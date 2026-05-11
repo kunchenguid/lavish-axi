@@ -41,11 +41,18 @@ test("artifact SDK isolates Lavish annotation UI in Shadow DOM", () => {
   assert.match(js, /lavish-annotation-root/);
 });
 
-test("annotation card does not block its own Queue Prompt button", () => {
+test("annotation card does not block its own Queue button", () => {
   const js = createSdkJs("abc");
 
   assert.match(js, /\.lavish-send'\)\.onclick=\(\)=>/);
   assert.doesNotMatch(js, /card\.addEventListener\('click',event=>event\.stopPropagation\(\),true\)/);
+});
+
+test("annotation card labels its submit action as Queue", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, />Queue<\/button>/);
+  assert.doesNotMatch(js, /Queue Prompt/);
 });
 
 test("annotation card keeps the selected element highlighted while open", () => {
@@ -85,11 +92,142 @@ test("annotation card title renders selected tag as an html element name", () =>
   assert.match(js, /'&gt;/);
 });
 
+test("annotation card shadow styles use Lavish design-system variables", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /--ink-900:#0f1115/);
+  assert.match(js, /--accent:#f4c95d/);
+  assert.match(js, /--font-sans:/);
+  assert.match(js, /font-family:var\(--font-sans\)/);
+  assert.match(js, /:focus-visible\{outline:2px solid var\(--accent\);outline-offset:2px/);
+});
+
 test("chrome labels the mode as annotation instead of inspect", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /Annotation: On/);
   assert.doesNotMatch(html, /Inspect/);
+});
+
+test("annotation toggle uses a brass border when enabled", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /class="button secondary annotation-on" id="annotation"/);
+  assert.match(html, /\.button\.annotation-on\{[^}]*border:1px solid var\(--accent\)/);
+  assert.match(html, /classList\.toggle\('annotation-on',annotation\)/);
+});
+
+test("chrome declares the Lavish design-system tokens", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /--ink-900:#0f1115/);
+  assert.match(html, /--cream-100:#f7f3ea/);
+  assert.match(html, /--brass-500:#f4c95d/);
+  assert.match(html, /--font-serif:/);
+  assert.match(html, /--font-sans:/);
+  assert.match(html, /--text-display:92px/);
+  assert.match(html, /--lh-display:1/);
+  assert.match(html, /--space-32:64px/);
+  assert.match(html, /--shadow-floating:0 20px 70px rgba\(0,0,0,.35\)/);
+  assert.match(html, /--ease:cubic-bezier\(.2,.6,.2,1\)/);
+  assert.match(html, /--dur-slow:320ms/);
+  assert.match(html, /--bar-h:56px/);
+  assert.match(html, /--panel-w:360px/);
+});
+
+test("artifact SDK uses design-token aliases for annotation highlight and shadow UI", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /--lavish-accent:#f4c95d/);
+  assert.match(js, /--lavish-annotate-outline:2px solid var\(--lavish-accent\)/);
+  assert.match(js, /el\.style\.outline='var\(--lavish-annotate-outline,2px solid #f4c95d\)'/);
+  assert.match(js, /el\.style\.outlineOffset='var\(--lavish-annotate-offset,2px\)'/);
+  assert.match(js, /--fg-faint:var\(--steel-300\)/);
+  assert.match(js, /textarea::placeholder\{color:var\(--fg-faint\)\}/);
+  assert.doesNotMatch(js, /placeholder\{color:#aeb6c6\}/);
+});
+
+test("chrome uses the annotation outline as the keyboard focus outline", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /:focus-visible\{outline:var\(--annotate-outline\);outline-offset:var\(--annotate-offset\)/);
+  assert.match(html, /--annotate-outline:2px solid var\(--accent\)/);
+  assert.match(html, /--annotate-offset:2px/);
+});
+
+test("chrome keeps the editor usable on narrow screens", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /@media \(max-width:860px\)/);
+  assert.match(html, /grid-template-columns:1fr/);
+  assert.match(html, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
+});
+
+test("chrome top bar follows the design mock wordmark and file treatment", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /class="brand-mark">Lavish/);
+  assert.match(html, /class="brand-support">Editor/);
+  assert.match(html, /font-family:var\(--font-serif\)/);
+  assert.match(html, /letter-spacing:\.18em/);
+  assert.match(html, /<input class="file-input" id="filePath"/);
+  assert.match(html, /readonly/);
+  assert.match(html, /size="18"/);
+  assert.match(html, /value="\/tmp\/artifact\.html"/);
+  assert.doesNotMatch(html, /class="file-icon"/);
+});
+
+test("chrome file path controls shrink-wrap and align together", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /\.file-wrap\{[^}]*align-items:center/);
+  assert.match(html, /\.file-wrap\{[^}]*flex:1 1 auto/);
+  assert.match(html, /\.file-input\{[^}]*width:auto/);
+  assert.match(html, /\.file-input\{[^}]*max-width:100%/);
+  assert.match(html, /\.file-input\{[^}]*border:1px solid var\(--border-subtle\)/);
+  assert.match(html, /\.file-input\{[^}]*border-radius:var\(--radius-sm\)/);
+  assert.doesNotMatch(html, /44vw/);
+  assert.doesNotMatch(html, /52vw/);
+});
+
+test("chrome can copy the file path from the top bar", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /id="copyPath"/);
+  assert.match(html, /Copy Path/);
+  assert.match(html, /navigator\.clipboard\.writeText\(filePathInput\.value\)/);
+  assert.match(html, /copyPathButton\.textContent='Copied'/);
+  assert.match(html, /setTimeout\(\(\)=>\{copyPathButton\.textContent='Copy Path'\}/);
+});
+
+test("chrome centers the top bar row while bottom-aligning the identity cluster", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /\.bar\{[^}]*align-items:center/);
+  assert.match(html, /\.brand\{[^}]*height:22px/);
+  assert.match(html, /\.brand\{[^}]*align-items:flex-end/);
+  assert.match(html, /\.file-wrap\{[^}]*height:22px/);
+  assert.match(html, /\.file-wrap\{[^}]*align-items:center/);
+  assert.match(html, /\.file-input\{[^}]*line-height:1/);
+  assert.match(html, /\.divider\{[^}]*height:22px/);
+});
+
+test("chrome chat bubbles follow the preview mock shades", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /\.bubble\.user\{[^}]*background:var\(--bg-elevated\)/);
+  assert.match(html, /\.bubble\.user\{[^}]*border-color:var\(--border-strong\)/);
+  assert.match(html, /\.bubble\.agent\{[^}]*background:transparent/);
+  assert.match(html, /\.bubble\.agent\{[^}]*border-color:var\(--border-subtle\)/);
+  assert.match(html, /border-top-color:var\(--accent\)/);
+});
+
+test("chrome queued-prompt pills use the preview mock steel treatment", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /\.pill\{[^}]*border:1px solid var\(--border-strong\)/);
+  assert.match(html, /\.pill\{[^}]*background:var\(--bg-elevated\)/);
+  assert.doesNotMatch(html, /\.pill\{[^}]*var\(--amber/);
 });
 
 test("chrome includes a chat-like prompt composer and agent reply listener", () => {
@@ -203,4 +341,17 @@ test("chrome ignores Lavish postMessages not sent by the artifact iframe", () =>
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /event\.source\s*!==\s*frame\.contentWindow/);
+});
+
+test("ended session message renders centered in the main content area", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /class="ended-view"/);
+  assert.match(html, /class="ended-card"/);
+  assert.match(html, /\.ended-view\{[^}]*height:calc\(100vh - var\(--bar-h\)\)/);
+  assert.match(html, /\.ended-view\{[^}]*place-items:center/);
+  assert.match(html, /Session ended\./);
+  assert.match(html, /Return to your agent to continue\./);
+  assert.doesNotMatch(html, /The agent polling loop can stop\./);
+  assert.doesNotMatch(html, /<span class="file">Session ended\. The agent polling loop can stop\.<\/span>/);
 });

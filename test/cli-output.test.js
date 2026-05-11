@@ -5,6 +5,7 @@ import test from "node:test";
 import { AxiError } from "axi-sdk-js";
 
 import {
+  collapseHomeDirectory,
   createHomeOutput,
   createOpenOutput,
   createPollOutput,
@@ -26,6 +27,17 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.artifact_guidance.some((item) => item.includes("window.lavish.queuePrompt")));
   assert.ok(output.visual_guidance.some((item) => item.includes("visual point of view")));
   assert.ok(output.help.some((item) => item.includes("lavish-axi <html-file>")));
+});
+
+test("home directory collapse tolerates Windows mixed separators", () => {
+  assert.equal(
+    collapseHomeDirectory("C:\\Users\\runneradmin/.local/bin/lavish-axi", "C:\\Users\\runneradmin"),
+    "~/.local/bin/lavish-axi",
+  );
+  assert.equal(
+    collapseHomeDirectory("C:\\Users\\runneradmin\\.local\\bin\\lavish-axi", "C:\\Users\\runneradmin"),
+    "~/.local/bin/lavish-axi",
+  );
 });
 
 test("open output uses one next_step string for user URL and polling", () => {

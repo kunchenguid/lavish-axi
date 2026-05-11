@@ -1,0 +1,1498 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      :root {
+        --ink-900: #0f1115;
+        --ink-800: #11141a;
+        --ink-700: #171a21;
+        --ink-600: #1c212b;
+        --steel-700: #2a2f3a;
+        --steel-600: #303745;
+        --steel-500: #3c4557;
+        --steel-400: #8c96aa;
+        --steel-300: #aeb6c6;
+        --steel-200: #b9c0cf;
+        --steel-100: #d8deea;
+        --cream-50: #fffbf3;
+        --cream-100: #f7f3ea;
+        --cream-200: #e8e1cf;
+        --brass-500: #f4c95d;
+        --brass-400: #ffd877;
+        --brass-ink: #17130a;
+        --sage-900: #172419;
+        --sage-700: #315f3a;
+        --sage-300: #8fe39e;
+        --amber-900: #25230f;
+        --amber-700: #5d4d1b;
+        --rust-500: #f06464;
+        --font-serif: "EB Garamond", "Iowan Old Style", Georgia, serif;
+        --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--ink-900);
+        color: var(--cream-100);
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--ink-900);
+      }
+
+      .scene {
+        position: absolute;
+        inset: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--ink-900);
+      }
+
+      .scene:not(#scene-terminal) {
+        opacity: 0;
+      }
+
+      .scene-content {
+        width: 100%;
+        height: 100%;
+        padding: 74px 92px;
+        display: flex;
+        flex-direction: column;
+        gap: 30px;
+      }
+
+      .eyebrow {
+        color: var(--steel-400);
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .terminal-stage {
+        justify-content: center;
+        align-items: center;
+      }
+
+      .terminal-shell {
+        width: 1260px;
+        height: 742px;
+        border: 1px solid var(--steel-600);
+        border-radius: 18px;
+        background: #0b0d11;
+        overflow: hidden;
+        opacity: 0;
+        box-shadow: 0 36px 110px rgba(0, 0, 0, 0.46);
+      }
+
+      .terminal-bar {
+        height: 48px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 18px;
+        background: #171a21;
+        border-bottom: 1px solid var(--steel-700);
+        color: var(--steel-200);
+        font-family: var(--font-mono);
+        font-size: 18px;
+      }
+
+      .traffic {
+        display: flex;
+        gap: 8px;
+        margin-right: 8px;
+      }
+
+      .traffic span {
+        width: 13px;
+        height: 13px;
+        border-radius: 999px;
+        background: var(--steel-500);
+      }
+
+      .terminal-body {
+        padding: 28px 34px;
+        font-family: var(--font-mono);
+        color: var(--steel-100);
+        font-size: 22px;
+        line-height: 1.52;
+      }
+
+      .terminal-conversation {
+        display: grid;
+        gap: 14px;
+        margin-bottom: 26px;
+      }
+
+      .terminal-turn {
+        width: 820px;
+        border: 1px solid var(--steel-700);
+        border-radius: 12px;
+        padding: 14px 16px;
+        color: var(--steel-100);
+        background: var(--ink-800);
+      }
+
+      .terminal-turn.user {
+        margin-left: auto;
+        border-color: var(--steel-500);
+        background: var(--ink-600);
+      }
+
+      .terminal-speaker {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--steel-300);
+        font-family: var(--font-sans);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .prompt-line {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        width: 100%;
+        min-height: 48px;
+        border: 1px solid var(--steel-600);
+        border-radius: 8px;
+        padding: 7px 12px;
+        color: var(--cream-100);
+      }
+
+      .prompt-marker {
+        color: var(--steel-200);
+      }
+
+      .prompt-text {
+        color: var(--cream-100);
+      }
+
+      .agent-log {
+        margin-top: 24px;
+        color: var(--steel-200);
+      }
+
+      .agent-log div {
+        opacity: 0;
+      }
+
+      .agent-log .command {
+        color: var(--cream-100);
+      }
+
+      .agent-log .file {
+        color: var(--brass-500);
+      }
+
+      .agent-log .green {
+        color: var(--sage-300);
+      }
+
+      .caption-block {
+        position: absolute;
+        right: 74px;
+        bottom: 68px;
+        width: 690px;
+        padding: 26px 30px 28px;
+        border: 1px solid rgba(48, 55, 69, 0.8);
+        border-radius: 18px;
+        background: linear-gradient(135deg, rgba(15, 17, 21, 0.94), rgba(15, 17, 21, 0.58));
+        box-shadow: 0 22px 80px rgba(0, 0, 0, 0.38);
+        opacity: 0;
+        transform: translateY(20px);
+        z-index: 10;
+      }
+
+      .caption-block h1 {
+        font-family: var(--font-serif);
+        font-size: 72px;
+        font-style: italic;
+        font-weight: 400;
+        line-height: 0.98;
+        letter-spacing: -0.015em;
+      }
+
+      .caption-block p {
+        margin-top: 18px;
+        color: var(--steel-200);
+        font-size: 25px;
+        line-height: 1.35;
+      }
+
+      .browser-stage {
+        padding: 58px 64px;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .browser-window {
+        width: 1760px;
+        height: 948px;
+        border: 1px solid var(--steel-600);
+        border-radius: 18px;
+        background: var(--ink-800);
+        overflow: hidden;
+        transform-origin: center center;
+        box-shadow: 0 34px 120px rgba(0, 0, 0, 0.5);
+      }
+
+      .browser-bar {
+        height: 48px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 18px;
+        background: #0b0d11;
+        border-bottom: 1px solid var(--steel-700);
+      }
+
+      .address {
+        flex: 1;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        border: 1px solid var(--steel-700);
+        border-radius: 999px;
+        color: var(--steel-200);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        background: var(--ink-900);
+      }
+
+      .editor {
+        height: 900px;
+        display: flex;
+        flex-direction: column;
+        background: var(--ink-900);
+      }
+
+      .topbar {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 16px;
+        background: var(--ink-700);
+        border-bottom: 1px solid var(--steel-700);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+      }
+
+      .brand .lavish {
+        font-family: var(--font-serif);
+        font-size: 25px;
+        font-style: italic;
+        line-height: 1;
+      }
+
+      .brand .editor-word {
+        color: var(--steel-200);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      .divider {
+        width: 1px;
+        height: 22px;
+        background: var(--steel-700);
+      }
+
+      .file-wrap {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 22px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .file-input {
+        display: block;
+        width: auto;
+        max-width: 100%;
+        min-width: 0;
+        border: 1px solid var(--steel-700);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--steel-100);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1;
+        padding: 4px 7px;
+        text-overflow: ellipsis;
+      }
+
+      .copy-button {
+        border: 1px solid var(--steel-600);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--steel-300);
+        font-family: var(--font-sans);
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1;
+        padding: 4px 7px;
+        white-space: nowrap;
+      }
+
+      .file-path {
+        flex: 1;
+        color: var(--steel-200);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .button {
+        border: 0;
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-family: var(--font-sans);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .button.secondary {
+        color: var(--cream-100);
+        background: var(--steel-700);
+      }
+
+      .button.danger {
+        color: var(--rust-500);
+        background: transparent;
+        border: 1px solid var(--rust-500);
+      }
+
+      .workbench {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 360px;
+        min-height: 0;
+      }
+
+      .artifact-frame {
+        position: relative;
+        overflow: hidden;
+        background: #f3ede1;
+        color: #1d1a15;
+      }
+
+      .report-page {
+        position: absolute;
+        inset: 38px 58px;
+        padding: 46px 52px;
+        background: #fffbf3;
+        border: 1px solid #ded2b9;
+        color: #1d1a15;
+      }
+
+      .report-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 28px;
+        margin-bottom: 28px;
+        border-bottom: 1px solid #e2d6bd;
+        padding-bottom: 26px;
+      }
+
+      .report-header h2 {
+        font-family: var(--font-serif);
+        font-size: 58px;
+        font-style: italic;
+        font-weight: 400;
+        line-height: 1.02;
+        letter-spacing: -0.02em;
+      }
+
+      .report-header p {
+        margin-top: 12px;
+        max-width: 650px;
+        color: #514a3e;
+        font-size: 19px;
+        line-height: 1.45;
+      }
+
+      .report-date {
+        color: #756a58;
+        font-family: var(--font-mono);
+        font-size: 15px;
+        line-height: 1.45;
+        text-align: right;
+      }
+
+      .report-date span {
+        display: block;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+        margin-bottom: 24px;
+      }
+
+      .metric {
+        border: 1px solid #e2d6bd;
+        border-radius: 14px;
+        padding: 18px;
+        background: #fbf5e9;
+      }
+
+      .metric .label {
+        color: #756a58;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .metric .value {
+        margin-top: 8px;
+        font-family: var(--font-mono);
+        font-size: 44px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .charts {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 22px;
+      }
+
+      .chart-card {
+        min-height: 262px;
+        border: 1px solid #e2d6bd;
+        border-radius: 16px;
+        padding: 22px;
+        background: #fbf5e9;
+      }
+
+      .chart-card.target,
+      .chart-card.target-second {
+        position: relative;
+      }
+
+      .chart-title {
+        color: #2b251b;
+        font-size: 22px;
+        font-weight: 700;
+      }
+
+      .chart-subtitle {
+        margin-top: 4px;
+        color: #756a58;
+        font-size: 15px;
+      }
+
+      .bar-chart {
+        display: grid;
+        gap: 13px;
+        margin-top: 28px;
+      }
+
+      .bar-row {
+        display: grid;
+        grid-template-columns: 84px 1fr 48px;
+        align-items: center;
+        gap: 12px;
+        color: #514a3e;
+        font-size: 16px;
+      }
+
+      .bar-track {
+        height: 18px;
+        border-radius: 999px;
+        background: #e9dec9;
+        overflow: hidden;
+      }
+
+      .bar-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: #2b251b;
+      }
+
+      .pie-chart {
+        position: absolute;
+        inset: 78px 24px 20px;
+        display: grid;
+        grid-template-columns: 172px 1fr;
+        gap: 24px;
+        align-items: center;
+        opacity: 0;
+      }
+
+      .pie {
+        width: 172px;
+        height: 172px;
+        border-radius: 50%;
+        background: conic-gradient(
+          #2b251b 0deg 166deg,
+          #9b8444 166deg 263deg,
+          #d7bc73 263deg 320deg,
+          #e8d9b5 320deg 360deg
+        );
+        border: 10px solid #fff7e8;
+      }
+
+      .legend {
+        display: grid;
+        gap: 12px;
+        color: #514a3e;
+        font-size: 16px;
+      }
+
+      .legend span {
+        display: inline-flex;
+        width: 11px;
+        height: 11px;
+        margin-right: 9px;
+        border-radius: 999px;
+        vertical-align: -1px;
+      }
+
+      .line-chart {
+        display: flex;
+        align-items: end;
+        gap: 18px;
+        height: 142px;
+        margin-top: 30px;
+        padding: 0 12px;
+        border-bottom: 1px solid #d9ccb2;
+      }
+
+      .line-column-wrap {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .line-number {
+        color: #514a3e;
+        font-family: var(--font-mono);
+        font-size: 15px;
+        font-weight: 700;
+        opacity: 0;
+      }
+
+      .line-column {
+        width: 48px;
+        background: #2b251b;
+        border-radius: 8px 8px 0 0;
+      }
+
+      .dark-report {
+        background: var(--ink-800);
+        border-color: var(--steel-600);
+        color: var(--cream-100);
+      }
+
+      .dark-report .report-header {
+        border-bottom-color: var(--steel-600);
+      }
+
+      .dark-report .eyebrow,
+      .dark-report .report-header p,
+      .dark-report .report-date,
+      .dark-report .chart-subtitle,
+      .dark-report .legend,
+      .dark-report .metric .label {
+        color: var(--steel-200) !important;
+      }
+
+      .dark-report .metric,
+      .dark-report .chart-card {
+        background: var(--ink-700);
+        border-color: var(--steel-600);
+      }
+
+      .dark-report .chart-title,
+      .dark-report .metric .value,
+      .dark-report .line-number {
+        color: var(--cream-100);
+      }
+
+      .dark-report .line-chart {
+        border-bottom-color: var(--steel-500);
+      }
+
+      .dark-report .line-column {
+        background: var(--brass-500);
+      }
+
+      .dark-report .line-number {
+        opacity: 1;
+      }
+
+      .dark-report .pie {
+        border-color: var(--ink-900);
+      }
+
+      .outline-target,
+      .outline-target-2 {
+        position: absolute;
+        inset: -2px;
+        border: 2px solid var(--brass-500);
+        border-radius: 18px;
+        outline: 2px solid var(--brass-500);
+        outline-offset: 2px;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .chat-panel {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        background: var(--ink-800);
+        border-left: 1px solid var(--steel-700);
+      }
+
+      .chat-panel h3 {
+        margin: 16px 16px 8px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .chat-log {
+        position: relative;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 0 16px 12px;
+      }
+
+      .bubble {
+        max-width: 292px;
+        border-radius: 14px;
+        padding: 11px 12px;
+        background: var(--ink-600);
+        border: 1px solid var(--steel-600);
+        color: var(--cream-100);
+        font-size: 14px;
+        line-height: 1.42;
+      }
+
+      .bubble small {
+        display: block;
+        color: var(--steel-300);
+        margin-bottom: 4px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .bubble.user small {
+        text-align: right;
+      }
+
+      .bubble.agent {
+        align-self: flex-start;
+        background: transparent;
+        border-color: var(--steel-700);
+      }
+
+      .bubble.user {
+        align-self: flex-end;
+        background: var(--ink-600);
+        border-color: var(--steel-500);
+        opacity: 0;
+      }
+
+      .working {
+        position: absolute;
+        left: 16px;
+        top: 268px;
+        width: 292px;
+        align-self: flex-start;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: transparent;
+        border-color: var(--steel-700);
+        color: var(--steel-100);
+        opacity: 0;
+      }
+
+      .spinner {
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        border: 2px solid var(--steel-600);
+        border-top-color: var(--brass-500);
+      }
+
+      .composer {
+        display: grid;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--steel-700);
+      }
+
+      .pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-height: 30px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        border: 1px solid var(--steel-500);
+        background: var(--ink-600);
+        color: var(--steel-100);
+        padding: 6px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        opacity: 0;
+      }
+
+      .textarea {
+        min-height: 82px;
+        position: relative;
+        border-radius: 12px;
+        border: 1px solid var(--steel-600);
+        background: var(--ink-900);
+        color: var(--steel-400);
+        padding: 10px;
+        font-size: 14px;
+        line-height: 1.35;
+      }
+
+      .textarea .placeholder {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        right: 10px;
+        color: var(--steel-400);
+      }
+
+      .textarea .chat-line {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        right: 10px;
+        color: var(--cream-100);
+      }
+
+      .textarea .chat-draft {
+        color: var(--cream-100);
+      }
+
+      .send-row {
+        display: flex;
+        justify-content: flex-end;
+      }
+
+      .send-button {
+        border: 0;
+        border-radius: 10px;
+        transform-origin: center center;
+        padding: 9px 12px;
+        background: var(--brass-500);
+        color: var(--brass-ink);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .annotation-card {
+        position: absolute;
+        left: 708px;
+        top: 436px;
+        width: 320px;
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid var(--brass-500);
+        background: var(--ink-800);
+        color: var(--cream-100);
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.35);
+        z-index: 20;
+        opacity: 0;
+      }
+
+      .annotation-card.second {
+        left: 950px;
+        top: 456px;
+      }
+
+      .annotation-card h4 {
+        margin-bottom: 7px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .annotation-input {
+        min-height: 86px;
+        border-radius: 10px;
+        border: 1px solid var(--steel-600);
+        background: var(--ink-900);
+        padding: 9px;
+        color: var(--cream-100);
+        font-size: 14px;
+        line-height: 1.35;
+      }
+
+      .annotation-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .queue-button {
+        border: 0;
+        border-radius: 9px;
+        padding: 8px 10px;
+        background: var(--brass-500);
+        color: var(--brass-ink);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .ghost-button {
+        border: 0;
+        border-radius: 9px;
+        padding: 8px 10px;
+        background: var(--steel-700);
+        color: var(--cream-100);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .pointer {
+        position: absolute;
+        z-index: 60;
+        width: 30px;
+        height: 30px;
+        color: var(--cream-100);
+        filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.45));
+      }
+
+      .pointer svg {
+        display: block;
+      }
+
+      .click-ring {
+        position: absolute;
+        z-index: 55;
+        width: 42px;
+        height: 42px;
+        margin: -20px 0 0 -20px;
+        border: 2px solid var(--brass-500);
+        border-radius: 999px;
+        opacity: 0;
+      }
+
+      .zoom-stage .browser-window {
+        transform-origin: 52% 50%;
+      }
+
+      .zoom-copy {
+        position: absolute;
+        left: 120px;
+        bottom: 96px;
+        width: 660px;
+        z-index: 40;
+      }
+
+      .zoom-copy h2 {
+        font-family: var(--font-serif);
+        font-size: 78px;
+        font-style: italic;
+        font-weight: 400;
+        line-height: 0.96;
+        letter-spacing: -0.018em;
+      }
+
+      .zoom-copy p {
+        margin-top: 18px;
+        color: var(--steel-100);
+        font-size: 26px;
+        line-height: 1.32;
+      }
+
+      .outro {
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        background: var(--ink-900);
+      }
+
+      .outro-brand {
+        display: flex;
+        align-items: baseline;
+        justify-content: center;
+        gap: 18px;
+      }
+
+      .outro-brand .lavish {
+        font-family: var(--font-serif);
+        font-size: 132px;
+        font-style: italic;
+        font-weight: 400;
+        line-height: 0.9;
+      }
+
+      .outro-brand .editor-word {
+        color: var(--steel-200);
+        font-size: 25px;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      .outro p {
+        margin-top: 28px;
+        color: var(--steel-100);
+        font-size: 31px;
+      }
+
+      .outro code {
+        display: inline-block;
+        margin-top: 36px;
+        border: 1px solid var(--steel-600);
+        border-radius: 10px;
+        background: var(--ink-600);
+        color: var(--brass-500);
+        padding: 10px 15px;
+        font-family: var(--font-mono);
+        font-size: 23px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="33.5" data-width="1920" data-height="1080">
+      <section id="scene-terminal" class="scene">
+        <div class="scene-content terminal-stage">
+          <div class="terminal-shell">
+            <div class="terminal-bar">
+              <div class="traffic"><span></span><span></span><span></span></div>
+              <span>kun@MacBook-Pro dev % agent</span>
+            </div>
+            <div class="terminal-body">
+              <div class="terminal-conversation">
+                <div class="terminal-turn user">
+                  <span class="terminal-speaker">Kun</span>
+                  The main issue is that screenshots lose the exact element people are talking about.
+                </div>
+                <div class="terminal-turn">
+                  <span class="terminal-speaker">Agent</span>
+                  Agreed. The pattern is precise review, local browser context, and a short feedback loop.
+                </div>
+                <div class="terminal-turn user">
+                  <span class="terminal-speaker">Kun</span>
+                  Right. We need a visual that makes that loop obvious.
+                </div>
+              </div>
+              <div class="prompt-line">
+                <span class="prompt-marker">&gt;</span>
+                <span id="typed-prompt" class="prompt-text"></span>
+              </div>
+              <div class="agent-log">
+                <div id="log-1" class="command">Thinking through the research notes...</div>
+                <div id="log-2">Creating <span class="file">/var/folders/tmp/infographic.html</span></div>
+                <div id="log-3" class="command">$ lavish-axi /var/folders/tmp/infographic.html</div>
+                <div id="log-4" class="green">Opened in Lavish Editor.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="caption-block">
+          <h1>Ask the agent for something visual.</h1>
+          <p>Then let the artifact open where it can actually be reviewed.</p>
+        </div>
+      </section>
+
+      <section id="scene-editor" class="scene">
+        <div class="scene-content browser-stage">
+          <div class="browser-window editor-window-1" data-layout-allow-overflow>
+            <div class="browser-bar">
+              <div class="traffic"><span></span><span></span><span></span></div>
+              <div class="address">localhost:4387/session/9a7c2f31</div>
+            </div>
+            <div class="editor">
+              <div class="topbar">
+                <div class="brand"><span class="lavish">Lavish</span><span class="editor-word">Editor</span></div>
+                <div class="divider"></div>
+                <div class="file-wrap">
+                  <div class="file-input">/var/folders/tmp/infographic.html</div>
+                  <button class="copy-button">Copy Path</button>
+                </div>
+                <button class="button secondary">Annotation: On</button>
+                <button class="button danger">End Session</button>
+              </div>
+              <div class="workbench">
+                <div class="artifact-frame">
+                  <div class="report-page">
+                    <div class="report-header">
+                      <div>
+                        <div class="eyebrow" style="color: #756a58">Mock user research report</div>
+                        <h2>What teams need from artifact review</h2>
+                        <p>
+                          Thirty interviews across design, engineering, and product teams. The work is clear. The
+                          handoff is not.
+                        </p>
+                      </div>
+                      <div class="report-date">
+                        <span>Q2 study</span><span>42 participants</span><span>Remote sessions</span>
+                      </div>
+                    </div>
+                    <div class="metrics">
+                      <div class="metric">
+                        <div class="label">Review cycles</div>
+                        <div class="value">3.8x</div>
+                      </div>
+                      <div class="metric">
+                        <div class="label">Screenshot comments</div>
+                        <div class="value">71%</div>
+                      </div>
+                      <div class="metric">
+                        <div class="label">Lost context</div>
+                        <div class="value">54%</div>
+                      </div>
+                    </div>
+                    <div class="charts">
+                      <div class="chart-card target">
+                        <div class="outline-target"></div>
+                        <div class="chart-title">Preferred feedback format</div>
+                        <div class="chart-subtitle">Share of participants</div>
+                        <div class="bar-chart chart-before">
+                          <div class="bar-row">
+                            <span>Point</span>
+                            <div class="bar-track"><div class="bar-fill" style="width: 64%"></div></div>
+                            <span>46%</span>
+                          </div>
+                          <div class="bar-row">
+                            <span>Sketch</span>
+                            <div class="bar-track"><div class="bar-fill" style="width: 38%"></div></div>
+                            <span>27%</span>
+                          </div>
+                          <div class="bar-row">
+                            <span>Text</span>
+                            <div class="bar-track"><div class="bar-fill" style="width: 26%"></div></div>
+                            <span>18%</span>
+                          </div>
+                          <div class="bar-row">
+                            <span>Other</span>
+                            <div class="bar-track"><div class="bar-fill" style="width: 13%"></div></div>
+                            <span>9%</span>
+                          </div>
+                        </div>
+                        <div class="pie-chart chart-after">
+                          <div class="pie"></div>
+                          <div class="legend">
+                            <div><span style="background: #2b251b"></span>Point - 46%</div>
+                            <div><span style="background: #9b8444"></span>Sketch - 27%</div>
+                            <div><span style="background: #d7bc73"></span>Text - 18%</div>
+                            <div><span style="background: #e8d9b5"></span>Other - 9%</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="chart-card target-second">
+                        <div class="outline-target-2"></div>
+                        <div class="chart-title">Confidence after review</div>
+                        <div class="chart-subtitle">Median score by round</div>
+                        <div class="line-chart">
+                          <div class="line-column-wrap">
+                            <div class="line-number">2.1</div>
+                            <div class="line-column" style="height: 38px"></div>
+                          </div>
+                          <div class="line-column-wrap">
+                            <div class="line-number">3.4</div>
+                            <div class="line-column" style="height: 64px"></div>
+                          </div>
+                          <div class="line-column-wrap">
+                            <div class="line-number">4.2</div>
+                            <div class="line-column" style="height: 90px"></div>
+                          </div>
+                          <div class="line-column-wrap">
+                            <div class="line-number">4.8</div>
+                            <div class="line-column" style="height: 112px"></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="annotation-card first">
+                    <h4>Annotate &lt;div&gt;</h4>
+                    <div id="annotation-text" class="annotation-input"></div>
+                    <div class="annotation-actions">
+                      <button class="ghost-button">Cancel</button>
+                      <button class="queue-button">Queue</button>
+                    </div>
+                  </div>
+                  <div class="annotation-card second">
+                    <h4>Annotate &lt;div&gt;</h4>
+                    <div id="annotation-text-2" class="annotation-input"></div>
+                    <div class="annotation-actions">
+                      <button class="ghost-button">Cancel</button>
+                      <button class="queue-button">Queue</button>
+                    </div>
+                  </div>
+                </div>
+                <aside class="chat-panel">
+                  <h3>Conversation</h3>
+                  <div class="chat-log">
+                    <div class="bubble agent">
+                      <small>Agent</small>
+                      <div>I opened the infographic. Click any element and tell me what should change.</div>
+                    </div>
+                    <div class="bubble user user-bubble">
+                      <small>You</small>
+                      <div>On preferred feedback format: use pie chart</div>
+                      <div>On confidence after review: show numbers</div>
+                      <div>also change to dark mode</div>
+                    </div>
+                    <div class="bubble working"><span class="spinner"></span><span>Working...</span></div>
+                    <div class="bubble agent done-bubble" style="opacity: 0">
+                      <small>Agent</small>
+                      <div>Done. I switched to dark mode, changed the first chart to a pie chart, and added numbers to the second.</div>
+                    </div>
+                  </div>
+                  <div class="composer">
+                    <div class="pills"><span class="pill pill-one">use pie chart</span><span class="pill pill-two">show numbers</span></div>
+                    <div class="textarea">
+                      <span class="placeholder">Write a message for the agent...</span>
+                      <span class="chat-line"><span id="chat-text" class="chat-draft"></span></span>
+                    </div>
+                    <div class="send-row"><button class="send-button">Send to Agent</button></div>
+                  </div>
+                </aside>
+              </div>
+            </div>
+          </div>
+          <div id="pointer-1" class="pointer">
+            <svg viewBox="0 0 32 32" fill="none">
+              <path
+                d="M6 3L25 19L16 20L12 29L6 3Z"
+                fill="#f7f3ea"
+                stroke="#0f1115"
+                stroke-width="2"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </div>
+          <div id="click-ring-1" class="click-ring"></div>
+        </div>
+      </section>
+
+      <section id="scene-zoom" class="scene">
+        <div class="scene-content browser-stage zoom-stage">
+          <div class="browser-window editor-window-2" data-layout-allow-overflow>
+            <div class="browser-bar">
+              <div class="traffic"><span></span><span></span><span></span></div>
+              <div class="address">localhost:4387/session/9a7c2f31</div>
+            </div>
+            <div class="editor">
+              <div class="topbar">
+                <div class="brand"><span class="lavish">Lavish</span><span class="editor-word">Editor</span></div>
+                <div class="divider"></div>
+                <div class="file-wrap">
+                  <div class="file-input">/var/folders/tmp/infographic.html</div>
+                  <button class="copy-button">Copy Path</button>
+                </div>
+                <button class="button secondary">Annotation: On</button>
+                <button class="button danger">End Session</button>
+              </div>
+              <div class="workbench">
+                <div class="artifact-frame">
+                  <div class="report-page dark-report">
+                    <div class="report-header">
+                      <div>
+                        <div class="eyebrow" style="color: #756a58">Updated artifact</div>
+                        <h2>Specific feedback, applied in place</h2>
+                        <p>
+                          The chart changes inside the artifact. The conversation stays attached to the exact element.
+                        </p>
+                      </div>
+                      <div class="report-date">
+                        <span>Q2 study</span><span>42 participants</span><span>Remote sessions</span>
+                      </div>
+                    </div>
+                    <div class="metrics">
+                      <div class="metric">
+                        <div class="label">Targets</div>
+                        <div class="value">2</div>
+                      </div>
+                      <div class="metric">
+                        <div class="label">Prompts</div>
+                        <div class="value">3</div>
+                      </div>
+                      <div class="metric">
+                        <div class="label">Context loss</div>
+                        <div class="value">0</div>
+                      </div>
+                    </div>
+                    <div class="charts">
+                      <div class="chart-card target">
+                        <div class="outline-target" style="opacity: 1"></div>
+                        <div class="chart-title">Preferred feedback format</div>
+                        <div class="chart-subtitle">Changed to a pie chart</div>
+                        <div class="pie-chart" style="opacity: 1">
+                          <div class="pie"></div>
+                          <div class="legend">
+                            <div><span style="background: #2b251b"></span>Point - 46%</div>
+                            <div><span style="background: #9b8444"></span>Sketch - 27%</div>
+                            <div><span style="background: #d7bc73"></span>Text - 18%</div>
+                            <div><span style="background: #e8d9b5"></span>Other - 9%</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="chart-card">
+                        <div class="chart-title">Confidence after review</div>
+                        <div class="chart-subtitle">Numbers shown by round</div>
+                        <div class="line-chart">
+                          <div class="line-column-wrap">
+                            <div class="line-number">2.1</div>
+                            <div class="line-column" style="height: 38px"></div>
+                          </div>
+                          <div class="line-column-wrap">
+                            <div class="line-number">3.4</div>
+                            <div class="line-column" style="height: 64px"></div>
+                          </div>
+                          <div class="line-column-wrap">
+                            <div class="line-number">4.2</div>
+                            <div class="line-column" style="height: 90px"></div>
+                          </div>
+                          <div class="line-column-wrap">
+                            <div class="line-number">4.8</div>
+                            <div class="line-column" style="height: 112px"></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <aside class="chat-panel">
+                  <h3>Conversation</h3>
+                  <div class="chat-log">
+                    <div class="bubble user" style="opacity: 1">
+                      <small>You</small>
+                      <div>On preferred feedback format: use pie chart</div>
+                      <div>On confidence after review: show numbers</div>
+                      <div>also change to dark mode</div>
+                    </div>
+                    <div class="bubble agent" style="opacity: 1">
+                      <small>Agent</small>
+                      <div>Done. I switched to dark mode, changed the first chart to a pie chart, and added numbers to the second.</div>
+                    </div>
+                  </div>
+                  <div class="composer">
+                    <div class="pills"></div>
+                    <div class="textarea">Write a message for the agent...</div>
+                    <div class="send-row"><button class="send-button">Send to Agent</button></div>
+                  </div>
+                </aside>
+              </div>
+            </div>
+          </div>
+          <div class="zoom-copy">
+            <div class="eyebrow">The part that matters</div>
+            <h2>Point at the artifact. Talk to the agent.</h2>
+            <p>Lavish keeps feedback visual, precise, and inside the browser.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene-outro" class="scene">
+        <div class="scene-content outro">
+          <div class="outro-brand"><span class="lavish">Lavish</span><span class="editor-word">Editor</span></div>
+          <p>For when a rich editor is not rich enough.</p>
+          <code>npx lavish-axi</code>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      function splitText(selector, text) {
+        const el = document.querySelector(selector);
+        el.innerHTML = "";
+        for (const char of text) {
+          const span = document.createElement("span");
+          span.textContent = char === " " ? "\u00a0" : char;
+          el.appendChild(span);
+        }
+      }
+
+      splitText("#typed-prompt", "create an infographic for what we discussed");
+      splitText("#annotation-text", "use pie chart");
+      splitText("#annotation-text-2", "show numbers");
+      splitText("#chat-text", "also change to dark mode");
+
+      function focusPull(fromScene, toScene, at) {
+        tl.set(toScene, { opacity: 0, filter: "blur(18px)", zIndex: 5 }, at);
+        tl.set(fromScene, { zIndex: 4 }, at);
+        tl.to(fromScene, { opacity: 0, filter: "blur(22px)", duration: 0.72, ease: "sine.inOut" }, at);
+        tl.to(toScene, { opacity: 1, filter: "blur(0px)", duration: 0.72, ease: "sine.inOut" }, at + 0.08);
+      }
+
+      gsap.set("#pointer-1", { x: 1220, y: 780, opacity: 0 });
+      gsap.set("#click-ring-1", { x: 0, y: 0, scale: 0.5 });
+
+      tl.fromTo(
+        ".terminal-shell",
+        { y: 46, opacity: 0, scale: 0.985 },
+        { y: 0, opacity: 1, scale: 1, duration: 0.76, ease: "power3.out" },
+        0.18,
+      );
+      tl.to("#scene-terminal .caption-block", { y: 0, opacity: 1, duration: 0.48, ease: "power2.out" }, 3.05);
+      tl.from("#scene-terminal .caption-block h1", { y: 34, opacity: 0, duration: 0.72, ease: "expo.out" }, 3.18);
+      tl.from("#scene-terminal .caption-block p", { y: 22, opacity: 0, duration: 0.58, ease: "sine.out" }, 3.52);
+      tl.from(".terminal-turn", { y: 18, opacity: 0, duration: 0.4, stagger: 0.16, ease: "power2.out" }, 0.72);
+      tl.from(".prompt-line", { y: 18, opacity: 0, duration: 0.44, ease: "power3.out" }, 1.48);
+      tl.from("#typed-prompt span", { opacity: 0, duration: 0.018, stagger: 0.036, ease: "none" }, 1.82);
+      tl.to("#log-1", { opacity: 1, y: 0, duration: 0.5, ease: "power1.out" }, 5.45);
+      tl.to("#log-2", { opacity: 1, y: 0, duration: 0.5, ease: "power1.out" }, 6.25);
+      tl.to("#log-3", { opacity: 1, y: 0, duration: 0.5, ease: "power1.out" }, 7.15);
+      tl.to("#log-4", { opacity: 1, y: 0, duration: 0.5, ease: "power1.out" }, 7.95);
+
+      focusPull("#scene-terminal", "#scene-editor", 8.85);
+
+      tl.from(".editor-window-1", { y: 42, scale: 0.985, duration: 0.72, ease: "power3.out" }, 9.24);
+      tl.from("#scene-editor .browser-bar", { y: -18, opacity: 0, duration: 0.42, ease: "power2.out" }, 9.38);
+      tl.from(
+        "#scene-editor .topbar > *",
+        { y: -12, opacity: 0, duration: 0.36, stagger: 0.045, ease: "sine.out" },
+        9.52,
+      );
+      tl.from("#scene-editor .report-header", { y: 28, opacity: 0, duration: 0.58, ease: "expo.out" }, 9.72);
+      tl.from("#scene-editor .metric", { y: 18, opacity: 0, duration: 0.44, stagger: 0.08, ease: "power2.out" }, 10.0);
+      tl.from(
+        "#scene-editor .chart-card",
+        { y: 28, opacity: 0, duration: 0.56, stagger: 0.1, ease: "power3.out" },
+        10.3,
+      );
+      tl.from("#scene-editor .chat-panel", { x: 34, opacity: 0, duration: 0.52, ease: "power2.out" }, 10.42);
+      tl.from("#scene-editor .bubble.agent:first-child", { x: 18, opacity: 0, duration: 0.38, ease: "sine.out" }, 10.78);
+      tl.from("#scene-editor .composer", { y: 24, opacity: 0, duration: 0.46, ease: "power1.out" }, 10.92);
+
+      tl.to("#pointer-1", { opacity: 1, duration: 0.24, ease: "power1.out" }, 11.48);
+      tl.to("#pointer-1", { x: 598, y: 612, duration: 0.82, ease: "power2.inOut" }, 11.64);
+      tl.to("#scene-editor .outline-target", { opacity: 1, duration: 0.22, ease: "sine.out" }, 12.36);
+      tl.set("#click-ring-1", { x: 598, y: 612 }, 12.48);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.22, ease: "power2.out" }, 12.48);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.5, duration: 0.34, ease: "sine.out" }, 12.71);
+      tl.to(".annotation-card.first", { opacity: 1, y: -8, duration: 0.38, ease: "power3.out" }, 12.8);
+      tl.to(".editor-window-1", { scale: 1.34, x: 6, y: -174, duration: 0.72, ease: "power2.inOut" }, 13.12);
+      tl.from("#annotation-text span", { opacity: 0, duration: 0.018, stagger: 0.07, ease: "none" }, 13.52);
+      tl.to("#pointer-1", { x: 1118, y: 684, duration: 0.56, ease: "power2.inOut" }, 15.02);
+      tl.set("#click-ring-1", { x: 1118, y: 684, scale: 0.55 }, 15.58);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.18, ease: "power2.out" }, 15.58);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.28, ease: "sine.out" }, 15.76);
+      tl.to(".annotation-card.first", { opacity: 0, y: 6, duration: 0.24, ease: "sine.out" }, 15.8);
+      tl.to(".editor-window-1", { scale: 1.18, x: -430, y: -76, duration: 0.74, ease: "power2.inOut" }, 15.92);
+      tl.to("#pointer-1", { x: 1538, y: 823, duration: 0.68, ease: "power2.inOut" }, 16.02);
+      tl.to(".pill-one", { opacity: 1, y: -2, duration: 0.32, ease: "power2.out" }, 16.48);
+
+      tl.to(".editor-window-1", { scale: 1.14, x: -210, y: -76, duration: 0.64, ease: "power2.inOut" }, 16.92);
+      tl.to("#pointer-1", { x: 1110, y: 642, duration: 0.7, ease: "power2.inOut" }, 17.04);
+      tl.to("#scene-editor .outline-target-2", { opacity: 1, duration: 0.22, ease: "sine.out" }, 17.64);
+      tl.set("#click-ring-1", { x: 1110, y: 642, scale: 0.55 }, 17.76);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.2, ease: "power2.out" }, 17.76);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.3, ease: "sine.out" }, 17.96);
+      tl.to(".annotation-card.second", { opacity: 1, y: -8, duration: 0.38, ease: "power3.out" }, 18.08);
+      tl.to(".editor-window-1", { scale: 1.25, x: -230, y: -164, duration: 0.62, ease: "power2.inOut" }, 18.26);
+      tl.from("#annotation-text-2 span", { opacity: 0, duration: 0.018, stagger: 0.07, ease: "none" }, 18.68);
+      tl.to("#pointer-1", { x: 1398, y: 704, duration: 0.52, ease: "power2.inOut" }, 19.72);
+      tl.set("#click-ring-1", { x: 1398, y: 704, scale: 0.55 }, 20.24);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.18, ease: "power2.out" }, 20.24);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.28, ease: "sine.out" }, 20.42);
+      tl.to(".annotation-card.second", { opacity: 0, y: 6, duration: 0.24, ease: "sine.out" }, 20.46);
+      tl.to(".editor-window-1", { scale: 1.18, x: -430, y: -76, duration: 0.74, ease: "power2.inOut" }, 20.58);
+      tl.to("#pointer-1", { x: 1480, y: 760, duration: 0.68, ease: "power2.inOut" }, 20.68);
+      tl.to(".pill-two", { opacity: 1, y: -2, duration: 0.32, ease: "power2.out" }, 20.98);
+      tl.set("#click-ring-1", { x: 1480, y: 760, scale: 0.55 }, 21.22);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.18, ease: "power2.out" }, 21.22);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.28, ease: "sine.out" }, 21.4);
+      tl.to(".textarea", { borderColor: "#f4c95d", duration: 0.18, ease: "sine.out" }, 21.26);
+      tl.to(".textarea .placeholder", { opacity: 0, duration: 0.16, ease: "sine.out" }, 21.34);
+      tl.from("#chat-text span", { opacity: 0, duration: 0.018, stagger: 0.052, ease: "none" }, 21.42);
+      tl.to("#pointer-1", { x: 1578, y: 833, duration: 0.5, ease: "power2.inOut" }, 22.86);
+      tl.set("#click-ring-1", { x: 1578, y: 833, scale: 0.55 }, 23.36);
+      tl.to("#click-ring-1", { opacity: 1, scale: 0.92, duration: 0.14, ease: "power2.out" }, 23.36);
+      tl.to(".send-button", { scale: 0.93, y: 2, backgroundColor: "#ffd877", duration: 0.1, ease: "power1.in" }, 23.36);
+      tl.to(".send-button", { scale: 1, y: 0, backgroundColor: "#f4c95d", duration: 0.16, ease: "power2.out" }, 23.48);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.5, duration: 0.28, ease: "sine.out" }, 23.5);
+      tl.to(".pill", { opacity: 0, y: 5, duration: 0.22, ease: "sine.out" }, 23.58);
+      tl.to(".chat-line", { opacity: 0, duration: 0.18, ease: "sine.out" }, 23.58);
+      tl.to(".textarea .placeholder", { opacity: 1, duration: 0.18, ease: "sine.out" }, 23.68);
+      tl.to(".textarea", { borderColor: "#303745", duration: 0.18, ease: "sine.out" }, 23.68);
+      tl.to(".user-bubble", { opacity: 1, y: -4, duration: 0.32, ease: "power2.out" }, 23.86);
+      tl.to(".working", { opacity: 1, y: -4, duration: 0.3, ease: "sine.out" }, 24.2);
+      tl.to(".spinner", { rotation: 360, duration: 0.8, repeat: 3, ease: "none" }, 24.2);
+      tl.to(".editor-window-1", { scale: 1, x: 0, y: 0, duration: 0.78, ease: "power2.inOut" }, 24.1);
+      tl.to("#pointer-1", { opacity: 0, duration: 0.28, ease: "sine.out" }, 24.16);
+      tl.to("#scene-editor .artifact-frame", { backgroundColor: "#0f1115", duration: 0.5, ease: "sine.inOut" }, 24.72);
+      tl.to("#scene-editor .report-page", { backgroundColor: "#11141a", borderColor: "#303745", color: "#f7f3ea", duration: 0.5, ease: "sine.inOut" }, 24.72);
+      tl.to("#scene-editor .report-header", { borderColor: "#303745", duration: 0.5, ease: "sine.inOut" }, 24.72);
+      tl.to("#scene-editor .metric, #scene-editor .chart-card", { backgroundColor: "#171a21", borderColor: "#303745", duration: 0.5, ease: "sine.inOut" }, 24.74);
+      tl.to("#scene-editor .report-header p, #scene-editor .report-date, #scene-editor .chart-subtitle, #scene-editor .legend, #scene-editor .metric .label", { color: "#b9c0cf", duration: 0.5, ease: "sine.inOut" }, 24.74);
+      tl.to("#scene-editor .chart-title, #scene-editor .metric .value, #scene-editor .line-number", { color: "#f7f3ea", duration: 0.5, ease: "sine.inOut" }, 24.74);
+      tl.to("#scene-editor .line-chart", { borderColor: "#3c4557", duration: 0.5, ease: "sine.inOut" }, 24.74);
+      tl.to("#scene-editor .line-column", { backgroundColor: "#f4c95d", duration: 0.44, ease: "sine.inOut" }, 24.86);
+      tl.to(".chart-before", { opacity: 0, duration: 0.28, ease: "sine.out" }, 24.9);
+      tl.to(".chart-after", { opacity: 1, duration: 0.42, ease: "power1.out" }, 25.04);
+      tl.from("#scene-editor .pie", { scale: 0.86, rotation: -12, duration: 0.46, ease: "power3.out" }, 25.04);
+      tl.to("#scene-editor .line-number", { opacity: 1, y: -2, duration: 0.34, stagger: 0.06, ease: "power2.out" }, 25.2);
+      tl.to(".working", { opacity: 0, y: 4, duration: 0.24, ease: "sine.out" }, 26.2);
+      tl.to(".done-bubble", { opacity: 1, y: -4, duration: 0.34, ease: "power2.out" }, 26.36);
+
+      focusPull("#scene-editor", "#scene-outro", 29.7);
+
+      tl.from(".outro-brand", { y: 36, opacity: 0, duration: 0.74, ease: "power3.out" }, 30.08);
+      tl.from("#scene-outro p", { y: 22, opacity: 0, duration: 0.48, ease: "sine.out" }, 30.48);
+      tl.from("#scene-outro code", { y: 18, opacity: 0, scale: 0.98, duration: 0.44, ease: "power2.out" }, 30.72);
+      tl.to("#scene-outro", { opacity: 0, duration: 0.5, ease: "sine.inOut" }, 32.95);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

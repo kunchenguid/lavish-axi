@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { AxiError, runAxiCli } from "axi-sdk-js";
@@ -56,12 +55,15 @@ export async function run(argv) {
   }
 }
 
-function collapseHomeDirectory(file, home) {
-  if (file === home) {
+export function collapseHomeDirectory(file, home) {
+  const normalizedFile = file.replaceAll("\\", "/");
+  const normalizedHome = home.replaceAll("\\", "/");
+
+  if (normalizedFile === normalizedHome) {
     return "~";
   }
-  if (file.startsWith(`${home}${path.sep}`)) {
-    return `~${file.slice(home.length)}`;
+  if (normalizedFile.startsWith(`${normalizedHome}/`)) {
+    return `~/${normalizedFile.slice(normalizedHome.length + 1)}`;
   }
   return file;
 }

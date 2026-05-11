@@ -22,6 +22,10 @@
 
 <h3 align="center">For when a rich editor is not rich enough.</h3>
 
+<p align="center">
+  <video src="lavish-editor-marketing/renders/lavish-editor-marketing.mp4" controls muted playsinline></video>
+</p>
+
 HTML is the new markdown. Lavish is the new editor for your HTML artifacts.
 
 Agents are good at producing rich HTML artifacts, but the human-agent collaboration loop on such artifacts is lacking and falls back into screenshots and long responses for “tell me what to change.”
