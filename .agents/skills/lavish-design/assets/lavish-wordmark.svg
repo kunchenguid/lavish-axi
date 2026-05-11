@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 64" width="420" height="64">
+  
+  <circle class="dot" cx="14" cy="42" r="5"></circle>
+  <text class="word cream" x="28" y="50" font-size="44">Lavish</text>
+  <text class="editor dim" x="170" y="46" font-size="18">EDITOR</text>
+</svg>

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 110" width="760" height="110" font-family="Geist Mono, ui-monospace, Menlo, monospace" font-size="12">
+  <g fill="none" stroke="#3c4557" stroke-width="1">
+    <rect x="8" y="34" width="160" height="42" rx="10"></rect>
+    <rect x="208" y="34" width="180" height="42" rx="10"></rect>
+    <rect x="428" y="34" width="160" height="42" rx="10"></rect>
+    <rect x="628" y="34" width="120" height="42" rx="10"></rect>
+  </g>
+  <g fill="#f7f3ea" text-anchor="middle">
+    <text x="88" y="60">agent writes</text>
+    <text x="298" y="54">lavish-axi &lt;file&gt;</text>
+    <text x="298" y="70" fill="#b9c0cf">opens browser UI</text>
+    <text x="508" y="54">human annotates</text>
+    <text x="508" y="70" fill="#b9c0cf">queues prompts</text>
+    <text x="688" y="60">poll → return</text>
+  </g>
+  <g stroke="#f4c95d" stroke-width="1.25" fill="none">
+    <path d="M168 55 L208 55" marker-end="url(#a)"></path>
+    <path d="M388 55 L428 55" marker-end="url(#a)"></path>
+    <path d="M588 55 L628 55" marker-end="url(#a)"></path>
+  </g>
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="#f4c95d"></path>
+    </marker>
+  </defs>
+</svg>
