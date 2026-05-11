@@ -57,7 +57,12 @@ function TopBar({ filePath, annotationOn, onToggleAnnotation, onEndSession, ende
       flexShrink: 0,
     },
     secondary: { background: "var(--steel-700)", color: "var(--cream-100)", fontWeight: 600 },
-    danger: { background: "transparent", color: "var(--rust-500)", border: "1px solid var(--rust-500)", fontWeight: 600 },
+    danger: {
+      background: "transparent",
+      color: "var(--rust-500)",
+      border: "1px solid var(--rust-500)",
+      fontWeight: 600,
+    },
   };
 
   return (
@@ -68,18 +73,39 @@ function TopBar({ filePath, annotationOn, onToggleAnnotation, onEndSession, ende
       </div>
       <div style={topBarStyles.divider} />
       <div style={topBarStyles.fileWrap} title={filePath}>
-        <svg style={topBarStyles.fileIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <svg
+          style={topBarStyles.fileIcon}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
         <span style={topBarStyles.fileText}>{filePath}</span>
       </div>
       <button
-        style={{ ...topBarStyles.btnBase, ...topBarStyles.secondary, opacity: ended ? 0.55 : 1, cursor: ended ? "not-allowed" : "pointer" }}
+        style={{
+          ...topBarStyles.btnBase,
+          ...topBarStyles.secondary,
+          opacity: ended ? 0.55 : 1,
+          cursor: ended ? "not-allowed" : "pointer",
+        }}
         onClick={ended ? undefined : onToggleAnnotation}
         disabled={ended}
       >
         Annotation: {annotationOn ? "On" : "Off"}
       </button>
       <button
-        style={{ ...topBarStyles.btnBase, ...topBarStyles.danger, opacity: ended ? 0.55 : 1, cursor: ended ? "not-allowed" : "pointer" }}
+        style={{
+          ...topBarStyles.btnBase,
+          ...topBarStyles.danger,
+          opacity: ended ? 0.55 : 1,
+          cursor: ended ? "not-allowed" : "pointer",
+        }}
         onClick={ended ? undefined : onEndSession}
         disabled={ended}
       >

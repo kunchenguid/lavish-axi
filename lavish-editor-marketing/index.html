@@ -1191,11 +1191,16 @@
                     <div class="bubble working"><span class="spinner"></span><span>Working...</span></div>
                     <div class="bubble agent done-bubble" style="opacity: 0">
                       <small>Agent</small>
-                      <div>Done. I switched to dark mode, changed the first chart to a pie chart, and added numbers to the second.</div>
+                      <div>
+                        Done. I switched to dark mode, changed the first chart to a pie chart, and added numbers to the
+                        second.
+                      </div>
                     </div>
                   </div>
                   <div class="composer">
-                    <div class="pills"><span class="pill pill-one">use pie chart</span><span class="pill pill-two">show numbers</span></div>
+                    <div class="pills">
+                      <span class="pill pill-one">use pie chart</span><span class="pill pill-two">show numbers</span>
+                    </div>
                     <div class="textarea">
                       <span class="placeholder">Write a message for the agent...</span>
                       <span class="chat-line"><span id="chat-text" class="chat-draft"></span></span>
@@ -1319,7 +1324,10 @@
                     </div>
                     <div class="bubble agent" style="opacity: 1">
                       <small>Agent</small>
-                      <div>Done. I switched to dark mode, changed the first chart to a pie chart, and added numbers to the second.</div>
+                      <div>
+                        Done. I switched to dark mode, changed the first chart to a pie chart, and added numbers to the
+                        second.
+                      </div>
                     </div>
                   </div>
                   <div class="composer">
@@ -1411,7 +1419,11 @@
         10.3,
       );
       tl.from("#scene-editor .chat-panel", { x: 34, opacity: 0, duration: 0.52, ease: "power2.out" }, 10.42);
-      tl.from("#scene-editor .bubble.agent:first-child", { x: 18, opacity: 0, duration: 0.38, ease: "sine.out" }, 10.78);
+      tl.from(
+        "#scene-editor .bubble.agent:first-child",
+        { x: 18, opacity: 0, duration: 0.38, ease: "sine.out" },
+        10.78,
+      );
       tl.from("#scene-editor .composer", { y: 24, opacity: 0, duration: 0.46, ease: "power1.out" }, 10.92);
 
       tl.to("#pointer-1", { opacity: 1, duration: 0.24, ease: "power1.out" }, 11.48);
@@ -1471,17 +1483,37 @@
       tl.to(".editor-window-1", { scale: 1, x: 0, y: 0, duration: 0.78, ease: "power2.inOut" }, 24.1);
       tl.to("#pointer-1", { opacity: 0, duration: 0.28, ease: "sine.out" }, 24.16);
       tl.to("#scene-editor .artifact-frame", { backgroundColor: "#0f1115", duration: 0.5, ease: "sine.inOut" }, 24.72);
-      tl.to("#scene-editor .report-page", { backgroundColor: "#11141a", borderColor: "#303745", color: "#f7f3ea", duration: 0.5, ease: "sine.inOut" }, 24.72);
+      tl.to(
+        "#scene-editor .report-page",
+        { backgroundColor: "#11141a", borderColor: "#303745", color: "#f7f3ea", duration: 0.5, ease: "sine.inOut" },
+        24.72,
+      );
       tl.to("#scene-editor .report-header", { borderColor: "#303745", duration: 0.5, ease: "sine.inOut" }, 24.72);
-      tl.to("#scene-editor .metric, #scene-editor .chart-card", { backgroundColor: "#171a21", borderColor: "#303745", duration: 0.5, ease: "sine.inOut" }, 24.74);
-      tl.to("#scene-editor .report-header p, #scene-editor .report-date, #scene-editor .chart-subtitle, #scene-editor .legend, #scene-editor .metric .label", { color: "#b9c0cf", duration: 0.5, ease: "sine.inOut" }, 24.74);
-      tl.to("#scene-editor .chart-title, #scene-editor .metric .value, #scene-editor .line-number", { color: "#f7f3ea", duration: 0.5, ease: "sine.inOut" }, 24.74);
+      tl.to(
+        "#scene-editor .metric, #scene-editor .chart-card",
+        { backgroundColor: "#171a21", borderColor: "#303745", duration: 0.5, ease: "sine.inOut" },
+        24.74,
+      );
+      tl.to(
+        "#scene-editor .report-header p, #scene-editor .report-date, #scene-editor .chart-subtitle, #scene-editor .legend, #scene-editor .metric .label",
+        { color: "#b9c0cf", duration: 0.5, ease: "sine.inOut" },
+        24.74,
+      );
+      tl.to(
+        "#scene-editor .chart-title, #scene-editor .metric .value, #scene-editor .line-number",
+        { color: "#f7f3ea", duration: 0.5, ease: "sine.inOut" },
+        24.74,
+      );
       tl.to("#scene-editor .line-chart", { borderColor: "#3c4557", duration: 0.5, ease: "sine.inOut" }, 24.74);
       tl.to("#scene-editor .line-column", { backgroundColor: "#f4c95d", duration: 0.44, ease: "sine.inOut" }, 24.86);
       tl.to(".chart-before", { opacity: 0, duration: 0.28, ease: "sine.out" }, 24.9);
       tl.to(".chart-after", { opacity: 1, duration: 0.42, ease: "power1.out" }, 25.04);
       tl.from("#scene-editor .pie", { scale: 0.86, rotation: -12, duration: 0.46, ease: "power3.out" }, 25.04);
-      tl.to("#scene-editor .line-number", { opacity: 1, y: -2, duration: 0.34, stagger: 0.06, ease: "power2.out" }, 25.2);
+      tl.to(
+        "#scene-editor .line-number",
+        { opacity: 1, y: -2, duration: 0.34, stagger: 0.06, ease: "power2.out" },
+        25.2,
+      );
       tl.to(".working", { opacity: 0, y: 4, duration: 0.24, ease: "sine.out" }, 26.2);
       tl.to(".done-bubble", { opacity: 1, y: -4, duration: 0.34, ease: "power2.out" }, 26.36);
 

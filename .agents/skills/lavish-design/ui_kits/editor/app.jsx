@@ -12,9 +12,7 @@ function App() {
   const [annotationOn, setAnnotationOn] = useState(true);
   const [hovered, setHovered] = useState(null);
   const [annotating, setAnnotating] = useState(null); // { id, tag, rect }
-  const [pills, setPills] = useState([
-    "Tighten the heading — fewer words, more confidence",
-  ]);
+  const [pills, setPills] = useState(["Tighten the heading — fewer words, more confidence"]);
   const [draft, setDraft] = useState("");
   const [chat, setChat] = useState([
     { role: "agent", text: "Opened landing/index.html. Annotation is on — click any element to start." },
@@ -23,10 +21,13 @@ function App() {
   const [ended, setEnded] = useState(false);
   const [replyIdx, setReplyIdx] = useState(0);
 
-  const handleArtifactClick = useCallback((target) => {
-    if (!annotationOn) return;
-    setAnnotating(target);
-  }, [annotationOn]);
+  const handleArtifactClick = useCallback(
+    (target) => {
+      if (!annotationOn) return;
+      setAnnotating(target);
+    },
+    [annotationOn],
+  );
 
   const closeCard = () => setAnnotating(null);
 
@@ -64,7 +65,9 @@ function App() {
   // Click outside annotation card closes it
   useEffect(() => {
     if (!annotating) return;
-    const onKey = (e) => { if (e.key === "Escape") closeCard(); };
+    const onKey = (e) => {
+      if (e.key === "Escape") closeCard();
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [annotating]);
@@ -144,12 +147,14 @@ function App() {
           onSend={sendToAgent}
         />
       </div>
-      {annotating && (
-        <AnnotationCard target={annotating} onCancel={closeCard} onQueue={queuePrompt} />
-      )}
+      {annotating && <AnnotationCard target={annotating} onCancel={closeCard} onQueue={queuePrompt} />}
       <div style={appStyles.endedOverlay}>
         <div style={appStyles.endedCard}>
-          <div style={appStyles.endedQuote}>Session ended.<br/>The agent polling loop can stop.</div>
+          <div style={appStyles.endedQuote}>
+            Session ended.
+            <br />
+            The agent polling loop can stop.
+          </div>
           <div style={appStyles.endedSub}>~/projects/landing/index.html</div>
         </div>
       </div>

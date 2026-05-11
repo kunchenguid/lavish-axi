@@ -77,7 +77,7 @@ function ChatPanel({ chat, working, pills, draft, onDraftChange, onRemovePill, o
       <h2 style={chatStyles.h2}>Conversation</h2>
       <div ref={logRef} style={chatStyles.log}>
         {chat.map((m, i) =>
-          m.role === "user" ? <UserBubble key={i}>{m.text}</UserBubble> : <AgentBubble key={i}>{m.text}</AgentBubble>
+          m.role === "user" ? <UserBubble key={i}>{m.text}</UserBubble> : <AgentBubble key={i}>{m.text}</AgentBubble>,
         )}
         {working && <WorkingBubble />}
       </div>

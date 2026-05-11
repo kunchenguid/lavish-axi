@@ -1,13 +1,55 @@
-<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css"></head>
-<body><div class="card">
-  <div class="label">Annotation outline = focus outline</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:center">
-    <div style="background:#fff;border-radius:12px;padding:32px;display:flex;align-items:center;justify-content:center">
-      <div style="font-family:'EB Garamond',serif;font-style:italic;font-size:32px;color:#222;outline:2px solid #f4c95d;outline-offset:2px;padding:4px 8px">selected element</div>
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="_base.css" />
+  </head>
+  <body>
+    <div class="card">
+      <div class="label">Annotation outline = focus outline</div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: center">
+        <div
+          style="
+            background: #fff;
+            border-radius: 12px;
+            padding: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          "
+        >
+          <div
+            style="
+              font-family: &quot;EB Garamond&quot;, serif;
+              font-style: italic;
+              font-size: 32px;
+              color: #222;
+              outline: 2px solid #f4c95d;
+              outline-offset: 2px;
+              padding: 4px 8px;
+            "
+          >
+            selected element
+          </div>
+        </div>
+        <div>
+          <div
+            style="
+              font-family: var(--font-serif);
+              font-style: italic;
+              font-size: 18px;
+              color: var(--fg);
+              max-width: 300px;
+            "
+          >
+            Attention is here. The hover, the selected element, and the focus ring share one visual language — a 2px
+            brass outline, 2px offset.
+          </div>
+          <div class="mono" style="margin-top: 10px; color: var(--fg-faint)">
+            outline: 2px solid #f4c95d · offset 2px
+          </div>
+        </div>
+      </div>
     </div>
-    <div>
-      <div style="font-family:var(--font-serif);font-style:italic;font-size:18px;color:var(--fg);max-width:300px">Attention is here. The hover, the selected element, and the focus ring share one visual language — a 2px brass outline, 2px offset.</div>
-      <div class="mono" style="margin-top:10px;color:var(--fg-faint)">outline: 2px solid #f4c95d · offset 2px</div>
-    </div>
-  </div>
-</div></body></html>
+  </body>
+</html>
