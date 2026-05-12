@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { createChromeHtml, createSdkJs, resolveArtifactAsset, serve } from "../src/server.js";
+
+test("server delegates artifact SDK generation to a dedicated source module", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+
+  assert.match(source, /from "\.\/artifact-sdk\.js"/);
+});
 
 test("artifact assets resolve within the artifact directory", () => {
   const root = path.resolve("/tmp/lavish-artifact");
@@ -31,14 +37,14 @@ test("artifact SDK ignores Lavish-owned annotation UI", () => {
   const js = createSdkJs("abc");
 
   assert.match(js, /function isLavishUi/);
-  assert.match(js, /closest\('\[data-lavish-ui\]'/);
+  assert.match(js, /closest\(["']\[data-lavish-ui\]["']\)/);
   assert.match(js, /data-lavish-ui/);
 });
 
 test("artifact SDK isolates Lavish annotation UI in Shadow DOM", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /attachShadow\(\{mode:'open'\}\)/);
+  assert.match(js, /attachShadow\(\{\s*mode:\s*["']open["'],?\s*\}\)/);
   assert.match(js, /:host\{all:initial/);
   assert.match(js, /lavish-annotation-root/);
 });
@@ -46,7 +52,7 @@ test("artifact SDK isolates Lavish annotation UI in Shadow DOM", () => {
 test("annotation card does not block its own Queue button", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /\.lavish-send'\)\.onclick=\(\)=>/);
+  assert.match(js, /sendButton\.onclick\s*=\s*\(\)\s*=>/);
   assert.doesNotMatch(js, /card\.addEventListener\('click',event=>event\.stopPropagation\(\),true\)/);
 });
 
@@ -60,17 +66,17 @@ test("annotation card labels its submit action as Queue", () => {
 test("annotation card keeps the selected element highlighted while open", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /let selected=null/);
+  assert.match(js, /let selected\s*=\s*null/);
   assert.match(js, /function highlightElement/);
-  assert.match(js, /if\(hovered&&hovered!==selected\)/);
+  assert.match(js, /if \(hovered && hovered !== selected\)/);
 });
 
 test("annotation hover remains active while another element is selected", () => {
   const js = createSdkJs("abc");
 
   assert.doesNotMatch(js, /\|\|selected\)return/);
-  assert.match(js, /if\(event\.target===selected\)return/);
-  assert.match(js, /if\(hovered&&hovered!==selected\)clearHighlight\(hovered\)/);
+  assert.match(js, /if \(event\.target === selected\) return/);
+  assert.match(js, /if \(hovered && hovered !== selected\) clearHighlight\(hovered\)/);
 });
 
 test("annotation mode forces the artifact cursor to default", () => {
@@ -84,7 +90,7 @@ test("annotation mode forces the artifact cursor to default", () => {
 test("turning annotation mode off clears selection and floating card", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /if\(!annotationMode\)closeCard\(\)/);
+  assert.match(js, /if \(!annotationMode\) closeCard\(\)/);
 });
 
 test("annotation card title renders selected tag as an html element name", () => {
@@ -142,8 +148,8 @@ test("artifact SDK uses design-token aliases for annotation highlight and shadow
 
   assert.match(js, /--lavish-accent:#f4c95d/);
   assert.match(js, /--lavish-annotate-outline:2px solid var\(--lavish-accent\)/);
-  assert.match(js, /el\.style\.outline='var\(--lavish-annotate-outline,2px solid #f4c95d\)'/);
-  assert.match(js, /el\.style\.outlineOffset='var\(--lavish-annotate-offset,2px\)'/);
+  assert.match(js, /el\.style\.outline\s*=\s*["']var\(--lavish-annotate-outline,2px solid #f4c95d\)["']/);
+  assert.match(js, /el\.style\.outlineOffset\s*=\s*["']var\(--lavish-annotate-offset,2px\)["']/);
   assert.match(js, /--fg-faint:var\(--steel-300\)/);
   assert.match(js, /textarea::placeholder\{color:var\(--fg-faint\)\}/);
   assert.doesNotMatch(js, /placeholder\{color:#aeb6c6\}/);

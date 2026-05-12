@@ -1,10 +1,10 @@
 <h1 align="center">lavish-axi</h1>
 <p align="center">
-  <a href="https://github.com/kunchenguid/lavish/actions/workflows/ci.yml"
-    ><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/kunchenguid/lavish/ci.yml?style=flat-square&label=ci"
+  <a href="https://github.com/kunchenguid/lavish-axi/actions/workflows/ci.yml"
+    ><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/kunchenguid/lavish-axi/ci.yml?style=flat-square&label=ci"
   /></a>
-  <a href="https://github.com/kunchenguid/lavish/actions/workflows/release-please.yml"
-    ><img alt="Release" src="https://img.shields.io/github/actions/workflow/status/kunchenguid/lavish/release-please.yml?style=flat-square&label=release"
+  <a href="https://github.com/kunchenguid/lavish-axi/actions/workflows/release-please.yml"
+    ><img alt="Release" src="https://img.shields.io/github/actions/workflow/status/kunchenguid/lavish-axi/release-please.yml?style=flat-square&label=release"
   /></a>
   <a href="https://www.npmjs.com/package/lavish-axi"
     ><img alt="npm" src="https://img.shields.io/npm/v/lavish-axi?style=flat-square"
@@ -31,15 +31,21 @@ HTML is the new markdown. Lavish is the new editor for your HTML artifacts.
 Agents are good at producing rich HTML artifacts, but the human-agent collaboration loop on such artifacts is lacking and falls back into screenshots and long responses for “tell me what to change.”
 That loses the thing HTML is best at: interactivity.
 
-Lavish Editor opens an agent-generated HTML file in a local browser, lets you pinpoint elements and send feedback.
+Lavish Editor opens agent-generated HTML files in a local browser, lets you pinpoint elements and send feedback to the agent to address.
 
-- **Browser-native review** - Serve local HTML artifacts with relative JS/CSS/assets intact.
-- **Precise feedback** - Click elements, queue annotation & prompts , and send them back to the agent.
-- **Agent-ergonomic interface** - Follows [AXI principles](https://axi.md), use TOON output, long polling, and contextual disclosure that keep autonomous agents on track.
+- **Local only** - Work with your local HTML artifacts with a local CLI. Zero cloud dependency.
+- **Human-AI collaboration** - Annotate elements and send messages to the agent without leaving Lavish Editor.
+- **Battery included** - Lavish Editor teaches your agent good visualization for common use cases such as technial plans, design explorations and more out of the box.
+
+Lavish Editor is an [AXI](https://axi.md), which means -
+
+- It's just a CLI any capable agent can run without setup.
+- No skills required. Agents learn to use AXIs by using them.
+- It's optimized for agent ergonomics. TOON output, long polling, and contextual disclosure making it highly token efficient.
 
 ## Quick Start
 
-Tell your agent:
+Just tell your agent:
 
 ```sh
 Use `npx lavish-axi` to write a technical plan for what we discussed.
@@ -56,8 +62,8 @@ npm install -g lavish-axi
 **From source**
 
 ```sh
-git clone https://github.com/kunchenguid/lavish.git
-cd lavish
+git clone https://github.com/kunchenguid/lavish-axi.git
+cd lavish-axi
 npm ci
 npm run build
 npm link
