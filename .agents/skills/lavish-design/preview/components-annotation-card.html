@@ -35,7 +35,8 @@
           A well-edited line.
         </div>
         <div style="position: absolute; left: 24px; top: 84px; color: #444; font-size: 14px; max-width: 240px">
-          Body copy in the artifact iframe. The selected heading shows the brass outline.
+          Body copy in the artifact iframe. The selected heading shows the brass outline, while selected text uses a
+          translucent brass highlight.
         </div>
         <!-- floating card -->
         <div
@@ -100,6 +101,56 @@
               Queue Prompt
             </button>
           </div>
+        </div>
+        <div
+          style="
+            position: absolute;
+            left: 24px;
+            top: 150px;
+            color: #222;
+            font-family: &quot;EB Garamond&quot;, serif;
+            font-size: 19px;
+            line-height: 1.25;
+            max-width: 210px;
+          "
+        >
+          Select
+          <span style="background: rgba(244, 201, 93, 0.28); box-shadow: 0 0 0 1px rgba(244, 201, 93, 0.45)"
+            >this exact phrase</span
+          >.
+        </div>
+        <div
+          style="
+            position: absolute;
+            left: 230px;
+            top: 150px;
+            width: 280px;
+            padding: 12px;
+            border-radius: 14px;
+            background: #11141a;
+            color: #f7f3ea;
+            border: 1px solid #f4c95d;
+            box-shadow: 0 20px 70px rgba(0, 0, 0, 0.35);
+            font: 14px/1.4 var(--font-sans);
+          "
+        >
+          <div style="font-weight: 700; margin-bottom: 6px">Annotate text</div>
+          <textarea
+            placeholder="Tell the agent what to change about this text…"
+            rows="2"
+            style="
+              width: 100%;
+              min-height: 52px;
+              resize: vertical;
+              border-radius: 10px;
+              border: 1px solid #303745;
+              background: #0f1115;
+              color: #f7f3ea;
+              padding: 9px;
+              font: inherit;
+              box-sizing: border-box;
+            "
+          ></textarea>
         </div>
       </div>
     </div>

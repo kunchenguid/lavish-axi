@@ -6,7 +6,7 @@
   </head>
   <body>
     <div class="card">
-      <div class="label">Annotation outline = focus outline</div>
+      <div class="label">Annotation states</div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: center">
         <div
           style="
@@ -42,11 +42,29 @@
               max-width: 300px;
             "
           >
-            Attention is here. The hover, the selected element, and the focus ring share one visual language — a 2px
-            brass outline, 2px offset.
+            Attention is here. Hover, selected element, and focus share a 2px brass outline, 2px offset. Selected text
+            ranges use a translucent brass highlight.
           </div>
           <div class="mono" style="margin-top: 10px; color: var(--fg-faint)">
             outline: 2px solid #f4c95d · offset 2px
+          </div>
+          <div
+            style="
+              margin-top: 14px;
+              font-family: &quot;EB Garamond&quot;, serif;
+              font-size: 21px;
+              line-height: 1.25;
+              color: #222;
+              background: #fff;
+              border-radius: 10px;
+              padding: 12px;
+            "
+          >
+            Select
+            <span style="background: rgba(244, 201, 93, 0.28); box-shadow: 0 0 0 1px rgba(244, 201, 93, 0.45)"
+              >this exact text</span
+            >
+            to annotate a range.
           </div>
         </div>
       </div>
