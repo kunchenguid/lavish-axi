@@ -13,7 +13,7 @@ import { initDefaultTelemetry } from "./telemetry.js";
 
 const COMMANDS = new Set(["open", "poll", "end", "server"]);
 const DESCRIPTION =
-  "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. First generate an interactive HTML artifact for the user to inspect, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements, queue prompts, and send feedback back through `lavish-axi poll`.";
+  "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. First generate an interactive HTML artifact for the user to inspect, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
 // Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
 export const VERSION =
   process.env.LAVISH_AXI_BUILD_VERSION ||

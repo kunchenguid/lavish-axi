@@ -2,7 +2,7 @@
 
 > _For when a rich editor is not rich enough._
 
-This is the brand & design system for **Lavish** — an in-browser agentic editor that opens agent-generated HTML artifacts in a local browser, lets a human pinpoint elements, annotate them, and ship that feedback back to the agent.
+This is the brand & design system for **Lavish** — an in-browser agentic editor that opens agent-generated HTML artifacts in a local browser, lets a human pinpoint elements or selected text, annotate them, and ship that feedback back to the agent.
 
 The product feels like a quiet reading room with a brass lamp: dark ink walls, a single warm gold accent, generous type set in a literary serif beside a clean technical sans. Elegant. Minimal. Futuristic. _Lavish._
 
@@ -26,7 +26,7 @@ Lavish is one product wearing two hats:
 | Surface                | Audience                                                                  | What it looks like                                                                                                                                                                                       |
 | ---------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **CLI** (`lavish-axi`) | Coding agents (Claude Code, Cursor, etc.) and the developers driving them | A long-polling, AXI-shaped command surface. Output is TOON-serialized. Not visually designed — it's _agent-ergonomic._                                                                                   |
-| **Editor chrome**      | Humans reviewing an agent's HTML artifact                                 | A two-pane browser app: the artifact in an iframe on the left, a conversation panel on the right, a session bar across the top. Click any element in the artifact, queue a prompt, send it to the agent. |
+| **Editor chrome**      | Humans reviewing an agent's HTML artifact                                 | A two-pane browser app: the artifact in an iframe on the left, a conversation panel on the right, a session bar across the top. Click any element or select text in the artifact, queue a prompt, send it to the agent. |
 
 The brand surface this design system serves is **the Editor chrome.** Marketing, docs, decks and screenshots should all feel like they came from the same hand that drew the chrome.
 
