@@ -29,3 +29,21 @@ test("package lock root bin matches the publish manifest", async () => {
 
   assert.deepEqual(packageLock.packages[""].bin, packageJson.bin);
 });
+
+test("release workflow publishes from the release tag checkout", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/release-please.yml", import.meta.url), "utf8");
+
+  assert.match(
+    workflow,
+    /uses: actions\/checkout@v6\n\s+if: \$\{\{ steps\.release\.outputs\.release_created \}\}\n\s+with:\n\s+ref: \$\{\{ steps\.release\.outputs\.tag_name \}\}/,
+  );
+});
+
+test("release workflow keeps telemetry env during npm publish prepack", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/release-please.yml", import.meta.url), "utf8");
+
+  assert.match(
+    workflow,
+    /run: npm publish --access public --provenance\n\s+if: \$\{\{ steps\.release\.outputs\.release_created \}\}\n\s+env:\n\s+LAVISH_AXI_UMAMI_HOST: https:\/\/a\.kunchenguid\.com\n\s+LAVISH_AXI_UMAMI_WEBSITE_ID: \$\{\{ vars\.LAVISH_AXI_UMAMI_WEBSITE_ID \}\}/,
+  );
+});
