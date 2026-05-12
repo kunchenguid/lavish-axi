@@ -7,13 +7,14 @@ import { fileURLToPath } from "node:url";
 import { AxiError, runAxiCli } from "axi-sdk-js";
 
 import { defaultPort, ensureStateDir, stateFile } from "./paths.js";
+import { findPlaybook, listPlaybooks, playbookIds } from "./playbooks.js";
 import { serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "server"]);
+const COMMANDS = new Set(["open", "poll", "end", "server", "playbook"]);
 const DESCRIPTION =
-  "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. First generate an interactive HTML artifact for the user to inspect, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
+  "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
 // Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
 export const VERSION =
   process.env.LAVISH_AXI_BUILD_VERSION ||
@@ -22,6 +23,7 @@ export const VERSION =
 export async function run(argv) {
   await ensureStateDir();
   const normalizedArgv = normalizeArgv(argv);
+  const isTopLevelHelp = argv.length === 1 && argv[0] === "--help";
   const command = telemetryCommandName(argv);
   const telemetry = initDefaultTelemetry({
     app: "lavish-axi",
@@ -34,18 +36,20 @@ export async function run(argv) {
     await runAxiCli({
       description: DESCRIPTION,
       version: VERSION,
-      argv: normalizedArgv,
+      argv: isTopLevelHelp ? [] : normalizedArgv,
       topLevelHelp: TOP_LEVEL_HELP,
       hooks: { binaryNames: ["lavish-axi"] },
       home: async () =>
         createHomeOutput({
           bin: process.argv[1] || "lavish-axi",
-          sessions: await visibleSessions(),
+          sessions: isTopLevelHelp ? [] : await visibleSessions(),
+          includeSessions: !isTopLevelHelp,
         }),
       commands: {
         open: openCommand,
         poll: pollCommand,
         end: endCommand,
+        playbook: playbookCommand,
         server: serverCommand,
       },
       getCommandHelp,
@@ -88,49 +92,55 @@ export function telemetryCommandName(argv) {
   return normalized[0] && !normalized[0].startsWith("-") ? normalized[0] : "home";
 }
 
-export function createHomeOutput({ bin, sessions }) {
+export function createHomeOutput({ bin, sessions, includeSessions = true }) {
   return {
     bin: collapseHomeDirectory(bin, os.homedir()),
     description: DESCRIPTION,
-    sessions: sessions.map((session) => ({
-      file: session.file,
-      status: session.status,
-      url: session.url,
-      pending_prompts: session.pending_prompts || 0,
-    })),
-    example_use_cases: [
-      "Technical plans with diagrams, mockups, data flow, and code snippets",
-      "Brainstorming early ideas with recommendations, open questions, and visible tradeoffs",
-      "Design explorations with multiple visual options side by side",
-      "PR and code review explainers with annotated diffs and findings",
-      "Interactive prototypes with sliders, knobs, forms, and animation tuning",
-      "Reports, research summaries, incident writeups, and learning guides",
-      "Custom editing interfaces for triage, config editing, prompt tuning, dataset curation, and structured config editing",
-    ],
-    artifact_guidance: [
-      "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
-      "Use clear sections, headings, tabs, cards, tables, diagrams, and spatial layout instead of long prose",
-      "Include concrete artifacts such as mockups, SVG diagrams, annotated code snippets, diffs, data-flow charts, and examples",
-      "For exploration, show multiple options side by side and label the tradeoff each option makes",
-      "For code review, render the relevant diff or snippets with inline annotations and severity-coded findings",
-      "For custom editors, include controls that let the user adjust values, then call `window.lavish.queuePrompt(...)` with the requested change",
-      "End interactive workflows with an obvious way for the user to queue prompts and send them back",
-    ],
+    ...(includeSessions
+      ? {
+          sessions: sessions.map((session) => ({
+            file: session.file,
+            status: session.status,
+            url: session.url,
+            pending_prompts: session.pending_prompts || 0,
+          })),
+        }
+      : {}),
     visual_guidance: [
-      "Choose a clear visual point of view that matches the artifact: editorial, technical dashboard, dense control room, refined memo, playful prototype, brutalist review board, etc.",
-      "Use typography, spacing, color, and layout deliberately; avoid generic system-font cards on white unless that restraint is the actual design choice",
       "Use visual hierarchy to make the most important decisions, risks, tradeoffs, and next actions obvious at a glance",
-      "Prefer diagrams, tables, annotated snippets, side-by-side comparisons, and spatial layouts over long prose",
-      "For explorations, make options visually distinct and label the tradeoff each option makes",
-      "For interactive artifacts, provide obvious controls and queue the user's chosen values with `window.lavish.queuePrompt(...)`",
+      "Use visual structure such as sections, cards, tables, diagrams, annotated snippets, and side-by-side comparisons instead of long prose",
+      "Choose typography, spacing, color, and layout deliberately so the artifact has a clear point of view",
       "Make the artifact responsive and readable; visual polish should improve comprehension, not distract from review",
     ],
+    playbooks: listPlaybooks(),
     help: [
       "Run `lavish-axi <html-file>` to open or resume a Lavish Editor session",
+      "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
       "Run `lavish-axi poll <html-file>` to wait for user feedback",
       "Run `lavish-axi end <html-file>` to end a session",
+      "Run `lavish-axi playbook <playbook_id>` for focused artifact guidance",
+      "Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, technical plan, comparison, report, or browser-based feedback loop",
     ],
   };
+}
+
+export function createPlaybookOutput(args) {
+  const id = args[0];
+  if (!id) {
+    return {
+      playbooks: listPlaybooks(),
+      help: ["Run `lavish-axi playbook <playbook_id>` for focused artifact guidance"],
+    };
+  }
+
+  const playbook = findPlaybook(id);
+  if (!playbook) {
+    throw new AxiError(`Unknown playbook: ${id}`, "VALIDATION_ERROR", [
+      `Run \`lavish-axi playbook\` to list known IDs: ${playbookIds().join(", ")}`,
+    ]);
+  }
+
+  return { playbook };
 }
 
 export function createOpenOutput({ file, url, status }) {
@@ -213,6 +223,10 @@ async function endCommand(args) {
   const baseUrl = await ensureServer();
   const response = await postJson(`${baseUrl}/api/end`, { file: absolute });
   return { session: { file: absolute, status: response.status || "ended" } };
+}
+
+async function playbookCommand(args) {
+  return createPlaybookOutput(args);
 }
 
 async function serverCommand(args) {
@@ -412,11 +426,12 @@ export function getCommandHelp(command) {
   return COMMAND_HELP[command] || null;
 }
 
-const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes.\n\n`;
+const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi playbook [playbook_id]\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes.\n\n`;
 
 const COMMAND_HELP = {
   open: `Usage: lavish-axi <html-file> [--no-open]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window.\n`,
   poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts, then returns them to the agent. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes so the user has time to review and send feedback. Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again.\n`,
   end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session.\n`,
+  playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, diff, interactive, slides.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook interactive\n`,
   server: `Usage: lavish-axi server [--port 4387]\n\nRun the local Lavish Editor server.\n`,
 };

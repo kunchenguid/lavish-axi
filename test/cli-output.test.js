@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -12,6 +13,7 @@ import {
   createHomeOutput,
   createOpenOutput,
   createPollOutput,
+  createPlaybookOutput,
   createServerSpawnOptions,
   getCommandHelp,
   normalizeArgv,
@@ -35,13 +37,90 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.match(output.description, /Lavish Editor/);
   assert.match(output.description, /First generate an interactive HTML artifact/);
   assert.deepEqual(output.sessions, []);
-  assert.equal(output.use_cases, undefined);
-  assert.ok(output.example_use_cases.some((item) => item.includes("plans with diagrams")));
-  assert.ok(output.example_use_cases.some((item) => item.includes("Brainstorming early ideas")));
-  assert.ok(output.artifact_guidance.some((item) => item.includes("`.lavish/`")));
-  assert.ok(output.artifact_guidance.some((item) => item.includes("window.lavish.queuePrompt")));
-  assert.ok(output.visual_guidance.some((item) => item.includes("visual point of view")));
+  assert.equal("use_cases" in output, false);
+  assert.equal("example_use_cases" in output, false);
+  assert.equal("artifact_guidance" in output, false);
+  assert.ok(output.visual_guidance.length <= 4);
+  assert.ok(output.visual_guidance.some((item) => item.includes("visual hierarchy")));
+  assert.ok(output.visual_guidance.some((item) => item.includes("sections, cards, tables")));
+  assert.ok(output.playbooks.some((item) => item.id === "diagram"));
+  assert.equal(
+    output.playbooks.find((item) => item.id === "interactive")?.use_when,
+    "Allow users to express preferences and choices through controls that send feedback from within the artifact",
+  );
   assert.ok(output.help.some((item) => item.includes("lavish-axi <html-file>")));
+  assert.ok(output.help.some((item) => item.includes("`.lavish/`")));
+  assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
+  assert.ok(!output.help.some((item) => item.includes("Known IDs")));
+  assert.ok(output.help.some((item) => item.includes("technical plan")));
+});
+
+test("top-level help renders static home output without dynamic sessions", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-help-test-`);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "--help"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /playbooks\[7\]/);
+    assert.match(result.stdout, /lavish-axi playbook <playbook_id>/);
+    assert.doesNotMatch(result.stdout, /sessions\[/);
+    assert.doesNotMatch(result.stdout, /Known IDs/);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
+test("playbook index output lists known playbooks with concise descriptions", () => {
+  const output = createPlaybookOutput([]);
+
+  assert.equal(output.playbooks.length, 7);
+  assert.deepEqual(
+    output.playbooks.map((playbook) => playbook.id),
+    ["diagram", "table", "comparison", "plan", "diff", "interactive", "slides"],
+  );
+  assert.equal(
+    output.playbooks.find((playbook) => playbook.id === "plan")?.use_when,
+    "Explain a technical plan before implementation",
+  );
+  assert.equal(
+    output.playbooks.find((playbook) => playbook.id === "interactive")?.use_when,
+    "Allow users to express preferences and choices through controls that send feedback from within the artifact",
+  );
+  assert.ok(output.playbooks.every((playbook) => playbook.use_when.length > 20));
+  assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
+});
+
+test("playbook detail output returns focused Lavish-native guidance", () => {
+  const output = createPlaybookOutput(["interactive"]);
+
+  assert.equal(output.playbook.id, "interactive");
+  assert.match(output.playbook.use_when, /user/i);
+  assert.ok(output.playbook.choose.some((item) => item.includes("control")));
+  assert.ok(output.playbook.structure.some((item) => item.includes("decision")));
+  assert.ok(output.playbook.design_rules.some((item) => item.includes("queuePrompt")));
+  assert.ok(output.playbook.pitfalls.some((item) => item.includes("unclear")));
+  assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
+});
+
+test("unknown playbook ids produce an actionable validation error", () => {
+  assert.throws(
+    () => createPlaybookOutput(["unknown"]),
+    (error) => {
+      assert.ok(error instanceof AxiError);
+      assert.equal(error.code, "VALIDATION_ERROR");
+      assert.match(error.message, /Unknown playbook/);
+      assert.ok(error.suggestions.some((item) => item.includes("lavish-axi playbook")));
+      return true;
+    },
+  );
 });
 
 test("home directory collapse tolerates Windows mixed separators", () => {
@@ -98,6 +177,7 @@ test("html file arguments normalize to the hidden open command", () => {
   assert.deepEqual(normalizeArgv(["report.html"]), ["open", "report.html"]);
   assert.deepEqual(normalizeArgv(["--no-open", "report.html"]), ["open", "--no-open", "report.html"]);
   assert.deepEqual(normalizeArgv(["poll", "report.html"]), ["poll", "report.html"]);
+  assert.deepEqual(normalizeArgv(["playbook", "diagram"]), ["playbook", "diagram"]);
   assert.deepEqual(normalizeArgv(["--help"]), ["--help"]);
 });
 
@@ -105,6 +185,7 @@ test("telemetry command names are anonymous and do not include file paths", () =
   assert.equal(telemetryCommandName(["report.html"]), "open");
   assert.equal(telemetryCommandName(["poll", "/tmp/secret/report.html"]), "poll");
   assert.equal(telemetryCommandName(["end", "/tmp/secret/report.html"]), "end");
+  assert.equal(telemetryCommandName(["playbook", "diagram"]), "playbook");
   assert.equal(telemetryCommandName([]), "home");
 });
 
@@ -168,6 +249,8 @@ test("open can resume a session without opening another browser window", () => {
   assert.equal(shouldOpenBrowser(["artifact.html"], { LAVISH_AXI_NO_OPEN: "1" }), false);
   assert.equal(shouldOpenBrowser(["artifact.html"], {}), true);
   assert.match(getCommandHelp("open"), /--no-open/);
+  assert.match(getCommandHelp("playbook"), /diagram/);
+  assert.match(getCommandHelp("playbook"), /interactive/);
 });
 
 test("polling a file without an active session tells the agent to open it first", () => {
