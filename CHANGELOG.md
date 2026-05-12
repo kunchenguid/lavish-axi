@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.6](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.5...lavish-axi-v0.1.6) (2026-05-12)
+
+
+### Features
+
+* **cli:** inject packaged design assets ([#16](https://github.com/kunchenguid/lavish-axi/issues/16)) ([2eb6170](https://github.com/kunchenguid/lavish-axi/commit/2eb61706823257a677bd8490e97bfe20a98080fa))
+
+
+### Bug Fixes
+
+* upgrade axi js sdk ([#14](https://github.com/kunchenguid/lavish-axi/issues/14)) ([dfb07f8](https://github.com/kunchenguid/lavish-axi/commit/dfb07f8862867f07e907c5ad975e14738c0992b2))
+
 ## [0.1.5](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.4...lavish-axi-v0.1.5) (2026-05-12)
 
 
