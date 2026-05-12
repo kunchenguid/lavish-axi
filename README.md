@@ -110,7 +110,7 @@ npm link
 | `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.         |
 | `lavish-axi design`           | Show the injected Tailwind CSS and DaisyUI design reference. |
 
-Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `interactive`, `slides`.
+Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `slides`.
 
 ### Flags
 
