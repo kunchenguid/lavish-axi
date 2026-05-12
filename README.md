@@ -107,6 +107,9 @@ npm link
 | `lavish-axi <html-file>`      | Open or resume a Lavish Editor session.                      |
 | `lavish-axi poll <html-file>` | Long-poll until the user sends feedback or ends the session. |
 | `lavish-axi end <html-file>`  | End a session.                                               |
+| `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.         |
+
+Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `interactive`, `slides`.
 
 ### Flags
 

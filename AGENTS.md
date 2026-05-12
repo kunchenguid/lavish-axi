@@ -59,7 +59,7 @@ Hand-edited files in `dist/` won't trigger reloads.
 
 ### AXI integration
 
-The CLI is built on `axi-sdk-js` (`runAxiCli`). The `home()` callback returns the rich object shown when the user runs `lavish-axi` with no arguments - this is the same TOON-serialized output that lands in the agent's `SessionStart` hook (`example_use_cases`, `artifact_guidance`, `visual_guidance`, `help`). The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.html"]` by `normalizeArgv`.
+The CLI is built on `axi-sdk-js` (`runAxiCli`). The `home()` callback returns the rich object shown when the user runs `lavish-axi` with no arguments - this is the same TOON-serialized output that lands in the agent's `SessionStart` hook (`sessions`, `visual_guidance`, `playbooks`, `help`). Top-level `--help` returns the same static guidance without dynamic sessions, and `lavish-axi playbook [playbook_id]` exposes focused artifact guidance. The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.html"]` by `normalizeArgv`.
 
 ### Telemetry
 
