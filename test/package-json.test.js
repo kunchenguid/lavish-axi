@@ -31,11 +31,16 @@ test("package metadata matches the GitHub repository used for npm provenance", a
   assert.equal(packageJson.homepage, "https://github.com/kunchenguid/lavish-axi#readme");
 });
 
-test("package lock root bin matches the publish manifest", async () => {
+test("pnpm lock root importer matches the publish manifest", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  const packageLock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
+  const pnpmLock = await readFile(new URL("../pnpm-lock.yaml", import.meta.url), "utf8");
 
-  assert.deepEqual(packageLock.packages[""].bin, packageJson.bin);
+  for (const [name, specifier] of Object.entries(packageJson.dependencies)) {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedSpecifier = specifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    assert.match(pnpmLock, new RegExp(`"?${escapedName}"?:[\\s\\S]*?specifier: ${escapedSpecifier}`));
+  }
 });
 
 test("release workflow publishes from the release tag checkout", async () => {

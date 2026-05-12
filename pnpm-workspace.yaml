@@ -1,0 +1,12 @@
+packages:
+  - "."
+
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+minimumReleaseAgeExclude:
+  - axi-sdk-js
+  - lavish-axi
+onlyBuiltDependencies:
+  - esbuild
+allowBuilds:
+  esbuild: true

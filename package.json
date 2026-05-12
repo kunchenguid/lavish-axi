@@ -1,6 +1,7 @@
 {
   "name": "lavish-axi",
   "version": "0.1.7",
+  "packageManager": "pnpm@11.1.1",
   "description": "HTML is the new markdown. Lavish is the new editor for your HTML artifacts.",
   "type": "module",
   "bin": {
@@ -24,7 +25,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tailwindcss/browser": "^4.3.0",
+    "@tailwindcss/browser": "4.2.4",
     "axi-sdk-js": "^0.1.6",
     "chokidar": "^4.0.3",
     "daisyui": "^5.5.19",

@@ -23,29 +23,32 @@ jobs:
         with:
           ref: ${{ steps.release.outputs.tag_name }}
 
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.release.outputs.release_created }}
+
       - uses: actions/setup-node@v6
         if: ${{ steps.release.outputs.release_created }}
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-          cache: npm
+          cache: pnpm
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
         if: ${{ steps.release.outputs.release_created }}
 
-      - run: npm run lint
+      - run: pnpm run lint
         if: ${{ steps.release.outputs.release_created }}
 
-      - run: npm run format:check
+      - run: pnpm run format:check
         if: ${{ steps.release.outputs.release_created }}
 
-      - run: npm run typecheck
+      - run: pnpm run typecheck
         if: ${{ steps.release.outputs.release_created }}
 
-      - run: npm test
+      - run: pnpm test
         if: ${{ steps.release.outputs.release_created }}
 
-      - run: npm run build
+      - run: pnpm run build
         if: ${{ steps.release.outputs.release_created }}
         env:
           LAVISH_AXI_UMAMI_HOST: https://a.kunchenguid.com
