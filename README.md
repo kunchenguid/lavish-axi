@@ -108,7 +108,7 @@ npm link
 | `lavish-axi poll <html-file>` | Long-poll until the user sends feedback or ends the session. |
 | `lavish-axi end <html-file>`  | End a session.                                               |
 | `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.         |
-| `lavish-axi design`           | Show the injected Tailwind CSS and DaisyUI design reference.  |
+| `lavish-axi design`           | Show the injected Tailwind CSS and DaisyUI design reference. |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `interactive`, `slides`.
 
