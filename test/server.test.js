@@ -111,6 +111,17 @@ test("annotation card keeps the selected element highlighted while open", () => 
   assert.match(js, /if \(hovered && hovered !== selected\)/);
 });
 
+test("artifact SDK can annotate selected text ranges with stable anchors", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /document\.getSelection\(\)/);
+  assert.match(js, /function textSelectionContext/);
+  assert.match(js, /type:\s*["']text-range["']/);
+  assert.match(js, /start:\s*rangeBoundary\(range\.startContainer, range\.startOffset\)/);
+  assert.match(js, /end:\s*rangeBoundary\(range\.endContainer, range\.endOffset\)/);
+  assert.match(js, /commonAncestorSelector/);
+});
+
 test("annotation hover remains active while another element is selected", () => {
   const js = createSdkJs("abc");
 
@@ -136,8 +147,7 @@ test("turning annotation mode off clears selection and floating card", () => {
 test("annotation card title renders selected tag as an html element name", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /Annotate &lt;'/);
-  assert.match(js, /'&gt;/);
+  assert.match(js, /"Annotate &lt;" \+ c\.tag \+ "&gt;"/);
 });
 
 test("annotation card shadow styles use Lavish design-system variables", () => {

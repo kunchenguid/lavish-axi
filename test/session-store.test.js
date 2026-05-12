@@ -34,6 +34,39 @@ test("queued prompts are returned with DOM snapshot context and then cleared", a
   }
 });
 
+test("queued text selection prompts preserve range anchors", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<p id='intro'>Hello <strong>bright</strong> world</p>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const target = {
+      type: "text-range",
+      text: "lo bright wo",
+      selector: "p#intro",
+      start: { selector: "p#intro", path: [0], offset: 3 },
+      end: { selector: "p#intro", path: [2], offset: 3 },
+    };
+
+    await store.queuePrompts(session.key, {
+      prompts: [
+        { uid: "", prompt: "Make this phrase punchier", selector: "p#intro", tag: "text", text: target.text, target },
+      ],
+    });
+
+    const result = await store.takeFeedback(session.key);
+    assert.equal(result.status, "feedback");
+    assert.deepEqual(result.prompts, [
+      { uid: "", prompt: "Make this phrase punchier", selector: "p#intro", tag: "text", text: target.text, target },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ending a session makes feedback return ended", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

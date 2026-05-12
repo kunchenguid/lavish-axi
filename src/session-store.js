@@ -144,11 +144,19 @@ export function sessionKey(file) {
 }
 
 function normalizePrompt(prompt) {
-  return {
+  const normalized = {
     uid: String(prompt.uid || ""),
     prompt: String(prompt.prompt || ""),
     selector: String(prompt.selector || ""),
     tag: String(prompt.tag || ""),
     text: String(prompt.text || ""),
   };
+  const target = normalizeTarget(prompt.target);
+  if (target) normalized.target = target;
+  return normalized;
+}
+
+function normalizeTarget(target) {
+  if (!target || typeof target !== "object" || Array.isArray(target)) return null;
+  return JSON.parse(JSON.stringify(target));
 }

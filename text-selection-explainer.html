@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lavish Text Selection Annotation Explainer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink-900: #0f1115;
+        --ink-800: #11141a;
+        --ink-700: #171a21;
+        --steel-600: #303745;
+        --steel-300: #aeb6c6;
+        --cream-100: #f7f3ea;
+        --brass-500: #f4c95d;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 18% 12%, rgba(244, 201, 93, 0.16), transparent 34rem),
+          linear-gradient(135deg, var(--ink-900), #17130f 72%);
+        color: var(--cream-100);
+        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(1120px, calc(100vw - 40px));
+        margin: 0 auto;
+        padding: 64px 0;
+      }
+
+      .eyebrow {
+        color: var(--brass-500);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 820px;
+        margin: 14px 0 18px;
+        font-size: clamp(38px, 7vw, 86px);
+        line-height: 0.95;
+        letter-spacing: -0.06em;
+      }
+
+      .lede {
+        max-width: 760px;
+        margin: 0 0 34px;
+        color: var(--steel-300);
+        font-size: clamp(18px, 2vw, 23px);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+        gap: 18px;
+        align-items: start;
+      }
+
+      section,
+      aside {
+        border: 1px solid rgba(244, 201, 93, 0.24);
+        border-radius: 24px;
+        background: rgba(17, 20, 26, 0.78);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+      }
+
+      section {
+        padding: 26px;
+      }
+
+      aside {
+        position: sticky;
+        top: 18px;
+        padding: 22px;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 22px;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 14px;
+        padding: 18px 0;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .step:first-of-type {
+        border-top: 0;
+      }
+
+      .number {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border-radius: 999px;
+        background: var(--brass-500);
+        color: #17130a;
+        font-weight: 900;
+      }
+
+      code {
+        border: 1px solid rgba(244, 201, 93, 0.26);
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.24);
+        color: #ffe39a;
+        padding: 2px 6px;
+        font: 0.92em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .sample {
+        margin-top: 18px;
+        padding: 18px;
+        border-radius: 18px;
+        background: var(--ink-700);
+      }
+
+      .sample strong {
+        color: var(--brass-500);
+      }
+
+      .payload {
+        overflow: auto;
+        margin: 14px 0 0;
+        padding: 14px;
+        border-radius: 14px;
+        background: #090b0f;
+        color: #d8deea;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre;
+      }
+
+      .try {
+        border-color: rgba(244, 201, 93, 0.48);
+      }
+
+      @media (max-width: 860px) {
+        main {
+          width: min(100vw - 24px, 720px);
+          padding: 34px 0;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">Lavish Editor text selection annotation</div>
+      <h1>Text annotations now use range anchors, not just element selectors.</h1>
+      <p class="lede">
+        The editor still supports clicking an element, but now it also detects a highlighted text selection and sends a structured range target back to the agent.
+      </p>
+
+      <div class="grid">
+        <section>
+          <h2>How it works</h2>
+          <div class="step">
+            <div class="number">1</div>
+            <div>
+              <strong>The artifact SDK listens for text selection.</strong>
+              On <code>mouseup</code>, it calls <code>document.getSelection()</code> and ignores collapsed or empty selections.
+            </div>
+          </div>
+          <div class="step">
+            <div class="number">2</div>
+            <div>
+              <strong>The selected text becomes a first-class target.</strong>
+              The SDK records the selected text, the common ancestor selector, and start/end DOM boundaries.
+            </div>
+          </div>
+          <div class="step">
+            <div class="number">3</div>
+            <div>
+              <strong>Boundaries are robust across nested markup.</strong>
+              Each boundary stores a selector for the closest element, a child-node path from that element to the exact text node, and the character offset.
+            </div>
+          </div>
+          <div class="step">
+            <div class="number">4</div>
+            <div>
+              <strong>The same annotation card is reused.</strong>
+              The SDK draws a translucent highlight over every client rect in the range, opens the card near the selection, and queues the prompt with <code>tag: "text"</code>.
+            </div>
+          </div>
+          <div class="step">
+            <div class="number">5</div>
+            <div>
+              <strong>The session store preserves the target.</strong>
+              Polling now returns the structured <code>target</code> object so the agent can understand exactly which words the user meant.
+            </div>
+          </div>
+
+          <div class="sample">
+            <h2>What if there is no ID?</h2>
+            <p>
+              IDs are helpful but not required.
+              When an element has an ID, Lavish uses it in the selector.
+              When there is no ID, Lavish falls back to a structural selector such as <code>body &gt; main &gt; div:nth-of-type(2)</code>.
+            </p>
+            <p>
+              The selector alone is not the full identity.
+              A text annotation is a locator packet: structural selector, selected text, common ancestor selector, start boundary, end boundary, child-node paths, offsets, and the DOM snapshot returned with the poll.
+              That combination lets the agent find the intended passage precisely in the current artifact, even when the selected phrase crosses nested elements.
+            </p>
+            <p>
+              The DOM snapshot UIDs are still useful, but they are runtime cross-references, not source-code IDs.
+              They let the prompt point back into the snapshot from the same poll response.
+              The agent should not treat them as durable identifiers after the artifact reloads or after the HTML is edited.
+            </p>
+          </div>
+
+          <div class="sample try">
+            <h2>Try selecting this text</h2>
+            <p>
+              Select just the words <strong>range anchors</strong>, or drag from the end of this sentence into <em>this nested emphasized phrase</em> to test a selection that crosses element boundaries.
+            </p>
+          </div>
+        </section>
+
+        <aside>
+          <h2>Queued prompt shape</h2>
+          <p>
+            This is an illustrative shape, not the literal selector from this page.
+            In real output, the selector may be a broad-looking structural anchor for the containing element, and the exact text span is identified by the range boundaries.
+          </p>
+          <div class="payload">{
+  "prompt": "Make this phrase clearer",
+  "selector": "body > main > div:nth-of-type(2) > aside > div",
+  "tag": "text",
+  "text": "selected words",
+  "target": {
+    "type": "text-range",
+    "text": "selected words",
+    "commonAncestorSelector": "body > main > div:nth-of-type(2) > aside > div",
+    "start": {
+      "selector": "body > main > div:nth-of-type(2) > aside > div",
+      "path": [0],
+      "offset": 12
+    },
+    "end": {
+      "selector": "strong",
+      "path": [0],
+      "offset": 6
+    }
+  }
+}</div>
+        </aside>
+      </div>
+    </main>
+  </body>
+</html>
