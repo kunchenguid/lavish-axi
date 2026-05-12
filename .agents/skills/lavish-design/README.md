@@ -69,7 +69,7 @@ Lavish copy reads like a well-edited reading-room sign — _short, declarative, 
 **Casing**
 
 - **Sentence case for everything user-facing.** Buttons (_"Send to Agent"_, _"End Session"_) are an exception: they use **Title Case** because they read as proper actions, not labels.
-- **lowercase command names** (`lavish-axi`, `npm run build`) — never SHOUTY, never `Lavish-Axi`.
+- **lowercase command names** (`lavish-axi`, `pnpm run build`) — never SHOUTY, never `Lavish-Axi`.
 - The brand mark **Lavish** is Title Case in prose; in product chrome it's set in a slightly heavier weight (`font-weight: 750`) with a touch of tracking (`letter-spacing: .02em`).
 
 **Pronouns**
