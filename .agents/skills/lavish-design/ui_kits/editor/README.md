@@ -1,6 +1,6 @@
 # Lavish Editor — UI kit
 
-A high-fidelity, clickable recreation of the **Lavish Editor chrome** that the `lavish-axi` CLI launches in a browser. Every styling value (colors, radii, shadows, spacing, type) is pulled either directly from `src/server.js` in the [`kunchenguid/lavish-axi`](https://github.com/kunchenguid/lavish-axi) repo or from `colors_and_type.css` in the parent of this folder.
+A high-fidelity, clickable recreation of the **Lavish Editor chrome** that the `lavish-axi` CLI launches in a browser. Every styling value (colors, radii, shadows, spacing, type) is pulled either directly from `src/server.js` and `src/artifact-sdk.js` in the [`kunchenguid/lavish-axi`](https://github.com/kunchenguid/lavish-axi) repo or from `colors_and_type.css` in the parent of this folder.
 
 Open `index.html` and try:
 
@@ -30,7 +30,7 @@ This is a **kit**, not a build of the product. Skipped:
 
 - The real iframe sandbox + `postMessage` wire (the artifact is rendered inline; we listen to clicks directly).
 - The `EventSource` reload pipe, the `chokidar` watcher.
-- DOM snapshot serialization. `lavish.snapshot()` would produce something like the tree in `src/server.js`; we don't.
+- DOM snapshot serialization. `lavish.snapshot()` would produce something like the tree in `src/artifact-sdk.js`; we don't.
 - File-path identity, session store, long-polling.
 
-Read `src/server.js` in the lavish-axi repo for the canonical behaviour.
+Read `src/server.js` and `src/artifact-sdk.js` in the lavish-axi repo for the canonical behaviour.

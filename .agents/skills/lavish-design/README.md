@@ -12,7 +12,7 @@ The product feels like a quiet reading room with a brass lamp: dark ink walls, a
 
 This system was reverse-engineered from the public source of truth:
 
-- **Codebase:** [`kunchenguid/lavish-axi`](https://github.com/kunchenguid/lavish-axi) — the CLI + local HTTP server that ships the Lavish Editor UI. The chrome HTML, the in-iframe annotation SDK, and every styling decision originate in `src/server.js` (`createChromeHtml` and `createSdkJs`). The README, AGENTS.md and CONTRIBUTING.md provided the product narrative.
+- **Codebase:** [`kunchenguid/lavish-axi`](https://github.com/kunchenguid/lavish-axi) — the CLI + local HTTP server that ships the Lavish Editor UI. The chrome HTML originates in `src/server.js` (`createChromeHtml`), while the in-iframe annotation SDK and its styling originate in `src/artifact-sdk.js` (`createArtifactSdk`). The README, AGENTS.md and CONTRIBUTING.md provided the product narrative.
 - **Brand promise** is paraphrased from the repository README: _"HTML is the new markdown. Lavish is the new editor for your HTML artifacts."_
 
 No Figma file or slide deck was provided. Slide templates were therefore **not** generated; if you have a deck, point this skill at it and I'll add a `slides/` folder.

@@ -33,6 +33,12 @@ test("artifact SDK uses a custom annotation card instead of browser prompts", ()
   assert.match(js, /textarea/);
 });
 
+test("artifact SDK script is valid JavaScript", () => {
+  const js = createSdkJs("abc");
+
+  assert.doesNotThrow(() => new Function(js));
+});
+
 test("artifact SDK ignores Lavish-owned annotation UI", () => {
   const js = createSdkJs("abc");
 
