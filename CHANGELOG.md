@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.2...lavish-axi-v0.1.3) (2026-05-12)
+
+
+### Bug Fixes
+
+* metadata ([0ac6980](https://github.com/kunchenguid/lavish-axi/commit/0ac698092c94c0f7c91011ad58db2ddfe673a680))
+
 ## [0.1.2](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.1...lavish-axi-v0.1.2) (2026-05-12)
 
 
