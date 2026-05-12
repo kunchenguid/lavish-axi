@@ -32,7 +32,10 @@ Lavish Editor is a CLI + local HTTP server that opens agent-generated HTML artif
 
 ### Process model
 
-The CLI (`bin/lavish-axi.js` -> `src/cli.js`) is the user-facing entry point. The first command that needs the server spawns `lavish-axi server` as a **detached** background process (`src/cli.js:startServer`) and waits for `/health`. Subsequent CLI invocations reuse the running server by re-checking health. Port defaults to 4387 (`LAVISH_AXI_PORT`).
+The CLI (`bin/lavish-axi.js` -> `src/cli.js`) is the user-facing entry point.
+The first command that needs the server spawns `lavish-axi server` as a **detached** background process (`src/cli.js:startServer`) and waits for `/health`, which returns `{ ok, app, version }`.
+Subsequent CLI invocations reuse the running server only when its health version matches the current CLI version; stale servers are asked to `POST /shutdown`, and pre-handshake servers may be SIGTERM'd by port PID before the upgraded server is spawned.
+Port defaults to 4387 (`LAVISH_AXI_PORT`).
 
 State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`). All sessions across all projects share this one file, keyed by a sha256 prefix of the canonicalized file path - so the CLI never needs opaque session IDs; the canonical HTML path _is_ the identity (`src/session-store.js:sessionKey`).
 
@@ -48,7 +51,10 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
 
 ### Live reload
 
-When a session opens, `chokidar` watches the artifact's directory (excluding `.git`, `node_modules`, `dist`, `build`, `.lavish-axi`). Any file change emits a `reload` event, which the SSE endpoint pushes to the chrome page, which reloads the iframe. Hand-edited files in `dist/` won't trigger reloads.
+When a session opens, `chokidar` watches the artifact's directory (excluding `.git`, `node_modules`, `dist`, `build`, `.lavish-axi`).
+Any file change emits a `reload` event, which the SSE endpoint pushes to the chrome page, which reloads the iframe.
+During version-driven shutdown, the server sends a `chrome-reload` SSE event so open browser chromes wait for the replacement server and then reload the whole chrome page.
+Hand-edited files in `dist/` won't trigger reloads.
 
 ### AXI integration
 
@@ -57,7 +63,9 @@ The CLI is built on `axi-sdk-js` (`runAxiCli`). The `home()` callback returns th
 ### Telemetry
 
 `src/telemetry.js` posts anonymous events to an Umami endpoint.
-The website ID and host can be baked into the bundle at build time via `LAVISH_AXI_UMAMI_HOST`/`LAVISH_AXI_UMAMI_WEBSITE_ID` env vars (consumed by `scripts/build.js` and inlined as `process.env.LAVISH_AXI_BUILD_UMAMI_*` defines). Users opt out with `LAVISH_AXI_TELEMETRY=0`.
+The website ID and host can be baked into the bundle at build time via `LAVISH_AXI_UMAMI_HOST`/`LAVISH_AXI_UMAMI_WEBSITE_ID` env vars (consumed by `scripts/build.js` and inlined as `process.env.LAVISH_AXI_BUILD_UMAMI_*` defines).
+The build also inlines `package.json`'s version as `process.env.LAVISH_AXI_BUILD_VERSION` for the CLI/server version handshake, with source runs falling back to reading `package.json`.
+Users opt out with `LAVISH_AXI_TELEMETRY=0`.
 The client is best-effort and must never affect CLI behavior - all errors are swallowed.
 No need to explicitly document the telemetry behaviors.
 
