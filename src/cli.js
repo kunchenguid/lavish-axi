@@ -292,8 +292,9 @@ export function shouldRestartServer(currentVersion, healthBody) {
 
 export function shouldKillProcessOnPort(currentVersion, healthBody) {
   if (!healthBody || typeof healthBody !== "object") return false;
+  if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
   if (healthBody.app !== "lavish-axi") return false;
-  return typeof healthBody.version === "string" && healthBody.version !== currentVersion;
+  return healthBody.version !== currentVersion;
 }
 
 async function fetchHealth(baseUrl) {

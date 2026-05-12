@@ -150,7 +150,11 @@ test("shouldRestartServer does not restart when /health was unreachable", () => 
 });
 
 test("shouldKillProcessOnPort does not kill unidentified health responders", () => {
-  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true }), false);
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "other", version: "0.1.3" }), false);
+});
+
+test("shouldKillProcessOnPort kills pre-handshake Lavish servers after shutdown fails", () => {
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true }), true);
 });
 
 test("shouldKillProcessOnPort only kills Lavish servers with a mismatched version", () => {
