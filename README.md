@@ -31,10 +31,10 @@ HTML is the new markdown. Lavish is the new editor for your HTML artifacts.
 Agents are good at producing rich HTML artifacts, but the human-agent collaboration loop on such artifacts is lacking and falls back into screenshots and long responses for “tell me what to change.”
 That loses the thing HTML is best at: interactivity.
 
-Lavish Editor opens agent-generated HTML files in a local browser, lets you pinpoint elements and send feedback to the agent to address.
+Lavish Editor opens agent-generated HTML files in a local browser, lets you pinpoint elements or selected text and send feedback to the agent to address.
 
 - **Local only** - Work with your local HTML artifacts with a local CLI. Zero cloud dependency.
-- **Human-AI collaboration** - Annotate elements and send messages to the agent without leaving Lavish Editor.
+- **Human-AI collaboration** - Annotate elements, selected text ranges, and send messages to the agent without leaving Lavish Editor.
 - **Battery included** - Lavish Editor teaches your agent good visualization for common use cases such as technial plans, design explorations and more out of the box.
 
 Lavish Editor is an [AXI](https://axi.md), which means -
@@ -83,7 +83,8 @@ npm link
 └───────┬────────────────┘
         ▼
 ┌────────────────────────┐
-│ Human annotates or     │
+│ Human annotates text   │
+│ or elements, or        │
 │ sends chat feedback    │
 └───────┬────────────────┘
         ▼
@@ -95,6 +96,7 @@ npm link
 
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
 - **Sandboxed artifact** - The artifact runs in an iframe while Lavish injects a small SDK for annotations and snapshots.
+- **Precise targets** - Text annotations include selected text plus range anchors, so agents are not limited to whole-element selectors.
 - **Local-first state** - Session state stays under `.lavish-axi/` in the workspace.
 
 ## CLI Reference

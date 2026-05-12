@@ -185,7 +185,7 @@ A "card" in Lavish is a slab of `#11141a` or `#1c212b` with a 1px border (`#3037
 - The top bar is fixed at 56px, full-width, sticky.
 - The side conversation panel is a fixed 360px wide on the right.
 - The artifact takes the remainder.
-- The annotation card is positioned relative to the clicked element via `getBoundingClientRect()` and clamped 12px from any viewport edge.
+- The annotation card is positioned relative to the clicked element or selected text range via `getBoundingClientRect()` and clamped 12px from any viewport edge.
 - The chat input lives at the bottom of the side panel; pills (queued prompts) sit _above_ the textarea, never inside it.
 
 ---
@@ -194,7 +194,7 @@ A "card" in Lavish is a slab of `#11141a` or `#1c212b` with a 1px border (`#3037
 
 **Lavish ships almost no icons.** Read that twice.
 
-The product chrome you've seen has exactly **one** glyph: the spinner. Buttons are _labeled_, not iconified — "Send to Agent," "End Session," "Annotation: On." The annotation card opens with `<h2>Annotate &lt;div&gt;</h2>` — the _tag name_ is the icon. This is intentional and on-brand: in a literary product, words are the iconography.
+The product chrome you've seen has exactly **one** glyph: the spinner. Buttons are _labeled_, not iconified — "Send to Agent," "End Session," "Annotation: On." The annotation card opens with `<h2>Annotate &lt;div&gt;</h2>` for elements or `Annotate text` for selected text — the _target name_ is the icon. This is intentional and on-brand: in a literary product, words are the iconography.
 
 When iconography is genuinely needed (marketing, an empty state, a settings menu in a future surface), follow these rules:
 
