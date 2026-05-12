@@ -32,7 +32,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 
 - Node 22+, ESM-only JavaScript, and TypeScript `checkJs` validation.
 - Use TDD for bug fixes and new features.
-- Run `npm run check` before pushing.
+- Run `pnpm run check` before pushing.
 - Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json`.
 - User-facing telemetry docs should stay minimal: anonymous usage telemetry, no sensitive content, and `LAVISH_AXI_TELEMETRY=0` opt-out.
 

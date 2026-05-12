@@ -5,12 +5,12 @@ This file provides guidance to coding agents when working with code in this repo
 ## Commands
 
 ```sh
-npm run check          # Run build, lint, format check, typecheck, and tests
-npm run build          # Bundle dist/cli.mjs and copy chrome/design assets into dist
-npm test               # node:test runner (test/*.test.js)
-npm run lint           # ESLint over bin src test scripts
-npm run format:check   # Prettier check
-npm run typecheck      # tsc --noEmit (checkJs mode)
+pnpm run check          # Run build, lint, format check, typecheck, and tests
+pnpm run build          # Bundle dist/cli.mjs and copy chrome/design assets into dist
+pnpm test               # node:test runner (test/*.test.js)
+pnpm run lint           # ESLint over bin src test scripts
+pnpm run format:check   # Prettier check
+pnpm run typecheck      # tsc --noEmit (checkJs mode)
 ```
 
 Run a single test file: `node --test test/server.test.js`.
@@ -22,7 +22,7 @@ The `prepack` script runs `build` automatically, so publishing always ships a fr
 
 - Node 22+, ESM-only JavaScript (`"type": "module"`). No TypeScript source - `.js` files validated via TS `checkJs`.
 - Use TDD for bug fixes and new features (see `test-driven-development` skill).
-- Run `npm run check` before pushing.
+- Run `pnpm run check` before pushing.
 - Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json` - release-please owns them.
 - Human-authored PRs to `main` must go through [`no-mistakes`](https://github.com/kunchenguid/no-mistakes); CI enforces a deterministic signature in the PR body. See CONTRIBUTING.md.
 

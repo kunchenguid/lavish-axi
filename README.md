@@ -64,9 +64,9 @@ npm install -g lavish-axi
 ```sh
 git clone https://github.com/kunchenguid/lavish-axi.git
 cd lavish-axi
-npm ci
-npm run build
-npm link
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm link
 ```
 
 ## How It Works
@@ -124,10 +124,10 @@ Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `
 ## Development
 
 ```sh
-npm run check          # Run all verification commands
-npm run build          # Bundle the publishable CLI, chrome, and design assets
-npm test               # Run node:test tests
-npm run lint           # Run ESLint
-npm run format:check   # Check Prettier formatting
-npm run typecheck      # Run TypeScript checkJs validation
+pnpm run check          # Run all verification commands
+pnpm run build          # Bundle the publishable CLI, chrome, and design assets
+pnpm test               # Run node:test tests
+pnpm run lint           # Run ESLint
+pnpm run format:check   # Check Prettier formatting
+pnpm run typecheck      # Run TypeScript checkJs validation
 ```
