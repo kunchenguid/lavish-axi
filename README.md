@@ -95,7 +95,7 @@ npm link
 ```
 
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
-- **Sandboxed artifact** - The artifact runs in an iframe while Lavish injects a small SDK for annotations and snapshots.
+- **Sandboxed artifact** - The artifact runs in an iframe while Lavish injects a small SDK for annotations and snapshots, plus Tailwind CSS v4 and DaisyUI v5 design assets unless the HTML includes `<meta name="lavish-design" content="off">`.
 - **Precise targets** - Text annotations include selected text plus range anchors, so agents are not limited to whole-element selectors.
 - **Local-first state** - Session state stays under `.lavish-axi/` in the workspace.
 
@@ -108,6 +108,7 @@ npm link
 | `lavish-axi poll <html-file>` | Long-poll until the user sends feedback or ends the session. |
 | `lavish-axi end <html-file>`  | End a session.                                               |
 | `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.         |
+| `lavish-axi design`           | Show the injected Tailwind CSS and DaisyUI design reference.  |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `interactive`, `slides`.
 
@@ -123,7 +124,7 @@ Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `interacti
 
 ```sh
 npm run check          # Run all verification commands
-npm run build          # Bundle the publishable CLI and chrome assets
+npm run build          # Bundle the publishable CLI, chrome, and design assets
 npm test               # Run node:test tests
 npm run lint           # Run ESLint
 npm run format:check   # Check Prettier formatting
