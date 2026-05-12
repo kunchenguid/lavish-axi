@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.4...lavish-axi-v0.1.5) (2026-05-12)
+
+
+### Features
+
+* **cli:** add artifact guidance playbooks ([#12](https://github.com/kunchenguid/lavish-axi/issues/12)) ([b13f033](https://github.com/kunchenguid/lavish-axi/commit/b13f033973f91935af97e0688574a0767e66463b))
+
 ## [0.1.4](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.3...lavish-axi-v0.1.4) (2026-05-12)
 
 
