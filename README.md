@@ -118,7 +118,7 @@ npm link
 
 ```sh
 npm run check          # Run all verification commands
-npm run build          # Bundle the publishable CLI
+npm run build          # Bundle the publishable CLI and chrome assets
 npm test               # Run node:test tests
 npm run lint           # Run ESLint
 npm run format:check   # Check Prettier formatting
