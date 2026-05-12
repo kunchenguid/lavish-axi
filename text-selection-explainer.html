@@ -27,7 +27,13 @@
           radial-gradient(circle at 18% 12%, rgba(244, 201, 93, 0.16), transparent 34rem),
           linear-gradient(135deg, var(--ink-900), #17130f 72%);
         color: var(--cream-100);
-        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font:
+          16px/1.6 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
       }
 
       main {
@@ -118,7 +124,12 @@
         background: rgba(0, 0, 0, 0.24);
         color: #ffe39a;
         padding: 2px 6px;
-        font: 0.92em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font:
+          0.92em ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
       }
 
       .sample {
@@ -139,7 +150,12 @@
         border-radius: 14px;
         background: #090b0f;
         color: #d8deea;
-        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font:
+          13px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
         white-space: pre;
       }
 
@@ -168,7 +184,8 @@
       <div class="eyebrow">Lavish Editor text selection annotation</div>
       <h1>Text annotations now use range anchors, not just element selectors.</h1>
       <p class="lede">
-        The editor still supports clicking an element, but now it also detects a highlighted text selection and sends a structured range target back to the agent.
+        The editor still supports clicking an element, but now it also detects a highlighted text selection and sends a
+        structured range target back to the agent.
       </p>
 
       <div class="grid">
@@ -178,7 +195,8 @@
             <div class="number">1</div>
             <div>
               <strong>The artifact SDK listens for text selection.</strong>
-              On <code>mouseup</code>, it calls <code>document.getSelection()</code> and ignores collapsed or empty selections.
+              On <code>mouseup</code>, it calls <code>document.getSelection()</code> and ignores collapsed or empty
+              selections.
             </div>
           </div>
           <div class="step">
@@ -192,47 +210,52 @@
             <div class="number">3</div>
             <div>
               <strong>Boundaries are robust across nested markup.</strong>
-              Each boundary stores a selector for the closest element, a child-node path from that element to the exact text node, and the character offset.
+              Each boundary stores a selector for the closest element, a child-node path from that element to the exact
+              text node, and the character offset.
             </div>
           </div>
           <div class="step">
             <div class="number">4</div>
             <div>
               <strong>The same annotation card is reused.</strong>
-              The SDK draws a translucent highlight over every client rect in the range, opens the card near the selection, and queues the prompt with <code>tag: "text"</code>.
+              The SDK draws a translucent highlight over every client rect in the range, opens the card near the
+              selection, and queues the prompt with <code>tag: "text"</code>.
             </div>
           </div>
           <div class="step">
             <div class="number">5</div>
             <div>
               <strong>The session store preserves the target.</strong>
-              Polling now returns the structured <code>target</code> object so the agent can understand exactly which words the user meant.
+              Polling now returns the structured <code>target</code> object so the agent can understand exactly which
+              words the user meant.
             </div>
           </div>
 
           <div class="sample">
             <h2>What if there is no ID?</h2>
             <p>
-              IDs are helpful but not required.
-              When an element has an ID, Lavish uses it in the selector.
-              When there is no ID, Lavish falls back to a structural selector such as <code>body &gt; main &gt; div:nth-of-type(2)</code>.
+              IDs are helpful but not required. When an element has an ID, Lavish uses it in the selector. When there is
+              no ID, Lavish falls back to a structural selector such as
+              <code>body &gt; main &gt; div:nth-of-type(2)</code>.
             </p>
             <p>
-              The selector alone is not the full identity.
-              A text annotation is a locator packet: structural selector, selected text, common ancestor selector, start boundary, end boundary, child-node paths, offsets, and the DOM snapshot returned with the poll.
-              That combination lets the agent find the intended passage precisely in the current artifact, even when the selected phrase crosses nested elements.
+              The selector alone is not the full identity. A text annotation is a locator packet: structural selector,
+              selected text, common ancestor selector, start boundary, end boundary, child-node paths, offsets, and the
+              DOM snapshot returned with the poll. That combination lets the agent find the intended passage precisely
+              in the current artifact, even when the selected phrase crosses nested elements.
             </p>
             <p>
-              The DOM snapshot UIDs are still useful, but they are runtime cross-references, not source-code IDs.
-              They let the prompt point back into the snapshot from the same poll response.
-              The agent should not treat them as durable identifiers after the artifact reloads or after the HTML is edited.
+              The DOM snapshot UIDs are still useful, but they are runtime cross-references, not source-code IDs. They
+              let the prompt point back into the snapshot from the same poll response. The agent should not treat them
+              as durable identifiers after the artifact reloads or after the HTML is edited.
             </p>
           </div>
 
           <div class="sample try">
             <h2>Try selecting this text</h2>
             <p>
-              Select just the words <strong>range anchors</strong>, or drag from the end of this sentence into <em>this nested emphasized phrase</em> to test a selection that crosses element boundaries.
+              Select just the words <strong>range anchors</strong>, or drag from the end of this sentence into
+              <em>this nested emphasized phrase</em> to test a selection that crosses element boundaries.
             </p>
           </div>
         </section>
@@ -240,30 +263,17 @@
         <aside>
           <h2>Queued prompt shape</h2>
           <p>
-            This is an illustrative shape, not the literal selector from this page.
-            In real output, the selector may be a broad-looking structural anchor for the containing element, and the exact text span is identified by the range boundaries.
+            This is an illustrative shape, not the literal selector from this page. In real output, the selector may be
+            a broad-looking structural anchor for the containing element, and the exact text span is identified by the
+            range boundaries.
           </p>
-          <div class="payload">{
-  "prompt": "Make this phrase clearer",
-  "selector": "body > main > div:nth-of-type(2) > aside > div",
-  "tag": "text",
-  "text": "selected words",
-  "target": {
-    "type": "text-range",
-    "text": "selected words",
-    "commonAncestorSelector": "body > main > div:nth-of-type(2) > aside > div",
-    "start": {
-      "selector": "body > main > div:nth-of-type(2) > aside > div",
-      "path": [0],
-      "offset": 12
-    },
-    "end": {
-      "selector": "strong",
-      "path": [0],
-      "offset": 6
-    }
-  }
-}</div>
+          <div class="payload">
+            { "prompt": "Make this phrase clearer", "selector": "body > main > div:nth-of-type(2) > aside > div", "tag":
+            "text", "text": "selected words", "target": { "type": "text-range", "text": "selected words",
+            "commonAncestorSelector": "body > main > div:nth-of-type(2) > aside > div", "start": { "selector": "body >
+            main > div:nth-of-type(2) > aside > div", "path": [0], "offset": 12 }, "end": { "selector": "strong",
+            "path": [0], "offset": 6 } } }
+          </div>
         </aside>
       </div>
     </main>

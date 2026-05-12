@@ -23,9 +23,9 @@ No Figma file or slide deck was provided. Slide templates were therefore **not**
 
 Lavish is one product wearing two hats:
 
-| Surface                | Audience                                                                  | What it looks like                                                                                                                                                                                       |
-| ---------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **CLI** (`lavish-axi`) | Coding agents (Claude Code, Cursor, etc.) and the developers driving them | A long-polling, AXI-shaped command surface. Output is TOON-serialized. Not visually designed — it's _agent-ergonomic._                                                                                   |
+| Surface                | Audience                                                                  | What it looks like                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **CLI** (`lavish-axi`) | Coding agents (Claude Code, Cursor, etc.) and the developers driving them | A long-polling, AXI-shaped command surface. Output is TOON-serialized. Not visually designed — it's _agent-ergonomic._                                                                                                  |
 | **Editor chrome**      | Humans reviewing an agent's HTML artifact                                 | A two-pane browser app: the artifact in an iframe on the left, a conversation panel on the right, a session bar across the top. Click any element or select text in the artifact, queue a prompt, send it to the agent. |
 
 The brand surface this design system serves is **the Editor chrome.** Marketing, docs, decks and screenshots should all feel like they came from the same hand that drew the chrome.
