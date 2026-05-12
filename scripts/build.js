@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile } from "node:fs/promises";
 
 import * as esbuild from "esbuild";
 
@@ -22,3 +22,5 @@ await esbuild.build({
 });
 
 await chmod("dist/cli.mjs", 0o755);
+await copyFile("src/chrome-client.js", "dist/chrome-client.js");
+await copyFile("src/chrome.css", "dist/chrome.css");

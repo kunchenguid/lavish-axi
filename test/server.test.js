@@ -6,10 +6,44 @@ import test from "node:test";
 
 import { createChromeHtml, createSdkJs, resolveArtifactAsset, serve } from "../src/server.js";
 
+async function chromeClientSource() {
+  return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
+}
+
+async function chromeCssSource() {
+  return normalizeCssForAssertions(await readFile(new URL("../src/chrome.css", import.meta.url), "utf8"));
+}
+
+function normalizeCssForAssertions(css) {
+  return css
+    .replace(/\s*([{}:;,])\s*/g, "$1")
+    .replace(/\s+/g, " ")
+    .replace(/0\./g, ".");
+}
+
 test("server delegates artifact SDK generation to a dedicated source module", async () => {
   const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
 
   assert.match(source, /from "\.\/artifact-sdk\.js"/);
+});
+
+test("server serves chrome browser behavior from a dedicated source file", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(source, /chrome-client\.js/);
+  assert.match(html, /<script id="lavish-session" type="application\/json">/);
+  assert.match(html, /<script src="\/chrome-client\.js"><\/script>/);
+  assert.doesNotMatch(html, /<script>\s*const key=/);
+});
+
+test("server serves chrome styles from a dedicated source file", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(source, /chrome\.css/);
+  assert.match(html, /<link rel="stylesheet" href="\/chrome\.css">/);
+  assert.doesNotMatch(html, /<style>/);
 });
 
 test("artifact assets resolve within the artifact directory", () => {
@@ -123,30 +157,32 @@ test("chrome labels the mode as annotation instead of inspect", () => {
   assert.doesNotMatch(html, /Inspect/);
 });
 
-test("annotation toggle uses a brass border when enabled", () => {
+test("annotation toggle uses a brass border when enabled", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+  const css = await chromeCssSource();
 
   assert.match(html, /class="button secondary annotation-on" id="annotation"/);
-  assert.match(html, /\.button\.annotation-on\{[^}]*border:1px solid var\(--accent\)/);
-  assert.match(html, /classList\.toggle\('annotation-on',annotation\)/);
+  assert.match(css, /\.button\.annotation-on\{[^}]*border:1px solid var\(--accent\)/);
+  assert.match(js, /classList\.toggle\("annotation-on", annotation\)/);
 });
 
-test("chrome declares the Lavish design-system tokens", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome declares the Lavish design-system tokens", async () => {
+  const css = await chromeCssSource();
 
-  assert.match(html, /--ink-900:#0f1115/);
-  assert.match(html, /--cream-100:#f7f3ea/);
-  assert.match(html, /--brass-500:#f4c95d/);
-  assert.match(html, /--font-serif:/);
-  assert.match(html, /--font-sans:/);
-  assert.match(html, /--text-display:92px/);
-  assert.match(html, /--lh-display:1/);
-  assert.match(html, /--space-32:64px/);
-  assert.match(html, /--shadow-floating:0 20px 70px rgba\(0,0,0,.35\)/);
-  assert.match(html, /--ease:cubic-bezier\(.2,.6,.2,1\)/);
-  assert.match(html, /--dur-slow:320ms/);
-  assert.match(html, /--bar-h:56px/);
-  assert.match(html, /--panel-w:360px/);
+  assert.match(css, /--ink-900:#0f1115/);
+  assert.match(css, /--cream-100:#f7f3ea/);
+  assert.match(css, /--brass-500:#f4c95d/);
+  assert.match(css, /--font-serif:/);
+  assert.match(css, /--font-sans:/);
+  assert.match(css, /--text-display:92px/);
+  assert.match(css, /--lh-display:1/);
+  assert.match(css, /--space-32:64px/);
+  assert.match(css, /--shadow-floating:0 20px 70px rgba\(0,0,0,.35\)/);
+  assert.match(css, /--ease:cubic-bezier\(.2,.6,.2,1\)/);
+  assert.match(css, /--dur-slow:320ms/);
+  assert.match(css, /--bar-h:56px/);
+  assert.match(css, /--panel-w:360px/);
 });
 
 test("artifact SDK uses design-token aliases for annotation highlight and shadow UI", () => {
@@ -161,29 +197,30 @@ test("artifact SDK uses design-token aliases for annotation highlight and shadow
   assert.doesNotMatch(js, /placeholder\{color:#aeb6c6\}/);
 });
 
-test("chrome uses the annotation outline as the keyboard focus outline", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome uses the annotation outline as the keyboard focus outline", async () => {
+  const css = await chromeCssSource();
 
-  assert.match(html, /:focus-visible\{outline:var\(--annotate-outline\);outline-offset:var\(--annotate-offset\)/);
-  assert.match(html, /--annotate-outline:2px solid var\(--accent\)/);
-  assert.match(html, /--annotate-offset:2px/);
+  assert.match(css, /:focus-visible\{outline:var\(--annotate-outline\);outline-offset:var\(--annotate-offset\)/);
+  assert.match(css, /--annotate-outline:2px solid var\(--accent\)/);
+  assert.match(css, /--annotate-offset:2px/);
 });
 
-test("chrome keeps the editor usable on narrow screens", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome keeps the editor usable on narrow screens", async () => {
+  const css = await chromeCssSource();
 
-  assert.match(html, /@media \(max-width:860px\)/);
-  assert.match(html, /grid-template-columns:1fr/);
-  assert.match(html, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
+  assert.match(css, /@media \(max-width:860px\)/);
+  assert.match(css, /grid-template-columns:1fr/);
+  assert.match(css, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
 });
 
-test("chrome top bar follows the design mock wordmark and file treatment", () => {
+test("chrome top bar follows the design mock wordmark and file treatment", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const css = await chromeCssSource();
 
   assert.match(html, /class="brand-mark">Lavish/);
   assert.match(html, /class="brand-support">Editor/);
-  assert.match(html, /font-family:var\(--font-serif\)/);
-  assert.match(html, /letter-spacing:\.18em/);
+  assert.match(css, /font-family:var\(--font-serif\)/);
+  assert.match(css, /letter-spacing:\.18em/);
   assert.match(html, /<input class="file-input" id="filePath"/);
   assert.match(html, /readonly/);
   assert.match(html, /size="18"/);
@@ -191,65 +228,67 @@ test("chrome top bar follows the design mock wordmark and file treatment", () =>
   assert.doesNotMatch(html, /class="file-icon"/);
 });
 
-test("chrome file path controls shrink-wrap and align together", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome file path controls shrink-wrap and align together", async () => {
+  const css = await chromeCssSource();
 
-  assert.match(html, /\.file-wrap\{[^}]*align-items:center/);
-  assert.match(html, /\.file-wrap\{[^}]*flex:1 1 auto/);
-  assert.match(html, /\.file-input\{[^}]*width:auto/);
-  assert.match(html, /\.file-input\{[^}]*max-width:100%/);
-  assert.match(html, /\.file-input\{[^}]*border:1px solid var\(--border-subtle\)/);
-  assert.match(html, /\.file-input\{[^}]*border-radius:var\(--radius-sm\)/);
-  assert.doesNotMatch(html, /44vw/);
-  assert.doesNotMatch(html, /52vw/);
+  assert.match(css, /\.file-wrap\{[^}]*align-items:center/);
+  assert.match(css, /\.file-wrap\{[^}]*flex:1 1 auto/);
+  assert.match(css, /\.file-input\{[^}]*width:auto/);
+  assert.match(css, /\.file-input\{[^}]*max-width:100%/);
+  assert.match(css, /\.file-input\{[^}]*border:1px solid var\(--border-subtle\)/);
+  assert.match(css, /\.file-input\{[^}]*border-radius:var\(--radius-sm\)/);
+  assert.doesNotMatch(css, /44vw/);
+  assert.doesNotMatch(css, /52vw/);
 });
 
-test("chrome can copy the file path from the top bar", () => {
+test("chrome can copy the file path from the top bar", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
 
   assert.match(html, /id="copyPath"/);
   assert.match(html, /Copy Path/);
-  assert.match(html, /navigator\.clipboard\.writeText\(filePathInput\.value\)/);
-  assert.match(html, /copyPathButton\.textContent='Copied'/);
-  assert.match(html, /setTimeout\(\(\)=>\{copyPathButton\.textContent='Copy Path'\}/);
+  assert.match(js, /navigator\.clipboard\.writeText\(filePathInput\.value\)/);
+  assert.match(js, /copyPathButton\.textContent = "Copied"/);
+  assert.match(js, /copyPathButton\.textContent = "Copy Path"/);
 });
 
-test("chrome centers the top bar row while bottom-aligning the identity cluster", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome centers the top bar row while bottom-aligning the identity cluster", async () => {
+  const css = await chromeCssSource();
 
-  assert.match(html, /\.bar\{[^}]*align-items:center/);
-  assert.match(html, /\.brand\{[^}]*height:22px/);
-  assert.match(html, /\.brand\{[^}]*align-items:flex-end/);
-  assert.match(html, /\.file-wrap\{[^}]*height:22px/);
-  assert.match(html, /\.file-wrap\{[^}]*align-items:center/);
-  assert.match(html, /\.file-input\{[^}]*line-height:1/);
-  assert.match(html, /\.divider\{[^}]*height:22px/);
+  assert.match(css, /\.bar\{[^}]*align-items:center/);
+  assert.match(css, /\.brand\{[^}]*height:22px/);
+  assert.match(css, /\.brand\{[^}]*align-items:flex-end/);
+  assert.match(css, /\.file-wrap\{[^}]*height:22px/);
+  assert.match(css, /\.file-wrap\{[^}]*align-items:center/);
+  assert.match(css, /\.file-input\{[^}]*line-height:1/);
+  assert.match(css, /\.divider\{[^}]*height:22px/);
 });
 
-test("chrome chat bubbles follow the preview mock shades", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome chat bubbles follow the preview mock shades", async () => {
+  const css = await chromeCssSource();
 
-  assert.match(html, /\.bubble\.user\{[^}]*background:var\(--bg-elevated\)/);
-  assert.match(html, /\.bubble\.user\{[^}]*border-color:var\(--border-strong\)/);
-  assert.match(html, /\.bubble\.agent\{[^}]*background:transparent/);
-  assert.match(html, /\.bubble\.agent\{[^}]*border-color:var\(--border-subtle\)/);
-  assert.match(html, /border-top-color:var\(--accent\)/);
+  assert.match(css, /\.bubble\.user\{[^}]*background:var\(--bg-elevated\)/);
+  assert.match(css, /\.bubble\.user\{[^}]*border-color:var\(--border-strong\)/);
+  assert.match(css, /\.bubble\.agent\{[^}]*background:transparent/);
+  assert.match(css, /\.bubble\.agent\{[^}]*border-color:var\(--border-subtle\)/);
+  assert.match(css, /border-top-color:var\(--accent\)/);
 });
 
-test("chrome queued-prompt pills use the preview mock steel treatment", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome queued-prompt pills use the preview mock steel treatment", async () => {
+  const css = await chromeCssSource();
 
-  assert.match(html, /\.pill\{[^}]*border:1px solid var\(--border-strong\)/);
-  assert.match(html, /\.pill\{[^}]*background:var\(--bg-elevated\)/);
-  assert.doesNotMatch(html, /\.pill\{[^}]*var\(--amber/);
+  assert.match(css, /\.pill\{[^}]*border:1px solid var\(--border-strong\)/);
+  assert.match(css, /\.pill\{[^}]*background:var\(--bg-elevated\)/);
+  assert.doesNotMatch(css, /\.pill\{[^}]*var\(--amber/);
 });
 
-test("chrome includes a chat-like prompt composer and agent reply listener", () => {
+test("chrome includes a chat-like prompt composer and agent reply listener", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
 
   assert.match(html, /id="chatLog"/);
   assert.match(html, /id="chatInput"/);
-  assert.match(html, /agent-reply/);
+  assert.match(js, /agent-reply/);
 });
 
 test("chrome bootstraps persisted chat history so missed replies still appear", () => {
@@ -259,72 +298,77 @@ test("chrome bootstraps persisted chat history so missed replies still appear", 
     chat: [{ role: "agent", text: "Persisted reply", at: "2026-05-11T00:00:00.000Z" }],
   });
 
-  assert.match(html, /const initialChat=/);
+  assert.match(html, /"initialChat":/);
   assert.match(html, /Persisted reply/);
-  assert.match(html, /initialChat\.forEach/);
 });
 
-test("chrome can sync persisted chat after the event stream reconnects", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome client renders persisted chat history", async () => {
+  const js = await chromeClientSource();
 
-  assert.match(html, /chat-sync/);
-  assert.match(html, /function syncChat/);
+  assert.match(js, /initialChat\.forEach/);
 });
 
-test("chrome shows agent working state when no poll is active", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome can sync persisted chat after the event stream reconnects", async () => {
+  const js = await chromeClientSource();
 
-  assert.match(html, /agent-working/);
-  assert.match(html, /Working\.\.\./);
-  assert.match(html, /spinner/);
+  assert.match(js, /chat-sync/);
+  assert.match(js, /function syncChat/);
 });
 
-test("chrome disables sending while agent is working", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome shows agent working state when no poll is active", async () => {
+  const js = await chromeClientSource();
 
-  assert.match(html, /let agentPolling=false/);
-  assert.match(html, /sendButton\.disabled=!agentPolling/);
-  assert.match(html, /if\(!agentPolling\)return/);
+  assert.match(js, /agent-working/);
+  assert.match(js, /Working\.\.\./);
+  assert.match(js, /spinner/);
 });
 
-test("chrome puts queued annotations inside the chat composer as preview pills", () => {
+test("chrome disables sending while agent is working", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /let agentPolling = false/);
+  assert.match(js, /sendButton\.disabled = !agentPolling/);
+  assert.match(js, /if \(!agentPolling\) return/);
+});
+
+test("chrome puts queued annotations inside the chat composer as preview pills", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+  const css = await chromeCssSource();
 
   assert.match(html, /id="annotationPills"/);
-  assert.match(html, /class="pill/);
-  assert.match(html, /pill-preview/);
-  assert.match(html, /removeQueuedPrompt/);
-  assert.match(html, /pill-tooltip/);
-  assert.match(html, /text-overflow:ellipsis/);
-  assert.doesNotMatch(html, /togglePill/);
-  assert.doesNotMatch(html, /pill-detail/);
+  assert.match(js, /class="pill/);
+  assert.match(js, /pill-preview/);
+  assert.match(js, /removeQueuedPrompt/);
+  assert.match(js, /pill-tooltip/);
+  assert.match(css, /text-overflow:ellipsis/);
+  assert.doesNotMatch(js, /togglePill/);
+  assert.doesNotMatch(js, /pill-detail/);
   assert.doesNotMatch(html, /<h2>Queued Annotations<\/h2>/);
 });
 
-test("chrome omits clear queue button because pills can be removed individually", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome omits clear queue button because pills can be removed individually", async () => {
+  const js = await chromeClientSource();
 
-  assert.match(html, /removeQueuedPrompt/);
-  assert.doesNotMatch(html, /Clear Queue/);
-  assert.doesNotMatch(html, /id="clear"/);
+  assert.match(js, /removeQueuedPrompt/);
+  assert.doesNotMatch(js, /Clear Queue/);
+  assert.doesNotMatch(js, /id="clear"/);
 });
 
-test("annotation pill tooltip separates target and prompt details", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("annotation pill tooltip separates target and prompt details", async () => {
+  const js = await chromeClientSource();
 
-  assert.match(html, /tooltip-label/);
-  assert.match(html, /Target/);
-  assert.match(html, /Prompt/);
-  assert.match(html, /pill-tooltip-target/);
-  assert.match(html, /pill-tooltip-prompt/);
+  assert.match(js, /tooltip-label/);
+  assert.match(js, /Target/);
+  assert.match(js, /Prompt/);
+  assert.match(js, /pill-tooltip-target/);
+  assert.match(js, /pill-tooltip-prompt/);
 });
 
-test("chrome inline script is valid JavaScript", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const match = html.match(/<script>([\s\S]*)<\/script>/);
+test("chrome client script is valid JavaScript", async () => {
+  const js = await chromeClientSource();
 
-  assert.ok(match);
-  assert.doesNotThrow(() => new Function(match[1]));
+  assert.doesNotThrow(() => new Function(js));
 });
 
 test("chrome omits the extra conversation description copy", () => {
@@ -333,36 +377,37 @@ test("chrome omits the extra conversation description copy", () => {
   assert.doesNotMatch(html, /Annotate elements in the artifact, or write a freeform message below/);
 });
 
-test("composer textarea is sized within the right panel", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("composer textarea is sized within the right panel", async () => {
+  const css = await chromeCssSource();
 
-  assert.match(html, /\.layout\{[^}]*min-height:0/);
-  assert.match(html, /\.panel\{[^}]*min-height:0/);
-  assert.match(html, /\.chat\{[^}]*min-height:0/);
-  assert.match(html, /\.composer\{[^}]*min-width:0/);
-  assert.match(html, /\.composer\{[^}]*flex-shrink:0/);
-  assert.match(html, /\.composer textarea\{[^}]*box-sizing:border-box/);
+  assert.match(css, /\.layout\{[^}]*min-height:0/);
+  assert.match(css, /\.panel\{[^}]*min-height:0/);
+  assert.match(css, /\.chat\{[^}]*min-height:0/);
+  assert.match(css, /\.composer\{[^}]*min-width:0/);
+  assert.match(css, /\.composer\{[^}]*flex-shrink:0/);
+  assert.match(css, /\.composer textarea\{[^}]*box-sizing:border-box/);
 });
 
-test("hot reload resets iframe src instead of crossing sandbox location", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("hot reload resets iframe src instead of crossing sandbox location", async () => {
+  const js = await chromeClientSource();
 
-  assert.doesNotMatch(html, /contentWindow\.location\.reload/);
-  assert.match(html, /frame\.src\s*=\s*frame\.src/);
+  assert.doesNotMatch(js, /contentWindow\.location\.reload/);
+  assert.match(js, /frame\.src\s*=\s*frame\.src/);
 });
 
-test("chrome ignores Lavish postMessages not sent by the artifact iframe", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome ignores Lavish postMessages not sent by the artifact iframe", async () => {
+  const js = await chromeClientSource();
 
-  assert.match(html, /event\.source\s*!==\s*frame\.contentWindow/);
+  assert.match(js, /event\.source\s*!==\s*frame\.contentWindow/);
 });
 
-test("chrome waits for the replacement server before version-driven reload", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  assert.match(html, /async function reloadAfterServerRestart\(\)/);
-  assert.match(html, /let sawOutage=false/);
-  assert.match(html, /if\(sawOutage&&res\.ok\)\{location\.reload\(\);return\}/);
-  assert.match(html, /addEventListener\('chrome-reload',\(\)=>\{reloadAfterServerRestart\(\)\}\)/);
+test("chrome waits for the replacement server before version-driven reload", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /async function reloadAfterServerRestart\(\)/);
+  assert.match(js, /let sawOutage = false/);
+  assert.match(js, /if \(sawOutage && res\.ok\) \{/);
+  assert.match(js, /addEventListener\("chrome-reload", \(\) => reloadAfterServerRestart\(\)\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
@@ -373,6 +418,43 @@ test("/health reports the server version so clients can detect upgrades", async 
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.version, "9.9.9-test");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/chrome-client.js serves the extracted chrome client script", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/chrome-client.js`);
+    const body = await res.text();
+
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") || "", /application\/javascript/);
+    assert.match(body, /const sessionData/);
+    assert.match(body, /new EventSource\("\/events\/" \+ key\)/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/chrome.css serves the extracted chrome stylesheet", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/chrome.css`);
+    const body = await res.text();
+
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") || "", /text\/css/);
+    assert.match(normalizeCssForAssertions(body), /--ink-900:#0f1115/);
+    assert.match(
+      normalizeCssForAssertions(body),
+      /\.layout\{[^}]*grid-template-columns:minmax\(0,1fr\) ?var\(--panel-w\)/,
+    );
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -392,15 +474,16 @@ test("POST /shutdown stops the listener so the client can spawn a fresh server",
   }
 });
 
-test("ended session message renders centered in the main content area", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("ended session message renders centered in the main content area", async () => {
+  const js = await chromeClientSource();
+  const css = await chromeCssSource();
 
-  assert.match(html, /class="ended-view"/);
-  assert.match(html, /class="ended-card"/);
-  assert.match(html, /\.ended-view\{[^}]*height:calc\(100vh - var\(--bar-h\)\)/);
-  assert.match(html, /\.ended-view\{[^}]*place-items:center/);
-  assert.match(html, /Session ended\./);
-  assert.match(html, /Return to your agent to continue\./);
-  assert.doesNotMatch(html, /The agent polling loop can stop\./);
-  assert.doesNotMatch(html, /<span class="file">Session ended\. The agent polling loop can stop\.<\/span>/);
+  assert.match(js, /class="ended-view"/);
+  assert.match(js, /class="ended-card"/);
+  assert.match(css, /\.ended-view\{[^}]*height:calc\(100vh - var\(--bar-h\)\)/);
+  assert.match(css, /\.ended-view\{[^}]*place-items:center/);
+  assert.match(js, /Session ended\./);
+  assert.match(js, /Return to your agent to continue\./);
+  assert.doesNotMatch(js, /The agent polling loop can stop\./);
+  assert.doesNotMatch(js, /<span class="file">Session ended\. The agent polling loop can stop\.<\/span>/);
 });
