@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.6...lavish-axi-v0.1.7) (2026-05-12)
+
+
+### Features
+
+* add input feedback controls ([#17](https://github.com/kunchenguid/lavish-axi/issues/17)) ([8eda036](https://github.com/kunchenguid/lavish-axi/commit/8eda036cfd6604823fad4945f9970b32a40e520a))
+
 ## [0.1.6](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.5...lavish-axi-v0.1.6) (2026-05-12)
 
 
