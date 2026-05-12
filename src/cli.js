@@ -94,8 +94,9 @@ export function createHomeOutput({ bin, sessions }) {
       url: session.url,
       pending_prompts: session.pending_prompts || 0,
     })),
-    use_cases: [
-      "Implementation plans with diagrams, mockups, data flow, and code snippets",
+    example_use_cases: [
+      "Technical plans with diagrams, mockups, data flow, and code snippets",
+      "Brainstorming early ideas with recommendations, open questions, and visible tradeoffs",
       "Design explorations with multiple visual options side by side",
       "PR and code review explainers with annotated diffs and findings",
       "Interactive prototypes with sliders, knobs, forms, and animation tuning",
@@ -103,6 +104,7 @@ export function createHomeOutput({ bin, sessions }) {
       "Custom editing interfaces for triage, config editing, prompt tuning, dataset curation, and structured config editing",
     ],
     artifact_guidance: [
+      "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
       "Use clear sections, headings, tabs, cards, tables, diagrams, and spatial layout instead of long prose",
       "Include concrete artifacts such as mockups, SVG diagrams, annotated code snippets, diffs, data-flow charts, and examples",
       "For exploration, show multiple options side by side and label the tradeoff each option makes",

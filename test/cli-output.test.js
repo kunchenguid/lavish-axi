@@ -23,7 +23,10 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.match(output.description, /Lavish Editor/);
   assert.match(output.description, /First generate an interactive HTML artifact/);
   assert.deepEqual(output.sessions, []);
-  assert.ok(output.use_cases.some((item) => item.includes("Implementation plans")));
+  assert.equal(output.use_cases, undefined);
+  assert.ok(output.example_use_cases.some((item) => item.includes("plans with diagrams")));
+  assert.ok(output.example_use_cases.some((item) => item.includes("Brainstorming early ideas")));
+  assert.ok(output.artifact_guidance.some((item) => item.includes("`.lavish/`")));
   assert.ok(output.artifact_guidance.some((item) => item.includes("window.lavish.queuePrompt")));
   assert.ok(output.visual_guidance.some((item) => item.includes("visual point of view")));
   assert.ok(output.help.some((item) => item.includes("lavish-axi <html-file>")));

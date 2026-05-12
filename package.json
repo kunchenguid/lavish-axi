@@ -14,6 +14,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.js",
+    "check": "npm run build && npm run lint && npm run format:check && npm run typecheck && npm test",
     "start": "node dist/cli.mjs",
     "lint": "eslint bin src test scripts",
     "format": "prettier --write .",
