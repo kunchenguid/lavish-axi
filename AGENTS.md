@@ -5,6 +5,7 @@ This file provides guidance to coding agents when working with code in this repo
 ## Commands
 
 ```sh
+npm run check          # Run build, lint, format check, typecheck, and tests
 npm run build          # esbuild bundle bin/lavish-axi.js -> dist/cli.mjs (ESM, external deps)
 npm test               # node:test runner (test/*.test.js)
 npm run lint           # ESLint over bin src test scripts
@@ -21,7 +22,7 @@ The `prepack` script runs `build` automatically, so publishing always ships a fr
 
 - Node 22+, ESM-only JavaScript (`"type": "module"`). No TypeScript source - `.js` files validated via TS `checkJs`.
 - Use TDD for bug fixes and new features (see `test-driven-development` skill).
-- Run `npm run lint`, `npm run format:check`, `npm run typecheck`, and `npm test` before pushing.
+- Run `npm run check` before pushing.
 - Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json` - release-please owns them.
 - Human-authored PRs to `main` must go through [`no-mistakes`](https://github.com/kunchenguid/no-mistakes); CI enforces a deterministic signature in the PR body. See CONTRIBUTING.md.
 
@@ -51,7 +52,7 @@ When a session opens, `chokidar` watches the artifact's directory (excluding `.g
 
 ### AXI integration
 
-The CLI is built on `axi-sdk-js` (`runAxiCli`). The `home()` callback returns the rich object shown when the user runs `lavish-axi` with no arguments - this is the same TOON-serialized output that lands in the agent's `SessionStart` hook (`use_cases`, `artifact_guidance`, `visual_guidance`, `help`). The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.html"]` by `normalizeArgv`.
+The CLI is built on `axi-sdk-js` (`runAxiCli`). The `home()` callback returns the rich object shown when the user runs `lavish-axi` with no arguments - this is the same TOON-serialized output that lands in the agent's `SessionStart` hook (`example_use_cases`, `artifact_guidance`, `visual_guidance`, `help`). The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.html"]` by `normalizeArgv`.
 
 ### Telemetry
 

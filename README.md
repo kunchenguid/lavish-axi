@@ -111,6 +111,7 @@ npm link
 ## Development
 
 ```sh
+npm run check          # Run all verification commands
 npm run build          # Bundle the publishable CLI
 npm test               # Run node:test tests
 npm run lint           # Run ESLint
