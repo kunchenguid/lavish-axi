@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.4](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.3...lavish-axi-v0.1.4) (2026-05-12)
+
+
+### Features
+
+* support text range annotations ([#10](https://github.com/kunchenguid/lavish-axi/issues/10)) ([dd0ed5c](https://github.com/kunchenguid/lavish-axi/commit/dd0ed5c1340e945ddd33ebb66317b5e28c78f3e6))
+
+
+### Bug Fixes
+
+* **cli:** restart stale servers after upgrades ([#6](https://github.com/kunchenguid/lavish-axi/issues/6)) ([d473557](https://github.com/kunchenguid/lavish-axi/commit/d4735576a0fb3933304a4c1394195b512d60ccda))
+
 ## [0.1.3](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.2...lavish-axi-v0.1.3) (2026-05-12)
 
 
