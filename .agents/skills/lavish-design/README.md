@@ -105,7 +105,7 @@ If new copy doesn't sit comfortably next to those lines, rewrite it.
 
 - **Ink** — the canvas. `#0f1115` for the artifact frame surround and composer input. `#11141a` for side panels. `#171a21` for the top bar. Never pure black: the warm cream type would feel clinical against it.
 - **Cream** — the type. `#f7f3ea`. A paper-warm off-white that reads at low contrast as candlelit, at high contrast as legible. All primary type sits on ink in cream.
-- **Brass** — the single accent. `#f4c95d`. Used for the primary CTA, the annotation outline (2px solid, 2px offset), the brand mark moment, and absolutely nothing else. Its ink-on-brass pair is `#17130a` — a deep almost-black that keeps the gold from feeling like a neon button.
+- **Brass** — the single accent. `#f4c95d`. Used for the primary CTA, the annotation outline (2px solid, 2px offset), selected-text range highlights (`rgba(244,201,93,.28)` with a `rgba(244,201,93,.45)` stroke), the brand mark moment, and absolutely nothing else. Its ink-on-brass pair is `#17130a` — a deep almost-black that keeps the gold from feeling like a neon button.
 - **Sage** — the _agent_ signal. `#172419` background, `#315f3a` border, `#8fe39e` for the working spinner. Used only on agent chat bubbles and the working indicator.
 - **Amber** — the _user_ signal. `#25230f` background, `#5d4d1b` border. Used only on user chat bubbles and queued-prompt pills.
 - **Rust** — the danger signal. `#f06464`. Reserved for _End Session_ and destructive confirmations.

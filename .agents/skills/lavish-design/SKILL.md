@@ -21,7 +21,7 @@ If the user invokes this skill without any other guidance, ask them what they wa
 1. **Dark ink + cream type + one brass accent.** No second accent, no gradient, no glassmorphism.
 2. **Serif for prose and brand moments (EB Garamond italic). Sans for chrome (Geist). Mono for technical (Geist Mono).**
 3. **No emoji. No exclamation marks. No "🚀 powerful seamless" copy.** Read the on-brand/off-brand examples in README's Content Fundamentals.
-4. **The annotation outline = the focus outline:** 2px brass, 2px offset. Same for hover, focus, selected — they all mean "attention is here."
+4. **The element annotation outline = the focus outline:** 2px brass, 2px offset. Text range annotations use a translucent brass highlight instead; both mean "attention is here."
 5. **Shadows only on floating surfaces** (tooltip, annotation card). Never on buttons or in-panel cards.
 6. **Sage = agent. Amber = user. Rust = danger.** Don't mix.
 7. **Words first, icons second.** When you must reach for an icon, use Lucide (stroke, 1.5, currentColor).
