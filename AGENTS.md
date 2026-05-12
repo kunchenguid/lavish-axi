@@ -74,6 +74,7 @@ No need to explicitly document the telemetry behaviors.
 
 - `canonicalFile` runs `realpath`, so symlinks resolve to their target before becoming session keys. Two paths that refer to the same file always collapse to one session.
 - The SDK injected into artifacts lives in `src/artifact-sdk.js` and is wrapped by `createSdkJs`. It executes inside an iframe sandboxed with `allow-scripts allow-forms allow-popups allow-downloads` (no `allow-same-origin`), so it cannot read the chrome's DOM - communication is `postMessage` only. Design asset injection is skipped when the HTML already contains `data-lavish-design` or opts out with `<meta name="lavish-design" content="off">`.
+- Artifact controls marked with `data-lavish-action` and their descendants are ignored by annotation handlers and get a pointer cursor, so use that marker on SDK-powered controls that call `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()`.
 - For text annotations, `prompt.selector` is the common ancestor/container selector, not the complete identity. Use the `target` range boundaries and snapshot context to locate the exact selected text.
 - `SessionStore` re-reads and re-writes the entire `state.json` on every operation. There's no in-memory cache and no locking - acceptable because writes are infrequent and serialized through the single server process.
 - Tests use `LAVISH_AXI_STATE_DIR` and ephemeral ports to stay isolated. When adding tests that spin up the server, do the same.
