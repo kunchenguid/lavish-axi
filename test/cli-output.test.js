@@ -45,10 +45,13 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.visual_guidance.length <= 4);
   assert.ok(output.visual_guidance.some((item) => item.includes("visual hierarchy")));
   assert.ok(output.visual_guidance.some((item) => item.includes("sections, cards, tables")));
+  assert.ok(output.visual_guidance.some((item) => item.includes("horizontal overflow")));
+  assert.ok(output.visual_guidance.some((item) => item.includes("minmax(0, 1fr)")));
+  assert.ok(!output.visual_guidance.some((item) => item.includes("test narrow viewports")));
   assert.ok(output.playbooks.some((item) => item.id === "diagram"));
   assert.equal(
-    output.playbooks.find((item) => item.id === "interactive")?.use_when,
-    "Allow users to express preferences and choices through controls that send feedback from within the artifact",
+    output.playbooks.find((item) => item.id === "input")?.use_when,
+    "Must be used when the agent needs to collect user input on decisions, choices, preferences, triage, scope, or other structured feedback from within the artifact",
   );
   assert.ok(output.help.some((item) => item.includes("lavish-axi <html-file>")));
   assert.ok(output.help.some((item) => item.includes("`.lavish/`")));
@@ -114,28 +117,31 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   assert.equal(output.playbooks.length, 7);
   assert.deepEqual(
     output.playbooks.map((playbook) => playbook.id),
-    ["diagram", "table", "comparison", "plan", "diff", "interactive", "slides"],
+    ["diagram", "table", "comparison", "plan", "diff", "input", "slides"],
   );
   assert.equal(
     output.playbooks.find((playbook) => playbook.id === "plan")?.use_when,
     "Explain a technical plan before implementation",
   );
   assert.equal(
-    output.playbooks.find((playbook) => playbook.id === "interactive")?.use_when,
-    "Allow users to express preferences and choices through controls that send feedback from within the artifact",
+    output.playbooks.find((playbook) => playbook.id === "input")?.use_when,
+    "Must be used when the agent needs to collect user input on decisions, choices, preferences, triage, scope, or other structured feedback from within the artifact",
   );
   assert.ok(output.playbooks.every((playbook) => playbook.use_when.length > 20));
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
 });
 
 test("playbook detail output returns focused Lavish-native guidance", () => {
-  const output = createPlaybookOutput(["interactive"]);
+  const output = createPlaybookOutput(["input"]);
 
-  assert.equal(output.playbook.id, "interactive");
-  assert.match(output.playbook.use_when, /user/i);
+  assert.equal(output.playbook.id, "input");
+  assert.match(output.playbook.use_when, /Must be used/);
+  assert.match(output.playbook.use_when, /collect user input/);
   assert.ok(output.playbook.choose.some((item) => item.includes("control")));
   assert.ok(output.playbook.structure.some((item) => item.includes("decision")));
   assert.ok(output.playbook.design_rules.some((item) => item.includes("queuePrompt")));
+  assert.ok(output.playbook.design_rules.some((item) => item.includes("data-lavish-action")));
+  assert.ok(output.playbook.lavish_notes.some((item) => item.includes("window.lavish.queuePrompt")));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("unclear")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
 });
@@ -295,7 +301,8 @@ test("open can resume a session without opening another browser window", () => {
   assert.equal(shouldOpenBrowser(["artifact.html"], {}), true);
   assert.match(getCommandHelp("open"), /--no-open/);
   assert.match(getCommandHelp("playbook"), /diagram/);
-  assert.match(getCommandHelp("playbook"), /interactive/);
+  assert.match(getCommandHelp("playbook"), /input/);
+  assert.doesNotMatch(getCommandHelp("playbook"), /interactive/);
   assert.match(getCommandHelp("design"), /DaisyUI/);
   assert.match(getCommandHelp("design"), /lavish-axi design/);
 });

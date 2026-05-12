@@ -83,7 +83,7 @@ export function createArtifactSdk() {
     if (range.collapsed || !text) return null;
 
     const ancestor = closestElement(range.commonAncestorContainer);
-    if (isLavishUi(ancestor)) return null;
+    if (isLavishUi(ancestor) || isLavishAction(ancestor)) return null;
 
     const commonAncestorSelector = selector(ancestor);
     const target = {
@@ -108,6 +108,10 @@ export function createArtifactSdk() {
 
   function isLavishUi(el) {
     return !!(el && el.closest && el.closest("[data-lavish-ui]"));
+  }
+
+  function isLavishAction(el) {
+    return !!(el && el.closest && el.closest("[data-lavish-action]"));
   }
 
   function highlightElement(el) {
@@ -147,7 +151,7 @@ export function createArtifactSdk() {
       style = document.createElement("style");
       style.id = "lavish-cursor-style";
       style.textContent =
-        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}";
+        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}";
       document.head.appendChild(style);
     }
     if (!annotationMode && style) style.remove();
@@ -288,7 +292,7 @@ export function createArtifactSdk() {
   document.addEventListener(
     "mouseover",
     (event) => {
-      if (!annotationMode || isLavishUi(event.target)) return;
+      if (!annotationMode || isLavishUi(event.target) || isLavishAction(event.target)) return;
       if (event.target === selected) return;
       if (hovered && hovered !== selected) clearHighlight(hovered);
       hovered = event.target;
@@ -311,7 +315,7 @@ export function createArtifactSdk() {
   document.addEventListener(
     "mouseup",
     (event) => {
-      if (!annotationMode || isLavishUi(event.target)) return;
+      if (!annotationMode || isLavishUi(event.target) || isLavishAction(event.target)) return;
 
       const c = textSelectionContext(document.getSelection());
       if (!c) return;
@@ -325,7 +329,7 @@ export function createArtifactSdk() {
   document.addEventListener(
     "click",
     (event) => {
-      if (!annotationMode || isLavishUi(event.target)) return;
+      if (!annotationMode || isLavishUi(event.target) || isLavishAction(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
       if (ignoreNextClick) {

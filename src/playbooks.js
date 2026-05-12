@@ -140,9 +140,9 @@ export const PLAYBOOKS = [
     ],
   },
   {
-    id: "interactive",
+    id: "input",
     use_when:
-      "Allow users to express preferences and choices through controls that send feedback from within the artifact",
+      "Must be used when the agent needs to collect user input on decisions, choices, preferences, triage, scope, or other structured feedback from within the artifact",
     choose: [
       "Use this when the user needs to select, tune, triage, annotate, or edit a structured choice.",
       "Use controls for decisions the user can make faster visually than by writing a prompt.",
@@ -154,7 +154,10 @@ export const PLAYBOOKS = [
       "Show queued or selected state clearly so the user trusts what will be sent back.",
     ],
     design_rules: [
-      "Use window.lavish.queuePrompt(...) for explicit user requests from buttons, forms, and choice controls.",
+      "Put data-lavish-action on any element that should act like a feedback control so Lavish does not annotate it and shows a pointer cursor instead.",
+      "Call window.lavish.queuePrompt(prompt, options) from the control's click, change, or submit handler to queue a precise request for the agent.",
+      "Pass options such as tag, text, selector, target, or data when they help the agent understand exactly what the user chose.",
+      "Call window.lavish.sendQueuedPrompts() when the control should immediately send the queued feedback instead of waiting for the user to press Send to Agent.",
       "Make queued prompts specific enough that the agent can act without asking a follow-up question.",
       "Keep native browser controls accessible and readable on mobile.",
     ],
@@ -165,7 +168,9 @@ export const PLAYBOOKS = [
     ],
     lavish_notes: [
       "Lavish is strongest when the artifact becomes a focused review surface and not just a static page.",
-      "End interactive paths with an obvious way for the user to send feedback back to the agent.",
+      "A minimal control looks like `<div role=\"button\" tabindex=\"0\" data-lavish-action onclick=\"window.lavish.queuePrompt('Choose option A', { tag: 'choice', text: 'Option A' })\">Choose option A</div>`.",
+      "Use window.lavish.queuePrompt for user intent, not internal analytics or UI-only state changes.",
+      "End input paths with an obvious way for the user to send feedback back to the agent.",
     ],
   },
   {

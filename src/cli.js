@@ -113,7 +113,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
       "Use visual hierarchy to make the most important decisions, risks, tradeoffs, and next actions obvious at a glance",
       "Use visual structure such as sections, cards, tables, diagrams, annotated snippets, and side-by-side comparisons instead of long prose",
       "Choose typography, spacing, color, and layout deliberately so the artifact has a clear point of view",
-      "Make the artifact responsive and readable; visual polish should improve comprehension, not distract from review",
+      "Prevent horizontal overflow: design narrow layouts intentionally, use minmax(0, 1fr) and min-width: 0 for grid/flex children, and deliberately wrap or truncate long labels/status text",
     ],
     playbooks: listPlaybooks(),
     help: [
@@ -450,7 +450,7 @@ const COMMAND_HELP = {
   open: `Usage: lavish-axi <html-file> [--no-open]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window.\n`,
   poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts, then returns them to the agent. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes so the user has time to review and send feedback. Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again.\n`,
   end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session.\n`,
-  playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, diff, interactive, slides.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook interactive\n`,
+  playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, diff, input, slides.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
   design: `Usage: lavish-axi design\n\nShow technical reference for the Tailwind CSS browser runtime v4, DaisyUI v5 components, and DaisyUI themes that Lavish auto-injects into artifacts. Do not add these libraries separately.\n`,
   server: `Usage: lavish-axi server [--port 4387]\n\nRun the local Lavish Editor server.\n`,
 };

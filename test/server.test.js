@@ -138,6 +138,15 @@ test("annotation mode forces the artifact cursor to default", () => {
   assert.match(js, /setAnnotationMode\(enabled\)/);
 });
 
+test("artifact SDK lets marked feedback controls handle their own clicks", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /function isLavishAction/);
+  assert.match(js, /closest\(["']\[data-lavish-action\]["']\)/);
+  assert.match(js, /isLavishAction\(event\.target\)/);
+  assert.match(js, /\[data-lavish-action\],[^{}]*\[data-lavish-action\] \*\{cursor:pointer!important\}/);
+});
+
 test("turning annotation mode off clears selection and floating card", () => {
   const js = createSdkJs("abc");
 
