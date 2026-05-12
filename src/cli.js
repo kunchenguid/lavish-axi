@@ -260,8 +260,10 @@ async function ensureServer() {
       // Pre-handshake servers (any release older than this change) don't expose /shutdown
       // so the POST 404'd. Fall back to SIGTERM by PID so the very first upgrade still
       // works, then keep waiting.
-      killProcessOnPort(port);
-      await waitForPortFree(baseUrl, 3000);
+      if (shouldKillProcessOnPort(VERSION, existing)) {
+        killProcessOnPort(port);
+        await waitForPortFree(baseUrl, 3000);
+      }
     }
   }
   await startServer(port);
@@ -286,6 +288,12 @@ export function shouldRestartServer(currentVersion, healthBody) {
   if (!healthBody || typeof healthBody !== "object") return false;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
   return healthBody.version !== currentVersion;
+}
+
+export function shouldKillProcessOnPort(currentVersion, healthBody) {
+  if (!healthBody || typeof healthBody !== "object") return false;
+  if (healthBody.app !== "lavish-axi") return false;
+  return typeof healthBody.version === "string" && healthBody.version !== currentVersion;
 }
 
 async function fetchHealth(baseUrl) {

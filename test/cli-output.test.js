@@ -16,6 +16,7 @@ import {
   getCommandHelp,
   normalizeArgv,
   resolveServerEntry,
+  shouldKillProcessOnPort,
   shouldOpenBrowser,
   shouldRestartServer,
   telemetryCommandName,
@@ -146,6 +147,15 @@ test("shouldRestartServer does not restart when /health was unreachable", () => 
   // null = fetch failed; the caller should fall through to startServer instead of trying
   // to POST /shutdown against nothing.
   assert.equal(shouldRestartServer("0.1.4", null), false);
+});
+
+test("shouldKillProcessOnPort does not kill unidentified health responders", () => {
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true }), false);
+});
+
+test("shouldKillProcessOnPort only kills Lavish servers with a mismatched version", () => {
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }), true);
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), false);
 });
 
 test("open can resume a session without opening another browser window", () => {
