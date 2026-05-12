@@ -11,6 +11,23 @@ import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
+const designAssetUrls = {
+  "daisyui.css": {
+    packaged: new URL("./design/daisyui.css", import.meta.url),
+    source: new URL("../node_modules/daisyui/daisyui.css", import.meta.url),
+    type: "text/css",
+  },
+  "daisyui-themes.css": {
+    packaged: new URL("./design/daisyui-themes.css", import.meta.url),
+    source: new URL("../node_modules/daisyui/themes.css", import.meta.url),
+    type: "text/css",
+  },
+  "tailwindcss-browser.js": {
+    packaged: new URL("./design/tailwindcss-browser.js", import.meta.url),
+    source: new URL("../node_modules/@tailwindcss/browser/dist/index.global.js", import.meta.url),
+    type: "application/javascript",
+  },
+};
 
 export async function serve({ port, stateFile, version = "" }) {
   const app = express();
@@ -254,6 +271,19 @@ export async function serve({ port, stateFile, version = "" }) {
     }
   });
 
+  app.get("/design/:asset", async (req, res, next) => {
+    try {
+      const asset = designAssetUrls[req.params.asset];
+      if (!asset) {
+        res.status(404).send("Not found");
+        return;
+      }
+      res.type(asset.type).send(await readDesignAsset(asset));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/sdk.js", (req, res) => {
     res.type("application/javascript").send(createSdkJs(String(req.query.key || "")));
   });
@@ -301,6 +331,15 @@ export async function serve({ port, stateFile, version = "" }) {
     },
     done,
   };
+}
+
+async function readDesignAsset(asset) {
+  try {
+    return await readFile(asset.packaged, "utf8");
+  } catch (error) {
+    if (error && error.code !== "ENOENT") throw error;
+    return readFile(asset.source, "utf8");
+  }
 }
 
 export function resolveArtifactAsset(root, assetPath) {

@@ -15,6 +15,14 @@ test("check script runs all verification commands", async () => {
   ]);
 });
 
+test("build copies local design assets for published artifact injection", async () => {
+  const buildScript = await readFile(new URL("../scripts/build.js", import.meta.url), "utf8");
+
+  assert.match(buildScript, /daisyui\.css/);
+  assert.match(buildScript, /daisyui-themes\.css/);
+  assert.match(buildScript, /tailwindcss-browser\.js/);
+});
+
 test("package metadata matches the GitHub repository used for npm provenance", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 

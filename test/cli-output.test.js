@@ -10,6 +10,7 @@ import { AxiError } from "axi-sdk-js";
 
 import {
   collapseHomeDirectory,
+  createDesignOutput,
   createHomeOutput,
   createOpenOutput,
   createPollOutput,
@@ -18,6 +19,7 @@ import {
   getCommandHelp,
   normalizeArgv,
   resolveServerEntry,
+  shouldForceRestartForLocalBuild,
   shouldKillProcessOnPort,
   shouldOpenBrowser,
   shouldRestartServer,
@@ -51,6 +53,9 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("lavish-axi <html-file>")));
   assert.ok(output.help.some((item) => item.includes("`.lavish/`")));
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
+  assert.ok(output.help.some((item) => item.includes("Tailwind CSS browser runtime v4")));
+  assert.ok(output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
+  assert.ok(output.help.some((item) => item.includes("lavish-axi design")));
   assert.ok(!output.help.some((item) => item.includes("Known IDs")));
   assert.ok(output.help.some((item) => item.includes("technical plan")));
 });
@@ -71,11 +76,36 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /playbooks\[7\]/);
     assert.match(result.stdout, /lavish-axi playbook <playbook_id>/);
+    assert.match(result.stdout, /Tailwind CSS browser runtime v4/);
+    assert.match(result.stdout, /lavish-axi design/);
+    assert.match(result.stdout, /lavish-design/);
     assert.doesNotMatch(result.stdout, /sessions\[/);
     assert.doesNotMatch(result.stdout, /Known IDs/);
   } finally {
     await rm(stateDir, { force: true, recursive: true });
   }
+});
+
+test("design output documents the auto-injected DaisyUI system", () => {
+  const output = createDesignOutput();
+
+  assert.match(output.design.summary, /Tailwind CSS browser runtime v4/);
+  assert.match(output.design.summary, /DaisyUI v5/);
+  assert.match(output.design.rule, /Do not add Tailwind or DaisyUI/);
+  assert.match(output.design.opt_out, /<meta name="lavish-design" content="off">/);
+  assert.equal(output.design.latest_docs, "https://daisyui.com/components/");
+  assert.equal(output.themes.length, 35);
+  assert.ok(output.themes.includes("luxury"));
+  assert.ok(output.themes.includes("silk"));
+  assert.ok(output.components.actions.includes("button"));
+  assert.ok(output.components.data_display.includes("card"));
+  assert.ok(output.components.feedback.includes("alert"));
+  assert.ok(output.reference.button.classes.includes("btn-primary"));
+  assert.match(output.reference.modal.syntax, /<dialog/);
+  assert.ok(output.reference.table.notes.some((item) => item.includes("overflow-x-auto")));
+  assert.ok(output.reference.drawer.notes.some((item) => item.includes("drawer-toggle")));
+  assert.ok(output.reference.mockup.notes.some((item) => item.includes("Keep `data-prefix` short")));
+  assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
 });
 
 test("playbook index output lists known playbooks with concise descriptions", () => {
@@ -178,6 +208,7 @@ test("html file arguments normalize to the hidden open command", () => {
   assert.deepEqual(normalizeArgv(["--no-open", "report.html"]), ["open", "--no-open", "report.html"]);
   assert.deepEqual(normalizeArgv(["poll", "report.html"]), ["poll", "report.html"]);
   assert.deepEqual(normalizeArgv(["playbook", "diagram"]), ["playbook", "diagram"]);
+  assert.deepEqual(normalizeArgv(["design"]), ["design"]);
   assert.deepEqual(normalizeArgv(["--help"]), ["--help"]);
 });
 
@@ -186,6 +217,7 @@ test("telemetry command names are anonymous and do not include file paths", () =
   assert.equal(telemetryCommandName(["poll", "/tmp/secret/report.html"]), "poll");
   assert.equal(telemetryCommandName(["end", "/tmp/secret/report.html"]), "end");
   assert.equal(telemetryCommandName(["playbook", "diagram"]), "playbook");
+  assert.equal(telemetryCommandName(["design"]), "design");
   assert.equal(telemetryCommandName([]), "home");
 });
 
@@ -207,8 +239,21 @@ test("server entry resolves to a node-executable script that actually invokes ru
   assert.equal(entry, fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)));
 });
 
+test("local built CLI opens force a server restart while source and installed runs do not", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+
+  assert.equal(shouldForceRestartForLocalBuild(`${root}/dist/cli.mjs`, true), true);
+  assert.equal(shouldForceRestartForLocalBuild(`${root}/bin/lavish-axi.js`, true), false);
+  assert.equal(shouldForceRestartForLocalBuild("/usr/local/lib/node_modules/lavish-axi/dist/cli.mjs", false), false);
+});
+
 test("shouldRestartServer reuses a server running the same version", () => {
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.4" }), false);
+});
+
+test("shouldRestartServer restarts same-version Lavish servers when forced", () => {
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }, true), true);
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "other", version: "0.1.4" }, true), false);
 });
 
 test("shouldRestartServer restarts when the running server reports a different version", () => {
@@ -251,6 +296,8 @@ test("open can resume a session without opening another browser window", () => {
   assert.match(getCommandHelp("open"), /--no-open/);
   assert.match(getCommandHelp("playbook"), /diagram/);
   assert.match(getCommandHelp("playbook"), /interactive/);
+  assert.match(getCommandHelp("design"), /DaisyUI/);
+  assert.match(getCommandHelp("design"), /lavish-axi design/);
 });
 
 test("polling a file without an active session tells the agent to open it first", () => {

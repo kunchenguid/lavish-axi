@@ -2,17 +2,19 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { AxiError, runAxiCli } from "axi-sdk-js";
 
+import { createDesignOutput, DESIGN_SYSTEM_HINT } from "./design-reference.js";
 import { defaultPort, ensureStateDir, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds } from "./playbooks.js";
 import { serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "server", "playbook"]);
+const COMMANDS = new Set(["open", "poll", "end", "server", "playbook", "design"]);
 const DESCRIPTION =
   "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
 // Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
@@ -50,6 +52,7 @@ export async function run(argv) {
         poll: pollCommand,
         end: endCommand,
         playbook: playbookCommand,
+        design: designCommand,
         server: serverCommand,
       },
       getCommandHelp,
@@ -119,6 +122,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
       "Run `lavish-axi poll <html-file>` to wait for user feedback",
       "Run `lavish-axi end <html-file>` to end a session",
       "Run `lavish-axi playbook <playbook_id>` for focused artifact guidance",
+      DESIGN_SYSTEM_HINT,
       "Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, technical plan, comparison, report, or browser-based feedback loop",
     ],
   };
@@ -157,7 +161,7 @@ async function openCommand(args) {
   }
   await assertHtmlFile(file);
   const absolute = await canonicalFile(file);
-  const baseUrl = await ensureServer();
+  const baseUrl = await ensureServer({ forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || "") });
   const response = await postJson(`${baseUrl}/api/sessions`, { file: absolute });
   if (shouldOpenBrowser(args, process.env)) {
     try {
@@ -229,6 +233,10 @@ async function playbookCommand(args) {
   return createPlaybookOutput(args);
 }
 
+async function designCommand() {
+  return createDesignOutput();
+}
+
 async function serverCommand(args) {
   const port = Number(flagValue(args, "--port") || defaultPort());
   const server = await serve({ port, stateFile: stateFile(), version: VERSION });
@@ -258,11 +266,11 @@ function isHtmlPath(file) {
   return file.toLowerCase().endsWith(".html") || file.toLowerCase().endsWith(".htm");
 }
 
-async function ensureServer() {
+async function ensureServer({ forceRestart = false } = {}) {
   const port = defaultPort();
   const baseUrl = `http://localhost:${port}`;
   const existing = await fetchHealth(baseUrl);
-  if (existing && !shouldRestartServer(VERSION, existing)) {
+  if (existing && !shouldRestartServer(VERSION, existing, forceRestart)) {
     return baseUrl;
   }
   if (existing) {
@@ -298,10 +306,20 @@ async function ensureServer() {
 // Returns true when the running server is a different (or pre-handshake) version than
 // what this CLI was built with - i.e. the user just upgraded and the stale server needs
 // to step aside.
-export function shouldRestartServer(currentVersion, healthBody) {
+export function shouldRestartServer(currentVersion, healthBody, forceRestart = false) {
   if (!healthBody || typeof healthBody !== "object") return false;
+  if (forceRestart && healthBody.app === "lavish-axi") return true;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
   return healthBody.version !== currentVersion;
+}
+
+export function shouldForceRestartForLocalBuild(executablePath, sourceServerExists = localSourceServerExists()) {
+  const localBuildEntry = fileURLToPath(new URL("../dist/cli.mjs", import.meta.url));
+  return sourceServerExists && path.resolve(executablePath) === path.resolve(localBuildEntry);
+}
+
+function localSourceServerExists() {
+  return existsSync(fileURLToPath(new URL("../src/server.js", import.meta.url)));
 }
 
 export function shouldKillProcessOnPort(currentVersion, healthBody) {
@@ -426,12 +444,15 @@ export function getCommandHelp(command) {
   return COMMAND_HELP[command] || null;
 }
 
-const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi playbook [playbook_id]\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes.\n\n`;
+const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes.\n\n`;
 
 const COMMAND_HELP = {
   open: `Usage: lavish-axi <html-file> [--no-open]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window.\n`,
   poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts, then returns them to the agent. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes so the user has time to review and send feedback. Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again.\n`,
   end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session.\n`,
   playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, diff, interactive, slides.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook interactive\n`,
+  design: `Usage: lavish-axi design\n\nShow technical reference for the Tailwind CSS browser runtime v4, DaisyUI v5 components, and DaisyUI themes that Lavish auto-injects into artifacts. Do not add these libraries separately.\n`,
   server: `Usage: lavish-axi server [--port 4387]\n\nRun the local Lavish Editor server.\n`,
 };
+
+export { createDesignOutput };

@@ -471,6 +471,30 @@ test("/chrome.css serves the extracted chrome stylesheet", async () => {
   }
 });
 
+test("/design serves local Tailwind and DaisyUI artifact assets", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const daisy = await fetch(`${base}/design/daisyui.css`);
+    const tailwind = await fetch(`${base}/design/tailwindcss-browser.js`);
+    const themes = await fetch(`${base}/design/daisyui-themes.css`);
+
+    assert.equal(daisy.status, 200);
+    assert.match(daisy.headers.get("content-type") || "", /text\/css/);
+    assert.match(await daisy.text(), /\.btn/);
+    assert.equal(tailwind.status, 200);
+    assert.match(tailwind.headers.get("content-type") || "", /application\/javascript/);
+    assert.match(await tailwind.text(), /tailwind/i);
+    assert.equal(themes.status, 200);
+    assert.match(themes.headers.get("content-type") || "", /text\/css/);
+    assert.match(await themes.text(), /luxury/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /shutdown stops the listener so the client can spawn a fresh server", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
