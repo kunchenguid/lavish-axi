@@ -345,12 +345,12 @@ test("chrome ignores Lavish postMessages not sent by the artifact iframe", () =>
   assert.match(html, /event\.source\s*!==\s*frame\.contentWindow/);
 });
 
-test("chrome reloads itself when the server signals a version-driven shutdown", () => {
-  // After /shutdown the server emits an SSE `chrome-reload` event. The chrome page must
-  // listen for it and call location.reload() so the browser tab picks up the upgraded
-  // chrome HTML/CSS/JS instead of staying on the old version until manual refresh.
+test("chrome waits for the replacement server before version-driven reload", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  assert.match(html, /addEventListener\('chrome-reload',\(\)=>\{location\.reload\(\)\}\)/);
+  assert.match(html, /async function reloadAfterServerRestart\(\)/);
+  assert.match(html, /let sawOutage=false/);
+  assert.match(html, /if\(sawOutage&&res\.ok\)\{location\.reload\(\);return\}/);
+  assert.match(html, /addEventListener\('chrome-reload',\(\)=>\{reloadAfterServerRestart\(\)\}\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
