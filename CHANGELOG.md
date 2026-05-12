@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.1...lavish-axi-v0.1.2) (2026-05-12)
+
+
+### Features
+
+* **cli:** improve AXI home guidance ([#4](https://github.com/kunchenguid/lavish-axi/issues/4)) ([70b5a30](https://github.com/kunchenguid/lavish-axi/commit/70b5a30bd2c0cadb97068fa79da316db4a6895ec))
+
+
+### Bug Fixes
+
+* ignore changelog in prettier checks ([c18d955](https://github.com/kunchenguid/lavish-axi/commit/c18d955af9cf3892150fc207be783c1b0bc90a74))
+
 ## [0.1.1](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.0...lavish-axi-v0.1.1) (2026-05-12)
 
 
