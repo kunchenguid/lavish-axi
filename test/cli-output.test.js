@@ -18,6 +18,8 @@ import {
   createServerSpawnOptions,
   getCommandHelp,
   normalizeArgv,
+  resolveBindHost,
+  resolvePublicBaseUrl,
   resolveServerEntry,
   shouldForceRestartForLocalBuild,
   shouldKillProcessOnPort,
@@ -232,6 +234,32 @@ test("server spawn options detach without inheriting invalid streams", () => {
 
   assert.equal(options.detached, true);
   assert.equal(options.stdio, "ignore");
+});
+
+test("remote server config defaults to loopback and localhost public URLs", () => {
+  assert.equal(resolveBindHost({ env: {} }), "127.0.0.1");
+  assert.equal(resolvePublicBaseUrl({ env: {}, port: 4387 }), "http://localhost:4387");
+});
+
+test("remote server config supports explicit bind host and public URL", () => {
+  assert.equal(resolveBindHost({ args: ["--host", "100.76.128.114"], env: {} }), "100.76.128.114");
+  assert.equal(resolveBindHost({ args: [], env: { LAVISH_AXI_HOST: "100.76.128.114" } }), "100.76.128.114");
+  assert.equal(
+    resolvePublicBaseUrl({
+      args: ["--public-url", "http://100.76.128.114:4387"],
+      env: {},
+      port: 4387,
+    }),
+    "http://100.76.128.114:4387",
+  );
+  assert.equal(
+    resolvePublicBaseUrl({
+      args: [],
+      env: { LAVISH_AXI_PUBLIC_URL: "http://100.76.128.114:4387/" },
+      port: 4387,
+    }),
+    "http://100.76.128.114:4387",
+  );
 });
 
 test("server entry resolves to a node-executable script that actually invokes run()", () => {

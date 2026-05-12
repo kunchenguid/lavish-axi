@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -437,6 +437,33 @@ test("/health reports the server version so clients can detect upgrades", async 
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.version, "9.9.9-test");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("session URLs use configured public base URL", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><title>remote</title>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    publicBaseUrl: "http://100.76.128.114:4387/",
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.match(body.url, /^http:\/\/100\.76\.128\.114:4387\/session\//);
+    assert.doesNotMatch(body.url, /localhost/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

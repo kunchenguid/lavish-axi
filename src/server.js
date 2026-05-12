@@ -29,13 +29,14 @@ const designAssetUrls = {
   },
 };
 
-export async function serve({ port, stateFile, version = "" }) {
+export async function serve({ port, host = "127.0.0.1", stateFile, version = "", publicBaseUrl = null }) {
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();
   const sseClients = new Set();
+  const advertisedBaseUrl = normalizeBaseUrl(publicBaseUrl || `http://localhost:${port}`);
 
   app.use(express.json({ limit: "2mb" }));
 
@@ -58,7 +59,7 @@ export async function serve({ port, stateFile, version = "" }) {
     try {
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
-      const url = `http://localhost:${port}/session/${key}`;
+      const url = `${advertisedBaseUrl}/session/${key}`;
       const session = await store.upsertSession(file, url);
       watchSession(session, watchers, events);
       res.json({ key, file, url, status: "opened" });
@@ -293,7 +294,7 @@ export async function serve({ port, stateFile, version = "" }) {
   });
 
   const httpServer = await new Promise((resolve) => {
-    const s = app.listen(port, "127.0.0.1", () => resolve(s));
+    const s = app.listen(port, host, () => resolve(s));
   });
 
   let shuttingDown = false;
@@ -331,6 +332,10 @@ export async function serve({ port, stateFile, version = "" }) {
     },
     done,
   };
+}
+
+function normalizeBaseUrl(url) {
+  return String(url || "").replace(/\/+$/, "");
 }
 
 async function readDesignAsset(asset) {
