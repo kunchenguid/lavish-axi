@@ -24,7 +24,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "axi-sdk-js": "^0.1.5",
+    "axi-sdk-js": "^0.1.6",
     "chokidar": "^4.0.3",
     "express": "^5.2.1",
     "open": "^10.2.0"
