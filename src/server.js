@@ -8,17 +8,29 @@ import express from "express";
 import { injectLavishSdk } from "./html-transform.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 
-export async function serve({ port, stateFile }) {
+export async function serve({ port, stateFile, version = "" }) {
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();
+  const sseClients = new Set();
 
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/health", (req, res) => {
-    res.json({ ok: true });
+    res.json({ ok: true, version });
+  });
+
+  let shutdownResolve;
+  const done = new Promise((resolve) => {
+    shutdownResolve = resolve;
+  });
+
+  app.post("/shutdown", (req, res) => {
+    res.json({ status: "shutting-down" });
+    // Defer until after the response flushes so the client gets confirmation.
+    setImmediate(shutdown);
   });
 
   app.post("/api/sessions", async (req, res, next) => {
@@ -189,6 +201,7 @@ export async function serve({ port, stateFile }) {
         "cache-control": "no-cache",
         connection: "keep-alive",
       });
+      sseClients.add(res);
       const session = await store.findByKey(req.params.key);
       const sendReload = (key) => {
         if (key === req.params.key) {
@@ -211,6 +224,7 @@ export async function serve({ port, stateFile }) {
       events.on("agent-reply", sendAgentReply);
       events.on("agent-working", sendWorking);
       req.on("close", () => {
+        sseClients.delete(res);
         events.off("reload", sendReload);
         events.off("agent-reply", sendAgentReply);
         events.off("agent-working", sendWorking);
@@ -228,9 +242,45 @@ export async function serve({ port, stateFile }) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   });
 
-  await new Promise((resolve) => {
-    app.listen(port, "127.0.0.1", resolve);
+  const httpServer = await new Promise((resolve) => {
+    const s = app.listen(port, "127.0.0.1", () => resolve(s));
   });
+
+  let shuttingDown = false;
+  function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // Tell open browser chromes to reload before we drop their SSE connection. The new
+    // server adopts the session via state.json once it binds, so the reloaded chrome
+    // immediately gets the upgraded HTML/CSS/JS.
+    for (const res of sseClients) {
+      try {
+        res.write("event: chrome-reload\ndata: {}\n\n");
+        res.end();
+      } catch {
+        // best effort
+      }
+    }
+    sseClients.clear();
+    for (const w of watchers.values()) {
+      w.close().catch(() => {});
+    }
+    watchers.clear();
+    httpServer.close(() => shutdownResolve());
+    // Force-close keep-alive sockets so SSE / long-polls don't keep us alive.
+    if (typeof httpServer.closeAllConnections === "function") {
+      httpServer.closeAllConnections();
+    }
+  }
+
+  return {
+    port: httpServer.address().port,
+    close: async () => {
+      shutdown();
+      await done;
+    },
+    done,
+  };
 }
 
 export function resolveArtifactAsset(root, assetPath) {
@@ -321,7 +371,7 @@ frame.addEventListener('load',()=>postToFrame({type:'lavish:setAnnotationMode',e
 function sendQueued(){if(!agentPolling)return;const text=chatInput.value.trim();if(text){queued.push({uid:'',prompt:text,selector:'',tag:'message',text:'Freeform message'});addChat('user',text);chatInput.value='';render()}if(!queued.length)return;postToFrame({type:'lavish:requestSnapshot'})}
 async function submitQueued(){const prompts=queued.splice(0,queued.length);render();setAgentPolling(false);await fetch('/api/'+key+'/prompts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompts,domSnapshot:pendingSnapshot})})}
 async function endSession(){await fetch('/api/'+key+'/end',{method:'POST'});document.body.innerHTML='<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div></div><main class="ended-view"><section class="ended-card"><div class="ended-title">Session ended.</div><p class="ended-copy">Return to your agent to continue.</p></section></main>'}
-const events=new EventSource('/events/'+key);events.addEventListener('reload',()=>{frame.src=frame.src});events.addEventListener('agent-reply',event=>addChat('agent',JSON.parse(event.data).text));events.addEventListener('chat-sync',event=>syncChat(JSON.parse(event.data).chat||[]));events.addEventListener('agent-working',event=>setAgentPolling(!JSON.parse(event.data).working));render();initialChat.forEach(item=>addChat(item.role,item.text));setAgentPolling(false);
+const events=new EventSource('/events/'+key);events.addEventListener('reload',()=>{frame.src=frame.src});events.addEventListener('chrome-reload',()=>{location.reload()});events.addEventListener('agent-reply',event=>addChat('agent',JSON.parse(event.data).text));events.addEventListener('chat-sync',event=>syncChat(JSON.parse(event.data).chat||[]));events.addEventListener('agent-working',event=>setAgentPolling(!JSON.parse(event.data).working));render();initialChat.forEach(item=>addChat(item.role,item.text));setAgentPolling(false);
 </script>
 </body>
 </html>`;

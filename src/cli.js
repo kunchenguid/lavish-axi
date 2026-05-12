@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -13,7 +14,10 @@ import { initDefaultTelemetry } from "./telemetry.js";
 const COMMANDS = new Set(["open", "poll", "end", "server"]);
 const DESCRIPTION =
   "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. First generate an interactive HTML artifact for the user to inspect, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements, queue prompts, and send feedback back through `lavish-axi poll`.";
-const VERSION = "0.1.0";
+// Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
+export const VERSION =
+  process.env.LAVISH_AXI_BUILD_VERSION ||
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 export async function run(argv) {
   await ensureStateDir();
@@ -213,7 +217,8 @@ async function endCommand(args) {
 
 async function serverCommand(args) {
   const port = Number(flagValue(args, "--port") || defaultPort());
-  await serve({ port, stateFile: stateFile() });
+  const server = await serve({ port, stateFile: stateFile(), version: VERSION });
+  await server.done;
   return "";
 }
 
@@ -242,13 +247,28 @@ function isHtmlPath(file) {
 async function ensureServer() {
   const port = defaultPort();
   const baseUrl = `http://localhost:${port}`;
-  if (await isHealthy(baseUrl)) {
+  const existing = await fetchHealth(baseUrl);
+  if (existing && !shouldRestartServer(VERSION, existing)) {
     return baseUrl;
+  }
+  if (existing) {
+    // Stale server from an older release is squatting on the port. Ask it to shut down
+    // gracefully so the upgraded client doesn't keep handing users an old chrome.
+    await requestShutdown(baseUrl);
+    const freed = await waitForPortFree(baseUrl, 2000);
+    if (!freed) {
+      // Pre-handshake servers (any release older than this change) don't expose /shutdown
+      // so the POST 404'd. Fall back to SIGTERM by PID so the very first upgrade still
+      // works, then keep waiting.
+      killProcessOnPort(port);
+      await waitForPortFree(baseUrl, 3000);
+    }
   }
   await startServer(port);
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    if (await isHealthy(baseUrl)) {
+    const health = await fetchHealth(baseUrl);
+    if (health && !shouldRestartServer(VERSION, health)) {
       return baseUrl;
     }
     await delay(100);
@@ -258,15 +278,85 @@ async function ensureServer() {
   ]);
 }
 
+// Pure helper so the upgrade-detection logic is unit-testable without spinning up HTTP.
+// Returns true when the running server is a different (or pre-handshake) version than
+// what this CLI was built with - i.e. the user just upgraded and the stale server needs
+// to step aside.
+export function shouldRestartServer(currentVersion, healthBody) {
+  if (!healthBody || typeof healthBody !== "object") return false;
+  if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
+  return healthBody.version !== currentVersion;
+}
+
+async function fetchHealth(baseUrl) {
+  try {
+    const response = await fetch(`${baseUrl}/health`);
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+async function requestShutdown(baseUrl) {
+  try {
+    await fetch(`${baseUrl}/shutdown`, { method: "POST" });
+  } catch {
+    // Best effort. If the server died before answering, the port will free up on its own.
+  }
+}
+
+async function waitForPortFree(baseUrl, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await fetchHealth(baseUrl))) return true;
+    await delay(100);
+  }
+  return false;
+}
+
+// Last-resort fallback for the bootstrap upgrade case: a pre-handshake server is squatting
+// on the port and doesn't expose /shutdown, so we resolve its PID via lsof and SIGTERM it.
+// macOS/Linux only - Windows users would need to kill manually, but lavish-axi isn't
+// shipped for Windows today.
+function killProcessOnPort(port) {
+  try {
+    const result = spawnSync("lsof", ["-t", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+    if (result.status !== 0) return;
+    for (const line of result.stdout.split("\n")) {
+      const pid = Number(line.trim());
+      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          // Process already gone or permission denied - either way nothing we can do.
+        }
+      }
+    }
+  } catch {
+    // lsof missing or unsupported platform - the outer caller will surface SERVER_ERROR.
+  }
+}
+
 async function startServer(port) {
   await ensureStateDir();
-  const bin = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
-  const child = spawn(process.execPath, [bin, "server", "--port", String(port)], {
+  const entry = resolveServerEntry();
+  const child = spawn(process.execPath, [entry, "server", "--port", String(port)], {
     detached: true,
     stdio: "ignore",
     env: { ...process.env, LAVISH_AXI_NO_OPEN: "1" },
   });
   child.unref();
+}
+
+// The detached server child must point at a node-executable entry that actually invokes
+// run(). In source layout that's `../bin/lavish-axi.js` (which calls run on import). In the
+// published bundle, only `dist/cli.mjs` ships and it self-invokes via the bundled bin
+// wrapper. Pick whichever exists.
+export function resolveServerEntry() {
+  const binEntry = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+  if (existsSync(binEntry)) return binEntry;
+  return fileURLToPath(import.meta.url);
 }
 
 export function createServerSpawnOptions() {
@@ -275,15 +365,6 @@ export function createServerSpawnOptions() {
     stdio: "ignore",
     env: { ...process.env, LAVISH_AXI_NO_OPEN: "1" },
   };
-}
-
-async function isHealthy(baseUrl) {
-  try {
-    const response = await fetch(`${baseUrl}/health`);
-    return response.ok;
-  } catch {
-    return false;
-  }
 }
 
 async function fetchJson(url) {

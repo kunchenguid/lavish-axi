@@ -1,5 +1,6 @@
 dist
 node_modules
+.lavish
 .lavish-axi
 lavish-code-review.html
 package-lock.json

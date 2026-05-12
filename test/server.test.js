@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createChromeHtml, createSdkJs, resolveArtifactAsset } from "../src/server.js";
+import { createChromeHtml, createSdkJs, resolveArtifactAsset, serve } from "../src/server.js";
 
 test("artifact assets resolve within the artifact directory", () => {
   const root = path.resolve("/tmp/lavish-artifact");
@@ -341,6 +343,41 @@ test("chrome ignores Lavish postMessages not sent by the artifact iframe", () =>
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /event\.source\s*!==\s*frame\.contentWindow/);
+});
+
+test("chrome reloads itself when the server signals a version-driven shutdown", () => {
+  // After /shutdown the server emits an SSE `chrome-reload` event. The chrome page must
+  // listen for it and call location.reload() so the browser tab picks up the upgraded
+  // chrome HTML/CSS/JS instead of staying on the old version until manual refresh.
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  assert.match(html, /addEventListener\('chrome-reload',\(\)=>\{location\.reload\(\)\}\)/);
+});
+
+test("/health reports the server version so clients can detect upgrades", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/health`);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.version, "9.9.9-test");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /shutdown stops the listener so the client can spawn a fresh server", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/shutdown`, { method: "POST" });
+    assert.equal(res.status, 200);
+    await server.done;
+    await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("ended session message renders centered in the main content area", () => {

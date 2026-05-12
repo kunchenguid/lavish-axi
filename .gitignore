@@ -1,7 +1,7 @@
 node_modules/
 dist/
 coverage/
+.lavish/
 .lavish-axi/
 .DS_Store
 *.log
-lavish-code-review.html

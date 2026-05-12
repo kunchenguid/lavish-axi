@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { AxiError } from "axi-sdk-js";
@@ -12,9 +15,17 @@ import {
   createServerSpawnOptions,
   getCommandHelp,
   normalizeArgv,
+  resolveServerEntry,
   shouldOpenBrowser,
+  shouldRestartServer,
   telemetryCommandName,
+  VERSION,
 } from "../src/cli.js";
+
+test("CLI version tracks package.json so release-please bumps reach the published binary", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(VERSION, packageJson.version);
+});
 
 test("home output teaches agents when and how to use Lavish Editor", () => {
   const output = createHomeOutput({ bin: `${os.homedir()}/.local/bin/lavish-axi`, sessions: [] });
@@ -101,6 +112,40 @@ test("server spawn options detach without inheriting invalid streams", () => {
 
   assert.equal(options.detached, true);
   assert.equal(options.stdio, "ignore");
+});
+
+test("server entry resolves to a node-executable script that actually invokes run()", () => {
+  // Running from source, the entry must be `bin/lavish-axi.js` (the only file in the
+  // source tree that calls run() on import). In the published bundle only `dist/cli.mjs`
+  // ships - it embeds the bin wrapper so it self-invokes. Either way, spawning the entry
+  // with `node <entry> server` must boot the server, not silently load the module and exit.
+  const entry = resolveServerEntry();
+  assert.ok(existsSync(entry), `server entry must exist on disk, got: ${entry}`);
+  // From source: bin/lavish-axi.js is present and preferred.
+  assert.equal(entry, fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)));
+});
+
+test("shouldRestartServer reuses a server running the same version", () => {
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.4" }), false);
+});
+
+test("shouldRestartServer restarts when the running server reports a different version", () => {
+  // Catches the upgrade scenario: client got bumped to 0.1.4 but a 0.1.3 server is still
+  // holding the port from a previous invocation.
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.3" }), true);
+});
+
+test("shouldRestartServer restarts when the running server predates the version handshake", () => {
+  // Pre-handshake servers (any release older than this change) return `{ ok: true }` with
+  // no version field. Treat that as "older than me" and restart so users actually get the
+  // version they just installed.
+  assert.equal(shouldRestartServer("0.1.4", { ok: true }), true);
+});
+
+test("shouldRestartServer does not restart when /health was unreachable", () => {
+  // null = fetch failed; the caller should fall through to startServer instead of trying
+  // to POST /shutdown against nothing.
+  assert.equal(shouldRestartServer("0.1.4", null), false);
 });
 
 test("open can resume a session without opening another browser window", () => {
