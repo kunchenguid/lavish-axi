@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -44,6 +44,13 @@ test("server serves chrome styles from a dedicated source file", async () => {
   assert.match(source, /chrome\.css/);
   assert.match(html, /<link rel="stylesheet" href="\/chrome\.css">/);
   assert.doesNotMatch(html, /<style>/);
+});
+
+test("server emits agent-working with unified polling semantics", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+
+  assert.match(source, /events\.emit\("agent-working", key, nextCount > 0\)/);
+  assert.match(source, /working: activePolls\.has\(req\.params\.key\)/);
 });
 
 test("artifact assets resolve within the artifact directory", () => {
@@ -350,6 +357,12 @@ test("chrome shows working indicator and controls button state based on agent po
   assert.match(js, /Working\.\.\./);
 });
 
+test("chrome allows queuing input while agent is not polling", async () => {
+  const js = await chromeClientSource();
+
+  assert.doesNotMatch(js, /if\s*\(\s*!agentPolling\s*\)\s*return/);
+});
+
 test("chrome puts queued annotations inside the chat composer as preview pills", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
@@ -513,6 +526,68 @@ test("POST /shutdown stops the listener so the client can spawn a fresh server",
     await server.done;
     await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SSE initial agent-working is false without poll and true with active poll", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<html><body>hello</body></html>");
+    const sessionRes = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await sessionRes.json();
+
+    async function readWorkingEvent(eventUrl) {
+      const res = await fetch(eventUrl);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const deadline = Date.now() + 1000;
+      while (Date.now() < deadline) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop();
+        for (const chunk of chunks) {
+          const lines = chunk.split("\n");
+          if (lines.some((l) => l === "event: agent-working")) {
+            const dataLine = lines.find((l) => l.startsWith("data: "));
+            reader.cancel();
+            return JSON.parse(dataLine.slice(6));
+          }
+        }
+      }
+      reader.cancel();
+      return null;
+    }
+
+    const noPoll = await readWorkingEvent(`http://127.0.0.1:${server.port}/events/${key}`);
+    assert.ok(noPoll);
+    assert.equal(noPoll.working, false);
+
+    const controller = new AbortController();
+    const pollPromise = fetch(
+      `http://127.0.0.1:${server.port}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=5000`,
+      { signal: controller.signal },
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const withPoll = await readWorkingEvent(`http://127.0.0.1:${server.port}/events/${key}`);
+    assert.ok(withPoll);
+    assert.equal(withPoll.working, true);
+
+    controller.abort();
+    await assert.rejects(() => pollPromise, /AbortError/);
+  } finally {
+    await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

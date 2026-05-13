@@ -48,7 +48,7 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
 4. Sibling assets resolve under `/artifact/:key/<path>`, sandboxed to the artifact's directory (`resolveArtifactAsset` rejects paths that escape via `..`), while packaged Tailwind/DaisyUI assets are served from `/design/:asset`.
 5. User actions in the iframe `postMessage` to the chrome (queue prompts, request snapshot, end session). The chrome POSTs collected prompts to `/api/:key/prompts`, which queues them in the session store and emits a `feedback` event. Text selection prompts use `tag: "text"` and preserve a structured `target` with `type: "text-range"`, selected text, `commonAncestorSelector`, and start/end boundary anchors.
 6. `lavish-axi poll <file.html>` (`pollCommand`) hits `GET /api/poll`. If queued prompts exist, it returns immediately; otherwise it long-polls on an `EventEmitter` until a `feedback` or `ended` event fires (default: no timeout - `--timeout-ms` is a test escape hatch).
-7. `--agent-reply` posts a chat message into the session before polling, so the agent's reply renders in the browser conversation panel via the `/events/:key` SSE stream.
+7. `--agent-reply` posts a chat message into the session before polling, so the agent's reply renders in the browser conversation panel via the `/events/:key` SSE stream, which also carries `agent-working` events (`working: true` when the agent has an active poll).
 
 ### Live reload
 
