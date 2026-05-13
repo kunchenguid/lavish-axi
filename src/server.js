@@ -240,7 +240,7 @@ export async function serve({ port, stateFile, version = "" }) {
         }
       };
       res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: session?.chat || [] })}\n\n`);
-      res.write(`event: agent-working\ndata: ${JSON.stringify({ working: !activePolls.has(req.params.key) })}\n\n`);
+      res.write(`event: agent-working\ndata: ${JSON.stringify({ working: activePolls.has(req.params.key) })}\n\n`);
       events.on("reload", sendReload);
       events.on("agent-reply", sendAgentReply);
       events.on("agent-working", sendWorking);
@@ -379,7 +379,7 @@ function setPollActive(key, activePolls, events, active) {
     activePolls.set(key, nextCount);
   }
   if (count > 0 === nextCount > 0) return;
-  events.emit("agent-working", key, nextCount === 0);
+  events.emit("agent-working", key, nextCount > 0);
 }
 
 export function createChromeHtml(session) {

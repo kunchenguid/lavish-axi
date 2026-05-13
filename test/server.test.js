@@ -342,12 +342,12 @@ test("chrome shows agent working state when no poll is active", async () => {
   assert.match(js, /spinner/);
 });
 
-test("chrome disables sending while agent is working", async () => {
+test("chrome shows working indicator and controls button state based on agent polling", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /let agentPolling = false/);
   assert.match(js, /sendButton\.disabled = !agentPolling/);
-  assert.match(js, /if \(!agentPolling\) return/);
+  assert.match(js, /Working\.\.\./);
 });
 
 test("chrome puts queued annotations inside the chat composer as preview pills", async () => {

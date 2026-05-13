@@ -111,8 +111,6 @@ function postToFrame(message) {
 }
 
 function sendQueued() {
-  if (!agentPolling) return;
-
   const text = chatInput.value.trim();
   if (text) {
     queued.push({ uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" });
@@ -214,7 +212,7 @@ events.addEventListener("reload", () => {
 events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
-events.addEventListener("agent-working", (event) => setAgentPolling(!JSON.parse(event.data).working));
+events.addEventListener("agent-working", (event) => setAgentPolling(JSON.parse(event.data).working));
 
 render();
 initialChat.forEach((item) => addChat(item.role, item.text));
