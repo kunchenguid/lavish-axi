@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.8...lavish-axi-v0.1.9) (2026-05-13)
+
+
+### Bug Fixes
+
+* **server:** track agent presence across polling states ([#31](https://github.com/kunchenguid/lavish-axi/issues/31)) ([351d7b4](https://github.com/kunchenguid/lavish-axi/commit/351d7b4174fb4f64b7683ea85a93537ecbb33ad3))
+
 ## [0.1.8](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.7...lavish-axi-v0.1.8) (2026-05-13)
 
 
