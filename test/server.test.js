@@ -737,6 +737,48 @@ test("SSE agent-presence returns to waiting when a poll disconnects without feed
   }
 });
 
+test("SSE agent-presence returns to waiting when poll feedback storage fails", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  const stateFile = path.join(dir, "state.json");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "waiting");
+
+      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=10`);
+      assert.equal(await presence.next(), "listening");
+
+      await writeFile(stateFile, "not json");
+      const pollResult = await poll;
+      assert.equal(pollResult.status, 500);
+
+      assert.equal(await presence.next(), "waiting");
+    } finally {
+      await presence.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("long-poll response cleanup is guarded against storage failures", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+
+  assert.match(source, /try \{\s*const result = await store\.takeFeedback\(key\)/);
+  assert.match(source, /finally \{\s*cleanup\(\);\s*\}/);
+});
+
 test("SSE agent-presence switches to working when poll immediately takes queued feedback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

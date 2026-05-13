@@ -96,10 +96,13 @@ export async function serve({ port, stateFile, version = "" }) {
       const respond = async () => {
         if (responding || res.headersSent) return;
         responding = true;
-        const result = await store.takeFeedback(key);
-        if (result.status === "feedback") markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
-        cleanup();
-        res.json(result);
+        try {
+          const result = await store.takeFeedback(key);
+          if (result.status === "feedback") markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
+          res.json(result);
+        } finally {
+          cleanup();
+        }
       };
       const onFeedback = (changedKey) => {
         if (changedKey !== key || res.headersSent) {
