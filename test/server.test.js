@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -19,6 +19,40 @@ function normalizeCssForAssertions(css) {
     .replace(/\s*([{}:;,])\s*/g, "$1")
     .replace(/\s+/g, " ")
     .replace(/0\./g, ".");
+}
+
+async function startPresenceStream(base, key) {
+  const controller = new AbortController();
+  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  return {
+    async next() {
+      const deadline = Date.now() + 500;
+      while (true) {
+        const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
+        if (match) {
+          buffer = buffer.replace(match[0], "");
+          return JSON.parse(match[1]).state;
+        }
+        const remaining = Math.max(1, deadline - Date.now());
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("timed out waiting for agent presence event")), remaining),
+          ),
+        ]);
+        if (done) throw new Error("presence stream closed before an agent presence event");
+        buffer += decoder.decode(value, { stream: true });
+      }
+    },
+    async close() {
+      controller.abort();
+      await reader.cancel().catch(() => {});
+    },
+  };
 }
 
 test("server delegates artifact SDK generation to a dedicated source module", async () => {
@@ -356,7 +390,7 @@ test("chrome shows a waiting banner when no agent has attached", async () => {
   const css = await chromeCssSource();
 
   assert.match(html, /id="presenceBanner"/);
-  assert.match(html, /No agent is listening/);
+  assert.match(html, /Your agent is not listening/);
   assert.match(js, /presenceBanner\.hidden = agentPresence !== "waiting"/);
   assert.match(css, /\.presence-banner\{/);
 });
@@ -633,6 +667,70 @@ test("SSE handshake reports waiting on a fresh session that never had a poll", a
     }
     controller.abort();
     assert.equal(state, "waiting");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SSE agent-presence returns to waiting when a poll times out without feedback", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "waiting");
+
+      const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1`);
+      assert.deepEqual(await poll.json(), { status: "waiting" });
+
+      assert.equal(await presence.next(), "listening");
+      assert.equal(await presence.next(), "waiting");
+    } finally {
+      await presence.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SSE agent-presence returns to waiting when a poll disconnects without feedback", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "waiting");
+
+      const pollController = new AbortController();
+      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: pollController.signal });
+      assert.equal(await presence.next(), "listening");
+      pollController.abort();
+      await poll.catch(() => {});
+
+      assert.equal(await presence.next(), "waiting");
+    } finally {
+      await presence.close();
+    }
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

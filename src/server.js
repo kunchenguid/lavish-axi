@@ -35,7 +35,7 @@ export async function serve({ port, stateFile, version = "" }) {
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();
-  const pollHistory = new Set();
+  const deliveredFeedback = new Set();
   const sseClients = new Set();
 
   app.use(express.json({ limit: "2mb" }));
@@ -76,33 +76,35 @@ export async function serve({ port, stateFile, version = "" }) {
         req.query.timeoutMs === undefined ? null : Math.max(0, Math.min(Number(req.query.timeoutMs || 0), 2147483647));
       const immediate = await store.takeFeedback(key);
       if (immediate.status !== "waiting") {
-        markPollObserved(key, activePolls, pollHistory, events);
+        if (immediate.status === "feedback") markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
         res.json(immediate);
         return;
       }
-      setPollActive(key, activePolls, pollHistory, events, true);
-      const timer =
-        timeoutMs === null
-          ? null
-          : setTimeout(async () => {
-              cleanup();
-              res.json(await store.takeFeedback(key));
-            }, timeoutMs);
-      const onFeedback = async (changedKey) => {
-        if (changedKey !== key || res.headersSent) {
-          return;
-        }
-        cleanup();
-        res.json(await store.takeFeedback(key));
-      };
+      setPollActive(key, activePolls, deliveredFeedback, events, true);
+      const timer = timeoutMs === null ? null : setTimeout(() => respond().catch(next), timeoutMs);
       let cleaned = false;
+      let responding = false;
       const cleanup = () => {
         if (cleaned) return;
         cleaned = true;
         if (timer) clearTimeout(timer);
         events.off("feedback", onFeedback);
         events.off("ended", onFeedback);
-        setPollActive(key, activePolls, pollHistory, events, false);
+        setPollActive(key, activePolls, deliveredFeedback, events, false);
+      };
+      const respond = async () => {
+        if (responding || res.headersSent) return;
+        responding = true;
+        const result = await store.takeFeedback(key);
+        if (result.status === "feedback") markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
+        cleanup();
+        res.json(result);
+      };
+      const onFeedback = (changedKey) => {
+        if (changedKey !== key || res.headersSent) {
+          return;
+        }
+        respond().catch(next);
       };
       events.on("feedback", onFeedback);
       events.on("ended", onFeedback);
@@ -243,7 +245,7 @@ export async function serve({ port, stateFile, version = "" }) {
       };
       res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: session?.chat || [] })}\n\n`);
       res.write(
-        `event: agent-presence\ndata: ${JSON.stringify({ state: computePresence(req.params.key, activePolls, pollHistory) })}\n\n`,
+        `event: agent-presence\ndata: ${JSON.stringify({ state: computePresence(req.params.key, activePolls, deliveredFeedback) })}\n\n`,
       );
       events.on("reload", sendReload);
       events.on("agent-reply", sendAgentReply);
@@ -373,7 +375,8 @@ function watchSession(session, watchers, events) {
   watchers.set(session.key, watcher);
 }
 
-function setPollActive(key, activePolls, pollHistory, events, active) {
+function setPollActive(key, activePolls, deliveredFeedback, events, active) {
+  const previousPresence = computePresence(key, activePolls, deliveredFeedback);
   const count = activePolls.get(key) || 0;
   const nextCount = active ? count + 1 : Math.max(0, count - 1);
   if (nextCount === count) return;
@@ -381,24 +384,24 @@ function setPollActive(key, activePolls, pollHistory, events, active) {
     activePolls.delete(key);
   } else {
     activePolls.set(key, nextCount);
-    pollHistory.add(key);
+    deliveredFeedback.delete(key);
   }
-  if (count > 0 === nextCount > 0) return;
-  events.emit("agent-presence", key, computePresence(key, activePolls, pollHistory));
+  const nextPresence = computePresence(key, activePolls, deliveredFeedback);
+  if (nextPresence !== previousPresence) events.emit("agent-presence", key, nextPresence);
 }
 
-function markPollObserved(key, activePolls, pollHistory, events) {
-  const previousPresence = computePresence(key, activePolls, pollHistory);
-  pollHistory.add(key);
-  const nextPresence = computePresence(key, activePolls, pollHistory);
+function markFeedbackDelivered(key, activePolls, deliveredFeedback, events) {
+  const previousPresence = computePresence(key, activePolls, deliveredFeedback);
+  deliveredFeedback.add(key);
+  const nextPresence = computePresence(key, activePolls, deliveredFeedback);
   if (nextPresence !== previousPresence) {
     events.emit("agent-presence", key, nextPresence);
   }
 }
 
-export function computePresence(key, activePolls, pollHistory) {
+export function computePresence(key, activePolls, deliveredFeedback) {
   if (activePolls.has(key)) return "listening";
-  if (pollHistory.has(key)) return "working";
+  if (deliveredFeedback.has(key)) return "working";
   return "waiting";
 }
 
@@ -415,7 +418,7 @@ export function createChromeHtml(session) {
 </head>
 <body class="lavish">
 <div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="divider" aria-hidden="true"></div><div class="file-wrap" title="${escapeHtml(session.file)}"><input class="file-input" id="filePath" readonly size="${fileInputSize}" value="${escapeHtml(session.file)}"><button class="copy-button" id="copyPath" type="button">Copy Path</button></div><button class="button secondary annotation-on" id="annotation">Annotation: On</button><button class="button danger" id="end">End Session</button></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="chat" id="chatLog"></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>No agent is listening - your message will be delivered when one attaches.</div><div class="annotation-pills" id="annotationPills"></div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="actions"><button class="button" id="send">Send to Agent</button></div></div></aside></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="chat" id="chatLog"></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><div class="annotation-pills" id="annotationPills"></div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="actions"><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>
 <script src="/chrome-client.js"></script>
 </body>
