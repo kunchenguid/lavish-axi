@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.7...lavish-axi-v0.1.8) (2026-05-13)
+
+
+### Bug Fixes
+
+* trigger release ([9bbf27f](https://github.com/kunchenguid/lavish-axi/commit/9bbf27fe77f0e8baa656b577e27fc536d3c7474a))
+
 ## [0.1.7](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.6...lavish-axi-v0.1.7) (2026-05-12)
 
 
