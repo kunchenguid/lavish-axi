@@ -37,6 +37,8 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
 
   assert.equal(output.bin, "~/.local/bin/lavish-axi");
   assert.match(output.description, /Lavish Editor/);
+  assert.match(output.description, /complex response/);
+  assert.match(output.description, /consider using Lavish Editor/);
   assert.match(output.description, /First generate an interactive HTML artifact/);
   assert.deepEqual(output.sessions, []);
   assert.equal("use_cases" in output, false);
