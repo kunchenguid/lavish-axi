@@ -61,6 +61,7 @@ export async function serve({ port, stateFile, version = "" }) {
       const key = sessionKey(file);
       const url = `http://localhost:${port}/session/${key}`;
       const session = await store.upsertSession(file, url);
+      clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       watchSession(session, watchers, events);
       res.json({ key, file, url, status: "opened" });
     } catch (error) {
@@ -131,6 +132,7 @@ export async function serve({ port, stateFile, version = "" }) {
   app.post("/api/:key/end", async (req, res, next) => {
     try {
       await store.endSession(req.params.key);
+      clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       events.emit("ended", req.params.key);
       res.json({ status: "ended" });
     } catch (error) {
@@ -158,6 +160,7 @@ export async function serve({ port, stateFile, version = "" }) {
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
       await store.endSession(key);
+      clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       events.emit("ended", key);
       res.json({ status: "ended" });
     } catch (error) {
@@ -393,6 +396,15 @@ function setPollActive(key, activePolls, deliveredFeedback, events, active) {
 function markFeedbackDelivered(key, activePolls, deliveredFeedback, events) {
   const previousPresence = computePresence(key, activePolls, deliveredFeedback);
   deliveredFeedback.add(key);
+  const nextPresence = computePresence(key, activePolls, deliveredFeedback);
+  if (nextPresence !== previousPresence) {
+    events.emit("agent-presence", key, nextPresence);
+  }
+}
+
+function clearFeedbackDelivery(key, activePolls, deliveredFeedback, events) {
+  const previousPresence = computePresence(key, activePolls, deliveredFeedback);
+  deliveredFeedback.delete(key);
   const nextPresence = computePresence(key, activePolls, deliveredFeedback);
   if (nextPresence !== previousPresence) {
     events.emit("agent-presence", key, nextPresence);

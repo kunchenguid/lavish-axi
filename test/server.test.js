@@ -812,6 +812,53 @@ test("SSE agent-presence switches to working when poll immediately takes queued 
   }
 });
 
+test("SSE agent-presence resets to waiting after ending and reopening a session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "waiting");
+
+      await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+      });
+      await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+      assert.equal(await presence.next(), "working");
+
+      await fetch(`${base}/api/${key}/end`, { method: "POST" });
+      await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      });
+    } finally {
+      await presence.close();
+    }
+
+    const reopenedPresence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await reopenedPresence.next(), "waiting");
+    } finally {
+      await reopenedPresence.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ended session message renders centered in the main content area", async () => {
   const js = await chromeClientSource();
   const css = await chromeCssSource();
