@@ -47,8 +47,10 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
 3. The artifact route reads the HTML from disk and runs `injectLavishSdk` (`src/html-transform.js`) to append `<script src="/sdk.js?key=...">` and, unless the artifact opts out with `<meta name="lavish-design" content="off">`, inject `/design/daisyui.css`, `/design/tailwindcss-browser.js`, and `/design/daisyui-themes.css`.
 4. Sibling assets resolve under `/artifact/:key/<path>`, sandboxed to the artifact's directory (`resolveArtifactAsset` rejects paths that escape via `..`), while packaged Tailwind/DaisyUI assets are served from `/design/:asset`.
 5. User actions in the iframe `postMessage` to the chrome (queue prompts, request snapshot, end session). The chrome POSTs collected prompts to `/api/:key/prompts`, which queues them in the session store and emits a `feedback` event. Text selection prompts use `tag: "text"` and preserve a structured `target` with `type: "text-range"`, selected text, `commonAncestorSelector`, and start/end boundary anchors.
-6. `lavish-axi poll <file.html>` (`pollCommand`) hits `GET /api/poll`. If queued prompts exist, it returns immediately; otherwise it long-polls on an `EventEmitter` until a `feedback` or `ended` event fires (default: no timeout - `--timeout-ms` is a test escape hatch).
-7. `--agent-reply` posts a chat message into the session before polling, so the agent's reply renders in the browser conversation panel via the `/events/:key` SSE stream.
+6. `lavish-axi poll <file.html>` (`pollCommand`) hits `GET /api/poll`. If queued prompts exist, it records that an agent has observed the session and returns immediately; otherwise it marks the session as actively listening and long-polls on an `EventEmitter` until a `feedback` or `ended` event fires (default: no timeout - `--timeout-ms` is a test escape hatch).
+7. The `/events/:key` SSE stream emits `agent-presence` states: `waiting` before any poll has attached, `listening` while a poll is active, and `working` after a poll has delivered feedback and released.
+   The chrome uses this state to show the waiting banner, allow queued feedback while waiting or listening, and block sends only while working.
+8. `--agent-reply` posts a chat message into the session before polling, so the agent's reply renders in the browser conversation panel via the `/events/:key` SSE stream.
 
 ### Live reload
 
