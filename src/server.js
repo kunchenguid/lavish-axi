@@ -60,8 +60,11 @@ export async function serve({ port, stateFile, version = "" }) {
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
       const url = `http://localhost:${port}/session/${key}`;
+      const existing = await store.findByKey(key);
       const session = await store.upsertSession(file, url);
-      clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+      if (existing?.status === "ended") {
+        clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+      }
       watchSession(session, watchers, events);
       res.json({ key, file, url, status: "opened" });
     } catch (error) {
