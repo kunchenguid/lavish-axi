@@ -14,10 +14,11 @@ const annotationButton = /** @type {HTMLButtonElement} */ (document.getElementBy
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const filePathInput = /** @type {HTMLInputElement} */ (document.getElementById("filePath"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
+const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("presenceBanner"));
 
 const queued = [];
 let annotation = true;
-let agentPolling = false;
+let agentPresence = "waiting";
 let pendingSnapshot = "";
 let workingBubble = null;
 
@@ -81,11 +82,12 @@ function syncChat(chat) {
   chatLog.scrollTop = chatLog.scrollHeight;
 }
 
-function setAgentPolling(active) {
-  agentPolling = !!active;
-  sendButton.disabled = !agentPolling;
+function setAgentPresence(state) {
+  agentPresence = state === "listening" || state === "working" ? state : "waiting";
+  sendButton.disabled = agentPresence === "working";
+  if (presenceBanner) presenceBanner.hidden = agentPresence !== "waiting";
 
-  if (agentPolling) {
+  if (agentPresence !== "working") {
     if (workingBubble) workingBubble.remove();
     workingBubble = null;
     return;
@@ -111,7 +113,7 @@ function postToFrame(message) {
 }
 
 function sendQueued() {
-  if (!agentPolling) return;
+  if (agentPresence === "working") return;
 
   const text = chatInput.value.trim();
   if (text) {
@@ -128,7 +130,7 @@ function sendQueued() {
 async function submitQueued() {
   const prompts = queued.splice(0, queued.length);
   render();
-  setAgentPolling(false);
+  if (agentPresence === "listening") setAgentPresence("working");
   await fetch("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -214,8 +216,8 @@ events.addEventListener("reload", () => {
 events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
-events.addEventListener("agent-working", (event) => setAgentPolling(!JSON.parse(event.data).working));
+events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
 
 render();
 initialChat.forEach((item) => addChat(item.role, item.text));
-setAgentPolling(false);
+setAgentPresence("waiting");

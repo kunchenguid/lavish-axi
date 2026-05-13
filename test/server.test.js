@@ -334,20 +334,31 @@ test("chrome can sync persisted chat after the event stream reconnects", async (
   assert.match(js, /function syncChat/);
 });
 
-test("chrome shows agent working state when no poll is active", async () => {
+test("chrome shows agent working state when a previous poll has released", async () => {
   const js = await chromeClientSource();
 
-  assert.match(js, /agent-working/);
+  assert.match(js, /agent-presence/);
   assert.match(js, /Working\.\.\./);
   assert.match(js, /spinner/);
 });
 
-test("chrome disables sending while agent is working", async () => {
+test("chrome disables sending while agent is working but allows it while waiting or listening", async () => {
   const js = await chromeClientSource();
 
-  assert.match(js, /let agentPolling = false/);
-  assert.match(js, /sendButton\.disabled = !agentPolling/);
-  assert.match(js, /if \(!agentPolling\) return/);
+  assert.match(js, /let agentPresence = "waiting"/);
+  assert.match(js, /sendButton\.disabled = agentPresence === "working"/);
+  assert.match(js, /if \(agentPresence === "working"\) return/);
+});
+
+test("chrome shows a waiting banner when no agent has attached", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+  const css = await chromeCssSource();
+
+  assert.match(html, /id="presenceBanner"/);
+  assert.match(html, /No agent is listening/);
+  assert.match(js, /presenceBanner\.hidden = agentPresence !== "waiting"/);
+  assert.match(css, /\.presence-banner\{/);
 });
 
 test("chrome puts queued annotations inside the chat composer as preview pills", async () => {
@@ -513,6 +524,117 @@ test("POST /shutdown stops the listener so the client can spawn a fresh server",
     await server.done;
     await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SSE agent-presence reflects waiting, listening, and working transitions", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await (await import("node:fs/promises")).writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+
+    const presenceEvents = [];
+    const presenceWaiters = [];
+    const presenceController = new AbortController();
+    const presenceFetch = fetch(`${base}/events/${key}`, { signal: presenceController.signal }).then(async (res) => {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let lines;
+        while ((lines = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m))) {
+          const data = JSON.parse(lines[1]);
+          presenceEvents.push(data.state);
+          buffer = buffer.replace(lines[0], "");
+          const waiter = presenceWaiters.shift();
+          if (waiter) waiter(data.state);
+        }
+      }
+    });
+    presenceFetch.catch(() => {});
+
+    const waitForPresence = () =>
+      new Promise((resolve) => {
+        if (presenceEvents.length > waitForPresence.lastIndex) {
+          waitForPresence.lastIndex++;
+          resolve(presenceEvents[waitForPresence.lastIndex - 1]);
+          return;
+        }
+        presenceWaiters.push((state) => {
+          waitForPresence.lastIndex = presenceEvents.length;
+          resolve(state);
+        });
+      });
+    waitForPresence.lastIndex = 0;
+
+    const initial = await waitForPresence();
+    assert.equal(initial, "waiting", "first SSE handshake should report waiting before any poll");
+
+    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+    const listening = await waitForPresence();
+    assert.equal(listening, "listening", "should switch to listening when poll attaches");
+
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+    });
+    await pollPromise;
+
+    const working = await waitForPresence();
+    assert.equal(working, "working", "should switch to working when poll releases after at least one attach");
+
+    presenceController.abort();
+    await presenceFetch.catch(() => {});
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SSE handshake reports waiting on a fresh session that never had a poll", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await (await import("node:fs/promises")).writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+
+    const controller = new AbortController();
+    const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let state = null;
+    while (state === null) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
+      if (match) state = JSON.parse(match[1]).state;
+    }
+    controller.abort();
+    assert.equal(state, "waiting");
+  } finally {
+    await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
