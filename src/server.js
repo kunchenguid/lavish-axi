@@ -76,6 +76,7 @@ export async function serve({ port, stateFile, version = "" }) {
         req.query.timeoutMs === undefined ? null : Math.max(0, Math.min(Number(req.query.timeoutMs || 0), 2147483647));
       const immediate = await store.takeFeedback(key);
       if (immediate.status !== "waiting") {
+        markPollObserved(key, activePolls, pollHistory, events);
         res.json(immediate);
         return;
       }
@@ -384,6 +385,15 @@ function setPollActive(key, activePolls, pollHistory, events, active) {
   }
   if (count > 0 === nextCount > 0) return;
   events.emit("agent-presence", key, computePresence(key, activePolls, pollHistory));
+}
+
+function markPollObserved(key, activePolls, pollHistory, events) {
+  const previousPresence = computePresence(key, activePolls, pollHistory);
+  pollHistory.add(key);
+  const nextPresence = computePresence(key, activePolls, pollHistory);
+  if (nextPresence !== previousPresence) {
+    events.emit("agent-presence", key, nextPresence);
+  }
 }
 
 export function computePresence(key, activePolls, pollHistory) {

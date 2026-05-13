@@ -639,6 +639,81 @@ test("SSE handshake reports waiting on a fresh session that never had a poll", a
   }
 });
 
+test("SSE agent-presence switches to working when poll immediately takes queued feedback", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await (await import("node:fs/promises")).writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+
+    const presenceEvents = [];
+    const presenceWaiters = [];
+    const presenceController = new AbortController();
+    const presenceFetch = fetch(`${base}/events/${key}`, { signal: presenceController.signal }).then(async (res) => {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let lines;
+        while ((lines = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m))) {
+          const data = JSON.parse(lines[1]);
+          presenceEvents.push(data.state);
+          buffer = buffer.replace(lines[0], "");
+          const waiter = presenceWaiters.shift();
+          if (waiter) waiter(data.state);
+        }
+      }
+    });
+    presenceFetch.catch(() => {});
+
+    const waitForPresence = () =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timed out waiting for agent presence event")), 500);
+        if (presenceEvents.length > waitForPresence.lastIndex) {
+          waitForPresence.lastIndex++;
+          clearTimeout(timer);
+          resolve(presenceEvents[waitForPresence.lastIndex - 1]);
+          return;
+        }
+        presenceWaiters.push((state) => {
+          waitForPresence.lastIndex = presenceEvents.length;
+          clearTimeout(timer);
+          resolve(state);
+        });
+      });
+    waitForPresence.lastIndex = 0;
+
+    const initial = await waitForPresence();
+    assert.equal(initial, "waiting");
+
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+    });
+    await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+
+    const working = await waitForPresence();
+    assert.equal(working, "working");
+
+    presenceController.abort();
+    await presenceFetch.catch(() => {});
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ended session message renders centered in the main content area", async () => {
   const js = await chromeClientSource();
   const css = await chromeCssSource();
