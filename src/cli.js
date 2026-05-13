@@ -16,7 +16,8 @@ import { initDefaultTelemetry } from "./telemetry.js";
 
 const COMMANDS = new Set(["open", "poll", "end", "server", "playbook", "design"]);
 const DESCRIPTION =
-  "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
+  "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. Whenever you are about to give user a complex response that will be easier to understand via a rich / interactive page, consider using Lavish Editor. " +
+  "First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
 // Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
 export const VERSION =
   process.env.LAVISH_AXI_BUILD_VERSION ||
@@ -150,7 +151,7 @@ export function createPlaybookOutput(args) {
 export function createOpenOutput({ file, url, status }) {
   return {
     session: { file, url, status },
-    next_step: `Tell the user to open ${url} to review the artifact in Lavish Editor, then run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback or ends the session. Do not pass --timeout-ms during normal agent use. Do not set a short shell timeout; either run it without a timeout or set the shell timeout above 10 minutes. After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback.`,
+    next_step: `Run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback or ends the session. Do not pass --timeout-ms during normal agent use. Do not set a short shell timeout; either run it without a timeout or set the shell timeout above 10 minutes. After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback.`,
   };
 }
 
