@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export class SessionStore {
   constructor(file) {
     this.file = file;
+    this.writeQueue = Promise.resolve();
   }
 
   async listSessions() {
@@ -26,94 +27,97 @@ export class SessionStore {
   async upsertSession(file, url) {
     const absolute = await canonicalFile(file);
     const key = sessionKey(absolute);
-    const state = await this.readState();
-    const existing = state.sessions[key] || {};
-    const session = {
-      key,
-      file: absolute,
-      url,
-      status: existing.status === "ended" ? "open" : existing.status || "open",
-      pending_prompts: existing.pending_prompts || 0,
-      prompts: existing.prompts || [],
-      dom_snapshot: existing.dom_snapshot || "",
-      chat: existing.chat || [],
-      updated_at: new Date().toISOString(),
-    };
-    state.sessions[key] = session;
-    await this.writeState(state);
-    return session;
+    return this.updateState((state) => {
+      const existing = state.sessions[key] || {};
+      const session = {
+        key,
+        file: absolute,
+        url,
+        status: existing.status === "ended" ? "open" : existing.status || "open",
+        pending_prompts: existing.pending_prompts || 0,
+        prompts: existing.prompts || [],
+        dom_snapshot: existing.dom_snapshot || "",
+        chat: existing.chat || [],
+        updated_at: new Date().toISOString(),
+      };
+      state.sessions[key] = session;
+      return session;
+    });
   }
 
   async queuePrompts(key, payload) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
-    const normalizedPrompts = prompts.map(normalizePrompt);
-    const userMessages = normalizedPrompts
-      .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-      .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
-    session.prompts = [...(session.prompts || []), ...normalizedPrompts];
-    session.chat = [...(session.chat || []), ...userMessages];
-    session.pending_prompts = session.prompts.length;
-    session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-    session.status = "feedback";
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.updateState((state) => {
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      const normalizedPrompts = prompts.map(normalizePrompt);
+      const userMessages = normalizedPrompts
+        .filter((prompt) => prompt.tag === "message" && prompt.prompt)
+        .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+      session.prompts = [...(session.prompts || []), ...normalizedPrompts];
+      session.chat = [...(session.chat || []), ...userMessages];
+      session.pending_prompts = session.prompts.length;
+      session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
+      session.status = "feedback";
+      session.updated_at = new Date().toISOString();
+      return session;
+    });
   }
 
   async takeFeedback(key) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return { status: "missing" };
-    }
-    if (session.status === "ended") {
-      return { status: "ended" };
-    }
-    const prompts = session.prompts || [];
-    if (prompts.length === 0) {
-      return { status: "waiting" };
-    }
-    const result = {
-      status: "feedback",
-      dom_snapshot: session.dom_snapshot || "",
-      prompts,
-    };
-    session.prompts = [];
-    session.pending_prompts = 0;
-    session.dom_snapshot = "";
-    session.status = "open";
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return result;
+    return this.updateState((state) => {
+      const session = state.sessions[key];
+      if (!session) {
+        return { status: "missing" };
+      }
+      if (session.status === "ended") {
+        return { status: "ended" };
+      }
+      const prompts = session.prompts || [];
+      if (prompts.length === 0) {
+        return { status: "waiting" };
+      }
+      const result = {
+        status: "feedback",
+        dom_snapshot: session.dom_snapshot || "",
+        prompts,
+      };
+      session.prompts = [];
+      session.pending_prompts = 0;
+      session.dom_snapshot = "";
+      session.status = "open";
+      session.updated_at = new Date().toISOString();
+      return result;
+    });
   }
 
   async endSession(key) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    session.status = "ended";
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.updateState((state) => {
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      session.status = "ended";
+      session.updated_at = new Date().toISOString();
+      return session;
+    });
   }
 
   async addAgentReply(key, text) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    session.chat = [...(session.chat || []), { role: "agent", text: String(text || ""), at: new Date().toISOString() }];
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.updateState((state) => {
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      session.chat = [
+        ...(session.chat || []),
+        { role: "agent", text: String(text || ""), at: new Date().toISOString() },
+      ];
+      session.updated_at = new Date().toISOString();
+      return session;
+    });
   }
 
   async readState() {
@@ -129,8 +133,22 @@ export class SessionStore {
     }
   }
 
+  async updateState(fn) {
+    const run = this.writeQueue.then(async () => {
+      const state = await this.readState();
+      const result = fn(state);
+      await this.writeState(state);
+      return result;
+    });
+    this.writeQueue = run.catch(() => {});
+    return run;
+  }
+
   async writeState(state) {
-    await writeFile(this.file, `${JSON.stringify(state, null, 2)}\n`);
+    const tmpFile = `${this.file}.${process.pid}.${Date.now()}.tmp`;
+    await mkdir(path.dirname(this.file), { recursive: true });
+    await writeFile(tmpFile, `${JSON.stringify(state, null, 2)}\n`);
+    await rename(tmpFile, this.file);
   }
 }
 

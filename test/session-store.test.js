@@ -130,3 +130,33 @@ test("freeform user prompts are stored in session chat history", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("concurrent state mutations preserve prompts and chat history", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "nested", "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await Promise.all([
+      store.queuePrompts(session.key, { prompts: [{ prompt: "first", tag: "message" }] }),
+      store.addAgentReply(session.key, "reply"),
+      store.queuePrompts(session.key, { prompts: [{ prompt: "second", tag: "message" }] }),
+    ]);
+
+    const updated = await store.findByKey(session.key);
+    assert.deepEqual(
+      updated.chat.map((item) => [item.role, item.text]).sort(),
+      [
+        ["agent", "reply"],
+        ["user", "first"],
+        ["user", "second"],
+      ].sort(),
+    );
+    assert.deepEqual(updated.prompts.map((prompt) => prompt.prompt).sort(), ["first", "second"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
