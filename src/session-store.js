@@ -50,6 +50,9 @@ export class SessionStore {
     if (!session) {
       return null;
     }
+    if (session.status === "ended") {
+      return { ended: true };
+    }
     const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
     const normalizedPrompts = prompts.map(normalizePrompt);
     const userMessages = normalizedPrompts
@@ -109,6 +112,9 @@ export class SessionStore {
     const session = state.sessions[key];
     if (!session) {
       return null;
+    }
+    if (session.status === "ended") {
+      return { ended: true };
     }
     session.chat = [...(session.chat || []), { role: "agent", text: String(text || ""), at: new Date().toISOString() }];
     session.updated_at = new Date().toISOString();

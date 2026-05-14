@@ -84,7 +84,10 @@ test("artifact assets resolve within the artifact directory", () => {
   const root = path.resolve("/tmp/lavish-artifact");
 
   assert.equal(resolveArtifactAsset(root, "style.css"), path.join(root, "style.css"));
+  assert.equal(resolveArtifactAsset(root, "nested/style.css"), path.join(root, "nested/style.css"));
   assert.equal(resolveArtifactAsset(root, "../secret.txt"), null);
+  assert.equal(resolveArtifactAsset(root, "%2e%2e/secret.txt"), null);
+  assert.equal(resolveArtifactAsset(root, "%E0%A4%A"), null);
 });
 
 test("chrome sandbox does not grant modal prompts", () => {
@@ -381,7 +384,24 @@ test("chrome disables sending while agent is working but allows it while waiting
 
   assert.match(js, /let agentPresence = "waiting"/);
   assert.match(js, /sendButton\.disabled = agentPresence === "working"/);
-  assert.match(js, /if \(agentPresence === "working"\) return/);
+  assert.match(js, /if \(agentPresence === "working" \|\| sending\) return/);
+});
+
+test("chrome preserves queued prompts when feedback send fails", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /const prompts = queued\.splice\(0, queued\.length\)/);
+  assert.match(js, /if \(!res\.ok\) throw new Error\("Send failed"\)/);
+  assert.match(js, /queued\.unshift\(\.\.\.prompts\)/);
+  assert.match(js, /Could not send feedback/);
+});
+
+test("chrome falls back when the artifact iframe does not return a snapshot", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /let snapshotTimer = null/);
+  assert.match(js, /snapshotTimer = setTimeout\(\(\) => submitQueued\(""\), 1000\)/);
+  assert.match(js, /clearSnapshotTimer\(\)/);
 });
 
 test("chrome shows a waiting banner when no agent has attached", async () => {

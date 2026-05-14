@@ -128,6 +128,10 @@ export async function serve({ port, stateFile, version = "" }) {
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (session.ended) {
+        res.status(409).json({ error: "session ended" });
+        return;
+      }
       events.emit("feedback", req.params.key);
       res.json({ status: "queued", pending_prompts: session.pending_prompts });
     } catch (error) {
@@ -152,6 +156,10 @@ export async function serve({ port, stateFile, version = "" }) {
       const session = await store.addAgentReply(req.params.key, text);
       if (!session) {
         res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (session.ended) {
+        res.status(409).json({ error: "session ended" });
         return;
       }
       events.emit("agent-reply", req.params.key, text);
@@ -358,7 +366,13 @@ async function readDesignAsset(asset) {
 }
 
 export function resolveArtifactAsset(root, assetPath) {
-  const file = path.resolve(root, assetPath);
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(assetPath);
+  } catch {
+    return null;
+  }
+  const file = path.resolve(root, decodedPath);
   const relative = path.relative(root, file);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return null;

@@ -85,6 +85,29 @@ test("ending a session makes feedback return ended", async () => {
   }
 });
 
+test("ended sessions reject queued prompts and agent replies", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.endSession(session.key);
+
+    assert.deepEqual(await store.queuePrompts(session.key, { prompts: [{ prompt: "late" }] }), { ended: true });
+    assert.deepEqual(await store.addAgentReply(session.key, "Late reply"), { ended: true });
+
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.status, "ended");
+    assert.deepEqual(updated.prompts, []);
+    assert.deepEqual(updated.chat, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("agent replies are stored in session chat history", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

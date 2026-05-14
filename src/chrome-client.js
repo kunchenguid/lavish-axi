@@ -21,6 +21,8 @@ let annotation = true;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
 let workingBubble = null;
+let snapshotTimer = null;
+let sending = false;
 
 function escapeHtml(value) {
   return String(value).replace(
@@ -112,8 +114,20 @@ function postToFrame(message) {
   if (frame.contentWindow) frame.contentWindow.postMessage(message, "*");
 }
 
+function showSendError(message) {
+  if (presenceBanner) {
+    presenceBanner.textContent = message;
+    presenceBanner.hidden = false;
+  }
+}
+
+function clearSnapshotTimer() {
+  if (snapshotTimer) clearTimeout(snapshotTimer);
+  snapshotTimer = null;
+}
+
 function sendQueued() {
-  if (agentPresence === "working") return;
+  if (agentPresence === "working" || sending) return;
 
   const text = chatInput.value.trim();
   if (text) {
@@ -124,18 +138,33 @@ function sendQueued() {
   }
   if (!queued.length) return;
 
+  sending = true;
+  pendingSnapshot = "";
   postToFrame({ type: "lavish:requestSnapshot" });
+  snapshotTimer = setTimeout(() => submitQueued(""), 1000);
 }
 
-async function submitQueued() {
+async function submitQueued(snapshot = pendingSnapshot) {
+  if (!sending) return;
+  clearSnapshotTimer();
+  sending = false;
   const prompts = queued.splice(0, queued.length);
   render();
+  const previousPresence = agentPresence;
   if (agentPresence === "listening") setAgentPresence("working");
-  await fetch("/api/" + key + "/prompts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompts, domSnapshot: pendingSnapshot }),
-  });
+  try {
+    const res = await fetch("/api/" + key + "/prompts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts, domSnapshot: snapshot }),
+    });
+    if (!res.ok) throw new Error("Send failed");
+  } catch {
+    queued.unshift(...prompts);
+    render();
+    setAgentPresence(previousPresence);
+    showSendError("Could not send feedback. Your queued prompts were restored; try again.");
+  }
 }
 
 async function endSession() {
@@ -189,7 +218,7 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:snapshot") {
     pendingSnapshot = msg.snapshot || "";
-    submitQueued();
+    submitQueued(pendingSnapshot);
   }
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
