@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.9...lavish-axi-v0.1.10) (2026-05-14)
+
+
+### Bug Fixes
+
+* **cli:** require polling before user replies ([#33](https://github.com/kunchenguid/lavish-axi/issues/33)) ([c23c86c](https://github.com/kunchenguid/lavish-axi/commit/c23c86c499cd16d7cf23ee7d48dca8ee7b74f174))
+
 ## [0.1.9](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.8...lavish-axi-v0.1.9) (2026-05-13)
 
 
