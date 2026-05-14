@@ -185,6 +185,7 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.equal(typeof output.next_step, "string");
   assert.doesNotMatch(output.next_step, /Tell the user/i);
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
+  assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
   assert.match(output.next_step, /long-polls until/);
   assert.match(output.next_step, /do not set a short shell timeout/i);
@@ -210,6 +211,7 @@ test("feedback next step tells agents to keep polling without timeout flag", () 
 
   assert.match(output.next_step, /without --timeout-ms/);
   assert.match(output.next_step, /above 10 minutes/);
+  assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
 });
 
 test("html file arguments normalize to the hidden open command", () => {
