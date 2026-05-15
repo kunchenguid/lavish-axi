@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createChromeHtml, createSdkJs, resolveArtifactAsset, serve } from "../src/server.js";
+import {
+  createChromeHtml,
+  createSdkJs,
+  hasLiveReloadRootOptIn,
+  resolveArtifactAsset,
+  resolveWatchTarget,
+  serve,
+} from "../src/server.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -934,6 +941,129 @@ test("SSE agent-presence stays working when resuming an open session", async () 
     } finally {
       await presence.close();
     }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hasLiveReloadRootOptIn detects the data attribute and meta opt-in", () => {
+  assert.equal(hasLiveReloadRootOptIn("<html><body></body></html>"), false);
+  assert.equal(hasLiveReloadRootOptIn(`<html data-lavish-live-reload-root><body></body></html>`), true);
+  assert.equal(
+    hasLiveReloadRootOptIn(`<html><head><meta name="lavish-live-reload" content="root"></head></html>`),
+    true,
+  );
+});
+
+test("resolveWatchTarget defaults to the artifact file so large sibling trees aren't scanned", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-watch-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  try {
+    const target = await resolveWatchTarget({ file: artifact, key: "abc" });
+    assert.equal(target.path, artifact);
+    assert.equal(target.scope, "file");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveWatchTarget upgrades to the artifact directory when data-lavish-live-reload-root opts in", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-watch-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, `<!doctype html><html data-lavish-live-reload-root><body></body></html>`);
+  try {
+    const target = await resolveWatchTarget({ file: artifact, key: "abc" });
+    assert.equal(target.path, dir);
+    assert.equal(target.scope, "directory");
+    assert.ok(target.options.ignored, "directory watch should ignore default noise");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveWatchTarget falls back to file-only when the artifact can't be read", async () => {
+  const target = await resolveWatchTarget({
+    file: path.join(tmpdir(), `lavish-missing-artifact-${process.hrtime.bigint()}.html`),
+    key: "abc",
+  });
+  assert.equal(target.scope, "file");
+});
+
+test("/health and / stay responsive after opening two back-to-back sessions", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-back-to-back-"));
+  const a = path.join(dir, "a.html");
+  const b = path.join(dir, "b.html");
+  await writeFile(a, "<!doctype html><html><body>a</body></html>");
+  await writeFile(b, "<!doctype html><html><body>b</body></html>");
+  // Add a sibling tree so a recursive watcher would have to scan it.
+  const big = path.join(dir, "big");
+  await mkdir(big, { recursive: true });
+  await Promise.all(Array.from({ length: 40 }, (_, i) => writeFile(path.join(big, `file-${i}.txt`), "x".repeat(64))));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: a }),
+    });
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: b }),
+    });
+
+    const start = Date.now();
+    const healthRes = await Promise.race([
+      fetch(`${base}/health`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("/health timed out")), 1000)),
+    ]);
+    assert.equal(healthRes.status, 200);
+    assert.equal((await healthRes.json()).ok, true);
+
+    const rootRes = await Promise.race([
+      fetch(`${base}/`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("/ timed out")), 1000)),
+    ]);
+    assert.equal(rootRes.status, 404);
+    await rootRes.text().catch(() => {});
+
+    assert.ok(Date.now() - start < 1000, "both probes should return well under one second");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("server debug logger receives session and watcher lifecycle events", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-debug-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const logs = [];
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    debug: true,
+    log: (line) => logs.push(line),
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.ok(
+      logs.some((line) => /session/i.test(line) && line.includes(artifact)),
+      `expected a session-opened log line, got: ${JSON.stringify(logs)}`,
+    );
+    assert.ok(
+      logs.some((line) => /watch/i.test(line)),
+      `expected a watcher log line, got: ${JSON.stringify(logs)}`,
+    );
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

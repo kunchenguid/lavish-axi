@@ -240,7 +240,8 @@ async function designCommand() {
 
 async function serverCommand(args) {
   const port = Number(flagValue(args, "--port") || defaultPort());
-  const server = await serve({ port, stateFile: stateFile(), version: VERSION });
+  const debug = args.includes("--verbose") || process.env.LAVISH_AXI_DEBUG === "1";
+  const server = await serve({ port, stateFile: stateFile(), version: VERSION, debug });
   await server.done;
   return "";
 }
@@ -453,7 +454,7 @@ const COMMAND_HELP = {
   end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session.\n`,
   playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, diff, input, slides.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
   design: `Usage: lavish-axi design\n\nShow technical reference for the Tailwind CSS browser runtime v4, DaisyUI v5 components, and DaisyUI themes that Lavish auto-injects into artifacts. Do not add these libraries separately.\n`,
-  server: `Usage: lavish-axi server [--port 4387]\n\nRun the local Lavish Editor server.\n`,
+  server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr.\n`,
 };
 
 export { createDesignOutput };

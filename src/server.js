@@ -29,7 +29,7 @@ const designAssetUrls = {
   },
 };
 
-export async function serve({ port, stateFile, version = "" }) {
+export async function serve({ port, stateFile, version = "", debug = false, log = null }) {
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
@@ -37,6 +37,9 @@ export async function serve({ port, stateFile, version = "" }) {
   const activePolls = new Map();
   const deliveredFeedback = new Set();
   const sseClients = new Set();
+  const verbose = debug || process.env.LAVISH_AXI_DEBUG === "1";
+  const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
+  const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
 
   app.use(express.json({ limit: "2mb" }));
 
@@ -65,7 +68,8 @@ export async function serve({ port, stateFile, version = "" }) {
       if (existing?.status === "ended") {
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       }
-      watchSession(session, watchers, events);
+      logEvent?.(`session opened key=${key} file=${file}`);
+      await watchSession(session, watchers, events, logEvent);
       res.json({ key, file, url, status: "opened" });
     } catch (error) {
       next(error);
@@ -181,7 +185,7 @@ export async function serve({ port, stateFile, version = "" }) {
         res.status(404).send("Session not found");
         return;
       }
-      watchSession(session, watchers, events);
+      await watchSession(session, watchers, events, logEvent);
       res.type("html").send(createChromeHtml(session));
     } catch (error) {
       next(error);
@@ -366,22 +370,58 @@ export function resolveArtifactAsset(root, assetPath) {
   return file;
 }
 
-function watchSession(session, watchers, events) {
+async function watchSession(session, watchers, events, logEvent) {
   if (watchers.has(session.key)) {
     return;
   }
-  const root = path.dirname(session.file);
-  const watcher = chokidar.watch(root, {
-    ignored: /(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi)([/\\]|$)/,
-    ignoreInitial: true,
-    awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
-  });
+  const target = await resolveWatchTarget(session);
+  logEvent?.(`watch session=${session.key} scope=${target.scope} path=${target.path}`);
+  const watcher = chokidar.watch(target.path, target.options);
   let timer = null;
-  watcher.on("all", () => {
+  watcher.on("all", (event, file) => {
+    logEvent?.(`watch event=${event} session=${session.key} file=${file ?? ""}`);
     clearTimeout(timer);
     timer = setTimeout(() => events.emit("reload", session.key), 100);
   });
+  watcher.on("error", (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logEvent?.(`watch error session=${session.key} message=${message}`);
+  });
   watchers.set(session.key, watcher);
+}
+
+// Watching the artifact's parent directory recursively can stall the event loop when the
+// artifact lives in a large tree (e.g. ~/Downloads). Default to watching only the artifact
+// itself; an artifact opts back into directory-wide live reload via either a
+// `data-lavish-live-reload-root` attribute on its root element or
+// `<meta name="lavish-live-reload" content="root">`.
+export async function resolveWatchTarget(session) {
+  const baseOptions = {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
+  };
+  try {
+    const html = await readFile(session.file, "utf8");
+    if (hasLiveReloadRootOptIn(html)) {
+      return {
+        path: path.dirname(session.file),
+        scope: "directory",
+        options: {
+          ...baseOptions,
+          ignored: /(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi)([/\\]|$)/,
+        },
+      };
+    }
+  } catch {
+    // Fall through to file-only watching when the artifact can't be read.
+  }
+  return { path: session.file, scope: "file", options: baseOptions };
+}
+
+export function hasLiveReloadRootOptIn(html) {
+  if (typeof html !== "string") return false;
+  if (/\bdata-lavish-live-reload-root\b/i.test(html)) return true;
+  return /<meta\b(?=[^>]*name=["']lavish-live-reload["'])(?=[^>]*content=["']root["'])[^>]*>/i.test(html);
 }
 
 function setPollActive(key, activePolls, deliveredFeedback, events, active) {

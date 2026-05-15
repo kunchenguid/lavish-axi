@@ -54,10 +54,12 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
 
 ### Live reload
 
-When a session opens, `chokidar` watches the artifact's directory (excluding `.git`, `node_modules`, `dist`, `build`, `.lavish-axi`).
+When a session opens, `chokidar` watches the artifact file itself by default - watching the entire parent directory recursively saturated the event loop when artifacts lived inside large trees like `~`.
+Artifacts can opt back into directory-wide live reload by adding `data-lavish-live-reload-root` to a root element or `<meta name="lavish-live-reload" content="root">`; that switches the watcher to the artifact's directory (excluding `.git`, `node_modules`, `dist`, `build`, `.lavish-axi`).
 Any file change emits a `reload` event, which the SSE endpoint pushes to the chrome page, which reloads the iframe.
 During version-driven shutdown, the server sends a `chrome-reload` SSE event so open browser chromes wait for the replacement server and then reload the whole chrome page.
 Hand-edited files in `dist/` won't trigger reloads.
+Run `lavish-axi server --verbose` (or set `LAVISH_AXI_DEBUG=1`) to log session and watcher events to stderr when diagnosing wedges.
 
 ### AXI integration
 
