@@ -1031,10 +1031,7 @@ test("concurrent same-session opens create only one file watcher", async () => {
   });
   try {
     const base = `http://127.0.0.1:${server.port}`;
-    const responses = await Promise.all([
-      fetch(`${base}/session/${key}`),
-      fetch(`${base}/session/${key}`),
-    ]);
+    const responses = await Promise.all([fetch(`${base}/session/${key}`), fetch(`${base}/session/${key}`)]);
     for (const response of responses) {
       assert.equal(response.status, 200);
     }
