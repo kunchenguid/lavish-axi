@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.11](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.10...lavish-axi-v0.1.11) (2026-05-15)
+
+
+### Bug Fixes
+
+* keep Lavish artifacts portable by default ([#40](https://github.com/kunchenguid/lavish-axi/issues/40)) ([6dc80bc](https://github.com/kunchenguid/lavish-axi/commit/6dc80bc6d411a19c48d14444d8aa2a13afdaf58f))
+* **server:** prevent live reload watcher stalls ([#38](https://github.com/kunchenguid/lavish-axi/issues/38)) ([cc1c841](https://github.com/kunchenguid/lavish-axi/commit/cc1c8411d3410b591fd5d1de945ba93c889af0e7))
+
 ## [0.1.10](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.9...lavish-axi-v0.1.10) (2026-05-14)
 
 
