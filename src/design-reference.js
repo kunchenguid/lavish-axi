@@ -1,5 +1,18 @@
+export const TAILWIND_BROWSER_VERSION = "4.2.4";
+export const DAISYUI_VERSION = "5.5.19";
+
+export const DESIGN_CDN_URLS = {
+  tailwind: `https://cdn.jsdelivr.net/npm/@tailwindcss/browser@${TAILWIND_BROWSER_VERSION}/dist/index.global.js`,
+  daisyui: `https://cdn.jsdelivr.net/npm/daisyui@${DAISYUI_VERSION}/daisyui.css`,
+  daisyuiThemes: `https://cdn.jsdelivr.net/npm/daisyui@${DAISYUI_VERSION}/themes.css`,
+};
+
+export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URLS.daisyui}">
+<link rel="stylesheet" href="${DESIGN_CDN_URLS.daisyuiThemes}">
+<script src="${DESIGN_CDN_URLS.tailwind}"></script>`;
+
 export const DESIGN_SYSTEM_HINT =
-  'Lavish auto-injects Tailwind CSS browser runtime v4, DaisyUI v5, and DaisyUI themes into artifacts. Do not add these libraries separately. Set <html data-theme="luxury"> or another DaisyUI theme as appropriate, then use DaisyUI/Tailwind classes directly. Prefer using DaisyUI/Tailwind for styling to avoid having to spend tokens on writing a custom stylesheet, but in cases where you need precise control on the artifact, you can opt out of the auto-injected styles by adding <meta name="lavish-design" content="off">. Run `lavish-axi design` for technical reference.';
+  "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Tailwind CSS browser runtime v4 and DaisyUI v5 are available via CDN if you want them; run `lavish-axi design` for a copy-pasteable CDN snippet plus component reference. You are also free to use any other design system or none.";
 
 export const DAISYUI_THEMES = [
   "light",
@@ -43,12 +56,15 @@ export function createDesignOutput() {
   return {
     design: {
       summary:
-        "Lavish artifacts already have Tailwind CSS browser runtime v4, DaisyUI v5, and DaisyUI themes available.",
-      rule: "Do not add Tailwind or DaisyUI script/link tags yourself.",
-      opt_out: 'Add `<meta name="lavish-design" content="off">` to disable injection for exact-fidelity artifacts.',
+        "Lavish does not auto-inject any design system. Artifacts stay portable HTML. Paste the CDN snippet below into your `<head>` if you want Tailwind CSS browser runtime v4 + DaisyUI v5 + themes. You can also use any other design system or none.",
+      cdn_snippet: DESIGN_CDN_SNIPPET,
+      cdn_urls: DESIGN_CDN_URLS,
+      versions: { tailwind: TAILWIND_BROWSER_VERSION, daisyui: DAISYUI_VERSION },
       latest_docs: "https://daisyui.com/components/",
       docs_note:
         "Use this command for common syntax. Read the latest DaisyUI docs for full details when using advanced or unfamiliar components.",
+      other_design_systems:
+        "If you prefer a different design system (Bootstrap, custom CSS, plain HTML, etc.), use that instead - Lavish does not require DaisyUI.",
     },
     theme_usage: [
       'Set the page theme with `<html data-theme="luxury">`.',

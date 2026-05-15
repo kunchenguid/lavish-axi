@@ -95,7 +95,7 @@ pnpm link
 ```
 
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
-- **Sandboxed artifact** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, and feedback controls, plus Tailwind CSS v4 and DaisyUI v5 design assets unless the HTML includes `<meta name="lavish-design" content="off">`.
+- **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, and feedback controls. Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser. Run `lavish-axi design` for a copy-pasteable CDN snippet to opt in to Tailwind CSS v4 + DaisyUI v5, or use any other design system (or none).
 - **Live reload** - Lavish watches the HTML artifact file by default. To also reload on sibling asset changes, add `data-lavish-live-reload-root` to the root element or `<meta name="lavish-live-reload" content="root">`.
 - **Feedback controls** - Mark buttons, choices, and other interactive elements with `data-lavish-action` so Lavish does not annotate them, then call `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()` from the control handler.
 - **Agent presence** - The browser shows when no agent is listening, still queues feedback for the next `lavish-axi poll`, and only blocks sending while the agent is working on delivered feedback.
@@ -111,7 +111,7 @@ pnpm link
 | `lavish-axi poll <html-file>` | Long-poll until the user sends feedback or ends the session. |
 | `lavish-axi end <html-file>`  | End a session.                                               |
 | `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.         |
-| `lavish-axi design`           | Show the injected Tailwind CSS and DaisyUI design reference. |
+| `lavish-axi design`           | Show CDN snippet + DaisyUI component reference (opt-in).     |
 | `lavish-axi server`           | Run the local Lavish Editor server.                          |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `slides`.

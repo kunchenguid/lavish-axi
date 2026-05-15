@@ -58,9 +58,12 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("lavish-axi <html-file>")));
   assert.ok(output.help.some((item) => item.includes("`.lavish/`")));
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
+  assert.ok(output.help.some((item) => item.includes("does not auto-inject")));
+  assert.ok(output.help.some((item) => item.includes("portable")));
   assert.ok(output.help.some((item) => item.includes("Tailwind CSS browser runtime v4")));
-  assert.ok(output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
   assert.ok(output.help.some((item) => item.includes("lavish-axi design")));
+  assert.ok(output.help.some((item) => item.includes("any other design system")));
+  assert.ok(!output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
   assert.ok(!output.help.some((item) => item.includes("Known IDs")));
   assert.ok(output.help.some((item) => item.includes("technical plan")));
 });
@@ -83,7 +86,8 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /lavish-axi playbook <playbook_id>/);
     assert.match(result.stdout, /Tailwind CSS browser runtime v4/);
     assert.match(result.stdout, /lavish-axi design/);
-    assert.match(result.stdout, /lavish-design/);
+    assert.match(result.stdout, /does not auto-inject/);
+    assert.doesNotMatch(result.stdout, /lavish-design/);
     assert.doesNotMatch(result.stdout, /sessions\[/);
     assert.doesNotMatch(result.stdout, /Known IDs/);
   } finally {
@@ -91,13 +95,30 @@ test("top-level help renders static home output without dynamic sessions", async
   }
 });
 
-test("design output documents the auto-injected DaisyUI system", () => {
+test("design output prints copy-pasteable CDN URLs so agents can opt in to DaisyUI", () => {
   const output = createDesignOutput();
 
+  assert.match(output.design.summary, /does not auto-inject/);
   assert.match(output.design.summary, /Tailwind CSS browser runtime v4/);
   assert.match(output.design.summary, /DaisyUI v5/);
-  assert.match(output.design.rule, /Do not add Tailwind or DaisyUI/);
-  assert.match(output.design.opt_out, /<meta name="lavish-design" content="off">/);
+  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
+  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
+  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@/);
+  assert.match(
+    output.design.cdn_urls.daisyui,
+    /^https:\/\/cdn\.jsdelivr\.net\/npm\/daisyui@\d+\.\d+\.\d+\/daisyui\.css$/,
+  );
+  assert.match(
+    output.design.cdn_urls.daisyuiThemes,
+    /^https:\/\/cdn\.jsdelivr\.net\/npm\/daisyui@\d+\.\d+\.\d+\/themes\.css$/,
+  );
+  assert.match(
+    output.design.cdn_urls.tailwind,
+    /^https:\/\/cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@\d+\.\d+\.\d+\/dist\/index\.global\.js$/,
+  );
+  assert.match(output.design.other_design_systems, /different design system|other design system/i);
+  assert.equal("opt_out" in output.design, false);
+  assert.equal("rule" in output.design, false);
   assert.equal(output.design.latest_docs, "https://daisyui.com/components/");
   assert.equal(output.themes.length, 35);
   assert.ok(output.themes.includes("luxury"));
@@ -310,6 +331,8 @@ test("open can resume a session without opening another browser window", () => {
   assert.doesNotMatch(getCommandHelp("playbook"), /interactive/);
   assert.match(getCommandHelp("design"), /DaisyUI/);
   assert.match(getCommandHelp("design"), /lavish-axi design/);
+  assert.match(getCommandHelp("design"), /portable/);
+  assert.doesNotMatch(getCommandHelp("design"), /auto-injects/);
 });
 
 test("polling a file without an active session tells the agent to open it first", () => {
