@@ -12,7 +12,7 @@ export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URL
 <script src="${DESIGN_CDN_URLS.tailwind}"></script>`;
 
 export const DESIGN_SYSTEM_HINT =
-  "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Tailwind CSS browser runtime v4 and DaisyUI v5 are available via CDN if you want them; run `lavish-axi design` for a copy-pasteable CDN snippet plus component reference. You are also free to use any other design system or none.";
+  "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Tailwind CSS browser runtime v4 and DaisyUI v5 are available via CDN; run `lavish-axi design` for a copy-pasteable CDN snippet plus component reference. Prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user. If the user asks for any other design system or plain HTML, follow that request.";
 
 export const DAISYUI_THEMES = [
   "light",
@@ -56,7 +56,7 @@ export function createDesignOutput() {
   return {
     design: {
       summary:
-        "Lavish does not auto-inject any design system. Artifacts stay portable HTML. Paste the CDN snippet below into your `<head>` if you want Tailwind CSS browser runtime v4 + DaisyUI v5 + themes. You can also use any other design system or none.",
+        "Lavish does not auto-inject any design system. Artifacts stay portable HTML. Paste the CDN snippet below into your `<head>` to use Tailwind CSS browser runtime v4 + DaisyUI v5 + themes. Prefer this CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.",
       cdn_snippet: DESIGN_CDN_SNIPPET,
       cdn_urls: DESIGN_CDN_URLS,
       versions: { tailwind: TAILWIND_BROWSER_VERSION, daisyui: DAISYUI_VERSION },
@@ -64,7 +64,7 @@ export function createDesignOutput() {
       docs_note:
         "Use this command for common syntax. Read the latest DaisyUI docs for full details when using advanced or unfamiliar components.",
       other_design_systems:
-        "If you prefer a different design system (Bootstrap, custom CSS, plain HTML, etc.), use that instead - Lavish does not require DaisyUI.",
+        "If the user asks for a different design system (Bootstrap, custom CSS, plain HTML, etc.), use that instead - Lavish does not require DaisyUI.",
     },
     theme_usage: [
       'Set the page theme with `<html data-theme="luxury">`.',

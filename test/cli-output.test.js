@@ -62,6 +62,8 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("portable")));
   assert.ok(output.help.some((item) => item.includes("Tailwind CSS browser runtime v4")));
   assert.ok(output.help.some((item) => item.includes("lavish-axi design")));
+  assert.ok(output.help.some((item) => /prefer.*CDN snippet.*hand-writing styles/i.test(item)));
+  assert.ok(output.help.some((item) => /unless.*explicitly instructed/i.test(item)));
   assert.ok(output.help.some((item) => item.includes("any other design system")));
   assert.ok(!output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
   assert.ok(!output.help.some((item) => item.includes("Known IDs")));
@@ -87,6 +89,8 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /Tailwind CSS browser runtime v4/);
     assert.match(result.stdout, /lavish-axi design/);
     assert.match(result.stdout, /does not auto-inject/);
+    assert.match(result.stdout, /prefer.*CDN snippet.*hand-writing styles/i);
+    assert.match(result.stdout, /unless.*explicitly instructed/i);
     assert.doesNotMatch(result.stdout, /lavish-design/);
     assert.doesNotMatch(result.stdout, /sessions\[/);
     assert.doesNotMatch(result.stdout, /Known IDs/);
@@ -101,6 +105,8 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.match(output.design.summary, /does not auto-inject/);
   assert.match(output.design.summary, /Tailwind CSS browser runtime v4/);
   assert.match(output.design.summary, /DaisyUI v5/);
+  assert.match(output.design.summary, /prefer.*CDN snippet.*hand-writing styles/i);
+  assert.match(output.design.summary, /unless.*explicitly instructed/i);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@/);
@@ -332,6 +338,8 @@ test("open can resume a session without opening another browser window", () => {
   assert.match(getCommandHelp("design"), /DaisyUI/);
   assert.match(getCommandHelp("design"), /lavish-axi design/);
   assert.match(getCommandHelp("design"), /portable/);
+  assert.match(getCommandHelp("design"), /prefer.*CDN snippet.*hand-writing styles/i);
+  assert.match(getCommandHelp("design"), /unless.*explicitly instructed/i);
   assert.doesNotMatch(getCommandHelp("design"), /auto-injects/);
 });
 
