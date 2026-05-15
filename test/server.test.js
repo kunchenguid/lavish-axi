@@ -12,7 +12,7 @@ import {
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
-import { sessionKey } from "../src/session-store.js";
+import { canonicalFile, sessionKey } from "../src/session-store.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -1092,6 +1092,7 @@ test("server debug logger receives session and watcher lifecycle events", async 
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-debug-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const loggedArtifact = await canonicalFile(artifact);
   const logs = [];
   const server = await serve({
     port: 0,
@@ -1108,7 +1109,7 @@ test("server debug logger receives session and watcher lifecycle events", async 
       body: JSON.stringify({ file: artifact }),
     });
     assert.ok(
-      logs.some((line) => /session/i.test(line) && line.includes(artifact)),
+      logs.some((line) => /session/i.test(line) && line.includes(loggedArtifact)),
       `expected a session-opened log line, got: ${JSON.stringify(logs)}`,
     );
     assert.ok(
