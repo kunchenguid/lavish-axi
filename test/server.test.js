@@ -956,6 +956,11 @@ test("hasLiveReloadRootOptIn detects the data attribute and meta opt-in", () => 
   );
 });
 
+test("hasLiveReloadRootOptIn ignores commented and text data attribute mentions", () => {
+  assert.equal(hasLiveReloadRootOptIn(`<!-- <html data-lavish-live-reload-root> -->`), false);
+  assert.equal(hasLiveReloadRootOptIn(`<html><body><code>data-lavish-live-reload-root</code></body></html>`), false);
+});
+
 test("resolveWatchTarget defaults to the artifact file so large sibling trees aren't scanned", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-watch-"));
   const artifact = path.join(dir, "artifact.html");

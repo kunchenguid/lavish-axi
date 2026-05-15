@@ -420,8 +420,9 @@ export async function resolveWatchTarget(session) {
 
 export function hasLiveReloadRootOptIn(html) {
   if (typeof html !== "string") return false;
-  if (/\bdata-lavish-live-reload-root\b/i.test(html)) return true;
-  return /<meta\b(?=[^>]*name=["']lavish-live-reload["'])(?=[^>]*content=["']root["'])[^>]*>/i.test(html);
+  const searchableHtml = html.replace(/<!--[\s\S]*?-->/g, "");
+  if (/<html\b[^>]*\sdata-lavish-live-reload-root(?:[\s=>/]|$)[^>]*>/i.test(searchableHtml)) return true;
+  return /<meta\b(?=[^>]*name=["']lavish-live-reload["'])(?=[^>]*content=["']root["'])[^>]*>/i.test(searchableHtml);
 }
 
 function setPollActive(key, activePolls, deliveredFeedback, events, active) {
