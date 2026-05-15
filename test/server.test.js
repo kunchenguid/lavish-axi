@@ -12,6 +12,7 @@ import {
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
+import { sessionKey } from "../src/session-store.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -994,6 +995,54 @@ test("resolveWatchTarget falls back to file-only when the artifact can't be read
     key: "abc",
   });
   assert.equal(target.scope, "file");
+});
+
+test("concurrent same-session opens create only one file watcher", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-watch-race-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>race</body></html>");
+  const key = sessionKey(artifact);
+  const stateFile = path.join(dir, "state.json");
+  await writeFile(
+    stateFile,
+    `${JSON.stringify({
+      sessions: {
+        [key]: {
+          key,
+          file: artifact,
+          url: `http://localhost:0/session/${key}`,
+          status: "open",
+          pending_prompts: 0,
+          prompts: [],
+          dom_snapshot: "",
+          chat: [],
+          updated_at: new Date().toISOString(),
+        },
+      },
+    })}\n`,
+  );
+  const logs = [];
+  const server = await serve({
+    port: 0,
+    stateFile,
+    version: "9.9.9-test",
+    debug: true,
+    log: (line) => logs.push(line),
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const responses = await Promise.all([
+      fetch(`${base}/session/${key}`),
+      fetch(`${base}/session/${key}`),
+    ]);
+    for (const response of responses) {
+      assert.equal(response.status, 200);
+    }
+    assert.equal(logs.filter((line) => line.includes("watch session=")).length, 1);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("/health and / stay responsive after opening two back-to-back sessions", async () => {

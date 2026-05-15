@@ -375,6 +375,9 @@ async function watchSession(session, watchers, events, logEvent) {
     return;
   }
   const target = await resolveWatchTarget(session);
+  if (watchers.has(session.key)) {
+    return;
+  }
   logEvent?.(`watch session=${session.key} scope=${target.scope} path=${target.path}`);
   const watcher = chokidar.watch(target.path, target.options);
   let timer = null;
