@@ -96,6 +96,7 @@ pnpm link
 
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
 - **Sandboxed artifact** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, and feedback controls, plus Tailwind CSS v4 and DaisyUI v5 design assets unless the HTML includes `<meta name="lavish-design" content="off">`.
+- **Live reload** - Lavish watches the HTML artifact file by default. To also reload on sibling asset changes, add `data-lavish-live-reload-root` to the root element or `<meta name="lavish-live-reload" content="root">`.
 - **Feedback controls** - Mark buttons, choices, and other interactive elements with `data-lavish-action` so Lavish does not annotate them, then call `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()` from the control handler.
 - **Agent presence** - The browser shows when no agent is listening, still queues feedback for the next `lavish-axi poll`, and only blocks sending while the agent is working on delivered feedback.
 - **Precise targets** - Text annotations include selected text plus range anchors, so agents are not limited to whole-element selectors.
@@ -111,6 +112,7 @@ pnpm link
 | `lavish-axi end <html-file>`  | End a session.                                               |
 | `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.         |
 | `lavish-axi design`           | Show the injected Tailwind CSS and DaisyUI design reference. |
+| `lavish-axi server`           | Run the local Lavish Editor server.                          |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `slides`.
 
@@ -121,6 +123,7 @@ Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `
 | `lavish-axi <html-file>` | `--no-open`           | Ensure the server/session exists without opening another browser window.  |
 | `lavish-axi poll`        | `--agent-reply "..."` | Show the agent's reply in the existing browser chat before polling again. |
 | `lavish-axi poll`        | `--timeout-ms <ms>`   | Test/debug escape hatch only; agents should normally omit it.             |
+| `lavish-axi server`      | `--verbose`           | Log session and watcher events to stderr.                                 |
 
 ## Development
 
