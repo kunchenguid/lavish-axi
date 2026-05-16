@@ -22,6 +22,7 @@ let annotation = true;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
 let workingBubble = null;
+let submitQueuedPromise = null;
 
 function escapeHtml(value) {
   return String(value).replace(
@@ -152,6 +153,17 @@ function sendQueued() {
 }
 
 async function submitQueued() {
+  if (submitQueuedPromise) return submitQueuedPromise;
+
+  submitQueuedPromise = submitQueuedOnce();
+  try {
+    return await submitQueuedPromise;
+  } finally {
+    submitQueuedPromise = null;
+  }
+}
+
+async function submitQueuedOnce() {
   const prompts = queued.slice();
   const response = await fetch("/api/" + key + "/prompts", {
     method: "POST",

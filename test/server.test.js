@@ -499,6 +499,14 @@ test("chrome keeps queued prompts persisted until submit succeeds", async () => 
   assert.match(js, /queued\.splice\(0, prompts\.length\);\s*persistQueuedPrompts\(\);/);
 });
 
+test("chrome ignores concurrent queued prompt submits", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /let submitQueuedPromise = null/);
+  assert.match(js, /if \(submitQueuedPromise\) return submitQueuedPromise/);
+  assert.match(js, /submitQueuedPromise = null/);
+});
+
 test("/health reports the server version so clients can detect upgrades", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
