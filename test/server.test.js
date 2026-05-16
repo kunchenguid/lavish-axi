@@ -496,7 +496,10 @@ test("chrome keeps queued prompts persisted until submit succeeds", async () => 
 
   assert.doesNotMatch(js, /const prompts = queued\.splice\(0, queued\.length\)/);
   assert.match(js, /await fetch\("\/api\/" \+ key \+ "\/prompts", \{/);
-  assert.match(js, /queued\.splice\(0, prompts\.length\);\s*persistQueuedPrompts\(\);/);
+  assert.doesNotMatch(js, /queued\.splice\(0, prompts\.length\)/);
+  assert.match(js, /for \(const prompt of prompts\) \{/);
+  assert.match(js, /const index = queued\.indexOf\(prompt\)/);
+  assert.match(js, /if \(index !== -1\) queued\.splice\(index, 1\)/);
 });
 
 test("chrome ignores concurrent queued prompt submits", async () => {

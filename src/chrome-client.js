@@ -171,7 +171,10 @@ async function submitQueuedOnce() {
     body: JSON.stringify({ prompts, domSnapshot: pendingSnapshot }),
   });
   if (!response.ok) throw new Error("failed to submit queued prompts");
-  queued.splice(0, prompts.length);
+  for (const prompt of prompts) {
+    const index = queued.indexOf(prompt);
+    if (index !== -1) queued.splice(index, 1);
+  }
   persistQueuedPrompts();
   render();
   if (agentPresence === "listening") setAgentPresence("working");
