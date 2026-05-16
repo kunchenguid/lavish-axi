@@ -506,8 +506,18 @@ test("chrome ignores concurrent queued prompt submits", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /let submitQueuedPromise = null/);
-  assert.match(js, /if \(submitQueuedPromise\) return submitQueuedPromise/);
+  assert.match(js, /if \(submitQueuedPromise\) \{/);
+  assert.match(js, /return submitQueuedPromise/);
   assert.match(js, /submitQueuedPromise = null/);
+});
+
+test("chrome submits prompts queued during an in-flight submit", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /let submitQueuedAgain = false/);
+  assert.match(js, /submitQueuedAgain = true/);
+  assert.match(js, /const shouldSubmitAgain = submitQueuedAgain/);
+  assert.match(js, /if \(succeeded && shouldSubmitAgain && queued\.length\) submitQueued\(\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
@@ -883,6 +893,15 @@ test("long-poll response cleanup is guarded against storage failures", async () 
 
   assert.match(source, /try \{\s*const result = await store\.takeFeedback\(key\)/);
   assert.match(source, /finally \{\s*cleanup\(\);\s*\}/);
+});
+
+test("heartbeat long-poll errors close the stream without Express error handling", async () => {
+  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+
+  assert.match(source, /function handleRespondError\(error\) \{/);
+  assert.match(source, /if \(streamHeartbeat\) \{/);
+  assert.match(source, /res\.destroy\(error\)/);
+  assert.match(source, /respond\(\)\.catch\(handleRespondError\)/);
 });
 
 test("SSE agent-presence switches to working when poll immediately takes queued feedback", async () => {

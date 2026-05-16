@@ -23,6 +23,7 @@ let agentPresence = "waiting";
 let pendingSnapshot = "";
 let workingBubble = null;
 let submitQueuedPromise = null;
+let submitQueuedAgain = false;
 
 function escapeHtml(value) {
   return String(value).replace(
@@ -153,13 +154,22 @@ function sendQueued() {
 }
 
 async function submitQueued() {
-  if (submitQueuedPromise) return submitQueuedPromise;
+  if (submitQueuedPromise) {
+    submitQueuedAgain = true;
+    return submitQueuedPromise;
+  }
 
+  let succeeded = false;
   submitQueuedPromise = submitQueuedOnce();
   try {
-    return await submitQueuedPromise;
+    const result = await submitQueuedPromise;
+    succeeded = true;
+    return result;
   } finally {
     submitQueuedPromise = null;
+    const shouldSubmitAgain = submitQueuedAgain;
+    submitQueuedAgain = false;
+    if (succeeded && shouldSubmitAgain && queued.length) submitQueued();
   }
 }
 

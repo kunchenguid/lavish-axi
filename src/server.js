@@ -101,7 +101,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
         heartbeat.unref?.();
       }
       setPollActive(key, activePolls, deliveredFeedback, events, true);
-      const timer = timeoutMs === null ? null : setTimeout(() => respond().catch(next), timeoutMs);
+      const timer = timeoutMs === null ? null : setTimeout(() => respond().catch(handleRespondError), timeoutMs);
       let cleaned = false;
       let responding = false;
       const cleanup = () => {
@@ -128,11 +128,19 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
           cleanup();
         }
       };
+      function handleRespondError(error) {
+        if (streamHeartbeat) {
+          cleanup();
+          if (!res.writableEnded) res.destroy(error);
+          return;
+        }
+        next(error);
+      }
       const onFeedback = (changedKey) => {
         if (changedKey !== key || res.writableEnded) {
           return;
         }
-        respond().catch(next);
+        respond().catch(handleRespondError);
       };
       events.on("feedback", onFeedback);
       events.on("ended", onFeedback);
