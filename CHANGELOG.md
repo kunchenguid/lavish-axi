@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.12](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.11...lavish-axi-v0.1.12) (2026-05-16)
+
+
+### Bug Fixes
+
+* harden feedback polling and queued prompts ([#41](https://github.com/kunchenguid/lavish-axi/issues/41)) ([ec1e664](https://github.com/kunchenguid/lavish-axi/commit/ec1e6643533a01f93389532d382897b0451201ee))
+
 ## [0.1.11](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.10...lavish-axi-v0.1.11) (2026-05-15)
 
 
