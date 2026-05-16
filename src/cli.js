@@ -443,7 +443,11 @@ export async function fetchJson(url, { retries = 0, retryDelayMs = 250 } = {}) {
   if (!response.ok) {
     throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
   }
-  return response.json();
+  try {
+    return await response.json();
+  } catch {
+    throw pollResponseInterruptedError();
+  }
 }
 
 async function postJson(url, body) {
@@ -465,6 +469,13 @@ async function postJson(url, body) {
 
 function serverConnectionError() {
   return new AxiError("Lavish Editor server connection failed", "SERVER_ERROR", [
+    "Run `lavish-axi server --verbose` to inspect server startup or crashes",
+    "Re-run the last `lavish-axi poll <html-file>` command after the server is healthy",
+  ]);
+}
+
+function pollResponseInterruptedError() {
+  return new AxiError("Lavish Editor poll response was interrupted", "SERVER_ERROR", [
     "Run `lavish-axi server --verbose` to inspect server startup or crashes",
     "Re-run the last `lavish-axi poll <html-file>` command after the server is healthy",
   ]);

@@ -405,7 +405,7 @@ test("fetchJson retries transient connection failures", async () => {
   }
 });
 
-test("fetchJson does not retry response body parse failures", async () => {
+test("fetchJson reports interrupted response body failures without retrying", async () => {
   let requests = 0;
   const server = createServer((req, res) => {
     requests += 1;
@@ -421,7 +421,12 @@ test("fetchJson does not retry response body parse failures", async () => {
 
     await assert.rejects(
       () => fetchJson(`http://127.0.0.1:${port}/api/poll`, { retries: 1, retryDelayMs: 1 }),
-      SyntaxError,
+      (error) => {
+        assert.ok(error instanceof AxiError);
+        assert.equal(error.code, "SERVER_ERROR");
+        assert.match(error.message, /Lavish Editor poll response was interrupted/);
+        return true;
+      },
     );
     assert.equal(requests, 1);
   } finally {
