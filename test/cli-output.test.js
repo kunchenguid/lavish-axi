@@ -404,3 +404,27 @@ test("fetchJson retries transient connection failures", async () => {
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("fetchJson does not retry response body parse failures", async () => {
+  let requests = 0;
+  const server = createServer((req, res) => {
+    requests += 1;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{");
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+    const port = address.port;
+
+    await assert.rejects(
+      () => fetchJson(`http://127.0.0.1:${port}/api/poll`, { retries: 1, retryDelayMs: 1 }),
+      SyntaxError,
+    );
+    assert.equal(requests, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

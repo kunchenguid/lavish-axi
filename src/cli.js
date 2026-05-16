@@ -427,13 +427,11 @@ export function createServerSpawnOptions(logFd = null) {
 }
 
 export async function fetchJson(url, { retries = 0, retryDelayMs = 250 } = {}) {
+  let response;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
-      }
-      return await response.json();
+      response = await fetch(url);
+      break;
     } catch (error) {
       if (error instanceof AxiError) throw error;
       if (attempt >= retries) throw serverConnectionError();
@@ -441,7 +439,11 @@ export async function fetchJson(url, { retries = 0, retryDelayMs = 250 } = {}) {
     }
   }
 
-  throw serverConnectionError();
+  if (!response) throw serverConnectionError();
+  if (!response.ok) {
+    throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
+  }
+  return response.json();
 }
 
 async function postJson(url, body) {
