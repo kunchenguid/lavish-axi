@@ -482,6 +482,23 @@ test("chrome waits for the replacement server before version-driven reload", asy
   assert.match(js, /addEventListener\("chrome-reload", \(\) => reloadAfterServerRestart\(\)\)/);
 });
 
+test("chrome restores queued prompts from tab storage after reload", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /lavish-axi:queued:/);
+  assert.match(js, /function loadQueuedPrompts\(\)/);
+  assert.match(js, /const queued = loadQueuedPrompts\(\)/);
+  assert.match(js, /sessionStorage\.getItem\(queueStorageKey\)/);
+});
+
+test("chrome keeps queued prompts persisted until submit succeeds", async () => {
+  const js = await chromeClientSource();
+
+  assert.doesNotMatch(js, /const prompts = queued\.splice\(0, queued\.length\)/);
+  assert.match(js, /await fetch\("\/api\/" \+ key \+ "\/prompts", \{/);
+  assert.match(js, /queued\.splice\(0, prompts\.length\);\s*persistQueuedPrompts\(\);/);
+});
+
 test("/health reports the server version so clients can detect upgrades", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
@@ -490,6 +507,74 @@ test("/health reports the server version so clients can detect upgrades", async 
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.version, "9.9.9-test");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("session URLs use the same IPv4 loopback host the server binds", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const body = await res.json();
+
+    assert.match(body.url, /^http:\/\/127\.0\.0\.1:/);
+    assert.doesNotMatch(body.url, /localhost/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("long-poll sends heartbeat bytes before feedback arrives", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    pollHeartbeatMs: 10,
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+
+    const controller = new AbortController();
+    const res = await Promise.race([
+      fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send headers")), 50)),
+    ]);
+    const reader = res.body.getReader();
+    try {
+      const decoder = new TextDecoder();
+      const first = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send initial heartbeat")), 50)),
+      ]);
+      const second = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not repeat heartbeat")), 50)),
+      ]);
+
+      assert.equal(decoder.decode(first.value), " ");
+      assert.equal(decoder.decode(second.value), " ");
+    } finally {
+      controller.abort();
+      await reader.cancel().catch(() => {});
+    }
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -624,7 +709,7 @@ test("SSE agent-presence reflects waiting, listening, and working transitions", 
     const initial = await waitForPresence();
     assert.equal(initial, "waiting", "first SSE handshake should report waiting before any poll");
 
-    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
     const listening = await waitForPresence();
     assert.equal(listening, "listening", "should switch to listening when poll attaches");
 
@@ -730,7 +815,9 @@ test("SSE agent-presence returns to waiting when a poll disconnects without feed
       assert.equal(await presence.next(), "waiting");
 
       const pollController = new AbortController();
-      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: pollController.signal });
+      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, {
+        signal: pollController.signal,
+      }).then((res) => res.text());
       assert.equal(await presence.next(), "listening");
       pollController.abort();
       await poll.catch(() => {});

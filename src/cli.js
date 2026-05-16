@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { AxiError, runAxiCli } from "axi-sdk-js";
 
 import { createDesignOutput, DESIGN_SYSTEM_HINT } from "./design-reference.js";
-import { defaultPort, ensureStateDir, stateFile } from "./paths.js";
+import { defaultPort, ensureStateDir, LOOPBACK_HOST, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds } from "./playbooks.js";
 import { serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
@@ -192,7 +192,10 @@ async function pollCommand(args) {
   }
   const timeoutMs = flagValue(args, "--timeout-ms");
   const timeoutQuery = timeoutMs ? `&timeoutMs=${encodeURIComponent(timeoutMs)}` : "";
-  const response = await fetchJson(`${baseUrl}/api/poll?file=${encodeURIComponent(absolute)}${timeoutQuery}`);
+  const response = await fetchJson(`${baseUrl}/api/poll?file=${encodeURIComponent(absolute)}${timeoutQuery}`, {
+    retries: 3,
+    retryDelayMs: 500,
+  });
   return createPollOutput({ file: absolute, response });
 }
 
@@ -270,7 +273,7 @@ function isHtmlPath(file) {
 
 async function ensureServer({ forceRestart = false } = {}) {
   const port = defaultPort();
-  const baseUrl = `http://localhost:${port}`;
+  const baseUrl = `http://${LOOPBACK_HOST}:${port}`;
   const existing = await fetchHealth(baseUrl);
   if (existing && !shouldRestartServer(VERSION, existing, forceRestart)) {
     return baseUrl;
@@ -384,12 +387,18 @@ function killProcessOnPort(port) {
 async function startServer(port) {
   await ensureStateDir();
   const entry = resolveServerEntry();
-  const child = spawn(process.execPath, [entry, "server", "--port", String(port)], {
-    detached: true,
-    stdio: "ignore",
-    env: { ...process.env, LAVISH_AXI_NO_OPEN: "1" },
-  });
-  child.unref();
+  let logFd = null;
+  try {
+    logFd = openSync(serverLogFile(), "a");
+  } catch {
+    // If logging cannot be initialized, keep the server behavior unchanged.
+  }
+  try {
+    const child = spawn(process.execPath, [entry, "server", "--port", String(port)], createServerSpawnOptions(logFd));
+    child.unref();
+  } finally {
+    if (logFd !== null) closeSync(logFd);
+  }
 }
 
 // The detached server child must point at a node-executable entry that actually invokes
@@ -402,32 +411,61 @@ export function resolveServerEntry() {
   return fileURLToPath(import.meta.url);
 }
 
-export function createServerSpawnOptions() {
+/**
+ * @param {number | null} logFd
+ * @returns {import("node:child_process").SpawnOptions}
+ */
+export function createServerSpawnOptions(logFd = null) {
+  const stdio = /** @type {import("node:child_process").StdioOptions} */ (
+    logFd === null ? "ignore" : ["ignore", logFd, logFd]
+  );
   return {
     detached: true,
-    stdio: "ignore",
+    stdio,
     env: { ...process.env, LAVISH_AXI_NO_OPEN: "1" },
   };
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url);
+export async function fetchJson(url, { retries = 0, retryDelayMs = 250 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
+      }
+      return await response.json();
+    } catch (error) {
+      if (error instanceof AxiError) throw error;
+      if (attempt >= retries) throw serverConnectionError();
+      await delay(retryDelayMs);
+    }
+  }
+
+  throw serverConnectionError();
+}
+
+async function postJson(url, body) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw serverConnectionError();
+  }
   if (!response.ok) {
     throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
   }
   return response.json();
 }
 
-async function postJson(url, body) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
-  }
-  return response.json();
+function serverConnectionError() {
+  return new AxiError("Lavish Editor server connection failed", "SERVER_ERROR", [
+    "Run `lavish-axi server --verbose` to inspect server startup or crashes",
+    "Re-run the last `lavish-axi poll <html-file>` command after the server is healthy",
+  ]);
 }
 
 function flagValue(args, flag) {

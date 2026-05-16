@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -16,6 +17,7 @@ import {
   createPollOutput,
   createPlaybookOutput,
   createServerSpawnOptions,
+  fetchJson,
   getCommandHelp,
   normalizeArgv,
   resolveServerEntry,
@@ -266,6 +268,13 @@ test("server spawn options detach without inheriting invalid streams", () => {
   assert.equal(options.stdio, "ignore");
 });
 
+test("server spawn options can persist detached server output to a log fd", () => {
+  const options = createServerSpawnOptions(17);
+
+  assert.equal(options.detached, true);
+  assert.deepEqual(options.stdio, ["ignore", 17, 17]);
+});
+
 test("server entry resolves to a node-executable script that actually invokes run()", () => {
   // Running from source, the entry must be `bin/lavish-axi.js` (the only file in the
   // source tree that calls run() on import). In the published bundle only `dist/cli.mjs`
@@ -354,4 +363,44 @@ test("polling a file without an active session tells the agent to open it first"
       return true;
     },
   );
+});
+
+test("network fetch failures become structured Lavish server errors", async () => {
+  await assert.rejects(
+    () => fetchJson("http://127.0.0.1:1/api/poll"),
+    (error) => {
+      assert.ok(error instanceof AxiError);
+      assert.equal(error.code, "SERVER_ERROR");
+      assert.match(error.message, /Lavish Editor server connection failed/);
+      assert.ok(error.suggestions.some((item) => item.includes("lavish-axi server --verbose")));
+      return true;
+    },
+  );
+});
+
+test("fetchJson retries transient connection failures", async () => {
+  let requests = 0;
+  const server = createServer((req, res) => {
+    requests += 1;
+    if (requests === 1) {
+      req.socket.destroy();
+      return;
+    }
+
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ status: "waiting" }));
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+    const port = address.port;
+    const result = await fetchJson(`http://127.0.0.1:${port}/api/poll`, { retries: 1, retryDelayMs: 1 });
+
+    assert.deepEqual(result, { status: "waiting" });
+    assert.equal(requests, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

@@ -3,6 +3,7 @@
 const sessionDataElement = document.getElementById("lavish-session");
 const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
 const key = String(sessionData.key || "");
+const queueStorageKey = "lavish-axi:queued:" + key;
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
@@ -16,7 +17,7 @@ const filePathInput = /** @type {HTMLInputElement} */ (document.getElementById("
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("presenceBanner"));
 
-const queued = [];
+const queued = loadQueuedPrompts();
 let annotation = true;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
@@ -34,6 +35,27 @@ function escapeHtml(value) {
         "'": "&#39;",
       })[char],
   );
+}
+
+function loadQueuedPrompts() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(queueStorageKey) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((prompt) => prompt && typeof prompt === "object") : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistQueuedPrompts() {
+  try {
+    if (queued.length) {
+      sessionStorage.setItem(queueStorageKey, JSON.stringify(queued));
+    } else {
+      sessionStorage.removeItem(queueStorageKey);
+    }
+  } catch {
+    // The in-memory queue still works if browser storage is unavailable.
+  }
 }
 
 function render() {
@@ -105,6 +127,7 @@ function setAgentPresence(state) {
 function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
   queued.splice(index, 1);
+  persistQueuedPrompts();
   render();
 }
 
@@ -118,6 +141,7 @@ function sendQueued() {
   const text = chatInput.value.trim();
   if (text) {
     queued.push({ uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" });
+    persistQueuedPrompts();
     addChat("user", text);
     chatInput.value = "";
     render();
@@ -128,14 +152,17 @@ function sendQueued() {
 }
 
 async function submitQueued() {
-  const prompts = queued.splice(0, queued.length);
-  render();
-  if (agentPresence === "listening") setAgentPresence("working");
-  await fetch("/api/" + key + "/prompts", {
+  const prompts = queued.slice();
+  const response = await fetch("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ prompts, domSnapshot: pendingSnapshot }),
   });
+  if (!response.ok) throw new Error("failed to submit queued prompts");
+  queued.splice(0, prompts.length);
+  persistQueuedPrompts();
+  render();
+  if (agentPresence === "listening") setAgentPresence("working");
 }
 
 async function endSession() {
@@ -185,6 +212,7 @@ window.addEventListener("message", (event) => {
   const msg = event.data || {};
   if (msg.type === "lavish:queuePrompt") {
     queued.push(msg.prompt);
+    persistQueuedPrompts();
     render();
   }
   if (msg.type === "lavish:snapshot") {

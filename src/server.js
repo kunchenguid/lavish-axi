@@ -7,6 +7,7 @@ import express from "express";
 
 import { createArtifactSdk } from "./artifact-sdk.js";
 import { injectLavishSdk } from "./html-transform.js";
+import { LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
@@ -29,7 +30,7 @@ const designAssetUrls = {
   },
 };
 
-export async function serve({ port, stateFile, version = "", debug = false, log = null }) {
+export async function serve({ port, stateFile, version = "", debug = false, log = null, pollHeartbeatMs = 15_000 }) {
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
@@ -40,6 +41,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
   const verbose = debug || process.env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
+  let publicPort = port;
 
   app.use(express.json({ limit: "2mb" }));
 
@@ -62,7 +64,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
     try {
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
-      const url = `http://localhost:${port}/session/${key}`;
+      const url = `http://${LOOPBACK_HOST}:${publicPort}/session/${key}`;
       const existing = await store.findByKey(key);
       const session = await store.upsertSession(file, url);
       if (existing?.status === "ended") {
@@ -88,6 +90,16 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
         res.json(immediate);
         return;
       }
+      const streamHeartbeat = timeoutMs === null;
+      let heartbeat = null;
+      if (streamHeartbeat) {
+        res.status(200).type("application/json");
+        res.write(" ");
+        heartbeat = setInterval(() => {
+          if (!res.writableEnded) res.write(" ");
+        }, pollHeartbeatMs);
+        heartbeat.unref?.();
+      }
       setPollActive(key, activePolls, deliveredFeedback, events, true);
       const timer = timeoutMs === null ? null : setTimeout(() => respond().catch(next), timeoutMs);
       let cleaned = false;
@@ -96,23 +108,28 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
         if (cleaned) return;
         cleaned = true;
         if (timer) clearTimeout(timer);
+        if (heartbeat) clearInterval(heartbeat);
         events.off("feedback", onFeedback);
         events.off("ended", onFeedback);
         setPollActive(key, activePolls, deliveredFeedback, events, false);
       };
       const respond = async () => {
-        if (responding || res.headersSent) return;
+        if (responding || res.writableEnded) return;
         responding = true;
         try {
           const result = await store.takeFeedback(key);
           if (result.status === "feedback") markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
-          res.json(result);
+          if (streamHeartbeat) {
+            res.end(JSON.stringify(result));
+          } else {
+            res.json(result);
+          }
         } finally {
           cleanup();
         }
       };
       const onFeedback = (changedKey) => {
-        if (changedKey !== key || res.headersSent) {
+        if (changedKey !== key || res.writableEnded) {
           return;
         }
         respond().catch(next);
@@ -312,8 +329,9 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
   });
 
   const httpServer = await new Promise((resolve) => {
-    const s = app.listen(port, "127.0.0.1", () => resolve(s));
+    const s = app.listen(port, LOOPBACK_HOST, () => resolve(s));
   });
+  publicPort = httpServer.address().port;
 
   let shuttingDown = false;
   function shutdown() {
