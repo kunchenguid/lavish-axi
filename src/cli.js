@@ -469,14 +469,14 @@ async function postJson(url, body) {
 
 function serverConnectionError() {
   return new AxiError("Lavish Editor server connection failed", "SERVER_ERROR", [
-    "Run `lavish-axi server --verbose` to inspect server startup or crashes",
+    "Run `lavish-axi server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server startup or crash diagnostics",
     "Re-run the last `lavish-axi poll <html-file>` command after the server is healthy",
   ]);
 }
 
 function pollResponseInterruptedError() {
   return new AxiError("Lavish Editor poll response was interrupted", "SERVER_ERROR", [
-    "Run `lavish-axi server --verbose` to inspect server startup or crashes",
+    "Run `lavish-axi server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server startup or crash diagnostics",
     "Re-run the last `lavish-axi poll <html-file>` command after the server is healthy",
   ]);
 }
