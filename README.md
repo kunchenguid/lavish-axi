@@ -98,7 +98,7 @@ pnpm link
 - **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, and feedback controls. Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser. Run `lavish-axi design` for a copy-pasteable CDN snippet to opt in to Tailwind CSS v4 + DaisyUI v5, or use any other design system (or none).
 - **Live reload** - Lavish watches the HTML artifact file by default. To also reload on sibling asset changes, add `data-lavish-live-reload-root` to the root element or `<meta name="lavish-live-reload" content="root">`.
 - **Feedback controls** - Mark buttons, choices, and other interactive elements with `data-lavish-action` so Lavish does not annotate them, then call `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()` from the control handler.
-- **Agent presence** - The browser shows when no agent is listening, still queues feedback for the next `lavish-axi poll`, and only blocks sending while the agent is working on delivered feedback.
+- **Agent presence** - The browser shows when no agent is listening, keeps queued feedback for the next successful `lavish-axi poll` send even across reloads, and only blocks sending while the agent is working on delivered feedback.
 - **Precise targets** - Text annotations include selected text plus range anchors, so agents are not limited to whole-element selectors.
 - **Local-first state** - Session state stays under `.lavish-axi/` in the workspace.
 
@@ -123,7 +123,7 @@ Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `
 | `lavish-axi <html-file>` | `--no-open`           | Ensure the server/session exists without opening another browser window.                 |
 | `lavish-axi poll`        | `--agent-reply "..."` | Show the agent's reply in the existing browser chat before polling again.                |
 | `lavish-axi poll`        | `--timeout-ms <ms>`   | Test/debug escape hatch only; agents should normally omit it.                            |
-| `lavish-axi server`      | `--verbose`           | Log session and watcher events to stderr; can also be enabled with `LAVISH_AXI_DEBUG=1`. |
+| `lavish-axi server`      | `--verbose`           | Log session and watcher events to stderr; can also be enabled with `LAVISH_AXI_DEBUG=1`. Detached server output is appended to `~/.lavish-axi/server.log` (or `LAVISH_AXI_STATE_DIR/server.log`) for startup and crash diagnostics. |
 
 ## Development
 

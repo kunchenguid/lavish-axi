@@ -41,13 +41,13 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
 
 ### Request flow
 
-1. `lavish-axi <file.html>` (`openCommand`) -> POST `/api/sessions` -> `SessionStore.upsertSession` -> server returns `http://localhost:PORT/session/<key>` and the CLI calls `open` to launch the browser.
+1. `lavish-axi <file.html>` (`openCommand`) -> POST `/api/sessions` -> `SessionStore.upsertSession` -> server returns `http://127.0.0.1:PORT/session/<key>` and the CLI calls `open` to launch the browser.
 2. The browser loads `GET /session/:key`, which serves a chrome page (`createChromeHtml`) containing an iframe pointing at `/artifact/:key/index.html`, a stylesheet at `/chrome.css`, and browser behavior at `/chrome-client.js`.
    The chrome client reads its session bootstrap from the `lavish-session` JSON script in the page.
 3. The artifact route reads the HTML from disk and runs `injectLavishSdk` (`src/html-transform.js`) to append `<script src="/sdk.js?key=...">` at the end of `<body>`. Nothing else is injected - artifacts stay byte-identical (apart from the SDK script tag) so they remain portable when opened directly without the server.
 4. Sibling assets resolve under `/artifact/:key/<path>`, sandboxed to the artifact's directory (`resolveArtifactAsset` rejects paths that escape via `..`). The packaged Tailwind/DaisyUI assets are still served from `/design/:asset` so older artifacts that link them keep working, but new artifacts are no longer auto-wired to those routes.
-5. User actions in the iframe `postMessage` to the chrome (queue prompts, request snapshot, end session). The chrome POSTs collected prompts to `/api/:key/prompts`, which queues them in the session store and emits a `feedback` event. Text selection prompts use `tag: "text"` and preserve a structured `target` with `type: "text-range"`, selected text, `commonAncestorSelector`, and start/end boundary anchors.
-6. `lavish-axi poll <file.html>` (`pollCommand`) hits `GET /api/poll`. If queued prompts exist, it records that an agent has observed the session and returns immediately; otherwise it marks the session as actively listening and long-polls on an `EventEmitter` until a `feedback` or `ended` event fires (default: no timeout - `--timeout-ms` is a test escape hatch).
+5. User actions in the iframe `postMessage` to the chrome (queue prompts, request snapshot, end session). The chrome stores queued prompts in tab `sessionStorage`, POSTs collected prompts to `/api/:key/prompts`, removes them only after a successful response, queues them in the session store, and emits a `feedback` event. Text selection prompts use `tag: "text"` and preserve a structured `target` with `type: "text-range"`, selected text, `commonAncestorSelector`, and start/end boundary anchors.
+6. `lavish-axi poll <file.html>` (`pollCommand`) hits `GET /api/poll`. If queued prompts exist, it records that an agent has observed the session and returns immediately; otherwise it marks the session as actively listening and long-polls on an `EventEmitter` until a `feedback` or `ended` event fires. Default no-timeout polls stream whitespace heartbeat bytes before the final JSON response; `--timeout-ms` is a non-streaming test/debug escape hatch.
 7. The `/events/:key` SSE stream emits `agent-presence` states: `waiting` before any poll has attached, `listening` while a poll is active, and `working` after a poll has delivered feedback and released.
    The chrome uses this state to show the waiting banner, allow queued feedback while waiting or listening, and block sends only while working.
 8. `--agent-reply` posts a chat message into the session before polling, so the agent's reply renders in the browser conversation panel via the `/events/:key` SSE stream.
@@ -60,6 +60,7 @@ Any file change emits a `reload` event, which the SSE endpoint pushes to the chr
 During version-driven shutdown, the server sends a `chrome-reload` SSE event so open browser chromes wait for the replacement server and then reload the whole chrome page.
 Hand-edited files in `dist/` won't trigger reloads.
 Run `lavish-axi server --verbose` (or set `LAVISH_AXI_DEBUG=1`) to log session and watcher events to stderr when diagnosing wedges.
+Detached server stdout/stderr is also appended to `server.log` in `LAVISH_AXI_STATE_DIR` (default `~/.lavish-axi/server.log`) for startup and crash diagnostics.
 
 ### AXI integration
 
