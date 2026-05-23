@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.14](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.13...lavish-axi-v0.1.14) (2026-05-23)
+
+
+### Bug Fixes
+
+* **cli:** require explicit agent hook setup ([#46](https://github.com/kunchenguid/lavish-axi/issues/46)) ([4a250b8](https://github.com/kunchenguid/lavish-axi/commit/4a250b843edbe4204599526c753bc94b798c9785))
+
 ## [0.1.13](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.12...lavish-axi-v0.1.13) (2026-05-23)
 
 
