@@ -287,7 +287,25 @@ export function createArtifactSdk() {
     if (msg.type === "lavish:requestSnapshot") {
       parent.postMessage({ type: "lavish:snapshot", snapshot: snapshot() }, "*");
     }
+    if (msg.type === "lavish:restoreScroll") {
+      window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
+    }
   });
+
+  // Report scroll position to the chrome so it can be restored across hot reloads.
+  // The iframe is sandboxed without same-origin, so the chrome can't read scrollY directly.
+  let scrollFrame = 0;
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (scrollFrame) return;
+      scrollFrame = window.requestAnimationFrame(() => {
+        scrollFrame = 0;
+        parent.postMessage({ type: "lavish:scroll", x: window.scrollX, y: window.scrollY }, "*");
+      });
+    },
+    { passive: true },
+  );
 
   document.addEventListener(
     "mouseover",

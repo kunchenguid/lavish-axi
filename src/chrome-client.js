@@ -24,6 +24,7 @@ let pendingSnapshot = "";
 let workingBubble = null;
 let submitQueuedPromise = null;
 let submitQueuedAgain = false;
+let lastScroll = { x: 0, y: 0 };
 
 function escapeHtml(value) {
   return String(value).replace(
@@ -244,6 +245,9 @@ window.addEventListener("message", (event) => {
     pendingSnapshot = msg.snapshot || "";
     submitQueued();
   }
+  if (msg.type === "lavish:scroll") {
+    lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
+  }
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
 });
@@ -258,7 +262,11 @@ annotationButton.onclick = () => {
 sendButton.onclick = sendQueued;
 copyPathButton.onclick = copyFilePath;
 endButton.onclick = endSession;
-frame.addEventListener("load", () => postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation }));
+frame.addEventListener("load", () => {
+  postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
+  // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
+  postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
+});
 
 const events = new EventSource("/events/" + key);
 events.addEventListener("reload", () => {

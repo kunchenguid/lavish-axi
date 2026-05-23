@@ -467,6 +467,26 @@ test("hot reload resets iframe src instead of crossing sandbox location", async 
   assert.match(js, /frame\.src\s*=\s*frame\.src/);
 });
 
+test("artifact SDK reports its scroll position and restores it on request", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /addEventListener\(\s*["']scroll["']/);
+  assert.match(js, /type:\s*["']lavish:scroll["']/);
+  assert.match(js, /window\.scrollX/);
+  assert.match(js, /window\.scrollY/);
+  assert.match(js, /msg\.type === ["']lavish:restoreScroll["']/);
+  assert.match(js, /window\.scrollTo\(/);
+});
+
+test("chrome remembers the artifact scroll position across reloads", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /let lastScroll = \{ x: 0, y: 0 \}/);
+  assert.match(js, /msg\.type === ["']lavish:scroll["']/);
+  assert.match(js, /type:\s*["']lavish:restoreScroll["']/);
+  assert.match(js, /x:\s*lastScroll\.x,\s*y:\s*lastScroll\.y/);
+});
+
 test("chrome ignores Lavish postMessages not sent by the artifact iframe", async () => {
   const js = await chromeClientSource();
 
