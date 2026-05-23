@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.15](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.14...lavish-axi-v0.1.15) (2026-05-23)
+
+
+### Bug Fixes
+
+* preserve artifact scroll on hot reload ([#48](https://github.com/kunchenguid/lavish-axi/issues/48)) ([81599a1](https://github.com/kunchenguid/lavish-axi/commit/81599a1f70ff08732b4a809e8634f5f4942b9d3b))
+
 ## [0.1.14](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.13...lavish-axi-v0.1.14) (2026-05-23)
 
 
