@@ -556,9 +556,11 @@ test("session URLs use the same IPv4 loopback host the server binds", async () =
 });
 
 test("/artifact serves files copied under the artifact directory", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const dir = path.join(parent, ".lavish");
   const assetDir = path.join(dir, "assets");
   const artifact = path.join(dir, "artifact.html");
+  await mkdir(dir);
   await mkdir(assetDir);
   await writeFile(
     artifact,
@@ -586,7 +588,7 @@ test("/artifact serves files copied under the artifact directory", async () => {
     assert.match(await svg.text(), /<svg/);
   } finally {
     await server.close();
-    await rm(dir, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
   }
 });
 

@@ -96,6 +96,7 @@ pnpm link
 
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
 - **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, and feedback controls. Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser. Run `lavish-axi design` for a copy-pasteable CDN snippet to opt in to Tailwind CSS v4 + DaisyUI v5, or use any other design system (or none).
+- **Local assets** - Copy local images, CSS, fonts, and scripts next to the HTML artifact and reference them with relative paths from that directory; root-prefixed paths such as `/assets/logo.png` will not resolve through Lavish's artifact route.
 - **Live reload** - Lavish watches the HTML artifact file by default. To also reload on sibling asset changes, add `data-lavish-live-reload-root` to the root element or `<meta name="lavish-live-reload" content="root">`.
 - **Feedback controls** - Mark buttons, choices, and other interactive elements with `data-lavish-action` so Lavish does not annotate them, then call `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()` from the control handler.
 - **Agent presence** - The browser shows when no agent is listening, keeps queued feedback for the next successful `lavish-axi poll` send even across reloads, and only blocks sending while the agent is working on delivered feedback.

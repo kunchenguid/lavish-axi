@@ -251,7 +251,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
         res.status(403).send("Forbidden");
         return;
       }
-      res.sendFile(file);
+      res.sendFile(file, { dotfiles: "allow" });
     } catch (error) {
       next(error);
     }
