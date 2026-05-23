@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.13](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.12...lavish-axi-v0.1.13) (2026-05-23)
+
+
+### Bug Fixes
+
+* support local artifact assets in hidden directories ([#44](https://github.com/kunchenguid/lavish-axi/issues/44)) ([2528e8e](https://github.com/kunchenguid/lavish-axi/commit/2528e8e571cfd0ed299be842df9943c56868f4ac))
+
 ## [0.1.12](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.11...lavish-axi-v0.1.12) (2026-05-16)
 
 
