@@ -251,9 +251,35 @@ test("html file arguments normalize to the hidden open command", () => {
   assert.deepEqual(normalizeArgv(["report.html"]), ["open", "report.html"]);
   assert.deepEqual(normalizeArgv(["--no-open", "report.html"]), ["open", "--no-open", "report.html"]);
   assert.deepEqual(normalizeArgv(["poll", "report.html"]), ["poll", "report.html"]);
+  assert.deepEqual(normalizeArgv(["setup", "hooks"]), ["setup", "hooks"]);
   assert.deepEqual(normalizeArgv(["playbook", "diagram"]), ["playbook", "diagram"]);
   assert.deepEqual(normalizeArgv(["design"]), ["design"]);
   assert.deepEqual(normalizeArgv(["--help"]), ["--help"]);
+});
+
+test("setup hooks installs agent session hooks explicitly", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-home-`);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "hooks"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: { ...process.env, HOME: homeDir, LAVISH_AXI_STATE_DIR: stateDir },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /hooks:/);
+    assert.match(result.stdout, /status: installed/);
+    assert.match(result.stdout, /Restart your agent session/);
+    assert.ok(existsSync(`${homeDir}/.claude/settings.json`));
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+  }
 });
 
 test("telemetry command names are anonymous and do not include file paths", () => {

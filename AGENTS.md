@@ -64,7 +64,7 @@ Detached server stdout/stderr is also appended to `server.log` in `LAVISH_AXI_ST
 
 ### AXI integration
 
-The CLI is built on `axi-sdk-js` (`runAxiCli`). The `home()` callback returns the rich object shown when the user runs `lavish-axi` with no arguments - this is the same TOON-serialized output that lands in the agent's `SessionStart` hook (`sessions`, `visual_guidance`, `playbooks`, `help`). Top-level `--help` returns the same static guidance without dynamic sessions, `lavish-axi playbook [playbook_id]` exposes focused artifact guidance, and `lavish-axi design` prints copy-pasteable Tailwind/DaisyUI CDN URLs plus the DaisyUI component reference (opt-in - artifacts stay portable by default). The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.html"]` by `normalizeArgv`.
+The CLI is built on `axi-sdk-js` (`runAxiCli`). The `home()` callback returns the rich object shown when the user runs `lavish-axi` with no arguments - this is the same TOON-serialized output that lands in the agent's optional `SessionStart` hook after `lavish-axi setup hooks` (`sessions`, `visual_guidance`, `playbooks`, `help`). Top-level `--help` returns the same static guidance without dynamic sessions, `lavish-axi playbook [playbook_id]` exposes focused artifact guidance, and `lavish-axi design` prints copy-pasteable Tailwind/DaisyUI CDN URLs plus the DaisyUI component reference (opt-in - artifacts stay portable by default). The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.html"]` by `normalizeArgv`.
 
 ### Telemetry
 

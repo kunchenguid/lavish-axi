@@ -39,7 +39,7 @@ test("pnpm lock root importer matches the publish manifest", async () => {
     const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const escapedSpecifier = specifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    assert.match(pnpmLock, new RegExp(`"?${escapedName}"?:[\\s\\S]*?specifier: ${escapedSpecifier}`));
+    assert.match(pnpmLock, new RegExp(`["']?${escapedName}["']?:[\\s\\S]*?specifier: ${escapedSpecifier}`));
   }
 });
 

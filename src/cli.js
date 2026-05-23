@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AxiError, runAxiCli } from "axi-sdk-js";
+import { AxiError, installSessionStartHooks, runAxiCli } from "axi-sdk-js";
 
 import { createDesignOutput, DESIGN_SYSTEM_HINT } from "./design-reference.js";
 import { defaultPort, ensureStateDir, LOOPBACK_HOST, serverLogFile, stateFile } from "./paths.js";
@@ -14,7 +14,7 @@ import { serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "server", "playbook", "design"]);
+const COMMANDS = new Set(["open", "poll", "end", "server", "playbook", "design", "setup"]);
 const DESCRIPTION =
   "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. Whenever you are about to give user a complex response that will be easier to understand via a rich / interactive page, consider using Lavish Editor. " +
   "First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
@@ -41,7 +41,6 @@ export async function run(argv) {
       version: VERSION,
       argv: isTopLevelHelp ? [] : normalizedArgv,
       topLevelHelp: TOP_LEVEL_HELP,
-      hooks: { binaryNames: ["lavish-axi"] },
       home: async () =>
         createHomeOutput({
           bin: process.argv[1] || "lavish-axi",
@@ -54,6 +53,7 @@ export async function run(argv) {
         end: endCommand,
         playbook: playbookCommand,
         design: designCommand,
+        setup: setupCommand,
         server: serverCommand,
       },
       getCommandHelp,
@@ -240,6 +240,23 @@ async function playbookCommand(args) {
 
 async function designCommand() {
   return createDesignOutput();
+}
+
+async function setupCommand(args) {
+  if (args.length !== 1 || args[0] !== "hooks") {
+    throw new AxiError("Unknown setup action", "VALIDATION_ERROR", ["Run `lavish-axi setup hooks`"]);
+  }
+
+  installSessionStartHooks({
+    marker: "lavish-axi",
+    binaryNames: ["lavish-axi"],
+    distEntrypoints: ["dist/cli.mjs", "bin/lavish-axi.js"],
+  });
+
+  return {
+    hooks: { status: "installed", integrations: "Claude Code, Codex, OpenCode" },
+    help: ["Restart your agent session to receive lavish-axi ambient context"],
+  };
 }
 
 async function serverCommand(args) {
@@ -498,7 +515,7 @@ export function getCommandHelp(command) {
   return COMMAND_HELP[command] || null;
 }
 
-const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes.\n\n`;
+const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes.\n\n`;
 
 const COMMAND_HELP = {
   open: `Usage: lavish-axi <html-file> [--no-open]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window.\n`,
@@ -506,6 +523,7 @@ const COMMAND_HELP = {
   end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session.\n`,
   playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, diff, input, slides.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
   design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, plus technical reference for DaisyUI components. Lavish artifacts stay portable HTML. Prefer the CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user. If the user asks for another design system or plain HTML, follow that request.\n`,
+  setup: `Usage: lavish-axi setup hooks\n\nInstall or repair agent SessionStart hooks for lavish-axi ambient context.\n`,
   server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n`,
 };
 
