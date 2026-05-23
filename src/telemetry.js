@@ -111,7 +111,7 @@ class HttpTelemetryClient {
     await Promise.race([
       drained,
       new Promise((resolve) => {
-        setTimeout(resolve, timeoutMs).unref?.();
+        setTimeout(resolve, timeoutMs);
       }),
     ]);
   }
