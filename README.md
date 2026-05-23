@@ -105,16 +105,16 @@ pnpm link
 
 ## CLI Reference
 
-| Command                       | Description                                                  |
-| ----------------------------- | ------------------------------------------------------------ |
-| `lavish-axi`                  | Show current sessions and usage guidance.                    |
-| `lavish-axi <html-file>`      | Open or resume a Lavish Editor session.                      |
-| `lavish-axi poll <html-file>` | Long-poll until the user sends feedback or ends the session. |
-| `lavish-axi end <html-file>`  | End a session.                                               |
-| `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.         |
-| `lavish-axi design`           | Show CDN snippet + DaisyUI component reference (opt-in).     |
+| Command                       | Description                                                                                                              |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `lavish-axi`                  | Show current sessions and usage guidance.                                                                                |
+| `lavish-axi <html-file>`      | Open or resume a Lavish Editor session.                                                                                  |
+| `lavish-axi poll <html-file>` | Long-poll until the user sends feedback or ends the session.                                                             |
+| `lavish-axi end <html-file>`  | End a session.                                                                                                           |
+| `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.                                                                     |
+| `lavish-axi design`           | Show CDN snippet + DaisyUI component reference (opt-in).                                                                 |
 | `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward. |
-| `lavish-axi server`           | Run the local Lavish Editor server.                          |
+| `lavish-axi server`           | Run the local Lavish Editor server.                                                                                      |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `slides`.
 
