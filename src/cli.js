@@ -247,11 +247,17 @@ async function setupCommand(args) {
     throw new AxiError("Unknown setup action", "VALIDATION_ERROR", ["Run `lavish-axi setup hooks`"]);
   }
 
+  const errors = [];
   installSessionStartHooks({
     marker: "lavish-axi",
     binaryNames: ["lavish-axi"],
     distEntrypoints: ["dist/cli.mjs", "bin/lavish-axi.js"],
+    onError: (message) => errors.push(message),
   });
+
+  if (errors.length > 0) {
+    throw new AxiError("Failed to install lavish-axi agent hooks", "SERVER_ERROR", errors);
+  }
 
   return {
     hooks: { status: "installed", integrations: "Claude Code, Codex, OpenCode" },

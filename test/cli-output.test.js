@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -276,6 +276,33 @@ test("setup hooks installs agent session hooks explicitly", async () => {
     assert.match(result.stdout, /status: installed/);
     assert.match(result.stdout, /Restart your agent session/);
     assert.ok(existsSync(`${homeDir}/.claude/settings.json`));
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("setup hooks exits with an error when hook installation fails", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-fail-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-fail-home-`);
+  try {
+    await mkdir(`${homeDir}/.claude`, { recursive: true });
+    await writeFile(`${homeDir}/.claude/settings.json`, "{ invalid json", "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "hooks"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: { ...process.env, HOME: homeDir, LAVISH_AXI_STATE_DIR: stateDir },
+      },
+    );
+
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(output, /hook/i);
+    assert.doesNotMatch(result.stdout, /status: installed/);
   } finally {
     await rm(stateDir, { force: true, recursive: true });
     await rm(homeDir, { force: true, recursive: true });
