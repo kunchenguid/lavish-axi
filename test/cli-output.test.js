@@ -60,6 +60,8 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("lavish-axi <html-file>")));
   assert.ok(output.help.some((item) => item.includes("`.lavish/`")));
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
+  assert.ok(output.help.some((item) => item.includes("reference other filesystem assets")));
+  assert.ok(output.help.some((item) => item.includes("same directory as the HTML file")));
   assert.ok(output.help.some((item) => item.includes("does not auto-inject")));
   assert.ok(output.help.some((item) => item.includes("portable")));
   assert.ok(output.help.some((item) => item.includes("Tailwind CSS browser runtime v4")));
@@ -88,6 +90,8 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /playbooks\[7\]/);
     assert.match(result.stdout, /lavish-axi playbook <playbook_id>/);
+    assert.match(result.stdout, /reference other filesystem assets/);
+    assert.match(result.stdout, /same directory as the HTML file/);
     assert.match(result.stdout, /Tailwind CSS browser runtime v4/);
     assert.match(result.stdout, /lavish-axi design/);
     assert.match(result.stdout, /does not auto-inject/);

@@ -120,6 +120,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
     help: [
       "Run `lavish-axi <html-file>` to open or resume a Lavish Editor session",
       "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
+      "Lavish serves the html file through a local express.js server. If your html needs to reference other filesystem assets such as images, CSS, fonts, and local scripts, copy them into the same directory as the HTML file, then reference them with relative paths from that directory. Never prepend `/` to those asset paths - root paths won't work",
       "Run `lavish-axi poll <html-file>` to wait for user feedback",
       "Run `lavish-axi end <html-file>` to end a session",
       "Run `lavish-axi playbook <playbook_id>` for focused artifact guidance",

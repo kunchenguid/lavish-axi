@@ -555,6 +555,41 @@ test("session URLs use the same IPv4 loopback host the server binds", async () =
   }
 });
 
+test("/artifact serves files copied under the artifact directory", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const assetDir = path.join(dir, "assets");
+  const artifact = path.join(dir, "artifact.html");
+  await mkdir(assetDir);
+  await writeFile(
+    artifact,
+    '<!doctype html><html><head><link rel="stylesheet" href="assets/style.css"></head><body><img src="./assets/icon.svg"></body></html>',
+  );
+  await writeFile(path.join(assetDir, "style.css"), "body { color: rgb(1 2 3); }\n");
+  await writeFile(path.join(assetDir, "icon.svg"), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>');
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+    const css = await fetch(`${base}/artifact/${session.key}/assets/style.css`);
+    const svg = await fetch(`${base}/artifact/${session.key}/assets/icon.svg`);
+
+    assert.equal(css.status, 200);
+    assert.match(css.headers.get("content-type") || "", /text\/css/);
+    assert.equal(await css.text(), "body { color: rgb(1 2 3); }\n");
+    assert.equal(svg.status, 200);
+    assert.match(svg.headers.get("content-type") || "", /image\/svg\+xml/);
+    assert.match(await svg.text(), /<svg/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("long-poll sends heartbeat bytes before feedback arrives", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
