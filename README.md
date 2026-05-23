@@ -113,7 +113,7 @@ pnpm link
 | `lavish-axi end <html-file>`  | End a session.                                               |
 | `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.         |
 | `lavish-axi design`           | Show CDN snippet + DaisyUI component reference (opt-in).     |
-| `lavish-axi setup hooks`      | Install optional agent session hooks.                        |
+| `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward. |
 | `lavish-axi server`           | Run the local Lavish Editor server.                          |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `slides`.
