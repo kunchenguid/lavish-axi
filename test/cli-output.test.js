@@ -20,6 +20,7 @@ import {
   fetchJson,
   getCommandHelp,
   normalizeArgv,
+  resolveHookHomeDir,
   resolveServerEntry,
   shouldForceRestartForLocalBuild,
   shouldKillProcessOnPort,
@@ -255,6 +256,13 @@ test("html file arguments normalize to the hidden open command", () => {
   assert.deepEqual(normalizeArgv(["playbook", "diagram"]), ["playbook", "diagram"]);
   assert.deepEqual(normalizeArgv(["design"]), ["design"]);
   assert.deepEqual(normalizeArgv(["--help"]), ["--help"]);
+});
+
+test("setup hooks resolves HOME before platform-specific user profile variables", () => {
+  assert.equal(
+    resolveHookHomeDir({ HOME: "/tmp/lavish-home", USERPROFILE: "C:\\Users\\runneradmin" }, "/fallback"),
+    "/tmp/lavish-home",
+  );
 });
 
 test("setup hooks installs agent session hooks explicitly", async () => {

@@ -252,6 +252,7 @@ async function setupCommand(args) {
     marker: "lavish-axi",
     binaryNames: ["lavish-axi"],
     distEntrypoints: ["dist/cli.mjs", "bin/lavish-axi.js"],
+    homeDir: resolveHookHomeDir(),
     onError: (message) => errors.push(message),
   });
 
@@ -263,6 +264,10 @@ async function setupCommand(args) {
     hooks: { status: "installed", integrations: "Claude Code, Codex, OpenCode" },
     help: ["Restart your agent session to receive lavish-axi ambient context"],
   };
+}
+
+export function resolveHookHomeDir(env = process.env, fallback = os.homedir()) {
+  return env.HOME || fallback;
 }
 
 async function serverCommand(args) {
