@@ -125,7 +125,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
       "Run `lavish-axi end <html-file>` to end a session",
       "Run `lavish-axi playbook <playbook_id>` for focused artifact guidance",
       DESIGN_SYSTEM_HINT,
-      "Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, technical plan, comparison, report, or browser-based feedback loop",
+      "Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, product or technical plan, comparison, report, or browser-based feedback loop",
     ],
   };
 }

@@ -35,7 +35,7 @@ Lavish Editor opens agent-generated HTML files in a local browser, lets you pinp
 
 - **Local only** - Work with your local HTML artifacts with a local CLI. Zero cloud dependency.
 - **Human-AI collaboration** - Annotate elements, selected text ranges, and send messages to the agent without leaving Lavish Editor.
-- **Battery included** - Lavish Editor teaches your agent good visualization for common use cases such as technial plans, design explorations and more out of the box.
+- **Battery included** - Lavish Editor teaches your agent good visualization for common use cases such as product or technical plans, design explorations and more out of the box.
 
 Lavish Editor is an [AXI](https://axi.md), which means -
 
@@ -48,7 +48,7 @@ Lavish Editor is an [AXI](https://axi.md), which means -
 Just tell your agent:
 
 ```sh
-Use `npx lavish-axi` to write a technical plan for what we discussed.
+Use `npx lavish-axi` to write a product or technical plan for what we discussed.
 ```
 
 ## Install
