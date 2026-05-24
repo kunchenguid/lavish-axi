@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.17](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.16...lavish-axi-v0.1.17) (2026-05-24)
+
+
+### Features
+
+* **cli:** broaden plan playbook guidance ([#52](https://github.com/kunchenguid/lavish-axi/issues/52)) ([aa533c4](https://github.com/kunchenguid/lavish-axi/commit/aa533c42c77a696ac0817402688b17cf29c5bdd5))
+
 ## [0.1.16](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.15...lavish-axi-v0.1.16) (2026-05-24)
 
 
