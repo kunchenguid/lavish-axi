@@ -12,7 +12,7 @@ export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URL
 <script src="${DESIGN_CDN_URLS.tailwind}"></script>`;
 
 export const DESIGN_SYSTEM_HINT =
-  "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Tailwind CSS browser runtime v4 and DaisyUI v5 are available via CDN; run `lavish-axi design` for a copy-pasteable CDN snippet plus component reference. Prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user. If the user asks for any other design system or plain HTML, follow that request.";
+  "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Choose a design system in this priority order: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, if the current project already has a design system or style conventions, match those so the artifact fits in; (3) otherwise, prefer the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, available via CDN - run `lavish-axi design` for a copy-pasteable CDN snippet plus component reference. Prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.";
 
 export const DAISYUI_THEMES = [
   "light",
@@ -56,7 +56,7 @@ export function createDesignOutput() {
   return {
     design: {
       summary:
-        "Lavish does not auto-inject any design system. Artifacts stay portable HTML. Paste the CDN snippet below into your `<head>` to use Tailwind CSS browser runtime v4 + DaisyUI v5 + themes. Prefer this CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.",
+        "Lavish does not auto-inject any design system. Artifacts stay portable HTML. Choose a design system in this priority order: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, if the current project already ships a design system or style conventions, match those; (3) otherwise, prefer the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5 + themes - paste the CDN snippet below into your `<head>`. Prefer this CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.",
       cdn_snippet: DESIGN_CDN_SNIPPET,
       cdn_urls: DESIGN_CDN_URLS,
       versions: { tailwind: TAILWIND_BROWSER_VERSION, daisyui: DAISYUI_VERSION },

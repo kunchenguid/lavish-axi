@@ -69,7 +69,8 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("lavish-axi design")));
   assert.ok(output.help.some((item) => /prefer.*CDN snippet.*hand-writing styles/i.test(item)));
   assert.ok(output.help.some((item) => /unless.*explicitly instructed/i.test(item)));
-  assert.ok(output.help.some((item) => item.includes("any other design system")));
+  assert.ok(output.help.some((item) => /priority order/i.test(item)));
+  assert.ok(output.help.some((item) => /current project/i.test(item)));
   assert.ok(!output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
   assert.ok(!output.help.some((item) => item.includes("Known IDs")));
   assert.ok(output.help.some((item) => item.includes("technical plan")));
@@ -98,6 +99,8 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /does not auto-inject/);
     assert.match(result.stdout, /prefer.*CDN snippet.*hand-writing styles/i);
     assert.match(result.stdout, /unless.*explicitly instructed/i);
+    assert.match(result.stdout, /priority order/i);
+    assert.match(result.stdout, /current project/i);
     assert.doesNotMatch(result.stdout, /lavish-design/);
     assert.doesNotMatch(result.stdout, /sessions\[/);
     assert.doesNotMatch(result.stdout, /Known IDs/);
@@ -114,6 +117,8 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.match(output.design.summary, /DaisyUI v5/);
   assert.match(output.design.summary, /prefer.*CDN snippet.*hand-writing styles/i);
   assert.match(output.design.summary, /unless.*explicitly instructed/i);
+  assert.match(output.design.summary, /priority order/i);
+  assert.match(output.design.summary, /current project/i);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@/);
@@ -414,6 +419,8 @@ test("open can resume a session without opening another browser window", () => {
   assert.match(getCommandHelp("design"), /portable/);
   assert.match(getCommandHelp("design"), /prefer.*CDN snippet.*hand-writing styles/i);
   assert.match(getCommandHelp("design"), /unless.*explicitly instructed/i);
+  assert.match(getCommandHelp("design"), /priority order/i);
+  assert.match(getCommandHelp("design"), /current project/i);
   assert.doesNotMatch(getCommandHelp("design"), /auto-injects/);
 });
 
