@@ -85,31 +85,28 @@ export const PLAYBOOKS = [
   },
   {
     id: "plan",
-    use_when: "Explain a technical plan before implementation",
+    use_when: "Explain a product or technical plan before implementation",
     choose: [
       "Use this when the user needs to inspect a feature approach before implementation begins.",
-      "Use it when state, APIs, files, tests, or edge cases are numerous enough to deserve a visual map.",
-      "Use a lighter comparison or diagram playbook when the plan is only a small design choice.",
+      "Use it when the user explicitly asked for a PRD, technical design, implementation plan or proposal.",
+      "Use a lighter comparison or diagram playbook when the plan is only a single small design choice.",
     ],
     structure: [
-      "Start with the problem, the desired behavior, and what is out of scope.",
-      "Show affected state, commands, functions, files, and user-visible behavior.",
-      "Include edge cases and tests before implementation notes so risk is visible early.",
+      "Start with the goal, the current state, and desired behavior.",
+      "Then describe the a proposed approach, focusing on high level decisions.",
+      "At the end, list any risks you see, and open questions you have, and follow the 'comparison' playbook to provide options for the user to choose from.",
     ],
     design_rules: [
       "Verify each claim against the codebase before presenting it as fact.",
-      "Keep code snippets focused on the pattern or seam, not full-file dumps.",
-      "Make test requirements concrete enough to drive TDD.",
+      "When discussing frontend experiences, prefer visually mocking the experience under a consistent design system as the real product over describing it with text.",
+      "The plan needs to be self-contained enough that another developer can read it and fully implement the proposal.",
     ],
     pitfalls: [
-      "Do not invent extension points or APIs that are not present in the repo.",
-      "Do not turn a plan into a long prose essay when state and file maps would be clearer.",
+      "Do not leave resolved open questions in the artifact. Update existing content to reflect the decision and remove the open question.",
+      "Do not only focus on ambiguous decisions and omit the actual proposal.",
       "Do not omit failure modes, migration concerns, or backwards compatibility questions.",
     ],
-    lavish_notes: [
-      "A Lavish plan should make uncertainties easy to annotate before code exists.",
-      "Use controls for scope choices so the user can queue a precise implementation direction.",
-    ],
+    lavish_notes: ["A Lavish plan should make a plan and its uncertainties easy to annotate before code exists."],
   },
   {
     id: "diff",
