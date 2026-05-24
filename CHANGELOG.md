@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.16](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.15...lavish-axi-v0.1.16) (2026-05-24)
+
+
+### Bug Fixes
+
+* **cli:** prioritize project design guidance ([#50](https://github.com/kunchenguid/lavish-axi/issues/50)) ([ee782c0](https://github.com/kunchenguid/lavish-axi/commit/ee782c04d737d888f9f3b3bae1916137d791516b))
+
 ## [0.1.15](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.14...lavish-axi-v0.1.15) (2026-05-23)
 
 
