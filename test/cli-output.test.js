@@ -162,7 +162,7 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   );
   assert.equal(
     output.playbooks.find((playbook) => playbook.id === "plan")?.use_when,
-    "Explain a technical plan before implementation",
+    "Explain a product or technical plan before implementation",
   );
   assert.equal(
     output.playbooks.find((playbook) => playbook.id === "input")?.use_when,
