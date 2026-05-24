@@ -187,6 +187,21 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
 });
 
+test("plan playbook detail output has polished guidance copy", () => {
+  const output = createPlaybookOutput(["plan"]);
+
+  assert.ok(
+    output.playbook.structure.some((item) =>
+      item.includes("Then describe a proposed approach"),
+    ),
+  );
+  assert.ok(
+    output.playbook.structure.every(
+      (item) => !item.includes("Then describe the a proposed approach"),
+    ),
+  );
+});
+
 test("unknown playbook ids produce an actionable validation error", () => {
   assert.throws(
     () => createPlaybookOutput(["unknown"]),

@@ -93,7 +93,7 @@ export const PLAYBOOKS = [
     ],
     structure: [
       "Start with the goal, the current state, and desired behavior.",
-      "Then describe the a proposed approach, focusing on high level decisions.",
+      "Then describe a proposed approach, focusing on high level decisions.",
       "At the end, list any risks you see, and open questions you have, and follow the 'comparison' playbook to provide options for the user to choose from.",
     ],
     design_rules: [
