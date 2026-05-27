@@ -101,6 +101,8 @@ pnpm link
 - **Feedback controls** - Mark buttons, choices, and other interactive elements with `data-lavish-action` so Lavish does not annotate them, then call `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()` from the control handler.
 - **Agent presence** - The browser shows when no agent is listening, keeps queued feedback for the next successful `lavish-axi poll` send even across reloads, and only blocks sending while the agent is working on delivered feedback.
 - **Precise targets** - Text annotations include selected text plus range anchors, so agents are not limited to whole-element selectors.
+- **Server cleanup** - The detached server stops after the last session ends when nothing is connected, or after `LAVISH_AXI_IDLE_TIMEOUT_MS` (default 30 minutes) with no browser or poll connections.
+  Set `LAVISH_AXI_IDLE_TIMEOUT_MS=0` or `off` to disable idle self-shutdown.
 - **Local-first state** - Session state stays under `.lavish-axi/` in the workspace.
 
 ## CLI Reference
@@ -111,6 +113,7 @@ pnpm link
 | `lavish-axi <html-file>`      | Open or resume a Lavish Editor session.                                                                                  |
 | `lavish-axi poll <html-file>` | Long-poll until the user sends feedback or ends the session.                                                             |
 | `lavish-axi end <html-file>`  | End a session.                                                                                                           |
+| `lavish-axi stop`             | Shut down the background server.                                                                                         |
 | `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.                                                                     |
 | `lavish-axi design`           | Show CDN snippet + DaisyUI component reference (opt-in).                                                                 |
 | `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward. |
@@ -125,6 +128,7 @@ Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `
 | `lavish-axi <html-file>` | `--no-open`           | Ensure the server/session exists without opening another browser window.                                                                                                                                                            |
 | `lavish-axi poll`        | `--agent-reply "..."` | Show the agent's reply in the existing browser chat before polling again.                                                                                                                                                           |
 | `lavish-axi poll`        | `--timeout-ms <ms>`   | Test/debug escape hatch only; agents should normally omit it.                                                                                                                                                                       |
+| `lavish-axi stop`        | `--port <port>`       | Shut down a server running on a non-default port.                                                                                                                                                                                   |
 | `lavish-axi server`      | `--verbose`           | Log session and watcher events to stderr; can also be enabled with `LAVISH_AXI_DEBUG=1`. Detached server output is appended to `~/.lavish-axi/server.log` (or `LAVISH_AXI_STATE_DIR/server.log`) for startup and crash diagnostics. |
 
 ## Development
