@@ -241,12 +241,30 @@ async function endCommand(args) {
 export async function stopCommand(args) {
   const port = Number(flagValue(args, "--port") || defaultPort());
   const baseUrl = `http://${LOOPBACK_HOST}:${port}`;
-  const health = await fetchHealth(baseUrl);
+  return shutdownServerOnPort(port, { baseUrl, currentVersion: VERSION });
+}
+
+export async function shutdownServerOnPort(
+  port,
+  {
+    baseUrl = `http://${LOOPBACK_HOST}:${port}`,
+    currentVersion = VERSION,
+    fetchHealth: healthFetcher = fetchHealth,
+    requestShutdown: shutdownRequester = requestShutdown,
+    waitForPortFree: portFreeWaiter = waitForPortFree,
+    killProcessOnPort: portKiller = killProcessOnPort,
+  } = {},
+) {
+  const health = await healthFetcher(baseUrl);
   if (!health) {
     return { server: { status: "not-running", port } };
   }
-  await requestShutdown(baseUrl);
-  const freed = await waitForPortFree(baseUrl, 3000);
+  await shutdownRequester(baseUrl);
+  let freed = await portFreeWaiter(baseUrl, 3000);
+  if (!freed && shouldKillProcessOnPort(currentVersion, health)) {
+    portKiller(port);
+    freed = await portFreeWaiter(baseUrl, 3000);
+  }
   return { server: { status: freed ? "stopped" : "stopping", port } };
 }
 

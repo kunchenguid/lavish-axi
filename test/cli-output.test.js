@@ -22,6 +22,7 @@ import {
   normalizeArgv,
   resolveHookHomeDir,
   resolveServerEntry,
+  shutdownServerOnPort,
   shouldForceRestartForLocalBuild,
   shouldKillProcessOnPort,
   shouldOpenBrowser,
@@ -412,6 +413,29 @@ test("shouldKillProcessOnPort kills pre-handshake Lavish servers after shutdown 
 test("shouldKillProcessOnPort only kills Lavish servers with a mismatched version", () => {
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }), true);
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), false);
+});
+
+test("shutdownServerOnPort kills pre-handshake Lavish servers when shutdown does not free the port", async () => {
+  let shutdowns = 0;
+  let kills = 0;
+  const portFreeResults = [false, true];
+
+  const output = await shutdownServerOnPort(4387, {
+    baseUrl: "http://127.0.0.1:4387",
+    currentVersion: "0.1.4",
+    fetchHealth: async () => ({ ok: true }),
+    requestShutdown: async () => {
+      shutdowns += 1;
+    },
+    waitForPortFree: async () => portFreeResults.shift() ?? false,
+    killProcessOnPort: () => {
+      kills += 1;
+    },
+  });
+
+  assert.equal(shutdowns, 1);
+  assert.equal(kills, 1);
+  assert.deepEqual(output, { server: { status: "stopped", port: 4387 } });
 });
 
 test("open can resume a session without opening another browser window", () => {

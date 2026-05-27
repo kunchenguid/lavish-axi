@@ -38,10 +38,11 @@ const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 // state.json. Set LAVISH_AXI_IDLE_TIMEOUT_MS to 0/off to disable, or to a custom millisecond
 // budget.
 export function resolveIdleTimeoutMs(env = process.env) {
-  const raw = env.LAVISH_AXI_IDLE_TIMEOUT_MS;
+  const raw = env.LAVISH_AXI_IDLE_TIMEOUT_MS?.trim();
   if (raw === undefined || raw === "") return DEFAULT_IDLE_TIMEOUT_MS;
+  if (raw === "0" || raw.toLowerCase() === "off") return null;
   const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) return null;
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_IDLE_TIMEOUT_MS;
   return value;
 }
 
