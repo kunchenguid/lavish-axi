@@ -30,7 +30,30 @@ const designAssetUrls = {
   },
 };
 
-export async function serve({ port, stateFile, version = "", debug = false, log = null, pollHeartbeatMs = 15_000 }) {
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
+
+// A detached server should not live forever. When no browser chrome (SSE) and no agent poll
+// are connected for this long, the server shuts itself down so it stops dangling. The next
+// `lavish-axi <file>` invocation re-spawns a fresh server and adopts the session from
+// state.json. Set LAVISH_AXI_IDLE_TIMEOUT_MS to 0/off to disable, or to a custom millisecond
+// budget.
+export function resolveIdleTimeoutMs(env = process.env) {
+  const raw = env.LAVISH_AXI_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return DEFAULT_IDLE_TIMEOUT_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+export async function serve({
+  port,
+  stateFile,
+  version = "",
+  debug = false,
+  log = null,
+  pollHeartbeatMs = 15_000,
+  idleTimeoutMs = resolveIdleTimeoutMs(),
+}) {
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
@@ -101,6 +124,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
         heartbeat.unref?.();
       }
       setPollActive(key, activePolls, deliveredFeedback, events, true);
+      refreshIdleTimer();
       const timer = timeoutMs === null ? null : setTimeout(() => respond().catch(handleRespondError), timeoutMs);
       let cleaned = false;
       let responding = false;
@@ -112,6 +136,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
         events.off("feedback", onFeedback);
         events.off("ended", onFeedback);
         setPollActive(key, activePolls, deliveredFeedback, events, false);
+        refreshIdleTimer();
       };
       const respond = async () => {
         if (responding || res.writableEnded) return;
@@ -170,6 +195,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
       clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       events.emit("ended", req.params.key);
       res.json({ status: "ended" });
+      await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);
     }
@@ -198,6 +224,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
       clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       events.emit("ended", key);
       res.json({ status: "ended" });
+      await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);
     }
@@ -265,6 +292,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
         connection: "keep-alive",
       });
       sseClients.add(res);
+      refreshIdleTimer();
       const session = await store.findByKey(req.params.key);
       const sendReload = (key) => {
         if (key === req.params.key) {
@@ -293,6 +321,7 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
         events.off("reload", sendReload);
         events.off("agent-reply", sendAgentReply);
         events.off("agent-presence", sendPresence);
+        refreshIdleTimer();
       });
     } catch (error) {
       next(error);
@@ -345,6 +374,10 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
   function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
     // Tell open browser chromes to reload before we drop their SSE connection. The new
     // server adopts the session via state.json once it binds, so the reloaded chrome
     // immediately gets the upgraded HTML/CSS/JS.
@@ -367,6 +400,47 @@ export async function serve({ port, stateFile, version = "", debug = false, log 
       httpServer.closeAllConnections();
     }
   }
+
+  // Idle self-shutdown: the timer only runs while nothing is connected. Any live SSE chrome or
+  // active long-poll cancels it; losing the last connection (re)arms it.
+  let idleTimer = null;
+  function refreshIdleTimer() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+    if (shuttingDown || idleTimeoutMs == null) return;
+    if (sseClients.size > 0 || activePolls.size > 0) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (!shuttingDown && sseClients.size === 0 && activePolls.size === 0) {
+        logEvent?.(`idle for ${idleTimeoutMs}ms with no connections, shutting down`);
+        shutdown();
+      }
+    }, idleTimeoutMs);
+    idleTimer.unref?.();
+  }
+
+  // When the final open session ends with nothing connected, there is nothing left to serve,
+  // so step down immediately rather than waiting out the idle timeout. If a browser chrome or
+  // poll is still attached (e.g. the user is about to reopen), leave the server up and let the
+  // idle timer reap it once those connections drop. Best-effort: never let a read failure
+  // block the end response.
+  async function shutdownIfNoLiveSessions() {
+    if (sseClients.size > 0 || activePolls.size > 0) return;
+    try {
+      const sessions = await store.listSessions();
+      if (sessions.every((session) => session.status === "ended")) {
+        logEvent?.("last open session ended with no live connections, shutting down");
+        setImmediate(shutdown);
+      }
+    } catch {
+      // ignore - the idle timer remains as a backstop
+    }
+  }
+
+  // Arm the idle timer for a server that is spawned but never opens a session.
+  refreshIdleTimer();
 
   return {
     port: httpServer.address().port,

@@ -9,6 +9,7 @@ import {
   createSdkJs,
   hasLiveReloadRootOptIn,
   resolveArtifactAsset,
+  resolveIdleTimeoutMs,
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
@@ -729,6 +730,135 @@ test("POST /shutdown stops the listener so the client can spawn a fresh server",
     await server.done;
     await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveIdleTimeoutMs defaults, parses, and disables on non-positive input", () => {
+  assert.equal(resolveIdleTimeoutMs({}), 30 * 60_000);
+  assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "" }), 30 * 60_000);
+  assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "5000" }), 5000);
+  assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "0" }), null);
+  assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "-1" }), null);
+  assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "off" }), null);
+});
+
+async function expectDoneWithin(server, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`server did not shut down within ${ms}ms`)), ms);
+  });
+  try {
+    await Promise.race([server.done, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test("server shuts itself down after the idle timeout with no connections", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    idleTimeoutMs: 150,
+  });
+  try {
+    await expectDoneWithin(server, 2000);
+    await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an open SSE connection keeps the server alive past the idle timeout", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    idleTimeoutMs: 150,
+  });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    // Hold an SSE connection open so the server is never idle.
+    const sse = fetch(`${base}/events/${key}`, { signal: controller.signal });
+    sse.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    const health = await fetch(`${base}/health`);
+    assert.equal(health.status, 200);
+    // Dropping the connection lets the idle timer fire and shut the server down.
+    controller.abort();
+    await expectDoneWithin(server, 2000);
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ending the last open session shuts the server down", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const end = await fetch(`${base}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.equal(end.status, 200);
+    await expectDoneWithin(server, 2000);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ending one of several sessions keeps the server running", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const first = path.join(dir, "first.html");
+  const second = path.join(dir, "second.html");
+  await writeFile(first, "<!doctype html><html><body>1</body></html>");
+  await writeFile(second, "<!doctype html><html><body>2</body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    for (const file of [first, second]) {
+      await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file }),
+      });
+    }
+    await fetch(`${base}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: first }),
+    });
+    // Give any erroneous shutdown a chance to fire before asserting the server is still up.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const health = await fetch(`${base}/health`);
+    assert.equal(health.status, 200);
+  } finally {
+    await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

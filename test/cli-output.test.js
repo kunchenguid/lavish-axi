@@ -26,9 +26,11 @@ import {
   shouldKillProcessOnPort,
   shouldOpenBrowser,
   shouldRestartServer,
+  stopCommand,
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
+import { serve } from "../src/server.js";
 
 test("CLI version tracks package.json so release-please bumps reach the published binary", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -510,5 +512,34 @@ test("fetchJson reports interrupted response body failures without retrying", as
     assert.equal(requests, 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("stop command shuts down the running server on the configured port", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-stop-test-`);
+  const server = await serve({ port: 0, stateFile: `${dir}/state.json`, version: "9.9.9-test" });
+  try {
+    const output = await stopCommand(["--port", String(server.port)]);
+    assert.deepEqual(output, { server: { status: "stopped", port: server.port } });
+    await server.done;
+    await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
+  } finally {
+    await server.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("stop command reports when no server is running", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-stop-test-`);
+  try {
+    // Bind then release a port so we know nothing is listening on it.
+    const probe = await serve({ port: 0, stateFile: `${dir}/state.json` });
+    const freePort = probe.port;
+    await probe.close();
+
+    const output = await stopCommand(["--port", String(freePort)]);
+    assert.deepEqual(output, { server: { status: "not-running", port: freePort } });
+  } finally {
+    await rm(dir, { force: true, recursive: true });
   }
 });

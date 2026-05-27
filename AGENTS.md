@@ -37,6 +37,11 @@ The first command that needs the server spawns `lavish-axi server` as a **detach
 Subsequent CLI invocations reuse the running server only when its health version matches the current CLI version; stale servers are asked to `POST /shutdown`, and pre-handshake servers may be SIGTERM'd by port PID before the upgraded server is spawned.
 Port defaults to 4387 (`LAVISH_AXI_PORT`).
 
+The detached server does not run forever.
+It shuts itself down once no browser chrome (SSE) and no agent poll have been connected for `LAVISH_AXI_IDLE_TIMEOUT_MS` (default 30 minutes; set `0`/`off` to disable), and immediately when the last open session ends while nothing is connected (a still-attached browser or poll defers cleanup to the idle timer instead).
+`lavish-axi stop` (`stopCommand`) explicitly `POST /shutdown`s the server on the default port, accepts `--port`, and reports `stopped`, `stopping`, or `not-running`.
+Because cleanup keys off live connections rather than session status, the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json`.
+
 State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`). All sessions across all projects share this one file, keyed by a sha256 prefix of the canonicalized file path - so the CLI never needs opaque session IDs; the canonical HTML path _is_ the identity (`src/session-store.js:sessionKey`).
 
 ### Request flow
