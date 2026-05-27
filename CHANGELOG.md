@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.18](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.17...lavish-axi-v0.1.18) (2026-05-27)
+
+
+### Features
+
+* **cli:** add server shutdown controls ([#54](https://github.com/kunchenguid/lavish-axi/issues/54)) ([33c5b45](https://github.com/kunchenguid/lavish-axi/commit/33c5b4549693d7c8fb5ca8dc59595dcf9377b4cd))
+
 ## [0.1.17](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.16...lavish-axi-v0.1.17) (2026-05-24)
 
 
