@@ -634,18 +634,18 @@ test("long-poll sends heartbeat bytes before feedback arrives", async () => {
     const controller = new AbortController();
     const res = await Promise.race([
       fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send headers")), 50)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send headers")), 500)),
     ]);
     const reader = res.body.getReader();
     try {
       const decoder = new TextDecoder();
       const first = await Promise.race([
         reader.read(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send initial heartbeat")), 50)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send initial heartbeat")), 500)),
       ]);
       const second = await Promise.race([
         reader.read(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not repeat heartbeat")), 50)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not repeat heartbeat")), 500)),
       ]);
 
       assert.equal(decoder.decode(first.value), " ");

@@ -253,11 +253,15 @@ export async function shutdownServerOnPort(
     requestShutdown: shutdownRequester = requestShutdown,
     waitForPortFree: portFreeWaiter = waitForPortFree,
     killProcessOnPort: portKiller = killProcessOnPort,
+    processMatchesLavish = processOnPortMatchesLavish,
   } = {},
 ) {
   const health = await healthFetcher(baseUrl);
   if (!health) {
     return { server: { status: "not-running", port } };
+  }
+  if (!(await canControlServerOnPort(port, health, processMatchesLavish))) {
+    return { server: { status: "not-lavish", port } };
   }
   await shutdownRequester(baseUrl);
   let freed = await portFreeWaiter(baseUrl, 3000);
@@ -342,6 +346,11 @@ async function ensureServer({ forceRestart = false } = {}) {
     return baseUrl;
   }
   if (existing) {
+    if (!(await canControlServerOnPort(port, existing, processOnPortMatchesLavish))) {
+      throw new AxiError(`Port ${port} is occupied by a non-Lavish server`, "SERVER_ERROR", [
+        `Stop the process using port ${port}, or set LAVISH_AXI_PORT to another port`,
+      ]);
+    }
     // Stale server from an older release is squatting on the port. Ask it to shut down
     // gracefully so the upgraded client doesn't keep handing users an old chrome.
     await requestShutdown(baseUrl);
@@ -397,6 +406,13 @@ export function shouldKillProcessOnPort(currentVersion, healthBody) {
   return healthBody.version !== currentVersion;
 }
 
+async function canControlServerOnPort(port, healthBody, processMatchesLavish) {
+  if (!healthBody || typeof healthBody !== "object") return false;
+  if (healthBody.app === "lavish-axi") return true;
+  if (typeof healthBody.version === "string" && healthBody.version !== "") return false;
+  return processMatchesLavish(port);
+}
+
 async function fetchHealth(baseUrl) {
   try {
     const response = await fetch(`${baseUrl}/health`);
@@ -445,6 +461,24 @@ function killProcessOnPort(port) {
   } catch {
     // lsof missing or unsupported platform - the outer caller will surface SERVER_ERROR.
   }
+}
+
+function processOnPortMatchesLavish(port) {
+  try {
+    const pids = spawnSync("lsof", ["-t", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+    if (pids.status !== 0) return false;
+    for (const line of pids.stdout.split("\n")) {
+      const pid = Number(line.trim());
+      if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+      const command = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+      if (command.status === 0 && /lavish-axi/.test(command.stdout)) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 async function startServer(port) {

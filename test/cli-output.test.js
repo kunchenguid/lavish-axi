@@ -431,11 +431,35 @@ test("shutdownServerOnPort kills pre-handshake Lavish servers when shutdown does
     killProcessOnPort: () => {
       kills += 1;
     },
+    processMatchesLavish: () => true,
   });
 
   assert.equal(shutdowns, 1);
   assert.equal(kills, 1);
   assert.deepEqual(output, { server: { status: "stopped", port: 4387 } });
+});
+
+test("shutdownServerOnPort ignores unidentified health responders", async () => {
+  let shutdowns = 0;
+  let kills = 0;
+
+  const output = await shutdownServerOnPort(4387, {
+    baseUrl: "http://127.0.0.1:4387",
+    currentVersion: "0.1.4",
+    fetchHealth: async () => ({ ok: true }),
+    requestShutdown: async () => {
+      shutdowns += 1;
+    },
+    waitForPortFree: async () => false,
+    killProcessOnPort: () => {
+      kills += 1;
+    },
+    processMatchesLavish: () => false,
+  });
+
+  assert.equal(shutdowns, 0);
+  assert.equal(kills, 0);
+  assert.deepEqual(output, { server: { status: "not-lavish", port: 4387 } });
 });
 
 test("open can resume a session without opening another browser window", () => {
