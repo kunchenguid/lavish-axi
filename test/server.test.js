@@ -782,7 +782,7 @@ test("an open SSE connection keeps the server alive past the idle timeout", asyn
     port: 0,
     stateFile: path.join(dir, "state.json"),
     version: "9.9.9-test",
-    idleTimeoutMs: 150,
+    idleTimeoutMs: 500,
   });
   const controller = new AbortController();
   try {
@@ -796,7 +796,8 @@ test("an open SSE connection keeps the server alive past the idle timeout", asyn
     // Hold an SSE connection open so the server is never idle.
     const sse = fetch(`${base}/events/${key}`, { signal: controller.signal });
     sse.catch(() => {});
-    await new Promise((resolve) => setTimeout(resolve, 450));
+    await sse;
+    await new Promise((resolve) => setTimeout(resolve, 750));
     const health = await fetch(`${base}/health`);
     assert.equal(health.status, 200);
     // Dropping the connection lets the idle timer fire and shut the server down.
