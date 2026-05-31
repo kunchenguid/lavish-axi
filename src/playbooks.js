@@ -151,7 +151,9 @@ export const PLAYBOOKS = [
       "Show queued or selected state clearly so the user trusts what will be sent back.",
     ],
     design_rules: [
-      "Put data-lavish-action on any element that should act like a feedback control so Lavish does not annotate it and shows a pointer cursor instead.",
+      "Native form controls - radios, checkboxes, text inputs, selects, textareas, buttons, options, labels, and contenteditable regions - are interactive automatically: clicks toggle, focus, and type instead of annotating, so they do not need data-lavish-action. Build choice and option UIs from these whenever you can.",
+      "To turn a native control into agent feedback, wire its own change, click, or submit handler to window.lavish.queuePrompt() (for example a radio group's onchange, or a submit button that reads the selected values) - no marker required.",
+      "Put data-lavish-action only on custom (non-native) elements that should act like a feedback control - typically a styled div or span you made clickable - so Lavish does not annotate it and shows a pointer cursor instead.",
       "Call window.lavish.queuePrompt(prompt, options) from the control's click, change, or submit handler to queue a precise request for the agent.",
       "Pass options such as tag, text, selector, target, or data when they help the agent understand exactly what the user chose.",
       "Call window.lavish.sendQueuedPrompts() when the control should immediately send the queued feedback instead of waiting for the user to press Send to Agent.",
@@ -165,7 +167,8 @@ export const PLAYBOOKS = [
     ],
     lavish_notes: [
       "Lavish is strongest when the artifact becomes a focused review surface and not just a static page.",
-      "A minimal control looks like `<div role=\"button\" tabindex=\"0\" data-lavish-action onclick=\"window.lavish.queuePrompt('Choose option A', { tag: 'choice', text: 'Option A' })\">Choose option A</div>`.",
+      "A native choice looks like `<label><input type=\"radio\" name=\"plan\" onchange=\"window.lavish.queuePrompt('Use the Pro plan', { tag: 'choice', text: 'Pro' })\"> Pro</label>` - it just works, no marker needed.",
+      "A custom (non-native) control needs the marker: `<div role=\"button\" tabindex=\"0\" data-lavish-action onclick=\"window.lavish.queuePrompt('Choose option A', { tag: 'choice', text: 'Option A' })\">Choose option A</div>`.",
       "Use window.lavish.queuePrompt for user intent, not internal analytics or UI-only state changes.",
       "End input paths with an obvious way for the user to send feedback back to the agent.",
     ],

@@ -190,6 +190,27 @@ test("artifact SDK lets marked feedback controls handle their own clicks", () =>
   assert.match(js, /\[data-lavish-action\],[^{}]*\[data-lavish-action\] \*\{cursor:pointer!important\}/);
 });
 
+test("artifact SDK lets native form controls handle their own clicks", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /function isInteractiveControl/);
+  assert.match(js, /button,input,select,textarea/);
+  assert.match(js, /isInteractiveControl\(event\.target\)/);
+});
+
+test("artifact SDK does not annotate text selected inside native controls", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /isInteractiveControl\(ancestor\)/);
+});
+
+test("artifact SDK shows native cursors on form controls in annotation mode", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /input,textarea,\[contenteditable\][^{]*\{cursor:text!important\}/);
+  assert.match(js, /input\[type='checkbox'\]/);
+});
+
 test("turning annotation mode off clears selection and floating card", () => {
   const js = createSdkJs("abc");
 

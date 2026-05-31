@@ -83,7 +83,7 @@ export function createArtifactSdk() {
     if (range.collapsed || !text) return null;
 
     const ancestor = closestElement(range.commonAncestorContainer);
-    if (isLavishUi(ancestor) || isLavishAction(ancestor)) return null;
+    if (isLavishUi(ancestor) || isLavishAction(ancestor) || isInteractiveControl(ancestor)) return null;
 
     const commonAncestorSelector = selector(ancestor);
     const target = {
@@ -112,6 +112,17 @@ export function createArtifactSdk() {
 
   function isLavishAction(el) {
     return !!(el && el.closest && el.closest("[data-lavish-action]"));
+  }
+
+  // Native interactive controls (radios, checkboxes, inputs, selects, buttons,
+  // labels, editable regions) should toggle/focus/type natively instead of
+  // triggering annotation, just like elements marked with data-lavish-action.
+  function isInteractiveControl(el) {
+    return !!(
+      el &&
+      el.closest &&
+      el.closest("button,input,select,textarea,option,optgroup,label,[contenteditable]:not([contenteditable='false'])")
+    );
   }
 
   function highlightElement(el) {
@@ -151,7 +162,7 @@ export function createArtifactSdk() {
       style = document.createElement("style");
       style.id = "lavish-cursor-style";
       style.textContent =
-        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}";
+        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
       document.head.appendChild(style);
     }
     if (!annotationMode && style) style.remove();
@@ -310,7 +321,13 @@ export function createArtifactSdk() {
   document.addEventListener(
     "mouseover",
     (event) => {
-      if (!annotationMode || isLavishUi(event.target) || isLavishAction(event.target)) return;
+      if (
+        !annotationMode ||
+        isLavishUi(event.target) ||
+        isLavishAction(event.target) ||
+        isInteractiveControl(event.target)
+      )
+        return;
       if (event.target === selected) return;
       if (hovered && hovered !== selected) clearHighlight(hovered);
       hovered = event.target;
@@ -333,7 +350,13 @@ export function createArtifactSdk() {
   document.addEventListener(
     "mouseup",
     (event) => {
-      if (!annotationMode || isLavishUi(event.target) || isLavishAction(event.target)) return;
+      if (
+        !annotationMode ||
+        isLavishUi(event.target) ||
+        isLavishAction(event.target) ||
+        isInteractiveControl(event.target)
+      )
+        return;
 
       const c = textSelectionContext(document.getSelection());
       if (!c) return;
@@ -347,7 +370,13 @@ export function createArtifactSdk() {
   document.addEventListener(
     "click",
     (event) => {
-      if (!annotationMode || isLavishUi(event.target) || isLavishAction(event.target)) return;
+      if (
+        !annotationMode ||
+        isLavishUi(event.target) ||
+        isLavishAction(event.target) ||
+        isInteractiveControl(event.target)
+      )
+        return;
       event.preventDefault();
       event.stopPropagation();
       if (ignoreNextClick) {
