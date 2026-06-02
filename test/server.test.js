@@ -1463,3 +1463,21 @@ test("ended session message renders centered in the main content area", async ()
   assert.doesNotMatch(js, /The agent polling loop can stop\./);
   assert.doesNotMatch(js, /<span class="file">Session ended\. The agent polling loop can stop\.<\/span>/);
 });
+
+test("annotation card queues prompt on Enter and inserts newline on Shift+Enter", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /textarea\.addEventListener\(["']keydown["']/);
+  assert.match(js, /event\.key === ["']Enter["'] && !event\.shiftKey/);
+  assert.match(js, /event\.preventDefault\(\)/);
+  assert.match(js, /sendButton\.click\(\)/);
+});
+
+test("chrome client chat input sends on Enter and inserts newline on Shift+Enter", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /chatInput\.addEventListener\(["']keydown["']/);
+  assert.match(js, /event\.key === ["']Enter["'] && !event\.shiftKey/);
+  assert.match(js, /event\.preventDefault\(\)/);
+  assert.match(js, /sendQueued\(\)/);
+});
