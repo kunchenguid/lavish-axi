@@ -280,6 +280,12 @@ export function createArtifactSdk() {
       if (prompt) queuePrompt(prompt, c);
       closeCard();
     };
+    textarea.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendButton.click();
+      }
+    });
     setTimeout(() => textarea.focus(), 0);
   }
 
