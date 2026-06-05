@@ -55,6 +55,8 @@ test("createSkillMarkdown uses non-interactive npx commands", () => {
   const md = createSkillMarkdown();
 
   assert.match(md, /`npx -y lavish-axi <html-file>`/);
+  assert.match(md, /If lavish-axi output shows a follow-up command starting with `lavish-axi`/);
+  assert.match(md, /run it as `npx -y lavish-axi/);
   assert.doesNotMatch(md, /`npx lavish-axi/);
   assert.doesNotMatch(md, /Run `lavish-axi/);
 });
