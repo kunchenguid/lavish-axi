@@ -176,6 +176,7 @@ Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `
 ```sh
 pnpm run check          # Run all verification commands
 pnpm run build          # Bundle the publishable CLI, chrome, and design assets
+pnpm run build:skill    # Regenerate the installable lavish-axi skill
 pnpm test               # Run node:test tests
 pnpm run lint           # Run ESLint
 pnpm run format:check   # Check Prettier formatting
