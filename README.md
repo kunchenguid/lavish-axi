@@ -73,9 +73,13 @@ pnpm run build
 pnpm link
 ```
 
-## Set Up Agent Hooks (recommended)
+## Teach Your Agent About Lavish (recommended)
 
-Lavish does not install agent hooks automatically, which means your agent would not know to use it in a fresh session.
+Lavish does not wire itself into your agent automatically, so in a fresh session your agent would not know to use it.
+There are two ways to fix that - **you only need one.**
+We recommend the hook.
+
+### Option A: Session hook (recommended)
 
 Run this once to opt in:
 
@@ -88,7 +92,22 @@ With the hook installed, your agent learns to turn complex responses into rich, 
 
 **Restart your agent session after running this** so the new hook takes effect.
 
-Prefer not to install hooks? Lavish still works fully as a plain CLI - just tell your agent to `npx lavish-axi <file.html>` as shown in the Quick Start.
+### Option B: Install as a skill
+
+Prefer the [Agent Skills](https://agentskills.io) format, or use an agent that supports it?
+Install Lavish as a skill with [`npx skills`](https://github.com/vercel-labs/skills):
+
+```sh
+npx skills add kunchenguid/lavish-axi
+```
+
+This drops a `lavish-axi` skill into your agent's skills directory (`.claude/skills/` for example; add `-g` for `~/.claude/skills/`).
+The skill carries the same guidance the hook delivers, but it loads on demand when the agent recognizes a task that calls for a visual artifact, rather than every session.
+It does not surface your live open sessions - run `lavish-axi setup hooks` if you want that ambient context too.
+
+### No setup at all
+
+Lavish also works fully as a plain CLI - just tell your agent to `npx lavish-axi <file.html>` as shown in the Quick Start.
 
 ## How It Works
 
