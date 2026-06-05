@@ -65,9 +65,5 @@ ${playbookList(home.playbooks)}
 ## Commands & rules
 
 ${bullets(home.help.map(skillCommandText))}
-
-## Ambient context (optional)
-
-This skill and \`lavish-axi setup hooks\` are two ways to teach your agent about Lavish - you only need one. The hook (recommended) installs a SessionStart integration for Claude Code, Codex, and OpenCode that delivers this same guidance every session and also surfaces your currently open sessions. Restart your agent after running it.
 `;
 }

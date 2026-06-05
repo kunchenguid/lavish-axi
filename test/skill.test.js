@@ -46,9 +46,9 @@ test("createSkillMarkdown does not leak live session state", () => {
   assert.ok(!/\/session\/[0-9a-f]{8}/.test(md), "no live session URLs");
 });
 
-test("createSkillMarkdown points power users at setup hooks as the ambient alternative", () => {
+test("createSkillMarkdown omits setup hooks guidance", () => {
   const md = createSkillMarkdown();
-  assert.ok(md.includes("lavish-axi setup hooks"), "mentions the hooks alternative");
+  assert.doesNotMatch(md, /setup hooks/);
 });
 
 test("createSkillMarkdown uses non-interactive npx commands", () => {

@@ -51,7 +51,3 @@ Run `npx -y lavish-axi playbook <id>` for focused, detailed guidance on any of t
 - Run `npx -y lavish-axi playbook <playbook_id>` for focused artifact guidance
 - Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Choose a design system in this priority order: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, if the current project already has a design system or style conventions, match those so the artifact fits in; (3) otherwise, prefer the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, available via CDN - run `npx -y lavish-axi design` for a copy-pasteable CDN snippet plus component reference. Prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.
 - Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, product or technical plan, comparison, report, or browser-based feedback loop
-
-## Ambient context (optional)
-
-This skill and `lavish-axi setup hooks` are two ways to teach your agent about Lavish - you only need one. The hook (recommended) installs a SessionStart integration for Claude Code, Codex, and OpenCode that delivers this same guidance every session and also surfaces your currently open sessions. Restart your agent after running it.
