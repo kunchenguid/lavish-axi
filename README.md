@@ -98,7 +98,7 @@ Prefer the [Agent Skills](https://agentskills.io) format, or use an agent that s
 Install Lavish as a skill with [`npx skills`](https://github.com/vercel-labs/skills):
 
 ```sh
-npx skills add kunchenguid/lavish-axi
+npx skills add kunchenguid/lavish-axi --skill lavish-axi
 ```
 
 This drops a `lavish-axi` skill into your agent's skills directory (`.claude/skills/` for example; add `-g` for `~/.claude/skills/`).
