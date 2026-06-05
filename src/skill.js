@@ -15,6 +15,10 @@ function playbookList(playbooks) {
   return playbooks.map((p) => `- \`${p.id}\` - ${p.use_when}`).join("\n");
 }
 
+function skillCommandText(text) {
+  return text.replaceAll("`lavish-axi", "`npx -y lavish-axi");
+}
+
 /**
  * Render the installable SKILL.md for lavish-axi. The body mirrors what
  * `lavish-axi` prints with no arguments (minus live session state), so the
@@ -32,9 +36,9 @@ description: ${SKILL_DESCRIPTION}
 
 # Lavish Editor
 
-${home.description}
+${skillCommandText(home.description)}
 
-You do not need lavish-axi installed globally - invoke it with \`npx lavish-axi <html-file>\`.
+You do not need lavish-axi installed globally - invoke it with \`npx -y lavish-axi <html-file>\`.
 
 ## When to use
 
@@ -43,10 +47,10 @@ ${home.help[home.help.length - 1]}
 ## Workflow
 
 1. Create the HTML artifact (default location \`.lavish/<name>.html\` in the working directory).
-2. Run \`npx lavish-axi <html-file>\` to open or resume a review session in the browser.
-3. Run \`npx lavish-axi poll <html-file>\` to long-poll for the user's annotations and queued prompts.
+2. Run \`npx -y lavish-axi <html-file>\` to open or resume a review session in the browser.
+3. Run \`npx -y lavish-axi poll <html-file>\` to long-poll for the user's annotations and queued prompts.
 4. Apply the feedback, then poll again with \`--agent-reply "<message>"\` to reply in the browser and keep the loop going.
-5. Run \`npx lavish-axi end <html-file>\` when the review is finished.
+5. Run \`npx -y lavish-axi end <html-file>\` when the review is finished.
 
 ## Visual guidance
 
@@ -54,13 +58,13 @@ ${bullets(home.visual_guidance)}
 
 ## Playbooks
 
-Run \`npx lavish-axi playbook <id>\` for focused, detailed guidance on any of these:
+Run \`npx -y lavish-axi playbook <id>\` for focused, detailed guidance on any of these:
 
 ${playbookList(home.playbooks)}
 
 ## Commands & rules
 
-${bullets(home.help)}
+${bullets(home.help.map(skillCommandText))}
 
 ## Ambient context (optional)
 

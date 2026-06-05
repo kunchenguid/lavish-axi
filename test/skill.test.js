@@ -4,6 +4,10 @@ import test from "node:test";
 import { createHomeOutput } from "../src/cli.js";
 import { SKILL_DESCRIPTION, createSkillMarkdown } from "../src/skill.js";
 
+function skillCommandText(text) {
+  return text.replaceAll("`lavish-axi", "`npx -y lavish-axi");
+}
+
 test("createSkillMarkdown emits valid frontmatter naming the lavish-axi skill", () => {
   const md = createSkillMarkdown();
   assert.ok(md.startsWith("---\n"), "starts with frontmatter fence");
@@ -19,7 +23,7 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
   const md = createSkillMarkdown();
   const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false });
 
-  assert.ok(md.includes(home.description), "includes the product description");
+  assert.ok(md.includes(skillCommandText(home.description)), "includes the product description");
 
   for (const item of home.visual_guidance) {
     assert.ok(md.includes(item), `includes visual guidance: ${item.slice(0, 32)}...`);
@@ -31,7 +35,8 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
   }
 
   for (const item of home.help) {
-    assert.ok(md.includes(item), `includes help: ${item.slice(0, 32)}...`);
+    const skillItem = skillCommandText(item);
+    assert.ok(md.includes(skillItem), `includes help: ${skillItem.slice(0, 32)}...`);
   }
 });
 
@@ -44,4 +49,12 @@ test("createSkillMarkdown does not leak live session state", () => {
 test("createSkillMarkdown points power users at setup hooks as the ambient alternative", () => {
   const md = createSkillMarkdown();
   assert.ok(md.includes("lavish-axi setup hooks"), "mentions the hooks alternative");
+});
+
+test("createSkillMarkdown uses non-interactive npx commands", () => {
+  const md = createSkillMarkdown();
+
+  assert.match(md, /`npx -y lavish-axi <html-file>`/);
+  assert.doesNotMatch(md, /`npx lavish-axi/);
+  assert.doesNotMatch(md, /Run `lavish-axi/);
 });
