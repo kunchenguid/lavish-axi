@@ -23,6 +23,12 @@ test("installable skill stays in sync with the no-args home output", async () =>
   assert.equal(committed, createSkillMarkdown(), "run `npm run build:skill` and commit the result");
 });
 
+test("published package includes the installable skill", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+  assert.ok(packageJson.files.includes("skills/lavish-axi"));
+});
+
 test("build copies local design assets for published artifact injection", async () => {
   const buildScript = await readFile(new URL("../scripts/build.js", import.meta.url), "utf8");
 

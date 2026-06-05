@@ -9,6 +9,7 @@
   },
   "files": [
     "dist",
+    "skills/lavish-axi",
     "lavish-editor-marketing/renders/lavish-editor-marketing.gif",
     "LICENSE",
     "README.md"
