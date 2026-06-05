@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.19](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.18...lavish-axi-v0.1.19) (2026-06-05)
+
+
+### Bug Fixes
+
+* allow native form controls during annotation ([#56](https://github.com/kunchenguid/lavish-axi/issues/56)) ([e355502](https://github.com/kunchenguid/lavish-axi/commit/e355502fb312620108c2dcd38b4280a23e9e27e1))
+
 ## [0.1.18](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.17...lavish-axi-v0.1.18) (2026-05-27)
 
 
