@@ -281,7 +281,7 @@ export function createArtifactSdk() {
       closeCard();
     };
     textarea.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         sendButton.click();
       }
