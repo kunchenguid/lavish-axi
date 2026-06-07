@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.20](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.19...lavish-axi-v0.1.20) (2026-06-07)
+
+
+### Features
+
+* send on Enter in chat input and annotation card ([#58](https://github.com/kunchenguid/lavish-axi/issues/58)) ([e88679f](https://github.com/kunchenguid/lavish-axi/commit/e88679f6a02a3ba4fdd6424d569e34f919025077))
+* **skills:** add installable Lavish agent skill ([#59](https://github.com/kunchenguid/lavish-axi/issues/59)) ([5f7cb2e](https://github.com/kunchenguid/lavish-axi/commit/5f7cb2e4263220ff38f63117ae6293616278fdf6))
+
 ## [0.1.19](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.18...lavish-axi-v0.1.19) (2026-06-05)
 
 
