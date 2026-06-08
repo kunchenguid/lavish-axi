@@ -597,6 +597,32 @@ test("session URLs use the same IPv4 loopback host the server binds", async () =
   }
 });
 
+test("session URLs use the configured linkHost while binding to loopback", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    host: "127.0.0.1",
+    linkHost: "host.example",
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const body = await res.json();
+
+    assert.match(body.url, new RegExp(`^http://host\\.example:${server.port}/session/`));
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("/artifact serves files copied under the artifact directory", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const dir = path.join(parent, ".lavish");
