@@ -370,7 +370,7 @@ export async function serve({
 
   const httpServer = await new Promise((resolve, reject) => {
     const s = app.listen(port, host, () => {
-      resolve(s);
+      if (s.address()) resolve(s);
     });
     s.once("error", reject);
   });
