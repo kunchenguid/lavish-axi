@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { AxiError, installSessionStartHooks, runAxiCli } from "axi-sdk-js";
 
 import { createDesignOutput, DESIGN_SYSTEM_HINT } from "./design-reference.js";
-import { clientHost, defaultPort, ensureStateDir, serverLogFile, stateFile } from "./paths.js";
+import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds } from "./playbooks.js";
 import { serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
@@ -240,14 +240,14 @@ async function endCommand(args) {
 // session), this stops the background process so it stops dangling between sessions.
 export async function stopCommand(args) {
   const port = Number(flagValue(args, "--port") || defaultPort());
-  const baseUrl = `http://${clientHost()}:${port}`;
+  const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
   return shutdownServerOnPort(port, { baseUrl, currentVersion: VERSION });
 }
 
 export async function shutdownServerOnPort(
   port,
   {
-    baseUrl = `http://${clientHost()}:${port}`,
+    baseUrl = `http://${hostForUrl(clientHost())}:${port}`,
     currentVersion = VERSION,
     fetchHealth: healthFetcher = fetchHealth,
     requestShutdown: shutdownRequester = requestShutdown,
@@ -340,7 +340,7 @@ function isHtmlPath(file) {
 
 async function ensureServer({ forceRestart = false } = {}) {
   const port = defaultPort();
-  const baseUrl = `http://${clientHost()}:${port}`;
+  const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
   const existing = await fetchHealth(baseUrl);
   if (existing && !shouldRestartServer(VERSION, existing, forceRestart)) {
     return baseUrl;

@@ -27,6 +27,13 @@ export function linkHost(env = process.env) {
   return env.LAVISH_AXI_LINK_HOST?.trim() || clientHost(env);
 }
 
+// Brackets an IPv6 literal so it can be safely interpolated into a URL authority.
+// IPv4 addresses and hostnames pass through unchanged.
+export function hostForUrl(host) {
+  if (host.includes(":") && !host.startsWith("[")) return `[${host}]`;
+  return host;
+}
+
 export function stateDir() {
   return process.env.LAVISH_AXI_STATE_DIR || path.join(os.homedir(), ".lavish-axi");
 }

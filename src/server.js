@@ -7,7 +7,7 @@ import express from "express";
 
 import { createArtifactSdk } from "./artifact-sdk.js";
 import { injectLavishSdk } from "./html-transform.js";
-import { bindHost, linkHost } from "./paths.js";
+import { bindHost, hostForUrl, linkHost } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
@@ -90,7 +90,7 @@ export async function serve({
     try {
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
-      const url = `http://${linkHostName}:${publicPort}/session/${key}`;
+      const url = `http://${hostForUrl(linkHostName)}:${publicPort}/session/${key}`;
       const existing = await store.findByKey(key);
       const session = await store.upsertSession(file, url);
       if (existing?.status === "ended") {
@@ -370,7 +370,7 @@ export async function serve({
 
   const httpServer = await new Promise((resolve, reject) => {
     const s = app.listen(port, host, () => {
-      if (s.address()) resolve(s);
+      resolve(s);
     });
     s.once("error", reject);
   });
