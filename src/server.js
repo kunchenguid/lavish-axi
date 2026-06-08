@@ -368,8 +368,11 @@ export async function serve({
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   });
 
-  const httpServer = await new Promise((resolve) => {
-    const s = app.listen(port, host, () => resolve(s));
+  const httpServer = await new Promise((resolve, reject) => {
+    const s = app.listen(port, host, () => {
+      if (s.address()) resolve(s);
+    });
+    s.once("error", reject);
   });
   publicPort = httpServer.address().port;
 

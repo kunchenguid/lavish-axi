@@ -623,6 +623,26 @@ test("session URLs use the configured linkHost while binding to loopback", async
   }
 });
 
+test("serve rejects fast when the bind host is unavailable", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  try {
+    await assert.rejects(
+      serve({
+        port: 0,
+        stateFile: path.join(dir, "state.json"),
+        version: "9.9.9-test",
+        host: "192.0.2.1",
+      }),
+      (error) => {
+        const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+        return code === "EADDRNOTAVAIL" || code === "EADDRINUSE";
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("/artifact serves files copied under the artifact directory", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const dir = path.join(parent, ".lavish");
