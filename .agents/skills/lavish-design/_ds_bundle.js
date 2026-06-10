@@ -130,7 +130,7 @@ function AnnotationCard({
       cursor: value.trim() ? "pointer" : "not-allowed"
     },
     onClick: () => value.trim() && onQueue(value.trim())
-  }, "Queue Prompt")));
+  }, "Queue")));
 }
 window.AnnotationCard = AnnotationCard;
 })(); } catch (e) { __ds_ns.__errors.push({ path: "ui_kits/editor/AnnotationCard.jsx", error: String((e && e.message) || e) }); }
@@ -1281,7 +1281,7 @@ function App() {
     setAnnotating(null);
     setChat(c => [...c, {
       role: "agent",
-      text: "Session ended. The agent polling loop can stop."
+      text: "Session ended. Return to your agent to continue."
     }]);
   };
   const reloadArtifact = () => {
@@ -1392,7 +1392,7 @@ function App() {
     style: appStyles.endedCard
   }, /*#__PURE__*/React.createElement("div", {
     style: appStyles.endedQuote
-  }, "Session ended.", /*#__PURE__*/React.createElement("br", null), "The agent polling loop can stop."), /*#__PURE__*/React.createElement("div", {
+  }, "Session ended.", /*#__PURE__*/React.createElement("br", null), "Return to your agent to continue."), /*#__PURE__*/React.createElement("div", {
     style: appStyles.endedSub
   }, "~/projects/landing/index.html"))));
 }
