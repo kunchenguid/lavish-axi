@@ -38,12 +38,8 @@ function Pill({ prompt, onRemove }) {
   return (
     <div style={pillStyles.wrap}>
       <div style={pillStyles.pill}>
-        <span style={pillStyles.preview} title={prompt}>
-          {prompt}
-        </span>
-        <button style={pillStyles.close} aria-label="Remove queued prompt" onClick={onRemove}>
-          ×
-        </button>
+        <span style={pillStyles.preview} title={prompt}>{prompt}</span>
+        <button style={pillStyles.close} aria-label="Remove queued prompt" onClick={onRemove}>×</button>
       </div>
     </div>
   );

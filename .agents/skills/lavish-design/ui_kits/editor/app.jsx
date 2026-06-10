@@ -12,7 +12,9 @@ function App() {
   const [annotationOn, setAnnotationOn] = useState(true);
   const [hovered, setHovered] = useState(null);
   const [annotating, setAnnotating] = useState(null); // { id, tag, rect }
-  const [pills, setPills] = useState(["Tighten the heading — fewer words, more confidence"]);
+  const [pills, setPills] = useState([
+    "Tighten the heading — fewer words, more confidence",
+  ]);
   const [draft, setDraft] = useState("");
   const [chat, setChat] = useState([
     { role: "agent", text: "Opened landing/index.html. Annotation is on — click any element to start." },
@@ -20,14 +22,12 @@ function App() {
   const [working, setWorking] = useState(false);
   const [ended, setEnded] = useState(false);
   const [replyIdx, setReplyIdx] = useState(0);
+  const [artifactKey, setArtifactKey] = useState(0);
 
-  const handleArtifactClick = useCallback(
-    (target) => {
-      if (!annotationOn) return;
-      setAnnotating(target);
-    },
-    [annotationOn],
-  );
+  const handleArtifactClick = useCallback((target) => {
+    if (!annotationOn) return;
+    setAnnotating(target);
+  }, [annotationOn]);
 
   const closeCard = () => setAnnotating(null);
 
@@ -55,19 +55,38 @@ function App() {
     }, 1400);
   };
 
+  // Send the queued/typed messages, then end — no waiting for a reply.
+  const sendAndEnd = () => {
+    if (working) return;
+    const messages = [...pills];
+    if (draft.trim()) messages.push(draft.trim());
+    if (messages.length) {
+      setChat((c) => [...c, ...messages.map((t) => ({ role: "user", text: t }))]);
+      setPills([]);
+      setDraft("");
+    }
+    endSession();
+  };
+
   const endSession = () => {
     setEnded(true);
     setAnnotationOn(false);
     setAnnotating(null);
-    setChat((c) => [...c, { role: "agent", text: "Session ended. The agent polling loop can stop." }]);
+    setChat((c) => [...c, { role: "agent", text: "Session ended. Return to your agent to continue." }]);
+  };
+
+  const reloadArtifact = () => {
+    setArtifactKey((k) => k + 1);
+  };
+
+  const copySnapshot = () => {
+    setChat((c) => [...c, { role: "agent", text: "Copied a DOM snapshot of the artifact to your clipboard." }]);
   };
 
   // Click outside annotation card closes it
   useEffect(() => {
     if (!annotating) return;
-    const onKey = (e) => {
-      if (e.key === "Escape") closeCard();
-    };
+    const onKey = (e) => { if (e.key === "Escape") closeCard(); };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [annotating]);
@@ -127,10 +146,13 @@ function App() {
         annotationOn={annotationOn}
         onToggleAnnotation={() => setAnnotationOn((v) => !v)}
         onEndSession={endSession}
+        onReload={reloadArtifact}
+        onSnapshot={copySnapshot}
         ended={ended}
       />
       <div style={appStyles.layout}>
         <Artifact
+          key={artifactKey}
           annotationOn={annotationOn && !ended}
           hoveredEl={hovered}
           selectedEl={annotating}
@@ -145,16 +167,15 @@ function App() {
           onDraftChange={setDraft}
           onRemovePill={removePill}
           onSend={sendToAgent}
+          onSendAndEnd={sendAndEnd}
         />
       </div>
-      {annotating && <AnnotationCard target={annotating} onCancel={closeCard} onQueue={queuePrompt} />}
+      {annotating && (
+        <AnnotationCard target={annotating} onCancel={closeCard} onQueue={queuePrompt} />
+      )}
       <div style={appStyles.endedOverlay}>
         <div style={appStyles.endedCard}>
-          <div style={appStyles.endedQuote}>
-            Session ended.
-            <br />
-            The agent polling loop can stop.
-          </div>
+          <div style={appStyles.endedQuote}>Session ended.<br/>Return to your agent to continue.</div>
           <div style={appStyles.endedSub}>~/projects/landing/index.html</div>
         </div>
       </div>

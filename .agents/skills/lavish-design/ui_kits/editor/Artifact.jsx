@@ -64,14 +64,7 @@ function Artifact({ annotationOn, selectedEl, hoveredEl, onHover, onClick }) {
       color: "#3a3a3a",
       margin: "36px 0 16px",
     },
-    list: {
-      fontFamily: "'Geist', system-ui, sans-serif",
-      fontSize: 15,
-      lineHeight: 1.7,
-      color: "#3a3a3a",
-      paddingLeft: 18,
-      margin: 0,
-    },
+    list: { fontFamily: "'Geist', system-ui, sans-serif", fontSize: 15, lineHeight: 1.7, color: "#3a3a3a", paddingLeft: 18, margin: 0 },
     footer: {
       fontFamily: "'Geist Mono', monospace",
       fontSize: 11,
@@ -116,37 +109,25 @@ function Artifact({ annotationOn, selectedEl, hoveredEl, onHover, onClick }) {
   return (
     <div style={artifactStyles.frame}>
       <div style={artifactStyles.page}>
-        <Anno id="eyebrow" tag="div" style={artifactStyles.eyebrow}>
-          v0.1 · the rich editor
-        </Anno>
-        <Anno id="h1" tag="h1" style={artifactStyles.h1}>
-          For when a rich editor is not rich enough.
-        </Anno>
+        <Anno id="eyebrow" tag="div" style={artifactStyles.eyebrow}>v0.1 · the rich editor</Anno>
+        <Anno id="h1" tag="h1" style={artifactStyles.h1}>For when a rich editor is not rich enough.</Anno>
         <Anno id="lede" tag="p" style={artifactStyles.lede}>
-          Lavish opens an agent-generated HTML artifact in a local browser, lets you pinpoint elements, and ships your
-          feedback back to the agent.
+          Lavish opens an agent-generated HTML artifact in a local browser, lets you pinpoint elements,
+          and ships your feedback back to the agent.
         </Anno>
-        <Anno id="cta" tag="button" style={artifactStyles.cta}>
-          Open an artifact →
-        </Anno>
+        <Anno id="cta" tag="button" style={artifactStyles.cta}>Open an artifact →</Anno>
 
         <Anno id="p1" tag="p" style={artifactStyles.p}>
-          Agents are good at producing rich HTML artifacts, but the human–agent collaboration loop on such artifacts is
-          lacking and falls back to screenshots and long responses for "tell me what to change." That loses the thing
-          HTML is best at: interactivity.
+          Agents are good at producing rich HTML artifacts, but the human–agent collaboration loop
+          on such artifacts is lacking and falls back to screenshots and long responses for
+          "tell me what to change." That loses the thing HTML is best at: interactivity.
         </Anno>
 
         <Anno id="list" tag="div" style={artifactStyles.list}>
           <ul style={{ margin: 0, paddingLeft: 18 }}>
-            <li>
-              <strong>Browser-native review</strong> — relative JS/CSS/assets intact.
-            </li>
-            <li>
-              <strong>Precise feedback</strong> — click elements, queue prompts.
-            </li>
-            <li>
-              <strong>Agent-ergonomic interface</strong> — TOON output, long polling.
-            </li>
+            <li><strong>Browser-native review</strong> — relative JS/CSS/assets intact.</li>
+            <li><strong>Precise feedback</strong> — click elements, queue prompts.</li>
+            <li><strong>Agent-ergonomic interface</strong> — TOON output, long polling.</li>
           </ul>
         </Anno>
 
