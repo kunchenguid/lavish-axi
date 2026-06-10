@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.21](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.20...lavish-axi-v0.1.21) (2026-06-10)
+
+
+### Features
+
+* **chrome:** align editor chrome with v2 UI ([#63](https://github.com/kunchenguid/lavish-axi/issues/63)) ([da6c19e](https://github.com/kunchenguid/lavish-axi/commit/da6c19ec4882024a55333adc83ca481ec16d09c8))
+
 ## [0.1.20](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.19...lavish-axi-v0.1.20) (2026-06-07)
 
 
