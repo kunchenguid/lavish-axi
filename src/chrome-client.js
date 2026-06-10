@@ -145,11 +145,11 @@ function toggleMenu(button, menu) {
   setMenuOpen(button, menu, open);
 }
 
-function copyText(text) {
+async function copyText(text) {
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(() => {});
-      return;
+      await navigator.clipboard.writeText(text);
+      return true;
     }
   } catch {
     // Fall through to the textarea-based fallback below.
@@ -162,6 +162,7 @@ function copyText(text) {
   helper.select();
   document.execCommand("copy");
   helper.remove();
+  return true;
 }
 
 function addChat(role, text) {

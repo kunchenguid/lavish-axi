@@ -378,6 +378,15 @@ test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard
   assert.match(js, /copyText\(msg\.snapshot \|\| ""\)/);
 });
 
+test("clipboard copy falls back when navigator clipboard rejects", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /async function copyText\(text\)/);
+  assert.match(js, /await navigator\.clipboard\.writeText\(text\)/);
+  assert.match(js, /document\.execCommand\("copy"\)/);
+  assert.doesNotMatch(js, /navigator\.clipboard\.writeText\(text\)\.catch/);
+});
+
 test("chrome centers the top bar row while bottom-aligning the identity cluster", async () => {
   const css = await chromeCssSource();
 
