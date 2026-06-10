@@ -487,6 +487,14 @@ test("send and end submits queued prompts before ending the session", async () =
   assert.match(js, /if \(shouldEndAfterSubmit\) await endSession\(\)/);
 });
 
+test("chrome only marks session ended after the end request succeeds", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /const response = await fetch\("\/api\/" \+ key \+ "\/end", \{ method: "POST" \}\)/);
+  assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\)/);
+  assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\);\n {2}ended = true/);
+});
+
 test("chrome shows a waiting banner when no agent has attached", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();

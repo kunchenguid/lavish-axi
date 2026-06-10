@@ -284,6 +284,8 @@ async function submitQueuedOnce() {
 
 async function endSession() {
   if (ended) return;
+  const response = await fetch("/api/" + key + "/end", { method: "POST" });
+  if (!response.ok) throw new Error("failed to end session");
   ended = true;
   closeMenus();
   annotationSwitch.disabled = true;
@@ -293,7 +295,6 @@ async function endSession() {
   if (presenceBanner) presenceBanner.hidden = true;
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
-  await fetch("/api/" + key + "/end", { method: "POST" });
 }
 
 function copyFilePath() {
