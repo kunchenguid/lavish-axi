@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.22](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.21...lavish-axi-v0.1.22) (2026-06-10)
+
+
+### Features
+
+* sync lavish design skill to v2 ([#65](https://github.com/kunchenguid/lavish-axi/issues/65)) ([d9cfc9d](https://github.com/kunchenguid/lavish-axi/commit/d9cfc9d42ae8a7875626878d10711cd20f23f2af))
+
 ## [0.1.21](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.20...lavish-axi-v0.1.21) (2026-06-10)
 
 
