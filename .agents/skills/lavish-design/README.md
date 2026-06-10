@@ -68,7 +68,7 @@ Lavish copy reads like a well-edited reading-room sign — _short, declarative, 
 
 **Casing**
 
-- **Sentence case for everything user-facing.** Buttons (_"Send to Agent"_, _"End Session"_) are an exception: they use **Title Case** because they read as proper actions, not labels.
+- **Sentence case for most user-facing labels.** Primary action labels may use title case when they read as proper actions (_"Send to Agent"_); menu actions such as _"Reload artifact"_, _"Copy DOM snapshot"_, _"Send & end session"_, and _"End session"_ use sentence case.
 - **lowercase command names** (`lavish-axi`, `pnpm run build`) — never SHOUTY, never `Lavish-Axi`.
 - The brand mark **Lavish** is Title Case in prose; in product chrome it's set in a slightly heavier weight (`font-weight: 750`) with a touch of tracking (`letter-spacing: .02em`).
 
@@ -89,8 +89,9 @@ Lavish copy reads like a well-edited reading-room sign — _short, declarative, 
 > _"For when a rich editor is not rich enough."_
 > _"HTML is the new markdown. Lavish is the new editor for your HTML artifacts."_
 > _"Browser-native review · Precise feedback · Agent-ergonomic interface"_
-> _"Session ended. The agent polling loop can stop."_
+> _"Session ended. Return to your agent to continue."_
 > _"Write a message for the agent…"_
+> _"Write a message or annotate an element first."_
 > _"Tell the agent what to change about this element…"_
 
 If new copy doesn't sit comfortably next to those lines, rewrite it.
@@ -108,7 +109,7 @@ If new copy doesn't sit comfortably next to those lines, rewrite it.
 - **Brass** — the single accent. `#f4c95d`. Used for the primary CTA, the annotation outline (2px solid, 2px offset), selected-text range highlights (`rgba(244,201,93,.28)` with a `rgba(244,201,93,.45)` stroke), the brand mark moment, and absolutely nothing else. Its ink-on-brass pair is `#17130a` — a deep almost-black that keeps the gold from feeling like a neon button.
 - **Sage** — the _agent_ signal. `#172419` background, `#315f3a` border, `#8fe39e` for the working spinner. Used only on agent chat bubbles and the working indicator.
 - **Amber** — the _user_ signal. `#25230f` background, `#5d4d1b` border. Used only on user chat bubbles and queued-prompt pills.
-- **Rust** — the danger signal. `#f06464`. Reserved for _End Session_ and destructive confirmations.
+- **Rust** — the danger signal. `#f06464`. Reserved for _End session_, _Send & end session_, and destructive confirmations.
 - **Steels** — the grays. `#2a2f3a` / `#303745` / `#3c4557` for borders, ranked subtle → strong. `#b9c0cf` / `#d8deea` / `#aeb6c6` / `#8c96aa` for muted type, ranked bright → dim.
 
 No gradients. No glassmorphism. No bluish-purple anything.
@@ -192,9 +193,10 @@ A "card" in Lavish is a slab of `#11141a` or `#1c212b` with a 1px border (`#3037
 
 ## Iconography
 
-**Lavish ships almost no icons.** Read that twice.
+**Lavish uses icons only where they reduce chrome, never as ornament.** Read that twice.
 
-The product chrome you've seen has exactly **one** glyph: the spinner. Buttons are _labeled_, not iconified — "Send to Agent," "End Session," "Annotation: On." The annotation card opens with `<h2>Annotate &lt;div&gt;</h2>` for elements or `Annotate text` for selected text — the _target name_ is the icon. This is intentional and on-brand: in a literary product, words are the iconography.
+The v2 product chrome keeps primary affordances word-first: the brand is text, the mode control reads _Annotate_, the main button reads _Send to Agent_, and the annotation card opens with `<h2>Annotate &lt;div&gt;</h2>` for elements or `Annotate text` for selected text.
+Compact chrome may use small current-color SVGs for the overflow menu, copy affordance, reload, snapshot, end, send, and split-button caret, but those icons support visible labels or tooltips rather than replacing product language.
 
 When iconography is genuinely needed (marketing, an empty state, a settings menu in a future surface), follow these rules:
 
