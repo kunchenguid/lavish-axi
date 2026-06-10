@@ -507,7 +507,21 @@ function ChatPanel({
       document.removeEventListener("keydown", onKey);
     };
   }, [splitOpen]);
-  const canSend = !working && (pills.length > 0 || draft.trim().length > 0);
+  const hasContent = pills.length > 0 || draft.trim().length > 0;
+  const canSend = !working;
+  const [hint, setHint] = useStateChat(false);
+  const hintTimer = useRefChat(null);
+  const trySend = () => {
+    if (working) return;
+    if (!hasContent) {
+      setHint(true);
+      clearTimeout(hintTimer.current);
+      hintTimer.current = setTimeout(() => setHint(false), 2600);
+      return;
+    }
+    setHint(false);
+    onSend();
+  };
   const s = {
     panel: {
       borderLeft: "1px solid var(--steel-700)",
@@ -566,9 +580,16 @@ function ChatPanel({
     },
     actions: {
       display: "flex",
+      alignItems: "center",
       gap: 8,
       justifyContent: "flex-end",
       position: "relative"
+    },
+    hint: {
+      marginRight: "auto",
+      color: "var(--fg-faint)",
+      fontSize: 11,
+      lineHeight: 1.35
     },
     split: {
       display: "inline-flex",
@@ -676,17 +697,22 @@ function ChatPanel({
   }))), /*#__PURE__*/React.createElement("textarea", {
     placeholder: "Write a message for the agent\u2026",
     value: draft,
-    onChange: e => onDraftChange(e.target.value),
+    onChange: e => {
+      setHint(false);
+      onDraftChange(e.target.value);
+    },
     style: s.ta
   }), /*#__PURE__*/React.createElement("div", {
     style: s.actions,
     ref: splitRef
-  }, /*#__PURE__*/React.createElement("div", {
+  }, hint && /*#__PURE__*/React.createElement("span", {
+    style: s.hint
+  }, "Write a message or annotate an element first."), /*#__PURE__*/React.createElement("div", {
     style: s.split
   }, /*#__PURE__*/React.createElement("button", {
     style: s.sendMain,
     disabled: !canSend,
-    onClick: canSend ? onSend : undefined
+    onClick: trySend
   }, "Send to Agent"), /*#__PURE__*/React.createElement("button", {
     style: s.sendCaret,
     title: "Send options",
@@ -700,7 +726,7 @@ function ChatPanel({
     disabled: !canSend,
     onClick: () => {
       setSplitOpen(false);
-      onSend();
+      trySend();
     }
   }), /*#__PURE__*/React.createElement(SplitMenuItem, {
     icon: /*#__PURE__*/React.createElement(ExitIcon, null),
