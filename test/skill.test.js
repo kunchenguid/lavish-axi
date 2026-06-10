@@ -8,15 +8,24 @@ function skillCommandText(text) {
   return text.replaceAll("`lavish-axi", "`npx -y lavish-axi");
 }
 
-test("createSkillMarkdown emits valid frontmatter naming the lavish-axi skill", () => {
+test("createSkillMarkdown emits valid frontmatter naming the lavish skill", () => {
   const md = createSkillMarkdown();
   assert.ok(md.startsWith("---\n"), "starts with frontmatter fence");
   const end = md.indexOf("\n---\n", 4);
   assert.ok(end > 0, "frontmatter is closed");
   const frontmatter = md.slice(4, end);
-  assert.match(frontmatter, /^name: lavish-axi$/m);
+  assert.match(frontmatter, /^name: lavish$/m);
   assert.match(frontmatter, /^description: /m);
+  assert.match(frontmatter, /^argument-hint: /m);
   assert.ok(frontmatter.includes(SKILL_DESCRIPTION), "frontmatter carries the skill description");
+});
+
+test("createSkillMarkdown handles explicit /lavish invocation arguments", () => {
+  const md = createSkillMarkdown();
+  const body = md.slice(md.indexOf("\n---\n", 4) + 5);
+
+  assert.ok(body.includes("$ARGUMENTS"), "body consumes slash-command arguments");
+  assert.match(body, /empty/i, "explains the model-invoked case where no arguments are passed");
 });
 
 test("createSkillMarkdown mirrors the no-args home output", () => {

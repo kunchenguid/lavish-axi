@@ -98,11 +98,12 @@ Prefer the [Agent Skills](https://agentskills.io) format, or use an agent that s
 Install Lavish as a skill with [`npx skills`](https://github.com/vercel-labs/skills):
 
 ```sh
-npx skills add kunchenguid/lavish-axi --skill lavish-axi
+npx skills add kunchenguid/lavish-axi --skill lavish
 ```
 
-This drops a `lavish-axi` skill into your agent's skills directory (`.claude/skills/` for example; add `-g` for `~/.claude/skills/`).
+This drops a `lavish` skill into your agent's skills directory (`.claude/skills/` for example; add `-g` for `~/.claude/skills/`).
 The skill carries the same guidance the hook delivers, but it loads on demand when the agent recognizes a task that calls for a visual artifact, rather than every session.
+In agents that expose skills as slash commands (Claude Code, for example), you can also invoke it explicitly with `/lavish <what the artifact should show>`.
 It does not surface your live open sessions - run `lavish-axi setup hooks` if you want that ambient context too.
 
 ### No setup at all
@@ -178,7 +179,7 @@ Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `
 ```sh
 pnpm run check          # Run all verification commands
 pnpm run build          # Bundle the publishable CLI, chrome, and design assets
-pnpm run build:skill    # Regenerate the installable lavish-axi skill
+pnpm run build:skill    # Regenerate the installable lavish skill
 pnpm test               # Run node:test tests
 pnpm run lint           # Run ESLint
 pnpm run format:check   # Check Prettier formatting

@@ -30,8 +30,9 @@ export function createSkillMarkdown() {
   const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false });
 
   return `---
-name: lavish-axi
+name: lavish
 description: ${SKILL_DESCRIPTION}
+argument-hint: <what the artifact should show>
 ---
 
 # Lavish Editor
@@ -40,6 +41,13 @@ ${skillCommandText(home.description)}
 
 You do not need lavish-axi installed globally - invoke it with \`npx -y lavish-axi <html-file>\`.
 If lavish-axi output shows a follow-up command starting with \`lavish-axi\`, run it as \`npx -y lavish-axi ...\` instead.
+
+## Request
+
+$ARGUMENTS
+
+If the request above is non-empty, the user invoked \`/lavish\` explicitly - build an HTML artifact for that request now, following the workflow below.
+If it is empty, infer what to visualize from the conversation.
 
 ## When to use
 
