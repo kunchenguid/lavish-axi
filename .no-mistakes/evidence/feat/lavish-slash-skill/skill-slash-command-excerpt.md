@@ -17,4 +17,3 @@ $ARGUMENTS
 
 If the request above is non-empty, the user invoked `/lavish` explicitly - build an HTML artifact for that request now, following the workflow below.
 If it is empty, infer what to visualize from the conversation.
-
