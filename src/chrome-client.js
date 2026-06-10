@@ -263,14 +263,19 @@ async function submitQueued() {
     submitQueuedPromise = null;
     const shouldSubmitAgain = submitQueuedAgain;
     submitQueuedAgain = false;
-    if (succeeded && shouldSubmitAgain && queued.length) submitQueued();
+    if (!succeeded) {
+      endAfterSubmit = false;
+    } else if (shouldSubmitAgain && queued.length) {
+      submitQueued();
+    } else if (endAfterSubmit) {
+      endAfterSubmit = false;
+      await endSession();
+    }
   }
 }
 
 async function submitQueuedOnce() {
   const prompts = queued.slice();
-  const shouldEndAfterSubmit = endAfterSubmit;
-  endAfterSubmit = false;
   const response = await fetch("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -284,7 +289,6 @@ async function submitQueuedOnce() {
   persistQueuedPrompts();
   render();
   if (agentPresence === "listening") setAgentPresence("working");
-  if (shouldEndAfterSubmit) await endSession();
 }
 
 async function endSession() {

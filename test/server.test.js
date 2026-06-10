@@ -494,7 +494,10 @@ test("send and end submits queued prompts before ending the session", async () =
 
   assert.match(js, /let endAfterSubmit = false/);
   assert.match(js, /sendQueued\(true\)/);
-  assert.match(js, /if \(shouldEndAfterSubmit\) await endSession\(\)/);
+  assert.doesNotMatch(js, /const shouldEndAfterSubmit = endAfterSubmit/);
+  assert.doesNotMatch(js, /if \(shouldEndAfterSubmit\) await endSession\(\)/);
+  assert.match(js, /if \(!succeeded\) \{\n {6}endAfterSubmit = false/);
+  assert.match(js, /\} else if \(endAfterSubmit\) \{\n {6}endAfterSubmit = false;\n {6}await endSession\(\)/);
 });
 
 test("chrome only marks session ended after the end request succeeds", async () => {
@@ -650,7 +653,7 @@ test("chrome submits prompts queued during an in-flight submit", async () => {
   assert.match(js, /let submitQueuedAgain = false/);
   assert.match(js, /submitQueuedAgain = true/);
   assert.match(js, /const shouldSubmitAgain = submitQueuedAgain/);
-  assert.match(js, /if \(succeeded && shouldSubmitAgain && queued\.length\) submitQueued\(\)/);
+  assert.match(js, /else if \(shouldSubmitAgain && queued\.length\) \{\n {6}submitQueued\(\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
