@@ -372,9 +372,10 @@ test("overflow menu offers reload, snapshot copy, and end session actions", asyn
 test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
   const js = await chromeClientSource();
 
-  assert.match(js, /let snapshotIntent = "submit"/);
-  assert.match(js, /snapshotIntent = "copy"/);
-  assert.match(js, /if \(snapshotIntent === "copy"\)/);
+  assert.match(js, /const snapshotRequests = \[\]/);
+  assert.match(js, /requestSnapshot\("copy"\)/);
+  assert.match(js, /const snapshotAction = snapshotRequests\.shift\(\) \|\| "submit"/);
+  assert.match(js, /if \(snapshotAction === "copy"\)/);
   assert.match(js, /copyText\(msg\.snapshot \|\| ""\)/);
 });
 

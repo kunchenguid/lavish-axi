@@ -36,7 +36,7 @@ let annotation = true;
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
-let snapshotIntent = "submit";
+const snapshotRequests = [];
 let endAfterSubmit = false;
 let workingBubble = null;
 let submitQueuedPromise = null;
@@ -216,6 +216,11 @@ function postToFrame(message) {
   if (frame.contentWindow) frame.contentWindow.postMessage(message, "*");
 }
 
+function requestSnapshot(action) {
+  snapshotRequests.push(action);
+  postToFrame({ type: "lavish:requestSnapshot" });
+}
+
 function sendQueued(endAfter) {
   if (ended || agentPresence === "working") return;
   closeMenus();
@@ -239,8 +244,7 @@ function sendQueued(endAfter) {
   hideSendHint();
 
   if (endAfter) endAfterSubmit = true;
-  snapshotIntent = "submit";
-  postToFrame({ type: "lavish:requestSnapshot" });
+  requestSnapshot("submit");
 }
 
 async function submitQueued() {
@@ -311,8 +315,7 @@ function copyFilePath() {
 
 function copyDomSnapshot() {
   closeMenus();
-  snapshotIntent = "copy";
-  postToFrame({ type: "lavish:requestSnapshot" });
+  requestSnapshot("copy");
 }
 
 function resetFrame() {
@@ -357,8 +360,8 @@ window.addEventListener("message", (event) => {
     render();
   }
   if (msg.type === "lavish:snapshot") {
-    if (snapshotIntent === "copy") {
-      snapshotIntent = "submit";
+    const snapshotAction = snapshotRequests.shift() || "submit";
+    if (snapshotAction === "copy") {
       copyText(msg.snapshot || "");
     } else {
       pendingSnapshot = msg.snapshot || "";
