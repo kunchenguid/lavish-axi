@@ -605,7 +605,12 @@ const chromeIcons = {
 // Display the path with the home directory shortened to "~", split so the directory part can
 // ellipsize in the menu while the file name itself always stays visible.
 export function displayPathParts(file, home = homedir()) {
-  const display = home && file.startsWith(home + path.sep) ? `~${file.slice(home.length)}` : file;
+  const normalizedFile = file.replaceAll("\\", "/");
+  const normalizedHome = home.replaceAll("\\", "/");
+  const display =
+    normalizedHome && normalizedFile.startsWith(`${normalizedHome}/`)
+      ? `~/${normalizedFile.slice(normalizedHome.length + 1)}`
+      : normalizedFile;
   const tailStart = display.lastIndexOf("/") + 1;
   return { head: display.slice(0, tailStart), tail: display.slice(tailStart) };
 }

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   createChromeHtml,
   createSdkJs,
+  displayPathParts,
   hasLiveReloadRootOptIn,
   resolveArtifactAsset,
   resolveIdleTimeoutMs,
@@ -345,6 +346,13 @@ test("overflow menu path shortens the home directory to a tilde", () => {
   assert.match(html, /class="path-tail">artifact\.html</);
   // The copy affordance still carries the absolute path.
   assert.ok(html.includes(`title="Copy path · ${file}"`));
+});
+
+test("overflow menu path display tolerates Windows separators", () => {
+  assert.deepEqual(
+    displayPathParts("C:\\Users\\runneradmin\\projects\\demo\\artifact.html", "C:\\Users\\runneradmin"),
+    { head: "~/projects/demo/", tail: "artifact.html" },
+  );
 });
 
 test("chrome can copy the full file path from the overflow menu", async () => {
