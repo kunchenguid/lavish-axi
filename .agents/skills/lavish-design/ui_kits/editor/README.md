@@ -19,7 +19,7 @@ Everything is fake — there's no `lavish-axi` server backing it. The reply text
 
 - `index.html` — entry; pulls React, Babel, and every JSX file in order.
 - `app.jsx` — top-level `App` component. Holds chat / queued-prompts / annotation state.
-- `TopBar.jsx` - legacy 56px sticky bar reference; production v2 uses a brand, Annotate switch, and overflow menu instead of an always-visible file path and end button.
+- `TopBar.jsx` - v2 56px sticky bar reference with the brand, Annotate switch, and overflow menu for editing actions.
 - `Artifact.jsx` — the faux landing page rendered where the agent's HTML normally goes.
 - `AnnotationCard.jsx` — floating card that opens when an element is clicked.
 - `ChatPanel.jsx` — side panel: heading + chat log + composer.
