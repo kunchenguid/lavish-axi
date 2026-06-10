@@ -142,6 +142,8 @@ Lavish also works fully as a plain CLI - just tell your agent to `npx lavish-axi
 - **Feedback controls** - Native form controls (radios, checkboxes, inputs, selects, buttons, labels, contenteditable) are interactive automatically, so they do not need `data-lavish-action`; wire their handlers to `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()` to send feedback.
   Mark only custom (non-native) clickable elements with `data-lavish-action` so Lavish does not annotate them.
   The browser chrome keeps editing actions in the overflow menu (copy path, reload artifact, copy DOM snapshot, end session) and can submit queued prompts with **Send & end session**, which delivers the prompts before ending the session.
+- **Keyboard shortcuts** - In the chrome composer, Enter sends queued prompts and Shift+Enter inserts a newline.
+  In the annotation card, Enter queues the annotation, Shift+Enter inserts a newline, and Ctrl+Enter (Cmd+Enter on macOS) queues it and sends all queued prompts immediately.
 - **Agent presence** - The browser shows when no agent is listening, keeps queued feedback for the next successful `lavish-axi poll` send even across reloads, and only blocks sending while the agent is working on delivered feedback.
 - **Precise targets** - Text annotations include selected text plus range anchors, so agents are not limited to whole-element selectors.
 - **Server cleanup** - The detached server stops after the last session ends when nothing is connected, or after `LAVISH_AXI_IDLE_TIMEOUT_MS` (default 30 minutes) with no browser or poll connections.

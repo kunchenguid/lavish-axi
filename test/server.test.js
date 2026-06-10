@@ -1580,6 +1580,16 @@ test("annotation card queues prompt on Enter and inserts newline on Shift+Enter"
   assert.match(js, /sendButton\.click\(\)/);
 });
 
+test("annotation card queues and sends immediately on Ctrl+Enter or Cmd+Enter", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /event\.ctrlKey \|\| event\.metaKey/);
+  assert.match(js, /sendQueuedPrompts\(\)/);
+  assert.match(js, /class="lavish-hint"/);
+  assert.match(js, /\+Enter to send now/);
+  assert.match(js, /\.lavish-annotation-card \.lavish-hint\{/);
+});
+
 test("chrome client chat input sends on Enter and inserts newline on Shift+Enter", async () => {
   const js = await chromeClientSource();
 

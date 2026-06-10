@@ -60,7 +60,7 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
    In the chrome composer, Enter sends queued prompts (equivalent to clicking "Send to Agent"); Shift+Enter inserts a newline.
    Sending an empty composer stays enabled, shows an inline hint, and focuses the composer instead of disabling the button.
    The split-button menu also offers "Send & end session", which submits queued prompts first and ends only after the POST succeeds.
-   The annotation card textarea follows the same convention: Enter queues the annotation (equivalent to clicking "Queue"); Shift+Enter inserts a newline.
+   The annotation card textarea follows the same convention: Enter queues the annotation (equivalent to clicking "Queue"); Shift+Enter inserts a newline; Ctrl+Enter (Cmd+Enter on macOS) queues the annotation and immediately sends all queued prompts, and the card shows a small hint for these shortcuts.
 6. The chrome top bar exposes annotation mode as an `Annotate` switch and keeps editing actions in an overflow menu: the home-shortened artifact path with a copy affordance, reload artifact, copy DOM snapshot, and end session.
    Copy path still copies the absolute canonical path, while copy DOM snapshot requests a fresh iframe snapshot before writing to the clipboard.
 7. `lavish-axi poll <file.html>` (`pollCommand`) hits `GET /api/poll`.
