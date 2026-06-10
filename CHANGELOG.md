@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.23](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.22...lavish-axi-v0.1.23) (2026-06-10)
+
+
+### Features
+
+* **skill:** support /lavish invocation ([#67](https://github.com/kunchenguid/lavish-axi/issues/67)) ([cd87b1f](https://github.com/kunchenguid/lavish-axi/commit/cd87b1f057848b1114ad414e99c27808ad044222))
+
 ## [0.1.22](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.21...lavish-axi-v0.1.22) (2026-06-10)
 
 
