@@ -1,11 +1,7 @@
 /* Preview card shell — used by every card in /preview */
-@import url("../colors_and_type.css");
+@import url('../colors_and_type.css');
 
-html,
-body {
-  margin: 0;
-  padding: 0;
-}
+html, body { margin: 0; padding: 0; }
 body {
   background: var(--bg);
   color: var(--fg);
@@ -23,16 +19,8 @@ body {
   flex-direction: column;
   gap: 16px;
 }
-.row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.grid {
-  display: grid;
-  gap: 12px;
-}
+.row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.grid { display: grid; gap: 12px; }
 .label {
   font-size: 10px;
   font-weight: 700;
@@ -40,11 +28,5 @@ body {
   text-transform: uppercase;
   color: var(--fg-label);
 }
-.mono {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--fg-faint);
-}
-.serif {
-  font-family: var(--font-serif);
-}
+.mono { font-family: var(--font-mono); font-size: 12px; color: var(--fg-faint); }
+.serif { font-family: var(--font-serif); }

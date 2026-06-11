@@ -1,60 +1,21 @@
 <!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <link rel="stylesheet" href="_base.css" />
-  </head>
-  <body>
-    <div class="card">
-      <div class="label">Composer — Send aligned right</div>
-      <div
-        style="
-          display: grid;
-          gap: 8px;
-          padding: 12px 16px;
-          border: 1px solid var(--border-subtle);
-          border-radius: 14px;
-          background: var(--bg-panel);
-          max-width: 520px;
-        "
-      >
-        <textarea
-          placeholder="Write a message for the agent…"
-          rows="3"
-          style="
-            width: 100%;
-            min-height: 82px;
-            resize: vertical;
-            border-radius: 12px;
-            border: 1px solid #303745;
-            background: #0f1115;
-            color: #f7f3ea;
-            padding: 10px;
-            font: inherit;
-            box-sizing: border-box;
-          "
-        ></textarea>
-        <div style="display: flex; gap: 8px; justify-content: flex-end">
-          <button
-            style="
-              border: 0;
-              border-radius: 10px;
-              padding: 9px 14px;
-              background: #f4c95d;
-              color: #17130a;
-              font: inherit;
-              font-weight: 700;
-              cursor: pointer;
-              white-space: nowrap;
-            "
-          >
-            Send to Agent
-          </button>
-        </div>
+<!-- @dsCard group="Components" name="Components · Composer" subtitle="Textarea, empty-send hint, split send menu" viewport="700x280" --><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css"></head>
+<body><div class="card">
+  <div class="label">Composer - split send</div>
+  <div style="display:grid;gap:8px;padding:12px 16px;border:1px solid var(--border-subtle);border-radius:14px;background:var(--bg-panel);max-width:520px">
+    <textarea placeholder="Write a message for the agent…" rows="3"
+      style="width:100%;min-height:82px;resize:vertical;border-radius:12px;border:1px solid #303745;background:#0f1115;color:#f7f3ea;padding:10px;font:inherit;box-sizing:border-box"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;position:relative">
+      <span style="margin-right:auto;color:var(--fg-faint);font-size:11px;line-height:1.35">Write a message or annotate an element first.</span>
+      <div style="display:inline-flex;align-items:stretch">
+        <button style="border:0;border-radius:10px 0 0 10px;padding:9px 14px;background:#f4c95d;color:#17130a;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap">Send to Agent</button>
+        <button title="Send options" style="border:0;border-left:1px solid rgba(23,19,10,.22);border-radius:0 10px 10px 0;padding:9px;background:#f4c95d;color:#17130a;font:inherit;font-weight:700;cursor:pointer;display:grid;place-items:center;line-height:1">⌄</button>
       </div>
-      <div class="mono" style="color: var(--fg-faint)">
-        action row · justify-content: flex-end · radius 12 · min-height 82
+      <div style="position:absolute;right:0;bottom:44px;width:208px;background:var(--ink-700);border:1px solid var(--steel-600);border-radius:11px;box-shadow:var(--shadow-tooltip);padding:6px;box-sizing:border-box">
+        <div style="display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;font-size:13px;color:var(--cream-100)">Send to Agent</div>
+        <div style="display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;font-size:13px;color:var(--rust-500)">Send &amp; end session</div>
       </div>
     </div>
-  </body>
-</html>
+  </div>
+  <div class="mono" style="color:var(--fg-faint)">empty send keeps button enabled · inline hint · split action menu</div>
+</div></body></html>

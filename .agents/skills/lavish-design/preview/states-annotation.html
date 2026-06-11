@@ -1,73 +1,14 @@
 <!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <link rel="stylesheet" href="_base.css" />
-  </head>
-  <body>
-    <div class="card">
-      <div class="label">Annotation states</div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: center">
-        <div
-          style="
-            background: #fff;
-            border-radius: 12px;
-            padding: 32px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          "
-        >
-          <div
-            style="
-              font-family: &quot;EB Garamond&quot;, serif;
-              font-style: italic;
-              font-size: 32px;
-              color: #222;
-              outline: 2px solid #f4c95d;
-              outline-offset: 2px;
-              padding: 4px 8px;
-            "
-          >
-            selected element
-          </div>
-        </div>
-        <div>
-          <div
-            style="
-              font-family: var(--font-serif);
-              font-style: italic;
-              font-size: 18px;
-              color: var(--fg);
-              max-width: 300px;
-            "
-          >
-            Attention is here. Hover, selected element, and focus share a 2px brass outline, 2px offset. Selected text
-            ranges use a translucent brass highlight.
-          </div>
-          <div class="mono" style="margin-top: 10px; color: var(--fg-faint)">
-            outline: 2px solid #f4c95d · offset 2px
-          </div>
-          <div
-            style="
-              margin-top: 14px;
-              font-family: &quot;EB Garamond&quot;, serif;
-              font-size: 21px;
-              line-height: 1.25;
-              color: #222;
-              background: #fff;
-              border-radius: 10px;
-              padding: 12px;
-            "
-          >
-            Select
-            <span style="background: rgba(244, 201, 93, 0.28); box-shadow: 0 0 0 1px rgba(244, 201, 93, 0.45)"
-              >this exact text</span
-            >
-            to annotate a range.
-          </div>
-        </div>
-      </div>
+<!-- @dsCard group="Components" name="Components · Annotation outline" subtitle="Same brass ring for hover, focus, and selected" viewport="700x220" --><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css"></head>
+<body><div class="card">
+  <div class="label">Annotation outline = focus outline</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:center">
+    <div style="background:#fff;border-radius:12px;padding:32px;display:flex;align-items:center;justify-content:center">
+      <div style="font-family:'EB Garamond',serif;font-style:italic;font-size:32px;color:#222;outline:2px solid #f4c95d;outline-offset:2px;padding:4px 8px">selected element</div>
     </div>
-  </body>
-</html>
+    <div>
+      <div style="font-family:var(--font-serif);font-style:italic;font-size:18px;color:var(--fg);max-width:300px">Attention is here. The hover, the selected element, and the focus ring share one visual language — a 2px brass outline, 2px offset.</div>
+      <div class="mono" style="margin-top:10px;color:var(--fg-faint)">outline: 2px solid #f4c95d · offset 2px</div>
+    </div>
+  </div>
+</div></body></html>

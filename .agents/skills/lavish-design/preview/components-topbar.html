@@ -1,112 +1,20 @@
 <!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <link rel="stylesheet" href="_base.css" />
-  </head>
-  <body>
-    <div class="card" style="padding: 0; gap: 0">
-      <div style="padding: 16px 24px 8px"><div class="label">Top bar — 56px sticky</div></div>
-      <div
-        style="
-          height: 56px;
-          display: flex;
-          align-items: center;
-          gap: 14px;
-          padding: 0 16px;
-          background: #171a21;
-          border-bottom: 1px solid #2a2f3a;
-          box-sizing: border-box;
-        "
-      >
-        <div style="display: flex; align-items: center; gap: 8px; white-space: nowrap">
-          <span
-            style="
-              font-family: var(--font-serif);
-              font-style: italic;
-              font-size: 22px;
-              line-height: 1;
-              color: var(--fg);
-            "
-            >Lavish</span
-          >
-          <span
-            style="
-              font-family: var(--font-sans);
-              font-size: 10px;
-              font-weight: 600;
-              letter-spacing: 0.18em;
-              text-transform: uppercase;
-              color: var(--fg-muted);
-              position: relative;
-              top: 1px;
-            "
-            >Editor</span
-          >
-        </div>
-        <div style="width: 1px; height: 22px; background: var(--border)"></div>
-        <div
-          style="
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            flex: 1;
-            min-width: 0;
-            color: var(--fg-muted);
-            font-family: var(--font-mono);
-            font-size: 12px;
-          "
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            style="flex-shrink: 0; opacity: 0.7"
-          >
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-          </svg>
-          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
-            >~/projects/landing/index.html</span
-          >
-        </div>
-        <button
-          style="
-            border: 0;
-            border-radius: 10px;
-            padding: 9px 12px;
-            background: #2a2f3a;
-            color: #f7f3ea;
-            font: inherit;
-            font-weight: 600;
-            white-space: nowrap;
-          "
-        >
-          Annotation: On
-        </button>
-        <button
-          style="
-            border-radius: 10px;
-            padding: 9px 12px;
-            background: transparent;
-            color: var(--rust);
-            border: 1px solid var(--rust);
-            font: inherit;
-            font-weight: 600;
-            white-space: nowrap;
-          "
-        >
-          End Session
-        </button>
-      </div>
-      <div style="padding: 10px 24px 18px" class="mono">
-        wordmark · divider · file chip · annotation toggle · destructive last
-      </div>
+<!-- @dsCard group="Components" name="Components · Top bar" subtitle="Wordmark, Annotate switch, overflow menu" viewport="700x200" --><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css"></head>
+<body><div class="card" style="padding:0;gap:0">
+  <div style="padding:16px 24px 8px"><div class="label">Top bar — 56px sticky</div></div>
+  <div style="height:56px;display:flex;align-items:center;gap:14px;padding:0 16px;background:#171a21;border-bottom:1px solid #2a2f3a;box-sizing:border-box">
+    <div style="display:flex;align-items:center;gap:8px;white-space:nowrap">
+      <span style="font-family:var(--font-serif);font-style:italic;font-size:22px;line-height:1;color:var(--fg)">Lavish</span>
+      <span style="font-family:var(--font-sans);font-size:10px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-muted);position:relative;top:1px">Editor</span>
     </div>
-  </body>
-</html>
+    <div style="flex:1"></div>
+    <button style="display:inline-flex;align-items:center;gap:8px;color:var(--fg-muted);font:inherit;font-size:13px;white-space:nowrap;background:none;border:0;padding:0;cursor:pointer" aria-pressed="true">
+      <span style="width:34px;height:20px;border-radius:999px;background:var(--accent);position:relative;flex-shrink:0"><span style="position:absolute;top:2px;left:16px;width:16px;height:16px;border-radius:999px;background:#17130a"></span></span>
+      <span>Annotate</span>
+    </button>
+    <button style="width:34px;height:34px;display:grid;place-items:center;border:1px solid #2a2f3a;background:transparent;color:var(--fg-muted);border-radius:9px;padding:0;cursor:pointer" title="More">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg>
+    </button>
+  </div>
+  <div style="padding:10px 24px 18px" class="mono">wordmark · spacer · Annotate switch · overflow menu (path + copy, reload, snapshot, end session)</div>
+</div></body></html>

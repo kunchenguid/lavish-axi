@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.1.27](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.26...lavish-axi-v0.1.27) (2026-06-11)
+
+
+### Bug Fixes
+
+* improve Lavish design fallback guidance ([#78](https://github.com/kunchenguid/lavish-axi/issues/78)) ([db9f294](https://github.com/kunchenguid/lavish-axi/commit/db9f2943a19ef626ccc233d7b4d66dafdf52cc51))
+
+## [0.1.26](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.25...lavish-axi-v0.1.26) (2026-06-11)
+
+
+### Bug Fixes
+
+* **cli:** make interrupted poll guidance reliable ([#76](https://github.com/kunchenguid/lavish-axi/issues/76)) ([1a01e26](https://github.com/kunchenguid/lavish-axi/commit/1a01e2603a545bea773e5126beb653ba84d1a8b5))
+
+## [0.1.25](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.24...lavish-axi-v0.1.25) (2026-06-11)
+
+
+### Bug Fixes
+
+* **cli:** improve poll and design guidance ([#74](https://github.com/kunchenguid/lavish-axi/issues/74)) ([302efac](https://github.com/kunchenguid/lavish-axi/commit/302efac1c73e486a01486dd394bc49f79fd8ae7b))
+
+## [0.1.24](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.23...lavish-axi-v0.1.24) (2026-06-11)
+
+
+### Features
+
+* **cli:** guide agents to combine relevant playbooks ([#73](https://github.com/kunchenguid/lavish-axi/issues/73)) ([d0c6e47](https://github.com/kunchenguid/lavish-axi/commit/d0c6e47d9eaed2efb40c0a14a152ffb8f602900e))
+
+
+### Bug Fixes
+
+* Add Ctrl+Enter immediate-send shortcut to the annotation card ([#71](https://github.com/kunchenguid/lavish-axi/issues/71)) ([9922767](https://github.com/kunchenguid/lavish-axi/commit/9922767ca7f7eb5e4bec02345464fcf107fab42c))
+
+## [0.1.23](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.22...lavish-axi-v0.1.23) (2026-06-10)
+
+
+### Features
+
+* **skill:** support /lavish invocation ([#67](https://github.com/kunchenguid/lavish-axi/issues/67)) ([cd87b1f](https://github.com/kunchenguid/lavish-axi/commit/cd87b1f057848b1114ad414e99c27808ad044222))
+
+## [0.1.22](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.21...lavish-axi-v0.1.22) (2026-06-10)
+
+
+### Features
+
+* sync lavish design skill to v2 ([#65](https://github.com/kunchenguid/lavish-axi/issues/65)) ([d9cfc9d](https://github.com/kunchenguid/lavish-axi/commit/d9cfc9d42ae8a7875626878d10711cd20f23f2af))
+
+## [0.1.21](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.20...lavish-axi-v0.1.21) (2026-06-10)
+
+
+### Features
+
+* **chrome:** align editor chrome with v2 UI ([#63](https://github.com/kunchenguid/lavish-axi/issues/63)) ([da6c19e](https://github.com/kunchenguid/lavish-axi/commit/da6c19ec4882024a55333adc83ca481ec16d09c8))
+
 ## [0.1.20](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.19...lavish-axi-v0.1.20) (2026-06-07)
 
 

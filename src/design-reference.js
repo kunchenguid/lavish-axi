@@ -12,7 +12,7 @@ export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URL
 <script src="${DESIGN_CDN_URLS.tailwind}"></script>`;
 
 export const DESIGN_SYSTEM_HINT =
-  "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Choose a design system in this priority order: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, if the current project already has a design system or style conventions, match those so the artifact fits in; (3) otherwise, prefer the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, available via CDN - run `lavish-axi design` for a copy-pasteable CDN snippet plus component reference. Prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.";
+  "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Before writing any HTML, decide the design direction in this strict priority order, and only move to the next step when the current one truly yields nothing: (1) if the user asked for a specific look or named design system, use that; (2) otherwise you must first inspect the current project for design conventions - look for a Tailwind or theme config, shared CSS variables or design tokens, a component library, brand assets, or existing styled pages - and match what you find so the artifact fits in; (3) only when both steps come up empty, use the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, available via CDN - run `lavish-axi design` for a copy-pasteable CDN snippet plus component reference, and prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user. When you deliver the artifact, state which of the three design sources you used and why.";
 
 export const DAISYUI_THEMES = [
   "light",
@@ -56,7 +56,7 @@ export function createDesignOutput() {
   return {
     design: {
       summary:
-        "Lavish does not auto-inject any design system. Artifacts stay portable HTML. Choose a design system in this priority order: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, if the current project already ships a design system or style conventions, match those; (3) otherwise, prefer the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5 + themes - paste the CDN snippet below into your `<head>`. Prefer this CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.",
+        "Use this Lavish CDN fallback only if (1) the user gave no design direction and (2) you already inspected the current project and found no design system or style conventions to match. If you have not checked the project yet, check first. Lavish does not auto-inject any design system; artifacts stay portable HTML. The strict priority order is: (1) a look or named design system the user asked for; (2) the current project's design system or style conventions - look for a Tailwind or theme config, shared CSS variables or design tokens, a component library, brand assets, or existing styled pages; (3) this Tailwind CSS browser runtime v4 + DaisyUI v5 + themes snippet - paste the CDN snippet below into your `<head>` and prefer the CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.",
       cdn_snippet: DESIGN_CDN_SNIPPET,
       cdn_urls: DESIGN_CDN_URLS,
       versions: { tailwind: TAILWIND_BROWSER_VERSION, daisyui: DAISYUI_VERSION },
@@ -67,11 +67,12 @@ export function createDesignOutput() {
         "If the user asks for a different design system (Bootstrap, custom CSS, plain HTML, etc.), use that instead - Lavish does not require DaisyUI.",
     },
     theme_usage: [
-      'Set the page theme with `<html data-theme="luxury">`.',
+      'Default to `<html data-theme="luxury">` - it matches the Lavish look. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it.',
       'Set a nested section theme with `<section data-theme="night">`.',
       "Prefer semantic colors such as `bg-base-100`, `bg-base-200`, `text-base-content`, `bg-primary`, `text-primary-content`, `alert-warning`, and `btn-primary` so themes remain readable.",
       "Avoid hardcoded Tailwind color names for text and surfaces unless the user asked for exact colors.",
       "Use Tailwind responsive prefixes such as `sm:`, `md:`, `lg:`, and `xl:` for layout changes.",
+      'Never `@apply` DaisyUI classes (such as `text-base-content/40`, `bg-base-200`, or `btn`) inside `<style type="text/tailwindcss">` - the Tailwind browser runtime does not know them, and one unknown utility aborts the entire compile, leaving the page with no Tailwind styles at all. Put DaisyUI classes directly on elements, or write plain CSS with theme variables such as `var(--color-base-200)`.',
     ],
     themes: DAISYUI_THEMES,
     components: {

@@ -85,6 +85,36 @@ test("ending a session makes feedback return ended", async () => {
   }
 });
 
+test("prompts queued before ending are still delivered before the ended status", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    // "Send & end session" with no agent listening: prompts land first, then the session ends.
+    await store.queuePrompts(session.key, {
+      domSnapshot: 'uid=1 h1 "Hello"',
+      prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "Freeform message" }],
+    });
+    await store.endSession(session.key);
+
+    const first = await store.takeFeedback(session.key);
+    assert.equal(first.status, "feedback");
+    assert.equal(first.prompts.length, 1);
+    assert.equal(first.prompts[0].prompt, "Parting feedback");
+    assert.equal(first.dom_snapshot, 'uid=1 h1 "Hello"');
+
+    // Delivering the final batch must not resurrect the session.
+    const second = await store.takeFeedback(session.key);
+    assert.equal(second.status, "ended");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("agent replies are stored in session chat history", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

@@ -71,12 +71,11 @@ export class SessionStore {
     if (!session) {
       return { status: "missing" };
     }
-    if (session.status === "ended") {
-      return { status: "ended" };
-    }
+    // Prompts queued before the session ended (e.g. "Send & end session") must still reach the
+    // agent, so deliver them before reporting the ended state; the next poll then sees ended.
     const prompts = session.prompts || [];
     if (prompts.length === 0) {
-      return { status: "waiting" };
+      return session.status === "ended" ? { status: "ended" } : { status: "waiting" };
     }
     const result = {
       status: "feedback",
@@ -86,7 +85,9 @@ export class SessionStore {
     session.prompts = [];
     session.pending_prompts = 0;
     session.dom_snapshot = "";
-    session.status = "open";
+    if (session.status !== "ended") {
+      session.status = "open";
+    }
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
     return result;

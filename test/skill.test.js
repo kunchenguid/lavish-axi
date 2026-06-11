@@ -8,15 +8,33 @@ function skillCommandText(text) {
   return text.replaceAll("`lavish-axi", "`npx -y lavish-axi");
 }
 
-test("createSkillMarkdown emits valid frontmatter naming the lavish-axi skill", () => {
+test("createSkillMarkdown emits valid frontmatter naming the lavish skill", () => {
   const md = createSkillMarkdown();
   assert.ok(md.startsWith("---\n"), "starts with frontmatter fence");
   const end = md.indexOf("\n---\n", 4);
   assert.ok(end > 0, "frontmatter is closed");
   const frontmatter = md.slice(4, end);
-  assert.match(frontmatter, /^name: lavish-axi$/m);
+  assert.match(frontmatter, /^name: lavish$/m);
   assert.match(frontmatter, /^description: /m);
+  assert.match(frontmatter, /^argument-hint: /m);
   assert.ok(frontmatter.includes(SKILL_DESCRIPTION), "frontmatter carries the skill description");
+});
+
+test("createSkillMarkdown emits Hermes Agent metadata in frontmatter", () => {
+  const md = createSkillMarkdown();
+  const frontmatter = md.slice(4, md.indexOf("\n---\n", 4));
+
+  assert.match(frontmatter, /^author: Kun Chen \(kunchenguid\)$/m);
+  assert.match(frontmatter, /^metadata:\n {2}hermes:\n {4}tags: \[[^\]]+\]\n {4}category: \S+$/m);
+  assert.doesNotMatch(frontmatter, /^version:/m, "version is omitted to avoid release churn");
+});
+
+test("createSkillMarkdown handles explicit /lavish invocation arguments", () => {
+  const md = createSkillMarkdown();
+  const body = md.slice(md.indexOf("\n---\n", 4) + 5);
+
+  assert.ok(body.includes("$ARGUMENTS"), "body consumes slash-command arguments");
+  assert.match(body, /empty/i, "explains the model-invoked case where no arguments are passed");
 });
 
 test("createSkillMarkdown mirrors the no-args home output", () => {
@@ -38,6 +56,14 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
     const skillItem = skillCommandText(item);
     assert.ok(md.includes(skillItem), `includes help: ${skillItem.slice(0, 32)}...`);
   }
+});
+
+test("createSkillMarkdown encourages reading every relevant playbook", () => {
+  const md = createSkillMarkdown();
+  const playbooksSection = md.slice(md.indexOf("## Playbooks"), md.indexOf("## Commands & rules"));
+
+  assert.ok(playbooksSection.includes("combines several playbooks"), "explains artifacts span playbooks");
+  assert.ok(playbooksSection.includes("read every playbook relevant"), "encourages reading all relevant playbooks");
 });
 
 test("createSkillMarkdown does not leak live session state", () => {

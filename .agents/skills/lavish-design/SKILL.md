@@ -2,6 +2,8 @@
 name: lavish-design
 description: Use this skill to generate well-branded interfaces and assets for Lavish, either for production or throwaway prototypes/mocks/etc. Contains essential design guidelines, colors, type, fonts, assets, and UI kit components for prototyping.
 user-invocable: true
+metadata:
+  internal: true
 ---
 
 Read the README.md file within this skill, and explore the other available files.

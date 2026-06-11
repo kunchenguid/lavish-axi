@@ -4,6 +4,7 @@ Thanks for wanting to contribute.
 One rule up front:
 
 **Human-authored pull requests targeting `main` must be raised through [`no-mistakes`](https://github.com/kunchenguid/no-mistakes).**
+We require this to reduce the maintainer's burden of reviewing and merging contributions.
 
 `no-mistakes` puts a local git proxy in front of your real remote.
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push upstream only after every check passes, and opens a clean PR automatically.
@@ -31,8 +32,8 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 ## Repo Conventions
 
 - Node 22+, ESM-only JavaScript, and TypeScript `checkJs` validation.
-- Use TDD for bug fixes and new features.
 - Run `pnpm run check` before pushing.
+- Do not reformat vendored `.agents/` skill content; `.prettierignore` excludes it intentionally.
 - Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json`.
 - User-facing telemetry docs should stay minimal: anonymous usage telemetry, no sensitive content, and `LAVISH_AXI_TELEMETRY=0` opt-out.
 

@@ -20,9 +20,9 @@ function skillCommandText(text) {
 }
 
 /**
- * Render the installable SKILL.md for lavish-axi. The body mirrors what
- * `lavish-axi` prints with no arguments (minus live session state), so the
- * skill and the SessionStart hook deliver the same guidance from one source.
+ * Render the installable SKILL.md for the lavish skill. The body mirrors what
+ * `lavish-axi` prints with no arguments (minus live session state), while the
+ * frontmatter adds discovery metadata for Agent Skills and Hermes Agent.
  *
  * @returns {string} full SKILL.md contents including YAML frontmatter
  */
@@ -30,8 +30,14 @@ export function createSkillMarkdown() {
   const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false });
 
   return `---
-name: lavish-axi
+name: lavish
 description: ${SKILL_DESCRIPTION}
+argument-hint: <what the artifact should show>
+author: Kun Chen (kunchenguid)
+metadata:
+  hermes:
+    tags: [html, review, artifacts, visualization]
+    category: productivity
 ---
 
 # Lavish Editor
@@ -40,6 +46,13 @@ ${skillCommandText(home.description)}
 
 You do not need lavish-axi installed globally - invoke it with \`npx -y lavish-axi <html-file>\`.
 If lavish-axi output shows a follow-up command starting with \`lavish-axi\`, run it as \`npx -y lavish-axi ...\` instead.
+
+## Request
+
+$ARGUMENTS
+
+If the request above is non-empty, the user invoked \`/lavish\` explicitly - build an HTML artifact for that request now, following the workflow below.
+If it is empty, infer what to visualize from the conversation.
 
 ## When to use
 
@@ -50,6 +63,8 @@ ${home.help[home.help.length - 1]}
 1. Create the HTML artifact (default location \`.lavish/<name>.html\` in the working directory).
 2. Run \`npx -y lavish-axi <html-file>\` to open or resume a review session in the browser.
 3. Run \`npx -y lavish-axi poll <html-file>\` to long-poll for the user's annotations and queued prompts.
+   The poll stays silent until the user acts - leave it running, never kill it.
+   If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.
 4. Apply the feedback, then poll again with \`--agent-reply "<message>"\` to reply in the browser and keep the loop going.
 5. Run \`npx -y lavish-axi end <html-file>\` when the review is finished.
 
@@ -59,7 +74,8 @@ ${bullets(home.visual_guidance)}
 
 ## Playbooks
 
-Run \`npx -y lavish-axi playbook <id>\` for focused, detailed guidance on any of these:
+Run \`npx -y lavish-axi playbook <id>\` for focused, detailed guidance on any of these.
+One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to your artifact, not just one, for the best quality:
 
 ${playbookList(home.playbooks)}
 

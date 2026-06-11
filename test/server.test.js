@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
   createChromeHtml,
   createSdkJs,
+  displayPathParts,
   hasLiveReloadRootOptIn,
   resolveArtifactAsset,
   resolveIdleTimeoutMs,
@@ -233,21 +234,23 @@ test("annotation card shadow styles use Lavish design-system variables", () => {
   assert.match(js, /:focus-visible\{outline:2px solid var\(--accent\);outline-offset:2px/);
 });
 
-test("chrome labels the mode as annotation instead of inspect", () => {
+test("chrome top bar uses an Annotate switch instead of a labeled toggle button", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
-  assert.match(html, /Annotation: On/);
+  assert.match(html, /class="annotate-switch" id="annotation"[^>]*aria-pressed="true"/);
+  assert.match(html, /class="switch-track"/);
+  assert.match(html, />Annotate</);
+  assert.doesNotMatch(html, /Annotation: On/);
   assert.doesNotMatch(html, /Inspect/);
 });
 
-test("annotation toggle uses a brass border when enabled", async () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("annotate switch shows a brass track and ink knob when enabled", async () => {
   const js = await chromeClientSource();
   const css = await chromeCssSource();
 
-  assert.match(html, /class="button secondary annotation-on" id="annotation"/);
-  assert.match(css, /\.button\.annotation-on\{[^}]*border:1px solid var\(--accent\)/);
-  assert.match(js, /classList\.toggle\("annotation-on", annotation\)/);
+  assert.match(css, /\.annotate-switch\[aria-pressed="true"\] \.switch-track\{background:var\(--accent\)/);
+  assert.match(css, /\.annotate-switch\[aria-pressed="true"\] \.switch-knob\{[^}]*background:var\(--accent-ink\)/);
+  assert.match(js, /annotationSwitch\.setAttribute\("aria-pressed", String\(annotation\)\)/);
 });
 
 test("chrome declares the Lavish design-system tokens", async () => {
@@ -296,7 +299,7 @@ test("chrome keeps the editor usable on narrow screens", async () => {
   assert.match(css, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
 });
 
-test("chrome top bar follows the design mock wordmark and file treatment", async () => {
+test("chrome top bar follows the design mock wordmark and overflow menu treatment", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();
 
@@ -304,35 +307,93 @@ test("chrome top bar follows the design mock wordmark and file treatment", async
   assert.match(html, /class="brand-support">Editor/);
   assert.match(css, /font-family:var\(--font-serif\)/);
   assert.match(css, /letter-spacing:\.18em/);
-  assert.match(html, /<input class="file-input" id="filePath"/);
-  assert.match(html, /readonly/);
-  assert.match(html, /size="18"/);
-  assert.match(html, /value="\/tmp\/artifact\.html"/);
+  assert.match(html, /class="more-button" id="moreButton"/);
+  assert.match(html, /class="menu more-menu" id="moreMenu" hidden/);
+  assert.doesNotMatch(html, /class="file-input"/);
+  assert.doesNotMatch(html, /class="divider"/);
   assert.doesNotMatch(html, /class="file-icon"/);
 });
 
-test("chrome file path controls shrink-wrap and align together", async () => {
+test("overflow menu shows the artifact path with a copy affordance", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact/index.html" });
   const css = await chromeCssSource();
 
-  assert.match(css, /\.file-wrap\{[^}]*align-items:center/);
-  assert.match(css, /\.file-wrap\{[^}]*flex:1 1 auto/);
-  assert.match(css, /\.file-input\{[^}]*width:auto/);
-  assert.match(css, /\.file-input\{[^}]*max-width:100%/);
-  assert.match(css, /\.file-input\{[^}]*border:1px solid var\(--border-subtle\)/);
-  assert.match(css, /\.file-input\{[^}]*border-radius:var\(--radius-sm\)/);
-  assert.doesNotMatch(css, /44vw/);
-  assert.doesNotMatch(css, /52vw/);
+  assert.match(html, /class="menu-label">Editing</);
+  assert.match(html, /class="menu-file" id="copyPath"[^>]*title="Copy path · \/tmp\/artifact\/index\.html"/);
+  assert.match(html, /class="copy-hint"/);
+  assert.match(css, /\.menu-file\{[^}]*font-family:var\(--font-mono\)/);
+  assert.match(css, /\.copy-hint\.copied\{color:var\(--accent-hover\)/);
 });
 
-test("chrome can copy the file path from the top bar", async () => {
+test("overflow menu path keeps the file name visible and elides the directories", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact/index.html" });
+  const css = await chromeCssSource();
+
+  assert.match(html, /class="path-head">\/tmp\/artifact\/</);
+  assert.match(html, /class="path-tail">index\.html</);
+  assert.match(css, /\.path-head\{[^}]*text-overflow:ellipsis/);
+  assert.match(css, /\.path-head\{[^}]*min-width:0/);
+  assert.match(css, /\.path-tail\{[^}]*flex:0 0 auto/);
+  assert.match(css, /\.path-tail\{[^}]*max-width:100%/);
+});
+
+test("overflow menu path shortens the home directory to a tilde", () => {
+  const home = homedir();
+  const file = path.join(home, "projects", "demo", "artifact.html");
+  const html = createChromeHtml({ key: "abc", file });
+
+  assert.match(html, /class="path-head">~\/projects\/demo\/</);
+  assert.match(html, /class="path-tail">artifact\.html</);
+  // The copy affordance still carries the absolute path.
+  assert.ok(html.includes(`title="Copy path · ${file}"`));
+});
+
+test("overflow menu path display tolerates Windows separators", () => {
+  assert.deepEqual(
+    displayPathParts("C:\\Users\\runneradmin\\projects\\demo\\artifact.html", "C:\\Users\\runneradmin"),
+    { head: "~/projects/demo/", tail: "artifact.html" },
+  );
+});
+
+test("chrome can copy the full file path from the overflow menu", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
 
-  assert.match(html, /id="copyPath"/);
-  assert.match(html, /Copy Path/);
-  assert.match(js, /navigator\.clipboard\.writeText\(filePathInput\.value\)/);
-  assert.match(js, /copyPathButton\.textContent = "Copied"/);
-  assert.match(js, /copyPathButton\.textContent = "Copy Path"/);
+  assert.match(html, /"file":"\/tmp\/artifact\.html"/);
+  assert.match(js, /const filePath = String\(sessionData\.file \|\| ""\)/);
+  assert.match(js, /copyText\(filePath\)/);
+  assert.match(js, /copyHintText\.textContent = "Copied"/);
+  assert.match(js, /copyHintText\.textContent = "Copy"/);
+});
+
+test("overflow menu offers reload, snapshot copy, and end session actions", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+
+  assert.match(html, /id="reloadArtifact"[^<]*>.*Reload artifact/);
+  assert.match(html, /id="copySnapshot"[^<]*>.*Copy DOM snapshot/);
+  assert.match(html, /class="menu-item danger" id="end"[^<]*>.*End session/);
+  assert.doesNotMatch(html, /End Session</);
+  assert.match(js, /event\.key === "Escape"/);
+});
+
+test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /const snapshotRequests = \[\]/);
+  assert.match(js, /requestSnapshot\("copy"\)/);
+  assert.match(js, /const snapshotAction = snapshotRequests\.shift\(\) \|\| "submit"/);
+  assert.match(js, /if \(snapshotAction === "copy"\)/);
+  assert.match(js, /copyText\(msg\.snapshot \|\| ""\)/);
+});
+
+test("clipboard copy falls back when navigator clipboard rejects", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /async function copyText\(text\)/);
+  assert.match(js, /await navigator\.clipboard\.writeText\(text\)/);
+  assert.match(js, /document\.execCommand\("copy"\)/);
+  assert.doesNotMatch(js, /navigator\.clipboard\.writeText\(text\)\.catch/);
 });
 
 test("chrome centers the top bar row while bottom-aligning the identity cluster", async () => {
@@ -341,10 +402,6 @@ test("chrome centers the top bar row while bottom-aligning the identity cluster"
   assert.match(css, /\.bar\{[^}]*align-items:center/);
   assert.match(css, /\.brand\{[^}]*height:22px/);
   assert.match(css, /\.brand\{[^}]*align-items:flex-end/);
-  assert.match(css, /\.file-wrap\{[^}]*height:22px/);
-  assert.match(css, /\.file-wrap\{[^}]*align-items:center/);
-  assert.match(css, /\.file-input\{[^}]*line-height:1/);
-  assert.match(css, /\.divider\{[^}]*height:22px/);
 });
 
 test("chrome chat bubbles follow the preview mock shades", async () => {
@@ -406,12 +463,57 @@ test("chrome shows agent working state when a previous poll has released", async
   assert.match(js, /spinner/);
 });
 
-test("chrome disables sending while agent is working but allows it while waiting or listening", async () => {
+test("chrome disables sending only while working or ended", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /let agentPresence = "waiting"/);
-  assert.match(js, /sendButton\.disabled = agentPresence === "working"/);
-  assert.match(js, /if \(agentPresence === "working"\) return/);
+  assert.match(js, /function updateSendState\(\)/);
+  assert.match(js, /sendButton\.disabled = ended \|\| agentPresence === "working"/);
+  assert.match(js, /sendCaret\.disabled = ended \|\| agentPresence === "working"/);
+  assert.doesNotMatch(js, /hasContent/);
+});
+
+test("sending with an empty composer nudges instead of blocking", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+  const css = await chromeCssSource();
+
+  assert.match(html, /class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.</);
+  assert.match(js, /function showSendHint\(\)/);
+  assert.match(js, /sendHint\.hidden = false/);
+  assert.match(js, /chatInput\.focus\(\)/);
+  assert.match(css, /\.send-hint\{/);
+});
+
+test("composer send is a split button with a send-and-end option", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const css = await chromeCssSource();
+
+  assert.match(html, /class="button send-main" id="send">Send to Agent</);
+  assert.match(html, /class="button send-caret" id="sendCaret"/);
+  assert.match(html, /class="menu send-menu" id="sendMenu" hidden/);
+  assert.match(html, /id="sendAndEnd"[^<]*>.*Send &amp; end session/);
+  assert.match(css, /\.send-main\{[^}]*border-radius:var\(--radius-md\) 0 0 var\(--radius-md\)/);
+  assert.match(css, /\.send-caret\{[^}]*border-left:1px solid rgba\(23,19,10,.22\)/);
+});
+
+test("send and end submits queued prompts before ending the session", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /let endAfterSubmit = false/);
+  assert.match(js, /sendQueued\(true\)/);
+  assert.doesNotMatch(js, /const shouldEndAfterSubmit = endAfterSubmit/);
+  assert.doesNotMatch(js, /if \(shouldEndAfterSubmit\) await endSession\(\)/);
+  assert.match(js, /if \(!succeeded\) \{\n {6}endAfterSubmit = false/);
+  assert.match(js, /\} else if \(endAfterSubmit\) \{\n {6}endAfterSubmit = false;\n {6}await endSession\(\)/);
+});
+
+test("chrome only marks session ended after the end request succeeds", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /const response = await fetch\("\/api\/" \+ key \+ "\/end", \{ method: "POST" \}\)/);
+  assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\)/);
+  assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\);\n {2}ended = true/);
 });
 
 test("chrome shows a waiting banner when no agent has attached", async () => {
@@ -421,7 +523,7 @@ test("chrome shows a waiting banner when no agent has attached", async () => {
 
   assert.match(html, /id="presenceBanner"/);
   assert.match(html, /Your agent is not listening/);
-  assert.match(js, /presenceBanner\.hidden = agentPresence !== "waiting"/);
+  assert.match(js, /presenceBanner\.hidden = ended \|\| agentPresence !== "waiting"/);
   assert.match(css, /\.presence-banner\{/);
 });
 
@@ -559,7 +661,7 @@ test("chrome submits prompts queued during an in-flight submit", async () => {
   assert.match(js, /let submitQueuedAgain = false/);
   assert.match(js, /submitQueuedAgain = true/);
   assert.match(js, /const shouldSubmitAgain = submitQueuedAgain/);
-  assert.match(js, /if \(succeeded && shouldSubmitAgain && queued\.length\) submitQueued\(\)/);
+  assert.match(js, /else if \(shouldSubmitAgain && queued\.length\) \{\n {6}submitQueued\(\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
@@ -1496,18 +1598,23 @@ test("server debug logger receives session and watcher lifecycle events", async 
   }
 });
 
-test("ended session message renders centered in the main content area", async () => {
+test("ended session shows an overlay card over the dimmed chrome", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
   const css = await chromeCssSource();
 
-  assert.match(js, /class="ended-view"/);
-  assert.match(js, /class="ended-card"/);
-  assert.match(css, /\.ended-view\{[^}]*height:calc\(100vh - var\(--bar-h\)\)/);
-  assert.match(css, /\.ended-view\{[^}]*place-items:center/);
-  assert.match(js, /Session ended\./);
-  assert.match(js, /Return to your agent to continue\./);
-  assert.doesNotMatch(js, /The agent polling loop can stop\./);
-  assert.doesNotMatch(js, /<span class="file">Session ended\. The agent polling loop can stop\.<\/span>/);
+  assert.match(html, /class="ended-overlay" id="endedOverlay" hidden/);
+  assert.match(html, /class="ended-card"/);
+  assert.match(html, /Session ended\./);
+  assert.match(html, /Return to your agent to continue\./);
+  assert.match(html, /class="ended-copy">\/tmp\/artifact\.html</);
+  assert.doesNotMatch(html, /The agent polling loop can stop\./);
+  assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
+  assert.match(css, /\.ended-overlay\{[^}]*background:rgba\(15,17,21,.86\)/);
+  assert.match(css, /\.ended-title\{[^}]*font-family:var\(--font-serif\)/);
+  assert.match(js, /endedOverlay\.hidden = false/);
+  assert.match(js, /annotationSwitch\.disabled = true/);
+  assert.match(js, /moreButton\.disabled = true/);
 });
 
 test("annotation card queues prompt on Enter and inserts newline on Shift+Enter", () => {
@@ -1517,6 +1624,16 @@ test("annotation card queues prompt on Enter and inserts newline on Shift+Enter"
   assert.match(js, /event\.key === ["']Enter["'] && !event\.shiftKey/);
   assert.match(js, /event\.preventDefault\(\)/);
   assert.match(js, /sendButton\.click\(\)/);
+});
+
+test("annotation card queues and sends immediately on Ctrl+Enter or Cmd+Enter", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /event\.ctrlKey \|\| event\.metaKey/);
+  assert.match(js, /sendQueuedPrompts\(\)/);
+  assert.match(js, /class="lavish-hint"/);
+  assert.match(js, /\+Enter to send now/);
+  assert.match(js, /\.lavish-annotation-card \.lavish-hint\{/);
 });
 
 test("chrome client chat input sends on Enter and inserts newline on Shift+Enter", async () => {

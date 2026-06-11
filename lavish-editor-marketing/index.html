@@ -29,11 +29,7 @@
         --brass-500: #f4c95d;
         --brass-400: #ffd877;
         --brass-ink: #17130a;
-        --sage-900: #172419;
-        --sage-700: #315f3a;
         --sage-300: #8fe39e;
-        --amber-900: #25230f;
-        --amber-700: #5d4d1b;
         --rust-500: #f06464;
         --font-serif: "EB Garamond", "Iowan Old Style", Georgia, serif;
         --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -70,22 +66,24 @@
         background: var(--ink-900);
       }
 
-      .scene:not(#scene-terminal) {
+      .scene:not(#scene-terminal):not(#scene-cover) {
         opacity: 0;
+      }
+
+      #scene-cover {
+        z-index: 30;
       }
 
       .scene-content {
         width: 100%;
         height: 100%;
-        padding: 74px 92px;
         display: flex;
         flex-direction: column;
-        gap: 30px;
       }
 
       .eyebrow {
         color: var(--steel-400);
-        font-size: 16px;
+        font-size: 24px;
         font-weight: 700;
         letter-spacing: 0.12em;
         text-transform: uppercase;
@@ -93,14 +91,15 @@
 
       .terminal-stage {
         justify-content: center;
-        align-items: center;
+        align-items: flex-start;
+        padding-left: 70px;
       }
 
       .terminal-shell {
-        width: 1260px;
-        height: 742px;
+        width: 1640px;
+        height: 890px;
         border: 1px solid var(--steel-600);
-        border-radius: 18px;
+        border-radius: 20px;
         background: #0b0d11;
         overflow: hidden;
         opacity: 0;
@@ -108,50 +107,50 @@
       }
 
       .terminal-bar {
-        height: 48px;
+        height: 62px;
         display: flex;
         align-items: center;
-        gap: 12px;
-        padding: 0 18px;
+        gap: 14px;
+        padding: 0 24px;
         background: #171a21;
         border-bottom: 1px solid var(--steel-700);
         color: var(--steel-200);
         font-family: var(--font-mono);
-        font-size: 18px;
+        font-size: 26px;
       }
 
       .traffic {
         display: flex;
-        gap: 8px;
+        gap: 10px;
         margin-right: 8px;
       }
 
       .traffic span {
-        width: 13px;
-        height: 13px;
+        width: 16px;
+        height: 16px;
         border-radius: 999px;
         background: var(--steel-500);
       }
 
       .terminal-body {
-        padding: 28px 34px;
+        padding: 34px 44px;
         font-family: var(--font-mono);
         color: var(--steel-100);
-        font-size: 22px;
-        line-height: 1.52;
+        font-size: 38px;
+        line-height: 1.46;
       }
 
       .terminal-conversation {
         display: grid;
-        gap: 14px;
-        margin-bottom: 26px;
+        gap: 18px;
+        margin-bottom: 30px;
       }
 
       .terminal-turn {
-        width: 820px;
+        width: 1120px;
         border: 1px solid var(--steel-700);
-        border-radius: 12px;
-        padding: 14px 16px;
+        border-radius: 16px;
+        padding: 18px 24px;
         color: var(--steel-100);
         background: var(--ink-800);
       }
@@ -164,10 +163,10 @@
 
       .terminal-speaker {
         display: block;
-        margin-bottom: 6px;
+        margin-bottom: 8px;
         color: var(--steel-300);
         font-family: var(--font-sans);
-        font-size: 12px;
+        font-size: 20px;
         font-weight: 700;
         letter-spacing: 0.08em;
         text-transform: uppercase;
@@ -176,12 +175,12 @@
       .prompt-line {
         display: flex;
         align-items: center;
-        gap: 14px;
+        gap: 18px;
         width: 100%;
-        min-height: 48px;
+        min-height: 76px;
         border: 1px solid var(--steel-600);
-        border-radius: 8px;
-        padding: 7px 12px;
+        border-radius: 12px;
+        padding: 10px 20px;
         color: var(--cream-100);
       }
 
@@ -193,8 +192,26 @@
         color: var(--cream-100);
       }
 
+      /* "/lavish" — the first 7 typed characters carry the brass attention color */
+      #typed-prompt span:nth-child(-n + 7) {
+        color: var(--brass-500);
+      }
+
+      .enter-key {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--steel-500);
+        border-radius: 8px;
+        background: var(--ink-600);
+        color: var(--steel-200);
+        padding: 4px 16px;
+        font-size: 24px;
+        opacity: 0;
+      }
+
       .agent-log {
-        margin-top: 24px;
+        margin-top: 30px;
         color: var(--steel-200);
       }
 
@@ -214,46 +231,14 @@
         color: var(--sage-300);
       }
 
-      .caption-block {
-        position: absolute;
-        right: 74px;
-        bottom: 68px;
-        width: 690px;
-        padding: 26px 30px 28px;
-        border: 1px solid rgba(48, 55, 69, 0.8);
-        border-radius: 18px;
-        background: linear-gradient(135deg, rgba(15, 17, 21, 0.94), rgba(15, 17, 21, 0.58));
-        box-shadow: 0 22px 80px rgba(0, 0, 0, 0.38);
-        opacity: 0;
-        transform: translateY(20px);
-        z-index: 10;
-      }
-
-      .caption-block h1 {
-        font-family: var(--font-serif);
-        font-size: 72px;
-        font-style: italic;
-        font-weight: 400;
-        line-height: 0.98;
-        letter-spacing: -0.015em;
-      }
-
-      .caption-block p {
-        margin-top: 18px;
-        color: var(--steel-200);
-        font-size: 25px;
-        line-height: 1.35;
-      }
-
       .browser-stage {
-        padding: 58px 64px;
         justify-content: center;
         align-items: center;
       }
 
       .browser-window {
-        width: 1760px;
-        height: 948px;
+        width: 1840px;
+        height: 1008px;
         border: 1px solid var(--steel-600);
         border-radius: 18px;
         background: var(--ink-800);
@@ -263,42 +248,42 @@
       }
 
       .browser-bar {
-        height: 48px;
+        height: 60px;
         display: flex;
         align-items: center;
-        gap: 14px;
-        padding: 0 18px;
+        gap: 18px;
+        padding: 0 24px;
         background: #0b0d11;
         border-bottom: 1px solid var(--steel-700);
       }
 
       .address {
         flex: 1;
-        height: 28px;
+        height: 40px;
         display: flex;
         align-items: center;
-        padding: 0 12px;
+        padding: 0 18px;
         border: 1px solid var(--steel-700);
         border-radius: 999px;
         color: var(--steel-200);
         font-family: var(--font-mono);
-        font-size: 13px;
+        font-size: 22px;
         background: var(--ink-900);
       }
 
       .editor {
-        height: 900px;
+        height: 946px;
         display: flex;
         flex-direction: column;
         background: var(--ink-900);
       }
 
       .topbar {
-        height: 56px;
+        height: 78px;
         display: flex;
         align-items: center;
-        gap: 12px;
-        padding: 0 16px;
+        gap: 16px;
+        padding: 0 22px;
         background: var(--ink-700);
         border-bottom: 1px solid var(--steel-700);
       }
@@ -306,103 +291,74 @@
       .brand {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         white-space: nowrap;
       }
 
       .brand .lavish {
         font-family: var(--font-serif);
-        font-size: 25px;
+        font-size: 38px;
         font-style: italic;
         line-height: 1;
       }
 
       .brand .editor-word {
         color: var(--steel-200);
-        font-size: 11px;
+        font-size: 18px;
         font-weight: 700;
         letter-spacing: 0.18em;
         text-transform: uppercase;
       }
 
-      .divider {
-        width: 1px;
-        height: 22px;
-        background: var(--steel-700);
+      .topbar-spacer {
+        flex: 1;
       }
 
-      .file-wrap {
-        flex: 1 1 auto;
-        min-width: 0;
-        height: 22px;
+      .annotate-switch {
         display: flex;
         align-items: center;
-        gap: 8px;
-      }
-
-      .file-input {
-        display: block;
-        width: auto;
-        max-width: 100%;
-        min-width: 0;
-        border: 1px solid var(--steel-700);
-        border-radius: 8px;
-        background: transparent;
+        gap: 14px;
         color: var(--steel-100);
-        font-family: var(--font-mono);
-        font-size: 12px;
-        line-height: 1;
-        padding: 4px 7px;
-        text-overflow: ellipsis;
-      }
-
-      .copy-button {
-        border: 1px solid var(--steel-600);
-        border-radius: 8px;
-        background: transparent;
-        color: var(--steel-300);
         font-family: var(--font-sans);
-        font-size: 11px;
-        font-weight: 600;
-        line-height: 1;
-        padding: 4px 7px;
+        font-size: 22px;
         white-space: nowrap;
       }
 
-      .file-path {
-        flex: 1;
+      .switch-track {
+        width: 58px;
+        height: 34px;
+        border-radius: 999px;
+        background: var(--brass-500);
+        position: relative;
+        flex-shrink: 0;
+      }
+
+      .switch-knob {
+        position: absolute;
+        top: 3px;
+        left: 27px;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        background: var(--brass-ink);
+      }
+
+      .more-button {
+        width: 58px;
+        height: 58px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--steel-700);
+        background: transparent;
         color: var(--steel-200);
-        font-family: var(--font-mono);
-        font-size: 13px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .button {
-        border: 0;
-        border-radius: 10px;
-        padding: 9px 12px;
-        font-family: var(--font-sans);
-        font-size: 13px;
-        font-weight: 700;
-      }
-
-      .button.secondary {
-        color: var(--cream-100);
-        background: var(--steel-700);
-      }
-
-      .button.danger {
-        color: var(--rust-500);
-        background: transparent;
-        border: 1px solid var(--rust-500);
+        border-radius: 15px;
+        padding: 0;
       }
 
       .workbench {
         flex: 1;
         display: grid;
-        grid-template-columns: 1fr 360px;
+        grid-template-columns: 1fr 480px;
         min-height: 0;
       }
 
@@ -415,26 +371,23 @@
 
       .report-page {
         position: absolute;
-        inset: 38px 58px;
-        padding: 46px 52px;
+        inset: 22px 32px;
+        padding: 36px 44px;
         background: #fffbf3;
         border: 1px solid #ded2b9;
         color: #1d1a15;
       }
 
       .report-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 28px;
-        margin-bottom: 28px;
+        margin-bottom: 24px;
         border-bottom: 1px solid #e2d6bd;
-        padding-bottom: 26px;
+        padding-bottom: 22px;
       }
 
       .report-header h2 {
+        margin-top: 8px;
         font-family: var(--font-serif);
-        font-size: 58px;
+        font-size: 60px;
         font-style: italic;
         font-weight: 400;
         line-height: 1.02;
@@ -442,123 +395,77 @@
       }
 
       .report-header p {
-        margin-top: 12px;
-        max-width: 650px;
+        margin-top: 14px;
+        max-width: 1120px;
         color: #514a3e;
-        font-size: 19px;
-        line-height: 1.45;
-      }
-
-      .report-date {
-        color: #756a58;
-        font-family: var(--font-mono);
-        font-size: 15px;
-        line-height: 1.45;
-        text-align: right;
-      }
-
-      .report-date span {
-        display: block;
-      }
-
-      .metrics {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 18px;
-        margin-bottom: 24px;
-      }
-
-      .metric {
-        border: 1px solid #e2d6bd;
-        border-radius: 14px;
-        padding: 18px;
-        background: #fbf5e9;
-      }
-
-      .metric .label {
-        color: #756a58;
-        font-size: 14px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-
-      .metric .value {
-        margin-top: 8px;
-        font-family: var(--font-mono);
-        font-size: 44px;
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
+        font-size: 28px;
+        line-height: 1.42;
       }
 
       .charts {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 22px;
+        gap: 24px;
       }
 
       .chart-card {
-        min-height: 262px;
         border: 1px solid #e2d6bd;
         border-radius: 16px;
-        padding: 22px;
+        padding: 24px;
         background: #fbf5e9;
       }
 
-      .chart-card.target,
-      .chart-card.target-second {
+      .chart-card.target {
         position: relative;
       }
 
       .chart-title {
         color: #2b251b;
-        font-size: 22px;
+        font-size: 30px;
         font-weight: 700;
       }
 
       .chart-subtitle {
         margin-top: 4px;
         color: #756a58;
-        font-size: 15px;
+        font-size: 21px;
       }
 
       .architecture-diagram {
         display: grid;
-        gap: 16px;
-        margin-top: 22px;
+        gap: 10px;
+        margin-top: 18px;
       }
 
       .diagram-flow {
         display: grid;
-        grid-template-columns: 1fr 34px 1fr 34px 1fr;
-        align-items: center;
         gap: 10px;
       }
 
       .diagram-node {
-        min-height: 74px;
         border: 1px solid #d7c9ad;
         border-radius: 13px;
         background: #fff7e8;
-        padding: 13px;
+        padding: 14px 18px;
       }
 
       .diagram-node strong {
         display: block;
         color: #2b251b;
-        font-size: 16px;
+        font-size: 25px;
       }
 
       .diagram-node span {
         display: block;
-        margin-top: 5px;
+        margin-top: 4px;
         color: #625847;
         font-family: var(--font-mono);
-        font-size: 12px;
+        font-size: 19px;
         line-height: 1.35;
       }
 
       .diagram-node.warn {
+        position: relative;
         border-color: #b98b37;
         background: #fff0bf;
       }
@@ -577,256 +484,54 @@
         color: #9b8444;
         font-family: var(--font-mono);
         font-size: 24px;
-        text-align: center;
-      }
-
-      .design-note {
-        border-left: 3px solid var(--brass-500);
-        padding-left: 12px;
-        color: #514a3e;
-        font-size: 14px;
-        line-height: 1.4;
+        line-height: 1;
+        margin-left: 28px;
       }
 
       .plan-after {
         position: absolute;
-        inset: 78px 24px 20px;
+        inset: 104px 24px 24px;
         opacity: 0;
       }
 
-      .decision-list {
+      .option-list {
         display: grid;
         gap: 12px;
-        margin-top: 24px;
+        margin-top: 18px;
       }
 
-      .decision-item {
+      .option-button {
         border: 1px solid #d7c9ad;
-        border-radius: 12px;
+        border-radius: 13px;
         background: #fff7e8;
-        padding: 12px 14px;
-        color: #514a3e;
-        font-size: 15px;
-        line-height: 1.4;
-      }
-
-      .decision-item strong {
-        display: block;
+        padding: 14px 18px;
+        text-align: left;
         color: #2b251b;
-        font-size: 13px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-
-      .change-token {
-        position: relative;
-        display: inline-block;
-        min-width: 154px;
-        color: #2b251b;
-        font-family: var(--font-mono);
+        font-family: var(--font-sans);
+        font-size: 25px;
         font-weight: 700;
-      }
-
-      .after-token {
-        position: absolute;
-        left: 0;
-        top: 0;
-        opacity: 0;
-        color: var(--brass-500);
       }
 
       .failure-list {
         display: grid;
-        gap: 9px;
-        margin-top: 12px;
+        gap: 12px;
+        margin-top: 18px;
       }
 
       .failure-item {
         border-left: 3px solid var(--brass-500);
-        padding-left: 10px;
+        padding-left: 14px;
         color: #514a3e;
-        font-size: 14px;
+        font-size: 22px;
         line-height: 1.35;
         opacity: 0;
       }
 
-      .bar-chart {
-        display: grid;
-        gap: 13px;
-        margin-top: 28px;
-      }
-
-      .bar-row {
-        display: grid;
-        grid-template-columns: 84px 1fr 48px;
-        align-items: center;
-        gap: 12px;
-        color: #514a3e;
-        font-size: 16px;
-      }
-
-      .bar-track {
-        height: 18px;
-        border-radius: 999px;
-        background: #e9dec9;
-        overflow: hidden;
-      }
-
-      .bar-fill {
-        height: 100%;
-        border-radius: inherit;
-        background: #2b251b;
-      }
-
-      .pie-chart {
-        position: absolute;
-        inset: 78px 24px 20px;
-        display: grid;
-        grid-template-columns: 172px 1fr;
-        gap: 24px;
-        align-items: center;
-        opacity: 0;
-      }
-
-      .pie {
-        width: 172px;
-        height: 172px;
-        border-radius: 50%;
-        background: conic-gradient(
-          #2b251b 0deg 166deg,
-          #9b8444 166deg 263deg,
-          #d7bc73 263deg 320deg,
-          #e8d9b5 320deg 360deg
-        );
-        border: 10px solid #fff7e8;
-      }
-
-      .legend {
-        display: grid;
-        gap: 12px;
-        color: #514a3e;
-        font-size: 16px;
-      }
-
-      .legend span {
-        display: inline-flex;
-        width: 11px;
-        height: 11px;
-        margin-right: 9px;
-        border-radius: 999px;
-        vertical-align: -1px;
-      }
-
-      .line-chart {
-        display: flex;
-        align-items: end;
-        gap: 18px;
-        height: 142px;
-        margin-top: 30px;
-        padding: 0 12px;
-        border-bottom: 1px solid #d9ccb2;
-      }
-
-      .line-column-wrap {
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-end;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .line-number {
-        color: #514a3e;
-        font-family: var(--font-mono);
-        font-size: 15px;
-        font-weight: 700;
-        opacity: 0;
-      }
-
-      .line-column {
-        width: 48px;
-        background: #2b251b;
-        border-radius: 8px 8px 0 0;
-      }
-
-      .dark-report {
-        background: var(--ink-800);
-        border-color: var(--steel-600);
-        color: var(--cream-100);
-      }
-
-      .dark-report .report-header {
-        border-bottom-color: var(--steel-600);
-      }
-
-      .dark-report .eyebrow,
-      .dark-report .report-header p,
-      .dark-report .report-date,
-      .dark-report .chart-subtitle,
-      .dark-report .legend,
-      .dark-report .metric .label {
-        color: var(--steel-200) !important;
-      }
-
-      .dark-report .metric,
-      .dark-report .chart-card {
-        background: var(--ink-700);
-        border-color: var(--steel-600);
-      }
-
-      .dark-report .chart-title,
-      .dark-report .metric .value,
-      .dark-report .line-number {
-        color: var(--cream-100);
-      }
-
-      .dark-report .line-chart {
-        border-bottom-color: var(--steel-500);
-      }
-
-      .dark-report .line-column {
-        background: var(--brass-500);
-      }
-
-      .dark-report .line-number {
-        opacity: 1;
-      }
-
-      .dark-report .pie {
-        border-color: var(--ink-900);
-      }
-
-      .dark-report .diagram-node,
-      .dark-report .decision-item {
-        background: var(--ink-600);
-        border-color: var(--steel-600);
-      }
-
-      .dark-report .diagram-node strong,
-      .dark-report .decision-item strong,
-      .dark-report .change-token {
-        color: var(--cream-100);
-      }
-
-      .dark-report .diagram-node span,
-      .dark-report .design-note,
-      .dark-report .decision-item,
-      .dark-report .failure-item {
-        color: var(--steel-200);
-      }
-
-      .dark-report .diagram-node.warn {
-        background: var(--ink-600);
-        border-color: var(--brass-500);
-      }
-
-      .outline-target,
-      .outline-target-2 {
+      .outline-target {
         position: absolute;
         inset: -2px;
         border: 2px solid var(--brass-500);
-        border-radius: 18px;
+        border-radius: 15px;
         outline: 2px solid var(--brass-500);
         outline-offset: 2px;
         opacity: 0;
@@ -842,8 +547,8 @@
       }
 
       .chat-panel h3 {
-        margin: 16px 16px 8px;
-        font-size: 15px;
+        margin: 18px 20px 8px;
+        font-size: 26px;
         font-weight: 700;
       }
 
@@ -853,25 +558,25 @@
         display: flex;
         flex-direction: column;
         gap: 10px;
-        padding: 0 16px 12px;
+        padding: 0 20px 14px;
       }
 
       .bubble {
-        max-width: 292px;
-        border-radius: 14px;
-        padding: 11px 12px;
+        max-width: 404px;
+        border-radius: 16px;
+        padding: 14px 16px;
         background: var(--ink-600);
         border: 1px solid var(--steel-600);
         color: var(--cream-100);
-        font-size: 14px;
-        line-height: 1.42;
+        font-size: 23px;
+        line-height: 1.38;
       }
 
       .bubble small {
         display: block;
         color: var(--steel-300);
-        margin-bottom: 4px;
-        font-size: 10px;
+        margin-bottom: 5px;
+        font-size: 15px;
         font-weight: 700;
         letter-spacing: 0.08em;
         text-transform: uppercase;
@@ -896,13 +601,13 @@
 
       .working {
         position: absolute;
-        left: 16px;
-        top: 340px;
-        width: 292px;
+        left: 20px;
+        top: 326px;
+        width: 404px;
         align-self: flex-start;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 12px;
         background: transparent;
         border-color: var(--steel-700);
         color: var(--steel-100);
@@ -910,25 +615,25 @@
       }
 
       .spinner {
-        width: 14px;
-        height: 14px;
+        width: 20px;
+        height: 20px;
         border-radius: 999px;
-        border: 2px solid var(--steel-600);
+        border: 3px solid var(--steel-600);
         border-top-color: var(--brass-500);
       }
 
       .composer {
         display: grid;
-        gap: 8px;
-        padding: 12px 16px;
+        gap: 10px;
+        padding: 14px 20px 18px;
         border-top: 1px solid var(--steel-700);
       }
 
       .pills {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
-        min-height: 30px;
+        gap: 8px;
+        min-height: 44px;
       }
 
       .pill {
@@ -938,37 +643,37 @@
         border: 1px solid var(--steel-500);
         background: var(--ink-600);
         color: var(--steel-100);
-        padding: 6px 10px;
-        font-size: 12px;
+        padding: 8px 14px;
+        font-size: 20px;
         font-weight: 700;
         opacity: 0;
       }
 
       .textarea {
-        min-height: 82px;
+        min-height: 124px;
         position: relative;
-        border-radius: 12px;
+        border-radius: 14px;
         border: 1px solid var(--steel-600);
         background: var(--ink-900);
         color: var(--steel-400);
-        padding: 10px;
-        font-size: 14px;
+        padding: 14px;
+        font-size: 23px;
         line-height: 1.35;
       }
 
       .textarea .placeholder {
         position: absolute;
-        top: 10px;
-        left: 10px;
-        right: 10px;
+        top: 14px;
+        left: 14px;
+        right: 14px;
         color: var(--steel-400);
       }
 
       .textarea .chat-line {
         position: absolute;
-        top: 10px;
-        left: 10px;
-        right: 10px;
+        top: 14px;
+        left: 14px;
+        right: 14px;
         color: var(--cream-100);
       }
 
@@ -981,24 +686,40 @@
         justify-content: flex-end;
       }
 
+      .send-split {
+        display: inline-flex;
+        align-items: stretch;
+        transform-origin: center center;
+      }
+
       .send-button {
         border: 0;
-        border-radius: 10px;
-        transform-origin: center center;
-        padding: 9px 12px;
+        border-radius: 12px 0 0 12px;
+        padding: 13px 18px;
         background: var(--brass-500);
         color: var(--brass-ink);
-        font-size: 13px;
+        font-size: 22px;
         font-weight: 700;
+      }
+
+      .send-caret {
+        border: 0;
+        border-radius: 0 12px 12px 0;
+        border-left: 1px solid rgba(23, 19, 10, 0.22);
+        padding: 0 13px;
+        background: var(--brass-500);
+        color: var(--brass-ink);
+        display: grid;
+        place-items: center;
       }
 
       .annotation-card {
         position: absolute;
-        left: 708px;
-        top: 436px;
-        width: 320px;
-        padding: 12px;
-        border-radius: 14px;
+        left: 250px;
+        top: 420px;
+        width: 470px;
+        padding: 18px;
+        border-radius: 16px;
         border: 1px solid var(--brass-500);
         background: var(--ink-800);
         color: var(--cream-100);
@@ -1007,60 +728,57 @@
         opacity: 0;
       }
 
-      .annotation-card.second {
-        left: 950px;
-        top: 456px;
-      }
-
       .annotation-card h4 {
-        margin-bottom: 7px;
-        font-size: 15px;
+        margin-bottom: 10px;
+        font-size: 24px;
         font-weight: 700;
       }
 
       .annotation-input {
-        min-height: 86px;
-        border-radius: 10px;
+        min-height: 118px;
+        border-radius: 12px;
         border: 1px solid var(--steel-600);
         background: var(--ink-900);
-        padding: 9px;
+        padding: 12px;
         color: var(--cream-100);
-        font-size: 14px;
+        font-size: 23px;
         line-height: 1.35;
       }
 
       .annotation-actions {
         display: flex;
         justify-content: flex-end;
-        gap: 8px;
-        margin-top: 8px;
+        gap: 10px;
+        margin-top: 12px;
       }
 
       .queue-button {
         border: 0;
-        border-radius: 9px;
-        padding: 8px 10px;
+        border-radius: 10px;
+        padding: 11px 15px;
         background: var(--brass-500);
         color: var(--brass-ink);
-        font-size: 13px;
+        font-size: 21px;
         font-weight: 700;
       }
 
       .ghost-button {
         border: 0;
-        border-radius: 9px;
-        padding: 8px 10px;
+        border-radius: 10px;
+        padding: 11px 15px;
         background: var(--steel-700);
         color: var(--cream-100);
-        font-size: 13px;
+        font-size: 21px;
         font-weight: 700;
       }
 
       .pointer {
         position: absolute;
+        left: 0;
+        top: 0;
         z-index: 60;
-        width: 30px;
-        height: 30px;
+        width: 40px;
+        height: 40px;
         color: var(--cream-100);
         filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.45));
       }
@@ -1071,41 +789,15 @@
 
       .click-ring {
         position: absolute;
+        left: 0;
+        top: 0;
         z-index: 55;
-        width: 42px;
-        height: 42px;
-        margin: -20px 0 0 -20px;
-        border: 2px solid var(--brass-500);
+        width: 54px;
+        height: 54px;
+        margin: -26px 0 0 -26px;
+        border: 3px solid var(--brass-500);
         border-radius: 999px;
         opacity: 0;
-      }
-
-      .zoom-stage .browser-window {
-        transform-origin: 52% 50%;
-      }
-
-      .zoom-copy {
-        position: absolute;
-        left: 120px;
-        bottom: 96px;
-        width: 660px;
-        z-index: 40;
-      }
-
-      .zoom-copy h2 {
-        font-family: var(--font-serif);
-        font-size: 78px;
-        font-style: italic;
-        font-weight: 400;
-        line-height: 0.96;
-        letter-spacing: -0.018em;
-      }
-
-      .zoom-copy p {
-        margin-top: 18px;
-        color: var(--steel-100);
-        font-size: 26px;
-        line-height: 1.32;
       }
 
       .outro {
@@ -1119,12 +811,12 @@
         display: flex;
         align-items: baseline;
         justify-content: center;
-        gap: 18px;
+        gap: 22px;
       }
 
       .outro-brand .lavish {
         font-family: var(--font-serif);
-        font-size: 132px;
+        font-size: 170px;
         font-style: italic;
         font-weight: 400;
         line-height: 0.9;
@@ -1132,28 +824,28 @@
 
       .outro-brand .editor-word {
         color: var(--steel-200);
-        font-size: 25px;
+        font-size: 32px;
         font-weight: 800;
         letter-spacing: 0.18em;
         text-transform: uppercase;
       }
 
       .outro p {
-        margin-top: 28px;
+        margin-top: 36px;
         color: var(--steel-100);
-        font-size: 31px;
+        font-size: 44px;
       }
 
       .outro code {
         display: inline-block;
-        margin-top: 36px;
+        margin-top: 44px;
         border: 1px solid var(--steel-600);
-        border-radius: 10px;
+        border-radius: 12px;
         background: var(--ink-600);
         color: var(--brass-500);
-        padding: 10px 15px;
+        padding: 16px 30px;
         font-family: var(--font-mono);
-        font-size: 23px;
+        font-size: 42px;
       }
     </style>
   </head>
@@ -1170,29 +862,26 @@
               <div class="terminal-conversation">
                 <div class="terminal-turn user">
                   <span class="terminal-speaker">Kun</span>
-                  We need the agent to think through the approach before writing code.
+                  How should browser feedback reach the agent, and where should the review queue live?
                 </div>
                 <div class="terminal-turn">
                   <span class="terminal-speaker">Agent</span>
-                  I can turn the discussion into a reviewable browser artifact with a diagram and concrete decisions.
+                  Long-polling and a local file store are the simplest start, with tradeoffs to review.
                 </div>
               </div>
               <div class="prompt-line">
                 <span class="prompt-marker">&gt;</span>
                 <span id="typed-prompt" class="prompt-text"></span>
+                <span class="enter-key">enter</span>
               </div>
               <div class="agent-log">
                 <div id="log-1" class="command">Drafting the technical approach...</div>
-                <div id="log-2">Creating <span class="file">/var/folders/tmp/design-plan.html</span></div>
-                <div id="log-3" class="command">$ lavish-axi /var/folders/tmp/design-plan.html</div>
+                <div id="log-2">Creating <span class="file">.lavish/plan.html</span></div>
+                <div id="log-3" class="command">$ npx lavish-axi .lavish/plan.html</div>
                 <div id="log-4" class="green">Opened in Lavish Editor.</div>
               </div>
             </div>
           </div>
-        </div>
-        <div class="caption-block">
-          <h1>Ask the agent for an artifact.</h1>
-          <p>Then review and collaborate on it in the browser.</p>
         </div>
       </section>
 
@@ -1206,33 +895,38 @@
             <div class="editor">
               <div class="topbar">
                 <div class="brand"><span class="lavish">Lavish</span><span class="editor-word">Editor</span></div>
-                <div class="divider"></div>
-                <div class="file-wrap">
-                  <div class="file-input">/var/folders/tmp/design-plan.html</div>
-                  <button class="copy-button">Copy Path</button>
+                <div class="topbar-spacer"></div>
+                <div class="annotate-switch">
+                  <span class="switch-track"><span class="switch-knob"></span></span>
+                  <span>Annotate</span>
                 </div>
-                <button class="button secondary">Annotation: On</button>
-                <button class="button danger">End Session</button>
+                <button class="more-button" aria-label="More">
+                  <svg
+                    width="27"
+                    height="27"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <circle cx="12" cy="5" r="1.4"></circle>
+                    <circle cx="12" cy="12" r="1.4"></circle>
+                    <circle cx="12" cy="19" r="1.4"></circle>
+                  </svg>
+                </button>
               </div>
               <div class="workbench">
                 <div class="artifact-frame">
                   <div class="report-page">
                     <div class="report-header">
-                      <div>
-                        <div class="eyebrow" style="color: #756a58">Technical plan</div>
-                        <h2>Element-specific feedback without screenshots</h2>
-                        <p>
-                          Proposed approach for sending precise browser annotations from a reviewed HTML artifact back
-                          to the coding agent.
-                        </p>
-                      </div>
-                      <div class="report-date">
-                        <span>Design review</span><span>Local-first</span><span>Agent feedback loop</span>
-                      </div>
+                      <div class="eyebrow" style="color: #756a58">Technical plan</div>
+                      <h2>Element-specific feedback without screenshots</h2>
+                      <p>Send precise browser annotations from a reviewed HTML artifact back to the coding agent.</p>
                     </div>
                     <div class="charts">
                       <div class="chart-card target">
-                        <div class="outline-target"></div>
                         <div class="chart-title">Architecture diagram</div>
                         <div class="chart-subtitle">Initial technical approach</div>
                         <div class="architecture-diagram chart-before">
@@ -1241,19 +935,17 @@
                               <strong>Browser review</strong>
                               <span>click element + write prompt</span>
                             </div>
-                            <div class="diagram-arrow">-&gt;</div>
+                            <div class="diagram-arrow">&darr;</div>
                             <div class="diagram-node warn">
+                              <div class="outline-target"></div>
                               <strong>Long-poll API</strong>
                               <span>poll waits for feedback</span>
                             </div>
-                            <div class="diagram-arrow">-&gt;</div>
+                            <div class="diagram-arrow">&darr;</div>
                             <div class="diagram-node">
                               <strong>Agent patch</strong>
                               <span>apply targeted edits</span>
                             </div>
-                          </div>
-                          <div class="design-note">
-                            The diagram explains how annotations move from artifact UI to agent action.
                           </div>
                         </div>
                         <div class="architecture-diagram plan-after chart-after">
@@ -1262,38 +954,31 @@
                               <strong>SDK in iframe</strong>
                               <span>selector + snapshot</span>
                             </div>
-                            <div class="diagram-arrow">-&gt;</div>
+                            <div class="diagram-arrow">&darr;</div>
                             <div class="diagram-node updated">
                               <strong>WebSocket channel</strong>
                               <span>push feedback to agent</span>
                             </div>
-                            <div class="diagram-arrow">-&gt;</div>
+                            <div class="diagram-arrow">&darr;</div>
                             <div class="diagram-node">
                               <strong>Agent patch</strong>
                               <span>apply targeted edits</span>
                             </div>
                           </div>
-                          <div class="design-note">The browser keeps a live channel open for collaborative review.</div>
                         </div>
                       </div>
                       <div class="chart-card target-second">
-                        <div class="outline-target-2"></div>
-                        <div class="chart-title">State and recovery</div>
-                        <div class="chart-subtitle">Persistence and failure-mode coverage</div>
-                        <div class="decision-list">
-                          <div class="decision-item">
-                            <strong>Session store</strong>
-                            Use
-                            <span class="change-token"
-                              ><span class="before-token">local file store</span
-                              ><span class="after-token">SQLite</span></span
-                            >
-                            for the review queue.
-                          </div>
-                          <div class="failure-list">
-                            <div class="failure-item">Server restart: poll resumes from persisted session state.</div>
-                            <div class="failure-item">Missing session: agent is told to reopen the same HTML file.</div>
-                          </div>
+                        <div class="chart-title">Session store</div>
+                        <div class="chart-subtitle">Pick the storage for the review queue</div>
+                        <div class="option-list">
+                          <button class="option-button">Local file store</button>
+                          <button class="option-button option-sqlite">SQLite</button>
+                          <button class="option-button">Postgres</button>
+                        </div>
+                        <div class="failure-list">
+                          <div class="failure-item">Server restart: poll resumes from persisted state.</div>
+                          <div class="failure-item">Missing session: reopen the same HTML path.</div>
+                          <div class="failure-item">Bad asset path: reject traversal outside the artifact.</div>
                         </div>
                       </div>
                     </div>
@@ -1306,46 +991,53 @@
                       <button class="queue-button">Queue</button>
                     </div>
                   </div>
-                  <div class="annotation-card second">
-                    <h4>Annotate &lt;div&gt;</h4>
-                    <div id="annotation-text-2" class="annotation-input"></div>
-                    <div class="annotation-actions">
-                      <button class="ghost-button">Cancel</button>
-                      <button class="queue-button">Queue</button>
-                    </div>
-                  </div>
                 </div>
                 <aside class="chat-panel">
                   <h3>Conversation</h3>
                   <div class="chat-log">
                     <div class="bubble agent">
                       <small>Agent</small>
-                      <div>I opened the technical plan. Click any element and tell me what should change.</div>
+                      <div>Plan opened. Click any element and tell me what to change.</div>
                     </div>
                     <div class="bubble user user-bubble">
                       <small>You</small>
-                      <div>On architecture diagram: use WebSocket instead of long-poll</div>
-                      <div>On state section: use SQLite instead of local file store</div>
-                      <div>surface failure modes and recovery paths</div>
+                      <div>Use WebSocket instead of long-poll</div>
+                      <div>Session store: SQLite</div>
+                      <div>What are the failure modes here?</div>
                     </div>
                     <div class="bubble working"><span class="spinner"></span><span>Working...</span></div>
                     <div class="bubble agent done-bubble" style="opacity: 0">
                       <small>Agent</small>
-                      <div>
-                        Done. I switched the plan to WebSocket, changed storage to SQLite, and surfaced failure modes
-                        across the plan.
-                      </div>
+                      <div>Done. The plan now uses WebSocket, SQLite, and lists failure modes.</div>
                     </div>
                   </div>
                   <div class="composer">
                     <div class="pills">
-                      <span class="pill pill-one">use WebSocket</span><span class="pill pill-two">use SQLite</span>
+                      <span class="pill pill-one">use WebSocket</span><span class="pill pill-two">chose SQLite</span>
                     </div>
                     <div class="textarea">
                       <span class="placeholder">Write a message for the agent...</span>
                       <span class="chat-line"><span id="chat-text" class="chat-draft"></span></span>
                     </div>
-                    <div class="send-row"><button class="send-button">Send to Agent</button></div>
+                    <div class="send-row">
+                      <div class="send-split">
+                        <button class="send-button">Send to Agent</button>
+                        <button class="send-caret" aria-label="Send options">
+                          <svg
+                            width="22"
+                            height="22"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path d="m6 9 6 6 6-6"></path>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </aside>
               </div>
@@ -1366,127 +1058,20 @@
         </div>
       </section>
 
-      <section id="scene-zoom" class="scene">
-        <div class="scene-content browser-stage zoom-stage">
-          <div class="browser-window editor-window-2" data-layout-allow-overflow>
-            <div class="browser-bar">
-              <div class="traffic"><span></span><span></span><span></span></div>
-              <div class="address">localhost:4387/session/9a7c2f31</div>
-            </div>
-            <div class="editor">
-              <div class="topbar">
-                <div class="brand"><span class="lavish">Lavish</span><span class="editor-word">Editor</span></div>
-                <div class="divider"></div>
-                <div class="file-wrap">
-                  <div class="file-input">/var/folders/tmp/design-plan.html</div>
-                  <button class="copy-button">Copy Path</button>
-                </div>
-                <button class="button secondary">Annotation: On</button>
-                <button class="button danger">End Session</button>
-              </div>
-              <div class="workbench">
-                <div class="artifact-frame">
-                  <div class="report-page">
-                    <div class="report-header">
-                      <div>
-                        <div class="eyebrow" style="color: #756a58">Updated technical plan</div>
-                        <h2>Precise corrections, plan-level guidance</h2>
-                        <p>The corrected diagram and persistence choice stay attached to the design review context.</p>
-                      </div>
-                      <div class="report-date">
-                        <span>Design review</span><span>Local-first</span><span>Agent feedback loop</span>
-                      </div>
-                    </div>
-                    <div class="charts">
-                      <div class="chart-card target">
-                        <div class="outline-target" style="opacity: 1"></div>
-                        <div class="chart-title">Architecture diagram</div>
-                        <div class="chart-subtitle">Corrected to match the CLI contract</div>
-                        <div class="architecture-diagram">
-                          <div class="diagram-flow">
-                            <div class="diagram-node">
-                              <strong>SDK in iframe</strong>
-                              <span>selector + DOM snapshot</span>
-                            </div>
-                            <div class="diagram-arrow">-&gt;</div>
-                            <div class="diagram-node updated">
-                              <strong>WebSocket channel</strong>
-                              <span>push feedback to agent</span>
-                            </div>
-                            <div class="diagram-arrow">-&gt;</div>
-                            <div class="diagram-node">
-                              <strong>Agent patch</strong>
-                              <span>edits the HTML artifact</span>
-                            </div>
-                          </div>
-                          <div class="design-note">
-                            The diagram explains the technical approach with a live collaboration channel.
-                          </div>
-                        </div>
-                      </div>
-                      <div class="chart-card">
-                        <div class="chart-title">State and recovery</div>
-                        <div class="chart-subtitle">SQLite plus explicit failure modes</div>
-                        <div class="decision-list">
-                          <div class="decision-item">
-                            <strong>Session store</strong>
-                            Use <span class="change-token">SQLite</span> for queued prompts and session status.
-                          </div>
-                          <div class="failure-list">
-                            <div class="failure-item" style="opacity: 1">
-                              Server restart: poll resumes from persisted state.
-                            </div>
-                            <div class="failure-item" style="opacity: 1">
-                              Missing session: reopen the same HTML path.
-                            </div>
-                            <div class="failure-item" style="opacity: 1">
-                              Bad asset path: reject traversal outside the artifact directory.
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <aside class="chat-panel">
-                  <h3>Conversation</h3>
-                  <div class="chat-log">
-                    <div class="bubble user" style="opacity: 1">
-                      <small>You</small>
-                      <div>On architecture diagram: use WebSocket instead of long-poll</div>
-                      <div>On state section: use SQLite instead of local file store</div>
-                      <div>surface failure modes and recovery paths</div>
-                    </div>
-                    <div class="bubble agent" style="opacity: 1">
-                      <small>Agent</small>
-                      <div>
-                        Done. I switched the plan to WebSocket, changed storage to SQLite, and surfaced failure modes
-                        across the plan.
-                      </div>
-                    </div>
-                  </div>
-                  <div class="composer">
-                    <div class="pills"></div>
-                    <div class="textarea">Write a message for the agent...</div>
-                    <div class="send-row"><button class="send-button">Send to Agent</button></div>
-                  </div>
-                </aside>
-              </div>
-            </div>
-          </div>
-          <div class="zoom-copy">
-            <div class="eyebrow">The part that matters</div>
-            <h2>Review the plan where the decisions live.</h2>
-            <p>Surgical annotations correct exact assumptions. Chat feedback changes the whole artifact.</p>
-          </div>
-        </div>
-      </section>
-
       <section id="scene-outro" class="scene">
         <div class="scene-content outro">
           <div class="outro-brand"><span class="lavish">Lavish</span><span class="editor-word">Editor</span></div>
           <p>For when a rich editor is not rich enough.</p>
-          <code>npx lavish-axi</code>
+          <code>/lavish</code>
+        </div>
+      </section>
+
+      <!-- Static copy of the outro's final frame, shown only at frame 0 so X uses it as the thumbnail -->
+      <section id="scene-cover" class="scene">
+        <div class="scene-content outro">
+          <div class="outro-brand"><span class="lavish">Lavish</span><span class="editor-word">Editor</span></div>
+          <p>For when a rich editor is not rich enough.</p>
+          <code>/lavish</code>
         </div>
       </section>
     </div>
@@ -1500,15 +1085,14 @@
         el.innerHTML = "";
         for (const char of text) {
           const span = document.createElement("span");
-          span.textContent = char === " " ? "\u00a0" : char;
+          span.textContent = char === " " ? " " : char;
           el.appendChild(span);
         }
       }
 
-      splitText("#typed-prompt", "write a technical plan");
+      splitText("#typed-prompt", "/lavish a technical plan for what we discussed");
       splitText("#annotation-text", "use websocket instead of long-poll");
-      splitText("#annotation-text-2", "use sqlite instead of local file store");
-      splitText("#chat-text", "surface failure modes and recovery paths");
+      splitText("#chat-text", "what are the failure modes here?");
 
       function focusPull(fromScene, toScene, at) {
         tl.set(toScene, { opacity: 0, filter: "blur(18px)", zIndex: 5 }, at);
@@ -1517,8 +1101,12 @@
         tl.to(toScene, { opacity: 1, filter: "blur(0px)", duration: 0.72, ease: "sine.inOut" }, at + 0.08);
       }
 
-      gsap.set("#pointer-1", { x: 1220, y: 780, opacity: 0 });
+      gsap.set("#pointer-1", { x: 1240, y: 820, opacity: 0 });
       gsap.set("#click-ring-1", { x: 0, y: 0, scale: 0.5 });
+
+      // Drop the thumbnail cover after ~3 frames at 30fps; a single-frame cover gets lost when the
+      // render is downsampled (12.5fps gif) or re-encoded by X, which uses frame 0 as the thumbnail
+      tl.set("#scene-cover", { opacity: 0 }, 0.1);
 
       tl.fromTo(
         ".terminal-shell",
@@ -1526,12 +1114,26 @@
         { y: 0, opacity: 1, scale: 1, duration: 0.76, ease: "power3.out" },
         0.18,
       );
-      tl.to("#scene-terminal .caption-block", { y: 0, opacity: 1, duration: 0.48, ease: "power2.out" }, 3.05);
-      tl.from("#scene-terminal .caption-block h1", { y: 34, opacity: 0, duration: 0.72, ease: "expo.out" }, 3.18);
-      tl.from("#scene-terminal .caption-block p", { y: 22, opacity: 0, duration: 0.58, ease: "sine.out" }, 3.52);
       tl.from(".terminal-turn", { y: 18, opacity: 0, duration: 0.4, stagger: 0.16, ease: "power2.out" }, 0.72);
       tl.from(".prompt-line", { y: 18, opacity: 0, duration: 0.44, ease: "power3.out" }, 1.48);
       tl.from("#typed-prompt span", { opacity: 0, duration: 0.018, stagger: 0.036, ease: "none" }, 1.82);
+      tl.to(".enter-key", { opacity: 1, duration: 0.3, ease: "sine.out" }, 3.85);
+      tl.to(
+        ".enter-key",
+        {
+          scale: 0.88,
+          backgroundColor: "#f4c95d",
+          borderColor: "#f4c95d",
+          color: "#17130a",
+          duration: 0.12,
+          ease: "power1.in",
+        },
+        4.6,
+      );
+      tl.to(".enter-key", { scale: 1, duration: 0.18, ease: "power2.out" }, 4.72);
+      tl.to(".prompt-line", { borderColor: "#f4c95d", duration: 0.15, ease: "sine.out" }, 4.62);
+      tl.to(".prompt-line", { borderColor: "#303745", duration: 0.3, ease: "sine.out" }, 5.05);
+      tl.to(".enter-key", { opacity: 0, duration: 0.3, ease: "sine.out" }, 5.1);
       tl.to("#log-1", { opacity: 1, y: 0, duration: 0.5, ease: "power1.out" }, 5.45);
       tl.to("#log-2", { opacity: 1, y: 0, duration: 0.5, ease: "power1.out" }, 6.25);
       tl.to("#log-3", { opacity: 1, y: 0, duration: 0.5, ease: "power1.out" }, 7.15);
@@ -1561,80 +1163,77 @@
       tl.from("#scene-editor .composer", { y: 24, opacity: 0, duration: 0.46, ease: "power1.out" }, 10.92);
 
       tl.to("#pointer-1", { opacity: 1, duration: 0.24, ease: "power1.out" }, 11.48);
-      tl.to("#pointer-1", { x: 598, y: 612, duration: 0.82, ease: "power2.inOut" }, 11.64);
-      tl.to("#scene-editor .outline-target", { opacity: 1, duration: 0.22, ease: "sine.out" }, 12.36);
-      tl.set("#click-ring-1", { x: 598, y: 612 }, 12.48);
-      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.22, ease: "power2.out" }, 12.48);
-      tl.to("#click-ring-1", { opacity: 0, scale: 1.5, duration: 0.34, ease: "sine.out" }, 12.71);
-      tl.to(".annotation-card.first", { opacity: 1, y: -8, duration: 0.38, ease: "power3.out" }, 12.8);
-      tl.to(".editor-window-1", { scale: 1.34, x: 6, y: -174, duration: 0.72, ease: "power2.inOut" }, 13.12);
-      tl.from("#annotation-text span", { opacity: 0, duration: 0.018, stagger: 0.07, ease: "none" }, 13.52);
-      tl.to("#pointer-1", { x: 1118, y: 684, duration: 0.56, ease: "power2.inOut" }, 15.02);
-      tl.set("#click-ring-1", { x: 1118, y: 684, scale: 0.55 }, 15.58);
-      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.18, ease: "power2.out" }, 15.58);
-      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.28, ease: "sine.out" }, 15.76);
-      tl.to(".annotation-card.first", { opacity: 0, y: 6, duration: 0.24, ease: "sine.out" }, 15.8);
-      tl.to(".editor-window-1", { scale: 1.18, x: -430, y: -76, duration: 0.74, ease: "power2.inOut" }, 15.92);
-      tl.to("#pointer-1", { x: 1538, y: 823, duration: 0.68, ease: "power2.inOut" }, 16.02);
-      tl.to(".pill-one", { opacity: 1, y: -2, duration: 0.32, ease: "power2.out" }, 16.48);
+      tl.to(".editor-window-1", { scale: 1.75, x: 914, y: -232, duration: 0.9, ease: "power2.inOut" }, 11.62);
+      tl.to("#pointer-1", { x: 899, y: 612, duration: 0.85, ease: "power2.inOut" }, 11.78);
+      tl.to("#scene-editor .outline-target", { opacity: 1, duration: 0.22, ease: "sine.out" }, 12.75);
+      tl.set("#click-ring-1", { x: 899, y: 612 }, 12.9);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.22, ease: "power2.out" }, 12.9);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.5, duration: 0.34, ease: "sine.out" }, 13.13);
+      tl.to(".annotation-card.first", { opacity: 1, y: -8, duration: 0.38, ease: "power3.out" }, 13.22);
+      tl.from("#annotation-text span", { opacity: 0, duration: 0.018, stagger: 0.07, ease: "none" }, 13.62);
+      tl.to("#pointer-1", { x: 1410, y: 760, duration: 0.5, ease: "power2.inOut" }, 16.12);
+      tl.set("#click-ring-1", { x: 1410, y: 760, scale: 0.55 }, 16.62);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.18, ease: "power2.out" }, 16.62);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.28, ease: "sine.out" }, 16.8);
+      tl.to(".annotation-card.first", { opacity: 0, y: 6, duration: 0.24, ease: "sine.out" }, 16.84);
+      tl.to(".editor-window-1", { scale: 1, x: 0, y: 0, duration: 0.74, ease: "power2.inOut" }, 16.96);
+      tl.to("#pointer-1", { x: 1480, y: 807, duration: 0.68, ease: "power2.inOut" }, 17.06);
+      tl.to(".pill-one", { opacity: 1, y: -2, duration: 0.32, ease: "power2.out" }, 17.52);
 
-      tl.to(".editor-window-1", { scale: 1.14, x: -210, y: -76, duration: 0.64, ease: "power2.inOut" }, 16.92);
-      tl.to("#pointer-1", { x: 1110, y: 642, duration: 0.7, ease: "power2.inOut" }, 17.04);
-      tl.to("#scene-editor .outline-target-2", { opacity: 1, duration: 0.22, ease: "sine.out" }, 17.64);
-      tl.set("#click-ring-1", { x: 1110, y: 642, scale: 0.55 }, 17.76);
-      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.2, ease: "power2.out" }, 17.76);
-      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.3, ease: "sine.out" }, 17.96);
-      tl.to(".annotation-card.second", { opacity: 1, y: -8, duration: 0.38, ease: "power3.out" }, 18.08);
-      tl.to(".editor-window-1", { scale: 1.25, x: -230, y: -164, duration: 0.62, ease: "power2.inOut" }, 18.26);
-      tl.from("#annotation-text-2 span", { opacity: 0, duration: 0.018, stagger: 0.07, ease: "none" }, 18.68);
-      tl.to("#pointer-1", { x: 1398, y: 704, duration: 0.52, ease: "power2.inOut" }, 19.72);
-      tl.set("#click-ring-1", { x: 1398, y: 704, scale: 0.55 }, 20.24);
-      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.18, ease: "power2.out" }, 20.24);
-      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.28, ease: "sine.out" }, 20.42);
-      tl.to(".annotation-card.second", { opacity: 0, y: 6, duration: 0.24, ease: "sine.out" }, 20.46);
-      tl.to(".editor-window-1", { scale: 1.18, x: -430, y: -76, duration: 0.74, ease: "power2.inOut" }, 20.58);
-      tl.to("#pointer-1", { x: 1480, y: 760, duration: 0.68, ease: "power2.inOut" }, 20.68);
-      tl.to(".pill-two", { opacity: 1, y: -2, duration: 0.32, ease: "power2.out" }, 20.98);
-      tl.set("#click-ring-1", { x: 1480, y: 760, scale: 0.55 }, 21.22);
-      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.18, ease: "power2.out" }, 21.22);
-      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.28, ease: "sine.out" }, 21.4);
-      tl.to(".textarea", { borderColor: "#f4c95d", duration: 0.18, ease: "sine.out" }, 21.26);
-      tl.to(".textarea .placeholder", { opacity: 0, duration: 0.16, ease: "sine.out" }, 21.34);
-      tl.from("#chat-text span", { opacity: 0, duration: 0.018, stagger: 0.052, ease: "none" }, 21.42);
-      tl.to("#pointer-1", { x: 1578, y: 833, duration: 0.5, ease: "power2.inOut" }, 22.86);
-      tl.set("#click-ring-1", { x: 1578, y: 833, scale: 0.55 }, 23.36);
-      tl.to("#click-ring-1", { opacity: 1, scale: 0.92, duration: 0.14, ease: "power2.out" }, 23.36);
-      tl.to(".send-button", { scale: 0.93, y: 2, backgroundColor: "#ffd877", duration: 0.1, ease: "power1.in" }, 23.36);
-      tl.to(".send-button", { scale: 1, y: 0, backgroundColor: "#f4c95d", duration: 0.16, ease: "power2.out" }, 23.48);
-      tl.to("#click-ring-1", { opacity: 0, scale: 1.5, duration: 0.28, ease: "sine.out" }, 23.5);
-      tl.to(".pill", { opacity: 0, y: 5, duration: 0.22, ease: "sine.out" }, 23.58);
-      tl.to(".chat-line", { opacity: 0, duration: 0.18, ease: "sine.out" }, 23.58);
-      tl.to(".textarea .placeholder", { opacity: 1, duration: 0.18, ease: "sine.out" }, 23.68);
-      tl.to(".textarea", { borderColor: "#303745", duration: 0.18, ease: "sine.out" }, 23.68);
-      tl.to(".user-bubble", { opacity: 1, y: -4, duration: 0.32, ease: "power2.out" }, 23.86);
-      tl.to(".working", { opacity: 1, y: -4, duration: 0.3, ease: "sine.out" }, 24.2);
-      tl.to(".spinner", { rotation: 360, duration: 0.8, repeat: 3, ease: "none" }, 24.2);
-      tl.to(".editor-window-1", { scale: 1, x: 0, y: 0, duration: 0.78, ease: "power2.inOut" }, 24.1);
-      tl.to("#pointer-1", { opacity: 0, duration: 0.28, ease: "sine.out" }, 24.16);
-      tl.to(".chart-before", { opacity: 0, duration: 0.28, ease: "sine.out" }, 24.9);
-      tl.to(".chart-after", { opacity: 1, duration: 0.42, ease: "power1.out" }, 25.04);
-      tl.from("#scene-editor .diagram-node.updated", { scale: 0.92, duration: 0.46, ease: "power3.out" }, 25.04);
-      tl.to("#scene-editor .before-token", { opacity: 0, duration: 0.24, ease: "sine.out" }, 25.12);
-      tl.to("#scene-editor .after-token", { opacity: 1, duration: 0.3, ease: "power2.out" }, 25.22);
+      tl.to("#pointer-1", { x: 1028, y: 628, duration: 0.72, ease: "power2.inOut" }, 18.42);
+      tl.set("#click-ring-1", { x: 1028, y: 628, scale: 0.55 }, 19.34);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.2, ease: "power2.out" }, 19.34);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.3, ease: "sine.out" }, 19.54);
+      tl.to(
+        ".option-sqlite",
+        { borderColor: "#f4c95d", backgroundColor: "#fff0bf", duration: 0.26, ease: "power2.out" },
+        19.56,
+      );
+      tl.to(".pill-two", { opacity: 1, y: -2, duration: 0.32, ease: "power2.out" }, 20.0);
+      tl.to("#pointer-1", { x: 1640, y: 901, duration: 0.68, ease: "power2.inOut" }, 21.82);
+      tl.set("#click-ring-1", { x: 1640, y: 901, scale: 0.55 }, 22.36);
+      tl.to("#click-ring-1", { opacity: 1, scale: 1, duration: 0.18, ease: "power2.out" }, 22.36);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.45, duration: 0.28, ease: "sine.out" }, 22.54);
+      tl.to(".textarea", { borderColor: "#f4c95d", duration: 0.18, ease: "sine.out" }, 22.4);
+      tl.to(".textarea .placeholder", { opacity: 0, duration: 0.16, ease: "sine.out" }, 22.48);
+      tl.from("#chat-text span", { opacity: 0, duration: 0.018, stagger: 0.052, ease: "none" }, 22.56);
+      tl.to("#pointer-1", { x: 1767, y: 999, duration: 0.5, ease: "power2.inOut" }, 24.0);
+      tl.set("#click-ring-1", { x: 1767, y: 999, scale: 0.55 }, 24.5);
+      tl.to("#click-ring-1", { opacity: 1, scale: 0.92, duration: 0.14, ease: "power2.out" }, 24.5);
+      tl.to(".send-split", { scale: 0.93, y: 2, duration: 0.1, ease: "power1.in" }, 24.5);
+      tl.to(".send-button, .send-caret", { backgroundColor: "#ffd877", duration: 0.1, ease: "power1.in" }, 24.5);
+      tl.to(".send-split", { scale: 1, y: 0, duration: 0.16, ease: "power2.out" }, 24.62);
+      tl.to(".send-button, .send-caret", { backgroundColor: "#f4c95d", duration: 0.16, ease: "power2.out" }, 24.62);
+      tl.to("#click-ring-1", { opacity: 0, scale: 1.5, duration: 0.28, ease: "sine.out" }, 24.64);
+      tl.to(".pill", { opacity: 0, y: 5, duration: 0.22, ease: "sine.out" }, 24.72);
+      tl.to(".chat-line", { opacity: 0, duration: 0.18, ease: "sine.out" }, 24.72);
+      tl.to(".textarea .placeholder", { opacity: 1, duration: 0.18, ease: "sine.out" }, 24.82);
+      tl.to(".textarea", { borderColor: "#303745", duration: 0.18, ease: "sine.out" }, 24.82);
+      tl.to(".user-bubble", { opacity: 1, y: -4, duration: 0.32, ease: "power2.out" }, 25.0);
+      tl.to(".working", { opacity: 1, y: -4, duration: 0.3, ease: "sine.out" }, 25.34);
+      tl.to(".spinner", { rotation: 360, duration: 0.8, repeat: 3, ease: "none" }, 25.34);
+      tl.to("#pointer-1", { opacity: 0, duration: 0.28, ease: "sine.out" }, 25.3);
+      tl.to(".chart-before", { opacity: 0, duration: 0.28, ease: "sine.out" }, 26.04);
+      tl.to(".chart-after", { opacity: 1, duration: 0.42, ease: "power1.out" }, 26.18);
+      tl.from("#scene-editor .diagram-node.updated", { scale: 0.92, duration: 0.46, ease: "power3.out" }, 26.18);
+      tl.to(
+        "#scene-editor .option-button:not(.option-sqlite)",
+        { opacity: 0.45, duration: 0.3, ease: "sine.out" },
+        26.26,
+      );
       tl.to(
         "#scene-editor .failure-item",
         { opacity: 1, y: -2, duration: 0.34, stagger: 0.08, ease: "power2.out" },
-        25.2,
+        26.34,
       );
-      tl.to(".working", { opacity: 0, y: 4, duration: 0.24, ease: "sine.out" }, 26.2);
-      tl.to(".done-bubble", { opacity: 1, y: -4, duration: 0.34, ease: "power2.out" }, 26.36);
+      tl.to(".working", { opacity: 0, y: 4, duration: 0.24, ease: "sine.out" }, 27.34);
+      tl.to(".done-bubble", { opacity: 1, y: -4, duration: 0.34, ease: "power2.out" }, 27.5);
 
       focusPull("#scene-editor", "#scene-outro", 29.7);
 
-      tl.from(".outro-brand", { y: 36, opacity: 0, duration: 0.74, ease: "power3.out" }, 30.08);
+      tl.from("#scene-outro .outro-brand", { y: 36, opacity: 0, duration: 0.74, ease: "power3.out" }, 30.08);
       tl.from("#scene-outro p", { y: 22, opacity: 0, duration: 0.48, ease: "sine.out" }, 30.48);
       tl.from("#scene-outro code", { y: 18, opacity: 0, scale: 0.98, duration: 0.44, ease: "power2.out" }, 30.72);
-      tl.to("#scene-outro", { opacity: 0, duration: 0.5, ease: "sine.inOut" }, 32.95);
 
       window.__timelines["main"] = tl;
     </script>
