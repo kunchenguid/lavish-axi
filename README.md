@@ -53,6 +53,7 @@ npx skills add kunchenguid/lavish-axi --skill lavish
 
 That is the entire setup - no npm install needed.
 The skill teaches your agent to run Lavish through `npx -y lavish-axi`, so the CLI comes along on demand.
+Its frontmatter also includes Hermes Agent metadata, so Hermes-compatible harnesses can categorize and surface it as a first-class productivity skill.
 
 Then, in agents that expose skills as slash commands (Claude Code, for example), invoke it directly:
 
