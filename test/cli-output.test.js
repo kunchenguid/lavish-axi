@@ -392,8 +392,12 @@ test("spawned poll announces the wait on stderr and leaves re-run guidance when 
     child.kill("SIGTERM");
     await exited;
 
-    assert.match(stderr, /Poll interrupted/);
-    assert.match(stderr, /queued feedback is never lost/);
+    // Windows terminates Node child processes directly instead of delivering SIGTERM
+    // to the child process's JavaScript signal handler.
+    if (process.platform !== "win32") {
+      assert.match(stderr, /Poll interrupted/);
+      assert.match(stderr, /queued feedback is never lost/);
+    }
   } finally {
     await server.close();
     await rm(stateDir, { force: true, recursive: true });
