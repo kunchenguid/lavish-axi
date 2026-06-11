@@ -388,9 +388,11 @@ test("spawned poll announces the wait on stderr and leaves re-run guidance when 
     });
     await sawBanner;
 
-    const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+    // Wait for "close" rather than "exit": "exit" can fire while the final stderr chunk is
+    // still in flight, so asserting on stderr at "exit" races the guidance message.
+    const closed = new Promise((resolve) => child.on("close", (code, signal) => resolve({ code, signal })));
     child.kill("SIGTERM");
-    await exited;
+    await closed;
 
     // Windows terminates Node child processes directly instead of delivering SIGTERM
     // to the child process's JavaScript signal handler.

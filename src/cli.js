@@ -201,15 +201,18 @@ async function pollCommand(args) {
   // The indefinite poll looks hung from the agent's side (stdout stays empty until the user
   // acts), so narrate the wait on stderr and leave re-run guidance behind if the agent's
   // harness kills the process anyway. stderr keeps the stdout JSON contract intact.
-  const waitReporter = timeoutMs ? null : startPollWaitReporter({ file: absolute });
   const onPollSignal = (signal) => {
     process.stderr.write(`\n${pollInterruptedText(absolute)}\n`);
     process.exit(signal === "SIGINT" ? 130 : 143);
   };
   if (!timeoutMs) {
+    // Register before the banner write below: a harness that kills the poll as soon as the
+    // banner appears can deliver the signal before the next statement runs, and without a
+    // handler the default disposition exits silently with no re-run guidance.
     process.on("SIGINT", onPollSignal);
     process.on("SIGTERM", onPollSignal);
   }
+  const waitReporter = timeoutMs ? null : startPollWaitReporter({ file: absolute });
   try {
     const response = await fetchJson(`${baseUrl}/api/poll?file=${encodeURIComponent(absolute)}${timeoutQuery}`, {
       retries: 3,
