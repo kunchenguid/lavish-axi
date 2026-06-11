@@ -10,4 +10,3 @@ One artifact often combines several playbooks (for example a plan that includes 
 - `diff` - Present code or PR changes with evidence and findings
 - `input` - Must be used when the agent needs to collect user input on decisions, choices, preferences, triage, scope, or other structured feedback from within the artifact
 - `slides` - Create a deliberate presentation when slides are requested
-
