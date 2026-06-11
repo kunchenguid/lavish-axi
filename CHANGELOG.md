@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.25](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.24...lavish-axi-v0.1.25) (2026-06-11)
+
+
+### Bug Fixes
+
+* **cli:** improve poll and design guidance ([#74](https://github.com/kunchenguid/lavish-axi/issues/74)) ([302efac](https://github.com/kunchenguid/lavish-axi/commit/302efac1c73e486a01486dd394bc49f79fd8ae7b))
+
 ## [0.1.24](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.23...lavish-axi-v0.1.24) (2026-06-11)
 
 
