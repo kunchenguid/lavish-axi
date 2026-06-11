@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.28](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.27...lavish-axi-v0.1.28) (2026-06-11)
+
+
+### Features
+
+* **server:** configurable bind address and link hostname ([#61](https://github.com/kunchenguid/lavish-axi/issues/61)) ([4bbdafd](https://github.com/kunchenguid/lavish-axi/commit/4bbdafd3dc41233540b07e034359973506bef6d9))
+* **skills:** add Hermes metadata to lavish skill ([#82](https://github.com/kunchenguid/lavish-axi/issues/82)) ([e634c23](https://github.com/kunchenguid/lavish-axi/commit/e634c232ec64e97be2643b33235d3fe4c39eb6b8))
+
+
+### Bug Fixes
+
+* **skills:** hide internal agent skills from discovery ([#80](https://github.com/kunchenguid/lavish-axi/issues/80)) ([a4bd520](https://github.com/kunchenguid/lavish-axi/commit/a4bd520bbbda62a06de6a8c592cd5aebdc5ef055))
+
 ## [0.1.27](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.26...lavish-axi-v0.1.27) (2026-06-11)
 
 
