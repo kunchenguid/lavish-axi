@@ -33,6 +33,11 @@ export function createSkillMarkdown() {
 name: lavish
 description: ${SKILL_DESCRIPTION}
 argument-hint: <what the artifact should show>
+author: Kun Chen (kunchenguid)
+metadata:
+  hermes:
+    tags: [html, review, artifacts, visualization]
+    category: productivity
 ---
 
 # Lavish Editor

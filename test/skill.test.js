@@ -20,6 +20,15 @@ test("createSkillMarkdown emits valid frontmatter naming the lavish skill", () =
   assert.ok(frontmatter.includes(SKILL_DESCRIPTION), "frontmatter carries the skill description");
 });
 
+test("createSkillMarkdown emits Hermes Agent metadata in frontmatter", () => {
+  const md = createSkillMarkdown();
+  const frontmatter = md.slice(4, md.indexOf("\n---\n", 4));
+
+  assert.match(frontmatter, /^author: Kun Chen \(kunchenguid\)$/m);
+  assert.match(frontmatter, /^metadata:\n {2}hermes:\n {4}tags: \[[^\]]+\]\n {4}category: \S+$/m);
+  assert.doesNotMatch(frontmatter, /^version:/m, "version is omitted to avoid release churn");
+});
+
 test("createSkillMarkdown handles explicit /lavish invocation arguments", () => {
   const md = createSkillMarkdown();
   const body = md.slice(md.indexOf("\n---\n", 4) + 5);
