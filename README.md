@@ -127,7 +127,10 @@ pnpm link
 ```
 
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
-- **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, and feedback controls. Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser. Before writing HTML, choose a design system in strict priority order: follow a user-requested look first; otherwise inspect the current project for a Tailwind or theme config, CSS variables or design tokens, a component library, brand assets, or existing styled pages and match what you find; only when both come up empty, run `lavish-axi design` for a copy-pasteable Tailwind CSS v4 + DaisyUI v5 CDN fallback.
+- **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, and feedback controls.
+  Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser.
+  Before writing HTML, choose a design system in strict priority order: follow a user-requested look first; otherwise inspect the current project for a Tailwind or theme config, CSS variables or design tokens, a component library, brand assets, or existing styled pages and match what you find; only when both come up empty, run `lavish-axi design` for a copy-pasteable Tailwind CSS v4 + DaisyUI v5 CDN fallback.
+  That fallback guidance recommends DaisyUI's `luxury` theme by default and warns not to `@apply` DaisyUI classes inside Tailwind browser-runtime style blocks.
 - **Local assets** - Copy local images, CSS, fonts, and scripts next to the HTML artifact and reference them with relative paths from that directory; root-prefixed paths such as `/assets/logo.png` will not resolve through Lavish's artifact route.
 - **Live reload** - Lavish watches the HTML artifact file by default and preserves the artifact iframe scroll position across reloads. To also reload on sibling asset changes, add `data-lavish-live-reload-root` to the root element or `<meta name="lavish-live-reload" content="root">`.
 - **Feedback controls** - Native form controls (radios, checkboxes, inputs, selects, buttons, labels, contenteditable) are interactive automatically, so they do not need `data-lavish-action`; wire their handlers to `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()` to send feedback.
@@ -151,7 +154,7 @@ pnpm link
 | `lavish-axi end <html-file>`  | End a session.                                                                                                              |
 | `lavish-axi stop`             | Shut down the background server.                                                                                            |
 | `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.                                                                        |
-| `lavish-axi design`           | Show the Tailwind + DaisyUI CDN fallback after user and project design sources come up empty.                               |
+| `lavish-axi design`           | Show the Tailwind + DaisyUI CDN fallback, including the `luxury` default theme and DaisyUI `@apply` warning.                |
 | `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.    |
 | `lavish-axi server`           | Run the local Lavish Editor server.                                                                                         |
 
