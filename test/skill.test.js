@@ -49,6 +49,14 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
   }
 });
 
+test("createSkillMarkdown encourages reading every relevant playbook", () => {
+  const md = createSkillMarkdown();
+  const playbooksSection = md.slice(md.indexOf("## Playbooks"), md.indexOf("## Commands & rules"));
+
+  assert.ok(playbooksSection.includes("combines several playbooks"), "explains artifacts span playbooks");
+  assert.ok(playbooksSection.includes("read every playbook relevant"), "encourages reading all relevant playbooks");
+});
+
 test("createSkillMarkdown does not leak live session state", () => {
   const md = createSkillMarkdown();
   assert.ok(!md.includes("pending_prompts"), "no session bookkeeping fields");

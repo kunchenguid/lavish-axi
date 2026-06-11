@@ -67,7 +67,8 @@ ${bullets(home.visual_guidance)}
 
 ## Playbooks
 
-Run \`npx -y lavish-axi playbook <id>\` for focused, detailed guidance on any of these:
+Run \`npx -y lavish-axi playbook <id>\` for focused, detailed guidance on any of these.
+One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to your artifact, not just one, for the best quality:
 
 ${playbookList(home.playbooks)}
 

@@ -39,7 +39,8 @@ Use lavish-axi when the user asks for a visual artifact, HTML explainer, interac
 
 ## Playbooks
 
-Run `npx -y lavish-axi playbook <id>` for focused, detailed guidance on any of these:
+Run `npx -y lavish-axi playbook <id>` for focused, detailed guidance on any of these.
+One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to your artifact, not just one, for the best quality:
 
 - `diagram` - Map relationships, flows, state, and architecture
 - `table` - Turn dense records into scan-friendly review surfaces
@@ -57,6 +58,6 @@ Run `npx -y lavish-axi playbook <id>` for focused, detailed guidance on any of t
 - Run `npx -y lavish-axi poll <html-file>` to wait for user feedback
 - Run `npx -y lavish-axi end <html-file>` to end a session
 - Run `npx -y lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)
-- Run `npx -y lavish-axi playbook <playbook_id>` for focused artifact guidance
+- Run `npx -y lavish-axi playbook <playbook_id>` for focused artifact guidance. One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to the artifact, not just one, for the best quality
 - Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Choose a design system in this priority order: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, if the current project already has a design system or style conventions, match those so the artifact fits in; (3) otherwise, prefer the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, available via CDN - run `npx -y lavish-axi design` for a copy-pasteable CDN snippet plus component reference. Prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.
 - Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, product or technical plan, comparison, report, or browser-based feedback loop

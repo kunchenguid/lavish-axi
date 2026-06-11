@@ -64,6 +64,8 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("lavish-axi <html-file>")));
   assert.ok(output.help.some((item) => item.includes("`.lavish/`")));
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
+  assert.ok(output.help.some((item) => item.includes("combines several playbooks")));
+  assert.ok(output.help.some((item) => item.includes("read every playbook relevant")));
   assert.ok(output.help.some((item) => item.includes("reference other filesystem assets")));
   assert.ok(output.help.some((item) => item.includes("same directory as the HTML file")));
   assert.ok(output.help.some((item) => item.includes("does not auto-inject")));
@@ -173,6 +175,8 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   );
   assert.ok(output.playbooks.every((playbook) => playbook.use_when.length > 20));
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
+  assert.ok(output.help.some((item) => item.includes("combines several playbooks")));
+  assert.ok(output.help.some((item) => item.includes("read every playbook relevant")));
 });
 
 test("playbook detail output returns focused Lavish-native guidance", () => {

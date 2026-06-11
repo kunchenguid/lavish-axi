@@ -125,7 +125,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
       "Run `lavish-axi poll <html-file>` to wait for user feedback",
       "Run `lavish-axi end <html-file>` to end a session",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
-      "Run `lavish-axi playbook <playbook_id>` for focused artifact guidance",
+      "Run `lavish-axi playbook <playbook_id>` for focused artifact guidance. One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to the artifact, not just one, for the best quality",
       DESIGN_SYSTEM_HINT,
       "Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, product or technical plan, comparison, report, or browser-based feedback loop",
     ],
@@ -137,7 +137,10 @@ export function createPlaybookOutput(args) {
   if (!id) {
     return {
       playbooks: listPlaybooks(),
-      help: ["Run `lavish-axi playbook <playbook_id>` for focused artifact guidance"],
+      help: [
+        "Run `lavish-axi playbook <playbook_id>` for focused artifact guidance",
+        "One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to the artifact, not just one, for the best quality",
+      ],
     };
   }
 
@@ -601,7 +604,7 @@ const COMMAND_HELP = {
   poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts, then returns them to the agent. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. do not set a short shell timeout; either run it without a timeout or use a very high threshold above 10 minutes so the user has time to review and send feedback. Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again.\n`,
   end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session.\n`,
   stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
-  playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, diff, input, slides.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
+  playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, diff, input, slides.\n\nOne artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to the artifact, not just one, for the best quality.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
   design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, plus technical reference for DaisyUI components. Lavish artifacts stay portable HTML. Choose a design system in this priority order: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, if the current project already has a design system or style conventions, match those; (3) otherwise, prefer the Lavish-recommended Tailwind + DaisyUI CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.\n`,
   setup: `Usage: lavish-axi setup hooks\n\nInstall or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, and OpenCode. Restart your agent session afterward to receive the context.\n`,
   server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n`,
