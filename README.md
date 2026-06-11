@@ -156,6 +156,7 @@ pnpm link
 | `lavish-axi server`           | Run the local Lavish Editor server.                                                                                      |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `slides`.
+One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so read every playbook relevant to the artifact for the best quality.
 
 ### Flags
 
