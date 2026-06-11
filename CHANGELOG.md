@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.26](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.25...lavish-axi-v0.1.26) (2026-06-11)
+
+
+### Bug Fixes
+
+* **cli:** make interrupted poll guidance reliable ([#76](https://github.com/kunchenguid/lavish-axi/issues/76)) ([1a01e26](https://github.com/kunchenguid/lavish-axi/commit/1a01e2603a545bea773e5126beb653ba84d1a8b5))
+
 ## [0.1.25](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.24...lavish-axi-v0.1.25) (2026-06-11)
 
 
