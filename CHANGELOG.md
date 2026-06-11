@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.24](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.23...lavish-axi-v0.1.24) (2026-06-11)
+
+
+### Features
+
+* **cli:** guide agents to combine relevant playbooks ([#73](https://github.com/kunchenguid/lavish-axi/issues/73)) ([d0c6e47](https://github.com/kunchenguid/lavish-axi/commit/d0c6e47d9eaed2efb40c0a14a152ffb8f602900e))
+
+
+### Bug Fixes
+
+* Add Ctrl+Enter immediate-send shortcut to the annotation card ([#71](https://github.com/kunchenguid/lavish-axi/issues/71)) ([9922767](https://github.com/kunchenguid/lavish-axi/commit/9922767ca7f7eb5e4bec02345464fcf107fab42c))
+
 ## [0.1.23](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.22...lavish-axi-v0.1.23) (2026-06-10)
 
 
