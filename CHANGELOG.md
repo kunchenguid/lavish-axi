@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.27](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.26...lavish-axi-v0.1.27) (2026-06-11)
+
+
+### Bug Fixes
+
+* improve Lavish design fallback guidance ([#78](https://github.com/kunchenguid/lavish-axi/issues/78)) ([db9f294](https://github.com/kunchenguid/lavish-axi/commit/db9f2943a19ef626ccc233d7b4d66dafdf52cc51))
+
 ## [0.1.26](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.25...lavish-axi-v0.1.26) (2026-06-11)
 
 
