@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -20,6 +20,9 @@ import {
   fetchJson,
   getCommandHelp,
   normalizeArgv,
+  pollInterruptedText,
+  pollWaitBannerText,
+  pollWaitTickText,
   resolveHookHomeDir,
   resolveServerEntry,
   shutdownServerOnPort,
@@ -27,6 +30,7 @@ import {
   shouldKillProcessOnPort,
   shouldOpenBrowser,
   shouldRestartServer,
+  startPollWaitReporter,
   stopCommand,
   telemetryCommandName,
   VERSION,
@@ -76,9 +80,29 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => /unless.*explicitly instructed/i.test(item)));
   assert.ok(output.help.some((item) => /priority order/i.test(item)));
   assert.ok(output.help.some((item) => /current project/i.test(item)));
+  assert.ok(output.help.some((item) => /before writing any html/i.test(item)));
+  assert.ok(output.help.some((item) => /inspect the current project/i.test(item)));
+  assert.ok(output.help.some((item) => /css variables|design tokens/i.test(item)));
+  assert.ok(output.help.some((item) => /component library/i.test(item)));
+  assert.ok(output.help.some((item) => /only when both steps come up empty/i.test(item)));
+  assert.ok(output.help.some((item) => /state which of the three design sources/i.test(item)));
   assert.ok(!output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
   assert.ok(!output.help.some((item) => item.includes("Known IDs")));
   assert.ok(output.help.some((item) => item.includes("technical plan")));
+});
+
+test("home output warns agents that poll is a long poll they must not kill", () => {
+  const output = createHomeOutput({ bin: "lavish-axi", sessions: [] });
+  const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
+
+  assert.ok(pollHelp, "home help mentions the poll command");
+  assert.match(pollHelp, /long-poll/);
+  assert.match(pollHelp, /stays silent/);
+  assert.match(pollHelp, /never kill it/);
+  assert.match(pollHelp, /background task/);
+  assert.match(pollHelp, /re-run/);
+  assert.match(pollHelp, /queued feedback is never lost/);
+  assert.doesNotMatch(pollHelp, /above 10 minutes/);
 });
 
 test("top-level help renders static home output without dynamic sessions", async () => {
@@ -106,6 +130,10 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /unless.*explicitly instructed/i);
     assert.match(result.stdout, /priority order/i);
     assert.match(result.stdout, /current project/i);
+    assert.match(result.stdout, /inspect the current project/i);
+    assert.match(result.stdout, /never kill it/);
+    assert.match(result.stdout, /queued feedback is never lost/);
+    assert.doesNotMatch(result.stdout, /above 10 minutes/);
     assert.doesNotMatch(result.stdout, /lavish-design/);
     assert.doesNotMatch(result.stdout, /sessions\[/);
     assert.doesNotMatch(result.stdout, /Known IDs/);
@@ -124,6 +152,10 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.match(output.design.summary, /unless.*explicitly instructed/i);
   assert.match(output.design.summary, /priority order/i);
   assert.match(output.design.summary, /current project/i);
+  assert.match(output.design.summary, /^Use this .*fallback only if/i);
+  assert.match(output.design.summary, /no design direction/i);
+  assert.match(output.design.summary, /inspect/i);
+  assert.match(output.design.summary, /check first/i);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@/);
@@ -241,19 +273,25 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
   assert.match(output.next_step, /long-polls until/);
-  assert.match(output.next_step, /do not set a short shell timeout/i);
-  assert.match(output.next_step, /above 10 minutes/);
+  assert.match(output.next_step, /stays silent/);
+  assert.match(output.next_step, /never kill it/);
+  assert.match(output.next_step, /background task/);
+  assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not pass --timeout-ms/);
+  assert.doesNotMatch(output.next_step, /above 10 minutes/);
 });
 
-test("poll help warns agents not to use short shell timeouts", () => {
+test("poll help warns agents to leave the long poll running", () => {
   const help = getCommandHelp("poll");
 
   assert.match(help, /long-polls indefinitely/);
-  assert.match(help, /do not set a short shell timeout/);
-  assert.match(help, /above 10 minutes/);
+  assert.match(help, /stays silent/);
+  assert.match(help, /never kill it/);
+  assert.match(help, /background task/);
+  assert.match(help, /queued feedback is never lost/);
   assert.match(help, /Do not pass --timeout-ms/);
   assert.match(help, /tests and debugging only/);
+  assert.doesNotMatch(help, /above 10 minutes/);
 });
 
 test("feedback next step tells agents to keep polling without timeout flag", () => {
@@ -262,9 +300,115 @@ test("feedback next step tells agents to keep polling without timeout flag", () 
     response: { status: "feedback", dom_snapshot: "", prompts: [] },
   });
 
+  assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /without --timeout-ms/);
-  assert.match(output.next_step, /above 10 minutes/);
+  assert.match(output.next_step, /background task/);
+  assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
+  assert.doesNotMatch(output.next_step, /above 10 minutes/);
+});
+
+test("poll wait messages tell watching agents the silence is normal", () => {
+  const banner = pollWaitBannerText("/tmp/report.html");
+  assert.match(banner, /\[lavish-axi\]/);
+  assert.match(banner, /Long-polling for user feedback/);
+  assert.match(banner, /stays silent/);
+  assert.match(banner, /leave it running/i);
+  assert.match(banner, /queued feedback is never lost/);
+
+  const tick = pollWaitTickText(3 * 60_000);
+  assert.match(tick, /\[lavish-axi\]/);
+  assert.match(tick, /Still waiting for user feedback \(3m\)/);
+  assert.match(tick, /leave this running/i);
+
+  const interrupted = pollInterruptedText("/tmp/report.html");
+  assert.match(interrupted, /\[lavish-axi\]/);
+  assert.match(interrupted, /Poll interrupted/);
+  assert.match(interrupted, /user may still be reviewing/);
+  assert.match(interrupted, /lavish-axi poll \/tmp\/report\.html/);
+  assert.match(interrupted, /queued feedback is never lost/);
+});
+
+test("poll wait reporter writes a banner immediately and heartbeats on an interval", async () => {
+  const lines = [];
+  const reporter = startPollWaitReporter({
+    file: "/tmp/report.html",
+    write: (line) => {
+      lines.push(line);
+    },
+    intervalMs: 5,
+  });
+
+  try {
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /Long-polling for user feedback/);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.ok(lines.length >= 2, "emits heartbeat lines while waiting");
+    assert.match(lines[1], /Still waiting for user feedback/);
+  } finally {
+    reporter.stop();
+  }
+
+  const countAfterStop = lines.length;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(lines.length, countAfterStop, "stops heartbeating after stop()");
+});
+
+test("spawned poll announces the wait on stderr and leaves re-run guidance when killed", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-poll-wait-test-`);
+  const artifact = `${stateDir}/artifact.html`;
+  await writeFile(artifact, "<html><body>hello</body></html>", "utf8");
+  const server = await serve({ port: 0, stateFile: `${stateDir}/state.json`, version: VERSION });
+  try {
+    const sessionResponse = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.ok(sessionResponse.ok, "session opens");
+
+    const child = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "poll", artifact],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_PORT: String(server.port) },
+      },
+    );
+
+    let stderr = "";
+    const sawBanner = new Promise((resolve, reject) => {
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+        if (stderr.includes("Long-polling for user feedback")) resolve();
+      });
+      child.on("error", reject);
+      setTimeout(() => reject(new Error(`no banner on stderr, got: ${stderr}`)), 15_000).unref();
+    });
+    await sawBanner;
+
+    const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+    child.kill("SIGTERM");
+    await exited;
+
+    assert.match(stderr, /Poll interrupted/);
+    assert.match(stderr, /queued feedback is never lost/);
+  } finally {
+    await server.close();
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
+test("waiting next step reassures agents that re-running poll loses nothing", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: { status: "waiting" },
+  });
+
+  assert.match(output.next_step, /lavish-axi poll \/tmp\/report\.html/);
+  assert.match(output.next_step, /without --timeout-ms/);
+  assert.match(output.next_step, /queued feedback is never lost/);
 });
 
 test("html file arguments normalize to the hidden open command", () => {
@@ -482,6 +626,8 @@ test("open can resume a session without opening another browser window", () => {
   assert.match(getCommandHelp("design"), /unless.*explicitly instructed/i);
   assert.match(getCommandHelp("design"), /priority order/i);
   assert.match(getCommandHelp("design"), /current project/i);
+  assert.match(getCommandHelp("design"), /fallback, not the default/i);
+  assert.match(getCommandHelp("design"), /inspect the project/i);
   assert.doesNotMatch(getCommandHelp("design"), /auto-injects/);
 });
 
