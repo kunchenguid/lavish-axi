@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.29](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.28...lavish-axi-v0.1.29) (2026-06-12)
+
+
+### Features
+
+* rename diff playbook to code ([#85](https://github.com/kunchenguid/lavish-axi/issues/85)) ([0e3487f](https://github.com/kunchenguid/lavish-axi/commit/0e3487f3bd95ca9a1902fb1dfbb462c7d218fe44))
+
 ## [0.1.28](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.27...lavish-axi-v0.1.28) (2026-06-11)
 
 
