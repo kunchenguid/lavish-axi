@@ -109,31 +109,64 @@ export const PLAYBOOKS = [
     lavish_notes: ["A Lavish plan should make a plan and its uncertainties easy to annotate before code exists."],
   },
   {
-    id: "diff",
-    use_when: "Present code or PR changes with evidence and findings",
+    id: "code",
+    use_when: "Render source code, code files, patches, PR diffs, and before/after code inside Lavish artifacts",
     choose: [
-      "Use this when the artifact is meant to help a human inspect a diff, PR, or local change set.",
-      "Use findings as the primary shape when bugs or regressions are possible.",
-      "Use architecture and file maps when the change is broad enough that text diffs lose the thread.",
+      "Use this whenever an artifact shows source code: a snippet, full file, patch, PR diff, local change set, or before/after code.",
+      "Use File for one code file, FileDiff for old/new versions or parsed patch metadata, and CodeView only when several files or diffs need coordinated navigation.",
+      "Choose split layout for careful side-by-side review when width allows; choose unified layout when space is tight, changes are mostly additive, or mobile readability matters.",
     ],
     structure: [
-      "Start with the review scope and the most important findings.",
-      "Show changed areas, tests, docs implications, and any behavioral deltas.",
-      "Keep evidence close to each claim with file paths, line references, or command outputs.",
+      "Place the path, language, and reason to inspect the code immediately before each rendered file or diff.",
+      "Keep evidence close to each claim with file paths, line references, or annotations next to the relevant code.",
+      "For multi-file changes, group files by user-facing area or task instead of dumping a raw patch in repository order.",
     ],
     design_rules: [
-      "Order findings by severity before summaries or praise.",
-      "Separate observed facts from inferred rationale.",
-      "Use severity, confidence, and affected file references consistently.",
+      `Rendering MUST use @pierre/diffs, not hand-rolled <pre> blocks or another diff library. This verified no-build standalone HTML snippet renders one file and one split diff from esm.sh:
+\`\`\`html
+<div id="file"></div>
+<div id="diff"></div>
+<script type="module">
+  import { File, FileDiff } from "https://esm.sh/@pierre/diffs@1.2.10?bundle";
+
+  const theme = { light: "github-light", dark: "github-dark" };
+  const options = { theme, themeType: "dark", overflow: "wrap" };
+  const oldFile = {
+    name: "src/greeting.ts",
+    contents: "export function greet(name: string) {\\n  return \\"Hello \\" + name;\\n}\\n\\nconsole.log(greet(\\"Lavish\\"));\\n",
+  };
+  const newFile = {
+    name: "src/greeting.ts",
+    contents: "export function greet(name: string) {\\n  return \\"Hello, \\" + name + \\"!\\";\\n}\\n\\nconsole.log(greet(\\"Lavish\\"));\\n",
+  };
+
+  new File(options).render({
+    containerWrapper: document.querySelector("#file"),
+    file: newFile,
+  });
+
+  new FileDiff({ ...options, diffStyle: "split" }).render({
+    containerWrapper: document.querySelector("#diff"),
+    oldFile,
+    newFile,
+  });
+
+</script>
+\`\`\``,
+      "Pick a Shiki theme pair that matches the artifact's DaisyUI or Tailwind direction and light or dark mode; replace the GitHub pair above when the page is not GitHub-like.",
+      'Use FileDiff diffStyle: "split" for side-by-side review and diffStyle: "unified" for stacked reading; keep overflow: "wrap" unless horizontal alignment is essential.',
+      "Use @pierre/diffs line annotations, selections, and headers when calling out specific lines so notes stay attached to code.",
     ],
     pitfalls: [
-      "Do not make a review artifact that is only a pretty changelog.",
-      "Do not state decision rationale as fact when it was inferred from code shape.",
-      "Do not skip tests and docs impact when public behavior changes.",
+      "Do not render code as static screenshots, plain <pre> blocks, or markdown pasted into HTML.",
+      "Do not choose an arbitrary default Shiki theme that clashes with the page palette or dark mode.",
+      "Do not show huge unrelated files when a focused render range, parsed patch file, or grouped summary would be clearer.",
+      "Do not separate a claim from the code lines that prove it.",
     ],
     lavish_notes: [
-      "A Lavish review should let the user click a finding and ask for the exact fix or clarification.",
-      "If no issue is found in a category, say so explicitly rather than leaving ambiguity.",
+      "A Lavish code artifact should make each file, hunk, and relevant line easy to annotate precisely.",
+      "When a user action should trigger a fix, queue prompts that name the file path, line range, and desired change.",
+      "If the artifact combines code with a plan, table, or comparison, read those playbooks too and keep @pierre/diffs responsible for the code surface.",
     ],
   },
   {

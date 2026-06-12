@@ -61,7 +61,7 @@ Then, in agents that expose skills as slash commands (Claude Code, for example),
 /lavish let's discuss our plan here
 ```
 
-Or just ask for anything that is easier to grasp visually - a plan, comparison, diagram, table, diff, or report - and the agent loads the skill on its own when it recognizes the task.
+Or just ask for anything that is easier to grasp visually - a plan, comparison, diagram, table, code view, or report - and the agent loads the skill on its own when it recognizes the task.
 
 By default the skill lands in the current project's skills directory (`.claude/skills/`, for example); add `-g` to install it for all projects (`~/.claude/skills/`).
 
@@ -160,7 +160,7 @@ pnpm link
 | `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.    |
 | `lavish-axi server`           | Run the local Lavish Editor server.                                                                                         |
 
-Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `diff`, `input`, `slides`.
+Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.
 One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so read every playbook relevant to the artifact for the best quality.
 
 ### Flags

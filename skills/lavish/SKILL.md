@@ -53,7 +53,7 @@ One artifact often combines several playbooks (for example a plan that includes 
 - `table` - Turn dense records into scan-friendly review surfaces
 - `comparison` - Show options, tradeoffs, and current vs target behavior
 - `plan` - Explain a product or technical plan before implementation
-- `diff` - Present code or PR changes with evidence and findings
+- `code` - Render source code, code files, patches, PR diffs, and before/after code inside Lavish artifacts
 - `input` - Must be used when the agent needs to collect user input on decisions, choices, preferences, triage, scope, or other structured feedback from within the artifact
 - `slides` - Create a deliberate presentation when slides are requested
 

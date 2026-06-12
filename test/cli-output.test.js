@@ -203,7 +203,7 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   assert.equal(output.playbooks.length, 7);
   assert.deepEqual(
     output.playbooks.map((playbook) => playbook.id),
-    ["diagram", "table", "comparison", "plan", "diff", "input", "slides"],
+    ["diagram", "table", "comparison", "plan", "code", "input", "slides"],
   );
   assert.equal(
     output.playbooks.find((playbook) => playbook.id === "plan")?.use_when,
@@ -232,6 +232,20 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("window.lavish.queuePrompt")));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("unclear")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
+});
+
+test("code playbook detail output requires verified @pierre/diffs rendering", () => {
+  const output = createPlaybookOutput(["code"]);
+
+  assert.equal(output.playbook.id, "code");
+  assert.match(output.playbook.use_when, /source code/);
+  assert.ok(output.playbook.choose.some((item) => item.includes("FileDiff")));
+  assert.ok(output.playbook.choose.some((item) => item.includes("split") && item.includes("unified")));
+  assert.ok(output.playbook.design_rules.some((item) => item.includes("@pierre/diffs")));
+  assert.ok(output.playbook.design_rules.some((item) => item.includes("https://esm.sh/@pierre/diffs@1.2.10?bundle")));
+  assert.ok(output.playbook.design_rules.some((item) => item.includes("new FileDiff")));
+  assert.ok(output.playbook.design_rules.some((item) => item.includes("Shiki theme")));
+  assert.ok(output.playbook.pitfalls.some((item) => item.includes("<pre>")));
 });
 
 test("plan playbook detail output has polished guidance copy", () => {
@@ -631,7 +645,9 @@ test("open can resume a session without opening another browser window", () => {
   assert.equal(shouldOpenBrowser(["artifact.html"], {}), true);
   assert.match(getCommandHelp("open"), /--no-open/);
   assert.match(getCommandHelp("playbook"), /diagram/);
+  assert.match(getCommandHelp("playbook"), /code/);
   assert.match(getCommandHelp("playbook"), /input/);
+  assert.doesNotMatch(getCommandHelp("playbook"), new RegExp(`${"di"}ff, input`));
   assert.doesNotMatch(getCommandHelp("playbook"), /interactive/);
   assert.match(getCommandHelp("design"), /DaisyUI/);
   assert.match(getCommandHelp("design"), /lavish-axi design/);
