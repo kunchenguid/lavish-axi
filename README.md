@@ -51,6 +51,12 @@ Install the Lavish skill in the [Agent Skills](https://agentskills.io) format wi
 npx skills add kunchenguid/lavish-axi --skill lavish
 ```
 
+To review and annotate R Shiny apps, install the `lavish-shiny` skill:
+
+```sh
+npx skills add freestatman/lavish-axi --skill lavish-shiny
+```
+
 That is the entire setup - no npm install needed.
 The skill teaches your agent to run Lavish through `npx -y lavish-axi`, so the CLI comes along on demand.
 Its frontmatter also includes Hermes Agent metadata, so Hermes-compatible harnesses can categorize and surface it as a first-class productivity skill.
@@ -146,19 +152,29 @@ pnpm link
 - **Local-first state** - Session state stays under `.lavish-axi/` in the workspace.
 - **Network binding** - The server binds to loopback (`127.0.0.1`) by default. Set `LAVISH_AXI_HOST` to bind elsewhere; a wildcard (`0.0.0.0` or `::`) binds every interface. Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. Set `LAVISH_AXI_LINK_HOST` to control the hostname written into generated session links (defaults to the bind address, or loopback when bound to a wildcard).
 
+## R Shiny Support
+
+Lavish Editor extends its interactive annotation workflow to **R Shiny Applications**, allowing you to preview and annotate active R Shiny layouts, plots, and UI inputs directly in the browser chrome.
+
+- **Managed Mode (Default)**: Run `lavish-axi shiny [app-dir]` (where `app-dir` defaults to the current directory). Lavish automatically checks for the `shiny` R package, finds a free port, launches the Shiny background process, and terminates it cleanly when the session ends.
+- **Attached Mode**: If you already have a Shiny application running locally, you can attach Lavish to it by running `lavish-axi shiny [app-dir] --url <url>` (for example, `--url http://127.0.0.1:8000`).
+- **Interactive UI & Plots**: The proxy server intercepts HTML responses, injects the Lavish annotation SDK, and strips blocking iframe headers (`X-Frame-Options` and `CSP`). It also routes real-time bidirectional WebSockets to allow native Shiny updates and reactive plots to function seamlessly inside the sandbox.
+- **Agent Reactivity**: User feedback and element-pinpointing annotations are delivered to the agent using the standard poll mechanism (`lavish-axi poll [app-dir]`). The agent can then read the feedback and dynamically update the R source code (`app.R`) or UI styling in real time.
+
 ## CLI Reference
 
-| Command                       | Description                                                                                                                 |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `lavish-axi`                  | Show current sessions and usage guidance.                                                                                   |
-| `lavish-axi <html-file>`      | Open or resume a Lavish Editor session.                                                                                     |
-| `lavish-axi poll <html-file>` | Long-poll until the user sends feedback or ends the session; leave no-timeout polls running, or re-run them if interrupted. |
-| `lavish-axi end <html-file>`  | End a session.                                                                                                              |
-| `lavish-axi stop`             | Shut down the background server.                                                                                            |
-| `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.                                                                        |
-| `lavish-axi design`           | Show the Tailwind + DaisyUI CDN fallback, including the `luxury` default theme and DaisyUI `@apply` warning.                |
-| `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.    |
-| `lavish-axi server`           | Run the local Lavish Editor server.                                                                                         |
+| Command                      | Description                                                                                                                 |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `lavish-axi`                 | Show current sessions and usage guidance.                                                                                   |
+| `lavish-axi <html-file>`     | Open or resume a Lavish Editor session.                                                                                     |
+| `lavish-axi shiny [app-dir]` | Open or resume an interactive R Shiny application annotation session.                                                       |
+| `lavish-axi poll <path>`     | Long-poll until the user sends feedback or ends the session; leave no-timeout polls running, or re-run them if interrupted. |
+| `lavish-axi end <path>`      | End a session.                                                                                                              |
+| `lavish-axi stop`            | Shut down the background server.                                                                                            |
+| `lavish-axi playbook [id]`   | List focused artifact guidance or show one playbook.                                                                        |
+| `lavish-axi design`          | Show the Tailwind + DaisyUI CDN fallback, including the `luxury` default theme and DaisyUI `@apply` warning.                |
+| `lavish-axi setup hooks`     | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.    |
+| `lavish-axi server`          | Run the local Lavish Editor server.                                                                                         |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.
 One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so read every playbook relevant to the artifact for the best quality.
@@ -168,6 +184,8 @@ One artifact often combines several playbooks, such as a plan that includes a co
 | Command                  | Flag                  | Description                                                                                                                                                                                                                         |
 | ------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lavish-axi <html-file>` | `--no-open`           | Ensure the server/session exists without opening another browser window.                                                                                                                                                            |
+| `lavish-axi shiny`       | `--url <url>`         | Proxy an already running Shiny app (Attached mode).                                                                                                                                                                                 |
+| `lavish-axi shiny`       | `--no-open`           | Ensure the server/session exists without opening another browser window.                                                                                                                                                            |
 | `lavish-axi poll`        | `--agent-reply "..."` | Show the agent's reply in the existing browser chat before polling again.                                                                                                                                                           |
 | `lavish-axi poll`        | `--timeout-ms <ms>`   | Test/debug escape hatch only; agents should normally omit it and leave the long poll running.                                                                                                                                       |
 | `lavish-axi stop`        | `--port <port>`       | Shut down a server running on a non-default port.                                                                                                                                                                                   |

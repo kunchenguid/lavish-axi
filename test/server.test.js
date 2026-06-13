@@ -1644,3 +1644,64 @@ test("chrome client chat input sends on Enter and inserts newline on Shift+Enter
   assert.match(js, /event\.preventDefault\(\)/);
   assert.match(js, /sendQueued\(\)/);
 });
+
+test("resolveWatchTarget returns directory scope for Shiny sessions", async () => {
+  const target = await resolveWatchTarget({
+    type: "shiny",
+    file: "/tmp/shinyapp",
+  });
+
+  assert.equal(target.scope, "directory");
+  assert.equal(target.path, "/tmp/shinyapp");
+  assert.match(target.options.ignored.toString(), /Rproj/);
+});
+
+test("createChromeHtml renders correct iframe for Shiny sessions", () => {
+  const html = createChromeHtml({
+    type: "shiny",
+    key: "shiny123",
+    file: "/tmp/shinyapp",
+    chat: [],
+  });
+
+  assert.match(
+    html,
+    /iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-same-origin"/,
+  );
+  assert.match(html, /src="\/shiny\/shiny123\/"/);
+  assert.match(html, /Shiny App/);
+  assert.match(html, /Reload app/);
+});
+
+test("POST /api/shiny-sessions creates a session with type=shiny", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-server-shiny-"));
+  const state = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile: state });
+
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const res = await fetch(`${base}/api/shiny-sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        appDir: dir,
+        url: "http://127.0.0.1:9999", // attached mode mock
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "opened");
+    assert.ok(body.url);
+
+    // Retrieve session and verify details
+    const sessionRes = await fetch(`${base}/session/${body.key}`);
+    assert.equal(sessionRes.status, 200);
+    const sessionHtml = await sessionRes.text();
+    assert.match(sessionHtml, /Shiny App/);
+    assert.match(sessionHtml, /src="\/shiny\/[a-f0-9]{16}\/"/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

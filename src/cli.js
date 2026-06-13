@@ -13,8 +13,9 @@ import { findPlaybook, listPlaybooks, playbookIds } from "./playbooks.js";
 import { serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
+import { detectRscript } from "./shiny-process.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup"]);
+const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "shiny"]);
 const DESCRIPTION =
   "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. Whenever you are about to give user a complex response that will be easier to understand via a rich / interactive page, consider using Lavish Editor. " +
   "First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
@@ -56,6 +57,7 @@ export async function run(argv) {
         design: designCommand,
         setup: setupCommand,
         server: serverCommand,
+        shiny: shinyCommand,
       },
       getCommandHelp,
     });
@@ -161,6 +163,48 @@ export function createOpenOutput({ file, url, status }) {
   };
 }
 
+async function shinyCommand(args) {
+  const rcheck = await detectRscript();
+  if (!rcheck.ok) {
+    throw new AxiError(`R environment issue: ${rcheck.error || "Rscript not found"}`, "SERVER_ERROR", [
+      "Ensure R is installed and Rscript is on your system PATH.",
+      "Ensure the R package 'shiny' is installed: Rscript -e \"install.packages('shiny')\"",
+    ]);
+  }
+
+  const urlArgIndex = args.indexOf("--url");
+  const filteredArgs = args.filter((arg, index) => {
+    if (arg.startsWith("-")) return false;
+    if (urlArgIndex !== -1 && (index === urlArgIndex || index === urlArgIndex + 1)) return false;
+    return true;
+  });
+
+  const appDir = filteredArgs[0] || ".";
+  const absolute = await canonicalFile(appDir);
+
+  const url = flagValue(args, "--url");
+  const baseUrl = await ensureServer({ forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || "") });
+
+  const response = await postJson(`${baseUrl}/api/shiny-sessions`, {
+    appDir: absolute,
+    url: url,
+  });
+
+  if (shouldOpenBrowser(args, process.env)) {
+    try {
+      const open = (await import("open")).default;
+      await open(response.url);
+    } catch {
+      response.status = "ready";
+    }
+  }
+
+  return {
+    session: { file: absolute, url: response.url, status: response.status || "opened", type: "shiny" },
+    next_step: `Do not respond to the user just yet. Now you must run \`lavish-axi poll ${absolute}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Do not pass --timeout-ms during normal agent use. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if the poll still gets killed or times out, just re-run it - queued feedback is never lost. After applying feedback, run \`lavish-axi poll ${absolute} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback.`,
+  };
+}
+
 async function openCommand(args) {
   const file = args.find((arg) => !arg.startsWith("-"));
   if (!file) {
@@ -188,7 +232,7 @@ export function shouldOpenBrowser(args, env) {
 async function pollCommand(args) {
   const file = args[0];
   if (!file) {
-    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi poll <html-file>`"]);
+    throw new AxiError("File or directory path is required", "VALIDATION_ERROR", ["Run `lavish-axi poll <path>`"]);
   }
   const absolute = await canonicalFile(file);
   const baseUrl = await ensureServer();
@@ -290,7 +334,7 @@ export function createPollOutput({ file, response }) {
 async function endCommand(args) {
   const file = args[0];
   if (!file) {
-    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi end <html-file>`"]);
+    throw new AxiError("File or directory path is required", "VALIDATION_ERROR", ["Run `lavish-axi end <path>`"]);
   }
   const absolute = await canonicalFile(file);
   const baseUrl = await ensureServer();
@@ -656,12 +700,13 @@ export function getCommandHelp(command) {
   return COMMAND_HELP[command] || null;
 }
 
-const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.\n\n`;
+const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi shiny [app-dir] [--url <url>]\n  lavish-axi poll <path> [--agent-reply "..."]\n  lavish-axi end <path>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.\n\n`;
 
 const COMMAND_HELP = {
   open: `Usage: lavish-axi <html-file> [--no-open]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window.\n`,
-  poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts, then returns them to the agent. It stays silent while it waits - that is normal, never kill it. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if it still gets killed or times out, just re-run it - queued feedback is never lost. Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again.\n`,
-  end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session.\n`,
+  shiny: `Usage: lavish-axi shiny [app-dir] [--url <url>] [--no-open]\n\nOpen a Shiny app interactive annotation session. It spawns the R/Shiny process automatically in the background (managed mode), unless --url is provided to proxy an already running Shiny app (attached mode).\n`,
+  poll: `Usage: lavish-axi poll <path> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts, then returns them to the agent. It stays silent while it waits - that is normal, never kill it. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if it still gets killed or times out, just re-run it - queued feedback is never lost. Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again.\n`,
+  end: `Usage: lavish-axi end <path>\n\nEnd a Lavish Editor session.\n`,
   stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
   playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\nOne artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to the artifact, not just one, for the best quality.\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
   design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, plus technical reference for DaisyUI components. Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the project before falling back. The strict priority order is: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, if the current project already has a design system or style conventions, match those; (3) only when both come up empty, prefer the Lavish-recommended Tailwind + DaisyUI CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.\n`,

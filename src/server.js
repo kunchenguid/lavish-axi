@@ -10,6 +10,8 @@ import { createArtifactSdk } from "./artifact-sdk.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, hostForUrl, linkHost } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import { createShinyProxy, proxyWebSocket } from "./shiny-proxy.js";
+import { launchShiny, findFreePort } from "./shiny-process.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -65,6 +67,8 @@ export async function serve({
   const activePolls = new Map();
   const deliveredFeedback = new Set();
   const sseClients = new Set();
+  const shinyProcesses = new Map();
+  const proxies = new Map();
   const verbose = debug || process.env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
@@ -93,6 +97,11 @@ export async function serve({
       const key = sessionKey(file);
       const url = `http://${hostForUrl(linkHostName)}:${publicPort}/session/${key}`;
       const existing = await store.findByKey(key);
+      if (shinyProcesses.has(key)) {
+        const shinyApp = shinyProcesses.get(key);
+        shinyApp.kill();
+        shinyProcesses.delete(key);
+      }
       const session = await store.upsertSession(file, url);
       if (existing?.status === "ended") {
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
@@ -102,6 +111,72 @@ export async function serve({
       res.json({ key, file, url, status: "opened" });
     } catch (error) {
       next(error);
+    }
+  });
+
+  app.post("/api/shiny-sessions", async (req, res, next) => {
+    try {
+      const appDir = await canonicalFile(req.body.appDir);
+      const key = sessionKey(appDir);
+      const existing = await store.findByKey(key);
+
+      let shinyUrl = req.body.url || null;
+      let shinyPid = null;
+
+      if (!shinyUrl) {
+        if (shinyProcesses.has(key)) {
+          const oldProc = shinyProcesses.get(key);
+          oldProc.kill();
+          shinyProcesses.delete(key);
+        }
+
+        const freePort = await findFreePort();
+        const shinyApp = await launchShiny(appDir, {
+          port: freePort,
+          host: "127.0.0.1",
+          log: logEvent ? (line) => logEvent(`[shiny] ${line}`) : null,
+        });
+
+        shinyUrl = shinyApp.url;
+        shinyPid = shinyApp.process.pid;
+        shinyProcesses.set(key, shinyApp);
+      }
+
+      const url = `http://${hostForUrl(linkHostName)}:${publicPort}/session/${key}`;
+      const session = await store.upsertSession(appDir, url, {
+        type: "shiny",
+        shinyUrl,
+        shinyPid,
+      });
+
+      if (existing?.status === "ended") {
+        clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+      }
+
+      logEvent?.(`shiny session opened key=${key} appDir=${appDir} url=${shinyUrl}`);
+      await watchSession(session, watchers, events, logEvent);
+      res.json({ key, file: appDir, url, status: "opened" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.use("/shiny/:key", async (req, res, next) => {
+    try {
+      const session = await store.findByKey(req.params.key);
+      if (!session || session.type !== "shiny" || !session.shinyUrl) {
+        res.status(404).send("Shiny session not found");
+        return;
+      }
+      let cached = proxies.get(session.key);
+      if (!cached || cached.shinyUrl !== session.shinyUrl) {
+        const proxy = createShinyProxy(session.shinyUrl, session.key);
+        cached = { proxy, shinyUrl: session.shinyUrl };
+        proxies.set(session.key, cached);
+      }
+      cached.proxy(req, res, next);
+    } catch (err) {
+      next(err);
     }
   });
 
@@ -195,9 +270,15 @@ export async function serve({
 
   app.post("/api/:key/end", async (req, res, next) => {
     try {
-      await store.endSession(req.params.key);
-      clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
-      events.emit("ended", req.params.key);
+      const key = req.params.key;
+      await store.endSession(key);
+      if (shinyProcesses.has(key)) {
+        const shinyApp = shinyProcesses.get(key);
+        shinyApp.kill();
+        shinyProcesses.delete(key);
+      }
+      clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+      events.emit("ended", key);
       res.json({ status: "ended" });
       await shutdownIfNoLiveSessions();
     } catch (error) {
@@ -225,6 +306,11 @@ export async function serve({
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
       await store.endSession(key);
+      if (shinyProcesses.has(key)) {
+        const shinyApp = shinyProcesses.get(key);
+        shinyApp.kill();
+        shinyProcesses.delete(key);
+      }
       clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       events.emit("ended", key);
       res.json({ status: "ended" });
@@ -377,10 +463,35 @@ export async function serve({
   });
   publicPort = httpServer.address().port;
 
+  httpServer.on("upgrade", async (req, socket, head) => {
+    const match = req.url.match(/^\/shiny\/([^/]+)/);
+    if (match) {
+      const key = match[1];
+      try {
+        const session = await store.findByKey(key);
+        if (session && session.type === "shiny" && session.shinyUrl) {
+          proxyWebSocket(req, socket, head, session.shinyUrl);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    socket.destroy();
+  });
+
   let shuttingDown = false;
   function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
+    for (const shinyApp of shinyProcesses.values()) {
+      try {
+        shinyApp.kill();
+      } catch {
+        // best effort
+      }
+    }
+    shinyProcesses.clear();
     if (idleTimer) {
       clearTimeout(idleTimer);
       idleTimer = null;
@@ -510,6 +621,16 @@ export async function resolveWatchTarget(session) {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
   };
+  if (session.type === "shiny") {
+    return {
+      path: session.file,
+      scope: "directory",
+      options: {
+        ...baseOptions,
+        ignored: /(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|\.Rproj\.user|rsconnect|\.Rhistory)([/\\]|$)/,
+      },
+    };
+  }
   try {
     const html = await readFile(session.file, "utf8");
     if (hasLiveReloadRootOptIn(html)) {
@@ -623,6 +744,16 @@ export function displayPathParts(file, home = homedir()) {
 export function createChromeHtml(session) {
   const sessionJson = jsonScript({ key: session.key, file: session.file, initialChat: session.chat || [] });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
+  const isShiny = session.type === "shiny";
+  const iframeSrc = isShiny ? `/shiny/${session.key}/` : `/artifact/${session.key}/index.html`;
+  const sandbox = isShiny
+    ? "allow-scripts allow-forms allow-popups allow-downloads allow-same-origin"
+    : "allow-scripts allow-forms allow-popups allow-downloads";
+  const reloadText = isShiny ? "Reload app" : "Reload artifact";
+  const badge = isShiny
+    ? '<span class="brand-support" style="margin-left:8px;background:rgba(244,201,93,0.15);color:#f4c95d;border:1px solid rgba(244,201,93,0.3);padding:2px 6px;border-radius:4px;font-size:10px;text-transform:uppercase;font-weight:700">Shiny App</span>'
+    : "";
+
   return `<!doctype html>
 <html>
 <head>
@@ -632,8 +763,8 @@ export function createChromeHtml(session) {
 <link rel="stylesheet" href="/chrome.css">
 </head>
 <body class="lavish">
-<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="chat" id="chatLog"></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><div class="annotation-pills" id="annotationPills"></div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="actions" id="sendActions"><span class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</span><div class="split"><button class="button send-main" id="send">Send to Agent</button><button class="button send-caret" id="sendCaret" type="button" title="Send options" aria-haspopup="menu" aria-expanded="false">${chromeIcons.caret}</button></div><div class="menu send-menu" id="sendMenu" hidden><button class="menu-item" id="sendFromMenu" type="button">${chromeIcons.send}<span>Send to Agent</span></button><button class="menu-item danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; end session</span></button></div></div></div></aside></div>
+<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span>${badge}</div><div class="spacer" aria-hidden="true"></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>${reloadText}</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="${sandbox}" src="${iframeSrc}"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="chat" id="chatLog"></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><div class="annotation-pills" id="annotationPills"></div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="actions" id="sendActions"><span class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</span><div class="split"><button class="button send-main" id="send">Send to Agent</button><button class="button send-caret" id="sendCaret" type="button" title="Send options" aria-haspopup="menu" aria-expanded="false">${chromeIcons.caret}</button></div><div class="menu send-menu" id="sendMenu" hidden><button class="menu-item" id="sendFromMenu" type="button">${chromeIcons.send}<span>Send to Agent</span></button><button class="menu-item danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; end session</span></button></div></div></div></aside></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>
 <script src="/chrome-client.js"></script>

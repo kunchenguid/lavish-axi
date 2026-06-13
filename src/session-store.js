@@ -23,7 +23,7 @@ export class SessionStore {
     return state.sessions[key] || null;
   }
 
-  async upsertSession(file, url) {
+  async upsertSession(file, url, { type = "html", shinyUrl = null, shinyPid = null } = {}) {
     const absolute = await canonicalFile(file);
     const key = sessionKey(absolute);
     const state = await this.readState();
@@ -32,6 +32,9 @@ export class SessionStore {
       key,
       file: absolute,
       url,
+      type: type || existing.type || "html",
+      shinyUrl: shinyUrl !== undefined ? shinyUrl : existing.shinyUrl || null,
+      shinyPid: shinyPid !== undefined ? shinyPid : existing.shinyPid || null,
       status: existing.status === "ended" ? "open" : existing.status || "open",
       pending_prompts: existing.pending_prompts || 0,
       prompts: existing.prompts || [],

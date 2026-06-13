@@ -771,3 +771,23 @@ test("stop command reports when no server is running", async () => {
     await rm(dir, { force: true, recursive: true });
   }
 });
+
+test("normalizeArgv preserves shiny command and flags", () => {
+  assert.deepEqual(normalizeArgv(["shiny", "./myapp"]), ["shiny", "./myapp"]);
+  assert.deepEqual(normalizeArgv(["shiny", "--url", "http://127.0.0.1:3838"]), [
+    "shiny",
+    "--url",
+    "http://127.0.0.1:3838",
+  ]);
+});
+
+test("shiny command help contains R/Shiny reference", () => {
+  const help = getCommandHelp("shiny");
+  assert.match(help, /Shiny app/i);
+  assert.match(help, /managed mode/i);
+  assert.match(help, /attached mode/i);
+});
+
+test("telemetryCommandName identifies shiny command correctly", () => {
+  assert.equal(telemetryCommandName(["shiny", "./myapp"]), "shiny");
+});
