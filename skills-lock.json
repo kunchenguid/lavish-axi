@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "lavish-shiny": {
+      "source": "freestatman/lavish-axi",
+      "sourceType": "github",
+      "skillPath": "skills/lavish-shiny/SKILL.md",
+      "computedHash": "838d2d781642f71cfe8b542909204a2fb96e2b727d3c28972e2e04de16cfd679"
+    }
+  }
+}

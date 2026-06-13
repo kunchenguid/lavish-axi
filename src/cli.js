@@ -163,15 +163,7 @@ export function createOpenOutput({ file, url, status }) {
   };
 }
 
-async function shinyCommand(args) {
-  const rcheck = await detectRscript();
-  if (!rcheck.ok) {
-    throw new AxiError(`R environment issue: ${rcheck.error || "Rscript not found"}`, "SERVER_ERROR", [
-      "Ensure R is installed and Rscript is on your system PATH.",
-      "Ensure the R package 'shiny' is installed: Rscript -e \"install.packages('shiny')\"",
-    ]);
-  }
-
+export async function shinyCommand(args) {
   const urlArgIndex = args.indexOf("--url");
   const filteredArgs = args.filter((arg, index) => {
     if (arg.startsWith("-")) return false;
@@ -183,6 +175,18 @@ async function shinyCommand(args) {
   const absolute = await canonicalFile(appDir);
 
   const url = flagValue(args, "--url");
+
+  // Only check for R/Rscript when we need to spawn a Shiny process (managed mode).
+  // When --url is provided the app is already running externally (attached mode).
+  if (!url) {
+    const rcheck = await detectRscript();
+    if (!rcheck.ok) {
+      throw new AxiError(`R environment issue: ${rcheck.error || "Rscript not found"}`, "SERVER_ERROR", [
+        "Ensure R is installed and Rscript is on your system PATH.",
+        "Ensure the R package 'shiny' is installed: Rscript -e \"install.packages('shiny')\"",
+      ]);
+    }
+  }
   const baseUrl = await ensureServer({ forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || "") });
 
   const response = await postJson(`${baseUrl}/api/shiny-sessions`, {

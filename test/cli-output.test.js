@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -33,6 +34,7 @@ import {
   startPollWaitReporter,
   stopCommand,
   telemetryCommandName,
+  shinyCommand,
   VERSION,
 } from "../src/cli.js";
 import { serve } from "../src/server.js";
@@ -790,4 +792,43 @@ test("shiny command help contains R/Shiny reference", () => {
 
 test("telemetryCommandName identifies shiny command correctly", () => {
   assert.equal(telemetryCommandName(["shiny", "./myapp"]), "shiny");
+});
+
+test("shiny command with --url skips R environment check and registers session", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-shiny-cli-test-`);
+  const state = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile: state });
+  const port = server.port;
+
+  const originalEnv = { ...process.env };
+
+  try {
+    // Set environment variables so ensureServer/defaultPort connects to our test server
+    process.env.LAVISH_AXI_PORT = String(port);
+    process.env.LAVISH_AXI_STATE_DIR = dir;
+    // Set PATH to empty to simulate environment without R/Rscript
+    process.env.PATH = "";
+
+    // 1. Without --url: should fail the R environment check
+    await assert.rejects(
+      async () => {
+        await shinyCommand(["--no-open", dir]);
+      },
+      (err) => {
+        assert.ok(err instanceof AxiError);
+        assert.match(err.message, /R environment issue/i);
+        return true;
+      },
+    );
+
+    // 2. With --url: should bypass R check, hit the test server, and succeed
+    const output = await shinyCommand(["--no-open", "--url", "http://127.0.0.1:8080", dir]);
+    assert.equal(output.session.type, "shiny");
+    assert.equal(output.session.status, "opened");
+    assert.match(output.session.url, new RegExp(`session/[a-f0-9]{16}`));
+  } finally {
+    process.env = originalEnv;
+    await server.close();
+    await rm(dir, { force: true, recursive: true });
+  }
 });
