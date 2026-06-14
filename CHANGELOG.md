@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.30](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.29...lavish-axi-v0.1.30) (2026-06-14)
+
+
+### Bug Fixes
+
+* clarify artifact design system guidance ([#89](https://github.com/kunchenguid/lavish-axi/issues/89)) ([6486407](https://github.com/kunchenguid/lavish-axi/commit/64864071f739344e3c148e4d570430e0495de586))
+
 ## [0.1.29](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.28...lavish-axi-v0.1.29) (2026-06-12)
 
 
