@@ -33,7 +33,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 
 - Node 22+, ESM-only JavaScript, and TypeScript `checkJs` validation.
 - Run `pnpm run check` before pushing.
-- Do not reformat vendored `.agents/` skill content; `.prettierignore` excludes it intentionally.
+- Do not reformat repo-provided `.agents/` skill content; `.prettierignore` excludes it intentionally.
 - Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json`.
 - User-facing telemetry docs should stay minimal: anonymous usage telemetry, no sensitive content, and `LAVISH_AXI_TELEMETRY=0` opt-out.
 
