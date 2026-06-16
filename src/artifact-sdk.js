@@ -1,6 +1,105 @@
 /* global CSS, Element, document, parent, window */
 
-export function createArtifactSdk() {
+export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
+
+export function deriveLavishQueueKey(element, options = {}) {
+  function stringValue(value) {
+    return value === null || value === undefined ? "" : String(value);
+  }
+
+  function attributeValue(el, name) {
+    if (!el) return "";
+    if (el.getAttribute) {
+      const value = el.getAttribute(name);
+      if (value !== null && value !== undefined) return value;
+    }
+    return el[name] || "";
+  }
+
+  function tagName(el) {
+    return stringValue(el?.tagName || el?.nodeName).toLowerCase();
+  }
+
+  function closestElementMatching(el, selector) {
+    return el && el.closest ? el.closest(selector) : null;
+  }
+
+  function elementPath(el) {
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && parts.length < 6) {
+      let part = tagName(node) || "element";
+      const id = stringValue(attributeValue(node, "id") || node.id).trim();
+      if (id) {
+        part += `#${id}`;
+        parts.unshift(part);
+        break;
+      }
+
+      const parent = node.parentElement;
+      if (parent && parent.children) {
+        const siblings = [...parent.children].filter((child) => tagName(child) === tagName(node));
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+      }
+      parts.unshift(part);
+      node = parent;
+    }
+    return parts.join(" > ");
+  }
+
+  function scopeKey(el) {
+    const scope = closestElementMatching(el, "form,fieldset") || el?.parentElement || el;
+    const tag = tagName(scope) || "scope";
+    const explicit = stringValue(
+      attributeValue(scope, "data-lavish-question") || attributeValue(scope, "id") || attributeValue(scope, "name"),
+    ).trim();
+    if (explicit) return `${tag}:${explicit}`;
+    return elementPath(scope) || tag;
+  }
+
+  function controlIdentity(el) {
+    const identity = stringValue(attributeValue(el, "name") || attributeValue(el, "id") || el?.name).trim();
+    if (identity) return identity;
+    return elementPath(el);
+  }
+
+  function isKeyedInputType(type) {
+    return !new Set(["button", "submit", "reset", "file", "image", "hidden", "radio", "checkbox"]).has(type);
+  }
+
+  const explicitKey = stringValue(options.queueKey).trim();
+  if (explicitKey) return explicitKey;
+
+  const question = closestElementMatching(element, "[data-lavish-question]");
+  const questionKey = stringValue(attributeValue(question, "data-lavish-question")).trim();
+  if (questionKey) return `question:${questionKey}`;
+
+  const tag = tagName(element);
+  const type = stringValue(attributeValue(element, "type") || element?.type).toLowerCase();
+  const scope = scopeKey(element);
+
+  if (tag === "input" && type === "radio") {
+    const name = stringValue(attributeValue(element, "name") || element?.name).trim();
+    if (name) return `radio:${scope}:${name}`;
+    return "";
+  }
+
+  if (tag === "input" && type === "checkbox") {
+    const identity = controlIdentity(element);
+    const option = stringValue(attributeValue(element, "value") || element?.value || elementPath(element)).trim();
+    if (identity) return `checkbox:${scope}:${identity}:${option}`;
+    return "";
+  }
+
+  if (tag === "select" || tag === "textarea" || (tag === "input" && isKeyedInputType(type))) {
+    const identity = controlIdentity(element);
+    if (identity) return `field:${scope}:${identity}`;
+  }
+
+  return "";
+}
+
+export function createArtifactSdk(deriveQueueKey) {
   let annotationMode = true;
   let hovered = null;
   let selected = null;
@@ -170,11 +269,14 @@ export function createArtifactSdk() {
   }
 
   function queuePrompt(prompt, options = {}) {
-    /** @type {{ uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown }} */
+    const originElement = options.element || document.activeElement || document.body;
+    /** @type {{ uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown, _lavishQueueKey?: string }} */
     const item = {
-      ...context(options.element || document.activeElement || document.body),
+      ...context(originElement),
       prompt: String(prompt || ""),
     };
+    const queueKey = typeof deriveQueueKey === "function" ? deriveQueueKey(originElement, options) : "";
+    if (queueKey) item._lavishQueueKey = String(queueKey);
 
     if (options.uid) item.uid = String(options.uid);
     if (options.selector) item.selector = String(options.selector);

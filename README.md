@@ -136,8 +136,9 @@ pnpm link
   That fallback guidance recommends DaisyUI's `luxury` theme by default and warns not to `@apply` DaisyUI classes inside Tailwind browser-runtime style blocks.
 - **Local assets** - Copy local images, CSS, fonts, and scripts next to the HTML artifact and reference them with relative paths from that directory; root-prefixed paths such as `/assets/logo.png` will not resolve through Lavish's artifact route.
 - **Live reload** - Lavish watches the HTML artifact file by default and preserves the artifact iframe scroll position across reloads. To also reload on sibling asset changes, add `data-lavish-live-reload-root` to the root element or `<meta name="lavish-live-reload" content="root">`.
-- **Feedback controls** - Native form controls (radios, checkboxes, inputs, selects, buttons, labels, contenteditable) are interactive automatically, so they do not need `data-lavish-action`; wire their handlers to `window.lavish.queuePrompt()` or `window.lavish.sendQueuedPrompts()` to send feedback.
-  Mark only custom (non-native) clickable elements with `data-lavish-action` so Lavish does not annotate them.
+- **Feedback controls** - Native form controls (radios, checkboxes, inputs, selects, buttons, labels, contenteditable) are interactive automatically, so they do not need `data-lavish-action`.
+  For reversible choices, let option clicks update local state, then queue exactly one final answer from a per-question submit or Queue answer button with `window.lavish.queuePrompt()`.
+  Mark only custom (non-native) clickable elements with `data-lavish-action` so Lavish does not annotate them, and use `data-lavish-question` or `queueKey` when pre-send updates for the same question should replace each other.
   The browser chrome keeps editing actions in the overflow menu (copy path, reload artifact, copy DOM snapshot, end session) and can submit queued prompts with **Send & end session**, which delivers the prompts before ending the session.
 - **Keyboard shortcuts** - In the chrome composer, Enter sends queued prompts and Shift+Enter inserts a newline.
   In the annotation card, Enter queues the annotation, Shift+Enter inserts a newline, and Ctrl+Enter (Cmd+Enter on macOS) queues it and sends all queued prompts immediately.

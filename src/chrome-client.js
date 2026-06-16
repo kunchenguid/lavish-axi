@@ -5,6 +5,7 @@ const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
 const key = String(sessionData.key || "");
 const filePath = String(sessionData.file || "");
 const queueStorageKey = "lavish-axi:queued:" + key;
+const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
@@ -212,6 +213,36 @@ function removeQueuedPrompt(index, event) {
   render();
 }
 
+function promptQueueKey(prompt) {
+  return prompt && typeof prompt[internalQueueKeyField] === "string" ? prompt[internalQueueKeyField].trim() : "";
+}
+
+function enqueuePrompt(prompt) {
+  if (!prompt || typeof prompt !== "object") return;
+
+  const queueKey = promptQueueKey(prompt);
+  if (queueKey) {
+    const index = queued.findIndex((item) => promptQueueKey(item) === queueKey);
+    if (index !== -1) {
+      queued[index] = prompt;
+    } else {
+      queued.push(prompt);
+    }
+  } else {
+    queued.push(prompt);
+  }
+
+  persistQueuedPrompts();
+  render();
+}
+
+function stripInternalPromptFields(prompt) {
+  if (!prompt || typeof prompt !== "object") return prompt;
+  const clean = { ...prompt };
+  delete clean[internalQueueKeyField];
+  return clean;
+}
+
 function postToFrame(message) {
   if (frame.contentWindow) frame.contentWindow.postMessage(message, "*");
 }
@@ -279,7 +310,7 @@ async function submitQueuedOnce() {
   const response = await fetch("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompts, domSnapshot: pendingSnapshot }),
+    body: JSON.stringify({ prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot }),
   });
   if (!response.ok) throw new Error("failed to submit queued prompts");
   for (const prompt of prompts) {
@@ -359,9 +390,7 @@ window.addEventListener("message", (event) => {
 
   const msg = event.data || {};
   if (msg.type === "lavish:queuePrompt") {
-    queued.push(msg.prompt);
-    persistQueuedPrompts();
-    render();
+    enqueuePrompt(msg.prompt);
   }
   if (msg.type === "lavish:snapshot") {
     const snapshotAction = snapshotRequests.shift() || "submit";
