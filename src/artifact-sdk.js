@@ -67,8 +67,9 @@ export function deriveLavishQueueKey(element, options = {}) {
     return !new Set(["button", "submit", "reset", "file", "image", "hidden", "radio", "checkbox"]).has(type);
   }
 
-  const explicitKey = stringValue(options.queueKey).trim();
-  if (explicitKey) return explicitKey;
+  if (Object.hasOwn(options, "queueKey")) {
+    return stringValue(options.queueKey).trim();
+  }
 
   const question = closestElementMatching(element, "[data-lavish-question]");
   const questionKey = stringValue(attributeValue(question, "data-lavish-question")).trim();
@@ -382,7 +383,7 @@ export function createArtifactSdk(deriveQueueKey) {
     cancelButton.onclick = closeCard;
     sendButton.onclick = () => {
       const prompt = textarea.value.trim();
-      if (prompt) queuePrompt(prompt, c);
+      if (prompt) queuePrompt(prompt, { ...c, queueKey: "" });
       closeCard();
     };
     textarea.addEventListener("keydown", (event) => {

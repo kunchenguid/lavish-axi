@@ -52,6 +52,13 @@ test("deriveLavishQueueKey uses explicit queueKey first", () => {
   assert.equal(deriveLavishQueueKey(input, { queueKey: "deployment-plan" }), "deployment-plan");
 });
 
+test("deriveLavishQueueKey allows explicit empty queueKey to suppress derivation", () => {
+  const button = node("button");
+  node("section", { "data-lavish-question": "deployment-plan" }, [button]);
+
+  assert.equal(deriveLavishQueueKey(button, { queueKey: "" }), "");
+});
+
 test("deriveLavishQueueKey groups controls inside data-lavish-question", () => {
   const first = node("button");
   const second = node("button");
