@@ -2,6 +2,8 @@
 
 export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 
+// Derive the browser-only replacement key used to collapse unsent updates for the same input.
+// The key is stripped by the chrome before prompts are sent to the server or returned by poll.
 export function deriveLavishQueueKey(element, options = {}) {
   function stringValue(value) {
     return value === null || value === undefined ? "" : String(value);
