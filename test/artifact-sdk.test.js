@@ -93,6 +93,16 @@ test("deriveLavishQueueKey keys checkbox toggles per checkbox, not per group", (
   assert.notEqual(deriveLavishQueueKey(first), deriveLavishQueueKey(second));
 });
 
+test("deriveLavishQueueKey does not collide checkbox default values", () => {
+  const first = node("input", { id: "search", type: "checkbox", name: "feature" });
+  const second = node("input", { id: "billing", type: "checkbox", name: "feature" });
+  first.value = "on";
+  second.value = "on";
+  node("form", { id: "features" }, [first, second]);
+
+  assert.notEqual(deriveLavishQueueKey(first), deriveLavishQueueKey(second));
+});
+
 test("deriveLavishQueueKey keys named selects as fields", () => {
   const select = node("select", { name: "region" });
   node("form", { id: "deploy" }, [select]);

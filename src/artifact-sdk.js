@@ -86,7 +86,8 @@ export function deriveLavishQueueKey(element, options = {}) {
 
   if (tag === "input" && type === "checkbox") {
     const identity = controlIdentity(element);
-    const option = stringValue(attributeValue(element, "value") || element?.value || elementPath(element)).trim();
+    const explicitValue = stringValue(element?.getAttribute ? element.getAttribute("value") : "").trim();
+    const option = explicitValue || stringValue(attributeValue(element, "id") || elementPath(element)).trim();
     if (identity) return `checkbox:${scope}:${identity}:${option}`;
     return "";
   }
