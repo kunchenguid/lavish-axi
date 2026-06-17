@@ -13,6 +13,7 @@ async function createChromeHarness({ fetchImpl = async () => ({ ok: true }), ses
   const source = await readFile(sourceUrl, "utf8");
   const storage = new Map();
   const postedToFrame = [];
+  const eventSources = [];
   const windowListeners = new Map();
   const elements = new Map();
   const timers = new Map();
@@ -119,6 +120,7 @@ async function createChromeHarness({ fetchImpl = async () => ({ ok: true }), ses
       constructor(url) {
         this.url = url;
         this.listeners = new Map();
+        eventSources.push(this);
       }
 
       addEventListener(type, handler) {
@@ -164,6 +166,10 @@ async function createChromeHarness({ fetchImpl = async () => ({ ok: true }), ses
     element,
     frame,
     postedToFrame,
+    eventSource() {
+      assert.equal(eventSources.length, 1);
+      return eventSources[0];
+    },
     sendFrameMessage(data) {
       const handler = windowListeners.get("message");
       assert.ok(handler, "chrome-client registered a message handler");
@@ -333,6 +339,34 @@ test("layout gate timeout reveals with a persistent layout issue banner", async 
   assert.match(chrome.element("layoutIssueBanner").textContent, /may have layout issues/);
 });
 
+test("layout gate timeout re-arms on reload", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:layoutWarnings",
+    layout_warnings: [{ selector: "html", kind: "content-overlap", severity: "error" }],
+  });
+  chrome.runTimers(25);
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
+
+  chrome.eventSource().listeners.get("reload")();
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+  assert.equal(chrome.element("body").classList.contains("layout-gate-active"), true);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
+
+  chrome.sendFrameMessage({
+    type: "lavish:layoutWarnings",
+    layout_warnings: [{ selector: "html", kind: "content-overlap", severity: "error" }],
+  });
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+  assert.match(chrome.element("layoutGateTitle").innerHTML, /Fixing a layout issue/);
+});
+
 test("layout gate manual override reveals immediately", async () => {
   const chrome = await createChromeHarness();
 
@@ -344,6 +378,28 @@ test("layout gate manual override reveals immediately", async () => {
 
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
   assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
+});
+
+test("layout gate manual override stays bypassed on reload", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:layoutWarnings",
+    layout_warnings: [{ selector: "html", kind: "content-overlap", severity: "error" }],
+  });
+  chrome.element("layoutGateAction").onclick();
+  chrome.eventSource().listeners.get("reload")();
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+  assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
+
+  chrome.sendFrameMessage({
+    type: "lavish:layoutWarnings",
+    layout_warnings: [{ selector: "html", kind: "content-overlap", severity: "error" }],
+  });
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
   assert.equal(chrome.element("layoutIssueBanner").hidden, false);
 });
 

@@ -50,7 +50,7 @@ const layoutGateMaxHoldMs =
     : 12_000;
 let layoutGateVisible = false;
 let layoutGateArmed = false;
-let layoutGateBypassed = !layoutGateEnabled;
+let layoutGateManuallyBypassed = !layoutGateEnabled;
 let layoutGateCycle = 0;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let layoutGateTimer;
@@ -387,7 +387,7 @@ function revealLayoutGate({ showBanner = false, bannerText = undefined } = {}) {
 
 function forceRevealLayoutGate(reason) {
   if (!layoutGateEnabled || ended) return;
-  layoutGateBypassed = true;
+  if (reason === "manual") layoutGateManuallyBypassed = true;
   const bannerText =
     reason === "timeout"
       ? "This surface may have layout issues. Lavish revealed it after the safety timeout so review is never blocked."
@@ -396,7 +396,7 @@ function forceRevealLayoutGate(reason) {
 }
 
 function startLayoutGateCycle() {
-  if (!layoutGateEnabled || layoutGateBypassed || ended) return;
+  if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
 
   layoutGateCycle += 1;
   layoutGateArmed = true;
@@ -419,7 +419,7 @@ function handleLayoutWarningsForGate(layoutWarnings) {
 
   if (!layoutGateEnabled) return;
 
-  if (layoutGateBypassed) {
+  if (layoutGateManuallyBypassed) {
     setLayoutIssueBanner(hasErrors);
     return;
   }
@@ -466,7 +466,7 @@ async function endSession() {
   chatInput.disabled = true;
   updateSendState();
   if (presenceBanner) presenceBanner.hidden = true;
-  layoutGateBypassed = true;
+  layoutGateManuallyBypassed = true;
   revealLayoutGate();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
