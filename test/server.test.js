@@ -738,6 +738,30 @@ test("session URLs use the configured linkHost while binding to loopback", async
   }
 });
 
+test("session URLs can disable the layout gate for one open", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact, noGate: true }),
+    });
+    const body = await res.json();
+
+    assert.match(body.url, /[?&]no-gate=1/);
+    const chrome = await (await fetch(body.url)).text();
+    assert.match(chrome, /<body class="lavish">/);
+    assert.match(chrome, /id="layoutGateOverlay" hidden/);
+    assert.match(chrome, /"layoutGateEnabled":false/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("serve rejects fast when the bind host is unavailable", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   try {
@@ -1683,6 +1707,25 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);
   assert.match(js, /moreButton\.disabled = true/);
+});
+
+test("layout gate curtain reuses the ended overlay card styling", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const noGateHtml = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, { layoutGateEnabled: false });
+  const js = await chromeClientSource();
+  const css = await chromeCssSource();
+
+  assert.match(html, /<body class="lavish layout-gate-active">/);
+  assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
+  assert.match(html, /<div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout/);
+  assert.match(html, /class="ended-copy" id="layoutGateCopy"/);
+  assert.match(html, /class="button ended-action" id="layoutGateAction" type="button">Show anyway/);
+  assert.match(css, /body\.layout-gate-active iframe#artifact\{[^}]*opacity:0/);
+  assert.match(css, /\.ended-action\{[^}]*margin-top:var\(--space-8\)/);
+  assert.match(js, /layoutGateAction\.onclick = \(\) => forceRevealLayoutGate\("manual"\)/);
+  assert.match(noGateHtml, /<body class="lavish">/);
+  assert.match(noGateHtml, /id="layoutGateOverlay" hidden/);
+  assert.match(noGateHtml, /"layoutGateEnabled":false/);
 });
 
 test("annotation card queues prompt on Enter and inserts newline on Shift+Enter", () => {

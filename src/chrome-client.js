@@ -30,6 +30,11 @@ const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHi
 const copyHintText = /** @type {HTMLSpanElement} */ (document.getElementById("copyHintText"));
 const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("presenceBanner"));
 const endedOverlay = /** @type {HTMLDivElement} */ (document.getElementById("endedOverlay"));
+const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateOverlay"));
+const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
+const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
+const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
+const layoutIssueBanner = /** @type {HTMLDivElement} */ (document.getElementById("layoutIssueBanner"));
 const sendHint = /** @type {HTMLSpanElement} */ (document.getElementById("sendHint"));
 
 const queued = loadQueuedPrompts();
@@ -37,6 +42,18 @@ let annotation = true;
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
+const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
+const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
+const layoutGateMaxHoldMs =
+  Number.isFinite(configuredLayoutGateMaxHoldMs) && configuredLayoutGateMaxHoldMs > 0
+    ? Math.min(configuredLayoutGateMaxHoldMs, 60_000)
+    : 12_000;
+let layoutGateVisible = false;
+let layoutGateArmed = false;
+let layoutGateBypassed = !layoutGateEnabled;
+let layoutGateCycle = 0;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let layoutGateTimer;
 const snapshotRequests = [];
 let endAfterSubmit = false;
 let workingBubble = null;
@@ -326,6 +343,109 @@ function normalizeLayoutWarningsPayload(value) {
   return Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
 }
 
+function isErrorLayoutWarning(warning) {
+  return String(warning?.severity || "").toLowerCase() === "error";
+}
+
+function setLayoutIssueBanner(visible, text = "This surface may have layout issues. Your agent has been notified.") {
+  if (!layoutIssueBanner) return;
+  layoutIssueBanner.textContent = text;
+  layoutIssueBanner.hidden = !visible;
+}
+
+function clearLayoutGateTimer() {
+  if (layoutGateTimer) clearTimeout(layoutGateTimer);
+  layoutGateTimer = undefined;
+}
+
+function setLayoutGateCard(state) {
+  if (!layoutGateTitle || !layoutGateCopy) return;
+
+  if (state === "held") {
+    layoutGateTitle.innerHTML = "Fixing a layout issue...";
+    layoutGateCopy.textContent =
+      "The real browser found overflow or overlapping content. Your agent has been notified and this will reveal after the next clean reload.";
+    return;
+  }
+
+  layoutGateTitle.innerHTML = "Checking layout.<br>One moment.";
+  layoutGateCopy.textContent = "Lavish is waiting for fonts and final geometry before revealing this artifact.";
+}
+
+function setLayoutGateActive(active) {
+  layoutGateVisible = active;
+  if (layoutGateOverlay) layoutGateOverlay.hidden = !active;
+  document.body?.classList?.toggle("layout-gate-active", active);
+}
+
+function revealLayoutGate({ showBanner = false, bannerText = undefined } = {}) {
+  clearLayoutGateTimer();
+  layoutGateArmed = false;
+  setLayoutGateActive(false);
+  setLayoutIssueBanner(showBanner, bannerText);
+}
+
+function forceRevealLayoutGate(reason) {
+  if (!layoutGateEnabled || ended) return;
+  layoutGateBypassed = true;
+  const bannerText =
+    reason === "timeout"
+      ? "This surface may have layout issues. Lavish revealed it after the safety timeout so review is never blocked."
+      : "This surface may have layout issues. You chose to show it before the layout check passed.";
+  revealLayoutGate({ showBanner: true, bannerText });
+}
+
+function startLayoutGateCycle() {
+  if (!layoutGateEnabled || layoutGateBypassed || ended) return;
+
+  layoutGateCycle += 1;
+  layoutGateArmed = true;
+  setLayoutIssueBanner(false);
+  setLayoutGateCard("checking");
+  setLayoutGateActive(true);
+  clearLayoutGateTimer();
+
+  const cycle = layoutGateCycle;
+  layoutGateTimer = setTimeout(() => {
+    if (cycle !== layoutGateCycle || !layoutGateVisible || ended) return;
+    forceRevealLayoutGate("timeout");
+  }, layoutGateMaxHoldMs);
+  layoutGateTimer?.unref?.();
+}
+
+function handleLayoutWarningsForGate(layoutWarnings) {
+  const warnings = normalizeLayoutWarningsPayload(layoutWarnings);
+  const hasErrors = warnings.some(isErrorLayoutWarning);
+
+  if (!layoutGateEnabled) return;
+
+  if (layoutGateBypassed) {
+    setLayoutIssueBanner(hasErrors);
+    return;
+  }
+
+  if (!layoutGateArmed && !layoutGateVisible) return;
+
+  if (!hasErrors) {
+    revealLayoutGate();
+    return;
+  }
+
+  setLayoutGateCard("held");
+  setLayoutGateActive(true);
+}
+
+function initializeLayoutGate() {
+  if (!layoutGateEnabled) {
+    setLayoutGateActive(false);
+    setLayoutIssueBanner(false);
+    return;
+  }
+
+  if (layoutGateAction) layoutGateAction.onclick = () => forceRevealLayoutGate("manual");
+  startLayoutGateCycle();
+}
+
 async function submitLayoutWarnings(layoutWarnings) {
   const response = await fetch("/api/" + key + "/layout-warnings", {
     method: "POST",
@@ -346,6 +466,8 @@ async function endSession() {
   chatInput.disabled = true;
   updateSendState();
   if (presenceBanner) presenceBanner.hidden = true;
+  layoutGateBypassed = true;
+  revealLayoutGate();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
 }
@@ -367,6 +489,7 @@ function copyDomSnapshot() {
 }
 
 function resetFrame() {
+  startLayoutGateCycle();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   // eslint-disable-next-line no-self-assign
   frame.src = frame.src;
@@ -418,6 +541,7 @@ window.addEventListener("message", (event) => {
     lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
   }
   if (msg.type === "lavish:layoutWarnings") {
+    handleLayoutWarningsForGate(msg.layout_warnings);
     submitLayoutWarnings(msg.layout_warnings).catch(() => {});
   }
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
@@ -462,6 +586,8 @@ frame.addEventListener("load", () => {
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
 });
+
+initializeLayoutGate();
 
 const events = new EventSource("/events/" + key);
 events.addEventListener("reload", () => resetFrame());

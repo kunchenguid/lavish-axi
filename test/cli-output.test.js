@@ -497,6 +497,7 @@ test("waiting next step reassures agents that re-running poll loses nothing", ()
 test("html file arguments normalize to the hidden open command", () => {
   assert.deepEqual(normalizeArgv(["report.html"]), ["open", "report.html"]);
   assert.deepEqual(normalizeArgv(["--no-open", "report.html"]), ["open", "--no-open", "report.html"]);
+  assert.deepEqual(normalizeArgv(["--no-gate", "report.html"]), ["open", "--no-gate", "report.html"]);
   assert.deepEqual(normalizeArgv(["poll", "report.html"]), ["poll", "report.html"]);
   assert.deepEqual(normalizeArgv(["setup", "hooks"]), ["setup", "hooks"]);
   assert.deepEqual(normalizeArgv(["playbook", "diagram"]), ["playbook", "diagram"]);
@@ -696,9 +697,11 @@ test("shutdownServerOnPort ignores unidentified health responders", async () => 
 test("open can resume a session without opening another browser window", () => {
   assert.equal(shouldOpenBrowser(["--no-open", "artifact.html"], {}), false);
   assert.equal(shouldOpenBrowser(["artifact.html", "--no-open"], {}), false);
+  assert.equal(shouldOpenBrowser(["--no-gate", "artifact.html"], {}), true);
   assert.equal(shouldOpenBrowser(["artifact.html"], { LAVISH_AXI_NO_OPEN: "1" }), false);
   assert.equal(shouldOpenBrowser(["artifact.html"], {}), true);
   assert.match(getCommandHelp("open"), /--no-open/);
+  assert.match(getCommandHelp("open"), /--no-gate/);
   assert.match(getCommandHelp("playbook"), /diagram/);
   assert.match(getCommandHelp("playbook"), /code/);
   assert.match(getCommandHelp("playbook"), /input/);
