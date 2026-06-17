@@ -15,6 +15,7 @@ import {
   serve,
 } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
+import { detectQuarto } from "../src/quarto-process.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -1789,6 +1790,91 @@ format: html
     const artifactHtml = await artifactRes.text();
     assert.match(artifactHtml, /Hello Quarto/);
     assert.match(artifactHtml, /sdk\.js\?key=/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveWatchTarget returns directory scope for Quarto Shiny sessions", async () => {
+  const target = await resolveWatchTarget({
+    type: "quarto-shiny",
+    file: "/tmp/doc.qmd",
+    qmdFile: "/tmp/doc.qmd",
+  });
+
+  assert.equal(target.scope, "directory");
+  assert.equal(target.path, "/tmp");
+  assert.match(String(target.options.ignored), /_freeze|_site/);
+});
+
+test("createChromeHtml renders correct iframe for Quarto Shiny sessions", () => {
+  const html = createChromeHtml({
+    type: "quarto-shiny",
+    key: "quarto123",
+    file: "/tmp/doc.qmd",
+    qmdFile: "/tmp/doc.qmd",
+    chat: [],
+  });
+
+  assert.match(
+    html,
+    /iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-same-origin"/,
+  );
+  assert.match(html, /src="\/shiny\/quarto123\/"/);
+  assert.match(html, /Quarto Shiny/);
+  assert.match(html, /Reload app/);
+});
+
+test("POST /api/quarto-sessions creates a session with type=quarto-shiny", async () => {
+  const detect = await detectQuarto();
+  if (!detect.ok) {
+    return;
+  }
+
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-server-quarto-shiny-"));
+  const state = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile: state });
+
+  const qmdFile = path.join(dir, "app.qmd");
+  const qmdContent = `---
+title: "Interactive Shiny App"
+format: html
+server: shiny
+---
+
+\`\`\`{r}
+numericInput("n", "N", 10)
+\`\`\`
+
+\`\`\`{r}
+#| context: server
+\`\`\`
+`;
+
+  try {
+    await writeFile(qmdFile, qmdContent, "utf8");
+    const base = `http://127.0.0.1:${server.port}`;
+    const res = await fetch(`${base}/api/quarto-sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        qmdFile,
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "opened");
+    assert.equal(body.type, "quarto-shiny");
+    assert.ok(body.url);
+
+    // Retrieve session and verify details
+    const sessionRes = await fetch(`${base}/session/${body.key}`);
+    assert.equal(sessionRes.status, 200);
+    const sessionHtml = await sessionRes.text();
+    assert.match(sessionHtml, /Quarto Shiny/);
+    assert.match(sessionHtml, /src="\/shiny\/[a-f0-9]{16}\/"/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

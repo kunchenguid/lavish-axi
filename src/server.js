@@ -12,7 +12,13 @@ import { bindHost, hostForUrl, linkHost } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import { createShinyProxy, proxyWebSocket } from "./shiny-proxy.js";
 import { launchShiny, findFreePort } from "./shiny-process.js";
-import { detectQuarto, renderQuarto, quartoOutputFile } from "./quarto-process.js";
+import {
+  detectQuarto,
+  renderQuarto,
+  quartoOutputFile,
+  isQuartoShinyFile,
+  launchQuartoShiny,
+} from "./quarto-process.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -175,6 +181,39 @@ export async function serve({
         return;
       }
 
+      if (await isQuartoShinyFile(qmdFile)) {
+        if (shinyProcesses.has(key)) {
+          const oldApp = shinyProcesses.get(key);
+          oldApp.kill();
+          shinyProcesses.delete(key);
+        }
+        const freePort = await findFreePort();
+        const logFn = logEvent ? (line) => logEvent(`[quarto-shiny] ${line}`) : null;
+        const quartoShinyApp = await launchQuartoShiny(qmdFile, {
+          port: freePort,
+          host: "127.0.0.1",
+          log: logFn,
+        });
+        shinyProcesses.set(key, quartoShinyApp);
+
+        const url = `http://${hostForUrl(linkHostName)}:${publicPort}/session/${key}`;
+        const session = await store.upsertSession(qmdFile, url, {
+          type: "quarto-shiny",
+          qmdFile,
+          shinyUrl: quartoShinyApp.url,
+          shinyPid: quartoShinyApp.process.pid,
+        });
+
+        if (existing?.status === "ended") {
+          clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+        }
+
+        logEvent?.(`quarto-shiny session opened key=${key} qmdFile=${qmdFile} url=${quartoShinyApp.url}`);
+        await watchSession(session, watchers, events, logEvent, quartoRenders);
+        res.json({ key, file: qmdFile, url, status: "opened", type: session.type });
+        return;
+      }
+
       if (quartoRenders.has(key)) {
         const oldController = quartoRenders.get(key);
         oldController.abort();
@@ -210,7 +249,7 @@ export async function serve({
 
       logEvent?.(`quarto session opened key=${key} qmdFile=${qmdFile} htmlFile=${htmlFile}`);
       await watchSession(session, watchers, events, logEvent, quartoRenders);
-      res.json({ key, file: qmdFile, url, status: "opened" });
+      res.json({ key, file: qmdFile, url, status: "opened", type: session.type });
     } catch (error) {
       next(error);
     }
@@ -219,7 +258,7 @@ export async function serve({
   app.use("/shiny/:key", async (req, res, next) => {
     try {
       const session = await store.findByKey(req.params.key);
-      if (!session || session.type !== "shiny" || !session.shinyUrl) {
+      if (!session || (session.type !== "shiny" && session.type !== "quarto-shiny") || !session.shinyUrl) {
         res.status(404).send("Shiny session not found");
         return;
       }
@@ -530,7 +569,7 @@ export async function serve({
       const key = match[1];
       try {
         const session = await store.findByKey(key);
-        if (session && session.type === "shiny" && session.shinyUrl) {
+        if (session && (session.type === "shiny" || session.type === "quarto-shiny") && session.shinyUrl) {
           proxyWebSocket(req, socket, head, session.shinyUrl);
           return;
         }
@@ -719,13 +758,14 @@ export async function resolveWatchTarget(session) {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
   };
-  if (session.type === "shiny") {
+  if (session.type === "shiny" || session.type === "quarto-shiny") {
     return {
-      path: session.file,
+      path: session.type === "shiny" ? session.file : path.dirname(session.file),
       scope: "directory",
       options: {
         ...baseOptions,
-        ignored: /(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|\.Rproj\.user|rsconnect|\.Rhistory)([/\\]|$)/,
+        ignored:
+          /(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|\.Rproj\.user|rsconnect|\.Rhistory|_freeze|_site|.*_files)([/\\]|$)/,
       },
     };
   }
@@ -866,16 +906,21 @@ export function createChromeHtml(session) {
   const sessionJson = jsonScript({ key: session.key, file: session.file, initialChat: session.chat || [] });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
   const isShiny = session.type === "shiny";
+  const isQuartoShiny = session.type === "quarto-shiny";
   const isQuarto = session.type === "quarto";
-  const iframeSrc = isShiny ? `/shiny/${session.key}/` : `/artifact/${session.key}/index.html`;
-  const sandbox = isShiny
-    ? "allow-scripts allow-forms allow-popups allow-downloads allow-same-origin"
-    : "allow-scripts allow-forms allow-popups allow-downloads";
-  const reloadText = isShiny ? "Reload app" : isQuarto ? "Re-render & reload" : "Reload artifact";
+  const iframeSrc = isShiny || isQuartoShiny ? `/shiny/${session.key}/` : `/artifact/${session.key}/index.html`;
+  const sandbox =
+    isShiny || isQuartoShiny
+      ? "allow-scripts allow-forms allow-popups allow-downloads allow-same-origin"
+      : "allow-scripts allow-forms allow-popups allow-downloads";
+  const reloadText = isShiny || isQuartoShiny ? "Reload app" : isQuarto ? "Re-render & reload" : "Reload artifact";
   let badge = "";
   if (isShiny) {
     badge =
       '<span class="brand-support" style="margin-left:8px;background:rgba(244,201,93,0.15);color:#f4c95d;border:1px solid rgba(244,201,93,0.3);padding:2px 6px;border-radius:4px;font-size:10px;text-transform:uppercase;font-weight:700">Shiny App</span>';
+  } else if (isQuartoShiny) {
+    badge =
+      '<span class="brand-support" style="margin-left:8px;background:rgba(79,191,169,0.15);color:#4fbfad;border:1px solid rgba(79,191,169,0.3);padding:2px 6px;border-radius:4px;font-size:10px;text-transform:uppercase;font-weight:700">Quarto Shiny</span>';
   } else if (isQuarto) {
     badge =
       '<span class="brand-support" style="margin-left:8px;background:rgba(79,191,169,0.15);color:#4fbfad;border:1px solid rgba(79,191,169,0.3);padding:2px 6px;border-radius:4px;font-size:10px;text-transform:uppercase;font-weight:700">Quarto Doc</span>';

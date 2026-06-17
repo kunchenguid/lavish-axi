@@ -251,7 +251,12 @@ export async function quartoCommand(args) {
   }
 
   return {
-    session: { file: absolute, url: response.url, status: response.status || "opened", type: "quarto" },
+    session: {
+      file: absolute,
+      url: response.url,
+      status: response.status || "opened",
+      type: response.type || "quarto",
+    },
     next_step: `Do not respond to the user just yet. Now you must run \`lavish-axi poll ${absolute}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Do not pass --timeout-ms during normal agent use. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if the poll still gets killed or times out, just re-run it - queued feedback is never lost. After applying feedback, run \`lavish-axi poll ${absolute} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback.`,
   };
 }
