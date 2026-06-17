@@ -1716,6 +1716,11 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   const css = await chromeCssSource();
 
   assert.match(html, /<body class="lavish layout-gate-active">/);
+  assert.match(
+    html,
+    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
+  );
+  assert.doesNotMatch(html, /<iframe id="artifact"[^>]* src=/);
   assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
   assert.match(html, /<div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout/);
   assert.match(html, /class="ended-copy" id="layoutGateCopy"/);

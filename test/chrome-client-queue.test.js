@@ -9,7 +9,11 @@ const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 /** @type {HarnessSessionData} */
 const defaultSessionData = { key: "abc", file: "/tmp/artifact.html" };
 
-async function createChromeHarness({ fetchImpl = async () => ({ ok: true }), sessionData = defaultSessionData } = {}) {
+async function createChromeHarness({
+  fetchImpl = async () => ({ ok: true }),
+  sessionData = defaultSessionData,
+  artifactSrc = "",
+} = {}) {
   const source = await readFile(sourceUrl, "utf8");
   const storage = new Map();
   const postedToFrame = [];
@@ -17,6 +21,7 @@ async function createChromeHarness({ fetchImpl = async () => ({ ok: true }), ses
   const windowListeners = new Map();
   const elements = new Map();
   const timers = new Map();
+  const srcLoads = [];
   let nextTimerId = 1;
 
   function fakeSetTimeout(fn, ms) {
@@ -103,6 +108,16 @@ async function createChromeHarness({ fetchImpl = async () => ({ ok: true }), ses
 
   element("lavish-session").textContent = JSON.stringify(sessionData);
   const frame = element("artifact");
+  frame.dataset.artifactSrc = artifactSrc;
+  Object.defineProperty(frame, "src", {
+    get() {
+      return this.currentSrc || "";
+    },
+    set(value) {
+      this.currentSrc = String(value);
+      srcLoads.push({ src: this.currentSrc, hadMessageListener: windowListeners.has("message") });
+    },
+  });
   frame.contentWindow = {
     postMessage(message) {
       postedToFrame.push(message);
@@ -179,6 +194,7 @@ async function createChromeHarness({ fetchImpl = async () => ({ ok: true }), ses
       return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
     },
     runTimers,
+    srcLoads,
   };
 }
 
@@ -246,6 +262,12 @@ test("chrome client posts layout warnings from the artifact iframe", async () =>
       },
     ],
   });
+});
+
+test("chrome client registers message listener before loading the artifact iframe", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+
+  assert.deepEqual(chrome.srcLoads, [{ src: "/artifact/abc/index.html", hadMessageListener: true }]);
 });
 
 test("layout gate reveals after a clean audit result", async () => {

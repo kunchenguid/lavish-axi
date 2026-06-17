@@ -36,6 +36,7 @@ const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementB
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
 const layoutIssueBanner = /** @type {HTMLDivElement} */ (document.getElementById("layoutIssueBanner"));
 const sendHint = /** @type {HTMLSpanElement} */ (document.getElementById("sendHint"));
+const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
 let annotation = true;
@@ -491,8 +492,11 @@ function copyDomSnapshot() {
 function resetFrame() {
   startLayoutGateCycle();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
-  // eslint-disable-next-line no-self-assign
-  frame.src = frame.src;
+  frame.src = artifactSrc || frame.src;
+}
+
+function loadFrame() {
+  if (artifactSrc) frame.src = artifactSrc;
 }
 
 function reloadArtifact() {
@@ -547,6 +551,8 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
 });
+
+loadFrame();
 
 annotationSwitch.onclick = () => {
   annotation = !annotation;
