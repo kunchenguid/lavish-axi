@@ -35,3 +35,20 @@ test("appends the Lavish SDK when the artifact has no body tag", () => {
 
   assert.equal(result, '<h1>Hi</h1>\n<script src="/sdk.js?key=abc123"></script>');
 });
+
+test("injects before the LAST body tag when earlier scripts contain body strings", () => {
+  const html = `<!doctype html><html><body>
+<script>
+  // Some code that contains body text or body tag
+  const x = "</body>";
+  console.log(x);
+</script>
+<h1>Hi</h1>
+</body></html>`;
+  const result = injectLavishSdk(html, "abc123");
+
+  assert.match(
+    result,
+    /console\.log\(x\);\s*<\/script>\s*<h1>Hi<\/h1>\s*<script src="\/sdk\.js\?key=abc123"><\/script>\s*<\/body>/,
+  );
+});

@@ -5,3 +5,7 @@ coverage/
 .lavish-axi/
 .DS_Store
 *.log
+
+/demo-output
+/examples
+/.agents/skills/lavish-quarto

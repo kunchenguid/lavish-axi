@@ -14,8 +14,9 @@ import { serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 import { detectRscript } from "./shiny-process.js";
+import { detectQuarto } from "./quarto-process.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "shiny"]);
+const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "shiny", "quarto"]);
 const DESCRIPTION =
   "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. Whenever you are about to give user a complex response that will be easier to understand via a rich / interactive page, consider using Lavish Editor. " +
   "First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
@@ -58,6 +59,7 @@ export async function run(argv) {
         setup: setupCommand,
         server: serverCommand,
         shiny: shinyCommand,
+        quarto: quartoCommand,
       },
       getCommandHelp,
     });
@@ -205,6 +207,51 @@ export async function shinyCommand(args) {
 
   return {
     session: { file: absolute, url: response.url, status: response.status || "opened", type: "shiny" },
+    next_step: `Do not respond to the user just yet. Now you must run \`lavish-axi poll ${absolute}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Do not pass --timeout-ms during normal agent use. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if the poll still gets killed or times out, just re-run it - queued feedback is never lost. After applying feedback, run \`lavish-axi poll ${absolute} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback.`,
+  };
+}
+
+export async function quartoCommand(args) {
+  const filteredArgs = args.filter((arg) => !arg.startsWith("-"));
+  const qmdFile = filteredArgs[0];
+  if (!qmdFile) {
+    throw new AxiError("Missing QMD file path", "VALIDATION_ERROR", ["Usage: lavish-axi quarto <file.qmd>"]);
+  }
+
+  const ext = path.extname(qmdFile).toLowerCase();
+  if (ext !== ".qmd" && ext !== ".rmd" && ext !== ".md") {
+    throw new AxiError(`Invalid file extension: ${ext}`, "VALIDATION_ERROR", [
+      "Quarto command accepts only .qmd, .rmd, or .md files.",
+    ]);
+  }
+
+  const absolute = await canonicalFile(qmdFile);
+
+  const quartoCheck = await detectQuarto();
+  if (!quartoCheck.ok) {
+    throw new AxiError(`Quarto environment issue: ${quartoCheck.error || "quarto not found"}`, "SERVER_ERROR", [
+      "Ensure Quarto is installed and 'quarto' command is on your system PATH.",
+      "See https://quarto.org/docs/get-started/ for installation instructions.",
+    ]);
+  }
+
+  const baseUrl = await ensureServer({ forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || "") });
+
+  const response = await postJson(`${baseUrl}/api/quarto-sessions`, {
+    qmdFile: absolute,
+  });
+
+  if (shouldOpenBrowser(args, process.env)) {
+    try {
+      const open = (await import("open")).default;
+      await open(response.url);
+    } catch {
+      response.status = "ready";
+    }
+  }
+
+  return {
+    session: { file: absolute, url: response.url, status: response.status || "opened", type: "quarto" },
     next_step: `Do not respond to the user just yet. Now you must run \`lavish-axi poll ${absolute}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Do not pass --timeout-ms during normal agent use. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if the poll still gets killed or times out, just re-run it - queued feedback is never lost. After applying feedback, run \`lavish-axi poll ${absolute} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback.`,
   };
 }
@@ -704,11 +751,12 @@ export function getCommandHelp(command) {
   return COMMAND_HELP[command] || null;
 }
 
-const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi shiny [app-dir] [--url <url>]\n  lavish-axi poll <path> [--agent-reply "..."]\n  lavish-axi end <path>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.\n\n`;
+const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file>\n  lavish-axi shiny [app-dir] [--url <url>]\n  lavish-axi quarto <file.qmd>\n  lavish-axi poll <path> [--agent-reply "..."]\n  lavish-axi end <path>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.\n\n`;
 
 const COMMAND_HELP = {
   open: `Usage: lavish-axi <html-file> [--no-open]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window.\n`,
   shiny: `Usage: lavish-axi shiny [app-dir] [--url <url>] [--no-open]\n\nOpen a Shiny app interactive annotation session. It spawns the R/Shiny process automatically in the background (managed mode), unless --url is provided to proxy an already running Shiny app (attached mode).\n`,
+  quarto: `Usage: lavish-axi quarto <file.qmd> [--no-open]\n\nOpen a Quarto document interactive annotation session. It automatically renders the QMD/RMD/MD file to HTML using 'quarto render' and sets up a session for live-reload.\n`,
   poll: `Usage: lavish-axi poll <path> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts, then returns them to the agent. It stays silent while it waits - that is normal, never kill it. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if it still gets killed or times out, just re-run it - queued feedback is never lost. Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again.\n`,
   end: `Usage: lavish-axi end <path>\n\nEnd a Lavish Editor session.\n`,
   stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,

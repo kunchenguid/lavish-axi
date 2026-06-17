@@ -1705,3 +1705,92 @@ test("POST /api/shiny-sessions creates a session with type=shiny", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("resolveWatchTarget returns directory scope for Quarto sessions", async () => {
+  const target = await resolveWatchTarget({
+    type: "quarto",
+    file: "/tmp/doc.html",
+    qmdFile: "/tmp/doc.qmd",
+  });
+
+  assert.equal(target.scope, "directory");
+  assert.equal(target.path, "/tmp");
+  assert.ok(typeof target.options.ignored === "function");
+  assert.equal(target.options.ignored("/tmp/doc.html"), true);
+  assert.equal(target.options.ignored("/tmp/other.html"), false);
+  assert.equal(target.options.ignored("/tmp/_freeze"), true);
+  assert.equal(target.options.ignored("/tmp/doc_files/libs/jquery.js"), true);
+
+  // Production case: session.file is the QMD file
+  const targetProd = await resolveWatchTarget({
+    type: "quarto",
+    file: "/tmp/doc.qmd",
+    qmdFile: "/tmp/doc.qmd",
+  });
+  assert.equal(targetProd.options.ignored("/tmp/doc.html"), true);
+  assert.equal(targetProd.options.ignored("/tmp/doc.qmd"), false);
+});
+
+test("createChromeHtml renders correct iframe for Quarto sessions", () => {
+  const html = createChromeHtml({
+    type: "quarto",
+    key: "quarto123",
+    file: "/tmp/doc.html",
+    qmdFile: "/tmp/doc.qmd",
+    chat: [],
+  });
+
+  assert.match(html, /iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads"/);
+  assert.match(html, /src="\/artifact\/quarto123\/index\.html"/);
+  assert.match(html, /Quarto Doc/);
+  assert.match(html, /Re-render & reload/);
+});
+
+test("POST /api/quarto-sessions creates a session with type=quarto", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-server-quarto-"));
+  const state = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile: state });
+
+  const qmdFile = path.join(dir, "document.qmd");
+  const qmdContent = `---
+title: "Test Document"
+format: html
+---
+
+# Hello Quarto
+`;
+
+  try {
+    await writeFile(qmdFile, qmdContent, "utf8");
+    const base = `http://127.0.0.1:${server.port}`;
+    const res = await fetch(`${base}/api/quarto-sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        qmdFile,
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "opened");
+    assert.ok(body.url);
+
+    // Retrieve session and verify details
+    const sessionRes = await fetch(`${base}/session/${body.key}`);
+    assert.equal(sessionRes.status, 200);
+    const sessionHtml = await sessionRes.text();
+    assert.match(sessionHtml, /Quarto Doc/);
+    assert.match(sessionHtml, /src="\/artifact\/[a-f0-9]{16}\/index\.html"/);
+
+    // Verify artifact serves the injected html
+    const artifactRes = await fetch(`${base}/artifact/${body.key}/index.html`);
+    assert.equal(artifactRes.status, 200);
+    const artifactHtml = await artifactRes.text();
+    assert.match(artifactHtml, /Hello Quarto/);
+    assert.match(artifactHtml, /sdk\.js\?key=/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

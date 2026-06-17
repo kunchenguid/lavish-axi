@@ -12,6 +12,7 @@ import { bindHost, hostForUrl, linkHost } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import { createShinyProxy, proxyWebSocket } from "./shiny-proxy.js";
 import { launchShiny, findFreePort } from "./shiny-process.js";
+import { detectQuarto, renderQuarto, quartoOutputFile } from "./quarto-process.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -68,6 +69,7 @@ export async function serve({
   const deliveredFeedback = new Set();
   const sseClients = new Set();
   const shinyProcesses = new Map();
+  const quartoRenders = new Map();
   const proxies = new Map();
   const verbose = debug || process.env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
@@ -107,7 +109,7 @@ export async function serve({
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       }
       logEvent?.(`session opened key=${key} file=${file}`);
-      await watchSession(session, watchers, events, logEvent);
+      await watchSession(session, watchers, events, logEvent, quartoRenders);
       res.json({ key, file, url, status: "opened" });
     } catch (error) {
       next(error);
@@ -154,8 +156,61 @@ export async function serve({
       }
 
       logEvent?.(`shiny session opened key=${key} appDir=${appDir} url=${shinyUrl}`);
-      await watchSession(session, watchers, events, logEvent);
+      await watchSession(session, watchers, events, logEvent, quartoRenders);
       res.json({ key, file: appDir, url, status: "opened" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/quarto-sessions", async (req, res, next) => {
+    try {
+      const qmdFile = await canonicalFile(req.body.qmdFile);
+      const key = sessionKey(qmdFile);
+      const existing = await store.findByKey(key);
+
+      const detect = await detectQuarto();
+      if (!detect.ok) {
+        res.status(500).json({ error: `Quarto not found: ${detect.error}` });
+        return;
+      }
+
+      if (quartoRenders.has(key)) {
+        const oldController = quartoRenders.get(key);
+        oldController.abort();
+        quartoRenders.delete(key);
+      }
+
+      const controller = new AbortController();
+      quartoRenders.set(key, controller);
+
+      const logFn = logEvent ? (line) => logEvent(`[quarto] ${line}`) : null;
+      const renderResult = await renderQuarto(qmdFile, {
+        signal: controller.signal,
+        log: logFn,
+      });
+
+      quartoRenders.delete(key);
+
+      if (!renderResult.ok) {
+        res.status(500).json({ error: `Quarto render failed: ${renderResult.error}` });
+        return;
+      }
+
+      const htmlFile = renderResult.outputFile;
+      const url = `http://${hostForUrl(linkHostName)}:${publicPort}/session/${key}`;
+      const session = await store.upsertSession(qmdFile, url, {
+        type: "quarto",
+        qmdFile,
+      });
+
+      if (existing?.status === "ended") {
+        clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+      }
+
+      logEvent?.(`quarto session opened key=${key} qmdFile=${qmdFile} htmlFile=${htmlFile}`);
+      await watchSession(session, watchers, events, logEvent, quartoRenders);
+      res.json({ key, file: qmdFile, url, status: "opened" });
     } catch (error) {
       next(error);
     }
@@ -277,6 +332,11 @@ export async function serve({
         shinyApp.kill();
         shinyProcesses.delete(key);
       }
+      if (quartoRenders.has(key)) {
+        const controller = quartoRenders.get(key);
+        controller.abort();
+        quartoRenders.delete(key);
+      }
       clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       events.emit("ended", key);
       res.json({ status: "ended" });
@@ -327,7 +387,7 @@ export async function serve({
         res.status(404).send("Session not found");
         return;
       }
-      await watchSession(session, watchers, events, logEvent);
+      await watchSession(session, watchers, events, logEvent, quartoRenders);
       res.type("html").send(createChromeHtml(session));
     } catch (error) {
       next(error);
@@ -346,7 +406,8 @@ export async function serve({
         res.status(404).send("Session not found");
         return;
       }
-      const html = await readFile(session.file, "utf8");
+      const fileToRead = session.type === "quarto" ? quartoOutputFile(session.file) : session.file;
+      const html = await readFile(fileToRead, "utf8");
       res.type("html").send(injectLavishSdk(html, key));
     } catch (error) {
       next(error);
@@ -492,6 +553,14 @@ export async function serve({
       }
     }
     shinyProcesses.clear();
+    for (const controller of quartoRenders.values()) {
+      try {
+        controller.abort();
+      } catch {
+        // best effort
+      }
+    }
+    quartoRenders.clear();
     if (idleTimer) {
       clearTimeout(idleTimer);
       idleTimer = null;
@@ -588,7 +657,7 @@ export function resolveArtifactAsset(root, assetPath) {
   return file;
 }
 
-async function watchSession(session, watchers, events, logEvent) {
+async function watchSession(session, watchers, events, logEvent, quartoRenders = null) {
   if (watchers.has(session.key)) {
     return;
   }
@@ -601,8 +670,37 @@ async function watchSession(session, watchers, events, logEvent) {
   let timer = null;
   watcher.on("all", (event, file) => {
     logEvent?.(`watch event=${event} session=${session.key} file=${file ?? ""}`);
-    clearTimeout(timer);
-    timer = setTimeout(() => events.emit("reload", session.key), 100);
+    if (session.type === "quarto" && quartoRenders) {
+      if (quartoRenders.has(session.key)) {
+        logEvent?.(`quarto render already in progress for key=${session.key}, skipping watch trigger`);
+        return;
+      }
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        logEvent?.(`auto-re-rendering quarto for key=${session.key}`);
+        const controller = new AbortController();
+        quartoRenders.set(session.key, controller);
+        try {
+          const logFn = logEvent ? (line) => logEvent(`[quarto] ${line}`) : null;
+          const renderResult = await renderQuarto(session.qmdFile, {
+            signal: controller.signal,
+            log: logFn,
+          });
+          if (renderResult.ok) {
+            events.emit("reload", session.key);
+          } else {
+            logEvent?.(`quarto render failed on watch: ${renderResult.error}`);
+          }
+        } catch (error) {
+          logEvent?.(`quarto render threw on watch: ${error}`);
+        } finally {
+          quartoRenders.delete(session.key);
+        }
+      }, 100);
+    } else {
+      clearTimeout(timer);
+      timer = setTimeout(() => events.emit("reload", session.key), 100);
+    }
   });
   watcher.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -628,6 +726,29 @@ export async function resolveWatchTarget(session) {
       options: {
         ...baseOptions,
         ignored: /(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|\.Rproj\.user|rsconnect|\.Rhistory)([/\\]|$)/,
+      },
+    };
+  }
+  if (session.type === "quarto") {
+    const qmdDir = path.dirname(session.qmdFile);
+    return {
+      path: qmdDir,
+      scope: "directory",
+      options: {
+        ...baseOptions,
+        ignored: (filePath) => {
+          if (/(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|_freeze|_site|.*_files)([/\\]|$)/.test(filePath)) {
+            return true;
+          }
+          try {
+            if (path.resolve(filePath) === quartoOutputFile(session.qmdFile || session.file)) {
+              return true;
+            }
+          } catch {
+            // ignore resolve error
+          }
+          return false;
+        },
       },
     };
   }
@@ -745,14 +866,20 @@ export function createChromeHtml(session) {
   const sessionJson = jsonScript({ key: session.key, file: session.file, initialChat: session.chat || [] });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
   const isShiny = session.type === "shiny";
+  const isQuarto = session.type === "quarto";
   const iframeSrc = isShiny ? `/shiny/${session.key}/` : `/artifact/${session.key}/index.html`;
   const sandbox = isShiny
     ? "allow-scripts allow-forms allow-popups allow-downloads allow-same-origin"
     : "allow-scripts allow-forms allow-popups allow-downloads";
-  const reloadText = isShiny ? "Reload app" : "Reload artifact";
-  const badge = isShiny
-    ? '<span class="brand-support" style="margin-left:8px;background:rgba(244,201,93,0.15);color:#f4c95d;border:1px solid rgba(244,201,93,0.3);padding:2px 6px;border-radius:4px;font-size:10px;text-transform:uppercase;font-weight:700">Shiny App</span>'
-    : "";
+  const reloadText = isShiny ? "Reload app" : isQuarto ? "Re-render & reload" : "Reload artifact";
+  let badge = "";
+  if (isShiny) {
+    badge =
+      '<span class="brand-support" style="margin-left:8px;background:rgba(244,201,93,0.15);color:#f4c95d;border:1px solid rgba(244,201,93,0.3);padding:2px 6px;border-radius:4px;font-size:10px;text-transform:uppercase;font-weight:700">Shiny App</span>';
+  } else if (isQuarto) {
+    badge =
+      '<span class="brand-support" style="margin-left:8px;background:rgba(79,191,169,0.15);color:#4fbfad;border:1px solid rgba(79,191,169,0.3);padding:2px 6px;border-radius:4px;font-size:10px;text-transform:uppercase;font-weight:700">Quarto Doc</span>';
+  }
 
   return `<!doctype html>
 <html>

@@ -35,6 +35,7 @@ import {
   stopCommand,
   telemetryCommandName,
   shinyCommand,
+  quartoCommand,
   VERSION,
 } from "../src/cli.js";
 import { serve } from "../src/server.js";
@@ -840,6 +841,54 @@ test("shiny command with --url skips R environment check and registers session",
     // 2. With --url: should bypass R check, hit the test server, and succeed
     const output = await shinyCommand(["--no-open", "--url", "http://127.0.0.1:8080", dir]);
     assert.equal(output.session.type, "shiny");
+    assert.equal(output.session.status, "opened");
+    assert.match(output.session.url, new RegExp(`session/[a-f0-9]{16}`));
+  } finally {
+    process.env = originalEnv;
+    await server.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("normalizeArgv preserves quarto command and flags", () => {
+  assert.deepEqual(normalizeArgv(["quarto", "./doc.qmd"]), ["quarto", "./doc.qmd"]);
+  assert.deepEqual(normalizeArgv(["quarto", "--no-open", "./doc.qmd"]), ["quarto", "--no-open", "./doc.qmd"]);
+});
+
+test("quarto command help contains Quarto reference", () => {
+  const help = getCommandHelp("quarto");
+  assert.match(help, /Quarto document/i);
+  assert.match(help, /quarto render/i);
+});
+
+test("telemetryCommandName identifies quarto command correctly", () => {
+  assert.equal(telemetryCommandName(["quarto", "./doc.qmd"]), "quarto");
+});
+
+test("quarto command successfully renders and registers session", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-quarto-cli-test-`);
+  const state = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile: state });
+  const port = server.port;
+
+  const originalEnv = { ...process.env };
+
+  const qmdFile = path.join(dir, "document.qmd");
+  const qmdContent = `---
+title: "Test Document"
+format: html
+---
+
+# Hello Quarto
+`;
+
+  try {
+    await writeFile(qmdFile, qmdContent, "utf8");
+    process.env.LAVISH_AXI_PORT = String(port);
+    process.env.LAVISH_AXI_STATE_DIR = dir;
+
+    const output = await quartoCommand(["--no-open", qmdFile]);
+    assert.equal(output.session.type, "quarto");
     assert.equal(output.session.status, "opened");
     assert.match(output.session.url, new RegExp(`session/[a-f0-9]{16}`));
   } finally {
