@@ -14,7 +14,7 @@ import {
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
-import { canonicalFile, sessionKey } from "../src/session-store.js";
+import { canonicalFile, sessionKey, SessionStore } from "../src/session-store.js";
 import { detectQuarto } from "../src/quarto-process.js";
 
 async function chromeClientSource() {
@@ -1875,6 +1875,72 @@ numericInput("n", "N", 10)
     const sessionHtml = await sessionRes.text();
     assert.match(sessionHtml, /Quarto Shiny/);
     assert.match(sessionHtml, /src="\/shiny\/[a-f0-9]{16}\/"/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("quarto-shiny session watch restarts server process on file change", async () => {
+  const detect = await detectQuarto();
+  if (!detect.ok) {
+    return;
+  }
+
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-server-quarto-shiny-watch-"));
+  const state = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile: state });
+
+  const qmdFile = path.join(dir, "app.qmd");
+  const qmdContent = `---
+title: "Interactive Shiny App"
+format: html
+server: shiny
+---
+
+\`\`\`{r}
+numericInput("n", "N", 10)
+\`\`\`
+
+\`\`\`{r}
+#| context: server
+\`\`\`
+`;
+
+  try {
+    await writeFile(qmdFile, qmdContent, "utf8");
+    const base = `http://127.0.0.1:${server.port}`;
+    const res = await fetch(`${base}/api/quarto-sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ qmdFile }),
+    });
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    const key = body.key;
+
+    // Get initial session to find original PID
+    const store = new SessionStore(state);
+    const s1 = await store.findByKey(key);
+    const originalPid = s1.shinyPid;
+    assert.ok(originalPid);
+
+    // Update the QMD file
+    await writeFile(qmdFile, qmdContent + "\n# added comment\n", "utf8");
+
+    // Wait for watcher to trigger restart
+    let restarted = false;
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const s2 = await store.findByKey(key);
+      if (s2.shinyPid && s2.shinyPid !== originalPid) {
+        restarted = true;
+        break;
+      }
+    }
+
+    assert.ok(restarted, "Shiny process should have restarted with a new PID");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
