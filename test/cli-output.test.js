@@ -39,6 +39,7 @@ import {
   VERSION,
 } from "../src/cli.js";
 import { serve } from "../src/server.js";
+import { detectQuarto } from "../src/quarto-process.js";
 
 test("CLI version tracks package.json so release-please bumps reach the published binary", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -866,6 +867,11 @@ test("telemetryCommandName identifies quarto command correctly", () => {
 });
 
 test("quarto command successfully renders and registers session", async () => {
+  const detect = await detectQuarto();
+  if (!detect.ok) {
+    return;
+  }
+
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-quarto-cli-test-`);
   const state = path.join(dir, "state.json");
   const server = await serve({ port: 0, stateFile: state });

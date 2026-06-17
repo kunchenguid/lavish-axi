@@ -410,6 +410,11 @@ export async function serve({
         shinyApp.kill();
         shinyProcesses.delete(key);
       }
+      if (quartoRenders.has(key)) {
+        const controller = quartoRenders.get(key);
+        controller.abort();
+        quartoRenders.delete(key);
+      }
       clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       events.emit("ended", key);
       res.json({ status: "ended" });

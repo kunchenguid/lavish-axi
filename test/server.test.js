@@ -1748,6 +1748,11 @@ test("createChromeHtml renders correct iframe for Quarto sessions", () => {
 });
 
 test("POST /api/quarto-sessions creates a session with type=quarto", async () => {
+  const detect = await detectQuarto();
+  if (!detect.ok) {
+    return;
+  }
+
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-server-quarto-"));
   const state = path.join(dir, "state.json");
   const server = await serve({ port: 0, stateFile: state });
