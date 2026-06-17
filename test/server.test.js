@@ -588,7 +588,7 @@ test("hot reload resets iframe src instead of crossing sandbox location", async 
   const js = await chromeClientSource();
 
   assert.doesNotMatch(js, /contentWindow\.location\.reload/);
-  assert.match(js, /frame\.src\s*=\s*frame\.src/);
+  assert.match(js, /frame\.src\s*=\s*artifactSrc \|\| frame\.src/);
 });
 
 test("artifact SDK audits layout after fonts and ResizeObserver settle", () => {

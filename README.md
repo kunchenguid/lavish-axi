@@ -135,6 +135,9 @@ pnpm link
   If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo.
   Only when both come up empty, run `lavish-axi design` for a copy-pasteable Tailwind CSS v4 + DaisyUI v5 CDN fallback.
   That fallback guidance recommends DaisyUI's `luxury` theme by default, warns not to `@apply` DaisyUI classes inside Tailwind browser-runtime style blocks, and includes an optional layout safety CSS snippet for dense nested grid/flex layouts.
+- **Open-time layout gate** - The browser chrome masks each artifact until the real in-iframe layout audit reports no error-severity findings.
+  Warning-only artifacts reveal normally; error findings notify the agent through the same `layout_warnings` poll path and keep the curtain up until a clean reload.
+  The user can click **Show anyway**, and a bounded safety timeout reveals with a persistent layout-issues banner so review is never blocked indefinitely.
 - **Layout warnings** - After fonts load and layout settles, the injected SDK audits the real browser render for page horizontal overflow, element overflow, clipped text, and overlapping text.
   Intentional horizontal scrollers using `overflow-x: auto` or `scroll` are excluded.
   Fresh warnings are returned from `lavish-axi poll` as `layout_warnings` with `selector`, `kind`, `overflowPx`, `viewportWidth`, and `severity`, so agents can fix unreadable layouts before asking the human to review.
@@ -158,7 +161,7 @@ pnpm link
 | Command                       | Description                                                                                                                                                               |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lavish-axi`                  | Show current sessions and usage guidance.                                                                                                                                 |
-| `lavish-axi <html-file>`      | Open or resume a Lavish Editor session.                                                                                                                                   |
+| `lavish-axi <html-file>`      | Open or resume a Lavish Editor session, with the open-time layout gate enabled by default.                                                                                |
 | `lavish-axi poll <html-file>` | Long-poll until the user sends feedback, ends the session, or the browser reports fresh `layout_warnings`; leave no-timeout polls running, or re-run them if interrupted. |
 | `lavish-axi end <html-file>`  | End a session.                                                                                                                                                            |
 | `lavish-axi stop`             | Shut down the background server.                                                                                                                                          |
@@ -175,6 +178,7 @@ One artifact often combines several playbooks, such as a plan that includes a co
 | Command                  | Flag                  | Description                                                                                                                                                                                                                         |
 | ------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lavish-axi <html-file>` | `--no-open`           | Ensure the server/session exists without opening another browser window.                                                                                                                                                            |
+| `lavish-axi <html-file>` | `--no-gate`           | Skip the open-time layout curtain for this browser open.                                                                                                                                                                            |
 | `lavish-axi poll`        | `--agent-reply "..."` | Show the agent's reply in the existing browser chat before polling again.                                                                                                                                                           |
 | `lavish-axi poll`        | `--timeout-ms <ms>`   | Test/debug escape hatch only; agents should normally omit it and leave the long poll running.                                                                                                                                       |
 | `lavish-axi stop`        | `--port <port>`       | Shut down a server running on a non-default port.                                                                                                                                                                                   |
