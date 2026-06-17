@@ -154,6 +154,44 @@ test("chrome client replaces queued prompts with the same internal key", async (
   assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /Use plan A/);
 });
 
+test("chrome client posts layout warnings from the artifact iframe", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      posts.push({ url, body: JSON.parse(init.body) });
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:layoutWarnings",
+    layout_warnings: [
+      {
+        selector: "html",
+        kind: "page-horizontal-overflow",
+        overflowPx: 18,
+        viewportWidth: 720,
+        severity: "error",
+      },
+    ],
+  });
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, "/api/abc/layout-warnings");
+  assert.deepEqual(posts[0].body, {
+    layout_warnings: [
+      {
+        selector: "html",
+        kind: "page-horizontal-overflow",
+        overflowPx: 18,
+        viewportWidth: 720,
+        severity: "error",
+      },
+    ],
+  });
+});
+
 test("chrome client strips the internal queue key before posting prompts", async () => {
   const posts = [];
   const chrome = await createChromeHarness({

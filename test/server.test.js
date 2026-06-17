@@ -591,6 +591,19 @@ test("hot reload resets iframe src instead of crossing sandbox location", async 
   assert.match(js, /frame\.src\s*=\s*frame\.src/);
 });
 
+test("artifact SDK audits layout after fonts and ResizeObserver settle", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /document\.fonts\?\.ready/);
+  assert.match(js, /new ResizeObserver\(scheduleFinish\)/);
+  assert.match(js, /type:\s*["']lavish:layoutWarnings["']/);
+  assert.match(js, /layout_warnings/);
+  assert.match(js, /page-horizontal-overflow/);
+  assert.match(js, /element-scroll-overflow/);
+  assert.match(js, /element-parent-overflow/);
+  assert.match(js, /clipped-text/);
+});
+
 test("artifact SDK reports its scroll position and restores it on request", () => {
   const js = createSdkJs("abc");
 
@@ -779,6 +792,61 @@ test("/artifact serves files copied under the artifact directory", async () => {
   } finally {
     await server.close();
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("layout warnings wake the same long-poll feedback channel as human prompts", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+
+    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=5000`).then((res) =>
+      res.json(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const warningResponse = await fetch(`${base}/api/${key}/layout-warnings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        layout_warnings: [
+          {
+            selector: "html",
+            kind: "page-horizontal-overflow",
+            overflowPx: 12,
+            viewportWidth: 720,
+            severity: "error",
+          },
+        ],
+      }),
+    });
+    assert.equal(warningResponse.status, 200);
+
+    assert.deepEqual(await pollPromise, {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [],
+      layout_warnings: [
+        {
+          selector: "html",
+          kind: "page-horizontal-overflow",
+          overflowPx: 12,
+          viewportWidth: 720,
+          severity: "error",
+        },
+      ],
+    });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

@@ -115,7 +115,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
       "Use visual hierarchy to make the most important decisions, risks, tradeoffs, and next actions obvious at a glance",
       "Use visual structure such as sections, cards, tables, diagrams, annotated snippets, and side-by-side comparisons instead of long prose",
       "Choose typography, spacing, color, and layout deliberately so the artifact has a clear point of view",
-      "Prevent horizontal overflow: design narrow layouts intentionally, use minmax(0, 1fr) and min-width: 0 for grid/flex children, and deliberately wrap or truncate long labels/status text",
+      "Prevent horizontal overflow at every nesting level: nested grid/flex children also need minmax(0, 1fr) tracks and min-width: 0, especially when badges, labels, or status text use wide pixel or monospace fonts; wrap, truncate, or contain long unbreakable text deliberately",
     ],
     playbooks: listPlaybooks(),
     help: [
@@ -157,7 +157,7 @@ export function createPlaybookOutput(args) {
 export function createOpenOutput({ file, url, status }) {
   return {
     session: { file, url, status },
-    next_step: `Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Do not pass --timeout-ms during normal agent use. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if the poll still gets killed or times out, just re-run it - queued feedback is never lost. After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback.`,
+    next_step: `Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback, ends the session, or the real browser reports layout_warnings from the in-iframe layout audit, and it stays silent the whole time - that is normal, never kill it. If layout_warnings arrive, fix overflow, clipped text, or overlapping unreadable content and re-check before involving the human. Do not pass --timeout-ms during normal agent use. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if the poll still gets killed or times out, just re-run it - queued feedback is never lost. After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback.`,
   };
 }
 
@@ -271,11 +271,13 @@ export function createPollOutput({ file, response }) {
     ]);
   }
   if (response.status === "feedback") {
+    const layoutWarnings = Array.isArray(response.layout_warnings) ? response.layout_warnings : [];
     return {
       session: { file, status: "feedback" },
       dom_snapshot: response.dom_snapshot || "",
       prompts: response.prompts || [],
-      next_step: `Apply the requested changes to ${file}. Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms unless the user ended the session. The poll waits silently until the user sends more feedback or ends the session - never kill it. If your harness limits how long a foreground command may run, run the poll as a background task; if it still gets killed or times out, just re-run it - queued feedback is never lost.`,
+      ...(layoutWarnings.length > 0 ? { layout_warnings: layoutWarnings } : {}),
+      next_step: createFeedbackNextStep(file, layoutWarnings.length),
     };
   }
   if (response.status === "ended") {
@@ -285,6 +287,14 @@ export function createPollOutput({ file, response }) {
     session: { file, status: response.status || "waiting" },
     next_step: `No user feedback arrived before the optional timeout. Run \`lavish-axi poll ${file}\` without --timeout-ms to wait indefinitely - queued feedback is never lost, so re-running the poll is always safe.`,
   };
+}
+
+function createFeedbackNextStep(file, layoutWarningCount) {
+  const layoutPrefix =
+    layoutWarningCount > 0
+      ? `${layoutWarningCount} layout warning${layoutWarningCount === 1 ? "" : "s"} detected - fix horizontal overflow, clipped text, or overlapping unreadable content in ${file}, then reload or re-open the artifact and re-check before involving the human. `
+      : `Apply the requested changes to ${file}. `;
+  return `${layoutPrefix}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms unless the user ended the session. The poll waits silently until the user sends more feedback, ends the session, or reports fresh layout_warnings - never kill it. If your harness limits how long a foreground command may run, run the poll as a background task; if it still gets killed or times out, just re-run it - queued feedback is never lost.`;
 }
 
 async function endCommand(args) {

@@ -322,6 +322,19 @@ async function submitQueuedOnce() {
   if (agentPresence === "listening") setAgentPresence("working");
 }
 
+function normalizeLayoutWarningsPayload(value) {
+  return Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
+}
+
+async function submitLayoutWarnings(layoutWarnings) {
+  const response = await fetch("/api/" + key + "/layout-warnings", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout_warnings: normalizeLayoutWarningsPayload(layoutWarnings) }),
+  });
+  if (!response.ok) throw new Error("failed to submit layout warnings");
+}
+
 async function endSession() {
   if (ended) return;
   const response = await fetch("/api/" + key + "/end", { method: "POST" });
@@ -403,6 +416,9 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:scroll") {
     lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
+  }
+  if (msg.type === "lavish:layoutWarnings") {
+    submitLayoutWarnings(msg.layout_warnings).catch(() => {});
   }
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();

@@ -42,7 +42,7 @@ Use lavish-axi when the user asks for a visual artifact, HTML explainer, interac
 - Use visual hierarchy to make the most important decisions, risks, tradeoffs, and next actions obvious at a glance
 - Use visual structure such as sections, cards, tables, diagrams, annotated snippets, and side-by-side comparisons instead of long prose
 - Choose typography, spacing, color, and layout deliberately so the artifact has a clear point of view
-- Prevent horizontal overflow: design narrow layouts intentionally, use minmax(0, 1fr) and min-width: 0 for grid/flex children, and deliberately wrap or truncate long labels/status text
+- Prevent horizontal overflow at every nesting level: nested grid/flex children also need minmax(0, 1fr) tracks and min-width: 0, especially when badges, labels, or status text use wide pixel or monospace fonts; wrap, truncate, or contain long unbreakable text deliberately
 
 ## Playbooks
 

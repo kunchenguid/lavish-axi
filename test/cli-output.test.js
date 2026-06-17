@@ -59,6 +59,8 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.visual_guidance.some((item) => item.includes("sections, cards, tables")));
   assert.ok(output.visual_guidance.some((item) => item.includes("horizontal overflow")));
   assert.ok(output.visual_guidance.some((item) => item.includes("minmax(0, 1fr)")));
+  assert.ok(output.visual_guidance.some((item) => /nested grid\/flex/i.test(item)));
+  assert.ok(output.visual_guidance.some((item) => /pixel or monospace fonts/i.test(item)));
   assert.ok(!output.visual_guidance.some((item) => item.includes("test narrow viewports")));
   assert.ok(output.playbooks.some((item) => item.id === "diagram"));
   assert.equal(
@@ -171,6 +173,11 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@/);
+  assert.match(output.design.layout_safety_snippet, /min-width: 0/);
+  assert.match(output.design.layout_safety_snippet, /overflow-wrap: anywhere/);
+  assert.match(output.design.layout_safety_snippet, /max-width: 100%/);
+  assert.match(output.design.layout_safety_note, /Optional copy-paste CSS/);
+  assert.match(output.design.layout_safety_note, /never auto-injects/);
   assert.match(
     output.design.cdn_urls.daisyui,
     /^https:\/\/cdn\.jsdelivr\.net\/npm\/daisyui@\d+\.\d+\.\d+\/daisyui\.css$/,
@@ -313,6 +320,8 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
   assert.match(output.next_step, /long-polls until/);
+  assert.match(output.next_step, /layout_warnings/);
+  assert.match(output.next_step, /in-iframe layout audit/);
   assert.match(output.next_step, /stays silent/);
   assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /background task/);
@@ -340,12 +349,40 @@ test("feedback next step tells agents to keep polling without timeout flag", () 
     response: { status: "feedback", dom_snapshot: "", prompts: [] },
   });
 
+  assert.equal("layout_warnings" in output, false);
   assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /without --timeout-ms/);
   assert.match(output.next_step, /background task/);
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
+  assert.match(output.next_step, /fresh layout_warnings/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
+});
+
+test("layout warning feedback tells agents to fix layout before involving the human", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [],
+      layout_warnings: [
+        {
+          selector: "html",
+          kind: "page-horizontal-overflow",
+          overflowPx: 16,
+          viewportWidth: 720,
+          severity: "error",
+        },
+      ],
+    },
+  });
+
+  assert.ok("layout_warnings" in output);
+  assert.equal(output.layout_warnings.length, 1);
+  assert.match(output.next_step, /1 layout warning detected/);
+  assert.match(output.next_step, /fix horizontal overflow/);
+  assert.match(output.next_step, /before involving the human/);
 });
 
 test("poll wait messages tell watching agents the silence is normal", () => {

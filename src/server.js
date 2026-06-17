@@ -193,6 +193,22 @@ export async function serve({
     }
   });
 
+  app.post("/api/:key/layout-warnings", async (req, res, next) => {
+    try {
+      const result = await store.recordLayoutWarnings(req.params.key, req.body || {});
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.changed && result.hasWarnings) {
+        events.emit("feedback", req.params.key);
+      }
+      res.json({ status: "recorded", layout_warnings: result.session.layout_warnings?.length || 0 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/:key/end", async (req, res, next) => {
     try {
       await store.endSession(req.params.key);

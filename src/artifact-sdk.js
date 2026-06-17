@@ -1,4 +1,4 @@
-/* global CSS, Element, document, parent, window */
+/* global CSS, Element, ResizeObserver, document, getComputedStyle, parent, window */
 
 export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 
@@ -316,6 +316,320 @@ export function createArtifactSdk(deriveQueueKey) {
     return lines.join("\n");
   }
 
+  const layoutAuditOverflowEpsilon = 1;
+  const layoutAuditErrorOverflowPx = 4;
+  const layoutAuditSettleMs = 180;
+  const layoutAuditMaxWaitMs = 2000;
+  let layoutAuditTimer = 0;
+  let layoutAuditRun = 0;
+  let lastLayoutAuditSignature = null;
+
+  function toPixelNumber(value) {
+    const parsed = Number.parseFloat(String(value || "0"));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function roundedOverflowPx(value) {
+    return Math.round(Math.max(0, value) * 10) / 10;
+  }
+
+  function overflowSeverity(overflowPx) {
+    return overflowPx > layoutAuditErrorOverflowPx ? "error" : "warning";
+  }
+
+  function elementText(el) {
+    return String(el?.innerText || el?.textContent || "")
+      .trim()
+      .replace(/\s+/g, " ");
+  }
+
+  function hasReadableText(el) {
+    return elementText(el).length > 0;
+  }
+
+  function rectArea(rect) {
+    return Math.max(0, rect.width) * Math.max(0, rect.height);
+  }
+
+  function intersectionArea(a, b) {
+    const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    return width * height;
+  }
+
+  function isVisibleForLayoutAudit(el, rect = el.getBoundingClientRect()) {
+    if (!el || isLavishUi(el) || rect.width <= 0 || rect.height <= 0) return false;
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+  }
+
+  function isIntentionalHorizontalScroller(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const overflowX = getComputedStyle(el).overflowX;
+    return overflowX === "auto" || overflowX === "scroll";
+  }
+
+  function hasIntentionalHorizontalScrollerAncestor(el) {
+    let node = el;
+    while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
+      if (isIntentionalHorizontalScroller(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function contentBoxRect(el) {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    const borderLeft = toPixelNumber(style.borderLeftWidth);
+    const borderRight = toPixelNumber(style.borderRightWidth);
+    const borderTop = toPixelNumber(style.borderTopWidth);
+    const borderBottom = toPixelNumber(style.borderBottomWidth);
+    const paddingLeft = toPixelNumber(style.paddingLeft);
+    const paddingRight = toPixelNumber(style.paddingRight);
+    const paddingTop = toPixelNumber(style.paddingTop);
+    const paddingBottom = toPixelNumber(style.paddingBottom);
+    return {
+      left: rect.left + borderLeft + paddingLeft,
+      right: rect.right - borderRight - paddingRight,
+      top: rect.top + borderTop + paddingTop,
+      bottom: rect.bottom - borderBottom - paddingBottom,
+    };
+  }
+
+  function collectLayoutAuditElements() {
+    const elements = [];
+
+    function walk(el) {
+      if (!(el instanceof Element) || isLavishUi(el)) return;
+      if (isIntentionalHorizontalScroller(el)) return;
+      elements.push(el);
+      for (const child of el.children) walk(child);
+    }
+
+    if (document.body) walk(document.body);
+    return elements;
+  }
+
+  function pushLayoutFinding(findings, seen, finding) {
+    const selectorValue = finding.selector || "";
+    const key = `${finding.kind}:${selectorValue}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    findings.push({
+      selector: selectorValue,
+      kind: String(finding.kind || "layout-warning"),
+      overflowPx: roundedOverflowPx(finding.overflowPx),
+      viewportWidth: Math.round(Number(finding.viewportWidth) || window.innerWidth || 0),
+      severity: finding.severity === "warning" ? "warning" : "error",
+    });
+  }
+
+  function isIntentionalTextTruncation(style) {
+    return style.textOverflow === "ellipsis" || Number.parseInt(style.webkitLineClamp || "0", 10) > 0;
+  }
+
+  function auditElementOverflow(el, viewportWidth, findings, seen) {
+    if (el === document.body || el === document.documentElement || hasIntentionalHorizontalScrollerAncestor(el)) return;
+
+    const rect = el.getBoundingClientRect();
+    if (!isVisibleForLayoutAudit(el, rect)) return;
+
+    const style = getComputedStyle(el);
+    const scrollOverflowPx = el.clientWidth > 0 ? el.scrollWidth - el.clientWidth : 0;
+    if (scrollOverflowPx > layoutAuditOverflowEpsilon) {
+      const clipsText =
+        hasReadableText(el) &&
+        (style.overflowX === "hidden" || style.overflowX === "clip") &&
+        !isIntentionalTextTruncation(style);
+      pushLayoutFinding(findings, seen, {
+        selector: selector(el),
+        kind: clipsText ? "clipped-text" : "element-scroll-overflow",
+        overflowPx: scrollOverflowPx,
+        viewportWidth,
+        severity: clipsText ? "error" : overflowSeverity(scrollOverflowPx),
+      });
+    }
+
+    const verticalClipPx = el.clientHeight > 0 ? el.scrollHeight - el.clientHeight : 0;
+    if (
+      verticalClipPx > layoutAuditOverflowEpsilon &&
+      hasReadableText(el) &&
+      (style.overflowY === "hidden" || style.overflowY === "clip") &&
+      !isIntentionalTextTruncation(style)
+    ) {
+      pushLayoutFinding(findings, seen, {
+        selector: selector(el),
+        kind: "clipped-text",
+        overflowPx: verticalClipPx,
+        viewportWidth,
+        severity: "error",
+      });
+    }
+
+    const parent = el.parentElement;
+    if (!parent || parent === document.body || parent === document.documentElement) return;
+    if (hasIntentionalHorizontalScrollerAncestor(parent)) return;
+
+    const parentBox = contentBoxRect(parent);
+    const parentOverflowPx = rect.right - parentBox.right;
+    if (parentOverflowPx > layoutAuditOverflowEpsilon && rectArea(rect) > 1) {
+      const positionedOffCanvas =
+        style.position === "absolute" || style.position === "fixed" || style.position === "sticky";
+      pushLayoutFinding(findings, seen, {
+        selector: selector(el),
+        kind: "element-parent-overflow",
+        overflowPx: parentOverflowPx,
+        viewportWidth,
+        severity: positionedOffCanvas ? "warning" : overflowSeverity(parentOverflowPx),
+      });
+    }
+  }
+
+  function auditOverlappingText(elements, viewportWidth, findings, seen) {
+    const candidates = elements
+      .filter((el) => el.children.length === 0 && hasReadableText(el))
+      .filter((el) => isVisibleForLayoutAudit(el))
+      .slice(0, 200);
+
+    for (const el of candidates) {
+      const rect = el.getBoundingClientRect();
+      if (rectArea(rect) < 16) continue;
+      const points = [
+        { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+        { x: rect.left + Math.min(4, rect.width / 2), y: rect.top + Math.min(4, rect.height / 2) },
+        { x: rect.right - Math.min(4, rect.width / 2), y: rect.bottom - Math.min(4, rect.height / 2) },
+      ];
+      for (const point of points) {
+        if (point.x < 0 || point.y < 0 || point.x > viewportWidth || point.y > window.innerHeight) continue;
+        const top = document.elementFromPoint(point.x, point.y);
+        if (!(top instanceof Element) || top === el || el.contains(top) || top.contains(el) || isLavishUi(top))
+          continue;
+        if (hasIntentionalHorizontalScrollerAncestor(top)) continue;
+        const elPosition = getComputedStyle(el).position;
+        const topPosition = getComputedStyle(top).position;
+        if (elPosition !== "static" || topPosition !== "static") continue;
+        const topRect = top.getBoundingClientRect();
+        const overlapArea = intersectionArea(rect, topRect);
+        if (overlapArea < Math.min(rectArea(rect) * 0.25, 24)) continue;
+        pushLayoutFinding(findings, seen, {
+          selector: selector(el),
+          kind: "overlapping-text",
+          overflowPx: 0,
+          viewportWidth,
+          severity: "error",
+        });
+        break;
+      }
+    }
+  }
+
+  function auditLayout() {
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const findings = [];
+    const seen = new Set();
+    const pageOverflowPx = document.documentElement.scrollWidth - viewportWidth;
+    if (pageOverflowPx > layoutAuditOverflowEpsilon) {
+      pushLayoutFinding(findings, seen, {
+        selector: "html",
+        kind: "page-horizontal-overflow",
+        overflowPx: pageOverflowPx,
+        viewportWidth,
+        severity: overflowSeverity(pageOverflowPx),
+      });
+    }
+
+    const elements = collectLayoutAuditElements();
+    for (const el of elements) auditElementOverflow(el, viewportWidth, findings, seen);
+    auditOverlappingText(elements, viewportWidth, findings, seen);
+    return findings;
+  }
+
+  function waitForDocumentFontsReady() {
+    try {
+      if (document.fonts?.ready) return document.fonts.ready.catch(() => {});
+    } catch {
+      // Ignore font readiness failures. The ResizeObserver settle below is still a safety net.
+    }
+    return Promise.resolve();
+  }
+
+  function waitForAnimationFrames(count) {
+    return new Promise((resolve) => {
+      function step(remaining) {
+        if (remaining <= 0) {
+          resolve();
+          return;
+        }
+        const next = () => step(remaining - 1);
+        if (window.requestAnimationFrame) {
+          window.requestAnimationFrame(next);
+        } else {
+          window.setTimeout(next, 16);
+        }
+      }
+      step(count);
+    });
+  }
+
+  function waitForResizeObserverSettle() {
+    return new Promise((resolve) => {
+      let observer = null;
+      let settleTimer = 0;
+      let maxTimer = 0;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (settleTimer) window.clearTimeout(settleTimer);
+        if (maxTimer) window.clearTimeout(maxTimer);
+        if (observer) observer.disconnect();
+        resolve();
+      };
+      const scheduleFinish = () => {
+        if (settleTimer) window.clearTimeout(settleTimer);
+        settleTimer = window.setTimeout(finish, layoutAuditSettleMs);
+      };
+
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(scheduleFinish);
+        const observed = [document.documentElement, document.body, ...[...(document.body?.querySelectorAll("*") || [])]]
+          .filter(Boolean)
+          .slice(0, 800);
+        for (const el of observed) observer.observe(el);
+      }
+
+      scheduleFinish();
+      maxTimer = window.setTimeout(finish, layoutAuditMaxWaitMs);
+    });
+  }
+
+  async function runLayoutAudit(runId) {
+    await waitForDocumentFontsReady();
+    await waitForResizeObserverSettle();
+    await waitForAnimationFrames(2);
+    if (runId !== layoutAuditRun) return;
+    const layout_warnings = auditLayout();
+    const signature = JSON.stringify(layout_warnings);
+    if (signature === lastLayoutAuditSignature) return;
+    lastLayoutAuditSignature = signature;
+    parent.postMessage({ type: "lavish:layoutWarnings", layout_warnings }, "*");
+  }
+
+  function scheduleLayoutAudit() {
+    if (layoutAuditTimer) window.clearTimeout(layoutAuditTimer);
+    const runId = ++layoutAuditRun;
+    layoutAuditTimer = window.setTimeout(() => {
+      runLayoutAudit(runId).catch(() => {});
+    }, 50);
+  }
+
+  function startLayoutAudit() {
+    scheduleLayoutAudit();
+    window.addEventListener("load", scheduleLayoutAudit, { once: true });
+    window.addEventListener("resize", scheduleLayoutAudit, { passive: true });
+  }
+
   function ensureShadow() {
     if (shadow) return shadow;
 
@@ -506,4 +820,9 @@ export function createArtifactSdk(deriveQueueKey) {
   );
 
   setAnnotationMode(annotationMode);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });
+  } else {
+    startLayoutAudit();
+  }
 }
