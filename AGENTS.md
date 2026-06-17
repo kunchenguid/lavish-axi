@@ -46,14 +46,16 @@ It shuts itself down once no browser chrome (SSE) and no agent poll have been co
 `lavish-axi stop` (`stopCommand`) explicitly `POST /shutdown`s the server on the default port, accepts `--port`, and reports `stopped`, `stopping`, `not-running`, or `not-lavish`.
 Because cleanup keys off live connections rather than session status, the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json`.
 
-State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`). All sessions across all projects share this one file, keyed by a sha256 prefix of the canonicalized file path - so the CLI never needs opaque session IDs; the canonical HTML path _is_ the identity (`src/session-store.js:sessionKey`).
+State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`). All sessions across all projects share this one file, keyed by a sha256 prefix of the canonicalized file path - so the CLI never needs opaque session IDs; the canonical file path (HTML, app directory, or `.qmd` source file) _is_ the identity (`src/session-store.js:sessionKey`).
 
 ### Request flow
 
 1. `lavish-axi <file.html>` (`openCommand`) -> POST `/api/sessions` -> `SessionStore.upsertSession` -> server returns `http://127.0.0.1:PORT/session/<key>` and the CLI calls `open` to launch the browser.
+   `lavish-axi quarto <file.qmd>` (`quartoCommand`) -> POST `/api/quarto-sessions` -> same session URL. For plain Quarto documents the server runs `quarto render` before creating the session; for documents with `server: shiny` in the YAML frontmatter it runs `quarto serve` and proxies the result (type `quarto-shiny`).
 2. The browser loads `GET /session/:key`, which serves a chrome page (`createChromeHtml`) containing an iframe pointing at `/artifact/:key/index.html`, a stylesheet at `/chrome.css`, and browser behavior at `/chrome-client.js`.
    The chrome client reads its session bootstrap from the `lavish-session` JSON script in the page.
-3. The artifact route reads the HTML from disk and runs `injectLavishSdk` (`src/html-transform.js`) to append `<script src="/sdk.js?key=...">` at the end of `<body>`. Nothing else is injected - artifacts stay byte-identical (apart from the SDK script tag) so they remain portable when opened directly without the server.
+3. The artifact route reads the HTML from disk and runs `injectLavishSdk` (`src/html-transform.js`) to inject `<script src="/sdk.js?key=...">` immediately before the last `</body>` tag (using the last match to correctly handle HTML that contains literal `</body>` strings in scripts). Nothing else is injected - artifacts stay byte-identical (apart from the SDK script tag) so they remain portable when opened directly without the server.
+   For Quarto sessions (`type: "quarto"`) the artifact route reads the rendered output HTML file (`quartoOutputFile(session.file)`) rather than the `.qmd` source file itself.
 4. Sibling assets resolve under `/artifact/:key/<path>`, sandboxed to the artifact's directory (`resolveArtifactAsset` rejects paths that escape via `..`). The packaged Tailwind/DaisyUI assets are still served from `/design/:asset` so older artifacts that link them keep working, but new artifacts are no longer auto-wired to those routes.
 5. User actions in the iframe `postMessage` to the chrome (queue prompts, request snapshot, end session).
    The chrome stores queued prompts in tab `sessionStorage`, POSTs collected prompts to `/api/:key/prompts`, removes them only after a successful response, queues them in the session store, and emits a `feedback` event.
@@ -78,6 +80,8 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
 When a session opens, `chokidar` watches the artifact file itself by default - watching the entire parent directory recursively saturated the event loop when artifacts lived inside large trees like `~`.
 Artifacts can opt back into directory-wide live reload by adding `data-lavish-live-reload-root` to a root element or `<meta name="lavish-live-reload" content="root">`; that switches the watcher to the artifact's directory (excluding `.git`, `node_modules`, `dist`, `build`, `.lavish-axi`).
 Any file change emits a `reload` event, which the SSE endpoint pushes to the chrome page, which reloads the iframe.
+Quarto sessions (`type: "quarto"`) always watch the document's directory and trigger `quarto render` on any change before reloading; the rendered output HTML and standard Quarto output directories (`_freeze`, `_site`, `*_files`) are excluded from the watch to avoid render loops.
+Quarto Shiny sessions (`type: "quarto-shiny"`) watch the document's directory and restart the `quarto serve` process on any change.
 The artifact SDK reports scroll position with `lavish:scroll`, and the chrome replays it with `lavish:restoreScroll` after the iframe loads because the sandbox prevents direct scroll reads.
 During version-driven shutdown, the server sends a `chrome-reload` SSE event so open browser chromes wait for the replacement server and then reload the whole chrome page.
 Hand-edited files in `dist/` won't trigger reloads.
@@ -105,4 +109,5 @@ No need to explicitly document the telemetry behaviors.
 - Use `data-lavish-action` only for custom non-native controls that should bypass annotation and get a pointer cursor.
 - For text annotations, `prompt.selector` is the common ancestor/container selector, not the complete identity. Use the `target` range boundaries and snapshot context to locate the exact selected text.
 - `SessionStore` re-reads and re-writes the entire `state.json` on every operation. There's no in-memory cache and no locking - acceptable because writes are infrequent and serialized through the single server process.
+- Session `type` is `"html"` (default), `"shiny"` (R Shiny), `"quarto"` (static Quarto document), or `"quarto-shiny"` (Quarto document with `server: shiny`). Quarto sessions additionally store a `qmdFile` field (canonical path to the `.qmd` source) alongside the `file` field which holds the same path for Quarto sessions.
 - Tests use `LAVISH_AXI_STATE_DIR` and ephemeral ports to stay isolated. When adding tests that spin up the server, do the same.
