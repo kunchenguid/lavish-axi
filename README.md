@@ -180,19 +180,19 @@ Lavish Editor extends its annotation workflow to **Quarto documents** (`.qmd`, `
 
 ## CLI Reference
 
-| Command                      | Description                                                                                                                 |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `lavish-axi`                 | Show current sessions and usage guidance.                                                                                   |
-| `lavish-axi <html-file>`     | Open or resume a Lavish Editor session.                                                                                     |
-| `lavish-axi shiny [app-dir]` | Open or resume an interactive R Shiny application annotation session.                                                       |
-| `lavish-axi quarto <file.qmd>` | Open or resume an interactive Quarto document or Quarto Shiny annotation session.                                         |
-| `lavish-axi poll <path>`     | Long-poll until the user sends feedback or ends the session; leave no-timeout polls running, or re-run them if interrupted. |
-| `lavish-axi end <path>`      | End a session.                                                                                                              |
-| `lavish-axi stop`            | Shut down the background server.                                                                                            |
-| `lavish-axi playbook [id]`   | List focused artifact guidance or show one playbook.                                                                        |
-| `lavish-axi design`          | Show the Tailwind + DaisyUI CDN fallback, including the `luxury` default theme and DaisyUI `@apply` warning.                |
-| `lavish-axi setup hooks`     | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.    |
-| `lavish-axi server`          | Run the local Lavish Editor server.                                                                                         |
+| Command                        | Description                                                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `lavish-axi`                   | Show current sessions and usage guidance.                                                                                   |
+| `lavish-axi <html-file>`       | Open or resume a Lavish Editor session.                                                                                     |
+| `lavish-axi shiny [app-dir]`   | Open or resume an interactive R Shiny application annotation session.                                                       |
+| `lavish-axi quarto <file.qmd>` | Open or resume an interactive Quarto document or Quarto Shiny annotation session.                                           |
+| `lavish-axi poll <path>`       | Long-poll until the user sends feedback or ends the session; leave no-timeout polls running, or re-run them if interrupted. |
+| `lavish-axi end <path>`        | End a session.                                                                                                              |
+| `lavish-axi stop`              | Shut down the background server.                                                                                            |
+| `lavish-axi playbook [id]`     | List focused artifact guidance or show one playbook.                                                                        |
+| `lavish-axi design`            | Show the Tailwind + DaisyUI CDN fallback, including the `luxury` default theme and DaisyUI `@apply` warning.                |
+| `lavish-axi setup hooks`       | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.    |
+| `lavish-axi server`            | Run the local Lavish Editor server.                                                                                         |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.
 One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so read every playbook relevant to the artifact for the best quality.
