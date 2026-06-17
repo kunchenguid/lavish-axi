@@ -192,6 +192,40 @@ test("ending a session makes feedback return ended", async () => {
   }
 });
 
+test("late layout warnings do not reopen ended sessions", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.endSession(session.key);
+    await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [
+        {
+          selector: "html",
+          kind: "page-horizontal-overflow",
+          overflowPx: 24,
+          viewportWidth: 720,
+          severity: "error",
+        },
+      ],
+    });
+
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.status, "ended");
+
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(first.layout_warnings.length, 1);
+    const second = await store.takeFeedback(session.key);
+    assert.equal(second.status, "ended");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("prompts queued before ending are still delivered before the ended status", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

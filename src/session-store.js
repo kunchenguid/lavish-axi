@@ -81,7 +81,7 @@ export class SessionStore {
       return { session, changed: false, hasWarnings: layoutWarnings.length > 0 };
     }
     session.layout_warnings = layoutWarnings;
-    if (layoutWarnings.length > 0) {
+    if (layoutWarnings.length > 0 && session.status !== "ended") {
       session.status = "feedback";
     } else if ((session.prompts || []).length === 0 && session.status !== "ended") {
       session.status = "open";
