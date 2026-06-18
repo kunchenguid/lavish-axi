@@ -31,18 +31,19 @@ Use lavish-axi when the user asks for a visual artifact, HTML explainer, interac
 
 1. Create the HTML artifact (default location `.lavish/<name>.html` in the working directory).
 2. Run `npx -y lavish-axi <html-file>` to open or resume a review session in the browser.
-3. Run `npx -y lavish-axi poll <html-file>` to long-poll for the user's annotations and queued prompts.
-   The poll stays silent until the user acts - leave it running, never kill it.
+3. Run `npx -y lavish-axi poll <html-file>` to long-poll for the user's annotations, queued prompts, and browser-reported `layout_warnings`.
+   The poll stays silent until the user acts or the real browser reports fresh layout warnings - leave it running, never kill it.
    If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.
-4. Apply the feedback, then poll again with `--agent-reply "<message>"` to reply in the browser and keep the loop going.
-5. Run `npx -y lavish-axi end <html-file>` when the review is finished.
+4. If poll returns `layout_warnings`, fix overflow, clipped text, or overlapping unreadable content and re-check before involving the human.
+5. Apply human feedback, then poll again with `--agent-reply "<message>"` to reply in the browser and keep the loop going.
+6. Run `npx -y lavish-axi end <html-file>` when the review is finished.
 
 ## Visual guidance
 
 - Use visual hierarchy to make the most important decisions, risks, tradeoffs, and next actions obvious at a glance
 - Use visual structure such as sections, cards, tables, diagrams, annotated snippets, and side-by-side comparisons instead of long prose
 - Choose typography, spacing, color, and layout deliberately so the artifact has a clear point of view
-- Prevent horizontal overflow: design narrow layouts intentionally, use minmax(0, 1fr) and min-width: 0 for grid/flex children, and deliberately wrap or truncate long labels/status text
+- Prevent horizontal overflow at every nesting level: nested grid/flex children also need minmax(0, 1fr) tracks and min-width: 0, especially when badges, labels, or status text use wide pixel or monospace fonts; wrap, truncate, or contain long unbreakable text deliberately
 
 ## Playbooks
 
@@ -62,7 +63,7 @@ One artifact often combines several playbooks (for example a plan that includes 
 - Run `npx -y lavish-axi <html-file>` to open or resume a Lavish Editor session
 - Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`
 - Lavish serves the html file through a local express.js server. If your html needs to reference other filesystem assets such as images, CSS, fonts, and local scripts, copy them into the same directory as the HTML file, then reference them with relative paths from that directory. Never prepend `/` to those asset paths - root paths won't work
-- Run `npx -y lavish-axi poll <html-file>` to wait for user feedback. It long-polls and stays silent until the user sends feedback or ends the session, so leave it running - never kill it. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost
+- Run `npx -y lavish-axi poll <html-file>` to wait for user feedback or browser-reported layout_warnings. It long-polls and stays silent until the user sends feedback, ends the session, or the real browser reports fresh layout_warnings, so leave it running - never kill it. Fix layout_warnings before involving the human. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost
 - Run `npx -y lavish-axi end <html-file>` to end a session
 - Run `npx -y lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)
 - Run `npx -y lavish-axi playbook <playbook_id>` for focused artifact guidance. One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to the artifact, not just one, for the best quality

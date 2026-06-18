@@ -589,7 +589,20 @@ test("hot reload resets iframe src instead of crossing sandbox location", async 
   const js = await chromeClientSource();
 
   assert.doesNotMatch(js, /contentWindow\.location\.reload/);
-  assert.match(js, /frame\.src\s*=\s*frame\.src/);
+  assert.match(js, /frame\.src\s*=\s*artifactSrc \|\| frame\.src/);
+});
+
+test("artifact SDK audits layout after fonts and ResizeObserver settle", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /document\.fonts\?\.ready/);
+  assert.match(js, /new ResizeObserver\(scheduleFinish\)/);
+  assert.match(js, /type:\s*["']lavish:layoutWarnings["']/);
+  assert.match(js, /layout_warnings/);
+  assert.match(js, /page-horizontal-overflow/);
+  assert.match(js, /element-scroll-overflow/);
+  assert.match(js, /element-parent-overflow/);
+  assert.match(js, /clipped-text/);
 });
 
 test("artifact SDK reports its scroll position and restores it on request", () => {
@@ -726,6 +739,30 @@ test("session URLs use the configured linkHost while binding to loopback", async
   }
 });
 
+test("session URLs can disable the layout gate for one open", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact, noGate: true }),
+    });
+    const body = await res.json();
+
+    assert.match(body.url, /[?&]no-gate=1/);
+    const chrome = await (await fetch(body.url)).text();
+    assert.match(chrome, /<body class="lavish">/);
+    assert.match(chrome, /id="layoutGateOverlay" hidden/);
+    assert.match(chrome, /"layoutGateEnabled":false/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("serve rejects fast when the bind host is unavailable", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   try {
@@ -780,6 +817,61 @@ test("/artifact serves files copied under the artifact directory", async () => {
   } finally {
     await server.close();
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("layout warnings wake the same long-poll feedback channel as human prompts", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+
+    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=5000`).then((res) =>
+      res.json(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const warningResponse = await fetch(`${base}/api/${key}/layout-warnings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        layout_warnings: [
+          {
+            selector: "html",
+            kind: "page-horizontal-overflow",
+            overflowPx: 12,
+            viewportWidth: 720,
+            severity: "error",
+          },
+        ],
+      }),
+    });
+    assert.equal(warningResponse.status, 200);
+
+    assert.deepEqual(await pollPromise, {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [],
+      layout_warnings: [
+        {
+          selector: "html",
+          kind: "page-horizontal-overflow",
+          overflowPx: 12,
+          viewportWidth: 720,
+          severity: "error",
+        },
+      ],
+    });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -1616,6 +1708,30 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);
   assert.match(js, /moreButton\.disabled = true/);
+});
+
+test("layout gate curtain reuses the ended overlay card styling", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const noGateHtml = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, { layoutGateEnabled: false });
+  const js = await chromeClientSource();
+  const css = await chromeCssSource();
+
+  assert.match(html, /<body class="lavish layout-gate-active">/);
+  assert.match(
+    html,
+    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
+  );
+  assert.doesNotMatch(html, /<iframe id="artifact"[^>]* src=/);
+  assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
+  assert.match(html, /<div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout/);
+  assert.match(html, /class="ended-copy" id="layoutGateCopy"/);
+  assert.match(html, /class="button ended-action" id="layoutGateAction" type="button">Show anyway/);
+  assert.match(css, /body\.layout-gate-active iframe#artifact\{[^}]*opacity:0/);
+  assert.match(css, /\.ended-action\{[^}]*margin-top:var\(--space-8\)/);
+  assert.match(js, /layoutGateAction\.onclick = \(\) => forceRevealLayoutGate\("manual"\)/);
+  assert.match(noGateHtml, /<body class="lavish">/);
+  assert.match(noGateHtml, /id="layoutGateOverlay" hidden/);
+  assert.match(noGateHtml, /"layoutGateEnabled":false/);
 });
 
 test("annotation card queues prompt on Enter and inserts newline on Shift+Enter", () => {

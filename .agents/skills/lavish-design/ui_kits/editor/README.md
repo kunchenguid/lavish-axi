@@ -1,7 +1,7 @@
 # Lavish Editor — UI kit
 
 A clickable design reference for the **Lavish Editor chrome** that the `lavish-axi` CLI launches in a browser.
-The production chrome in `src/chrome.css`, `src/server.js`, and `src/chrome-client.js` is canonical; it now uses the v2 top bar with an **Annotate** switch, an overflow menu for editing actions, and a split **Send to Agent** button with **Send & end session**.
+The production chrome in `src/chrome.css`, `src/server.js`, and `src/chrome-client.js` is canonical; it now uses the v2 top bar with an **Annotate** switch, an overflow menu for editing actions, a split **Send to Agent** button with **Send & end session**, and an open-time layout gate that reuses the ended-session card visual language.
 This kit remains useful for token-driven components and interaction exploration, but check the production files before copying exact chrome structure.
 
 Open `index.html` and try:
@@ -32,6 +32,7 @@ This is a **kit**, not a build of the product. Skipped:
 
 - The real iframe sandbox + `postMessage` wire (the artifact is rendered inline; we listen to clicks directly).
 - Text-range selection annotations; the product can annotate selected text, but this kit only recreates element-click annotations.
+- The open-time layout gate that masks artifacts until the production in-iframe audit reports no error-severity layout findings.
 - The `EventSource` reload pipe, the `chokidar` watcher.
 - DOM snapshot serialization. `lavish.snapshot()` would produce something like the tree in `src/artifact-sdk.js`; we don't.
 - File-path identity, session store, long-polling.

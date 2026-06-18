@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.31](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.30...lavish-axi-v0.1.31) (2026-06-16)
+
+
+### Bug Fixes
+
+* supersede unsent input choices ([#92](https://github.com/kunchenguid/lavish-axi/issues/92)) ([352dd0d](https://github.com/kunchenguid/lavish-axi/commit/352dd0d91d00f7914e23282b4b036eaa1ba7ecd2))
+
 ## [0.1.30](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.29...lavish-axi-v0.1.30) (2026-06-14)
 
 

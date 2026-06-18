@@ -40,6 +40,8 @@ export class SessionStore {
     const key = sessionKey(absolute);
     const state = await this.readState();
     const existing = state.sessions[key] || {};
+    const existingPrompts = existing.prompts || [];
+    const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
     const session = {
       key,
       file: absolute,
@@ -48,9 +50,10 @@ export class SessionStore {
       shinyUrl: shinyUrl !== undefined ? shinyUrl : existing.shinyUrl || null,
       shinyPid: shinyPid !== undefined ? shinyPid : existing.shinyPid || null,
       qmdFile: canonicalQmd !== undefined ? canonicalQmd : existing.qmdFile || null,
-      status: existing.status === "ended" ? "open" : existing.status || "open",
+      status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
       pending_prompts: existing.pending_prompts || 0,
-      prompts: existing.prompts || [],
+      prompts: existingPrompts,
+      layout_warnings: [],
       dom_snapshot: existing.dom_snapshot || "",
       chat: existing.chat || [],
       updated_at: new Date().toISOString(),
@@ -81,6 +84,29 @@ export class SessionStore {
     return session;
   }
 
+  async recordLayoutWarnings(key, payload) {
+    const state = await this.readState();
+    const session = state.sessions[key];
+    if (!session) {
+      return null;
+    }
+    const layoutWarnings = normalizeLayoutWarnings(payload.layout_warnings || payload.layoutWarnings || []);
+    const previousSignature = JSON.stringify(session.layout_warnings || []);
+    const nextSignature = JSON.stringify(layoutWarnings);
+    if (previousSignature === nextSignature) {
+      return { session, changed: false, hasWarnings: layoutWarnings.length > 0 };
+    }
+    session.layout_warnings = layoutWarnings;
+    if (layoutWarnings.length > 0 && session.status !== "ended") {
+      session.status = "feedback";
+    } else if ((session.prompts || []).length === 0 && session.status !== "ended") {
+      session.status = "open";
+    }
+    session.updated_at = new Date().toISOString();
+    await this.writeState(state);
+    return { session, changed: true, hasWarnings: layoutWarnings.length > 0 };
+  }
+
   async takeFeedback(key) {
     const state = await this.readState();
     const session = state.sessions[key];
@@ -90,15 +116,18 @@ export class SessionStore {
     // Prompts queued before the session ended (e.g. "Send & end session") must still reach the
     // agent, so deliver them before reporting the ended state; the next poll then sees ended.
     const prompts = session.prompts || [];
-    if (prompts.length === 0) {
+    const layoutWarnings = session.layout_warnings || [];
+    if (prompts.length === 0 && layoutWarnings.length === 0) {
       return session.status === "ended" ? { status: "ended" } : { status: "waiting" };
     }
     const result = {
       status: "feedback",
       dom_snapshot: session.dom_snapshot || "",
       prompts,
+      ...(layoutWarnings.length > 0 ? { layout_warnings: layoutWarnings } : {}),
     };
     session.prompts = [];
+    session.layout_warnings = [];
     session.pending_prompts = 0;
     session.dom_snapshot = "";
     if (session.status !== "ended") {
@@ -171,6 +200,24 @@ function normalizePrompt(prompt) {
   const target = normalizeTarget(prompt.target);
   if (target) normalized.target = target;
   return normalized;
+}
+
+function normalizeLayoutWarnings(layoutWarnings) {
+  if (!Array.isArray(layoutWarnings)) return [];
+  return layoutWarnings
+    .filter((warning) => warning && typeof warning === "object" && !Array.isArray(warning))
+    .map((warning) => ({
+      selector: String(warning.selector || ""),
+      kind: String(warning.kind || "layout-warning"),
+      overflowPx: normalizeFiniteNumber(warning.overflowPx),
+      viewportWidth: normalizeFiniteNumber(warning.viewportWidth),
+      severity: warning.severity === "warning" ? "warning" : "error",
+    }));
+}
+
+function normalizeFiniteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 }
 
 function normalizeTarget(target) {
