@@ -1,0 +1,81 @@
+---
+title: "Quarto Shiny: Interactive Analytics Dashboard"
+author: "Lavish Analyst"
+format: 
+  html:
+    theme: cosmo
+    toc: true
+server: shiny
+---
+
+## Introduction
+
+This is an interactive Quarto document utilizing R Shiny. The user can interactively customize parameters of the data analysis and see the visualizations update in real time.
+
+## Interactive Distribution Plot
+
+Adjust the controls below to generate normal random variables and visualize their distribution.
+
+```{r}
+#| panel: sidebar
+library(echarts4r)
+sliderInput("obs", "Number of observations:", 
+            min = 10, max = 1000, value = 500, step = 10)
+
+selectInput("color", "Plot Color:",
+            choices = c("Modern Purple" = "#8b5cf6", "Red" = "red", "Steel Blue" = "steelblue", "Tomato" = "tomato", "Forest Green" = "forestgreen", "Goldenrod" = "goldenrod"),
+            selected = "#8b5cf6")
+
+checkboxInput("density", "Show Density Curve", value = TRUE)
+```
+
+```{r}
+#| panel: fill
+echarts4rOutput("distPlot")
+```
+
+```{r}
+#| context: server
+library(echarts4r)
+library(dplyr)
+
+output$distPlot <- renderEcharts4r({
+  
+  data <- rnorm(input$obs)
+  df <- data.frame(val = data)
+  
+  p <- df %>%
+    e_charts() %>%
+    e_histogram(val, name = "Histogram") %>%
+    e_color(c(input$color, "darkblue")) %>%
+    e_y_axis(name = "Count") %>%
+    e_title(paste("Histogram of", input$obs, "Normal Observations")) %>%
+    e_tooltip(trigger = "axis")
+  
+  if (input$density) {
+    p <- p %>%
+      e_density(val, name = "Density", y_index = 1, smooth = TRUE) %>%
+      e_y_axis(index = 1, name = "Density", show = TRUE)
+  }
+  p
+})
+```
+
+## Summary Statistics
+
+Below is a summary of the generated dataset.
+
+```{r}
+tableOutput("statsTable")
+```
+
+```{r}
+#| context: server
+output$statsTable <- renderTable({
+  data <- rnorm(input$obs)
+  data.frame(
+    Metric = c("Min", "Mean", "Median", "Max", "SD"),
+    Value = c(min(data), mean(data), median(data), max(data), sd(data))
+  )
+})
+```

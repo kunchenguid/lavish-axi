@@ -854,7 +854,7 @@ export async function resolveWatchTarget(session) {
           ) {
             return true;
           }
-          if (/\.knit\.md$|\.utf8\.md$/.test(filePath)) {
+          if (/\.knit\.md$|\.utf8\.md$|\.rmarkdown$/.test(filePath)) {
             return true;
           }
           if (session.type === "quarto-shiny") {
@@ -882,7 +882,7 @@ export async function resolveWatchTarget(session) {
           if (/(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|_freeze|_site|.*_files)([/\\]|$)/.test(filePath)) {
             return true;
           }
-          if (/\.knit\.md$|\.utf8\.md$/.test(filePath)) {
+          if (/\.knit\.md$|\.utf8\.md$|\.rmarkdown$/.test(filePath)) {
             return true;
           }
           try {
