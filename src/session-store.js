@@ -23,9 +23,20 @@ export class SessionStore {
     return state.sessions[key] || null;
   }
 
-  async upsertSession(file, url, { type = "html", shinyUrl = null, shinyPid = null, qmdFile = null } = {}) {
+  /**
+   * @param {string} file
+   * @param {string} url
+   * @param {{ type?: string; shinyUrl?: string|null; shinyPid?: number|null; qmdFile?: string|null }} [options]
+   */
+  async upsertSession(file, url, options = {}) {
+    const { type, shinyUrl, shinyPid, qmdFile } = options;
     const absolute = await canonicalFile(file);
-    const canonicalQmd = qmdFile ? await canonicalFile(qmdFile) : null;
+    let canonicalQmd = undefined;
+    if (qmdFile === null) {
+      canonicalQmd = null;
+    } else if (qmdFile !== undefined) {
+      canonicalQmd = await canonicalFile(qmdFile);
+    }
     const key = sessionKey(absolute);
     const state = await this.readState();
     const existing = state.sessions[key] || {};

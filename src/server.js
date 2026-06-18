@@ -262,6 +262,7 @@ export async function serve({
         res.status(404).send("Shiny session not found");
         return;
       }
+      res.set("cache-control", "no-store, no-cache, must-revalidate, private");
       let cached = proxies.get(session.key);
       if (!cached || cached.shinyUrl !== session.shinyUrl) {
         const proxy = createShinyProxy(session.shinyUrl, session.key);
@@ -452,6 +453,7 @@ export async function serve({
       }
       const fileToRead = session.type === "quarto" ? quartoOutputFile(session.file) : session.file;
       const html = await readFile(fileToRead, "utf8");
+      res.set("cache-control", "no-store, no-cache, must-revalidate, private");
       res.type("html").send(injectLavishSdk(html, key));
     } catch (error) {
       next(error);
@@ -720,77 +722,102 @@ async function watchSession(
   logEvent?.(`watch session=${session.key} scope=${target.scope} path=${target.path}`);
   const watcher = chokidar.watch(target.path, target.options);
   let timer = null;
+  let quartoRenderInProgress = false;
+  let quartoRenderPending = false;
+  let quartoRenderTimer = null;
+  let shinyRestartInProgress = false;
+  let shinyRestartPending = false;
+  let shinyRestartTimer = null;
+
+  async function runQuartoRender() {
+    if (quartoRenderInProgress) {
+      quartoRenderPending = true;
+      return;
+    }
+    quartoRenderInProgress = true;
+    quartoRenderPending = false;
+    logEvent?.(`auto-re-rendering quarto for key=${session.key}`);
+    const controller = new AbortController();
+    quartoRenders.set(session.key, controller);
+    try {
+      const logFn = logEvent ? (line) => logEvent(`[quarto] ${line}`) : null;
+      const renderResult = await renderQuarto(session.qmdFile, {
+        signal: controller.signal,
+        log: logFn,
+      });
+      if (renderResult.ok) {
+        events.emit("reload", session.key);
+      } else {
+        logEvent?.(`quarto render failed on watch: ${renderResult.error}`);
+      }
+    } catch (error) {
+      logEvent?.(`quarto render threw on watch: ${error}`);
+    } finally {
+      quartoRenders.delete(session.key);
+      quartoRenderInProgress = false;
+      if (quartoRenderPending) {
+        clearTimeout(quartoRenderTimer);
+        quartoRenderTimer = setTimeout(runQuartoRender, 100);
+      }
+    }
+  }
+
+  async function runShinyRestart() {
+    if (shinyRestartInProgress) {
+      shinyRestartPending = true;
+      return;
+    }
+    shinyRestartInProgress = true;
+    shinyRestartPending = false;
+    logEvent?.(`auto-restarting quarto-shiny for key=${session.key}`);
+    const oldApp = shinyProcesses.get(session.key);
+    const controller = new AbortController();
+    if (quartoRenders) {
+      quartoRenders.set(session.key, controller);
+    }
+    try {
+      if (oldApp) {
+        oldApp.kill();
+        shinyProcesses.delete(session.key);
+      }
+      const logFn = logEvent ? (line) => logEvent(`[quarto-shiny] ${line}`) : null;
+      const quartoShinyApp = await launchQuartoShiny(session.qmdFile || session.file, {
+        port: oldApp ? oldApp.port : await findFreePort(),
+        host: "127.0.0.1",
+        log: logFn,
+      });
+      shinyProcesses.set(session.key, quartoShinyApp);
+      if (store) {
+        await store.upsertSession(session.file, session.url, {
+          type: session.type,
+          qmdFile: session.qmdFile,
+          shinyUrl: quartoShinyApp.url,
+          shinyPid: quartoShinyApp.process.pid,
+        });
+      }
+      events.emit("reload", session.key);
+    } catch (error) {
+      logEvent?.(`quarto-shiny restart failed: ${error}`);
+    } finally {
+      if (quartoRenders) {
+        quartoRenders.delete(session.key);
+      }
+      shinyRestartInProgress = false;
+      if (shinyRestartPending) {
+        clearTimeout(shinyRestartTimer);
+        shinyRestartTimer = setTimeout(runShinyRestart, 100);
+      }
+    }
+  }
+
   watcher.on("all", (event, file) => {
     logEvent?.(`watch event=${event} session=${session.key} file=${file ?? ""}`);
     if (session.type === "quarto" && quartoRenders) {
-      if (quartoRenders.has(session.key)) {
-        logEvent?.(`quarto render already in progress for key=${session.key}, skipping watch trigger`);
-        return;
-      }
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        logEvent?.(`auto-re-rendering quarto for key=${session.key}`);
-        const controller = new AbortController();
-        quartoRenders.set(session.key, controller);
-        try {
-          const logFn = logEvent ? (line) => logEvent(`[quarto] ${line}`) : null;
-          const renderResult = await renderQuarto(session.qmdFile, {
-            signal: controller.signal,
-            log: logFn,
-          });
-          if (renderResult.ok) {
-            events.emit("reload", session.key);
-          } else {
-            logEvent?.(`quarto render failed on watch: ${renderResult.error}`);
-          }
-        } catch (error) {
-          logEvent?.(`quarto render threw on watch: ${error}`);
-        } finally {
-          quartoRenders.delete(session.key);
-        }
-      }, 100);
+      clearTimeout(quartoRenderTimer);
+      quartoRenderTimer = setTimeout(runQuartoRender, 100);
     } else if (session.type === "quarto-shiny" && shinyProcesses) {
-      if (quartoRenders && quartoRenders.has(session.key)) {
-        logEvent?.(`quarto-shiny restart already in progress for key=${session.key}, skipping watch trigger`);
-        return;
-      }
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        logEvent?.(`auto-restarting quarto-shiny for key=${session.key}`);
-        const oldApp = shinyProcesses.get(session.key);
-        const controller = new AbortController();
-        if (quartoRenders) {
-          quartoRenders.set(session.key, controller);
-        }
-        try {
-          if (oldApp) {
-            oldApp.kill();
-            shinyProcesses.delete(session.key);
-          }
-          const logFn = logEvent ? (line) => logEvent(`[quarto-shiny] ${line}`) : null;
-          const quartoShinyApp = await launchQuartoShiny(session.qmdFile || session.file, {
-            port: oldApp ? oldApp.port : await findFreePort(),
-            host: "127.0.0.1",
-            log: logFn,
-          });
-          shinyProcesses.set(session.key, quartoShinyApp);
-          if (store) {
-            await store.upsertSession(session.file, session.url, {
-              type: session.type,
-              qmdFile: session.qmdFile,
-              shinyUrl: quartoShinyApp.url,
-              shinyPid: quartoShinyApp.process.pid,
-            });
-          }
-          events.emit("reload", session.key);
-        } catch (error) {
-          logEvent?.(`quarto-shiny restart failed: ${error}`);
-        } finally {
-          if (quartoRenders) {
-            quartoRenders.delete(session.key);
-          }
-        }
-      }, 100);
+      clearTimeout(shinyRestartTimer);
+      shinyRestartTimer = setTimeout(runShinyRestart, 100);
     } else {
       clearTimeout(timer);
       timer = setTimeout(() => events.emit("reload", session.key), 100);
@@ -819,8 +846,28 @@ export async function resolveWatchTarget(session) {
       scope: "directory",
       options: {
         ...baseOptions,
-        ignored:
-          /(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|\.Rproj\.user|rsconnect|\.Rhistory|_freeze|_site|.*_files)([/\\]|$)/,
+        ignored: (filePath) => {
+          if (
+            /(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|\.Rproj\.user|rsconnect|\.Rhistory|_freeze|_site|.*_files)([/\\]|$)/.test(
+              filePath,
+            )
+          ) {
+            return true;
+          }
+          if (/\.knit\.md$|\.utf8\.md$/.test(filePath)) {
+            return true;
+          }
+          if (session.type === "quarto-shiny") {
+            try {
+              if (path.resolve(filePath) === quartoOutputFile(session.qmdFile || session.file)) {
+                return true;
+              }
+            } catch {
+              // ignore resolve error
+            }
+          }
+          return false;
+        },
       },
     };
   }
@@ -833,6 +880,9 @@ export async function resolveWatchTarget(session) {
         ...baseOptions,
         ignored: (filePath) => {
           if (/(^|[/\\])(\.git|node_modules|dist|build|\.lavish-axi|_freeze|_site|.*_files)([/\\]|$)/.test(filePath)) {
+            return true;
+          }
+          if (/\.knit\.md$|\.utf8\.md$/.test(filePath)) {
             return true;
           }
           try {
