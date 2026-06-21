@@ -158,17 +158,17 @@ pnpm link
 
 ## CLI Reference
 
-| Command                       | Description                                                                                                                                                               |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lavish-axi`                  | Show current sessions and usage guidance.                                                                                                                                 |
-| `lavish-axi <html-file>`      | Open or resume a Lavish Editor session, with the open-time layout gate enabled by default.                                                                                |
-| `lavish-axi poll <html-file>` | Long-poll until the user sends feedback, ends the session, or the browser reports fresh `layout_warnings`; leave no-timeout polls running, or re-run them if interrupted. |
-| `lavish-axi end <html-file>`  | End a session.                                                                                                                                                            |
-| `lavish-axi stop`             | Shut down the background server.                                                                                                                                          |
-| `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook; agents must open each matching playbook before writing HTML.                                                         |
+| Command                       | Description                                                                                                                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lavish-axi`                  | Show current sessions and usage guidance.                                                                                                                                   |
+| `lavish-axi <html-file>`      | Open or resume a Lavish Editor session, with the open-time layout gate enabled by default.                                                                                  |
+| `lavish-axi poll <html-file>` | Long-poll until the user sends feedback, ends the session, or the browser reports fresh `layout_warnings`; leave no-timeout polls running, or re-run them if interrupted.   |
+| `lavish-axi end <html-file>`  | End a session.                                                                                                                                                              |
+| `lavish-axi stop`             | Shut down the background server.                                                                                                                                            |
+| `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook; agents must open each matching playbook before writing HTML.                                                           |
 | `lavish-axi design`           | Show the Tailwind + DaisyUI CDN fallback, content-to-playbook router, Mermaid diagram tooling, `luxury` default theme, DaisyUI `@apply` warning, and layout safety snippet. |
-| `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.                                                  |
-| `lavish-axi server`           | Run the local Lavish Editor server.                                                                                                                                       |
+| `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.                                                    |
+| `lavish-axi server`           | Run the local Lavish Editor server.                                                                                                                                         |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.
 One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so agents must match against each `use_when` trigger and open every matching playbook before writing HTML.
