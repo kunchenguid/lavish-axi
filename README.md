@@ -133,8 +133,8 @@ pnpm link
   Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser.
   Before writing HTML, choose a design system in strict priority order: follow a user-requested look first; otherwise inspect the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and match that project's Tailwind or theme config, CSS variables or design tokens, component library, brand assets, or existing styled pages.
   If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo.
-  Only when both come up empty, run `lavish-axi design` for a copy-pasteable Tailwind CSS v4 + DaisyUI v5 CDN fallback.
-  That fallback guidance recommends DaisyUI's `luxury` theme by default, warns not to `@apply` DaisyUI classes inside Tailwind browser-runtime style blocks, and includes an optional layout safety CSS snippet for dense nested grid/flex layouts.
+  Only when both come up empty, run `lavish-axi design` for a copy-pasteable Tailwind CSS v4 + DaisyUI v5 CDN fallback, a content-to-playbook router, and Mermaid diagram tooling.
+  That fallback guidance recommends DaisyUI's `luxury` theme by default, warns not to `@apply` DaisyUI classes inside Tailwind browser-runtime style blocks, includes an optional layout safety CSS snippet for dense nested grid/flex layouts, and provides a pinned Mermaid CDN snippet with initialization for flows, architecture, state, and sequence diagrams.
 - **Open-time layout gate** - The browser chrome masks each artifact until the real in-iframe layout audit reports no error-severity findings.
   Warning-only artifacts reveal normally; error findings notify the agent through the same `layout_warnings` poll path and keep the curtain up until a clean reload.
   The user can click **Show anyway**, and a bounded safety timeout reveals with a persistent layout-issues banner so review is never blocked indefinitely.
@@ -165,13 +165,14 @@ pnpm link
 | `lavish-axi poll <html-file>` | Long-poll until the user sends feedback, ends the session, or the browser reports fresh `layout_warnings`; leave no-timeout polls running, or re-run them if interrupted. |
 | `lavish-axi end <html-file>`  | End a session.                                                                                                                                                            |
 | `lavish-axi stop`             | Shut down the background server.                                                                                                                                          |
-| `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook.                                                                                                                      |
-| `lavish-axi design`           | Show the Tailwind + DaisyUI CDN fallback, including the `luxury` default theme, DaisyUI `@apply` warning, and optional layout safety snippet.                             |
+| `lavish-axi playbook [id]`    | List focused artifact guidance or show one playbook; agents must open each matching playbook before writing HTML.                                                         |
+| `lavish-axi design`           | Show the Tailwind + DaisyUI CDN fallback, content-to-playbook router, Mermaid diagram tooling, `luxury` default theme, DaisyUI `@apply` warning, and layout safety snippet. |
 | `lavish-axi setup hooks`      | Install or repair optional SessionStart hooks for Claude Code, Codex, and OpenCode; restart the agent session afterward.                                                  |
 | `lavish-axi server`           | Run the local Lavish Editor server.                                                                                                                                       |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.
-One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so read every playbook relevant to the artifact for the best quality.
+One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so agents must match against each `use_when` trigger and open every matching playbook before writing HTML.
+For flows, architecture, state, or sequence diagrams, open the diagram playbook and use the Mermaid tooling from `lavish-axi design` unless SVG is needed for richly annotated nodes; avoid hand-built div/flexbox boxes-and-arrows.
 
 ### Flags
 
