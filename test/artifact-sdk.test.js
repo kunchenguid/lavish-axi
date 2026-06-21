@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveLavishQueueKey } from "../src/artifact-sdk.js";
+import { deriveLavishQueueKey, isNativeInteractiveControl } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
   const el = {
@@ -20,6 +20,9 @@ function node(tag, attrs = {}, children = []) {
         current = current.parentElement;
       }
       return null;
+    },
+    matches(selector) {
+      return matchesSelectorList(this, selector);
     },
   };
   if (attrs.id) el.id = attrs.id;
@@ -43,8 +46,27 @@ function matchesSelectorList(el, selectorList) {
 function matchesSelector(el, selector) {
   if (selector === "form" || selector === "fieldset") return el.tagName.toLowerCase() === selector;
   if (selector === "[data-lavish-question]") return el.getAttribute("data-lavish-question") !== null;
+  if (selector === "[contenteditable]:not([contenteditable='false'])") {
+    const value = el.getAttribute("contenteditable");
+    return value !== null && value !== "false";
+  }
+  if (/^[a-z]+$/i.test(selector)) return el.tagName.toLowerCase() === selector.toLowerCase();
   return false;
 }
+
+test("isNativeInteractiveControl leaves details body descendants annotatable", () => {
+  const summaryChild = node("span");
+  const summary = node("summary", {}, [summaryChild]);
+  const bodyText = node("span");
+  const bodyLink = node("a", { href: "#target" });
+  const body = node("div", {}, [bodyText, bodyLink]);
+  const details = node("details", { open: "" }, [summary, body]);
+
+  assert.equal(isNativeInteractiveControl(summaryChild), true);
+  assert.equal(isNativeInteractiveControl(details), true);
+  assert.equal(isNativeInteractiveControl(bodyText), false);
+  assert.equal(isNativeInteractiveControl(bodyLink), false);
+});
 
 test("deriveLavishQueueKey uses explicit queueKey first", () => {
   const input = node("input", { type: "radio", name: "plan" });

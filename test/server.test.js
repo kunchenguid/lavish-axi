@@ -202,7 +202,9 @@ test("artifact SDK lets native form controls handle their own clicks", () => {
 test("artifact SDK lets disclosure controls handle their own clicks", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /button,input,select,textarea,option,optgroup,label,summary,details,\[contenteditable\]/);
+  assert.match(js, /button,input,select,textarea,option,optgroup,label,summary,\[contenteditable\]/);
+  assert.doesNotMatch(js, /summary,details,\[contenteditable\]/);
+  assert.match(js, /matches\(["']details["']\)/);
   assert.match(js, /isInteractiveControl\(event\.target\)/);
 });
 

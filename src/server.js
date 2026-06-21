@@ -6,7 +6,7 @@ import path from "node:path";
 import chokidar from "chokidar";
 import express from "express";
 
-import { createArtifactSdk, deriveLavishQueueKey } from "./artifact-sdk.js";
+import { createArtifactSdk, deriveLavishQueueKey, isNativeInteractiveControl } from "./artifact-sdk.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, hostForUrl, linkHost } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
@@ -710,7 +710,8 @@ export function createSdkJs(key) {
 const key=${JSON.stringify(key)};
 void key;
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
-(${createArtifactSdk.toString()})(deriveQueueKey);
+const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl);
 })();`;
 }
 
