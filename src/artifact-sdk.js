@@ -218,13 +218,15 @@ export function createArtifactSdk(deriveQueueKey) {
   }
 
   // Native interactive controls (radios, checkboxes, inputs, selects, buttons,
-  // labels, editable regions) should toggle/focus/type natively instead of
+  // labels, disclosures, editable regions) should toggle/focus/type natively instead of
   // triggering annotation, just like elements marked with data-lavish-action.
   function isInteractiveControl(el) {
     return !!(
       el &&
       el.closest &&
-      el.closest("button,input,select,textarea,option,optgroup,label,[contenteditable]:not([contenteditable='false'])")
+      el.closest(
+        "button,input,select,textarea,option,optgroup,label,summary,details,[contenteditable]:not([contenteditable='false'])",
+      )
     );
   }
 

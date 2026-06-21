@@ -199,6 +199,13 @@ test("artifact SDK lets native form controls handle their own clicks", () => {
   assert.match(js, /isInteractiveControl\(event\.target\)/);
 });
 
+test("artifact SDK lets disclosure controls handle their own clicks", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /button,input,select,textarea,option,optgroup,label,summary,details,\[contenteditable\]/);
+  assert.match(js, /isInteractiveControl\(event\.target\)/);
+});
+
 test("artifact SDK does not annotate text selected inside native controls", () => {
   const js = createSdkJs("abc");
 
