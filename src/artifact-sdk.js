@@ -106,11 +106,10 @@ export function deriveLavishQueueKey(element, options = {}) {
 export function isNativeInteractiveControl(el) {
   return !!(
     el &&
-    ((el.closest &&
-      el.closest(
-        "button,input,select,textarea,option,optgroup,label,summary,[contenteditable]:not([contenteditable='false'])",
-      )) ||
-      (el.matches && el.matches("details")))
+    el.closest &&
+    el.closest(
+      "button,input,select,textarea,option,optgroup,label,summary,[contenteditable]:not([contenteditable='false'])",
+    )
   );
 }
 
@@ -233,6 +232,10 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
   // triggering annotation, just like elements marked with data-lavish-action.
   function isInteractiveControl(el) {
     return isNativeInteractive(el);
+  }
+
+  function isDirectDetailsElement(el) {
+    return !!(el && el.matches && el.matches("details"));
   }
 
   function highlightElement(el) {
@@ -812,7 +815,8 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
         !annotationMode ||
         isLavishUi(event.target) ||
         isLavishAction(event.target) ||
-        isInteractiveControl(event.target)
+        isInteractiveControl(event.target) ||
+        isDirectDetailsElement(event.target)
       )
         return;
       event.preventDefault();

@@ -63,9 +63,19 @@ test("isNativeInteractiveControl leaves details body descendants annotatable", (
   const details = node("details", { open: "" }, [summary, body]);
 
   assert.equal(isNativeInteractiveControl(summaryChild), true);
-  assert.equal(isNativeInteractiveControl(details), true);
+  assert.equal(isNativeInteractiveControl(details), false);
   assert.equal(isNativeInteractiveControl(bodyText), false);
   assert.equal(isNativeInteractiveControl(bodyLink), false);
+});
+
+test("isNativeInteractiveControl allows details as a text selection ancestor", () => {
+  const firstParagraph = node("p");
+  const secondParagraph = node("p");
+  const details = node("details", { open: "" }, [node("summary", {}, [node("span")]), firstParagraph, secondParagraph]);
+
+  assert.equal(isNativeInteractiveControl(details), false);
+  assert.equal(isNativeInteractiveControl(firstParagraph), false);
+  assert.equal(isNativeInteractiveControl(secondParagraph), false);
 });
 
 test("deriveLavishQueueKey uses explicit queueKey first", () => {
