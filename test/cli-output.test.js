@@ -71,7 +71,7 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("`.lavish/`")));
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
   assert.ok(output.help.some((item) => item.includes("combines several playbooks")));
-  assert.ok(output.help.some((item) => item.includes("read every playbook relevant")));
+  assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
   assert.ok(output.help.some((item) => item.includes("reference other filesystem assets")));
   assert.ok(output.help.some((item) => item.includes("same directory as the HTML file")));
   assert.ok(output.help.some((item) => item.includes("does not auto-inject")));
@@ -155,6 +155,12 @@ test("top-level help renders static home output without dynamic sessions", async
 test("design output prints copy-pasteable CDN URLs so agents can opt in to DaisyUI", () => {
   const output = createDesignOutput();
 
+  assert.match(output.playbook_router.instruction, /MUST open each matching playbook before writing HTML/);
+  assert.equal(output.playbook_router.playbooks.length, 7);
+  assert.equal(
+    output.playbook_router.playbooks.find((playbook) => playbook.id === "diagram")?.use_when,
+    "Map relationships, flows, state, and architecture",
+  );
   assert.match(output.design.summary, /does not auto-inject/);
   assert.match(output.design.summary, /Tailwind CSS browser runtime v4/);
   assert.match(output.design.summary, /DaisyUI v5/);
@@ -191,6 +197,16 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
     /^https:\/\/cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@\d+\.\d+\.\d+\/dist\/index\.global\.js$/,
   );
   assert.match(output.design.other_design_systems, /different design system|other design system/i);
+  assert.match(output.diagram_tooling.use_when, /flows \/ architecture \/ state \/ sequence diagrams/);
+  assert.match(output.diagram_tooling.use_when, /hand-built div\/flexbox boxes/);
+  assert.match(output.diagram_tooling.mermaid_cdn_snippet, /cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+/);
+  assert.match(output.diagram_tooling.mermaid_cdn_snippet, /mermaid\.initialize/);
+  assert.match(output.diagram_tooling.mermaid_cdn_snippet, /startOnLoad: true/);
+  assert.match(
+    output.diagram_tooling.cdn_urls.mermaid,
+    /^https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+\/dist\/mermaid\.esm\.min\.mjs$/,
+  );
+  assert.equal(output.diagram_tooling.versions.mermaid, "11.15.0");
   assert.equal("opt_out" in output.design, false);
   assert.equal("rule" in output.design, false);
   assert.equal(output.design.latest_docs, "https://daisyui.com/components/");
@@ -235,7 +251,16 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   assert.ok(output.playbooks.every((playbook) => playbook.use_when.length > 20));
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
   assert.ok(output.help.some((item) => item.includes("combines several playbooks")));
-  assert.ok(output.help.some((item) => item.includes("read every playbook relevant")));
+  assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
+});
+
+test("diagram playbook names the hand-built flow anti-pattern", () => {
+  const output = createPlaybookOutput(["diagram"]);
+
+  assert.ok(output.playbook.choose.some((item) => item.includes("Mermaid")));
+  assert.ok(output.playbook.pitfalls.some((item) => /hand-build boxes-and-arrows/i.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /div\/flexbox/i.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /does not auto-route edges/i.test(item)));
 });
 
 test("playbook detail output returns focused Lavish-native guidance", () => {

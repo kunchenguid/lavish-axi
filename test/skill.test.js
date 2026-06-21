@@ -58,12 +58,13 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
   }
 });
 
-test("createSkillMarkdown encourages reading every relevant playbook", () => {
+test("createSkillMarkdown requires opening every matching playbook", () => {
   const md = createSkillMarkdown();
   const playbooksSection = md.slice(md.indexOf("## Playbooks"), md.indexOf("## Commands & rules"));
 
   assert.ok(playbooksSection.includes("combines several playbooks"), "explains artifacts span playbooks");
-  assert.ok(playbooksSection.includes("read every playbook relevant"), "encourages reading all relevant playbooks");
+  assert.ok(playbooksSection.includes("MUST open each matching playbook"), "requires opening matching playbooks");
+  assert.ok(playbooksSection.includes("do not hand-build boxes-and-arrows"), "names the diagram anti-pattern");
 });
 
 test("createSkillMarkdown does not leak live session state", () => {

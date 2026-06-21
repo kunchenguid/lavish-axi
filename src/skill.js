@@ -1,4 +1,5 @@
 import { createHomeOutput } from "./cli.js";
+import { PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 
 // Trigger string Claude Code (and other agents) match against to auto-load the skill.
 // Kept terse and outcome-focused so it fires on "about to show something visual" intents.
@@ -76,7 +77,8 @@ ${bullets(home.visual_guidance)}
 ## Playbooks
 
 Run \`npx -y lavish-axi playbook <id>\` for focused, detailed guidance on any of these.
-One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to your artifact, not just one, for the best quality:
+${PLAYBOOK_ROUTER_HELP}
+For flows, architecture, state, or sequence diagrams, do not hand-build boxes-and-arrows from div/flexbox; open the diagram playbook and use Mermaid unless SVG is needed for richly annotated nodes.
 
 ${playbookList(home.playbooks)}
 

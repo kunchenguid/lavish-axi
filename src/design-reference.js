@@ -1,5 +1,8 @@
+import { listPlaybooks, PLAYBOOK_ROUTER_INSTRUCTION } from "./playbooks.js";
+
 export const TAILWIND_BROWSER_VERSION = "4.2.4";
 export const DAISYUI_VERSION = "5.5.19";
+export const MERMAID_VERSION = "11.15.0";
 
 export const DESIGN_CDN_URLS = {
   tailwind: `https://cdn.jsdelivr.net/npm/@tailwindcss/browser@${TAILWIND_BROWSER_VERSION}/dist/index.global.js`,
@@ -7,9 +10,21 @@ export const DESIGN_CDN_URLS = {
   daisyuiThemes: `https://cdn.jsdelivr.net/npm/daisyui@${DAISYUI_VERSION}/themes.css`,
 };
 
+export const MERMAID_CDN_URL = `https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_VERSION}/dist/mermaid.esm.min.mjs`;
+
 export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URLS.daisyui}">
 <link rel="stylesheet" href="${DESIGN_CDN_URLS.daisyuiThemes}">
 <script src="${DESIGN_CDN_URLS.tailwind}"></script>`;
+
+export const MERMAID_CDN_SNIPPET = `<script type="module">
+  import mermaid from "${MERMAID_CDN_URL}";
+
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    securityLevel: "strict",
+  });
+</script>`;
 
 export const LAYOUT_SAFETY_CSS_SNIPPET = `<style>
   *, *::before, *::after { box-sizing: border-box; }
@@ -69,6 +84,10 @@ export const DAISYUI_THEMES = [
 
 export function createDesignOutput() {
   return {
+    playbook_router: {
+      instruction: PLAYBOOK_ROUTER_INSTRUCTION,
+      playbooks: listPlaybooks(),
+    },
     design: {
       summary:
         "Use this Lavish CDN fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system; artifacts stay portable HTML. The strict priority order is: (1) a look or named design system the user asked for; (2) the subject project's design system or style conventions - look for a Tailwind or theme config, shared CSS variables or design tokens, a component library, brand assets, or existing styled pages. If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo; (3) this Tailwind CSS browser runtime v4 + DaisyUI v5 + themes snippet - paste the CDN snippet below into your `<head>` and prefer the CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.",
@@ -83,6 +102,13 @@ export function createDesignOutput() {
         "Optional copy-paste CSS for artifacts with dense nested grid/flex layouts, badges, wide monospace or pixel fonts, or local media. Paste it into the artifact yourself when useful. Lavish never auto-injects it, so direct-open portability stays intact.",
       other_design_systems:
         "If the user asks for a different design system (Bootstrap, custom CSS, plain HTML, etc.), use that instead - Lavish does not require DaisyUI.",
+    },
+    diagram_tooling: {
+      use_when:
+        "Use this for flows / architecture / state / sequence diagrams after opening the diagram playbook; Mermaid handles layout and edge routing better than hand-built div/flexbox boxes.",
+      mermaid_cdn_snippet: MERMAID_CDN_SNIPPET,
+      cdn_urls: { mermaid: MERMAID_CDN_URL },
+      versions: { mermaid: MERMAID_VERSION },
     },
     theme_usage: [
       'Default to `<html data-theme="luxury">` - it matches the Lavish look. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it.',

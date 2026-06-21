@@ -1,3 +1,9 @@
+export const PLAYBOOK_ROUTER_INSTRUCTION =
+  "MUST open each matching playbook before writing HTML. Match against the use_when trigger; one artifact often combines several playbooks.";
+
+export const PLAYBOOK_ROUTER_HELP =
+  "One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so MUST open each matching playbook before writing HTML.";
+
 export const PLAYBOOKS = [
   {
     id: "diagram",
@@ -19,6 +25,7 @@ export const PLAYBOOKS = [
     ],
     pitfalls: [
       "Do not cram every file or function into one diagram when a layered explanation would be clearer.",
+      "Do not hand-build boxes-and-arrows from div/flexbox for a flow: it does not auto-route edges and reads worse than Mermaid; reach for Mermaid or SVG for richly annotated nodes.",
       "Do not let default diagram colors clash with the page palette or dark mode.",
       "Do not present unverified architecture claims as facts. Cite the files or commands that support them.",
     ],
