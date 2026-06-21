@@ -211,7 +211,8 @@ test("artifact SDK lets disclosure controls handle their own clicks", () => {
   assert.doesNotMatch(js, /summary,details,\[contenteditable\]/);
   assert.doesNotMatch(nativeInteractive, /matches\(["']details["']\)/);
   assert.match(js, /isInteractiveControl\(event\.target\)/);
-  assert.match(clickHandler, /isDirectDetailsElement\(event\.target\)/);
+  assert.doesNotMatch(clickHandler, /isDirectDetailsElement\(event\.target\)/);
+  assert.doesNotMatch(js, /function isDirectDetailsElement/);
 });
 
 test("artifact SDK does not annotate text selected inside native controls", () => {
