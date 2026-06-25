@@ -486,6 +486,42 @@ async function submitLayoutWarnings(layoutWarnings) {
   if (!response.ok) throw new Error("failed to submit layout warnings");
 }
 
+// Relay artifact state to the per-session server store. The sandboxed iframe can't use
+// localStorage, so it posts setState/getState here; we persist over fetch so state survives
+// reloads. Writes are debounced and last-write-wins; reads resolve null when unavailable.
+let pendingState;
+let hasPendingState = false;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let stateWriteTimer;
+
+function scheduleStateWrite(state) {
+  pendingState = state;
+  hasPendingState = true;
+  if (stateWriteTimer) return;
+  stateWriteTimer = setTimeout(flushStateWrite, 250);
+  stateWriteTimer?.unref?.();
+}
+
+function flushStateWrite() {
+  stateWriteTimer = undefined;
+  if (!hasPendingState) return;
+  const state = pendingState;
+  hasPendingState = false;
+  pendingState = undefined;
+  fetch("/api/" + key + "/state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(state ?? null),
+  }).catch(() => {});
+}
+
+function respondWithState(id) {
+  fetch("/api/" + key + "/state")
+    .then((response) => (response.ok ? response.json() : null))
+    .catch(() => null)
+    .then((state) => postToFrame({ type: "lavish:state", id, state: state ?? null }));
+}
+
 async function endSession() {
   if (ended) return;
   const response = await fetch("/api/" + key + "/end", { method: "POST" });
@@ -705,6 +741,8 @@ window.addEventListener("message", (event) => {
     handleLayoutWarningsForGate(msg.layout_warnings);
     submitLayoutWarnings(msg.layout_warnings).catch(() => {});
   }
+  if (msg.type === "lavish:setState") scheduleStateWrite(msg.state);
+  if (msg.type === "lavish:getState") respondWithState(msg.id);
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();

@@ -53,6 +53,10 @@ const designAssetUrls = {
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 
+// Cap server-persisted artifact state so a runaway artifact can't bloat state.json. Stays under
+// the 2mb express.json body limit; oversized writes get an explicit 413.
+const ARTIFACT_STATE_MAX_BYTES = 1024 * 1024;
+
 // A detached server should not live forever. When no browser chrome (SSE) and no agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
 // `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
@@ -251,6 +255,37 @@ export async function serve({
       events.emit("ended", req.params.key);
       res.json({ status: "ended" });
       await shutdownIfNoLiveSessions();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/:key/state", async (req, res, next) => {
+    try {
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.json(session.state ?? null);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/state", async (req, res, next) => {
+    try {
+      const value = req.body === undefined ? null : req.body;
+      if (Buffer.byteLength(JSON.stringify(value ?? null)) > ARTIFACT_STATE_MAX_BYTES) {
+        res.status(413).json({ error: "artifact state too large", limit: ARTIFACT_STATE_MAX_BYTES });
+        return;
+      }
+      const session = await store.setArtifactState(req.params.key, value);
+      if (!session) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.status(204).end();
     } catch (error) {
       next(error);
     }

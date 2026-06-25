@@ -296,6 +296,11 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.design_rules.some((item) => item.includes("queueKey")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("window.lavish.queuePrompt")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("onsubmit")));
+  assert.ok(
+    output.playbook.design_rules.some((item) => item.includes("setState") && item.includes("survive a reload")),
+  );
+  assert.ok(output.playbook.lavish_notes.some((item) => item.includes("getState")));
+  assert.ok(output.playbook.pitfalls.some((item) => item.includes("localStorage")));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("unclear")));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("radio change")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));

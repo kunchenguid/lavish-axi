@@ -866,3 +866,52 @@ test("chrome client ignores annotation mode toggles after the session ends", asy
   assert.equal(chrome.element("annotation")["aria-pressed"], "false");
   assert.equal(chrome.postedToFrame.length, afterEndPostCount);
 });
+
+test("chrome client persists artifact state with a debounced last-write-wins server POST", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      posts.push({ url, method: init?.method, body: init?.body ? JSON.parse(init.body) : undefined });
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:setState", state: { count: 1 } });
+  chrome.sendFrameMessage({ type: "lavish:setState", state: { count: 2 } });
+
+  // Debounced: nothing is written until the timer fires.
+  assert.equal(posts.length, 0);
+
+  chrome.runTimers(250);
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, "/api/abc/state");
+  assert.equal(posts[0].method, "POST");
+  assert.deepEqual(posts[0].body, { count: 2 });
+});
+
+test("chrome client answers getState from the server and posts it to the iframe", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ count: 7 }) }),
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:getState", id: "req-1" });
+  await flushPromises();
+
+  // The chrome client runs in a separate vm realm, so JSON-clone before structural comparison.
+  const reply = chrome.postedToFrame.find((message) => message.type === "lavish:state");
+  assert.deepEqual(JSON.parse(JSON.stringify(reply)), { type: "lavish:state", id: "req-1", state: { count: 7 } });
+});
+
+test("chrome client resolves getState to null when the server has no state or errors", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({ ok: false }),
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:getState", id: "req-2" });
+  await flushPromises();
+
+  const reply = chrome.postedToFrame.find((message) => message.type === "lavish:state");
+  assert.deepEqual(JSON.parse(JSON.stringify(reply)), { type: "lavish:state", id: "req-2", state: null });
+});

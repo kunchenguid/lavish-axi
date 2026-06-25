@@ -569,6 +569,34 @@ export function createArtifactSdk(
     parent.postMessage({ type: "lavish:endSession" }, "*");
   }
 
+  // Server-backed key/value state so artifacts survive reloads. The iframe is sandboxed without
+  // allow-same-origin, so localStorage/IndexedDB throw here; the chrome relays these messages to
+  // a per-session server store. setState is fire-and-forget (the chrome debounces the write);
+  // getState resolves the last persisted value, or null on an older host that ignores the message.
+  let stateRequestCounter = 0;
+  const pendingStateRequests = new Map();
+
+  function setState(state) {
+    parent.postMessage({ type: "lavish:setState", state }, "*");
+  }
+
+  function getState() {
+    return new Promise((resolve) => {
+      const id = "lavish-state-" + ++stateRequestCounter;
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        pendingStateRequests.delete(id);
+        resolve(value === undefined ? null : value);
+      };
+      pendingStateRequests.set(id, finish);
+      // Resolve null if the host never replies (e.g. an older chrome that ignores getState).
+      window.setTimeout(() => finish(null), 4000);
+      parent.postMessage({ type: "lavish:getState", id }, "*");
+    });
+  }
+
   function snapshot() {
     const lines = [];
 
@@ -1037,6 +1065,8 @@ export function createArtifactSdk(
     queuePrompt,
     sendQueuedPrompts,
     endSession,
+    setState,
+    getState,
     getQueuedPrompts: () => [],
     setStatus: (message) => parent.postMessage({ type: "lavish:status", message: String(message) }, "*"),
     snapshot,
@@ -1050,6 +1080,9 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
+    }
+    if (msg.type === "lavish:state" && pendingStateRequests.has(msg.id)) {
+      pendingStateRequests.get(msg.id)(msg.state ?? null);
     }
   });
 

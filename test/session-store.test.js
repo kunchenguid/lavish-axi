@@ -589,3 +589,37 @@ test("freeform user prompts are stored in session chat history", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("artifact state persists, defaults to null, and survives reopening the session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    assert.equal(await store.getArtifactState(session.key), null);
+
+    await store.setArtifactState(session.key, { items: [1, 2, 3] });
+    assert.deepEqual(await store.getArtifactState(session.key), { items: [1, 2, 3] });
+
+    // Reopening the same file must not wipe persisted artifact state.
+    await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    assert.deepEqual(await store.getArtifactState(session.key), { items: [1, 2, 3] });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("artifact state operations no-op on an unknown session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const store = new SessionStore(path.join(dir, "state.json"));
+    assert.equal(await store.getArtifactState("missing"), null);
+    assert.equal(await store.setArtifactState("missing", { a: 1 }), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

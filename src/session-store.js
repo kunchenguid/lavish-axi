@@ -43,6 +43,7 @@ export class SessionStore {
       delivered_layout_warning_keys: existing.delivered_layout_warning_keys || [],
       dom_snapshot: existing.dom_snapshot || "",
       chat: existing.chat || [],
+      state: existing.state ?? null,
       updated_at: new Date().toISOString(),
     };
     state.sessions[key] = session;
@@ -162,6 +163,30 @@ export class SessionStore {
     const nextEndedBy = endedBy === "user" || existingEndedBy === "user" ? "user" : "agent";
     session.status = "ended";
     session.ended_by = nextEndedBy;
+    session.updated_at = new Date().toISOString();
+    await this.writeState(state);
+    return session;
+  }
+
+  // Opaque per-session key/value state owned by the artifact. The artifact iframe runs in an
+  // opaque origin (no allow-same-origin), so localStorage/IndexedDB throw inside it; persisting
+  // here lets artifact state survive reloads without relaxing the sandbox.
+  async getArtifactState(key) {
+    const state = await this.readState();
+    const session = state.sessions[key];
+    if (!session) {
+      return null;
+    }
+    return session.state ?? null;
+  }
+
+  async setArtifactState(key, value) {
+    const state = await this.readState();
+    const session = state.sessions[key];
+    if (!session) {
+      return null;
+    }
+    session.state = value ?? null;
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
     return session;
