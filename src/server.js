@@ -94,7 +94,14 @@ export async function serve({
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   let publicPort = port;
 
-  app.use(express.json({ limit: "2mb" }));
+  const jsonParser = express.json({ limit: "2mb" });
+  const lenientJsonParser = express.json({ strict: false, limit: "2mb" });
+  app.use((req, res, next) => {
+    if (req.method === "POST" && /^\/api\/[^/]+\/state$/.test(req.path)) {
+      return lenientJsonParser(req, res, next);
+    }
+    return jsonParser(req, res, next);
+  });
 
   app.get("/health", (req, res) => {
     res.json({ ok: true, app: "lavish-axi", version });
@@ -267,7 +274,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      res.json(session.state ?? null);
+      res.json(await store.getArtifactState(req.params.key));
     } catch (error) {
       next(error);
     }

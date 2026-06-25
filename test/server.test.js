@@ -2634,6 +2634,27 @@ test("artifact state round-trips through the server", async () => {
 
     const read = await fetch(`${base}/api/${session.key}/state`);
     assert.deepEqual(await read.json(), { checklist: [true, false] });
+
+    for (const primitive of [0, "", false, "ready"]) {
+      const writePrimitive = await fetch(`${base}/api/${session.key}/state`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(primitive),
+      });
+      assert.equal(writePrimitive.status, 204);
+      const readPrimitive = await fetch(`${base}/api/${session.key}/state`);
+      assert.deepEqual(await readPrimitive.json(), primitive);
+    }
+
+    const clear = await fetch(`${base}/api/${session.key}/state`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(null),
+    });
+    assert.equal(clear.status, 204);
+    const cleared = await fetch(`${base}/api/${session.key}/state`);
+    assert.equal(cleared.status, 200);
+    assert.equal(await cleared.json(), null);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

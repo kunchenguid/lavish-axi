@@ -516,6 +516,10 @@ function flushStateWrite() {
 }
 
 function respondWithState(id) {
+  if (hasPendingState) {
+    postToFrame({ type: "lavish:state", id, state: pendingState ?? null });
+    return;
+  }
   fetch("/api/" + key + "/state")
     .then((response) => (response.ok ? response.json() : null))
     .catch(() => null)

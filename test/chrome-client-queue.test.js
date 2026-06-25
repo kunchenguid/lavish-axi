@@ -891,6 +891,25 @@ test("chrome client persists artifact state with a debounced last-write-wins ser
   assert.deepEqual(posts[0].body, { count: 2 });
 });
 
+test("chrome client answers getState from the unflushed pending write during the debounce window", async () => {
+  let fetched = false;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      if (init?.method === "POST") return { ok: true };
+      fetched = true;
+      return { ok: true, json: async () => ({ count: 0 }) };
+    },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:setState", state: { count: 9 } });
+  chrome.sendFrameMessage({ type: "lavish:getState", id: "req-pending" });
+  await flushPromises();
+
+  const reply = chrome.postedToFrame.find((message) => message.type === "lavish:state");
+  assert.deepEqual(JSON.parse(JSON.stringify(reply)), { type: "lavish:state", id: "req-pending", state: { count: 9 } });
+  assert.equal(fetched, false);
+});
+
 test("chrome client answers getState from the server and posts it to the iframe", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async () => ({ ok: true, json: async () => ({ count: 7 }) }),
