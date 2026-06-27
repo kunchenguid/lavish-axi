@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.32](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.31...lavish-axi-v0.1.32) (2026-06-27)
+
+
+### Features
+
+* add layout audit curtain gate ([#97](https://github.com/kunchenguid/lavish-axi/issues/97)) ([0fa3968](https://github.com/kunchenguid/lavish-axi/commit/0fa3968fdf1f7184f52a8d5eb6eeeccc106b46cb))
+* **cli:** add Lavish playbook routing guidance ([#99](https://github.com/kunchenguid/lavish-axi/issues/99)) ([03cb069](https://github.com/kunchenguid/lavish-axi/commit/03cb0696ed1c5069db8b464e7299fd87098b1fff))
+* **cli:** expose SDK self-update command ([#110](https://github.com/kunchenguid/lavish-axi/issues/110)) ([26473c7](https://github.com/kunchenguid/lavish-axi/commit/26473c72e715986cee7130dfea8402007fc9e522))
+* report browser layout warnings through poll ([#95](https://github.com/kunchenguid/lavish-axi/issues/95)) ([4809102](https://github.com/kunchenguid/lavish-axi/commit/480910213eb2f12d2c4c514ee4a5c1f03ce1655f))
+
+
+### Bug Fixes
+
+* let summary controls toggle in annotation mode ([#100](https://github.com/kunchenguid/lavish-axi/issues/100)) ([3eb70c6](https://github.com/kunchenguid/lavish-axi/commit/3eb70c6e8ccdcdbc725b5d282327b0cc08dd1868))
+
 ## [0.1.31](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.30...lavish-axi-v0.1.31) (2026-06-16)
 
 
