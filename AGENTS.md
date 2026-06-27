@@ -104,6 +104,7 @@ The generated skill intentionally omits a `version` frontmatter field because re
 The playbook guidance tells agents that one artifact can combine several playbooks and must open each matching playbook before writing HTML.
 Diagram guidance names hand-built div/flexbox boxes-and-arrows as an anti-pattern and points flow, architecture, state, and sequence diagrams to Mermaid unless SVG is needed.
 The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.html"]` by `normalizeArgv`.
+`normalizeArgv` must let the SDK's `RESERVED_COMMANDS` (such as the built-in `update` self-updater) pass through untouched; otherwise the bare-arg rewrite turns `lavish-axi update` into `["open", "update"]` and the inherited reserved command never reaches `runAxiCli`.
 
 ### Telemetry
 

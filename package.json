@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "@tailwindcss/browser": "4.2.4",
-    "axi-sdk-js": "^0.1.7",
+    "axi-sdk-js": "^0.1.8",
     "chokidar": "^4.0.3",
     "daisyui": "^5.5.19",
     "express": "^5.2.1",

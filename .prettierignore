@@ -7,3 +7,4 @@ lavish-code-review.html
 package-lock.json
 CHANGELOG.md
 .agents
+.claude/settings.local.json

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AxiError, installSessionStartHooks, runAxiCli } from "axi-sdk-js";
+import { AxiError, installSessionStartHooks, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
 
 import { createDesignOutput, DESIGN_SYSTEM_HINT } from "./design-reference.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
@@ -15,6 +15,9 @@ import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
 const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup"]);
+// SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
+// the bare-arg normalization below would rewrite them into the hidden `open` command.
+const RESERVED = new Set(RESERVED_COMMANDS);
 const DESCRIPTION =
   "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. Whenever you are about to give user a complex response that will be easier to understand via a rich / interactive page, consider using Lavish Editor. " +
   "First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
@@ -83,7 +86,7 @@ export function collapseHomeDirectory(file, home) {
 
 export function normalizeArgv(argv) {
   const first = argv[0];
-  if (!first || COMMANDS.has(first)) {
+  if (!first || COMMANDS.has(first) || RESERVED.has(first)) {
     return argv;
   }
   if (first.startsWith("-")) {

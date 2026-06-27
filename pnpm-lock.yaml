@@ -11,8 +11,8 @@ importers:
         specifier: 4.2.4
         version: 4.2.4
       axi-sdk-js:
-        specifier: ^0.1.7
-        version: 0.1.7
+        specifier: ^0.1.8
+        version: 0.1.8
       chokidar:
         specifier: ^4.0.3
         version: 4.0.3
@@ -351,9 +351,9 @@ packages:
     resolution:
       { integrity: sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw== }
 
-  axi-sdk-js@0.1.7:
+  axi-sdk-js@0.1.8:
     resolution:
-      { integrity: sha512-kzIeuQHZx3FFpzJknq+sdbi3XBGdyPGMdOHM2Zepa4MF5MpckhPeWPd5x+RX6gBKEWZdaW73YrOPY+HAGyLekw== }
+      { integrity: sha512-N8Qd/9sVBpG8QRVSw0lLevdFuaBfjHHPdcbcj8DCuxr68sA1/c5KCnGEDqO7lI3kt52/bgymCZajmpTqz/rLOw== }
     engines: { node: ">=20" }
 
   balanced-match@4.0.4:
@@ -1171,7 +1171,7 @@ snapshots:
       json-schema-traverse: 0.4.1
       uri-js: 4.4.1
 
-  axi-sdk-js@0.1.7:
+  axi-sdk-js@0.1.8:
     dependencies:
       "@toon-format/toon": 2.1.0
 

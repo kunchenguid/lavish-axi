@@ -530,6 +530,12 @@ test("html file arguments normalize to the hidden open command", () => {
   assert.deepEqual(normalizeArgv(["--help"]), ["--help"]);
 });
 
+test("SDK reserved commands pass through instead of normalizing to open", () => {
+  assert.deepEqual(normalizeArgv(["update"]), ["update"]);
+  assert.deepEqual(normalizeArgv(["update", "--check"]), ["update", "--check"]);
+  assert.deepEqual(normalizeArgv(["update", "--help"]), ["update", "--help"]);
+});
+
 test("setup hooks resolves HOME before platform-specific user profile variables", () => {
   assert.equal(
     resolveHookHomeDir({ HOME: "/tmp/lavish-home", USERPROFILE: "C:\\Users\\runneradmin" }, "/fallback"),
