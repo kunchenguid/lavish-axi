@@ -54,8 +54,11 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.equal("use_cases" in output, false);
   assert.equal("example_use_cases" in output, false);
   assert.equal("artifact_guidance" in output, false);
-  assert.ok(output.visual_guidance.length <= 4);
+  assert.ok(output.visual_guidance.length <= 5);
   assert.ok(output.visual_guidance.some((item) => item.includes("visual hierarchy")));
+  assert.ok(
+    output.visual_guidance.some((item) => /screenshot/i.test(item) && /embed/i.test(item) && /prose/i.test(item)),
+  );
   assert.ok(output.visual_guidance.some((item) => item.includes("sections, cards, tables")));
   assert.ok(output.visual_guidance.some((item) => item.includes("horizontal overflow")));
   assert.ok(output.visual_guidance.some((item) => item.includes("minmax(0, 1fr)")));
