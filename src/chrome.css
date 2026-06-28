@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --ink-900: #0f1115;
   --ink-800: #11141a;
   --ink-700: #171a21;
@@ -38,6 +39,12 @@
   --accent-hover: var(--brass-400);
   --accent-ink: var(--brass-ink);
   --danger: var(--rust-500);
+  --hover: var(--steel-700);
+  --scrim: rgba(15, 17, 21, 0.86);
+  --banner-bg: rgba(37, 35, 15, 0.92);
+  --banner-border: rgba(244, 201, 93, 0.35);
+  --banner-fg: var(--brass-400);
+  --accent-divider: rgba(23, 19, 10, 0.22);
   --font-serif: "EB Garamond", "Iowan Old Style", Georgia, serif;
   --font-sans: Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -104,6 +111,33 @@
   --annotate-outline: 2px solid var(--accent);
   --annotate-offset: 2px;
 }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f1ece3;
+  --bg-panel: #f7f3eb;
+  --bg-bar: #ebe5d7;
+  --bg-elevated: #fffdf6;
+  --fg: #181b21;
+  --fg-muted: #495061;
+  --fg-dim: #5b6474;
+  --fg-faint: #67707f;
+  --fg-label: #60687a;
+  --border: #d3ccbb;
+  --border-subtle: #e2dccb;
+  --border-strong: #bdb59f;
+  --accent: var(--brass-500);
+  --accent-hover: var(--brass-400);
+  --accent-ink: var(--brass-ink);
+  --danger: var(--rust-500);
+  --hover: #e6dfce;
+  --scrim: rgba(20, 22, 28, 0.55);
+  --banner-bg: rgba(244, 201, 93, 0.22);
+  --banner-border: rgba(163, 118, 31, 0.45);
+  --banner-fg: #6b4e16;
+  --accent-divider: rgba(23, 19, 10, 0.22);
+  --shadow-tooltip: 0 16px 44px rgba(15, 17, 21, 0.18);
+  --shadow-floating: 0 20px 70px rgba(15, 17, 21, 0.18);
+}
 * {
   box-sizing: border-box;
 }
@@ -122,9 +156,6 @@ body {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-}
-body.lavish {
-  color-scheme: dark;
 }
 :focus-visible {
   outline: var(--annotate-outline);
@@ -167,6 +198,43 @@ body.lavish {
 }
 .spacer {
   flex: 1;
+}
+.theme-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+.theme-seg {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 0;
+  transition:
+    background 120ms var(--ease),
+    color 120ms var(--ease);
+}
+.theme-seg:hover:not([aria-pressed="true"]) {
+  background: var(--hover);
+  color: var(--fg);
+}
+.theme-seg[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.theme-seg:focus-visible {
+  outline: var(--annotate-outline);
+  outline-offset: 1px;
 }
 .annotate-switch {
   display: inline-flex;
@@ -234,7 +302,7 @@ body.lavish {
 .more-button:hover:not(:disabled),
 .more-button[aria-expanded="true"] {
   border-color: var(--border-strong);
-  background: var(--steel-700);
+  background: var(--hover);
   color: var(--fg);
 }
 .more-button:disabled {
@@ -286,7 +354,7 @@ body.lavish {
   color: var(--fg-muted);
 }
 .menu-file:hover {
-  background: var(--steel-700);
+  background: var(--hover);
 }
 .menu-file > svg {
   opacity: 0.7;
@@ -358,7 +426,7 @@ body.lavish {
   color: var(--fg);
 }
 .menu-item:hover:not(:disabled) {
-  background: var(--steel-700);
+  background: var(--hover);
 }
 .menu-item:disabled {
   cursor: not-allowed;
@@ -414,7 +482,7 @@ body.lavish {
 .send-caret {
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
   padding: 9px;
-  border-left: 1px solid rgba(23, 19, 10, 0.22);
+  border-left: 1px solid var(--accent-divider);
   display: grid;
   place-items: center;
 }
@@ -845,7 +913,7 @@ body.lavish {
 .ended-overlay {
   position: fixed;
   inset: var(--bar-h) 0 0 0;
-  background: rgba(15, 17, 21, 0.86);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -887,10 +955,10 @@ body.lavish {
   left: var(--space-8);
   right: var(--space-8);
   z-index: 20;
-  border: 1px solid rgba(244, 201, 93, 0.35);
+  border: 1px solid var(--banner-border);
   border-radius: var(--radius-lg);
-  background: rgba(37, 35, 15, 0.92);
-  color: var(--brass-400);
+  background: var(--banner-bg);
+  color: var(--banner-fg);
   padding: var(--space-6) var(--space-8);
   font-size: var(--text-sm);
   line-height: var(--lh-sm);

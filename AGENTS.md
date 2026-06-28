@@ -153,6 +153,12 @@ No need to explicitly document the telemetry behaviors.
 
 ## Things to know when editing
 
+- The editor chrome (`src/chrome.css`, injected by `src/server.js:createChromeHtml`) themes itself for light and dark.
+  All chrome design tokens live as CSS custom properties on `:root` (the dark default, with `color-scheme: dark`) and a cohesive light counterpart is defined on `:root[data-theme="light"]` (with `color-scheme: light`).
+  `createChromeHtml` inlines a tiny head script that reads `localStorage["lavish-axi:theme"]` and sets `document.documentElement` `data-theme` before paint to avoid a flash of the wrong theme.
+  `src/chrome-client.js` owns the runtime theme logic: a three-state System/Light/Dark segmented control in the top bar, preference persisted in `localStorage` under `lavish-axi:theme` (`"system"` is stored by removing the key), and a live `matchMedia("(prefers-color-scheme: dark)")` listener that only reapplies the theme while the preference is System.
+  Theme-aware surfaces (hover backgrounds, the ended-session scrim, the layout-issue banner, the send-caret divider) route through `--hover`, `--scrim`, `--banner-bg`/`--banner-border`/`--banner-fg`, and `--accent-divider` so each theme can set a fitting value; do not reintroduce hardcoded dark-only colors in chrome rules.
+  The user-authored artifact inside the iframe is never themed by the chrome - it keeps its own colors and `color-scheme`.
 - `canonicalFile` runs `realpath`, so symlinks resolve to their target before becoming session keys. Two paths that refer to the same file always collapse to one session.
 - The SDK injected into artifacts lives in `src/artifact-sdk.js` and is wrapped by `createSdkJs`.
   It executes inside an iframe sandboxed with `allow-scripts allow-forms allow-popups allow-downloads` (no `allow-same-origin`), so it cannot read the chrome's DOM - communication is `postMessage` only.

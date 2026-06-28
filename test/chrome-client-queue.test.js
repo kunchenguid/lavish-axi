@@ -87,6 +87,9 @@ async function createChromeHarness({
       setAttribute(name, value) {
         this[name] = String(value);
       },
+      getAttribute(name) {
+        return this[name] !== undefined ? String(this[name]) : null;
+      },
       addEventListener(type, handler) {
         listeners.set(type, handler);
       },
@@ -137,6 +140,26 @@ async function createChromeHarness({
     },
   };
 
+  const localStorageData = new Map();
+  const mediaQueryListeners = [];
+  const systemMediaQueryList = {
+    media: "(prefers-color-scheme: dark)",
+    matches: false,
+    addEventListener(type, handler) {
+      if (type === "change") mediaQueryListeners.push(handler);
+    },
+    removeEventListener(type, handler) {
+      if (type === "change") {
+        const index = mediaQueryListeners.indexOf(handler);
+        if (index !== -1) mediaQueryListeners.splice(index, 1);
+      }
+    },
+  };
+  function matchMedia(media) {
+    if (String(media).includes("prefers-color-scheme")) return systemMediaQueryList;
+    return { media, matches: false, addEventListener() {}, removeEventListener() {} };
+  }
+
   const context = {
     clearTimeout: fakeClearTimeout,
     console,
@@ -163,6 +186,7 @@ async function createChromeHarness({
     },
     document: {
       body: element("body"),
+      documentElement: element("html"),
       getElementById(id) {
         return element(id);
       },
@@ -179,6 +203,17 @@ async function createChromeHarness({
         return true;
       },
     },
+    localStorage: {
+      getItem(key) {
+        return localStorageData.has(key) ? localStorageData.get(key) : null;
+      },
+      setItem(key, value) {
+        localStorageData.set(key, String(value));
+      },
+      removeItem(key) {
+        localStorageData.delete(key);
+      },
+    },
     sessionStorage: {
       getItem(key) {
         return storage.has(key) ? storage.get(key) : null;
@@ -190,10 +225,12 @@ async function createChromeHarness({
         storage.delete(key);
       },
     },
+    matchMedia,
     window: {
       addEventListener(type, handler) {
         windowListeners.set(type, handler);
       },
+      matchMedia,
     },
   };
 
@@ -235,6 +272,16 @@ async function createChromeHarness({
     },
     runTimers,
     srcLoads,
+    setSystemTheme(dark) {
+      systemMediaQueryList.matches = dark === "dark";
+      for (const handler of [...mediaQueryListeners]) handler({ matches: systemMediaQueryList.matches });
+    },
+    themePreference() {
+      return localStorageData.get("lavish-axi:theme") || "system";
+    },
+    resolvedTheme() {
+      return element("html").getAttribute("data-theme");
+    },
   };
 }
 

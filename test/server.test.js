@@ -377,6 +377,60 @@ test("chrome uses the annotation outline as the keyboard focus outline", async (
   assert.match(css, /--annotate-offset:2px/);
 });
 
+test("chrome html inlines a no-FOUC theme script that resolves data-theme before paint", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  // The inline head script must run before the stylesheet/body so the correct
+  // theme applies on first paint, with no flash of the wrong theme.
+  const headEnd = html.indexOf("</head>");
+  const bodyStart = html.indexOf("<body");
+  assert.ok(headEnd > 0 && bodyStart > headEnd, "chrome html has a <head> before <body>");
+  const head = html.slice(0, headEnd);
+  assert.match(head, /<script>[^]*lavish-axi:theme[^]*<\/script>/);
+  assert.match(head, /prefers-color-scheme:\s*dark/);
+  assert.match(head, /data-theme/);
+});
+
+test("chrome html includes a three-state theme switch in the top bar", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /id="themeSwitch"/);
+  assert.match(html, /id="themeSystem"[^>]*aria-pressed="true"/);
+  assert.match(html, /id="themeLight"[^>]*aria-pressed="false"/);
+  assert.match(html, /id="themeDark"[^>]*aria-pressed="false"/);
+  // The switch lives inside the top bar, before the annotate switch.
+  const switchIndex = html.indexOf('id="themeSwitch"');
+  const annotateIndex = html.indexOf('id="annotation"');
+  assert.ok(switchIndex > 0 && annotateIndex > switchIndex, "theme switch precedes the annotate switch");
+});
+
+test("chrome css defaults to dark and defines a cohesive light theme keyed by data-theme", async () => {
+  const css = await chromeCssSource();
+
+  // Dark is the :root default (preserving the original luxury palette).
+  assert.match(css, /:root\{[^}]*color-scheme:dark/);
+  assert.match(css, /:root\{[^}]*--bg:var\(--ink-900\)/);
+
+  // A light counterpart overrides the same semantic seam with paper/ink tokens.
+  assert.match(css, /:root\[data-theme="light"\]\{[^}]*color-scheme:light/);
+  assert.match(css, /:root\[data-theme="light"\]\{[^}]*--bg:#f/);
+  assert.match(css, /:root\[data-theme="light"\]\{[^}]*--fg:#/);
+  assert.match(css, /:root\[data-theme="light"\]\{[^}]*--border:#/);
+});
+
+test("chrome css routes hover, scrim, and layout-warning surfaces through theme tokens", async () => {
+  const css = await chromeCssSource();
+
+  // Hover backgrounds go through --hover so light/dark can each pick a fitting tint.
+  assert.match(css, /\.menu-item:hover:not\(:disabled\)\{background:var\(--hover\)/);
+  assert.match(css, /\.more-button:hover:not\(:disabled\)[^{]*\{[^}]*background:var\(--hover\)/);
+  // The ended overlay scrim and layout-warning banner are theme-aware, not hardcoded.
+  assert.match(css, /\.ended-overlay\{[^}]*background:var\(--scrim\)/);
+  assert.match(css, /\.layout-issue-banner\{[^}]*background:var\(--banner-bg\)[^}]*color:var\(--banner-fg\)/);
+  // The dark scrim value is still defined as the :root default.
+  assert.match(css, /--scrim:rgba\(15,17,21,.86\)/);
+});
+
 test("chrome keeps the editor usable on narrow screens", async () => {
   const css = await chromeCssSource();
 
@@ -626,7 +680,7 @@ test("composer send is a split button with a send-and-end option", async () => {
   assert.match(html, /class="menu send-menu" id="sendMenu" hidden/);
   assert.match(html, /id="sendAndEnd"[^<]*>.*Send &amp; end session/);
   assert.match(css, /\.send-main\{[^}]*border-radius:var\(--radius-md\) 0 0 var\(--radius-md\)/);
-  assert.match(css, /\.send-caret\{[^}]*border-left:1px solid rgba\(23,19,10,.22\)/);
+  assert.match(css, /\.send-caret\{[^}]*border-left:1px solid var\(--accent-divider\)/);
 });
 
 test("send and end submits queued prompts before ending the session", async () => {
@@ -2413,7 +2467,7 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.match(html, /class="ended-copy">\/tmp\/artifact\.html</);
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
-  assert.match(css, /\.ended-overlay\{[^}]*background:rgba\(15,17,21,.86\)/);
+  assert.match(css, /\.ended-overlay\{[^}]*background:var\(--scrim\)/);
   assert.match(css, /\.ended-title\{[^}]*font-family:var\(--font-serif\)/);
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);

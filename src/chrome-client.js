@@ -56,6 +56,12 @@ const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementB
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
 const layoutIssueBanner = /** @type {HTMLDivElement} */ (document.getElementById("layoutIssueBanner"));
 const sendHint = /** @type {HTMLSpanElement} */ (document.getElementById("sendHint"));
+const themeButtons = {
+  system: /** @type {HTMLButtonElement} */ (document.getElementById("themeSystem")),
+  light: /** @type {HTMLButtonElement} */ (document.getElementById("themeLight")),
+  dark: /** @type {HTMLButtonElement} */ (document.getElementById("themeDark")),
+};
+const themeStorageKey = "lavish-axi:theme";
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
@@ -85,6 +91,7 @@ let lastScroll = { x: 0, y: 0 };
 let copyHintTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendHintTimer;
+let themePreference = readThemePreference();
 
 function escapeHtml(value) {
   return String(value).replace(
@@ -166,6 +173,52 @@ function showSendHint() {
 function hideSendHint() {
   clearTimeout(sendHintTimer);
   sendHint.hidden = true;
+}
+
+function readThemePreference() {
+  try {
+    const value = localStorage.getItem(themeStorageKey);
+    if (value === "light" || value === "dark") return value;
+  } catch {
+    // localStorage may be unavailable in restricted contexts; fall back to system.
+  }
+  return "system";
+}
+
+function systemPrefersDark() {
+  try {
+    return Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  } catch {
+    return true;
+  }
+}
+
+function resolveTheme(preference) {
+  if (preference === "light" || preference === "dark") return preference;
+  return systemPrefersDark() ? "dark" : "light";
+}
+
+function applyResolvedTheme(resolved) {
+  const root = document.documentElement;
+  if (root) root.setAttribute("data-theme", resolved);
+}
+
+function renderThemeButtons() {
+  for (const [name, button] of Object.entries(themeButtons)) {
+    if (button) button.setAttribute("aria-pressed", String(name === themePreference));
+  }
+}
+
+function setThemePreference(preference) {
+  themePreference = preference;
+  try {
+    if (preference === "system") localStorage.removeItem(themeStorageKey);
+    else localStorage.setItem(themeStorageKey, preference);
+  } catch {
+    // Preference stays in memory if storage is unavailable.
+  }
+  applyResolvedTheme(resolveTheme(preference));
+  renderThemeButtons();
 }
 
 function setMenuOpen(button, menu, open) {
@@ -793,3 +846,22 @@ events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse
 render();
 initialChat.forEach((item) => addChat(item.role, item.text));
 setAgentPresence("waiting");
+
+// Sync the editor chrome theme: the inline head script already set data-theme
+// before paint to avoid a flash; recompute here so a stored preference wins and
+// the toggle reflects the active choice, then track live OS changes while on System.
+applyResolvedTheme(resolveTheme(themePreference));
+renderThemeButtons();
+for (const [name, button] of Object.entries(themeButtons)) {
+  if (button) button.onclick = () => setThemePreference(name);
+}
+try {
+  const mediaQueryList = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+  if (mediaQueryList && typeof mediaQueryList.addEventListener === "function") {
+    mediaQueryList.addEventListener("change", (event) => {
+      if (themePreference === "system") applyResolvedTheme(event.matches ? "dark" : "light");
+    });
+  }
+} catch {
+  // If matchMedia is unavailable, the system preference simply stays as resolved at load.
+}
