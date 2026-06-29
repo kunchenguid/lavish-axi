@@ -113,6 +113,12 @@ test("chrome sandbox does not grant modal prompts", () => {
   assert.doesNotMatch(html, /sandbox="[^"]*allow-modals/);
 });
 
+test("chrome delegates clipboard writes to the sandboxed artifact", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /<iframe id="artifact"[^>]* allow="clipboard-write"/);
+});
+
 test("artifact SDK uses a custom annotation card instead of browser prompts", () => {
   const js = createSdkJs("abc");
 
@@ -204,11 +210,11 @@ test("annotation hover and click resolve to the same Mermaid node element", () =
   assert.match(js, /anchor = annotationTargetEl\(target\)/);
 });
 
-test("annotation mode forces the artifact cursor to default", () => {
+test("annotation mode preserves native artifact cursors", () => {
   const js = createSdkJs("abc");
 
   assert.match(js, /lavish-cursor-style/);
-  assert.match(js, /cursor:default!important/);
+  assert.doesNotMatch(js, /\*\{cursor:default!important/);
   assert.match(js, /setAnnotationMode\(enabled\)/);
 });
 
@@ -252,6 +258,17 @@ test("the annotate switch exposes the mode toggle hotkey as a discoverable toolt
   assert.match(html, /id="annotation"[^>]*title="Toggle annotate\/explore mode \(⌘I \/ Ctrl\+I\)"/);
 });
 
+test("artifact SDK reserves annotation for an explicit context-menu action", () => {
+  const js = createSdkJs("abc");
+
+  assert.doesNotMatch(js, /document\.addEventListener\(\s*["']mouseup["']/);
+  assert.doesNotMatch(js, /document\.addEventListener\(\s*["']click["']/);
+  assert.match(js, /document\.addEventListener\(\s*["']contextmenu["']/);
+  assert.match(js, /Copy selection/);
+  assert.match(js, /Annotate selection/);
+  assert.match(js, /Annotate element/);
+});
+
 test("artifact SDK lets marked feedback controls handle their own clicks", () => {
   const js = createSdkJs("abc");
 
@@ -291,11 +308,11 @@ test("artifact SDK does not annotate text selected inside native controls", () =
   assert.match(js, /isInteractiveControl\(ancestor\)/);
 });
 
-test("artifact SDK shows native cursors on form controls in annotation mode", () => {
+test("artifact SDK does not replace native control cursors in annotation mode", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /input,textarea,\[contenteditable\][^{]*\{cursor:text!important\}/);
-  assert.match(js, /input\[type='checkbox'\]/);
+  assert.doesNotMatch(js, /input,textarea,\[contenteditable\][^{]*\{cursor:text!important\}/);
+  assert.doesNotMatch(js, /input\[type='checkbox'\][^{]*\{cursor:pointer!important\}/);
 });
 
 test("turning annotation mode off clears selection and floating card", () => {
@@ -2429,7 +2446,7 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   assert.match(html, /<body class="lavish layout-gate-active">/);
   assert.match(
     html,
-    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
+    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" allow="clipboard-write" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
   );
   assert.doesNotMatch(html, /<iframe id="artifact"[^>]* src=/);
   assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
