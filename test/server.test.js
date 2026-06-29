@@ -10,6 +10,7 @@ import {
   createSdkJs,
   displayPathParts,
   exportContentDisposition,
+  extractArtifactHead,
   hasLiveReloadRootOptIn,
   resolveArtifactAsset,
   resolveDesignAssetPath,
@@ -2511,3 +2512,59 @@ function restoreEnv(name, value) {
     process.env[name] = value;
   }
 }
+
+test("chrome falls back to a default favicon and title when none are provided", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,/);
+  assert.match(html, /<title>Lavish Editor<\/title>/);
+});
+
+test("chrome adopts a favicon tag and tab title passed from the artifact", () => {
+  const faviconTag =
+    '<link rel="icon" href="data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\'><text>🗂️</text></svg>">';
+  const html = createChromeHtml(
+    { key: "abc", file: "/tmp/artifact.html" },
+    { faviconTag, title: "Project Board · Lavish" },
+  );
+
+  assert.ok(html.includes(faviconTag), "artifact favicon tag is injected verbatim");
+  assert.match(html, /<title>Project Board · Lavish<\/title>/);
+});
+
+test("chrome tab title from the artifact is HTML-escaped", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, { title: "<script>alert(1)</script>" });
+
+  assert.doesNotMatch(html, /<title><script>/);
+  assert.match(html, /&lt;script&gt;/);
+});
+
+test("extractArtifactHead pulls a data-URI favicon and title from the artifact head", () => {
+  const artifact = `<!doctype html><html><head>
+    <title>  Weekly   Board  </title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗂️</text></svg>">
+    </head><body></body></html>`;
+  const { faviconTag, title } = extractArtifactHead(artifact);
+
+  assert.match(faviconTag, /rel="icon"/);
+  assert.match(faviconTag, /viewBox='0 0 100 100'/, "data-URI '>' chars must not truncate the tag");
+  assert.match(faviconTag, /<\/svg>">$/, "the full link tag is captured");
+  assert.equal(title, "Weekly Board");
+});
+
+test("extractArtifactHead handles shortcut icon and absolute hrefs", () => {
+  const artifact = `<head><link rel="shortcut icon" href="https://example.com/fav.ico"></head>`;
+  const { faviconTag } = extractArtifactHead(artifact);
+
+  assert.match(faviconTag, /href="https:\/\/example\.com\/fav\.ico"/);
+});
+
+test("extractArtifactHead falls back to the default for missing or relative favicons", () => {
+  const none = extractArtifactHead("<head><title>No icon</title></head>");
+  assert.match(none.faviconTag, /data:image\/svg\+xml/);
+  assert.equal(none.title, "No icon");
+
+  // Relative hrefs would not resolve against the chrome page, so they fall back.
+  const relative = extractArtifactHead('<head><link rel="icon" href="favicon.png"></head>');
+  assert.match(relative.faviconTag, /data:image\/svg\+xml/);
+});
