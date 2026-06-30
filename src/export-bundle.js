@@ -105,6 +105,9 @@ const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
   "unsupported-css-import",
   "unsupported-frame",
   "unsupported-script-timing",
+  "unsupported-script-type",
+  "unsupported-style-type",
+  "unsupported-stylesheet-type",
 ]);
 
 /**

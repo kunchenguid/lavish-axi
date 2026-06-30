@@ -175,6 +175,34 @@ test("warns for local fetchable link hints left external", async () => {
   assert.equal(splitExportWarnings(warnings).unresolved.length, 4);
 });
 
+test("classifies unsupported local references left external as unresolved assets", () => {
+  const warnings = [
+    { kind: "unsupported-stylesheet-type", ref: "theme.txt" },
+    { kind: "unsupported-script-type", ref: "data.json" },
+    { kind: "unsupported-style-type", ref: "theme.png" },
+    { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+    { kind: "csp-meta", ref: "script-src 'self'" },
+  ];
+
+  const { unresolved, notices } = splitExportWarnings(warnings);
+
+  assert.deepEqual(
+    unresolved.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-stylesheet-type", ref: "theme.txt" },
+      { kind: "unsupported-script-type", ref: "data.json" },
+      { kind: "unsupported-style-type", ref: "theme.png" },
+    ],
+  );
+  assert.deepEqual(
+    notices.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+      { kind: "csp-meta", ref: "script-src 'self'" },
+    ],
+  );
+});
+
 test("leaves non-CSS stylesheet links external with warnings", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" type="application/json" href="secrets.json">' +
