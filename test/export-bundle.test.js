@@ -793,6 +793,35 @@ test("does not rewrite markup-like text inside legacy raw-text elements", async 
   assert.equal(warnings.length, 0);
 });
 
+test("redacts file URLs in closed raw-text bodies without tokenizing", async () => {
+  const readPaths = [];
+  const html =
+    "<!doctype html><html><head><title>file:///Users/kun/title.txt</title></head><body>" +
+    '<textarea>file:///Users/kun/text.txt <img src="local.png"></textarea>' +
+    '<xmp>file:///Users/kun/xmp.txt <img src="local.png"></xmp></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return Buffer.from("unexpected");
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<title>about:blank<\/title>/);
+  assert.match(out, /<textarea>about:blank <img src="local\.png"><\/textarea>/);
+  assert.match(out, /<xmp>about:blank <img src="local\.png"><\/xmp>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/title.txt" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/text.txt" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/xmp.txt" },
+    ],
+  );
+});
+
 test("treats unterminated raw-text content as inert through EOF", async () => {
   const html =
     '<!doctype html><html><body><textarea><img src="local.png"><img src="file:///Users/kun/secret.png"><img src="live.png">';
@@ -929,6 +958,30 @@ test("redacts file URLs inside inert template content", async () => {
   assert.deepEqual(
     warnings.map((warning) => warning.kind),
     ["file-url-redacted", "file-url-redacted"],
+  );
+});
+
+test("redacts file URLs in inert text chunks without tokenizing", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><template>before file:///Users/kun/secret.txt after <img src="local.png"></template></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return Buffer.from("unexpected");
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<template>before about:blank after <img src="local\.png"><\/template>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.txt" },
+      { kind: "inert-resource", ref: "local.png" },
+    ],
   );
 });
 
@@ -1889,10 +1942,23 @@ test("warns on unmapped root-absolute refs while leaving them unchanged", async 
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
+      { kind: "unmapped-root-absolute", ref: "/assets/" },
       { kind: "unmapped-root-absolute", ref: "/assets/bg.png" },
       { kind: "unmapped-root-absolute", ref: "/assets/logo.png" },
       { kind: "unmapped-root-absolute", ref: "/assets/relative.png" },
     ],
+  );
+});
+
+test("warns on an unmapped root-absolute base href without other assets", async () => {
+  const { html: out, warnings } = await buildSelfContainedHtml('<!doctype html><base href="/assets/">', {
+    baseDir: "/art",
+  });
+
+  assert.match(out, /<base href="\/assets\/">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "unmapped-root-absolute", ref: "/assets/" }],
   );
 });
 

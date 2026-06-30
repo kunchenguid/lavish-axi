@@ -272,10 +272,10 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
   while (index < markup.length) {
     const lt = markup.indexOf("<", index);
     if (lt === -1) {
-      result += markup.slice(index);
+      result += scrubRawTextFileUrls(markup.slice(index), ctx);
       break;
     }
-    result += markup.slice(index, lt);
+    result += scrubRawTextFileUrls(markup.slice(index, lt), ctx);
     const token = readHtmlToken(markup, lt);
     if (!token) {
       result += markup[lt];
@@ -334,7 +334,13 @@ async function transformRawTextElement(token, body, closeTag, baseDir, ctx) {
     return `${startTag}${escapeRawText(await inlineCss(body, baseDir, ctx, 0, baseDir), "style")}${closeTag}`;
   }
   if (tagName === "script") return inlineScript(token.tag, token.attrs, body, closeTag, baseDir, ctx);
-  return `${await transformStartTag(token.tag, token.attrs, false, baseDir, ctx)}${body}${closeTag}`;
+  return `${await transformStartTag(token.tag, token.attrs, false, baseDir, ctx)}${scrubRawTextBodyWithoutInlining(
+    tagName,
+    token.attrs,
+    body,
+    baseDir,
+    ctx,
+  )}${closeTag}`;
 }
 
 async function transformUnterminatedRawTextElement(token, body, baseDir, ctx) {
@@ -390,6 +396,7 @@ async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTa
   next = await inlineStyleAttr(next, baseDir, ctx);
   const isCspMetaTag = tagName === "meta" && isCspMeta(next);
   if (isCspMetaTag) warnCspMeta(next, ctx);
+  if (tagName === "base") warnBaseHref(next, ctx);
   if (tagName === "link") {
     const linked = await inlineLink(next, baseDir, ctx);
     if (linked.replacement) return linked.replacement;
@@ -397,6 +404,13 @@ async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTa
   }
   next = scrubFileUrlAttrs(next, ctx, isCspMetaTag ? { skipNames: ["content"] } : {});
   return formatStartTag(tag, next, selfClosing);
+}
+
+function warnBaseHref(attrs, ctx) {
+  const attr = findHtmlAttr(attrs, "href");
+  if (!attr || !attr.hasValue) return;
+  const descriptor = resolveRef(attr.value, localRefBase(ctx.baseDir), ctx, HTML_REF_OPTIONS);
+  if (descriptor.kind === "unmapped-root") warnUnresolvedDescriptor(descriptor, attr.value, ctx);
 }
 
 function scrubFileUrlAttrs(attrs, ctx, options = {}) {
