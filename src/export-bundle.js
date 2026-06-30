@@ -176,6 +176,7 @@ async function transformMarkup(markup, baseDir, ctx) {
     next = await inlineAttr(next, "xlink:href", baseDir, ctx);
     return formatStartTag(tag, next, isSelfClosingTag(match));
   });
+  result = await inlineRenderResourceTags(result, baseDir, ctx);
   result = await inlineStyleAttrs(result, baseDir, ctx);
   result = await replaceAsync(result, LINK_TAG_RE, (match, attrs) => inlineLink(match, attrs, baseDir, ctx));
   result = scrubFileUrlAttrs(result, ctx);
@@ -195,6 +196,32 @@ function scrubFileUrlAttrs(markup, ctx) {
     });
     return changed ? formatStartTag(tag, next, isSelfClosingTag(match)) : match;
   });
+}
+
+async function inlineRenderResourceTags(markup, baseDir, ctx) {
+  return replaceAsync(markup, START_TAG_RE, async (match, tag, attrs) => {
+    const tagName = tag.toLowerCase();
+    if (tagName === "object") {
+      return formatStartTag(tag, await inlineRenderAttr(attrs, "data", baseDir, ctx), isSelfClosingTag(match));
+    }
+    if (tagName === "embed") {
+      return formatStartTag(tag, await inlineRenderAttr(attrs, "src", baseDir, ctx), isSelfClosingTag(match));
+    }
+    if (tagName === "input") {
+      if (getAttr(attrs, "type").trim().toLowerCase() !== "image") return match;
+      return formatStartTag(tag, await inlineRenderAttr(attrs, "src", baseDir, ctx), isSelfClosingTag(match));
+    }
+    if (tagName === "iframe") {
+      return formatStartTag(tag, warnFrameSrc(attrs, baseDir, ctx), isSelfClosingTag(match));
+    }
+    return match;
+  });
+}
+
+async function inlineRenderAttr(attrs, name, baseDir, ctx) {
+  const value = getAttr(attrs, name);
+  if (value && containsFileUrl(value)) return attrs;
+  return inlineAttr(attrs, name, baseDir, ctx);
 }
 
 async function inlineStyleAttrs(markup, baseDir, ctx) {
@@ -485,7 +512,7 @@ function collectCssPrelude(css) {
 function classifyCssImport(parsed, baseDir, ctx, depth) {
   if (depth >= ctx.maxDepth) return { kind: "depth" };
   if (parsed.media && !isPlainCssMediaQueryList(parsed.media)) return { kind: "unsupported" };
-  const descriptor = resolveRef(parsed.ref, baseDir, ctx);
+  const descriptor = resolveRef(parsed.ref, baseDir, ctx, { cssSyntax: true });
   return descriptor.kind === "file" ? { kind: "candidate", descriptor } : { kind: descriptor.kind, descriptor };
 }
 
@@ -605,7 +632,7 @@ function rebaseCssUrlToken(token, baseDir, outputBaseDir) {
   if (shouldRedactUnresolvedRef(token.ref, { cssSyntax: true })) {
     return `url(${token.quote}${REDACTED_FILE_REF}${token.quote})`;
   }
-  const rebased = rebaseLocalCssRef(token.ref, baseDir, outputBaseDir);
+  const rebased = rebaseLocalCssRef(token.ref, baseDir, outputBaseDir, { cssSyntax: true });
   return rebased ? `url(${token.quote}${rebased}${token.quote})` : token.raw;
 }
 
@@ -613,13 +640,13 @@ function rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir) {
   if (shouldRedactUnresolvedRef(parsed.ref, { cssSyntax: true })) {
     return `${rule.slice(0, parsed.refStart)}${REDACTED_FILE_REF}${rule.slice(parsed.refEnd)}`;
   }
-  const rebased = rebaseLocalCssRef(parsed.ref, baseDir, outputBaseDir);
+  const rebased = rebaseLocalCssRef(parsed.ref, baseDir, outputBaseDir, { cssSyntax: true });
   if (!rebased) return rule;
   return `${rule.slice(0, parsed.refStart)}${rebased}${rule.slice(parsed.refEnd)}`;
 }
 
-function rebaseLocalCssRef(ref, baseDir, outputBaseDir) {
-  const trimmed = String(ref || "").trim();
+function rebaseLocalCssRef(ref, baseDir, outputBaseDir, options = {}) {
+  const trimmed = normalizeRefForResolution(ref, options).trim();
   const base = normalizeRefBase(baseDir);
   const outputBase = normalizeRefBase(outputBaseDir);
   if (base.kind !== "local" || outputBase.kind !== "local") return "";
@@ -806,8 +833,7 @@ function startsUnsupportedCssImportTail(tail) {
   let cursor = index;
   while (cursor < tail.length && isCssIdentChar(tail[cursor])) cursor += 1;
   const ident = tail.slice(index, cursor).toLowerCase();
-  const afterIdent = skipCssWhitespaceAndComments(tail, cursor);
-  if (ident === "layer" && afterIdent >= tail.length) return true;
+  if (ident === "layer") return true;
   return tail[cursor] === "(" && (ident === "layer" || ident === "supports" || cursor > index);
 }
 
@@ -1020,6 +1046,27 @@ function warnUnsupportedScriptType(ref, baseDir, ctx, options = {}) {
   }
 }
 
+function warnFrameSrc(attrs, baseDir, ctx) {
+  const ref = getAttr(attrs, "src");
+  if (!ref) return attrs;
+  if (containsFileUrl(ref)) return attrs;
+  warnUnsupportedFrame(ref, baseDir, ctx, HTML_REF_OPTIONS);
+  return replaceUnresolvedAttrRef(attrs, "src", ref);
+}
+
+function warnUnsupportedFrame(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "unsupported-frame",
+      ref,
+      reason: "iframe documents are left as references because nested HTML is not bundled",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
 function warnInlineModuleImports(body, baseDir, ctx) {
   for (const ref of findInlineModuleImportRefs(body)) {
     if (!isRelativeModuleImport(ref)) continue;
@@ -1041,7 +1088,7 @@ function warnInlineModuleImport(ref, baseDir, ctx) {
 }
 
 function warnUnsupportedCssImport(ref, baseDir, ctx, tail) {
-  const descriptor = resolveRef(ref, baseDir, ctx);
+  const descriptor = resolveRef(ref, baseDir, ctx, { cssSyntax: true });
   if (descriptor.kind === "file") {
     ctx.warnings.push({
       kind: "unsupported-css-import",
@@ -1054,7 +1101,7 @@ function warnUnsupportedCssImport(ref, baseDir, ctx, tail) {
 }
 
 function warnCssImportDepth(ref, baseDir, ctx) {
-  const descriptor = resolveRef(ref, baseDir, ctx);
+  const descriptor = resolveRef(ref, baseDir, ctx, { cssSyntax: true });
   if (descriptor.kind === "file") {
     ctx.warnings.push({
       kind: "css-import-depth",
@@ -1079,7 +1126,7 @@ function warnCssImportOrder(ref, descriptor, ctx) {
 }
 
 function warnLateCssImport(ref, baseDir, ctx) {
-  const descriptor = resolveRef(ref, baseDir, ctx);
+  const descriptor = resolveRef(ref, baseDir, ctx, { cssSyntax: true });
   if (descriptor.kind === "file") {
     ctx.warnings.push({
       kind: "late-css-import",
@@ -1439,8 +1486,9 @@ function fragmentSuffix(ref) {
 }
 
 function normalizeRefForResolution(ref, options = {}) {
-  const value = String(ref);
-  return options.decodeHtmlEntities ? decodeHtmlCharacterReferences(value) : value;
+  let value = String(ref);
+  if (options.decodeHtmlEntities) value = decodeHtmlCharacterReferences(value);
+  return options.cssSyntax ? decodeCssEscapes(value) : value;
 }
 
 function normalizeRefForScheme(ref, options = {}) {

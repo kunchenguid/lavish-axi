@@ -635,6 +635,22 @@ test("leaves non-media CSS imports unchanged with a warning", async () => {
   );
 });
 
+test("leaves bare layer CSS imports with media unchanged with a warning", async () => {
+  const html = '<!doctype html><html><head><style>@import "theme.css" layer screen;</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/theme.css": ".theme{color:red}" }),
+  });
+
+  assert.match(out, /@import "theme\.css" layer screen;/);
+  assert.doesNotMatch(out, /@media layer screen/);
+  assert.doesNotMatch(out, /\.theme\{color:red\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "unsupported-css-import", ref: "theme.css" }],
+  );
+});
+
 test("does not treat CSS strings or comments as url or import assets", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
@@ -1009,6 +1025,38 @@ test("redacts remaining file URLs from arbitrary HTML attributes", async () => {
   );
 });
 
+test("decodes CSS escapes when resolving local url and import refs", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><head><style>@import "theme\\000020dark.css";' +
+    ".hero{background:url(my\\ image.png)}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/theme dark.css": ".theme{color:red}",
+      "/art/my image.png": png,
+    }),
+  });
+
+  assert.doesNotMatch(out, /@import/);
+  assert.match(out, /\.theme\{color:red\}/);
+  assert.match(out, /background:url\(data:image\/png;base64,iVBORw==\)/);
+  assert.equal(warnings.length, 0);
+});
+
+test("preserves original CSS escape tokens when unresolved refs remain external", async () => {
+  const html = "<!doctype html><html><head><style>.hero{background:url(my\\ image.png)}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.match(out, /background:url\(my\\ image\.png\)/);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].kind, "load-failed");
+  assert.equal(warnings[0].ref, "my\\ image.png");
+});
+
 test("redacts browser-normalized file schemes in attributes and CSS urls", async () => {
   const html =
     "<!doctype html><html><head><style>.x{background:url(file\\3a///Users/kun/css-secret.png)}</style></head>" +
@@ -1026,6 +1074,34 @@ test("redacts browser-normalized file schemes in attributes and CSS urls", async
   assert.deepEqual(
     warnings.map((warning) => warning.kind),
     ["outside-root", "file-url-redacted"],
+  );
+});
+
+test("inlines local object embed and image input resources while warning for iframes", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const svg = "<svg></svg>";
+  const html =
+    '<!doctype html><html><body><object data="diagram.svg"></object><embed src="doc.pdf">' +
+    '<input type="image" src="button.png"><input type="text" src="ignored.png">' +
+    '<iframe src="panel.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/diagram.svg": svg,
+      "/art/doc.pdf": Buffer.from("%PDF"),
+      "/art/button.png": png,
+      "/art/panel.html": "<p>Nested</p>",
+    }),
+  });
+
+  assert.match(out, /<object data="data:image\/svg\+xml;base64,[^"]+"><\/object>/);
+  assert.match(out, /<embed src="data:application\/pdf;base64,JVBERg==">/);
+  assert.match(out, /<input type="image" src="data:image\/png;base64,iVBORw==">/);
+  assert.match(out, /<input type="text" src="ignored\.png">/);
+  assert.match(out, /<iframe src="panel\.html"><\/iframe>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "unsupported-frame", ref: "panel.html" }],
   );
 });
 
