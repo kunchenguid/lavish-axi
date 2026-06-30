@@ -213,7 +213,8 @@ function popHtmlParent(openStack, tagName) {
 }
 
 async function transformInertContentElement(token, body, closeTag, baseDir, ctx) {
-  const startTag = formatStartTag(token.tag, scrubInertAttrs(token.attrs, baseDir, ctx), false);
+  const tagName = token.tag.toLowerCase();
+  const startTag = formatStartTag(token.tag, scrubInertAttrs(tagName, token.attrs, baseDir, ctx), false);
   return `${startTag}${transformInertMarkup(body, baseDir, ctx)}${closeTag}`;
 }
 
@@ -246,7 +247,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       const body = markup.slice(token.end, bodyEnd);
       if (!close) warnUnterminatedRawText(tagName, ctx);
       if (INERT_CONTENT_TAGS.has(tagName)) {
-        const attrs = scrubInertAttrs(token.attrs, baseDir, ctx, options);
+        const attrs = scrubInertAttrs(tagName, token.attrs, baseDir, ctx, options);
         result += `${formatStartTag(token.tag, attrs, false)}${transformInertMarkup(body, baseDir, ctx, options)}${
           close ? close.raw : ""
         }`;
@@ -259,7 +260,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
     if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx);
     result += formatStartTag(
       token.tag,
-      scrubInertAttrs(token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
+      scrubInertAttrs(tagName, token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
       token.selfClosing,
     );
     index = token.end;
@@ -289,7 +290,7 @@ function transformInertRawTextElement(token, body, closeTag, baseDir, ctx, optio
   if (options.warnLocalRefs !== false) warnInertStartTagRefs(token.tag.toLowerCase(), token.attrs, baseDir, ctx);
   const startTag = formatStartTag(
     token.tag,
-    scrubInertAttrs(token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
+    scrubInertAttrs(token.tag.toLowerCase(), token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
     false,
   );
   return `${startTag}${scrubRawTextBodyWithoutInlining(
@@ -329,6 +330,7 @@ async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTa
   }
   next = await inlineRenderResourceAttrs(tagName, next, baseDir, ctx);
   next = await inlineStyleAttr(next, baseDir, ctx);
+  if (tagName === "meta") warnCspMeta(next, ctx);
   if (tagName === "link") {
     const linked = await inlineLink(next, baseDir, ctx);
     if (linked.replacement) return linked.replacement;
@@ -350,8 +352,9 @@ function scrubFileUrlAttrs(attrs, ctx) {
   return result;
 }
 
-function scrubInertAttrs(attrs, baseDir, ctx, options = {}) {
+function scrubInertAttrs(tagName, attrs, baseDir, ctx, options = {}) {
   let result = scrubInertStyleAttr(attrs, baseDir, ctx, options);
+  if (tagName === "iframe") result = scrubFrameSrcdoc(result, baseDir, ctx);
   result = scrubFileUrlAttrs(result, ctx);
   return result;
 }
@@ -442,6 +445,16 @@ function isCssStylesheetType(attrs) {
 
 function isCssStyleElementType(attrs) {
   return isCssStylesheetType(attrs);
+}
+
+function warnCspMeta(attrs, ctx) {
+  const httpEquiv = getDecisionAttr(attrs, "http-equiv").trim().toLowerCase();
+  if (httpEquiv !== "content-security-policy") return;
+  ctx.warnings.push({
+    kind: "csp-meta",
+    ref: getAttr(attrs, "content") || "Content-Security-Policy",
+    reason: "author-set CSP meta is left unchanged and may block inlined export assets",
+  });
 }
 
 async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
@@ -735,8 +748,8 @@ function warnExternalizedCssImport(item, baseDir, ctx, depth, importIndex, failu
     warnCssImportDepth(item.parsed.ref, baseDir, ctx);
   } else if (classification.kind === "unsupported") {
     warnUnsupportedCssImport(item.parsed.ref, baseDir, ctx, item.parsed.media);
-  } else if (classification.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref: item.parsed.ref });
+  } else {
+    warnUnresolvedDescriptor(classification.descriptor || { kind: classification.kind }, item.parsed.ref, ctx);
   }
 }
 
@@ -1074,8 +1087,8 @@ function scrubCssRefWithoutInlining(ref, baseDir, ctx, options) {
       ref,
       reason: options.localWarningReason,
     });
-  } else if (descriptor.kind === "escape") {
-    pushCssScrubWarning(ctx, options, { kind: "outside-root", ref });
+  } else if (descriptor.kind === "escape" || descriptor.kind === "unmapped-root") {
+    pushCssScrubWarning(ctx, options, unresolvedDescriptorWarning(descriptor, ref));
   }
   return { replacement: "" };
 }
@@ -1819,7 +1832,9 @@ function resolveRef(ref, baseDir, ctx, options = {}) {
   const localPath = decodeLocalPath(stripQueryAndHash(effectiveRef));
   if (effectiveRef.startsWith("/")) {
     const mapped = ctx.resolveAbsolute(localPath);
-    return mapped ? { kind: "file", path: mapped, allowOutsideRoot: true } : { kind: "skip" };
+    return mapped
+      ? { kind: "file", path: mapped, allowOutsideRoot: true }
+      : { kind: "unmapped-root", ref: effectiveRef };
   }
   const resolved = resolveLocalPathPreservingTrailingSlash(base.dir, localPath);
   if (ctx.confineDir && isOutside(ctx.confineDir, resolved)) return { kind: "escape", path: resolved };
@@ -1831,6 +1846,23 @@ function resolveLocalPathPreservingTrailingSlash(baseDir, localPath) {
   return localPath.endsWith("/") && !resolved.endsWith(path.sep) ? `${resolved}${path.sep}` : resolved;
 }
 
+function warnUnresolvedDescriptor(descriptor, ref, ctx) {
+  const warning = unresolvedDescriptorWarning(descriptor, ref);
+  if (warning) ctx.warnings.push(warning);
+}
+
+function unresolvedDescriptorWarning(descriptor, ref) {
+  if (descriptor.kind === "escape") return { kind: "outside-root", ref };
+  if (descriptor.kind === "unmapped-root") {
+    return {
+      kind: "unmapped-root-absolute",
+      ref: descriptor.ref || ref,
+      reason: "root-absolute reference has no trusted local mapping and is left unchanged",
+    };
+  }
+  return null;
+}
+
 async function loadText(ref, baseDir, ctx, options = {}) {
   const descriptor = resolveRef(ref, baseDir, ctx, options);
   return loadTextFromDescriptor(descriptor, ref, ctx);
@@ -1838,7 +1870,7 @@ async function loadText(ref, baseDir, ctx, options = {}) {
 
 async function loadTextFromDescriptor(descriptor, ref, ctx, options = {}) {
   if (descriptor.kind !== "file") {
-    if (descriptor.kind === "escape") ctx.warnings.push({ kind: "outside-root", ref });
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
     return null;
   }
   const buffer = await readBudgeted(descriptor, ref, ctx, options);
@@ -1849,7 +1881,7 @@ async function loadTextFromDescriptor(descriptor, ref, ctx, options = {}) {
 async function loadDataUri(ref, baseDir, ctx, options = {}) {
   const descriptor = resolveRef(ref, baseDir, ctx, options);
   if (descriptor.kind !== "file") {
-    if (descriptor.kind === "escape") ctx.warnings.push({ kind: "outside-root", ref });
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
     return null;
   }
   const buffer = await readBudgeted(descriptor, ref, ctx);
@@ -1866,8 +1898,8 @@ function warnUnsupportedScriptTiming(ref, baseDir, ctx, options = {}) {
       ref,
       reason: "defer and async scripts are left as references to preserve execution timing",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -1879,8 +1911,8 @@ function warnInactiveStylesheet(ref, baseDir, ctx, options = {}) {
       ref,
       reason: "inactive stylesheet links are left as references to preserve disabled or alternate state",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -1892,8 +1924,8 @@ function warnBehavioralStylesheet(ref, baseDir, ctx, options = {}) {
       ref,
       reason: "stylesheet links with event handler attributes are left as references to preserve behavior",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -1905,8 +1937,8 @@ function warnExternalModuleScript(ref, baseDir, ctx, options = {}) {
       ref,
       reason: "module scripts are left as references to preserve relative imports",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -1918,8 +1950,8 @@ function warnUnsupportedScriptType(ref, baseDir, ctx, options = {}) {
       ref,
       reason: "non-classic script types are left as references",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -1931,8 +1963,8 @@ function warnUnsupportedStylesheetType(ref, baseDir, ctx, options = {}) {
       ref,
       reason: "non-CSS stylesheet links are left as references",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -1967,8 +1999,8 @@ function warnUnsupportedFrame(ref, baseDir, ctx, options = {}) {
       ref,
       reason: "iframe documents are left as references because nested HTML is not bundled",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -2029,7 +2061,10 @@ function warnInertStyleRefs(attrs, baseDir, ctx, options = {}) {
 function warnInertResource(ref, baseDir, ctx, refOptions = {}, warningOptions = {}) {
   if (shouldRedactUnresolvedRef(ref, refOptions)) return;
   const descriptor = resolveRef(ref, baseDir, ctx, refOptions);
-  if (descriptor.kind !== "file" && descriptor.kind !== "escape") return;
+  if (descriptor.kind !== "file") {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
+    return;
+  }
   ctx.warnings.push({
     kind: "inert-resource",
     ref,
@@ -2067,8 +2102,8 @@ function warnInlineImportMapLocalRefs(body, baseDir, ctx) {
         ref,
         reason: "inline import maps are left unchanged; local mapped modules are not bundled",
       });
-    } else if (descriptor.kind === "escape") {
-      ctx.warnings.push({ kind: "outside-root", ref });
+    } else {
+      warnUnresolvedDescriptor(descriptor, ref, ctx);
     }
   }
 }
@@ -2128,8 +2163,8 @@ function warnInlineModuleImport(ref, baseDir, ctx) {
       ref,
       reason: "inline module imports are left as references",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -2141,8 +2176,8 @@ function warnUnsupportedCssImport(ref, baseDir, ctx, tail) {
       ref,
       reason: `CSS @import tail is left unchanged: ${tail}`,
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -2154,8 +2189,8 @@ function warnCssImportDepth(ref, baseDir, ctx) {
       ref,
       reason: `CSS @import recursion reached max depth ${ctx.maxDepth}`,
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -2166,8 +2201,8 @@ function warnCssImportOrder(ref, descriptor, ctx) {
       ref,
       reason: "CSS @import is left as a reference to preserve import ordering",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 
@@ -2179,8 +2214,8 @@ function warnLateCssImport(ref, baseDir, ctx) {
       ref,
       reason: "CSS @import appears outside the valid top-level import prelude and is left unchanged",
     });
-  } else if (descriptor.kind === "escape") {
-    ctx.warnings.push({ kind: "outside-root", ref });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
   }
 }
 

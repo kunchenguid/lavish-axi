@@ -176,6 +176,27 @@ test("redacts file URLs in non-CSS style element bodies without bundling", async
   );
 });
 
+test("leaves CSP meta unchanged and warns it may block inlined export assets", async () => {
+  const html =
+    "<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'self'; img-src 'self'\">" +
+    '<script src="app.js"></script></head><body><img src="logo.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/app.js": "window.ready = true;",
+      "/art/logo.png": Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    }),
+  });
+
+  assert.match(out, /<meta http-equiv="Content-Security-Policy" content="script-src 'self'; img-src 'self'">/);
+  assert.match(out, /<script>window\.ready = true;<\/script>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "csp-meta", ref: "script-src 'self'; img-src 'self'" }],
+  );
+});
+
 test("inlines a local script src as an inline script and escapes closing tags", async () => {
   const html = '<!doctype html><html><body><script src="app.js"></script></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -1691,6 +1712,34 @@ test("resolves root-absolute references through resolveAbsolute (e.g. legacy /de
   assert.match(out, /<style>\.btn\{color:blue\}<\/style>/);
 });
 
+test("warns on unmapped root-absolute refs while leaving them unchanged", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><head><base href="/assets/"><style>.x{background:url(/assets/bg.png)}</style></head>' +
+    '<body><img src="/assets/logo.png"><img src="relative.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return Buffer.from("unexpected");
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.match(out, /<base href="\/assets\/">/);
+  assert.match(out, /url\(\/assets\/bg\.png\)/);
+  assert.match(out, /<img src="\/assets\/logo\.png">/);
+  assert.match(out, /<img src="relative\.png">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unmapped-root-absolute", ref: "/assets/bg.png" },
+      { kind: "unmapped-root-absolute", ref: "/assets/logo.png" },
+      { kind: "unmapped-root-absolute", ref: "/assets/relative.png" },
+    ],
+  );
+});
+
 test("default reader allows trusted root-absolute mapped design assets outside the artifact root", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
   try {
@@ -1987,6 +2036,36 @@ test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
   assert.doesNotMatch(out, /\/Users\/kun/);
   assert.doesNotMatch(out, /file\\3a/i);
   assert.match(out, /srcdoc='<img src="local\.png"><style>\.x\{background:url\(about:blank\)\}<\/style>'/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inert-resource", ref: "local.png" },
+      { kind: "file-url-redacted", ref: "file\\3a///Users/kun/secret.png" },
+    ],
+  );
+});
+
+test("scrubs inert iframe srcdoc refs without bundling nested HTML", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><template><iframe srcdoc=\'<img src="local.png">' +
+    "<style>.x{background:u\\72l(file\\3a///Users/kun/secret.png)}</style>'></iframe></template></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({ "/art/local.png": Buffer.from("local") })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(out, /file\\3a/i);
+  assert.match(
+    out,
+    /<template><iframe srcdoc='<img src="local\.png"><style>\.x\{background:url\(about:blank\)\}<\/style>'><\/iframe><\/template>/,
+  );
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
