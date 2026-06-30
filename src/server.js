@@ -260,7 +260,6 @@ export async function serve({
       });
       res.setHeader("content-disposition", `attachment; filename="${exportFileName(session.file)}"`);
       res.setHeader("x-lavish-export-warning-count", String(warnings.length));
-      if (warnings.length) res.setHeader("x-lavish-export-warnings", encodeURIComponent(JSON.stringify(warnings)));
       res.type("html").send(html);
     } catch (error) {
       next(error);

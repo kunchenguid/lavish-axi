@@ -1075,7 +1075,7 @@ test("GET /api/:key/export inlines local assets and leaves remote references int
   }
 });
 
-test("GET /api/:key/export reports unresolved local asset warnings", async () => {
+test("GET /api/:key/export reports unresolved local asset warning count", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, '<!doctype html><html><body><img src="missing.png"></body></html>');
@@ -1092,14 +1092,10 @@ test("GET /api/:key/export reports unresolved local asset warnings", async () =>
 
     const exportRes = await fetch(`${base}/api/${session.key}/export`);
     const body = await exportRes.text();
-    const warnings = JSON.parse(decodeURIComponent(exportRes.headers.get("x-lavish-export-warnings") || "%5B%5D"));
 
     assert.equal(exportRes.status, 200);
     assert.equal(exportRes.headers.get("x-lavish-export-warning-count"), "1");
-    assert.equal(warnings.length, 1);
-    assert.equal(warnings[0].kind, "load-failed");
-    assert.equal(warnings[0].ref, "missing.png");
-    assert.match(warnings[0].reason || "", /ENOENT/);
+    assert.equal(exportRes.headers.get("x-lavish-export-warnings"), null);
     assert.match(body, /<img src="missing\.png">/);
   } finally {
     await server.close();

@@ -46,7 +46,7 @@ const DEFAULT_MAX_DEPTH = 8;
 const DEFAULT_MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 25 * 1024 * 1024;
 const RAW_TEXT_OR_COMMENT_RE =
-  /<!--[\s\S]*?-->|<style\b[^>]*>[\s\S]*?<\/style\s*>|<script\b[^>]*>[\s\S]*?<\/script\s*>|<textarea\b[^>]*>[\s\S]*?<\/textarea\s*>|<title\b[^>]*>[\s\S]*?<\/title\s*>/gi;
+  /<!--[\s\S]*?-->|<style(?=\s|\/|>)[^>]*>[\s\S]*?<\/style\s*>|<script(?=\s|\/|>)[^>]*>[\s\S]*?<\/script\s*>|<textarea(?=\s|\/|>)[^>]*>[\s\S]*?<\/textarea\s*>|<title(?=\s|\/|>)[^>]*>[\s\S]*?<\/title\s*>/gi;
 
 /**
  * @param {string} html
@@ -111,12 +111,12 @@ async function transform(html, ctx) {
 
 async function transformRawTextOrComment(segment, baseDir, ctx) {
   if (segment.startsWith("<!--")) return segment;
-  const style = segment.match(/^<style\b([^>]*)>([\s\S]*?)<\/style\s*>$/i);
+  const style = segment.match(/^<style(?=\s|\/|>)([^>]*)>([\s\S]*?)<\/style\s*>$/i);
   if (style) {
     const [, attrs, css] = style;
     return `<style${attrs}>${escapeRawText(await inlineCss(css, baseDir, ctx, 0, baseDir), "style")}</style>`;
   }
-  const script = segment.match(/^<script\b([^>]*)>([\s\S]*?)<\/script\s*>$/i);
+  const script = segment.match(/^<script(?=\s|\/|>)([^>]*)>([\s\S]*?)<\/script\s*>$/i);
   if (script) {
     const [, attrs, body] = script;
     return inlineScript(segment, attrs, body, baseDir, ctx);
@@ -128,7 +128,7 @@ async function transformMarkup(markup, baseDir, ctx) {
   let result = markup;
   result = await replaceAsync(
     result,
-    /<(img|source|video|audio)(?=\s|\/|>)([^>]*?)\/?>/gi,
+    /<(img|source|video|audio|track)(?=\s|\/|>)([^>]*?)\/?>/gi,
     async (match, tag, attrs) => {
       return `<${tag}${await inlineMediaAttrs(attrs, baseDir, ctx)}>`;
     },
@@ -139,7 +139,7 @@ async function transformMarkup(markup, baseDir, ctx) {
     return `<${tag}${next}>`;
   });
   result = await inlineStyleAttrs(result, baseDir, ctx);
-  result = await replaceAsync(result, /<link\b([^>]*?)\/?>/gi, (match, attrs) =>
+  result = await replaceAsync(result, /<link(?=\s|\/|>)([^>]*?)\/?>/gi, (match, attrs) =>
     inlineLink(match, attrs, baseDir, ctx),
   );
   return result;
@@ -168,6 +168,10 @@ async function inlineLink(match, attrs, baseDir, ctx) {
   if (!href) return match;
 
   if (rel.includes("stylesheet")) {
+    if (isInactiveStylesheet(attrs, rel)) {
+      warnInactiveStylesheet(href, baseDir, ctx);
+      return match;
+    }
     const loaded = await loadText(href, baseDir, ctx);
     if (!loaded) return match;
     const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0, baseDir);
@@ -182,6 +186,10 @@ async function inlineLink(match, attrs, baseDir, ctx) {
   }
 
   return match;
+}
+
+function isInactiveStylesheet(attrs, rel) {
+  return hasAttr(attrs, "disabled") || rel.includes("alternate");
 }
 
 async function inlineScript(match, attrs, body, baseDir, ctx) {
@@ -691,6 +699,19 @@ function warnUnsupportedScriptTiming(ref, baseDir, ctx) {
       kind: "unsupported-script-timing",
       ref,
       reason: "defer and async scripts are left as references to preserve execution timing",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
+function warnInactiveStylesheet(ref, baseDir, ctx) {
+  const descriptor = resolveRef(ref, baseDir, ctx);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "inactive-stylesheet",
+      ref,
+      reason: "inactive stylesheet links are left as references to preserve disabled or alternate state",
     });
   } else if (descriptor.kind === "escape") {
     ctx.warnings.push({ kind: "outside-root", ref });

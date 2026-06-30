@@ -32,6 +32,33 @@ test("inlines a local stylesheet link as a <style> block", async () => {
   assert.equal(warnings.length, 0);
 });
 
+test("leaves inactive stylesheet links external with warnings", async () => {
+  const html =
+    '<!doctype html><html><head><link rel="stylesheet" disabled href="disabled.css">' +
+    '<link rel="alternate stylesheet" href="alternate.css"><link rel="stylesheet" href="active.css"></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/disabled.css": ".disabled{color:red}",
+      "/art/alternate.css": ".alternate{color:blue}",
+      "/art/active.css": ".active{color:green}",
+    }),
+  });
+
+  assert.match(out, /<link rel="stylesheet" disabled href="disabled\.css">/);
+  assert.match(out, /<link rel="alternate stylesheet" href="alternate\.css">/);
+  assert.match(out, /<style>\.active\{color:green\}<\/style>/);
+  assert.doesNotMatch(out, /\.disabled\{color:red\}/);
+  assert.doesNotMatch(out, /\.alternate\{color:blue\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inactive-stylesheet", ref: "disabled.css" },
+      { kind: "inactive-stylesheet", ref: "alternate.css" },
+    ],
+  );
+});
+
 test("inlines a local script src as an inline script and escapes closing tags", async () => {
   const html = '<!doctype html><html><body><script src="app.js"></script></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -92,6 +119,23 @@ test("inlines local images referenced by src into data URIs", async () => {
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
 });
 
+test("inlines local track captions and warns on missing track assets", async () => {
+  const html =
+    '<!doctype html><html><body><video controls><track kind="captions" src="captions.vtt">' +
+    '<track kind="subtitles" src="missing.vtt"></video></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/captions.vtt": "WEBVTT\n" }),
+  });
+
+  assert.match(out, /<track kind="captions" src="data:text\/vtt;base64,V0VCVlRUCg==">/);
+  assert.match(out, /<track kind="subtitles" src="missing\.vtt">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "load-failed", ref: "missing.vtt" }],
+  );
+});
+
 test("does not treat hyphenated custom elements as native asset tags", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
@@ -107,6 +151,20 @@ test("does not treat hyphenated custom elements as native asset tags", async () 
   assert.match(out, /<video-player src="clip\.mp4"><\/video-player>/);
   assert.match(out, /<image-card href="icon\.svg"><\/image-card>/);
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="real">/);
+  assert.equal(warnings.length, 0);
+});
+
+test("does not treat hyphenated custom link elements as stylesheet links", async () => {
+  const html =
+    '<!doctype html><html><head><link-preview rel="stylesheet" href="preview.css"></link-preview>' +
+    '<link rel="stylesheet" href="theme.css"></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/theme.css": "body{color:red}" }),
+  });
+
+  assert.match(out, /<link-preview rel="stylesheet" href="preview\.css"><\/link-preview>/);
+  assert.match(out, /<style>body\{color:red\}<\/style>/);
   assert.equal(warnings.length, 0);
 });
 
