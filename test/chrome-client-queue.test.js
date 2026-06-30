@@ -324,7 +324,29 @@ test("chrome client surfaces share warnings from the server response", async () 
   await submit({ preventDefault() {} });
   await flushPromises();
 
-  assert.equal(chrome.element("shareStatus").textContent, "Published with 1 unresolved local asset.");
+  assert.equal(chrome.element("shareStatus").textContent, "Published with 1 unresolved local asset and 1 notice.");
+  assert.equal(chrome.element("shareResult").hidden, false);
+});
+
+test("chrome client does not count share notices as unresolved assets", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        url: "https://abc123.ht-ml.app/",
+        update_key: "uk_secret",
+        warnings: [{ kind: "csp-meta", ref: "script-src 'self'" }],
+        notices: [{ kind: "csp-meta", ref: "script-src 'self'" }],
+      }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+  assert.equal(typeof submit, "function");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.equal(chrome.element("shareStatus").textContent, "Published with 1 notice.");
   assert.equal(chrome.element("shareResult").hidden, false);
 });
 

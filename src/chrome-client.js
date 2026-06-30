@@ -587,18 +587,19 @@ async function publishShare(event) {
     if (!response.ok) throw new Error(data.error || "publish failed");
     shareUrlInput.value = data.url || "";
     shareUpdateKeyInput.value = data.update_key || "";
-    const unresolvedAssets = Array.isArray(data.unresolved_local_assets)
-      ? data.unresolved_local_assets
-      : Array.isArray(data.warnings)
-        ? data.warnings
-        : [];
+    const unresolvedAssets = Array.isArray(data.unresolved_local_assets) ? data.unresolved_local_assets : [];
+    const notices = Array.isArray(data.notices) ? data.notices : [];
     const warningCount = unresolvedAssets.length;
+    const noticeCount = notices.length;
+    const noticeText = noticeCount ? `${noticeCount === 1 ? "1 notice" : `${noticeCount} notices`}` : "";
     shareStatus.textContent =
       warningCount > 0
-        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
-        : passwordProtected
-          ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
-          : "Published. Anyone with the link can view this page.";
+        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}${noticeText ? ` and ${noticeText}` : ""}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
+        : noticeCount > 0
+          ? `Published with ${noticeText}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
+          : passwordProtected
+            ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
+            : "Published. Anyone with the link can view this page.";
     shareResult.hidden = false;
     shareUrlInput.focus();
     shareUrlInput.select();

@@ -60,6 +60,7 @@ const HTML_ENTITY_MAP = {
   tab: "\t",
 };
 const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title", "iframe", "xmp", "noembed", "noframes"]);
+const PLAINTEXT_TAG = "plaintext";
 const INERT_CONTENT_TAGS = new Set(["template", "noscript"]);
 const MEDIA_TAGS = new Set(["img", "source", "video", "audio", "track"]);
 const SVG_REF_TAGS = new Set(["use", "image", "feimage"]);
@@ -198,8 +199,13 @@ async function transformMarkup(markup, baseDir, ctx) {
       continue;
     }
     const tagName = token.tag.toLowerCase();
+    if (tagName === PLAINTEXT_TAG && !token.selfClosing) {
+      result += await transformPlaintextElement(token, markup.slice(token.end), baseDir, ctx);
+      index = markup.length;
+      continue;
+    }
     if (INERT_CONTENT_TAGS.has(tagName) && !token.selfClosing) {
-      const close = findRawTextClose(markup, token.end, tagName);
+      const close = findContentClose(markup, token.end, tagName);
       if (close) {
         const body = markup.slice(token.end, close.start);
         result += await transformInertContentElement(token, body, close.raw, baseDir, ctx);
@@ -212,7 +218,7 @@ async function transformMarkup(markup, baseDir, ctx) {
       continue;
     }
     if (RAW_TEXT_TAGS.has(tagName) && !token.selfClosing) {
-      const close = findRawTextClose(markup, token.end, tagName);
+      const close = findContentClose(markup, token.end, tagName);
       if (close) {
         const body = markup.slice(token.end, close.start);
         result += await transformRawTextElement(token, body, close.raw, baseDir, ctx);
@@ -253,6 +259,11 @@ async function transformInertContentElement(token, body, closeTag, baseDir, ctx)
   return `${startTag}${transformInertMarkup(body, baseDir, ctx)}${closeTag}`;
 }
 
+async function transformPlaintextElement(token, body, baseDir, ctx) {
+  const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx);
+  return `${startTag}${scrubRawTextBodyWithoutInlining(token.tag.toLowerCase(), token.attrs, body, baseDir, ctx)}`;
+}
+
 function transformInertMarkup(markup, baseDir, ctx, options = {}) {
   const warnLocalRefs = options.warnLocalRefs !== false;
   let result = "";
@@ -276,8 +287,17 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       continue;
     }
     const tagName = token.tag.toLowerCase();
+    if (tagName === PLAINTEXT_TAG && !token.selfClosing) {
+      if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx);
+      result += transformInertRawTextElement(token, markup.slice(token.end), "", baseDir, ctx, {
+        ...options,
+        warnLocalRefs: false,
+      });
+      index = markup.length;
+      continue;
+    }
     if ((INERT_CONTENT_TAGS.has(tagName) || RAW_TEXT_TAGS.has(tagName)) && !token.selfClosing) {
-      const close = findRawTextClose(markup, token.end, tagName);
+      const close = findContentClose(markup, token.end, tagName);
       const bodyEnd = close ? close.start : markup.length;
       const body = markup.slice(token.end, bodyEnd);
       if (!close) warnUnterminatedRawText(tagName, ctx);
@@ -365,21 +385,24 @@ async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTa
   }
   next = await inlineRenderResourceAttrs(tagName, next, baseDir, ctx);
   next = await inlineStyleAttr(next, baseDir, ctx);
-  if (tagName === "meta") warnCspMeta(next, ctx);
+  const isCspMetaTag = tagName === "meta" && isCspMeta(next);
+  if (isCspMetaTag) warnCspMeta(next, ctx);
   if (tagName === "link") {
     const linked = await inlineLink(next, baseDir, ctx);
     if (linked.replacement) return linked.replacement;
     next = linked.attrs;
   }
-  next = scrubFileUrlAttrs(next, ctx);
+  next = scrubFileUrlAttrs(next, ctx, isCspMetaTag ? { skipNames: ["content"] } : {});
   return formatStartTag(tag, next, selfClosing);
 }
 
-function scrubFileUrlAttrs(attrs, ctx) {
+function scrubFileUrlAttrs(attrs, ctx, options = {}) {
   let result = attrs;
   const parsed = parseHtmlAttrs(attrs);
+  const skipNames = new Set((options.skipNames || []).map((name) => String(name).toLowerCase()));
   for (let index = parsed.length - 1; index >= 0; index -= 1) {
     const attr = parsed[index];
+    if (skipNames.has(attr.name.toLowerCase())) continue;
     if (!attr.hasValue || !containsFileUrl(attr.value)) continue;
     ctx.warnings.push({ kind: "file-url-redacted", ref: attr.value });
     result = replaceAttrTokenValue(result, attr, REDACTED_FILE_REF, { preserveEntities: true });
@@ -495,13 +518,16 @@ function isCssStyleElementType(attrs) {
 }
 
 function warnCspMeta(attrs, ctx) {
-  const httpEquiv = getDecisionAttr(attrs, "http-equiv").trim().toLowerCase();
-  if (httpEquiv !== "content-security-policy") return;
+  if (!isCspMeta(attrs)) return;
   ctx.warnings.push({
     kind: "csp-meta",
     ref: getAttr(attrs, "content") || "Content-Security-Policy",
     reason: "author-set CSP meta is left unchanged and may block inlined export assets",
   });
+}
+
+function isCspMeta(attrs) {
+  return getDecisionAttr(attrs, "http-equiv").trim().toLowerCase() === "content-security-policy";
 }
 
 async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
@@ -1770,6 +1796,48 @@ function findRawTextClose(html, index, tag) {
   return match ? { start: match.index, raw: match[0], end: match.index + match[0].length } : null;
 }
 
+function findContentClose(html, index, tag) {
+  if (tag === "template") return findTemplateClose(html, index);
+  return findRawTextClose(html, index, tag);
+}
+
+function findTemplateClose(html, index) {
+  let depth = 1;
+  let cursor = index;
+  while (cursor < html.length) {
+    const lt = html.indexOf("<", cursor);
+    if (lt === -1) return null;
+    const token = readHtmlToken(html, lt);
+    if (!token) {
+      cursor = lt + 1;
+      continue;
+    }
+    if (token.type === "close" && token.tag.toLowerCase() === "template") {
+      depth -= 1;
+      if (depth === 0) return { start: lt, raw: token.raw, end: token.end };
+      cursor = token.end;
+      continue;
+    }
+    if (token.type === "start") {
+      const tagName = token.tag.toLowerCase();
+      if (tagName === "template" && !token.selfClosing) {
+        depth += 1;
+        cursor = token.end;
+        continue;
+      }
+      if (tagName === PLAINTEXT_TAG && !token.selfClosing) return null;
+      if (RAW_TEXT_TAGS.has(tagName) && !token.selfClosing) {
+        const close = findRawTextClose(html, token.end, tagName);
+        if (!close) return null;
+        cursor = close.end;
+        continue;
+      }
+    }
+    cursor = token.end;
+  }
+  return null;
+}
+
 // --- resolution + loading ---------------------------------------------------
 
 function resolveDocumentRefBase(html, ctx) {
@@ -1810,6 +1878,7 @@ function findFirstDocumentBaseHref(html) {
         }
         break;
       }
+      if (tag === PLAINTEXT_TAG && !token.selfClosing) break;
     }
     index = token.end;
   }
@@ -2052,7 +2121,6 @@ function scrubUnsupportedStyleElementBody(css, baseDir, ctx) {
 function warnFrameSrc(attrs, baseDir, ctx) {
   const ref = getAttr(attrs, "src");
   if (!ref) return attrs;
-  if (containsFileUrl(ref)) return attrs;
   warnUnsupportedFrame(ref, baseDir, ctx, HTML_REF_OPTIONS);
   return replaceUnresolvedAttrRef(attrs, "src", ref);
 }
@@ -2148,8 +2216,9 @@ function warnInertResource(ref, baseDir, ctx, refOptions = {}, warningOptions = 
 
 function warnInlineModuleImports(body, baseDir, ctx) {
   for (const ref of findInlineModuleImportRefs(body)) {
-    if (!isRelativeModuleImport(ref)) continue;
-    warnInlineModuleImport(ref, baseDir, ctx);
+    const normalized = normalizeJsRefForScheme(ref);
+    if (!isLocalModuleImport(normalized)) continue;
+    warnInlineModuleImport(normalized, baseDir, ctx);
   }
 }
 
@@ -2474,8 +2543,11 @@ function findJsImportFromRef(source, index) {
   return { ref: null, end: cursor };
 }
 
-function isRelativeModuleImport(ref) {
-  return /^\.{1,2}\//.test(String(ref || "").trim());
+function isLocalModuleImport(ref) {
+  const trimmed = String(ref || "").trim();
+  if (!trimmed || isInert(trimmed)) return false;
+  if (trimmed.startsWith("//") || /^https?:\/\//i.test(trimmed)) return false;
+  return trimmed.startsWith("/") || /^\.{1,2}\//.test(trimmed);
 }
 
 function isFileSchemeJsRef(ref) {

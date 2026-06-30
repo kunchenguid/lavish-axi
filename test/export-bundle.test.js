@@ -216,7 +216,7 @@ test("redacts file URLs in non-CSS style element bodies without bundling", async
 
 test("leaves CSP meta unchanged and warns it may block inlined export assets", async () => {
   const html =
-    "<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'self'; img-src 'self'\">" +
+    '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src \'self\'; img-src file:///Users/kun/policy">' +
     '<script src="app.js"></script></head><body><img src="logo.png"></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
@@ -226,12 +226,15 @@ test("leaves CSP meta unchanged and warns it may block inlined export assets", a
     }),
   });
 
-  assert.match(out, /<meta http-equiv="Content-Security-Policy" content="script-src 'self'; img-src 'self'">/);
+  assert.match(
+    out,
+    /<meta http-equiv="Content-Security-Policy" content="script-src 'self'; img-src file:\/\/\/Users\/kun\/policy">/,
+  );
   assert.match(out, /<script>window\.ready = true;<\/script>/);
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
-    [{ kind: "csp-meta", ref: "script-src 'self'; img-src 'self'" }],
+    [{ kind: "csp-meta", ref: "script-src 'self'; img-src file:///Users/kun/policy" }],
   );
 });
 
@@ -356,6 +359,26 @@ test("warns when inline module scripts reference local imports", async () => {
       { kind: "inline-module-import", ref: "../shared.js" },
       { kind: "inline-module-import", ref: "./lazy.js" },
       { kind: "inline-module-import", ref: "./keywords.js" },
+    ],
+  );
+});
+
+test("warns on root-absolute and escaped inline module local specifiers", async () => {
+  const html =
+    '<!doctype html><html><head><script type="module">' +
+    'import "/assets/app.js";\nimport escaped from ".\\/dep.js";\n' +
+    'import remote from "https://cdn.example/remote.js";\nimport pkg from "pkg";\n' +
+    "</script></head></html>";
+  const { warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art/components",
+    readLocalFile: localReader({}),
+  });
+
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unmapped-root-absolute", ref: "/assets/app.js" },
+      { kind: "inline-module-import", ref: "./dep.js" },
     ],
   );
 });
@@ -799,6 +822,32 @@ test("treats unterminated raw-text content as inert through EOF", async () => {
   );
 });
 
+test("treats plaintext content as inert through EOF", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><plaintext><img src="local.png"><img src="file:///Users/kun/secret.png"><img src="live.png">';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/local.png": Buffer.from("local"),
+        "/art/live.png": Buffer.from("live"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /data:/);
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<plaintext><img src="local\.png"><img src="about:blank"><img src="live\.png">$/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" }],
+  );
+});
+
 test("leaves template and noscript resources inert while warning on local refs", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const readPaths = [];
@@ -828,6 +877,39 @@ test("leaves template and noscript resources inert while warning on local refs",
       { kind: "inert-resource", ref: "local.png" },
       { kind: "inert-resource", ref: "theme.css" },
       { kind: "inert-resource", ref: "noscript.png" },
+    ],
+  );
+});
+
+test("keeps nested and quoted template content inert until the matching close", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><template><template><img src="inner.png"></template>' +
+    '<div data-close="</template>"><img src="outer.png"></div></template><img src="live.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/inner.png": Buffer.from("inner"),
+        "/art/outer.png": Buffer.from("outer"),
+        "/art/live.png": png,
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/live.png"]);
+  assert.match(
+    out,
+    /<template><template><img src="inner\.png"><\/template><div data-close="<\/template>"><img src="outer\.png"><\/div><\/template>/,
+  );
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inert-resource", ref: "inner.png" },
+      { kind: "inert-resource", ref: "outer.png" },
     ],
   );
 });
@@ -1931,7 +2013,7 @@ test("redacts remaining file URLs from arbitrary HTML attributes", async () => {
       "file-url-redacted",
       "outside-root",
       "outside-root",
-      "file-url-redacted",
+      "outside-root",
       "file-url-redacted",
       "file-url-redacted",
     ],
@@ -2037,6 +2119,20 @@ test("inlines local object embed and image input resources while warning for ifr
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [{ kind: "unsupported-frame", ref: "panel.html" }],
+  );
+});
+
+test("records file iframe src as an unresolved frame before redacting it", async () => {
+  const html = '<!doctype html><html><body><iframe src="file:///art/panel.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.match(out, /<iframe src="about:blank"><\/iframe>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "unsupported-frame", ref: "file:///art/panel.html" }],
   );
 });
 
