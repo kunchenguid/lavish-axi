@@ -59,7 +59,7 @@ const HTML_ENTITY_MAP = {
   sol: "/",
   tab: "\t",
 };
-const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title"]);
+const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title", "iframe", "xmp", "noembed", "noframes"]);
 const MEDIA_TAGS = new Set(["img", "source", "video", "audio", "track"]);
 const SVG_REF_TAGS = new Set(["use", "image"]);
 
@@ -238,6 +238,10 @@ async function inlineLink(attrs, baseDir, ctx) {
       warnInactiveStylesheet(href, baseDir, ctx, HTML_REF_OPTIONS);
       return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
     }
+    if (hasStylesheetBehaviorAttrs(attrs)) {
+      warnBehavioralStylesheet(href, baseDir, ctx, HTML_REF_OPTIONS);
+      return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
+    }
     const loaded = await loadText(href, baseDir, ctx, HTML_REF_OPTIONS);
     if (!loaded) return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
     const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0, baseDir);
@@ -260,6 +264,10 @@ function isInactiveStylesheet(attrs, rel) {
   return hasAttr(attrs, "disabled") || rel.includes("alternate");
 }
 
+function hasStylesheetBehaviorAttrs(attrs) {
+  return parseHtmlAttrs(attrs).some((attr) => attr.name.toLowerCase().startsWith("on"));
+}
+
 function isCssStylesheetType(attrs) {
   const type = getAttr(attrs, "type").trim().toLowerCase();
   if (!type) return true;
@@ -274,6 +282,7 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   const src = getAttr(attrs, "src");
   if (!src) {
     if (isModuleScript(attrs)) warnInlineModuleImports(body, baseDir, ctx);
+    if (isImportMapScript(attrs)) warnInlineImportMapLocalRefs(body, baseDir, ctx);
     return `${await transformStartTag(tag, attrs, false, baseDir, ctx)}${body}${closeTag}`;
   }
   if (isInjectedLavishSdkSrc(src)) return "";
@@ -1466,6 +1475,19 @@ function warnInactiveStylesheet(ref, baseDir, ctx, options = {}) {
   }
 }
 
+function warnBehavioralStylesheet(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "behavioral-stylesheet",
+      ref,
+      reason: "stylesheet links with event handler attributes are left as references to preserve behavior",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
 function warnExternalModuleScript(ref, baseDir, ctx, options = {}) {
   const descriptor = resolveRef(ref, baseDir, ctx, options);
   if (descriptor.kind === "file") {
@@ -1551,6 +1573,21 @@ function warnInlineModuleImports(body, baseDir, ctx) {
   }
 }
 
+function warnInlineImportMapLocalRefs(body, baseDir, ctx) {
+  for (const ref of findImportMapLocalRefs(body)) {
+    const descriptor = resolveRef(ref, baseDir, ctx);
+    if (descriptor.kind === "file") {
+      ctx.warnings.push({
+        kind: "inline-importmap-local-ref",
+        ref,
+        reason: "inline import maps are left unchanged; local mapped modules are not bundled",
+      });
+    } else if (descriptor.kind === "escape") {
+      ctx.warnings.push({ kind: "outside-root", ref });
+    }
+  }
+}
+
 function warnInlineModuleImport(ref, baseDir, ctx) {
   const descriptor = resolveRef(ref, baseDir, ctx);
   if (descriptor.kind === "file") {
@@ -1619,6 +1656,10 @@ function isModuleScript(attrs) {
   return getAttr(attrs, "type").trim().toLowerCase() === "module";
 }
 
+function isImportMapScript(attrs) {
+  return getAttr(attrs, "type").trim().toLowerCase() === "importmap";
+}
+
 function isClassicScript(attrs) {
   const type = getAttr(attrs, "type").trim().toLowerCase();
   if (!type) return true;
@@ -1669,6 +1710,42 @@ function findInlineModuleImportRefs(source) {
     index += 1;
   }
   return refs;
+}
+
+function findImportMapLocalRefs(body) {
+  let map;
+  try {
+    map = JSON.parse(body);
+  } catch {
+    return [];
+  }
+  const refs = [];
+  const seen = new Set();
+  collectImportMapAddressRefs(map && map.imports, refs, seen);
+  if (map && map.scopes && typeof map.scopes === "object" && !Array.isArray(map.scopes)) {
+    for (const scopedImports of Object.values(map.scopes)) {
+      collectImportMapAddressRefs(scopedImports, refs, seen);
+    }
+  }
+  return refs;
+}
+
+function collectImportMapAddressRefs(imports, refs, seen) {
+  if (!imports || typeof imports !== "object" || Array.isArray(imports)) return;
+  for (const value of Object.values(imports)) {
+    if (typeof value !== "string" || !isLocalImportMapAddress(value)) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    refs.push(value);
+  }
+}
+
+function isLocalImportMapAddress(ref) {
+  const trimmed = String(ref || "").trim();
+  if (!trimmed || isInert(trimmed)) return false;
+  if (trimmed.startsWith("//") || /^https?:\/\//i.test(trimmed)) return false;
+  if (isFileSchemeRef(trimmed)) return true;
+  return !/^[a-z][a-z0-9+.-]*:/i.test(trimmed);
 }
 
 function parseJsImport(source, index) {

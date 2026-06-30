@@ -59,6 +59,33 @@ test("leaves inactive stylesheet links external with warnings", async () => {
   );
 });
 
+test("leaves eventful stylesheet links external with warnings", async () => {
+  const html =
+    '<!doctype html><html><head><link rel="stylesheet" media="print" onload="this.media=\'all\'" href="async.css">' +
+    '<link rel="stylesheet" onerror="this.remove()" href="fallback.css">' +
+    '<link rel="stylesheet" media="screen" href="active.css"></head></html>';
+  const readPaths = [];
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({ "/art/active.css": ".active{color:green}" })(absPath);
+    },
+  });
+
+  assert.match(out, /<link rel="stylesheet" media="print" onload="this\.media='all'" href="async\.css">/);
+  assert.match(out, /<link rel="stylesheet" onerror="this\.remove\(\)" href="fallback\.css">/);
+  assert.match(out, /<style media="screen">\.active\{color:green\}<\/style>/);
+  assert.deepEqual(readPaths, ["/art/active.css"]);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "behavioral-stylesheet", ref: "async.css" },
+      { kind: "behavioral-stylesheet", ref: "fallback.css" },
+    ],
+  );
+});
+
 test("leaves non-CSS stylesheet links external with warnings", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" type="application/json" href="secrets.json">' +
@@ -172,6 +199,41 @@ test("leaves non-classic script src references unchanged with a warning", async 
     [
       { kind: "unsupported-script-type", ref: "data.json" },
       { kind: "unsupported-script-type", ref: "map.json" },
+    ],
+  );
+});
+
+test("warns when inline import maps reference local module URLs", async () => {
+  const importMap = {
+    imports: {
+      app: "./app.js",
+      shared: "shared.js",
+      remote: "https://cdn.example/remote.js",
+      data: "data:application/javascript,export{}",
+    },
+    scopes: {
+      "./scope/": {
+        scoped: "../scoped.js",
+        remoteScoped: "https://cdn.example/scoped.js",
+      },
+    },
+  };
+  const html = `<!doctype html><html><head><script type="importmap">${JSON.stringify(
+    importMap,
+  )}</script></head></html>`;
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art/components",
+    readLocalFile: localReader({}),
+  });
+
+  assert.match(out, /<script type="importmap">/);
+  assert.match(out, /"app":"\.\/app\.js"/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inline-importmap-local-ref", ref: "./app.js" },
+      { kind: "inline-importmap-local-ref", ref: "shared.js" },
+      { kind: "inline-importmap-local-ref", ref: "../scoped.js" },
     ],
   );
 });
@@ -452,6 +514,26 @@ test("does not rewrite markup-like text inside textarea or title", async () => {
 
   assert.match(out, /<title><img src="missing-title\.png"><\/title>/);
   assert.match(out, /<textarea><img src="missing-textarea\.png"><\/textarea>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="real">/);
+  assert.equal(warnings.length, 0);
+});
+
+test("does not rewrite markup-like text inside legacy raw-text elements", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><xmp><img src="missing-xmp.png"></xmp>' +
+    '<noembed><img src="missing-noembed.png"></noembed>' +
+    '<noframes><img src="missing-noframes.png"></noframes>' +
+    '<iframe><img src="missing-frame.png"></iframe><img src="pic.png" alt="real"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.match(out, /<xmp><img src="missing-xmp\.png"><\/xmp>/);
+  assert.match(out, /<noembed><img src="missing-noembed\.png"><\/noembed>/);
+  assert.match(out, /<noframes><img src="missing-noframes\.png"><\/noframes>/);
+  assert.match(out, /<iframe><img src="missing-frame\.png"><\/iframe>/);
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="real">/);
   assert.equal(warnings.length, 0);
 });
