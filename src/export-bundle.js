@@ -194,7 +194,10 @@ function isInactiveStylesheet(attrs, rel) {
 
 async function inlineScript(match, attrs, body, baseDir, ctx) {
   const src = getAttr(attrs, "src");
-  if (!src) return match;
+  if (!src) {
+    if (isModuleScript(attrs)) warnInlineModuleImports(body, baseDir, ctx);
+    return match;
+  }
   if (isInjectedLavishSdkSrc(src)) return "";
   if (isModuleScript(attrs)) {
     warnExternalModuleScript(src, baseDir, ctx);
@@ -229,19 +232,45 @@ async function inlineAttr(attrs, name, baseDir, ctx) {
 async function inlineSrcset(attrs, baseDir, ctx) {
   const value = getAttr(attrs, "srcset");
   if (!value) return attrs;
-  // srcset is a comma-separated list of "url descriptor"; load candidates sequentially so the
-  // per-bundle byte budget is honored rather than racing many reads at once.
-  const out = [];
-  for (const candidate of value.split(",")) {
-    const parts = candidate.trim().split(/\s+/);
-    if (!parts[0]) {
-      out.push(candidate.trim());
-      continue;
+  const candidates = parseSrcsetCandidates(value);
+  let result = "";
+  let lastIndex = 0;
+  for (const candidate of candidates) {
+    result += value.slice(lastIndex, candidate.urlStart);
+    const ref = value.slice(candidate.urlStart, candidate.urlEnd);
+    if (isInert(ref.trim())) {
+      result += ref;
+    } else {
+      const dataUri = await loadDataUri(ref, baseDir, ctx);
+      result += dataUri || ref;
     }
-    const dataUri = await loadDataUri(parts[0], baseDir, ctx);
-    out.push(dataUri ? [dataUri, ...parts.slice(1)].join(" ") : candidate.trim());
+    lastIndex = candidate.urlEnd;
   }
-  return replaceAttrValue(attrs, "srcset", out.join(", "));
+  result += value.slice(lastIndex);
+  return replaceAttrValue(attrs, "srcset", result);
+}
+
+function parseSrcsetCandidates(value) {
+  const candidates = [];
+  let index = 0;
+  while (index < value.length) {
+    while (index < value.length && (isHtmlSpace(value[index]) || value[index] === ",")) index += 1;
+    if (index >= value.length) break;
+
+    const urlStart = index;
+    while (index < value.length && !isHtmlSpace(value[index])) index += 1;
+    let urlEnd = index;
+    while (urlEnd > urlStart && value[urlEnd - 1] === ",") urlEnd -= 1;
+    if (urlEnd > urlStart) candidates.push({ urlStart, urlEnd });
+
+    while (index < value.length && value[index] !== ",") index += 1;
+    if (index < value.length && value[index] === ",") index += 1;
+  }
+  return candidates;
+}
+
+function isHtmlSpace(char) {
+  return /[\t\n\f\r ]/.test(char);
 }
 
 async function inlineCss(css, baseDir, ctx, depth, outputBaseDir) {
@@ -731,6 +760,26 @@ function warnExternalModuleScript(ref, baseDir, ctx) {
   }
 }
 
+function warnInlineModuleImports(body, baseDir, ctx) {
+  for (const ref of findInlineModuleImportRefs(body)) {
+    if (!isRelativeModuleImport(ref)) continue;
+    warnInlineModuleImport(ref, baseDir, ctx);
+  }
+}
+
+function warnInlineModuleImport(ref, baseDir, ctx) {
+  const descriptor = resolveRef(ref, baseDir, ctx);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "inline-module-import",
+      ref,
+      reason: "inline module imports are left as references",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
 function warnUnsupportedCssImport(ref, baseDir, ctx, tail) {
   const descriptor = resolveRef(ref, baseDir, ctx);
   if (descriptor.kind === "file") {
@@ -759,6 +808,182 @@ function warnCssImportDepth(ref, baseDir, ctx) {
 
 function isModuleScript(attrs) {
   return getAttr(attrs, "type").trim().toLowerCase() === "module";
+}
+
+function findInlineModuleImportRefs(source) {
+  const refs = [];
+  let index = 0;
+  while (index < source.length) {
+    const skipped = skipJsIgnored(source, index);
+    if (skipped !== index) {
+      index = skipped;
+      continue;
+    }
+    if (startsJsKeyword(source, index, "import")) {
+      const parsed = parseJsImport(source, index);
+      refs.push(...parsed.refs);
+      index = Math.max(parsed.end, index + "import".length);
+      continue;
+    }
+    index += 1;
+  }
+  return refs;
+}
+
+function parseJsImport(source, index) {
+  let cursor = skipJsWhitespaceAndComments(source, index + "import".length);
+  if (source[cursor] === ".") return { refs: [], end: cursor + 1 };
+  if (source[cursor] === "(") {
+    cursor = skipJsWhitespaceAndComments(source, cursor + 1);
+    if (source[cursor] !== '"' && source[cursor] !== "'") return { refs: [], end: cursor + 1 };
+    const token = parseJsString(source, cursor);
+    return { refs: [token.value], end: token.end };
+  }
+  if (source[cursor] === '"' || source[cursor] === "'") {
+    const token = parseJsString(source, cursor);
+    return { refs: [token.value], end: token.end };
+  }
+  const found = findJsImportFromRef(source, cursor);
+  return { refs: found.ref ? [found.ref] : [], end: found.end };
+}
+
+function findJsImportFromRef(source, index) {
+  let cursor = index;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+  while (cursor < source.length) {
+    const skipped = skipJsIgnored(source, cursor);
+    if (skipped !== cursor) {
+      cursor = skipped;
+      continue;
+    }
+    if (source[cursor] === "{") braceDepth += 1;
+    if (source[cursor] === "}") braceDepth = Math.max(0, braceDepth - 1);
+    if (source[cursor] === "[") bracketDepth += 1;
+    if (source[cursor] === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    if (source[cursor] === "(") parenDepth += 1;
+    if (source[cursor] === ")") parenDepth = Math.max(0, parenDepth - 1);
+    const topLevel = braceDepth === 0 && bracketDepth === 0 && parenDepth === 0;
+    if (topLevel && source[cursor] === ";") return { ref: "", end: cursor + 1 };
+    if (topLevel && cursor !== index && startsJsKeyword(source, cursor, "import")) return { ref: "", end: cursor };
+    if (topLevel && startsJsKeyword(source, cursor, "from")) {
+      const refStart = skipJsWhitespaceAndComments(source, cursor + "from".length);
+      if (source[refStart] === '"' || source[refStart] === "'") {
+        const token = parseJsString(source, refStart);
+        return { ref: token.value, end: token.end };
+      }
+    }
+    cursor += 1;
+  }
+  return { ref: "", end: cursor };
+}
+
+function isRelativeModuleImport(ref) {
+  return /^\.{1,2}\//.test(String(ref || "").trim());
+}
+
+function skipJsWhitespaceAndComments(source, index) {
+  let cursor = index;
+  while (cursor < source.length) {
+    while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+    if (source.startsWith("//", cursor)) {
+      const next = source.indexOf("\n", cursor + 2);
+      cursor = next === -1 ? source.length : next + 1;
+      continue;
+    }
+    if (source.startsWith("/*", cursor)) {
+      const next = source.indexOf("*/", cursor + 2);
+      cursor = next === -1 ? source.length : next + 2;
+      continue;
+    }
+    break;
+  }
+  return cursor;
+}
+
+function skipJsIgnored(source, index) {
+  if (source.startsWith("//", index)) {
+    const next = source.indexOf("\n", index + 2);
+    return next === -1 ? source.length : next + 1;
+  }
+  if (source.startsWith("/*", index)) {
+    const next = source.indexOf("*/", index + 2);
+    return next === -1 ? source.length : next + 2;
+  }
+  if (source[index] === "/" && isLikelyJsRegexStart(source, index)) return skipJsRegex(source, index);
+  if (source[index] === '"' || source[index] === "'") return parseJsString(source, index).end;
+  if (source[index] === "`") return skipJsTemplate(source, index);
+  return index;
+}
+
+function parseJsString(source, index) {
+  const quote = source[index];
+  let cursor = index + 1;
+  let value = "";
+  while (cursor < source.length) {
+    const char = source[cursor];
+    if (char === "\\") {
+      value += source.slice(cursor, Math.min(cursor + 2, source.length));
+      cursor += 2;
+      continue;
+    }
+    if (char === quote) return { value, end: cursor + 1 };
+    value += char;
+    cursor += 1;
+  }
+  return { value, end: source.length };
+}
+
+function skipJsTemplate(source, index) {
+  let cursor = index + 1;
+  while (cursor < source.length) {
+    if (source[cursor] === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (source[cursor] === "`") return cursor + 1;
+    cursor += 1;
+  }
+  return source.length;
+}
+
+function isLikelyJsRegexStart(source, index) {
+  let cursor = index - 1;
+  while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+  if (cursor < 0) return true;
+  return /[([{=:;,!?&|+\-*~^<>%]/.test(source[cursor]);
+}
+
+function skipJsRegex(source, index) {
+  let cursor = index + 1;
+  let inClass = false;
+  while (cursor < source.length) {
+    if (source[cursor] === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (source[cursor] === "[") inClass = true;
+    if (source[cursor] === "]") inClass = false;
+    if (source[cursor] === "/" && !inClass) {
+      cursor += 1;
+      while (cursor < source.length && /[a-z]/i.test(source[cursor])) cursor += 1;
+      return cursor;
+    }
+    cursor += 1;
+  }
+  return source.length;
+}
+
+function startsJsKeyword(source, index, keyword) {
+  if (source.slice(index, index + keyword.length) !== keyword) return false;
+  const before = source[index - 1] || "";
+  const after = source[index + keyword.length] || "";
+  return !isJsIdentChar(before) && !isJsIdentChar(after);
+}
+
+function isJsIdentChar(char) {
+  return Boolean(char) && /[a-z0-9_$]/i.test(char);
 }
 
 // Read a local file, enforcing per-asset and per-bundle size caps so a huge local asset cannot

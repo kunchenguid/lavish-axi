@@ -97,6 +97,31 @@ test("leaves local module scripts as references with a warning", async () => {
   assert.equal(warnings[0].ref, "js/main.js");
 });
 
+test("warns when inline module scripts reference local imports", async () => {
+  const html =
+    '<!doctype html><html><head><script type="module">' +
+    'import "./dep.js";\nimport value from "../shared.js";\nconst lazy = () => import("./lazy.js");\n' +
+    'import { import as imported } from "./keywords.js";\nconst regex = /import from ".\\/regex.js"/;\n' +
+    'import remote from "https://cdn.example/remote.js";\nimport pkg from "pkg";\n' +
+    'const text = "import \\"./string.js\\"";\n// import "./comment.js"\n' +
+    "</script></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art/components",
+    readLocalFile: localReader({}),
+  });
+
+  assert.match(out, /<script type="module">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inline-module-import", ref: "./dep.js" },
+      { kind: "inline-module-import", ref: "../shared.js" },
+      { kind: "inline-module-import", ref: "./lazy.js" },
+      { kind: "inline-module-import", ref: "./keywords.js" },
+    ],
+  );
+});
+
 test("escapes a closing style tag when inlining external CSS into a <style> block", async () => {
   const html = '<!doctype html><html><head><link rel="stylesheet" href="x.css"></head><body></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -117,6 +142,23 @@ test("inlines local images referenced by src into data URIs", async () => {
   });
 
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
+});
+
+test("parses srcset without splitting data URI candidates", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><img srcset="data:image/png;base64,AAAA 1x, pic.png 2x, https://cdn.example/pic.png 3x"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.match(
+    out,
+    /srcset="data:image\/png;base64,AAAA 1x, data:image\/png;base64,iVBORw== 2x, https:\/\/cdn\.example\/pic\.png 3x"/,
+  );
+  assert.doesNotMatch(out, /base64, AAAA/);
+  assert.equal(warnings.length, 0);
 });
 
 test("inlines local track captions and warns on missing track assets", async () => {
