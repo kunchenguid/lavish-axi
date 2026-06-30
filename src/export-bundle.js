@@ -46,6 +46,15 @@ const DEFAULT_MAX_DEPTH = 8;
 const DEFAULT_MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 25 * 1024 * 1024;
 const REDACTED_FILE_REF = "about:blank";
+const HTML_REF_OPTIONS = { decodeHtmlEntities: true };
+const HTML_ENTITY_MAP = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  nbsp: "\u00a0",
+  quot: '"',
+};
 const TAG_ATTRS_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*`;
 const TAG_ATTRS_PATTERN_LAZY = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*?`;
 const RAW_TEXT_OR_COMMENT_RE = new RegExp(
@@ -177,7 +186,7 @@ async function inlineStyleAttrs(markup, baseDir, ctx) {
         const quote = sq !== undefined ? "'" : '"';
         const value = dq ?? sq ?? unquoted;
         if (!/url\(/i.test(value)) return attrMatch;
-        return `${boundary}${prefix}${quote}${await inlineCssUrls(value, baseDir, ctx, baseDir)}${quote}`;
+        return `${boundary}${prefix}${quote}${await inlineCssUrls(value, baseDir, ctx, baseDir, HTML_REF_OPTIONS)}${quote}`;
       },
     );
     return formatStartTag(tag, next, isSelfClosingTag(match));
@@ -191,10 +200,10 @@ async function inlineLink(match, attrs, baseDir, ctx) {
 
   if (rel.includes("stylesheet")) {
     if (isInactiveStylesheet(attrs, rel)) {
-      warnInactiveStylesheet(href, baseDir, ctx);
+      warnInactiveStylesheet(href, baseDir, ctx, HTML_REF_OPTIONS);
       return replaceUnresolvedAttrRef(match, "href", href);
     }
-    const loaded = await loadText(href, baseDir, ctx);
+    const loaded = await loadText(href, baseDir, ctx, HTML_REF_OPTIONS);
     if (!loaded) return replaceUnresolvedAttrRef(match, "href", href);
     const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0, baseDir);
     const media = getAttr(attrs, "media");
@@ -202,7 +211,7 @@ async function inlineLink(match, attrs, baseDir, ctx) {
   }
 
   if (rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value))) {
-    const dataUri = await loadDataUri(href, baseDir, ctx);
+    const dataUri = await loadDataUri(href, baseDir, ctx, HTML_REF_OPTIONS);
     if (!dataUri) return replaceUnresolvedAttrRef(match, "href", href);
     return replaceAttrValue(match, "href", dataUri);
   }
@@ -222,15 +231,15 @@ async function inlineScript(match, attrs, body, baseDir, ctx) {
   }
   if (isInjectedLavishSdkSrc(src)) return "";
   if (isModuleScript(attrs)) {
-    warnExternalModuleScript(src, baseDir, ctx);
+    warnExternalModuleScript(src, baseDir, ctx, HTML_REF_OPTIONS);
     return replaceUnresolvedAttrRef(match, "src", src);
   }
   if (hasAttr(attrs, "defer") || hasAttr(attrs, "async")) {
-    warnUnsupportedScriptTiming(src, baseDir, ctx);
+    warnUnsupportedScriptTiming(src, baseDir, ctx, HTML_REF_OPTIONS);
     return replaceUnresolvedAttrRef(match, "src", src);
   }
 
-  const loaded = await loadText(src, baseDir, ctx);
+  const loaded = await loadText(src, baseDir, ctx, HTML_REF_OPTIONS);
   if (!loaded) return replaceUnresolvedAttrRef(match, "src", src);
   const cleanedAttrs = removeAttrs(attrs, ["src", "integrity", "crossorigin"]);
   return `<script${cleanedAttrs}>${escapeRawText(loaded.text, "script")}</script>`;
@@ -246,7 +255,7 @@ async function inlineMediaAttrs(attrs, baseDir, ctx) {
 async function inlineAttr(attrs, name, baseDir, ctx) {
   const value = getAttr(attrs, name);
   if (!value) return attrs;
-  const dataUri = await loadDataUri(value, baseDir, ctx);
+  const dataUri = await loadDataUri(value, baseDir, ctx, HTML_REF_OPTIONS);
   if (!dataUri) return replaceUnresolvedAttrRef(attrs, name, value);
   return replaceAttrValue(attrs, name, dataUri);
 }
@@ -261,10 +270,10 @@ async function inlineSrcset(attrs, baseDir, ctx) {
   for (const candidate of candidates) {
     result += value.slice(lastIndex, candidate.urlStart);
     const ref = value.slice(candidate.urlStart, candidate.urlEnd);
-    if (isInert(ref.trim())) {
+    if (isInert(decodeHtmlCharacterReferences(ref.trim()))) {
       result += ref;
     } else {
-      const dataUri = await loadDataUri(ref, baseDir, ctx);
+      const dataUri = await loadDataUri(ref, baseDir, ctx, HTML_REF_OPTIONS);
       if (dataUri) {
         changed = true;
         result += dataUri;
@@ -345,21 +354,31 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
   const flushPendingInline = async () => {
     if (!pending.length) return;
     const prepared = [];
+    const startBytes = ctx.inlinedBytes;
     let failed = false;
-    for (const item of pending) {
-      const loaded = await loadTextFromDescriptor(item.descriptor, item.parsed.ref, ctx, { countBytes: false });
-      if (!loaded) failed = true;
+
+    for (let pendingIndex = 0; pendingIndex < pending.length; pendingIndex += 1) {
+      const item = pending[pendingIndex];
+      const loaded = await loadTextFromDescriptor(item.descriptor, item.parsed.ref, ctx);
       prepared.push({ ...item, loaded });
+      if (!loaded) {
+        failed = true;
+        for (const remaining of pending.slice(pendingIndex + 1)) {
+          prepared.push({ ...remaining, loaded: null, skipped: true });
+        }
+        break;
+      }
     }
 
-    if (!failed && reservePreparedCssImports(prepared, ctx)) {
+    if (!failed) {
       for (const item of prepared) {
         const inner = await inlineCss(item.loaded.text, item.loaded.baseDir, ctx, depth + 1, outputBaseDir);
         result += item.parsed.media ? `@media ${item.parsed.media}{${inner}}` : inner;
       }
     } else {
+      ctx.inlinedBytes = startBytes;
       for (const item of prepared) {
-        if (item.loaded) warnCssImportOrder(item.parsed.ref, item.descriptor, ctx);
+        if (item.loaded || item.skipped) warnCssImportOrder(item.parsed.ref, item.descriptor, ctx);
         result += rebaseCssImportRule(item.rule, item.parsed, baseDir, outputBaseDir);
       }
     }
@@ -429,25 +448,7 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
   return result;
 }
 
-function reservePreparedCssImports(prepared, ctx) {
-  let nextBytes = ctx.inlinedBytes;
-  for (const item of prepared) {
-    const byteLength = item.loaded.byteLength;
-    if (nextBytes + byteLength > ctx.maxBundleBytes) {
-      ctx.warnings.push({
-        kind: "too-large",
-        ref: item.parsed.ref,
-        reason: `would exceed per-bundle cap ${ctx.maxBundleBytes}`,
-      });
-      return false;
-    }
-    nextBytes += byteLength;
-  }
-  ctx.inlinedBytes = nextBytes;
-  return true;
-}
-
-async function inlineCssUrls(css, baseDir, ctx, outputBaseDir) {
+async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
   let result = "";
   let index = 0;
   while (index < css.length) {
@@ -484,12 +485,13 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir) {
     }
 
     const trimmed = token.ref.trim();
-    if (isInert(trimmed)) {
+    const refForResolution = options.decodeHtmlEntities ? decodeHtmlCharacterReferences(trimmed) : trimmed;
+    if (isInert(refForResolution)) {
       result += token.raw;
       index = token.end;
       continue;
     }
-    const dataUri = await loadDataUri(trimmed, baseDir, ctx);
+    const dataUri = await loadDataUri(trimmed, baseDir, ctx, options);
     result += dataUri
       ? `url(${token.quote}${dataUri}${token.quote})`
       : rebaseCssUrlToken(token, baseDir, outputBaseDir);
@@ -684,6 +686,8 @@ function startsUnsupportedCssImportTail(tail) {
   let cursor = index;
   while (cursor < tail.length && isCssIdentChar(tail[cursor])) cursor += 1;
   const ident = tail.slice(index, cursor).toLowerCase();
+  const afterIdent = skipCssWhitespaceAndComments(tail, cursor);
+  if (ident === "layer" && afterIdent >= tail.length) return true;
   return tail[cursor] === "(" && (ident === "layer" || ident === "supports" || cursor > index);
 }
 
@@ -734,7 +738,7 @@ function scanMarkupForBaseHref(markup, templateDepth) {
 }
 
 function refBaseFromHref(href, documentDir) {
-  const trimmed = String(href || "").trim();
+  const trimmed = decodeHtmlCharacterReferences(String(href || "").trim());
   if (!trimmed || isInert(trimmed)) return localRefBase(documentDir);
   if (trimmed.startsWith("//") || /^https?:\/\//i.test(trimmed)) return { kind: "remote" };
   if (/^file:\/\//i.test(trimmed)) {
@@ -782,8 +786,8 @@ function rootRelativeRef(basePath, ref) {
 
 // Classify a reference. Remote and unsupported-scheme refs resolve to `skip`, meaning "leave the
 // reference exactly as written" - they are not fetched. Only local refs become `file`.
-function resolveRef(ref, baseDir, ctx) {
-  const trimmed = String(ref).trim();
+function resolveRef(ref, baseDir, ctx, options = {}) {
+  const trimmed = normalizeRefForResolution(ref, options).trim();
   const base = normalizeRefBase(baseDir);
   if (isInert(trimmed)) return { kind: "skip" };
 
@@ -816,8 +820,8 @@ function resolveRef(ref, baseDir, ctx) {
   return { kind: "file", path: resolved };
 }
 
-async function loadText(ref, baseDir, ctx) {
-  const descriptor = resolveRef(ref, baseDir, ctx);
+async function loadText(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
   return loadTextFromDescriptor(descriptor, ref, ctx);
 }
 
@@ -831,8 +835,8 @@ async function loadTextFromDescriptor(descriptor, ref, ctx, options = {}) {
   return { text: buffer.toString("utf8"), baseDir: path.dirname(descriptor.path), byteLength: buffer.length };
 }
 
-async function loadDataUri(ref, baseDir, ctx) {
-  const descriptor = resolveRef(ref, baseDir, ctx);
+async function loadDataUri(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
   if (descriptor.kind !== "file") {
     if (descriptor.kind === "escape") ctx.warnings.push({ kind: "outside-root", ref });
     return null;
@@ -840,11 +844,11 @@ async function loadDataUri(ref, baseDir, ctx) {
   const buffer = await readBudgeted(descriptor, ref, ctx);
   if (!buffer) return null;
   const mime = pickMime(descriptor.path);
-  return `${toDataUri(buffer, mime)}${mime === "image/svg+xml" ? fragmentSuffix(ref) : ""}`;
+  return `${toDataUri(buffer, mime)}${mime === "image/svg+xml" ? fragmentSuffix(normalizeRefForResolution(ref, options)) : ""}`;
 }
 
-function warnUnsupportedScriptTiming(ref, baseDir, ctx) {
-  const descriptor = resolveRef(ref, baseDir, ctx);
+function warnUnsupportedScriptTiming(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
   if (descriptor.kind === "file") {
     ctx.warnings.push({
       kind: "unsupported-script-timing",
@@ -856,8 +860,8 @@ function warnUnsupportedScriptTiming(ref, baseDir, ctx) {
   }
 }
 
-function warnInactiveStylesheet(ref, baseDir, ctx) {
-  const descriptor = resolveRef(ref, baseDir, ctx);
+function warnInactiveStylesheet(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
   if (descriptor.kind === "file") {
     ctx.warnings.push({
       kind: "inactive-stylesheet",
@@ -869,8 +873,8 @@ function warnInactiveStylesheet(ref, baseDir, ctx) {
   }
 }
 
-function warnExternalModuleScript(ref, baseDir, ctx) {
-  const descriptor = resolveRef(ref, baseDir, ctx);
+function warnExternalModuleScript(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
   if (descriptor.kind === "file") {
     ctx.warnings.push({
       kind: "module-external",
@@ -1224,7 +1228,8 @@ function isInert(ref) {
 }
 
 function shouldRedactUnresolvedRef(ref) {
-  return /^file:\/\//i.test(String(ref || "").trim());
+  const value = String(ref || "").trim();
+  return /^file:\/\//i.test(value) || /^file:\/\//i.test(decodeHtmlCharacterReferences(value));
 }
 
 function replaceUnresolvedAttrRef(source, name, ref) {
@@ -1251,6 +1256,28 @@ function fragmentSuffix(ref) {
   const value = String(ref).trim();
   const hashIndex = value.indexOf("#");
   return hashIndex === -1 ? "" : value.slice(hashIndex);
+}
+
+function normalizeRefForResolution(ref, options = {}) {
+  const value = String(ref);
+  return options.decodeHtmlEntities ? decodeHtmlCharacterReferences(value) : value;
+}
+
+function decodeHtmlCharacterReferences(value) {
+  return String(value).replace(/&(#(\d+)|#x([\da-f]+)|[a-z]+);/gi, (match, entity, decimal, hex) => {
+    if (decimal) return decodeNumericCharacterReference(Number.parseInt(decimal, 10), match);
+    if (hex) return decodeNumericCharacterReference(Number.parseInt(hex, 16), match);
+    return HTML_ENTITY_MAP[entity.toLowerCase()] ?? match;
+  });
+}
+
+function decodeNumericCharacterReference(codePoint, fallback) {
+  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) return fallback;
+  try {
+    return String.fromCodePoint(codePoint);
+  } catch {
+    return fallback;
+  }
 }
 
 function decodeLocalPath(ref) {

@@ -368,6 +368,30 @@ test("decodes percent-encoded local asset paths before resolving them", async ()
   assert.equal(warnings.length, 0);
 });
 
+test("decodes HTML entities in local asset refs before resolving them", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><img src="logo&amp;dark.png">' +
+    '<img src="numeric&#38;dark.png"><img src="hex&#x26;dark.png">' +
+    '<img src="missing&amp;dark.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/logo&dark.png": png,
+      "/art/numeric&dark.png": png,
+      "/art/hex&dark.png": png,
+    }),
+  });
+
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
+  assert.doesNotMatch(out, /numeric&#38;dark\.png|hex&#x26;dark\.png/);
+  assert.match(out, /<img src="missing&amp;dark\.png">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "load-failed", ref: "missing&amp;dark.png" }],
+  );
+});
+
 test("resolves HTML asset references against the first document base href", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
@@ -488,26 +512,31 @@ test("inlines not media-condition CSS imports with parenthesized features", asyn
 test("leaves non-media CSS imports unchanged with a warning", async () => {
   const html =
     '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +
-    '@import url("supported.css") supports(display: grid);@import "print.css" print;</style></head></html>';
+    '@import url("supported.css") supports(display: grid);@import "bare.css" layer;' +
+    '@import "print.css" print;</style></head></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: localReader({
       "/art/theme.css": ".theme{color:red}",
       "/art/supported.css": ".supported{display:grid}",
+      "/art/bare.css": ".bare{color:purple}",
       "/art/print.css": ".print{color:black}",
     }),
   });
 
   assert.match(out, /@import "theme\.css" layer\(theme\);/);
   assert.match(out, /@import url\("supported\.css"\) supports\(display: grid\);/);
+  assert.match(out, /@import "bare\.css" layer;/);
   assert.match(out, /@media print\{\.print\{color:black\}\}/);
   assert.doesNotMatch(out, /\.theme\{color:red\}/);
   assert.doesNotMatch(out, /\.supported\{display:grid\}/);
+  assert.doesNotMatch(out, /\.bare\{color:purple\}/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
       { kind: "unsupported-css-import", ref: "theme.css" },
       { kind: "unsupported-css-import", ref: "supported.css" },
+      { kind: "unsupported-css-import", ref: "bare.css" },
     ],
   );
 });
@@ -579,6 +608,44 @@ test("keeps earlier CSS imports external when a later local import cannot inline
     "css-import-order:tokens.css",
     "load-failed:missing.css",
   ]);
+});
+
+test("stops reading consecutive CSS imports once the bundle cap is exhausted", async () => {
+  const files = {
+    "/art/a.css": "a".repeat(10),
+    "/art/b.css": "b".repeat(10),
+    "/art/c.css": "c".repeat(10),
+  };
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><head><style>@import "a.css";@import "b.css";' +
+    '@import "c.css";.app{color:red}</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    maxBundleBytes: 15,
+    readLocalFile: async (absPath, options = {}) => {
+      readPaths.push(absPath);
+      const value = Buffer.from(files[absPath]);
+      if (value.length > options.maxBundleRemaining) {
+        const error = new Error(`would exceed per-bundle cap ${options.maxBundleBytes}`);
+        // @ts-expect-error attach a node-style code for parity with fs errors
+        error.code = "TOO_LARGE";
+        throw error;
+      }
+      return value;
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/a.css", "/art/b.css"]);
+  assert.match(out, /@import "a\.css";@import "b\.css";@import "c\.css";\.app\{color:red\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "too-large", ref: "b.css" },
+      { kind: "css-import-order", ref: "a.css" },
+      { kind: "css-import-order", ref: "c.css" },
+    ],
+  );
 });
 
 test("rebases unresolved local refs from linked CSS to the HTML base", async () => {
