@@ -122,6 +122,26 @@ test("warns when inline module scripts reference local imports", async () => {
   );
 });
 
+test("warns when inline module scripts reference local re-exports", async () => {
+  const html =
+    '<!doctype html><html><head><script type="module">' +
+    'export * from "./dep.js";\nexport { value } from "../shared.js";\n' +
+    'export { remote } from "https://cdn.example/remote.js";\nexport { pkg } from "pkg";\n' +
+    "</script></head></html>";
+  const { warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art/components",
+    readLocalFile: localReader({}),
+  });
+
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inline-module-import", ref: "./dep.js" },
+      { kind: "inline-module-import", ref: "../shared.js" },
+    ],
+  );
+});
+
 test("escapes a closing style tag when inlining external CSS into a <style> block", async () => {
   const html = '<!doctype html><html><head><link rel="stylesheet" href="x.css"></head><body></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -526,6 +546,39 @@ test("only rewrites url references inside real style attributes", async () => {
   assert.match(out, /literal style="url\(missing-text\.png\)"/);
   assert.match(out, /style="background:url\(data:image\/png;base64,iVBORw==\)"/);
   assert.equal(warnings.length, 0);
+});
+
+test("rewrites url references inside unquoted style attributes", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    "<!doctype html><html><body><div style=background:url(pic.png)></div>" +
+    "<div data-style=background:url(missing-data.png)></div></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.match(out, /style="background:url\(data:image\/png;base64,iVBORw==\)"/);
+  assert.match(out, /data-style=background:url\(missing-data\.png\)/);
+  assert.equal(warnings.length, 0);
+});
+
+test("keeps earlier CSS imports external when a later local import cannot inline", async () => {
+  const html = '<!doctype html><html><head><link rel="stylesheet" href="css/app.css"></head><body></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/css/app.css": '@import "tokens.css";@import "missing.css";.app{color:red}',
+      "/art/css/tokens.css": ".tokens{color:blue}",
+    }),
+  });
+
+  assert.match(out, /@import "css\/tokens\.css";@import "css\/missing\.css";\.app\{color:red\}/);
+  assert.doesNotMatch(out, /\.tokens\{color:blue\}/);
+  assert.deepEqual(warnings.map((warning) => `${warning.kind}:${warning.ref}`).sort(), [
+    "css-import-order:tokens.css",
+    "load-failed:missing.css",
+  ]);
 });
 
 test("rebases unresolved local refs from linked CSS to the HTML base", async () => {
