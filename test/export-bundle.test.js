@@ -664,6 +664,22 @@ test("inlines local track captions and warns on missing track assets", async () 
   );
 });
 
+test("leaves standalone track captions unchanged", async () => {
+  const readPaths = [];
+  const html = '<!doctype html><html><body><track kind="captions" src="captions.vtt"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({ "/art/captions.vtt": "WEBVTT\n" })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.match(out, /<track kind="captions" src="captions\.vtt">/);
+  assert.equal(warnings.length, 0);
+});
+
 test("preserves self-closing syntax when rewriting asset tags", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
@@ -752,6 +768,28 @@ test("redacts file URLs inside HTML and CSS comments", async () => {
     [
       { kind: "file-url-redacted", ref: "file:///Users/kun/comment.png" },
       { kind: "file-url-redacted", ref: "file:///Users/kun/style.css" },
+    ],
+  );
+});
+
+test("redacts file URLs inside special HTML tokens", async () => {
+  const html =
+    '<!doctype html SYSTEM "file:///Users/kun/secret.dtd"><html><body>' +
+    '<?xml-stylesheet href="file:///Users/kun/secret.css"?></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<!doctype html SYSTEM "about:blank">/);
+  assert.match(out, /<\?xml-stylesheet href="about:blank"\?>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.dtd" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.css" },
     ],
   );
 });
@@ -2207,6 +2245,36 @@ test("inlines local object embed and image input resources while warning for ifr
   );
 });
 
+test("leaves object and embed HTML nested documents unresolved", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><object data="panel.html"></object>' +
+    '<embed src="widget.htm"><object data="diagram.svg"></object></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/panel.html": "<p>Nested</p>",
+        "/art/widget.htm": "<p>Nested</p>",
+        "/art/diagram.svg": "<svg></svg>",
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/diagram.svg"]);
+  assert.match(out, /<object data="panel\.html"><\/object>/);
+  assert.match(out, /<embed src="widget\.htm">/);
+  assert.match(out, /<object data="data:image\/svg\+xml;base64,[^"]+"><\/object>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-frame", ref: "panel.html" },
+      { kind: "unsupported-frame", ref: "widget.htm" },
+    ],
+  );
+});
+
 test("records file iframe src as an unresolved frame before redacting it", async () => {
   const html = '<!doctype html><html><body><iframe src="file:///art/panel.html"></iframe></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
@@ -2277,6 +2345,29 @@ test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
     [
       { kind: "srcdoc-resource", ref: "local.png" },
       { kind: "file-url-redacted", ref: "file\\3a///Users/kun/secret.png" },
+    ],
+  );
+});
+
+test("counts active srcdoc file resources as unresolved before redacting them", async () => {
+  const html =
+    '<!doctype html><html><body><iframe srcdoc=\'<img src="file:///art/local.png">' +
+    '<img src="file:///Users/kun/secret.png">\'></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({ "/art/local.png": Buffer.from("local") }),
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /srcdoc='<img src="about:blank"><img src="about:blank">'/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "srcdoc-resource", ref: "file:///art/local.png" },
+      { kind: "file-url-redacted", ref: "file:///art/local.png" },
+      { kind: "srcdoc-resource", ref: "file:///Users/kun/secret.png" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
     ],
   );
 });

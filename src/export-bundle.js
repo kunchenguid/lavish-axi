@@ -195,7 +195,7 @@ async function transformMarkup(markup, baseDir, ctx) {
       continue;
     }
     if (token.type !== "start") {
-      result += token.type === "comment" ? scrubHtmlComment(token.raw, ctx) : token.raw;
+      result += token.type === "comment" ? scrubHtmlComment(token.raw, ctx) : scrubRawTextFileUrls(token.raw, ctx);
       index = token.end;
       continue;
     }
@@ -283,7 +283,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       continue;
     }
     if (token.type !== "start") {
-      result += token.type === "comment" ? scrubHtmlComment(token.raw, ctx) : token.raw;
+      result += token.type === "comment" ? scrubHtmlComment(token.raw, ctx) : scrubRawTextFileUrls(token.raw, ctx);
       index = token.end;
       continue;
     }
@@ -446,8 +446,8 @@ function scrubInertStyleAttr(attrs, baseDir, ctx, options = {}) {
 }
 
 async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
-  if (tagName === "object") return inlineRenderAttr(attrs, "data", baseDir, ctx);
-  if (tagName === "embed") return inlineRenderAttr(attrs, "src", baseDir, ctx);
+  if (tagName === "object") return inlineRenderAttr(attrs, "data", baseDir, ctx, { nestedHtml: true });
+  if (tagName === "embed") return inlineRenderAttr(attrs, "src", baseDir, ctx, { nestedHtml: true });
   if (tagName === "input") {
     if (getDecisionAttr(attrs, "type").trim().toLowerCase() !== "image") return attrs;
     return inlineRenderAttr(attrs, "src", baseDir, ctx);
@@ -460,7 +460,13 @@ async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
   return attrs;
 }
 
-async function inlineRenderAttr(attrs, name, baseDir, ctx) {
+async function inlineRenderAttr(attrs, name, baseDir, ctx, options = {}) {
+  const value = getAttr(attrs, name);
+  if (!value) return attrs;
+  if (options.nestedHtml && isHtmlDocumentRef(value)) {
+    warnUnsupportedFrame(value, baseDir, ctx, HTML_REF_OPTIONS);
+    return replaceUnresolvedAttrRef(attrs, name, value);
+  }
   return inlineAttr(attrs, name, baseDir, ctx);
 }
 
@@ -594,6 +600,7 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
 
 async function inlineMediaAttrs(tagName, attrs, baseDir, ctx, parentTag = "") {
   let next = attrs;
+  if (tagName === "track" && parentTag !== "video" && parentTag !== "audio") return next;
   if (tagName !== "source" || parentTag === "video" || parentTag === "audio") {
     next = await inlineAttr(next, "src", baseDir, ctx);
   }
@@ -2229,7 +2236,16 @@ function warnInertStyleRefs(attrs, baseDir, ctx, options = {}) {
 }
 
 function warnInertResource(ref, baseDir, ctx, refOptions = {}, warningOptions = {}) {
-  if (shouldRedactUnresolvedRef(ref, refOptions)) return;
+  if (shouldRedactUnresolvedRef(ref, refOptions)) {
+    if (warningOptions.localWarningKind === "srcdoc-resource") {
+      ctx.warnings.push({
+        kind: warningOptions.localWarningKind,
+        ref,
+        reason: warningOptions.localWarningReason || SRCDOC_RESOURCE_REASON,
+      });
+    }
+    return;
+  }
   const descriptor = resolveRef(ref, baseDir, ctx, refOptions);
   if (descriptor.kind !== "file") {
     warnUnresolvedDescriptor(descriptor, ref, ctx);
@@ -2844,6 +2860,11 @@ function isInert(ref) {
   // `#a` and its percent-encoded form `%23a` are in-document fragment references (e.g. SVG
   // filter/mask ids), not fetchable resources, so leave them untouched.
   return !ref || ref.startsWith("#") || /^%23/i.test(ref) || /^(data|blob|about|javascript|mailto|tel):/i.test(ref);
+}
+
+function isHtmlDocumentRef(ref) {
+  const locator = normalizeRefForResolution(ref, HTML_REF_OPTIONS).trim();
+  return [".html", ".htm", ".xhtml"].includes(path.extname(stripQueryAndHash(locator)).toLowerCase());
 }
 
 function shouldRedactUnresolvedRef(ref, options = {}) {
