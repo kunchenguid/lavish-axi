@@ -617,6 +617,20 @@ test("poll help warns agents to leave the long poll running", () => {
   assert.doesNotMatch(help, /above 10 minutes/);
 });
 
+test("share help distinguishes public default from password-protected shares", () => {
+  const help = getCommandHelp("share");
+  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
+  const homeShareHelp = home.help.find((item) => item.includes("lavish-axi share <html-file>"));
+
+  assert.match(help, /PUBLIC by default/);
+  assert.match(help, /Pass --password to publish a PRIVATE password-protected page/);
+  assert.match(help, /viewers must supply the password to view/);
+  assert.doesNotMatch(help, /EVERYTHING PUBLISHED IS PUBLIC/);
+  assert.match(homeShareHelp, /PUBLIC by default/);
+  assert.match(homeShareHelp, /Pass --password to publish a PRIVATE password-protected page/);
+  assert.doesNotMatch(homeShareHelp, /Everything published is public/);
+});
+
 test("feedback next step tells agents to keep polling without timeout flag", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",

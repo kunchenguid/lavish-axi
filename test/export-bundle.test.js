@@ -535,6 +535,18 @@ test("inlines not media-condition CSS imports with parenthesized features", asyn
   assert.equal(warnings.length, 0);
 });
 
+test("removes empty CSS imports that were successfully inlined", async () => {
+  const html = '<!doctype html><html><head><style>@import "empty.css";.app{color:red}</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/empty.css": "" }),
+  });
+
+  assert.doesNotMatch(out, /@import/);
+  assert.match(out, /\.app\{color:red\}/);
+  assert.equal(warnings.length, 0);
+});
+
 test("only inlines CSS imports from the valid top-level import prelude", async () => {
   const readPaths = [];
   const html =
@@ -1074,6 +1086,28 @@ test("redacts browser-normalized file schemes in attributes and CSS urls", async
   assert.deepEqual(
     warnings.map((warning) => warning.kind),
     ["outside-root", "file-url-redacted"],
+  );
+});
+
+test("redacts escaped CSS resource identifiers and numeric file entities without semicolons", async () => {
+  const html =
+    '<!doctype html><html><head><style>@im\\70ort "file:///Users/kun/import.css";' +
+    ".x{background:u\\72l(file\\3a///Users/kun/css-secret.png)}</style></head>" +
+    '<body><a href="file&#58///Users/kun/attr-secret.png">Download</a></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(out, /file&#58/i);
+  assert.doesNotMatch(out, /file\\3a/i);
+  assert.match(out, /@im\\70ort "about:blank";/);
+  assert.match(out, /background:url\(about:blank\)/);
+  assert.match(out, /<a href="about:blank">Download<\/a>/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["outside-root", "outside-root", "file-url-redacted"],
   );
 });
 

@@ -436,7 +436,7 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
       continue;
     }
     if (complete) {
-      result += prepared.get(segment) || segment.rule;
+      result += prepared.has(segment) ? prepared.get(segment) : segment.rule;
       continue;
     }
     warnExternalizedCssImport(
@@ -679,7 +679,8 @@ function encodeRelativeRef(ref) {
 }
 
 function parseCssImportRule(rule) {
-  let index = "@import".length;
+  let index = cssKeywordEnd(rule, 0, "@import");
+  if (index === -1) return null;
   index = skipCssWhitespaceAndComments(rule, index);
   let ref;
   let refStart;
@@ -707,8 +708,9 @@ function parseCssImportRule(rule) {
 }
 
 function parseCssUrlToken(css, index) {
-  if (!startsCssKeyword(css, index, "url") || css[index + 3] !== "(") return null;
-  let cursor = skipCssWhitespace(css, index + 4);
+  const keywordEnd = cssKeywordEnd(css, index, "url");
+  if (keywordEnd === -1 || css[keywordEnd] !== "(") return null;
+  let cursor = skipCssWhitespace(css, keywordEnd + 1);
   let quote = "";
   let ref;
   let refStart;
@@ -817,10 +819,26 @@ function skipCssWhitespaceAndComments(css, index) {
 }
 
 function startsCssKeyword(css, index, keyword) {
-  if (css.slice(index, index + keyword.length).toLowerCase() !== keyword.toLowerCase()) return false;
+  return cssKeywordEnd(css, index, keyword) !== -1;
+}
+
+function cssKeywordEnd(css, index, keyword) {
+  if (!hasCssIdentifierBoundaryBefore(css, index)) return -1;
+  const expected = String(keyword).toLowerCase();
+  if (expected.startsWith("@")) {
+    if (css[index] !== "@") return -1;
+    const ident = consumeCssIdentifier(css, index + 1);
+    if (!ident || `@${ident.value.toLowerCase()}` !== expected) return -1;
+    return ident.end;
+  }
+  const ident = consumeCssIdentifier(css, index);
+  if (!ident || ident.value.toLowerCase() !== expected) return -1;
+  return ident.end;
+}
+
+function hasCssIdentifierBoundaryBefore(css, index) {
   const before = css[index - 1] || "";
-  const after = css[index + keyword.length] || "";
-  return !isCssIdentChar(before) && !isCssIdentChar(after);
+  return before !== "\\" && !isCssIdentChar(before);
 }
 
 function isPlainCssMediaQueryList(tail) {
@@ -829,16 +847,52 @@ function isPlainCssMediaQueryList(tail) {
 
 function startsUnsupportedCssImportTail(tail) {
   const index = skipCssWhitespaceAndComments(tail, 0);
-  if (!isCssIdentChar(tail[index])) return false;
-  let cursor = index;
-  while (cursor < tail.length && isCssIdentChar(tail[cursor])) cursor += 1;
-  const ident = tail.slice(index, cursor).toLowerCase();
-  if (ident === "layer") return true;
-  return tail[cursor] === "(" && (ident === "layer" || ident === "supports" || cursor > index);
+  const ident = consumeCssIdentifier(tail, index);
+  if (!ident) return false;
+  const cursor = ident.end;
+  const value = ident.value.toLowerCase();
+  if (value === "layer") return true;
+  return tail[cursor] === "(";
 }
 
 function isCssIdentChar(char) {
   return Boolean(char) && /[a-z0-9_-]/i.test(char);
+}
+
+function consumeCssIdentifier(css, index) {
+  let cursor = index;
+  let value = "";
+  while (cursor < css.length) {
+    if (css[cursor] === "\\") {
+      const escaped = readCssEscape(css, cursor);
+      value += escaped.value;
+      cursor = escaped.end;
+      continue;
+    }
+    if (!isCssIdentChar(css[cursor])) break;
+    value += css[cursor];
+    cursor += 1;
+  }
+  return cursor === index ? null : { value, end: cursor };
+}
+
+function readCssEscape(input, index) {
+  if (index + 1 >= input.length) return { value: "\\", end: index + 1 };
+  const next = input[index + 1];
+  if (next === "\r" && input[index + 2] === "\n") return { value: "", end: index + 3 };
+  if (/[\n\r\f]/.test(next)) return { value: "", end: index + 2 };
+  if (/[\da-f]/i.test(next)) {
+    let cursor = index + 1;
+    let hex = "";
+    while (cursor < input.length && hex.length < 6 && /[\da-f]/i.test(input[cursor])) {
+      hex += input[cursor];
+      cursor += 1;
+    }
+    const value = decodeNumericCharacterReference(Number.parseInt(hex, 16), "");
+    if (cursor < input.length && /[\t\n\f\r ]/.test(input[cursor])) cursor += 1;
+    return { value, end: cursor };
+  }
+  return { value: next, end: index + 2 };
 }
 
 // --- resolution + loading ---------------------------------------------------
@@ -1509,10 +1563,10 @@ function normalizeCssRefForScheme(ref, options = {}) {
 }
 
 function decodeHtmlCharacterReferences(value) {
-  return String(value).replace(/&(#(\d+)|#x([\da-f]+)|[a-z][a-z0-9]+);/gi, (match, entity, decimal, hex) => {
+  return String(value).replace(/&(?:#(\d+);?|#x([\da-f]+);?|([a-z][a-z0-9]+);)/gi, (match, decimal, hex, named) => {
     if (decimal) return decodeNumericCharacterReference(Number.parseInt(decimal, 10), match);
     if (hex) return decodeNumericCharacterReference(Number.parseInt(hex, 16), match);
-    return HTML_ENTITY_MAP[entity.toLowerCase()] ?? match;
+    return HTML_ENTITY_MAP[named.toLowerCase()] ?? match;
   });
 }
 
@@ -1540,15 +1594,9 @@ function decodeCssEscapes(value) {
       continue;
     }
     if (/[\da-f]/i.test(next)) {
-      let cursor = index + 1;
-      let hex = "";
-      while (cursor < input.length && hex.length < 6 && /[\da-f]/i.test(input[cursor])) {
-        hex += input[cursor];
-        cursor += 1;
-      }
-      result += decodeNumericCharacterReference(Number.parseInt(hex, 16), "");
-      if (cursor < input.length && /[\t\n\f\r ]/.test(input[cursor])) cursor += 1;
-      index = cursor;
+      const escaped = readCssEscape(input, index);
+      result += escaped.value;
+      index = escaped.end;
       continue;
     }
     result += next;
