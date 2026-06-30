@@ -487,24 +487,43 @@ test("only inlines media attributes that the element can fetch", async () => {
   const html =
     '<!doctype html><html><body><img poster="poster.png" srcset="small.png 1x">' +
     '<audio src="audio.mp3" poster="audio-poster.png" srcset="audio-srcset.png 1x"></audio>' +
-    '<video poster="poster.png" src="video.mp4"></video><source srcset="small.png 1x"></body></html>';
+    '<video poster="poster.png" src="video.mp4"></video>' +
+    '<picture><source src="ignored-picture.png" srcset="small.png 1x"></picture>' +
+    '<video><source src="video-source.mp4" srcset="ignored-video.png 1x"></video></body></html>';
+  const readPaths = [];
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
-    readLocalFile: localReader({
-      "/art/audio.mp3": Buffer.from("audio"),
-      "/art/poster.png": png,
-      "/art/small.png": png,
-      "/art/video.mp4": Buffer.from("video"),
-    }),
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/audio.mp3": Buffer.from("audio"),
+        "/art/poster.png": png,
+        "/art/small.png": png,
+        "/art/video.mp4": Buffer.from("video"),
+        "/art/video-source.mp4": Buffer.from("source"),
+      })(absPath);
+    },
   });
 
+  assert.deepEqual(readPaths, [
+    "/art/small.png",
+    "/art/audio.mp3",
+    "/art/video.mp4",
+    "/art/poster.png",
+    "/art/small.png",
+    "/art/video-source.mp4",
+  ]);
   assert.match(out, /<img poster="poster\.png" srcset="data:image\/png;base64,iVBORw== 1x">/);
   assert.match(
     out,
     /<audio src="data:audio\/mpeg;base64,YXVkaW8=" poster="audio-poster\.png" srcset="audio-srcset\.png 1x"><\/audio>/,
   );
   assert.match(out, /<video poster="data:image\/png;base64,iVBORw==" src="data:video\/mp4;base64,dmlkZW8="><\/video>/);
-  assert.match(out, /<source srcset="data:image\/png;base64,iVBORw== 1x">/);
+  assert.match(
+    out,
+    /<picture><source src="ignored-picture\.png" srcset="data:image\/png;base64,iVBORw== 1x"><\/picture>/,
+  );
+  assert.match(out, /<video><source src="data:video\/mp4;base64,c291cmNl" srcset="ignored-video\.png 1x"><\/video>/);
   assert.equal(warnings.length, 0);
 });
 
@@ -528,14 +547,14 @@ test("inlines local track captions and warns on missing track assets", async () 
 test("preserves self-closing syntax when rewriting asset tags", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
-    '<!doctype html><html><body><picture><source src="pic.png" /></picture>' +
+    '<!doctype html><html><body><picture><source srcset="pic.png 1x" /></picture>' +
     '<img src="pic.png"/><video><track src="captions.vtt" /></video></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: localReader({ "/art/pic.png": png, "/art/captions.vtt": "WEBVTT\n" }),
   });
 
-  assert.match(out, /<source src="data:image\/png;base64,iVBORw==" \/>/);
+  assert.match(out, /<source srcset="data:image\/png;base64,iVBORw== 1x" \/>/);
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" \/>/);
   assert.match(out, /<track src="data:text\/vtt;base64,V0VCVlRUCg==" \/>/);
   assert.doesNotMatch(out, /\/>>/);
@@ -915,6 +934,28 @@ test("keeps trailing slashes in unquoted attribute values before tag close", asy
   );
 });
 
+test("ignores base href inside unterminated raw text", async () => {
+  const readPaths = [];
+  const html = '<!doctype html><html><body><img src="pic.png"><script><base href="assets/">';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/pic.png": Buffer.from("root"),
+        "/art/assets/pic.png": Buffer.from("wrong"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/pic.png"]);
+  assert.match(out, /<img src="data:image\/png;base64,cm9vdA==">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "unterminated-raw-text", ref: "script" }],
+  );
+});
+
 test("leaves HTML asset references unchanged when the document base href is remote", async () => {
   const html =
     '<!doctype html><html><head><base href="https://cdn.example/assets/">' +
@@ -1128,6 +1169,24 @@ test("leaves namespace url identifiers unchanged", async () => {
   assert.equal(warnings.length, 0);
 });
 
+test("rebases namespace url identifiers when hoisting linked CSS", async () => {
+  const html = '<!doctype html><html><head><link rel="stylesheet" href="css/app.css"></head></html>';
+  const readPaths = [];
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/css/app.css": "@namespace icon url(ns.xml);icon|glyph{fill:red}",
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/css/app.css"]);
+  assert.match(out, /<style>@namespace icon url\(css\/ns\.xml\);icon\|glyph\{fill:red\}<\/style>/);
+  assert.equal(warnings.length, 0);
+});
+
 test("leaves non-media CSS imports unchanged with a warning", async () => {
   const html =
     '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +
@@ -1264,6 +1323,36 @@ test("does not rewrite CSS URLs in conditional at-rule preludes", async () => {
   assert.match(out, /\.media\{background:image-set\("data:image\/png;base64,iVBORw==" 1x\)\}/);
   assert.match(out, /\.container\{background:url\(data:image\/png;base64,iVBORw==\)\}/);
   assert.equal(warnings.length, 0);
+});
+
+test("redacts file URLs in conditional CSS at-rule preludes", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    "<!doctype html><html><head><style>@supports (background:url(file:///Users/kun/supports.png)){" +
+    ".supports{background:url(ok.png)}}" +
+    '@media (background:image-set("file:///Users/kun/media.png" 1x)){.media{background:url(ok.png)}}' +
+    "@container (background:u\\72l(file\\3a///Users/kun/container.png)){.container{background:url(ok.png)}}" +
+    "</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({ "/art/ok.png": png }),
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /@supports \(background:url\(about:blank\)\)/);
+  assert.match(out, /@media \(background:image-set\("about:blank" 1x\)\)/);
+  assert.match(out, /@container \(background:url\(about:blank\)\)/);
+  assert.match(out, /\.supports\{background:url\(data:image\/png;base64,iVBORw==\)\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/supports.png" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/media.png" },
+      { kind: "file-url-redacted", ref: "file\\3a///Users/kun/container.png" },
+    ],
+  );
 });
 
 test("handles escaped urls and image-set operands inside inline styles", async () => {

@@ -63,6 +63,22 @@ const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title", "iframe",
 const INERT_CONTENT_TAGS = new Set(["template", "noscript"]);
 const MEDIA_TAGS = new Set(["img", "source", "video", "audio", "track"]);
 const SVG_REF_TAGS = new Set(["use", "image", "feimage"]);
+const HTML_VOID_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
 const INERT_RESOURCE_REASON = "resources inside template or noscript content are left unchanged";
 const SRCDOC_RESOURCE_REASON = "iframe srcdoc nested HTML is left unchanged";
 
@@ -121,6 +137,7 @@ async function transform(html, ctx) {
 async function transformMarkup(markup, baseDir, ctx) {
   let result = "";
   let index = 0;
+  const openStack = [];
   while (index < markup.length) {
     const lt = markup.indexOf("<", index);
     if (lt === -1) {
@@ -132,6 +149,12 @@ async function transformMarkup(markup, baseDir, ctx) {
     if (!token) {
       result += markup[lt];
       index = lt + 1;
+      continue;
+    }
+    if (token.type === "close") {
+      popHtmlParent(openStack, token.tag.toLowerCase());
+      result += token.raw;
+      index = token.end;
       continue;
     }
     if (token.type !== "start") {
@@ -166,10 +189,27 @@ async function transformMarkup(markup, baseDir, ctx) {
       index = markup.length;
       continue;
     }
-    result += await transformStartTag(token.tag, token.attrs, token.selfClosing, baseDir, ctx);
+    result += await transformStartTag(
+      token.tag,
+      token.attrs,
+      token.selfClosing,
+      baseDir,
+      ctx,
+      currentHtmlParent(openStack),
+    );
+    if (!token.selfClosing && !HTML_VOID_TAGS.has(tagName)) openStack.push(tagName);
     index = token.end;
   }
   return result;
+}
+
+function currentHtmlParent(openStack) {
+  return openStack.length ? openStack[openStack.length - 1] : "";
+}
+
+function popHtmlParent(openStack, tagName) {
+  const index = openStack.lastIndexOf(tagName);
+  if (index !== -1) openStack.length = index;
 }
 
 async function transformInertContentElement(token, body, closeTag, baseDir, ctx) {
@@ -277,11 +317,11 @@ function scrubRawTextBodyWithoutInlining(tagName, attrs, body, baseDir, ctx, opt
   return transformInertMarkup(body, baseDir, ctx, { warnLocalRefs: false });
 }
 
-async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx) {
+async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTag = "") {
   const tagName = tag.toLowerCase();
   let next = attrs;
   if (MEDIA_TAGS.has(tagName)) {
-    next = await inlineMediaAttrs(tagName, next, baseDir, ctx);
+    next = await inlineMediaAttrs(tagName, next, baseDir, ctx, parentTag);
   }
   if (SVG_REF_TAGS.has(tagName)) {
     next = await inlineAttr(next, "href", baseDir, ctx);
@@ -447,10 +487,15 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   return `${startTag}${escapeRawText(loaded.text, "script")}${closeTag}`;
 }
 
-async function inlineMediaAttrs(tagName, attrs, baseDir, ctx) {
-  let next = await inlineAttr(attrs, "src", baseDir, ctx);
+async function inlineMediaAttrs(tagName, attrs, baseDir, ctx, parentTag = "") {
+  let next = attrs;
+  if (tagName !== "source" || parentTag === "video" || parentTag === "audio") {
+    next = await inlineAttr(next, "src", baseDir, ctx);
+  }
   if (tagName === "video") next = await inlineAttr(next, "poster", baseDir, ctx);
-  if (tagName === "img" || tagName === "source") next = await inlineSrcset(next, baseDir, ctx);
+  if (tagName === "img" || (tagName === "source" && parentTag === "picture")) {
+    next = await inlineSrcset(next, baseDir, ctx);
+  }
   return next;
 }
 
@@ -776,14 +821,14 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
         result += css.slice(index);
         break;
       }
-      result += css.slice(index, ruleEnd + 1);
+      result += rebaseCssNamespaceRule(css.slice(index, ruleEnd + 1), baseDir, outputBaseDir, ctx);
       index = ruleEnd + 1;
       continue;
     }
 
     const conditionalBlock = parseCssConditionalAtRuleBlock(css, index);
     if (conditionalBlock) {
-      result += css.slice(index, conditionalBlock.bodyStart);
+      result += scrubCssNonFetchPrelude(css.slice(index, conditionalBlock.bodyStart), baseDir, ctx, options);
       result += await inlineCssUrls(
         css.slice(conditionalBlock.bodyStart, conditionalBlock.bodyEnd),
         baseDir,
@@ -911,14 +956,14 @@ function scrubCssRefsWithoutInliningInner(css, baseDir, ctx, options) {
         result += css.slice(index);
         break;
       }
-      result += css.slice(index, ruleEnd + 1);
+      result += rebaseCssNamespaceRule(css.slice(index, ruleEnd + 1), baseDir, baseDir, ctx);
       index = ruleEnd + 1;
       continue;
     }
 
     const conditionalBlock = parseCssConditionalAtRuleBlock(css, index);
     if (conditionalBlock) {
-      result += css.slice(index, conditionalBlock.bodyStart);
+      result += scrubCssNonFetchPrelude(css.slice(index, conditionalBlock.bodyStart), baseDir, ctx, options);
       result += scrubCssRefsWithoutInliningInner(
         css.slice(conditionalBlock.bodyStart, conditionalBlock.bodyEnd),
         baseDir,
@@ -963,6 +1008,14 @@ function scrubCssRefsWithoutInliningInner(css, baseDir, ctx, options) {
     index += 1;
   }
   return result;
+}
+
+function scrubCssNonFetchPrelude(css, baseDir, ctx, options = {}) {
+  return scrubCssRefsWithoutInliningInner(css, baseDir, ctx, {
+    ...options,
+    localWarningKind: null,
+    seen: options.seen || new Set(),
+  });
 }
 
 function scrubCssImageSetArgsWithoutInlining(args, baseDir, ctx, options) {
@@ -1156,6 +1209,18 @@ function rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir) {
   return `${rule.slice(0, parsed.refStart)}${rebased}${rule.slice(parsed.refEnd)}`;
 }
 
+function rebaseCssNamespaceRule(rule, baseDir, outputBaseDir, ctx) {
+  const parsed = parseCssNamespaceRule(rule);
+  if (!parsed) return rule;
+  if (shouldRedactUnresolvedRef(parsed.ref, { cssSyntax: true })) {
+    ctx.warnings.push({ kind: "file-url-redacted", ref: parsed.ref });
+    return `${rule.slice(0, parsed.refStart)}${REDACTED_FILE_REF}${rule.slice(parsed.refEnd)}`;
+  }
+  const rebased = rebaseLocalCssRef(parsed.ref, baseDir, outputBaseDir, { cssSyntax: true });
+  if (!rebased) return rule;
+  return `${rule.slice(0, parsed.refStart)}${rebased}${rule.slice(parsed.refEnd)}`;
+}
+
 function rebaseLocalCssRef(ref, baseDir, outputBaseDir, options = {}) {
   const trimmed = normalizeRefForResolution(ref, options).trim();
   const base = normalizeRefBase(baseDir);
@@ -1216,6 +1281,32 @@ function parseCssImportRule(rule) {
   if (semicolon === -1) return null;
   const media = rule.slice(skipCssWhitespaceAndComments(rule, index), semicolon).trim();
   return { ref, media, refStart, refEnd };
+}
+
+function parseCssNamespaceRule(rule) {
+  let index = cssKeywordEnd(rule, 0, "@namespace");
+  if (index === -1) return null;
+  index = skipCssWhitespaceAndComments(rule, index);
+  let parsed = parseCssNamespaceRef(rule, index);
+  if (parsed) return parsed;
+  const prefix = consumeCssIdentifier(rule, index);
+  if (!prefix) return null;
+  index = skipCssWhitespaceAndComments(rule, prefix.end);
+  parsed = parseCssNamespaceRef(rule, index);
+  return parsed;
+}
+
+function parseCssNamespaceRef(rule, index) {
+  if (startsCssKeyword(rule, index, "url")) {
+    const token = parseCssUrlToken(rule, index);
+    if (!token) return null;
+    return { ref: token.ref.trim(), refStart: token.refStart, refEnd: token.refEnd };
+  }
+  if (rule[index] === '"' || rule[index] === "'") {
+    const token = parseCssString(rule, index);
+    return { ref: token.value, refStart: index + 1, refEnd: token.end - 1 };
+  }
+  return null;
 }
 
 function parseCssUrlToken(css, index) {
@@ -1624,6 +1715,7 @@ function findFirstDocumentBaseHref(html) {
           index = close.end;
           continue;
         }
+        break;
       }
     }
     index = token.end;
