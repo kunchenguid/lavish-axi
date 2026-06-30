@@ -2494,6 +2494,33 @@ test("redacts unresolved file URLs instead of leaking local paths", async () => 
   assert.ok(warnings.every((warning) => warning.kind === "outside-root"));
 });
 
+test("reports unparseable file URLs before redacting active assets", async () => {
+  const ref = "file://server/share.png";
+  const readPaths = [];
+  const { html: out, warnings } = await buildSelfContainedHtml(`<img src="${ref}">`, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      throw new Error(`unexpected read: ${absPath}`);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.match(out, /<img src="about:blank">/);
+  assert.doesNotMatch(out, /file:\/\/server/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-unresolved", ref },
+      { kind: "file-url-redacted", ref },
+    ],
+  );
+  assert.deepEqual(
+    splitExportWarnings(warnings).unresolved.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-unresolved", ref }],
+  );
+});
+
 test("redacts remaining file URLs from arbitrary HTML attributes", async () => {
   const secret = "file:///Users/kun/secret.png";
   const escaped = "file:&#x2f;&#x2f;/Users/kun/escaped.png";

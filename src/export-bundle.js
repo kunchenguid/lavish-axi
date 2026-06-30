@@ -88,6 +88,7 @@ const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
   "css-import-depth",
   "css-import-order",
   "fetchable-link",
+  "file-url-unresolved",
   "inactive-stylesheet",
   "inline-importmap-local-ref",
   "inline-module-import",
@@ -2280,7 +2281,7 @@ function resolveRef(ref, baseDir, ctx, options = {}) {
       if (ctx.confineDir && isOutside(ctx.confineDir, resolved)) return { kind: "escape", path: resolved };
       return { kind: "file", path: resolved };
     } catch {
-      return { kind: "skip" };
+      return { kind: "unparseable-file-url" };
     }
   }
 
@@ -2309,10 +2310,18 @@ function resolveLocalPathPreservingTrailingSlash(baseDir, localPath) {
 function warnUnresolvedDescriptor(descriptor, ref, ctx) {
   const warning = unresolvedDescriptorWarning(descriptor, ref);
   if (warning) ctx.warnings.push(warning);
+  if (descriptor.kind === "unparseable-file-url") ctx.warnings.push({ kind: "file-url-redacted", ref });
 }
 
 function unresolvedDescriptorWarning(descriptor, ref) {
   if (descriptor.kind === "escape") return { kind: "outside-root", ref };
+  if (descriptor.kind === "unparseable-file-url") {
+    return {
+      kind: "file-url-unresolved",
+      ref,
+      reason: "file URL could not be resolved to a local file and was redacted",
+    };
+  }
   if (descriptor.kind === "unmapped-root") {
     return {
       kind: "unmapped-root-absolute",
