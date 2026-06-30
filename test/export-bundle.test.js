@@ -3,18 +3,35 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { buildSelfContainedHtml, exportFileName, splitExportWarnings } from "../src/export-bundle.js";
 
+function portablePathKey(absPath) {
+  return String(absPath)
+    .replace(/\\/g, "/")
+    .replace(/^[A-Za-z]:(?=\/)/, "");
+}
+
+function portableFileUrl(absPath) {
+  return pathToFileURL(path.resolve(absPath)).href;
+}
+
+function cssEscapedFileUrl(absPath) {
+  return portableFileUrl(absPath).replace(/^file:/i, "file\\3a");
+}
+
 function localReader(files) {
+  const entries = new Map(Object.entries(files).map(([key, value]) => [portablePathKey(key), value]));
   return async (absPath) => {
-    if (!(absPath in files)) {
-      const error = new Error(`ENOENT: ${absPath}`);
+    const key = portablePathKey(absPath);
+    if (!entries.has(key)) {
+      const error = new Error(`ENOENT: ${key}`);
       // @ts-expect-error attach a node-style code for parity with fs errors
       error.code = "ENOENT";
       throw error;
     }
-    const value = files[absPath];
+    const value = entries.get(key);
     return typeof value === "string" ? Buffer.from(value) : value;
   };
 }
@@ -103,7 +120,7 @@ test("leaves eventful stylesheet links external with warnings", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({ "/art/active.css": ".active{color:green}" })(absPath);
     },
   });
@@ -129,7 +146,7 @@ test("leaves preload-as-style links external with warnings", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({ "/art/active.css": ".active{color:green}" })(absPath);
     },
   });
@@ -152,7 +169,7 @@ test("warns for local fetchable link hints left external", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       throw new Error(`unexpected read: ${absPath}`);
     },
   });
@@ -757,7 +774,7 @@ test("only inlines media attributes that the element can fetch", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/audio.mp3": Buffer.from("audio"),
         "/art/poster.png": png,
@@ -813,7 +830,7 @@ test("leaves standalone track captions unchanged", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({ "/art/captions.vtt": "WEBVTT\n" })(absPath);
     },
   });
@@ -1006,7 +1023,7 @@ test("redacts file URLs in closed raw-text bodies without tokenizing", async () 
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return Buffer.from("unexpected");
     },
   });
@@ -1034,7 +1051,7 @@ test("treats self-closing non-void raw-text and inert tags as open HTML elements
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/text-secret.png": Buffer.from("text-secret"),
         "/art/template-secret.png": Buffer.from("template-secret"),
@@ -1062,7 +1079,7 @@ test("treats unterminated raw-text content as inert through EOF", async () => {
     baseDir: "/art",
     confineDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/local.png": Buffer.from("local"),
         "/art/live.png": Buffer.from("live"),
@@ -1089,7 +1106,7 @@ test("reports unterminated active script src while leaving following markup iner
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/app.js": "console.log(1);",
         "/art/secret.png": Buffer.from("secret"),
@@ -1120,7 +1137,7 @@ test("treats plaintext content as inert through EOF", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/local.png": Buffer.from("local"),
         "/art/live.png": Buffer.from("live"),
@@ -1148,7 +1165,7 @@ test("leaves template and noscript resources inert while warning on local refs",
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/local.png": Buffer.from("local"),
         "/art/theme.css": "body{color:red}",
@@ -1181,7 +1198,7 @@ test("keeps nested and quoted template content inert until the matching close", 
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/inner.png": Buffer.from("inner"),
         "/art/outer.png": Buffer.from("outer"),
@@ -1248,7 +1265,7 @@ test("redacts file URLs in inert text chunks without tokenizing", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return Buffer.from("unexpected");
     },
   });
@@ -1274,7 +1291,7 @@ test("scrubs CSS-aware style attributes inside inert content without inlining", 
     baseDir: "/art",
     confineDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({ "/art/local.png": Buffer.from("local") })(absPath);
     },
   });
@@ -1325,7 +1342,7 @@ test("treats unterminated inert content as inert through EOF", async () => {
     baseDir: "/art",
     confineDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/local.png": Buffer.from("local"),
         "/art/live.png": Buffer.from("live"),
@@ -1443,7 +1460,7 @@ test("keeps trailing slashes in unquoted attribute values before tag close", asy
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/assets/pic.png": png,
         "/art/pic.png": Buffer.from("wrong"),
@@ -1475,7 +1492,7 @@ test("ignores base href inside unterminated raw text", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/pic.png": Buffer.from("root"),
         "/art/assets/pic.png": Buffer.from("wrong"),
@@ -1497,7 +1514,7 @@ test("closes raw-text elements on end tags with attributes", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({ "/art/pic.png": Buffer.from("pic") })(absPath);
     },
   });
@@ -1657,8 +1674,8 @@ test("only inlines CSS imports from the valid top-level import prelude", async (
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
-      return Buffer.from(files[absPath]);
+      readPaths.push(portablePathKey(absPath));
+      return Buffer.from(files[portablePathKey(absPath)]);
     },
   });
 
@@ -1763,7 +1780,7 @@ test("rebases namespace url identifiers when hoisting linked CSS", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/css/app.css": "@namespace icon url(ns.xml);icon|glyph{fill:red}",
       })(absPath);
@@ -1895,7 +1912,7 @@ test("does not rewrite CSS URLs in conditional at-rule preludes", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/ok.png": png,
         "/art/secret.png": Buffer.from("secret"),
@@ -2110,8 +2127,8 @@ test("stops reading consecutive CSS imports once the bundle cap is exhausted", a
     baseDir: "/art",
     maxBundleBytes: 15,
     readLocalFile: async (absPath, options = {}) => {
-      readPaths.push(absPath);
-      const value = Buffer.from(files[absPath]);
+      readPaths.push(portablePathKey(absPath));
+      const value = Buffer.from(files[portablePathKey(absPath)]);
       if (value.length > options.maxBundleRemaining) {
         const error = new Error(`would exceed per-bundle cap ${options.maxBundleBytes}`);
         // @ts-expect-error attach a node-style code for parity with fs errors
@@ -2373,7 +2390,7 @@ test("warns on unmapped root-absolute refs while leaving them unchanged", async 
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return Buffer.from("unexpected");
     },
   });
@@ -2474,7 +2491,7 @@ test("does not inline HTML resource attributes in foreign namespaces", async () 
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/secret.png": Buffer.from("secret"),
         "/art/secret.svg": "<svg></svg>",
@@ -2499,7 +2516,7 @@ test("resumes HTML parsing inside SVG foreignObject", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/app.js": "window.app = true;",
         "/art/active.png": Buffer.from("active"),
@@ -2635,7 +2652,7 @@ test("reports unparseable file URLs before redacting active assets", async () =>
   const { html: out, warnings } = await buildSelfContainedHtml(`<img src="${ref}">`, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       throw new Error(`unexpected read: ${absPath}`);
     },
   });
@@ -2728,9 +2745,11 @@ test("preserves original CSS escape tokens when unresolved refs remain external"
 });
 
 test("redacts browser-normalized file schemes in attributes and CSS urls", async () => {
+  const cssSecret = cssEscapedFileUrl("/Users/kun/css-secret.png");
+  const attrSecret = portableFileUrl("/Users/kun/attr-secret.png").replace(/^file/i, "fi&#x09;le");
   const html =
-    "<!doctype html><html><head><style>.x{background:url(file\\3a///Users/kun/css-secret.png)}</style></head>" +
-    '<body><a href="fi&#x09;le:///Users/kun/attr-secret.png">Download</a></body></html>';
+    `<!doctype html><html><head><style>.x{background:url(${cssSecret})}</style></head>` +
+    `<body><a href="${attrSecret}">Download</a></body></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     confineDir: "/art",
@@ -2748,10 +2767,13 @@ test("redacts browser-normalized file schemes in attributes and CSS urls", async
 });
 
 test("redacts escaped CSS resource identifiers and numeric file entities without semicolons", async () => {
+  const importSecret = portableFileUrl("/Users/kun/import.css");
+  const cssSecret = cssEscapedFileUrl("/Users/kun/css-secret.png");
+  const attrSecret = portableFileUrl("/Users/kun/attr-secret.png").replace(/^file:/i, "file&#58");
   const html =
-    '<!doctype html><html><head><style>@im\\70ort "file:///Users/kun/import.css";' +
-    ".x{background:u\\72l(file\\3a///Users/kun/css-secret.png)}</style></head>" +
-    '<body><a href="file&#58///Users/kun/attr-secret.png">Download</a></body></html>';
+    `<!doctype html><html><head><style>@im\\70ort "${importSecret}";` +
+    `.x{background:u\\72l(${cssSecret})}</style></head>` +
+    `<body><a href="${attrSecret}">Download</a></body></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     confineDir: "/art",
@@ -2805,7 +2827,7 @@ test("leaves object and embed HTML nested documents unresolved", async () => {
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/panel.html": "<p>Nested</p>",
         "/art/widget.htm": "<p>Nested</p>",
@@ -2836,7 +2858,7 @@ test("leaves object and embed HTML MIME nested documents unresolved", async () =
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/panel": "<p>Nested</p>",
         "/art/widget": "<p>Nested</p>",
@@ -2866,7 +2888,7 @@ test("leaves percent-encoded object and embed HTML nested documents unresolved",
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/panel.html": "<p>Nested</p>",
         "/art/widget.htm": "<p>Nested</p>",
@@ -2889,7 +2911,8 @@ test("leaves percent-encoded object and embed HTML nested documents unresolved",
 });
 
 test("records file iframe src as an unresolved frame before redacting it", async () => {
-  const html = '<!doctype html><html><body><iframe src="file:///art/panel.html"></iframe></body></html>';
+  const panelUrl = portableFileUrl("/art/panel.html");
+  const html = `<!doctype html><html><body><iframe src="${panelUrl}"></iframe></body></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     confineDir: "/art",
@@ -2898,7 +2921,7 @@ test("records file iframe src as an unresolved frame before redacting it", async
   assert.match(out, /<iframe src="about:blank"><\/iframe>/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
-    [{ kind: "unsupported-frame", ref: "file:///art/panel.html" }],
+    [{ kind: "unsupported-frame", ref: panelUrl }],
   );
 });
 
@@ -2906,15 +2929,19 @@ test("inlines confined file URL render resources and redacts escaping ones", asy
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const svg = "<svg></svg>";
   const readPaths = [];
+  const diagramUrl = portableFileUrl("/art/diagram.svg");
+  const docUrl = portableFileUrl("/art/doc.pdf");
+  const buttonUrl = portableFileUrl("/art/button.png");
+  const secretUrl = portableFileUrl("/Users/kun/secret.svg");
   const html =
-    '<!doctype html><html><body><object data="file:///art/diagram.svg"></object>' +
-    '<embed src="file:///art/doc.pdf"><input type="image" src="file:///art/button.png">' +
-    '<object data="file:///Users/kun/secret.svg"></object></body></html>';
+    `<!doctype html><html><body><object data="${diagramUrl}"></object>` +
+    `<embed src="${docUrl}"><input type="image" src="${buttonUrl}">` +
+    `<object data="${secretUrl}"></object></body></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     confineDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({
         "/art/diagram.svg": svg,
         "/art/doc.pdf": Buffer.from("%PDF"),
@@ -2931,7 +2958,7 @@ test("inlines confined file URL render resources and redacts escaping ones", asy
   assert.match(out, /<object data="about:blank"><\/object>/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
-    [{ kind: "outside-root", ref: "file:///Users/kun/secret.svg" }],
+    [{ kind: "outside-root", ref: secretUrl }],
   );
 });
 
@@ -2944,7 +2971,7 @@ test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
     baseDir: "/art",
     confineDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({ "/art/local.png": Buffer.from("local") })(absPath);
     },
   });
@@ -3046,9 +3073,11 @@ test("preserves CSP meta content inside iframe srcdoc while warning", async () =
 });
 
 test("counts active srcdoc file resources as unresolved before redacting them", async () => {
+  const localUrl = portableFileUrl("/art/local.png");
+  const secretUrl = portableFileUrl("/Users/kun/secret.png");
   const html =
-    '<!doctype html><html><body><iframe srcdoc=\'<img src="file:///art/local.png">' +
-    '<img src="file:///Users/kun/secret.png">\'></iframe></body></html>';
+    `<!doctype html><html><body><iframe srcdoc='<img src="${localUrl}">` +
+    `<img src="${secretUrl}">'></iframe></body></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     confineDir: "/art",
@@ -3060,10 +3089,10 @@ test("counts active srcdoc file resources as unresolved before redacting them", 
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
-      { kind: "srcdoc-resource", ref: "file:///art/local.png" },
-      { kind: "file-url-redacted", ref: "file:///art/local.png" },
-      { kind: "srcdoc-resource", ref: "file:///Users/kun/secret.png" },
-      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+      { kind: "srcdoc-resource", ref: localUrl },
+      { kind: "file-url-redacted", ref: localUrl },
+      { kind: "srcdoc-resource", ref: secretUrl },
+      { kind: "file-url-redacted", ref: secretUrl },
     ],
   );
 });
@@ -3077,7 +3106,7 @@ test("scrubs inert iframe srcdoc refs without bundling nested HTML", async () =>
     baseDir: "/art",
     confineDir: "/art",
     readLocalFile: async (absPath) => {
-      readPaths.push(absPath);
+      readPaths.push(portablePathKey(absPath));
       return localReader({ "/art/local.png": Buffer.from("local") })(absPath);
     },
   });
@@ -3129,15 +3158,15 @@ test("redacts file URLs hidden behind semicolonless named entities", async () =>
 });
 
 test("scrubs CSS import URLs that contain semicolons", async () => {
-  const html =
-    "<!doctype html><html><head><style>@import url(file:///Users/kun/secret.css;v);.ok{color:red}</style></head></html>";
+  const secretUrl = `${portableFileUrl("/Users/kun/secret.css")};v`;
+  const html = `<!doctype html><html><head><style>@import url(${secretUrl});.ok{color:red}</style></head></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, { baseDir: "/art", confineDir: "/art" });
 
   assert.match(out, /@import url\(about:blank\);\.ok\{color:red\}/);
   assert.doesNotMatch(out, /\/Users\/kun/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
-    [{ kind: "outside-root", ref: "file:///Users/kun/secret.css;v" }],
+    [{ kind: "outside-root", ref: secretUrl }],
   );
 });
 

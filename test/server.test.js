@@ -1095,7 +1095,7 @@ test("GET /api/:key/export inlines local assets and leaves remote references int
 
 test("GET /api/:key/export sends a safe download filename header", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, 'résumé "draft".html');
+  const artifact = path.join(dir, "résumé draft.html");
   await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
 
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
@@ -1113,7 +1113,7 @@ test("GET /api/:key/export sends a safe download filename header", async () => {
     assert.equal(exportRes.status, 200);
     assert.equal(
       exportRes.headers.get("content-disposition"),
-      "attachment; filename=\"r_sum_ _draft_.export.html\"; filename*=UTF-8''r%C3%A9sum%C3%A9%20%22draft%22.export.html",
+      "attachment; filename=\"r_sum_ draft.export.html\"; filename*=UTF-8''r%C3%A9sum%C3%A9%20draft.export.html",
     );
   } finally {
     await server.close();
