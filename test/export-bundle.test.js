@@ -372,6 +372,31 @@ test("redacts file URLs from inline module and import-map specifiers", async () 
   );
 });
 
+test("redacts file URL import-map import keys", async () => {
+  const html =
+    '<!doctype html><html><head><script type="importmap">' +
+    '{"imports":{"file:///Users/kun/secret-key.js":"./app.js","ok":"./ok.js"}}' +
+    "</script></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /"about:blank":"\.\/app\.js"/);
+  assert.match(out, /"ok":"\.\/ok\.js"/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret-key.js" },
+      { kind: "inline-importmap-local-ref", ref: "./app.js" },
+      { kind: "inline-importmap-local-ref", ref: "./ok.js" },
+    ],
+  );
+});
+
 test("escapes a closing style tag when inlining external CSS into a <style> block", async () => {
   const html = '<!doctype html><html><head><link rel="stylesheet" href="x.css"></head><body></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -611,6 +636,29 @@ test("does not rewrite markup-like text inside scripts, styles, or comments", as
   assert.match(out, /<!-- <img src="pic\.png"> -->/);
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
   assert.equal(warnings.length, 0);
+});
+
+test("redacts file URLs inside HTML and CSS comments", async () => {
+  const html =
+    "<!doctype html><html><head><!-- local file:///Users/kun/comment.png -->" +
+    "<style>/* css file:///Users/kun/style.css */.x{color:red}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<!-- local about:blank -->/);
+  assert.match(out, /\/\* css about:blank \*\//);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/comment.png" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/style.css" },
+    ],
+  );
 });
 
 test("does not rewrite markup-like text inside textarea or title", async () => {
@@ -1764,8 +1812,8 @@ test("redacts remaining file URLs from arbitrary HTML attributes", async () => {
     [
       "file-url-redacted",
       "file-url-redacted",
-      "file-url-redacted",
-      "file-url-redacted",
+      "outside-root",
+      "outside-root",
       "file-url-redacted",
       "file-url-redacted",
       "file-url-redacted",
@@ -1872,6 +1920,39 @@ test("inlines local object embed and image input resources while warning for ifr
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [{ kind: "unsupported-frame", ref: "panel.html" }],
+  );
+});
+
+test("inlines confined file URL render resources and redacts escaping ones", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const svg = "<svg></svg>";
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><object data="file:///art/diagram.svg"></object>' +
+    '<embed src="file:///art/doc.pdf"><input type="image" src="file:///art/button.png">' +
+    '<object data="file:///Users/kun/secret.svg"></object></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/diagram.svg": svg,
+        "/art/doc.pdf": Buffer.from("%PDF"),
+        "/art/button.png": png,
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/diagram.svg", "/art/doc.pdf", "/art/button.png"]);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<object data="data:image\/svg\+xml;base64,[^"]+"><\/object>/);
+  assert.match(out, /<embed src="data:application\/pdf;base64,JVBERg==">/);
+  assert.match(out, /<input type="image" src="data:image\/png;base64,iVBORw==">/);
+  assert.match(out, /<object data="about:blank"><\/object>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "outside-root", ref: "file:///Users/kun/secret.svg" }],
   );
 });
 

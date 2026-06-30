@@ -158,7 +158,7 @@ async function transformMarkup(markup, baseDir, ctx) {
       continue;
     }
     if (token.type !== "start") {
-      result += token.raw;
+      result += token.type === "comment" ? scrubHtmlComment(token.raw, ctx) : token.raw;
       index = token.end;
       continue;
     }
@@ -235,7 +235,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       continue;
     }
     if (token.type !== "start") {
-      result += token.raw;
+      result += token.type === "comment" ? scrubHtmlComment(token.raw, ctx) : token.raw;
       index = token.end;
       continue;
     }
@@ -379,8 +379,6 @@ async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
 }
 
 async function inlineRenderAttr(attrs, name, baseDir, ctx) {
-  const value = getAttr(attrs, name);
-  if (value && containsFileUrl(value)) return attrs;
   return inlineAttr(attrs, name, baseDir, ctx);
 }
 
@@ -749,7 +747,7 @@ function rewriteLateCssImports(css, baseDir, ctx, outputBaseDir) {
   while (index < css.length) {
     const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
     if (commentEnd !== -1) {
-      result += css.slice(index, commentEnd);
+      result += scrubCssComment(css.slice(index, commentEnd), ctx);
       index = commentEnd;
       continue;
     }
@@ -792,7 +790,7 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
   while (index < css.length) {
     const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
     if (commentEnd !== -1) {
-      result += css.slice(index, commentEnd);
+      result += scrubCssComment(css.slice(index, commentEnd), ctx);
       index = commentEnd;
       continue;
     }
@@ -884,7 +882,7 @@ async function inlineCssImageSetArgs(args, baseDir, ctx, outputBaseDir, options 
   while (index < args.length) {
     const commentEnd = args.startsWith("/*", index) ? findCssCommentEnd(args, index) : -1;
     if (commentEnd !== -1) {
-      result += args.slice(index, commentEnd);
+      result += scrubCssComment(args.slice(index, commentEnd), ctx);
       index = commentEnd;
       continue;
     }
@@ -928,7 +926,7 @@ function scrubCssRefsWithoutInliningInner(css, baseDir, ctx, options) {
   while (index < css.length) {
     const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
     if (commentEnd !== -1) {
-      result += css.slice(index, commentEnd);
+      result += scrubCssComment(css.slice(index, commentEnd), ctx);
       index = commentEnd;
       continue;
     }
@@ -1025,7 +1023,7 @@ function scrubCssImageSetArgsWithoutInlining(args, baseDir, ctx, options) {
   while (index < args.length) {
     const commentEnd = args.startsWith("/*", index) ? findCssCommentEnd(args, index) : -1;
     if (commentEnd !== -1) {
-      result += args.slice(index, commentEnd);
+      result += scrubCssComment(args.slice(index, commentEnd), ctx);
       index = commentEnd;
       continue;
     }
@@ -1464,6 +1462,27 @@ function findCssStringEnd(css, index) {
 function findCssCommentEnd(css, index) {
   const end = css.indexOf("*/", index + 2);
   return end === -1 ? css.length : end + 2;
+}
+
+function scrubHtmlComment(raw, ctx) {
+  const text = String(raw);
+  const closed = text.endsWith("-->");
+  const bodyEnd = closed ? text.length - 3 : text.length;
+  return `${text.slice(0, 4)}${scrubFileUrlsInCommentBody(text.slice(4, bodyEnd), ctx)}${closed ? "-->" : ""}`;
+}
+
+function scrubCssComment(raw, ctx) {
+  const text = String(raw);
+  const closed = text.endsWith("*/");
+  const bodyEnd = closed ? text.length - 2 : text.length;
+  return `${text.slice(0, 2)}${scrubFileUrlsInCommentBody(text.slice(2, bodyEnd), ctx)}${closed ? "*/" : ""}`;
+}
+
+function scrubFileUrlsInCommentBody(text, ctx) {
+  return String(text).replace(/(^|[^a-z0-9+.-])(file:[^\s"'<>)]*)/gi, (_match, prefix, ref) => {
+    ctx.warnings.push({ kind: "file-url-redacted", ref });
+    return `${prefix}${REDACTED_FILE_REF}`;
+  });
 }
 
 function findCssAtRuleEnd(css, index) {
@@ -2063,15 +2082,28 @@ function redactInlineImportMapFileRefs(body, ctx) {
   }
   let changed = false;
   const redactImports = (imports) => {
-    if (!imports || typeof imports !== "object" || Array.isArray(imports)) return;
+    if (!imports || typeof imports !== "object" || Array.isArray(imports)) return imports;
+    let redacted = false;
+    const nextImports = {};
     for (const [key, value] of Object.entries(imports)) {
-      if (typeof value !== "string" || !isFileSchemeRef(value)) continue;
-      ctx.warnings.push({ kind: "file-url-redacted", ref: value });
-      imports[key] = REDACTED_FILE_REF;
-      changed = true;
+      let nextKey = key;
+      let nextValue = value;
+      if (isFileSchemeRef(key)) {
+        ctx.warnings.push({ kind: "file-url-redacted", ref: key });
+        nextKey = REDACTED_FILE_REF;
+        redacted = true;
+      }
+      if (typeof value === "string" && isFileSchemeRef(value)) {
+        ctx.warnings.push({ kind: "file-url-redacted", ref: value });
+        nextValue = REDACTED_FILE_REF;
+        redacted = true;
+      }
+      nextImports[nextKey] = nextValue;
     }
+    if (redacted) changed = true;
+    return redacted ? nextImports : imports;
   };
-  redactImports(map && map.imports);
+  if (map && map.imports) map.imports = redactImports(map.imports);
   if (map && map.scopes && typeof map.scopes === "object" && !Array.isArray(map.scopes)) {
     const scopes = {};
     for (const [scopePrefix, scopedImports] of Object.entries(map.scopes)) {
@@ -2081,8 +2113,7 @@ function redactInlineImportMapFileRefs(body, ctx) {
         nextPrefix = REDACTED_FILE_REF;
         changed = true;
       }
-      scopes[nextPrefix] = scopedImports;
-      redactImports(scopedImports);
+      scopes[nextPrefix] = redactImports(scopedImports);
     }
     map.scopes = scopes;
   }
