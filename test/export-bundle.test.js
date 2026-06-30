@@ -147,7 +147,7 @@ test("inlines local images referenced by src into data URIs", async () => {
 test("parses srcset without splitting data URI candidates", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
-    '<!doctype html><html><body><img srcset="data:image/png;base64,AAAA 1x, pic.png 2x, https://cdn.example/pic.png 3x"></body></html>';
+    '<!doctype html><html><body><img srcset="data:image/png;base64,AAAA 1x, pic.png 2x, https://cdn.example/pic.png?a=1&amp;b=2 3x"></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: localReader({ "/art/pic.png": png }),
@@ -155,9 +155,22 @@ test("parses srcset without splitting data URI candidates", async () => {
 
   assert.match(
     out,
-    /srcset="data:image\/png;base64,AAAA 1x, data:image\/png;base64,iVBORw== 2x, https:\/\/cdn\.example\/pic\.png 3x"/,
+    /srcset="data:image\/png;base64,AAAA 1x, data:image\/png;base64,iVBORw== 2x, https:\/\/cdn\.example\/pic\.png\?a=1&amp;b=2 3x"/,
   );
   assert.doesNotMatch(out, /base64, AAAA/);
+  assert.doesNotMatch(out, /&amp;amp;/);
+  assert.equal(warnings.length, 0);
+});
+
+test("leaves unchanged srcset values byte-for-byte when no candidate is inlined", async () => {
+  const html =
+    '<!doctype html><html><body><img srcset="https://cdn.example/pic.png?a=1&amp;b=2 1x, data:image/png;base64,AAAA 2x"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.equal(out, html);
   assert.equal(warnings.length, 0);
 });
 
@@ -176,6 +189,23 @@ test("inlines local track captions and warns on missing track assets", async () 
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [{ kind: "load-failed", ref: "missing.vtt" }],
   );
+});
+
+test("preserves self-closing syntax when rewriting asset tags", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><picture><source src="pic.png" /></picture>' +
+    '<img src="pic.png"/><video><track src="captions.vtt" /></video></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png, "/art/captions.vtt": "WEBVTT\n" }),
+  });
+
+  assert.match(out, /<source src="data:image\/png;base64,iVBORw==" \/>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==" \/>/);
+  assert.match(out, /<track src="data:text\/vtt;base64,V0VCVlRUCg==" \/>/);
+  assert.doesNotMatch(out, /\/>>/);
+  assert.equal(warnings.length, 0);
 });
 
 test("does not treat hyphenated custom elements as native asset tags", async () => {
@@ -593,6 +623,23 @@ test("preserves external SVG fragments when inlining local references", async ()
   });
 
   assert.match(out, /<use href="data:image\/svg\+xml;base64,[^"]+#check">/);
+  assert.equal(warnings.length, 0);
+});
+
+test("preserves self-closing SVG use and image tags when inlining references", async () => {
+  const html =
+    '<!doctype html><html><body><svg><use href="icons.svg#check"/><image href="icon.svg" /></svg></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/icons.svg": '<svg><symbol id="check"></symbol></svg>',
+      "/art/icon.svg": "<svg></svg>",
+    }),
+  });
+
+  assert.match(out, /<use href="data:image\/svg\+xml;base64,[^"]+#check" \/>/);
+  assert.match(out, /<image href="data:image\/svg\+xml;base64,[^"]+" \/>/);
+  assert.doesNotMatch(out, /\/>>/);
   assert.equal(warnings.length, 0);
 });
 

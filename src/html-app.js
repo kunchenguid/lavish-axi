@@ -71,10 +71,14 @@ export async function publishToHtmlApp(html, options = {}) {
   if (!url) {
     throw new Error("ht-ml.app publish failed: response did not include a url");
   }
+  const updateKey = optionalString(data.update_key);
+  if (!updateKey) {
+    throw new Error("ht-ml.app publish failed: response did not include an update_key");
+  }
   return {
     url,
     site_id: String(data.site_id || ""),
-    update_key: String(data.update_key || ""),
+    update_key: updateKey,
     status: String(data.status || ""),
   };
 }

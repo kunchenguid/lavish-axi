@@ -130,13 +130,13 @@ async function transformMarkup(markup, baseDir, ctx) {
     result,
     /<(img|source|video|audio|track)(?=\s|\/|>)([^>]*?)\/?>/gi,
     async (match, tag, attrs) => {
-      return `<${tag}${await inlineMediaAttrs(attrs, baseDir, ctx)}>`;
+      return formatStartTag(tag, await inlineMediaAttrs(attrs, baseDir, ctx), isSelfClosingTag(match));
     },
   );
   result = await replaceAsync(result, /<(use|image)(?=\s|\/|>)([^>]*?)\/?>/gi, async (match, tag, attrs) => {
     let next = await inlineAttr(attrs, "href", baseDir, ctx);
     next = await inlineAttr(next, "xlink:href", baseDir, ctx);
-    return `<${tag}${next}>`;
+    return formatStartTag(tag, next, isSelfClosingTag(match));
   });
   result = await inlineStyleAttrs(result, baseDir, ctx);
   result = await replaceAsync(result, /<link(?=\s|\/|>)([^>]*?)\/?>/gi, (match, attrs) =>
@@ -235,6 +235,7 @@ async function inlineSrcset(attrs, baseDir, ctx) {
   const candidates = parseSrcsetCandidates(value);
   let result = "";
   let lastIndex = 0;
+  let changed = false;
   for (const candidate of candidates) {
     result += value.slice(lastIndex, candidate.urlStart);
     const ref = value.slice(candidate.urlStart, candidate.urlEnd);
@@ -242,12 +243,13 @@ async function inlineSrcset(attrs, baseDir, ctx) {
       result += ref;
     } else {
       const dataUri = await loadDataUri(ref, baseDir, ctx);
+      if (dataUri) changed = true;
       result += dataUri || ref;
     }
     lastIndex = candidate.urlEnd;
   }
   result += value.slice(lastIndex);
-  return replaceAttrValue(attrs, "srcset", result);
+  return changed ? replaceAttrValuePreservingEntities(attrs, "srcset", result) : attrs;
 }
 
 function parseSrcsetCandidates(value) {
@@ -1121,6 +1123,15 @@ function toBuffer(value) {
   return Buffer.from(value);
 }
 
+function isSelfClosingTag(tag) {
+  return /\/\s*>$/.test(tag);
+}
+
+function formatStartTag(tag, attrs, selfClosing) {
+  if (selfClosing) return `<${tag}${String(attrs).replace(/\s+$/, "")} />`;
+  return `<${tag}${attrs}>`;
+}
+
 // Break the closing tag of raw-text content (script/style) so inlined text containing `</script>`
 // or `</style>` cannot terminate the element early. The escape (`<\/script`) is valid inside the
 // JS/CSS string where such a token can legitimately appear.
@@ -1145,6 +1156,14 @@ function replaceAttrValue(source, name, value) {
   return source.replace(re, `$1$2"${escapeAttr(value)}"`);
 }
 
+function replaceAttrValuePreservingEntities(source, name, value) {
+  const re = new RegExp(`(^|\\s)(${escapeRegExp(name)}\\s*=\\s*)("[^"]*"|'[^']*'|[^\\s"'>]+)`, "i");
+  return source.replace(re, (match, boundary, prefix, raw) => {
+    const preferredQuote = raw.startsWith("'") ? "'" : '"';
+    return `${boundary}${prefix}${quoteAttrValuePreservingEntities(value, preferredQuote)}`;
+  });
+}
+
 function removeAttrs(attrs, names) {
   let result = attrs;
   for (const name of names) {
@@ -1159,6 +1178,14 @@ function removeAttrs(attrs, names) {
 
 function escapeAttr(value) {
   return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+function quoteAttrValuePreservingEntities(value, preferredQuote) {
+  const text = String(value);
+  if (!text.includes(preferredQuote)) return `${preferredQuote}${text}${preferredQuote}`;
+  const alternateQuote = preferredQuote === '"' ? "'" : '"';
+  if (!text.includes(alternateQuote)) return `${alternateQuote}${text}${alternateQuote}`;
+  return `"${text.replace(/"/g, "&quot;")}"`;
 }
 
 function escapeRegExp(value) {

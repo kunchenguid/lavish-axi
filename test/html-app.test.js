@@ -66,7 +66,7 @@ test("publishToHtmlApp posts the HTML to /v1/sites and returns the public url an
 });
 
 test("publishToHtmlApp sends a bearer token when one is configured", async () => {
-  const { fetchImpl, calls } = recordingFetch(jsonResponse(200, { url: "https://x.ht-ml.app/" }));
+  const { fetchImpl, calls } = recordingFetch(jsonResponse(200, { url: "https://x.ht-ml.app/", update_key: "uk" }));
 
   await publishToHtmlApp("<h1>Hi</h1>", { fetch: fetchImpl, env: { LAVISH_AXI_HTML_APP_TOKEN: "tok_123" } });
 
@@ -79,6 +79,15 @@ test("publishToHtmlApp rejects a successful response that omits the url", async 
   await assert.rejects(
     () => publishToHtmlApp("<h1>Hi</h1>", { fetch: fetchImpl, env: {} }),
     /response did not include a url/,
+  );
+});
+
+test("publishToHtmlApp rejects a successful response that omits the update key", async () => {
+  const { fetchImpl } = recordingFetch(jsonResponse(200, { site_id: "abc", url: "https://abc.ht-ml.app/" }));
+
+  await assert.rejects(
+    () => publishToHtmlApp("<h1>Hi</h1>", { fetch: fetchImpl, env: {} }),
+    /response did not include an update_key/,
   );
 });
 
