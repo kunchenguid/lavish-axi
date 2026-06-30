@@ -1135,8 +1135,40 @@ test("GET /api/:key/export reports unresolved local asset warning count", async 
 
     assert.equal(exportRes.status, 200);
     assert.equal(exportRes.headers.get("x-lavish-export-warning-count"), "1");
+    assert.equal(exportRes.headers.get("x-lavish-export-notice-count"), "0");
     assert.equal(exportRes.headers.get("x-lavish-export-warnings"), null);
     assert.match(body, /<img src="missing\.png">/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/export counts notices separately from unresolved assets", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(
+    artifact,
+    '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src \'self\'"></head><body><h1>Ship</h1></body></html>',
+  );
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const exportRes = await fetch(`${base}/api/${session.key}/export`);
+    const body = await exportRes.text();
+
+    assert.equal(exportRes.status, 200);
+    assert.equal(exportRes.headers.get("x-lavish-export-warning-count"), "0");
+    assert.equal(exportRes.headers.get("x-lavish-export-notice-count"), "1");
+    assert.match(body, /Content-Security-Policy/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1241,6 +1273,8 @@ test("POST /api/:key/share returns unresolved local asset warnings", async () =>
     assert.equal(shareRes.status, 200);
     assert.equal(body.url, "https://abc123.ht-ml.app/");
     assert.equal(body.warnings.length, 1);
+    assert.equal(body.unresolved_local_assets.length, 1);
+    assert.equal("notices" in body, false);
     assert.equal(body.warnings[0].kind, "load-failed");
     assert.equal(body.warnings[0].ref, "missing.png");
     assert.match(body.warnings[0].reason || "", /ENOENT/);

@@ -32,6 +32,22 @@ test("inlines a local stylesheet link as a <style> block", async () => {
   assert.equal(warnings.length, 0);
 });
 
+test("scrubs file URLs from generated stylesheet media attributes", async () => {
+  const html =
+    '<!doctype html><html><head><link rel="stylesheet" href="theme.css" media="file:///Users/kun/secret"></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/theme.css": "body{color:red}" }),
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<style media="about:blank">body\{color:red\}<\/style>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: "file:///Users/kun/secret" }],
+  );
+});
+
 test("decodes control attributes before stylesheet decisions", async () => {
   const html =
     '<!doctype html><html><head><link rel="style&#115;heet" href="theme.css"></head><body><p>Hi</p></body></html>';
@@ -96,6 +112,28 @@ test("leaves eventful stylesheet links external with warnings", async () => {
       { kind: "behavioral-stylesheet", ref: "async.css" },
       { kind: "behavioral-stylesheet", ref: "fallback.css" },
     ],
+  );
+});
+
+test("leaves preload-as-style links external with warnings", async () => {
+  const html =
+    '<!doctype html><html><head><link rel="preload" as="style" href="preload.css" onload="this.rel=\'stylesheet\'">' +
+    '<link rel="stylesheet" href="active.css"></head></html>';
+  const readPaths = [];
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({ "/art/active.css": ".active{color:green}" })(absPath);
+    },
+  });
+
+  assert.match(out, /<link rel="preload" as="style" href="preload\.css" onload="this\.rel='stylesheet'">/);
+  assert.match(out, /<style>\.active\{color:green\}<\/style>/);
+  assert.deepEqual(readPaths, ["/art/active.css"]);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "preload-stylesheet", ref: "preload.css" }],
   );
 });
 
@@ -1457,6 +1495,23 @@ test("handles escaped urls and image-set operands inside inline styles", async (
   assert.deepEqual(
     warnings.map((warning) => warning.kind),
     ["outside-root"],
+  );
+});
+
+test("scrubs file URLs from copied CSS import rules in inline styles", async () => {
+  const html =
+    '<!doctype html><html><body><div style="@im\\70ort url(file\\3a///Users/kun/secret.css); color:red"></div></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(out, /file\\3a/i);
+  assert.match(out, /style="@im\\70ort url\(about:blank\); color:red"/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: "file\\3a///Users/kun/secret.css" }],
   );
 });
 

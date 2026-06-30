@@ -81,6 +81,23 @@ const HTML_VOID_TAGS = new Set([
 ]);
 const INERT_RESOURCE_REASON = "resources inside template or noscript content are left unchanged";
 const SRCDOC_RESOURCE_REASON = "iframe srcdoc nested HTML is left unchanged";
+const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
+  "behavioral-stylesheet",
+  "css-import-depth",
+  "css-import-order",
+  "inactive-stylesheet",
+  "inline-importmap-local-ref",
+  "inline-module-import",
+  "load-failed",
+  "module-external",
+  "outside-root",
+  "preload-stylesheet",
+  "too-large",
+  "unmapped-root-absolute",
+  "unsupported-css-import",
+  "unsupported-frame",
+  "unsupported-script-timing",
+]);
 
 /**
  * @param {string} html
@@ -127,6 +144,24 @@ export function exportFileName(file) {
   const base = path.basename(String(file || "artifact.html"));
   const stem = base.replace(/\.html?$/i, "");
   return `${stem || "artifact"}.export.html`;
+}
+
+export function splitExportWarnings(warnings) {
+  const unresolved = [];
+  const notices = [];
+  for (const warning of Array.isArray(warnings) ? warnings : []) {
+    if (UNRESOLVED_LOCAL_ASSET_WARNING_KINDS.has(warning?.kind)) unresolved.push(warning);
+    else notices.push(warning);
+  }
+  return { unresolved, notices };
+}
+
+export function exportWarningSummaries(warnings) {
+  return (Array.isArray(warnings) ? warnings : []).map((warning) => ({
+    kind: warning.kind,
+    ref: warning.ref,
+    ...(warning.reason ? { reason: warning.reason } : {}),
+  }));
 }
 
 async function transform(html, ctx) {
@@ -414,10 +449,15 @@ async function inlineLink(attrs, baseDir, ctx) {
     const loaded = await loadText(href, baseDir, ctx, HTML_REF_OPTIONS);
     if (!loaded) return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
     const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0, baseDir);
-    const media = getDecisionAttr(attrs, "media");
+    const media = scrubGeneratedHtmlAttrValue(getDecisionAttr(attrs, "media"), ctx);
     return {
       replacement: `<style${media ? ` media="${escapeAttr(media)}"` : ""}>${escapeRawText(css, "style")}</style>`,
     };
+  }
+
+  if (rel.includes("preload") && getDecisionAttr(attrs, "as").trim().toLowerCase() === "style") {
+    warnPreloadStylesheet(href, baseDir, ctx, HTML_REF_OPTIONS);
+    return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
   }
 
   if (rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value))) {
@@ -435,6 +475,13 @@ function isInactiveStylesheet(attrs, rel) {
 
 function hasStylesheetBehaviorAttrs(attrs) {
   return parseHtmlAttrs(attrs).some((attr) => attr.name.toLowerCase().startsWith("on"));
+}
+
+function scrubGeneratedHtmlAttrValue(value, ctx) {
+  const text = String(value || "");
+  if (!text || !containsFileUrl(text)) return text;
+  ctx.warnings.push({ kind: "file-url-redacted", ref: text });
+  return REDACTED_FILE_REF;
 }
 
 function isCssStylesheetType(attrs) {
@@ -821,7 +868,9 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
         result += css.slice(index);
         break;
       }
-      result += css.slice(index, ruleEnd + 1);
+      const rule = css.slice(index, ruleEnd + 1);
+      const parsed = parseCssImportRule(rule);
+      result += scrubCopiedCssImportRule(rule, parsed, baseDir, ctx, options);
       index = ruleEnd + 1;
       continue;
     }
@@ -878,6 +927,18 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
     index = token.end;
   }
   return result;
+}
+
+function scrubCopiedCssImportRule(rule, parsed, baseDir, ctx, options = {}) {
+  if (!parsed) return rule;
+  const scrubbed = scrubCssRefWithoutInlining(parsed.ref, baseDir, ctx, {
+    ...options,
+    localWarningKind: null,
+    seen: new Set(),
+  });
+  return scrubbed.replacement
+    ? `${rule.slice(0, parsed.refStart)}${scrubbed.replacement}${rule.slice(parsed.refEnd)}`
+    : rule;
 }
 
 async function rewriteCssUrlToken(token, baseDir, ctx, outputBaseDir, options = {}) {
@@ -1923,6 +1984,19 @@ function warnBehavioralStylesheet(ref, baseDir, ctx, options = {}) {
       kind: "behavioral-stylesheet",
       ref,
       reason: "stylesheet links with event handler attributes are left as references to preserve behavior",
+    });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
+  }
+}
+
+function warnPreloadStylesheet(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "preload-stylesheet",
+      ref,
+      reason: "preload-as-style links are left as references to preserve activation behavior",
     });
   } else {
     warnUnresolvedDescriptor(descriptor, ref, ctx);

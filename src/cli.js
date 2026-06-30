@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 import { AxiError, installSessionStartHooks, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
 
 import { createDesignOutput, DESIGN_SYSTEM_HINT } from "./design-reference.js";
-import { buildSelfContainedHtml, exportFileName } from "./export-bundle.js";
+import {
+  buildSelfContainedHtml,
+  exportFileName,
+  exportWarningSummaries,
+  splitExportWarnings,
+} from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
@@ -339,19 +344,25 @@ async function exportCommand(args) {
 }
 
 export function createExportOutput({ source, output, html, warnings }) {
-  const remaining = Array.isArray(warnings) ? warnings : [];
+  const allWarnings = Array.isArray(warnings) ? warnings : [];
+  const { unresolved, notices } = splitExportWarnings(allWarnings);
   const result = {
     export: {
       source,
       output,
       bytes: Buffer.byteLength(html),
-      unresolved_local_assets: remaining.length,
+      unresolved_local_assets: unresolved.length,
+      notices: notices.length,
     },
   };
-  if (remaining.length) {
-    result.unresolved_local_assets = remaining.map((warning) => ({ kind: warning.kind, ref: warning.ref }));
+  if (allWarnings.length) result.warnings = exportWarningSummaries(allWarnings);
+  if (unresolved.length) result.unresolved_local_assets = exportWarningSummaries(unresolved);
+  if (notices.length) result.notices = exportWarningSummaries(notices);
+  if (unresolved.length) {
     result.next_step =
       "Some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); they will break once the file is moved. Remote CDN/font references are intentionally left as links and render where there is network access.";
+  } else if (notices.length) {
+    result.next_step = `Wrote ${output} with export notices (see notices). Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
   } else {
     result.next_step = `Wrote ${output}. Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
   }
@@ -359,10 +370,7 @@ export function createExportOutput({ source, output, html, warnings }) {
 }
 
 function assetWarningSummaries(warnings) {
-  return (Array.isArray(warnings) ? warnings : []).map((warning) => ({
-    kind: warning.kind,
-    ref: warning.ref,
-  }));
+  return exportWarningSummaries(warnings);
 }
 
 // Publish the artifact as a visitable page on ht-ml.app. Builds the same local-inlined
@@ -390,7 +398,8 @@ async function shareCommand(args) {
 }
 
 export function createShareOutput({ source, site, warnings, passwordProtected = false }) {
-  const remaining = Array.isArray(warnings) ? warnings : [];
+  const allWarnings = Array.isArray(warnings) ? warnings : [];
+  const { unresolved, notices } = splitExportWarnings(allWarnings);
   const isPasswordProtected = Boolean(passwordProtected);
   const result = {
     share: {
@@ -402,24 +411,30 @@ export function createShareOutput({ source, site, warnings, passwordProtected = 
       public: !isPasswordProtected,
       visibility: isPasswordProtected ? "private" : "public",
       password_protected: isPasswordProtected,
-      unresolved_local_assets: remaining.length,
+      unresolved_local_assets: unresolved.length,
+      notices: notices.length,
     },
   };
   const passwordNote = isPasswordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : "";
-  if (remaining.length) {
-    result.unresolved_local_assets = assetWarningSummaries(remaining);
+  if (allWarnings.length) result.warnings = exportWarningSummaries(allWarnings);
+  if (unresolved.length) result.unresolved_local_assets = assetWarningSummaries(unresolved);
+  if (notices.length) result.notices = assetWarningSummaries(notices);
+  const noticeNote = notices.length ? " Export notices are available in notices." : "";
+  if (unresolved.length) {
     result.next_step =
-      `Published ${isPasswordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote} ` +
+      `Published ${isPasswordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote}${noticeNote} ` +
       `Remote CDN/font references are intentionally left as links and render where there is network access. ` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery).`;
   } else if (isPasswordProtected) {
     result.next_step =
       `Published a PASSWORD-PROTECTED page: ${site.url} - share this URL with the user and provide the password separately; viewers also need the password. ` +
+      `${noticeNote ? `${noticeNote} ` : ""}` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
       `ht-ml.app hosts the page, so it needs no Lavish server.`;
   } else {
     result.next_step =
       `Published a PUBLIC page that anyone with the link can view: ${site.url} - share this URL with the user. ` +
+      `${noticeNote ? `${noticeNote} ` : ""}` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
       `ht-ml.app hosts the page, so it needs no Lavish server.`;
   }

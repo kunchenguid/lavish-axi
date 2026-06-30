@@ -396,6 +396,28 @@ test("export output surfaces local assets that could not be inlined", () => {
   assert.match(output.next_step, /LOCAL assets could not be inlined/);
 });
 
+test("export output separates unresolved assets from notices", () => {
+  const output = createExportOutput({
+    source: "/tmp/report.html",
+    output: "/tmp/report.export.html",
+    html: "<html></html>",
+    warnings: [
+      { kind: "load-failed", ref: "./missing.png", reason: "ENOENT" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+      { kind: "csp-meta", ref: "script-src 'self'" },
+    ],
+  });
+
+  assert.equal(output.export.unresolved_local_assets, 1);
+  assert.equal(output.export.notices, 2);
+  assert.deepEqual(output.unresolved_local_assets, [{ kind: "load-failed", ref: "./missing.png", reason: "ENOENT" }]);
+  assert.deepEqual(output.notices, [
+    { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+    { kind: "csp-meta", ref: "script-src 'self'" },
+  ]);
+  assert.equal(output.warnings.length, 3);
+});
+
 test("export command writes a portable HTML file next to the artifact", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-export-test-`);
   const artifact = `${dir}/report.html`;
@@ -497,6 +519,28 @@ test("share output surfaces local assets that could not be inlined", () => {
   assert.deepEqual(output.unresolved_local_assets, [{ kind: "load-failed", ref: "./missing.png" }]);
   assert.match(output.next_step, /LOCAL assets could not be inlined/);
   assert.doesNotMatch(output.next_step, /share this URL/);
+});
+
+test("share output separates unresolved assets from notices", () => {
+  const output = createShareOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
+    warnings: [
+      { kind: "module-external", ref: "./main.js" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+      { kind: "csp-meta", ref: "script-src 'self'" },
+    ],
+  });
+
+  assert.equal(output.share.unresolved_local_assets, 1);
+  assert.equal(output.share.notices, 2);
+  assert.deepEqual(output.unresolved_local_assets, [{ kind: "module-external", ref: "./main.js" }]);
+  assert.deepEqual(output.notices, [
+    { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+    { kind: "csp-meta", ref: "script-src 'self'" },
+  ]);
+  assert.equal(output.warnings.length, 3);
+  assert.match(output.next_step, /Export notices are available in notices/);
 });
 
 test("password-protected share output with unresolved assets still mentions the password", () => {

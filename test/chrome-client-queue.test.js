@@ -309,7 +309,12 @@ test("chrome client surfaces share warnings from the server response", async () 
       json: async () => ({
         url: "https://abc123.ht-ml.app/",
         update_key: "uk_secret",
-        warnings: [{ kind: "load-failed", ref: "missing.png" }],
+        warnings: [
+          { kind: "load-failed", ref: "missing.png" },
+          { kind: "csp-meta", ref: "script-src 'self'" },
+        ],
+        unresolved_local_assets: [{ kind: "load-failed", ref: "missing.png" }],
+        notices: [{ kind: "csp-meta", ref: "script-src 'self'" }],
       }),
     }),
   });

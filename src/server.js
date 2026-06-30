@@ -9,7 +9,12 @@ import chokidar from "chokidar";
 import express from "express";
 
 import { createArtifactSdk, deriveLavishQueueKey, isNativeInteractiveControl } from "./artifact-sdk.js";
-import { buildSelfContainedHtml, exportFileName } from "./export-bundle.js";
+import {
+  buildSelfContainedHtml,
+  exportFileName,
+  exportWarningSummaries,
+  splitExportWarnings,
+} from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, hostForUrl, linkHost } from "./paths.js";
@@ -258,8 +263,10 @@ export async function serve({
         confineDir: root,
         resolveAbsolute: resolveDesignAssetPath,
       });
+      const { unresolved, notices } = splitExportWarnings(warnings);
       res.setHeader("content-disposition", exportContentDisposition(session.file));
-      res.setHeader("x-lavish-export-warning-count", String(warnings.length));
+      res.setHeader("x-lavish-export-warning-count", String(unresolved.length));
+      res.setHeader("x-lavish-export-notice-count", String(notices.length));
       res.type("html").send(html);
     } catch (error) {
       next(error);
@@ -297,7 +304,13 @@ export async function serve({
         res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
         return;
       }
-      res.json(warnings.length ? { ...site, warnings } : site);
+      const { unresolved, notices } = splitExportWarnings(warnings);
+      res.json({
+        ...site,
+        ...(warnings.length ? { warnings: exportWarningSummaries(warnings) } : {}),
+        ...(unresolved.length ? { unresolved_local_assets: exportWarningSummaries(unresolved) } : {}),
+        ...(notices.length ? { notices: exportWarningSummaries(notices) } : {}),
+      });
     } catch (error) {
       next(error);
     }

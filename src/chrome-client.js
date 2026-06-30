@@ -587,7 +587,12 @@ async function publishShare(event) {
     if (!response.ok) throw new Error(data.error || "publish failed");
     shareUrlInput.value = data.url || "";
     shareUpdateKeyInput.value = data.update_key || "";
-    const warningCount = Array.isArray(data.warnings) ? data.warnings.length : 0;
+    const unresolvedAssets = Array.isArray(data.unresolved_local_assets)
+      ? data.unresolved_local_assets
+      : Array.isArray(data.warnings)
+        ? data.warnings
+        : [];
+    const warningCount = unresolvedAssets.length;
     shareStatus.textContent =
       warningCount > 0
         ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
