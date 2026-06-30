@@ -46,7 +46,7 @@ const DEFAULT_MAX_DEPTH = 8;
 const DEFAULT_MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 25 * 1024 * 1024;
 const RAW_TEXT_OR_COMMENT_RE =
-  /<!--[\s\S]*?-->|<style\b[^>]*>[\s\S]*?<\/style\s*>|<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
+  /<!--[\s\S]*?-->|<style\b[^>]*>[\s\S]*?<\/style\s*>|<script\b[^>]*>[\s\S]*?<\/script\s*>|<textarea\b[^>]*>[\s\S]*?<\/textarea\s*>|<title\b[^>]*>[\s\S]*?<\/title\s*>/gi;
 
 /**
  * @param {string} html
@@ -126,10 +126,14 @@ async function transformRawTextOrComment(segment, baseDir, ctx) {
 
 async function transformMarkup(markup, baseDir, ctx) {
   let result = markup;
-  result = await replaceAsync(result, /<(img|source|video|audio)\b([^>]*?)\/?>/gi, async (match, tag, attrs) => {
-    return `<${tag}${await inlineMediaAttrs(attrs, baseDir, ctx)}>`;
-  });
-  result = await replaceAsync(result, /<(use|image)\b([^>]*?)\/?>/gi, async (match, tag, attrs) => {
+  result = await replaceAsync(
+    result,
+    /<(img|source|video|audio)(?=\s|\/|>)([^>]*?)\/?>/gi,
+    async (match, tag, attrs) => {
+      return `<${tag}${await inlineMediaAttrs(attrs, baseDir, ctx)}>`;
+    },
+  );
+  result = await replaceAsync(result, /<(use|image)(?=\s|\/|>)([^>]*?)\/?>/gi, async (match, tag, attrs) => {
     let next = await inlineAttr(attrs, "href", baseDir, ctx);
     next = await inlineAttr(next, "xlink:href", baseDir, ctx);
     return `<${tag}${next}>`;
@@ -510,42 +514,17 @@ function startsCssKeyword(css, index, keyword) {
 }
 
 function isPlainCssMediaQueryList(tail) {
-  return !hasTopLevelCssImportFunction(tail);
+  return !startsUnsupportedCssImportTail(tail);
 }
 
-function hasTopLevelCssImportFunction(tail) {
-  let index = 0;
-  let depth = 0;
-  while (index < tail.length) {
-    if (tail.startsWith("/*", index)) {
-      index = findCssCommentEnd(tail, index);
-      continue;
-    }
-    if (tail[index] === '"' || tail[index] === "'") {
-      index = findCssStringEnd(tail, index);
-      continue;
-    }
-    if (tail[index] === "(") {
-      depth += 1;
-      index += 1;
-      continue;
-    }
-    if (tail[index] === ")") {
-      depth = Math.max(0, depth - 1);
-      index += 1;
-      continue;
-    }
-    if (depth === 0 && isCssIdentChar(tail[index])) {
-      const start = index;
-      while (index < tail.length && isCssIdentChar(tail[index])) index += 1;
-      const ident = tail.slice(start, index).toLowerCase();
-      const next = skipCssWhitespace(tail, index);
-      if (ident === "layer" || ident === "supports" || tail[next] === "(") return true;
-      continue;
-    }
-    index += 1;
-  }
-  return false;
+function startsUnsupportedCssImportTail(tail) {
+  const index = skipCssWhitespaceAndComments(tail, 0);
+  if (!isCssIdentChar(tail[index])) return false;
+  let cursor = index;
+  while (cursor < tail.length && isCssIdentChar(tail[cursor])) cursor += 1;
+  const ident = tail.slice(index, cursor).toLowerCase();
+  const next = skipCssWhitespaceAndComments(tail, cursor);
+  return ident === "layer" || ident === "supports" || tail[next] === "(";
 }
 
 function isCssIdentChar(char) {

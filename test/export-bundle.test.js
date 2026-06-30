@@ -92,6 +92,24 @@ test("inlines local images referenced by src into data URIs", async () => {
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
 });
 
+test("does not treat hyphenated custom elements as native asset tags", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><source-code src="example.js"></source-code>' +
+    '<video-player src="clip.mp4"></video-player><image-card href="icon.svg"></image-card>' +
+    '<img src="pic.png" alt="real"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.match(out, /<source-code src="example\.js"><\/source-code>/);
+  assert.match(out, /<video-player src="clip\.mp4"><\/video-player>/);
+  assert.match(out, /<image-card href="icon\.svg"><\/image-card>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="real">/);
+  assert.equal(warnings.length, 0);
+});
+
 test("does not rewrite markup-like text inside scripts, styles, or comments", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
@@ -109,6 +127,23 @@ test("does not rewrite markup-like text inside scripts, styles, or comments", as
   assert.match(out, /const template = "<img src='pic\.png'>";/);
   assert.match(out, /<!-- <img src="pic\.png"> -->/);
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
+  assert.equal(warnings.length, 0);
+});
+
+test("does not rewrite markup-like text inside textarea or title", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><head><title><img src="missing-title.png"></title></head><body>' +
+    '<textarea><img src="missing-textarea.png"></textarea><img src="pic.png" alt="real">' +
+    "</body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.match(out, /<title><img src="missing-title\.png"><\/title>/);
+  assert.match(out, /<textarea><img src="missing-textarea\.png"><\/textarea>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="real">/);
   assert.equal(warnings.length, 0);
 });
 
@@ -160,6 +195,19 @@ test("rewrites url() and @import inside local CSS, resolving relative to the sty
   assert.match(out, /url\(data:font\/woff2;base64,/);
   assert.match(out, /url\(data:image\/svg\+xml;base64,/);
   assert.doesNotMatch(out, /@import/);
+});
+
+test("inlines media-query CSS imports with parenthesized features", async () => {
+  const html =
+    '<!doctype html><html><head><style>@import "mobile.css" screen and (max-width: 600px);</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/mobile.css": ".mobile{color:red}" }),
+  });
+
+  assert.match(out, /@media screen and \(max-width: 600px\)\{\.mobile\{color:red\}\}/);
+  assert.doesNotMatch(out, /@import/);
+  assert.equal(warnings.length, 0);
 });
 
 test("leaves non-media CSS imports unchanged with a warning", async () => {
