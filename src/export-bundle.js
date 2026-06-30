@@ -365,7 +365,8 @@ async function transformUnterminatedRawTextElement(token, body, baseDir, ctx) {
 }
 
 function transformInertRawTextElement(token, body, closeTag, baseDir, ctx, options = {}) {
-  if (options.warnLocalRefs !== false) warnInertStartTagRefs(token.tag.toLowerCase(), token.attrs, baseDir, ctx);
+  if (options.warnLocalRefs !== false)
+    warnInertStartTagRefs(token.tag.toLowerCase(), token.attrs, baseDir, ctx, options);
   const startTag = formatStartTag(
     token.tag,
     scrubInertAttrs(token.tag.toLowerCase(), token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
@@ -391,8 +392,16 @@ function scrubRawTextBodyWithoutInlining(tagName, attrs, body, baseDir, ctx, opt
   }
   if (tagName === "script") {
     let scrubbed = body;
-    if (isModuleScript(attrs)) scrubbed = redactInlineModuleFileRefs(scrubbed, ctx);
-    if (isImportMapScript(attrs)) scrubbed = redactInlineImportMapFileRefs(scrubbed, ctx);
+    const warnActiveScriptDependencies = options.localWarningKind === "srcdoc-resource";
+    if (isModuleScript(attrs)) {
+      scrubbed = redactInlineModuleFileRefs(scrubbed, ctx, { warnUnresolved: warnActiveScriptDependencies });
+      if (warnActiveScriptDependencies) warnInlineModuleImports(scrubbed, baseDir, ctx);
+      scrubbed = scrubClassicScriptFileUrlComments(scrubbed, ctx);
+    }
+    if (isImportMapScript(attrs)) {
+      scrubbed = redactInlineImportMapFileRefs(scrubbed, ctx, { warnUnresolved: warnActiveScriptDependencies });
+      if (warnActiveScriptDependencies) warnInlineImportMapLocalRefs(scrubbed, baseDir, ctx);
+    }
     return scrubRawTextFileUrls(scrubbed, ctx);
   }
   return scrubRawTextFileUrls(body, ctx);
@@ -587,11 +596,12 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   if (!src) {
     let inlineBody = body;
     if (isModuleScript(attrs)) {
-      inlineBody = redactInlineModuleFileRefs(inlineBody, ctx);
+      inlineBody = redactInlineModuleFileRefs(inlineBody, ctx, { warnUnresolved: true });
       warnInlineModuleImports(inlineBody, baseDir, ctx);
+      inlineBody = scrubClassicScriptFileUrlComments(inlineBody, ctx);
     }
     if (isImportMapScript(attrs)) {
-      inlineBody = redactInlineImportMapFileRefs(inlineBody, ctx);
+      inlineBody = redactInlineImportMapFileRefs(inlineBody, ctx, { warnUnresolved: true });
       warnInlineImportMapLocalRefs(inlineBody, baseDir, ctx);
     }
     if (isClassicScript(attrs)) inlineBody = scrubClassicScriptFileUrlComments(inlineBody, ctx);
@@ -601,7 +611,7 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   if (isModuleScript(attrs)) {
     warnExternalModuleScript(src, baseDir, ctx, HTML_REF_OPTIONS);
     const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
-    return `${startTag}${body}${closeTag}`;
+    return `${startTag}${scrubClassicScriptFileUrlComments(body, ctx)}${closeTag}`;
   }
   if (!isClassicScript(attrs)) {
     warnUnsupportedScriptType(src, baseDir, ctx, HTML_REF_OPTIONS);
@@ -2375,10 +2385,13 @@ function warnInlineModuleImports(body, baseDir, ctx) {
   }
 }
 
-function redactInlineModuleFileRefs(body, ctx) {
+function redactInlineModuleFileRefs(body, ctx, options = {}) {
   const refs = findInlineModuleImportRefTokens(body).filter((ref) => isFileSchemeJsRef(ref.value));
   if (refs.length === 0) return body;
-  for (const ref of refs) ctx.warnings.push({ kind: "file-url-redacted", ref: ref.value });
+  for (const ref of refs) {
+    if (options.warnUnresolved) pushInlineModuleImportWarning(ctx, ref.value);
+    ctx.warnings.push({ kind: "file-url-redacted", ref: ref.value });
+  }
   let result = body;
   for (let index = refs.length - 1; index >= 0; index -= 1) {
     const ref = refs[index];
@@ -2393,18 +2406,14 @@ function warnInlineImportMapLocalRefs(body, baseDir, ctx) {
   for (const ref of findImportMapLocalRefs(body)) {
     const descriptor = resolveRef(ref, baseDir, ctx);
     if (descriptor.kind === "file") {
-      ctx.warnings.push({
-        kind: "inline-importmap-local-ref",
-        ref,
-        reason: "inline import maps are left unchanged; local mapped modules are not bundled",
-      });
+      pushInlineImportMapLocalRefWarning(ctx, ref);
     } else {
       warnUnresolvedDescriptor(descriptor, ref, ctx);
     }
   }
 }
 
-function redactInlineImportMapFileRefs(body, ctx) {
+function redactInlineImportMapFileRefs(body, ctx, options = {}) {
   let map;
   try {
     map = JSON.parse(body);
@@ -2420,11 +2429,13 @@ function redactInlineImportMapFileRefs(body, ctx) {
       let nextKey = key;
       let nextValue = value;
       if (isFileSchemeRef(key)) {
+        if (options.warnUnresolved) pushInlineImportMapLocalRefWarning(ctx, key);
         ctx.warnings.push({ kind: "file-url-redacted", ref: key });
         nextKey = REDACTED_FILE_REF;
         redacted = true;
       }
       if (typeof value === "string" && isFileSchemeRef(value)) {
+        if (options.warnUnresolved) pushInlineImportMapLocalRefWarning(ctx, value);
         ctx.warnings.push({ kind: "file-url-redacted", ref: value });
         nextValue = REDACTED_FILE_REF;
         redacted = true;
@@ -2440,6 +2451,7 @@ function redactInlineImportMapFileRefs(body, ctx) {
     for (const [scopePrefix, scopedImports] of Object.entries(map.scopes)) {
       let nextPrefix = scopePrefix;
       if (isFileSchemeRef(scopePrefix)) {
+        if (options.warnUnresolved) pushInlineImportMapLocalRefWarning(ctx, scopePrefix);
         ctx.warnings.push({ kind: "file-url-redacted", ref: scopePrefix });
         nextPrefix = REDACTED_FILE_REF;
         changed = true;
@@ -2451,14 +2463,26 @@ function redactInlineImportMapFileRefs(body, ctx) {
   return changed ? JSON.stringify(map) : body;
 }
 
+function pushInlineModuleImportWarning(ctx, ref) {
+  ctx.warnings.push({
+    kind: "inline-module-import",
+    ref,
+    reason: "inline module imports are left as references",
+  });
+}
+
+function pushInlineImportMapLocalRefWarning(ctx, ref) {
+  ctx.warnings.push({
+    kind: "inline-importmap-local-ref",
+    ref,
+    reason: "inline import maps are left unchanged; local mapped modules are not bundled",
+  });
+}
+
 function warnInlineModuleImport(ref, baseDir, ctx) {
   const descriptor = resolveRef(ref, baseDir, ctx);
   if (descriptor.kind === "file") {
-    ctx.warnings.push({
-      kind: "inline-module-import",
-      ref,
-      reason: "inline module imports are left as references",
-    });
+    pushInlineModuleImportWarning(ctx, ref);
   } else {
     warnUnresolvedDescriptor(descriptor, ref, ctx);
   }

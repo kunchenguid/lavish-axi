@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildSelfContainedHtml, exportFileName } from "../src/export-bundle.js";
+import { buildSelfContainedHtml, exportFileName, splitExportWarnings } from "../src/export-bundle.js";
 
 function localReader(files) {
   return async (absPath) => {
@@ -453,12 +453,32 @@ test("redacts file URLs from inline module and import-map specifiers", async () 
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
+      { kind: "inline-module-import", ref: "file:///Users/kun/secret-module.js" },
       { kind: "file-url-redacted", ref: "file:///Users/kun/secret-module.js" },
+      { kind: "inline-module-import", ref: "file:/Users/kun/secret-export.js" },
       { kind: "file-url-redacted", ref: "file:/Users/kun/secret-export.js" },
+      { kind: "inline-module-import", ref: "file:///Users/kun/secret-lazy.js" },
       { kind: "file-url-redacted", ref: "file:///Users/kun/secret-lazy.js" },
       { kind: "inline-module-import", ref: "./dep.js" },
+      { kind: "inline-importmap-local-ref", ref: "file:///Users/kun/secret-map.js" },
       { kind: "file-url-redacted", ref: "file:///Users/kun/secret-map.js" },
+      { kind: "inline-importmap-local-ref", ref: "file:///Users/kun/secret-scope/" },
       { kind: "file-url-redacted", ref: "file:///Users/kun/secret-scope/" },
+      { kind: "inline-importmap-local-ref", ref: "./app.js" },
+      { kind: "inline-importmap-local-ref", ref: "./x.js" },
+      { kind: "inline-importmap-local-ref", ref: "./local-scope/" },
+      { kind: "inline-importmap-local-ref", ref: "./y.js" },
+    ],
+  );
+  assert.deepEqual(
+    splitExportWarnings(warnings).unresolved.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inline-module-import", ref: "file:///Users/kun/secret-module.js" },
+      { kind: "inline-module-import", ref: "file:/Users/kun/secret-export.js" },
+      { kind: "inline-module-import", ref: "file:///Users/kun/secret-lazy.js" },
+      { kind: "inline-module-import", ref: "./dep.js" },
+      { kind: "inline-importmap-local-ref", ref: "file:///Users/kun/secret-map.js" },
+      { kind: "inline-importmap-local-ref", ref: "file:///Users/kun/secret-scope/" },
       { kind: "inline-importmap-local-ref", ref: "./app.js" },
       { kind: "inline-importmap-local-ref", ref: "./x.js" },
       { kind: "inline-importmap-local-ref", ref: "./local-scope/" },
@@ -485,6 +505,7 @@ test("redacts file URL import-map import keys", async () => {
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
+      { kind: "inline-importmap-local-ref", ref: "file:///Users/kun/secret-key.js" },
       { kind: "file-url-redacted", ref: "file:///Users/kun/secret-key.js" },
       { kind: "inline-importmap-local-ref", ref: "./app.js" },
       { kind: "inline-importmap-local-ref", ref: "./ok.js" },
@@ -1048,6 +1069,24 @@ test("redacts file URLs inside inert template content", async () => {
     warnings.map((warning) => warning.kind),
     ["file-url-redacted", "file-url-redacted"],
   );
+});
+
+test("redacts inert module file refs without counting rendered unresolved assets", async () => {
+  const html =
+    '<!doctype html><html><body><template><script type="module">import "file:///Users/kun/secret.js";</script></template></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<template><script type="module">import "about:blank";<\/script><\/template>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: "file:///Users/kun/secret.js" }],
+  );
+  assert.deepEqual(splitExportWarnings(warnings).unresolved, []);
 });
 
 test("redacts file URLs in inert text chunks without tokenizing", async () => {
@@ -2029,6 +2068,28 @@ test("scrubs file URLs from classic script comments without touching string lite
   );
 });
 
+test("scrubs file URLs from module script comments without touching string literals", async () => {
+  const commentRef = "file:///Users/kun/module.map";
+  const stringRef = "file:///Users/kun/module-string.txt";
+  const html =
+    '<!doctype html><html><body><script type="module">//# sourceMappingURL=' +
+    commentRef +
+    '\nconst path = "' +
+    stringRef +
+    '";</script></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.doesNotMatch(out, /sourceMappingURL=file:\/\/\/Users/);
+  assert.ok(out.includes(stringRef));
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: commentRef }],
+  );
+});
+
 test("resolves root-absolute references through resolveAbsolute (e.g. legacy /design assets)", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" href="/design/daisyui.css"></head><body></body></html>';
@@ -2516,6 +2577,32 @@ test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
       { kind: "srcdoc-resource", ref: "local.png" },
       { kind: "srcdoc-resource", ref: "file\\3a///Users/kun/secret.png" },
       { kind: "file-url-redacted", ref: "file\\3a///Users/kun/secret.png" },
+    ],
+  );
+});
+
+test("reports raw-text script refs inside active iframe srcdoc as unresolved", async () => {
+  const html =
+    '<!doctype html><html><body><iframe srcdoc=\'<script src="local.js"></script>' +
+    '<script type="module">import "./dep.js";</script>\'></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.match(out, /srcdoc='<script src="local\.js"><\/script><script type="module">import "\.\/dep\.js";<\/script>'/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "srcdoc-resource", ref: "local.js" },
+      { kind: "inline-module-import", ref: "./dep.js" },
+    ],
+  );
+  assert.deepEqual(
+    splitExportWarnings(warnings).unresolved.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "srcdoc-resource", ref: "local.js" },
+      { kind: "inline-module-import", ref: "./dep.js" },
     ],
   );
 });
