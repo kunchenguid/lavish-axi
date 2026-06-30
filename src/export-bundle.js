@@ -156,6 +156,10 @@ async function inlineScript(match, attrs, body, baseDir, ctx) {
   const src = getAttr(attrs, "src");
   if (!src) return match;
   if (isInjectedLavishSdkSrc(src)) return "";
+  if (hasAttr(attrs, "defer") || hasAttr(attrs, "async")) {
+    warnUnsupportedScriptTiming(src, baseDir, ctx);
+    return match;
+  }
 
   const loaded = await loadText(src, baseDir, ctx);
   if (!loaded) return match;
@@ -249,11 +253,12 @@ function resolveRef(ref, baseDir, ctx) {
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return { kind: "skip" };
 
   const localRef = stripQueryAndHash(trimmed);
+  const localPath = decodeLocalPath(localRef);
   if (trimmed.startsWith("/")) {
-    const mapped = ctx.resolveAbsolute(localRef);
+    const mapped = ctx.resolveAbsolute(localPath);
     return mapped ? { kind: "file", path: mapped, allowOutsideRoot: true } : { kind: "skip" };
   }
-  const resolved = path.resolve(baseDir, localRef);
+  const resolved = path.resolve(baseDir, localPath);
   if (ctx.confineDir && isOutside(ctx.confineDir, resolved)) return { kind: "escape", path: resolved };
   return { kind: "file", path: resolved };
 }
@@ -278,6 +283,19 @@ async function loadDataUri(ref, baseDir, ctx) {
   const buffer = await readBudgeted(descriptor, ref, ctx);
   if (!buffer) return null;
   return toDataUri(buffer, pickMime(descriptor.path));
+}
+
+function warnUnsupportedScriptTiming(ref, baseDir, ctx) {
+  const descriptor = resolveRef(ref, baseDir, ctx);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "unsupported-script-timing",
+      ref,
+      reason: "defer and async scripts are left as references to preserve execution timing",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
 }
 
 // Read a local file, enforcing per-asset and per-bundle size caps so a huge local asset cannot
@@ -380,6 +398,19 @@ function stripQueryAndHash(ref) {
   return ref.replace(/[?#].*$/, "");
 }
 
+function decodeLocalPath(ref) {
+  return String(ref)
+    .split("/")
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    })
+    .join("/");
+}
+
 function pickMime(locator) {
   const ext = path.extname(stripQueryAndHash(locator)).toLowerCase();
   return EXT_MIME[ext] || "application/octet-stream";
@@ -409,6 +440,10 @@ function getAttr(attrs, name) {
   );
   if (!match) return "";
   return match[2] ?? match[3] ?? match[4] ?? "";
+}
+
+function hasAttr(attrs, name) {
+  return new RegExp(`(?:^|\\s)${escapeRegExp(name)}(?:\\s*=|(?=\\s|$))`, "i").test(String(attrs));
 }
 
 function replaceAttrValue(source, name, value) {

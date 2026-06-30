@@ -429,6 +429,30 @@ test("export command writes a portable HTML file next to the artifact", async ()
   }
 });
 
+test("export command treats --out value as an option operand, not the source file", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-export-test-`);
+  const artifact = `${dir}/report.html`;
+  const output = `${dir}/custom.html`;
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "export", "--out", output, artifact],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: dir, LAVISH_AXI_TELEMETRY: "0" },
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /custom\.html/);
+    assert.match(await readFile(output, "utf8"), /<h1>Hi<\/h1>/);
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
 test("share output reports the public url and the secret update key", () => {
   const output = createShareOutput({
     source: "/tmp/report.html",
@@ -462,7 +486,7 @@ test("share command publishes the artifact to ht-ml.app and returns the public u
     // on this process's event loop, which spawnSync would block, deadlocking the request.
     const child = spawn(
       process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", artifact, "--password", "pw"],
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", "--password", "pw", artifact],
       {
         cwd: fileURLToPath(new URL("..", import.meta.url)),
         env: {

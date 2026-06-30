@@ -43,6 +43,19 @@ test("inlines a local script src as an inline script and escapes closing tags", 
   assert.doesNotMatch(out, /src=/);
 });
 
+test("leaves deferred local scripts as references with a warning", async () => {
+  const html = '<!doctype html><html><head><script defer src="app.js"></script></head><body></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/app.js": "document.body.dataset.ready = 'true';" }),
+  });
+
+  assert.match(out, /<script defer src="app\.js"><\/script>/);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].kind, "unsupported-script-timing");
+  assert.equal(warnings[0].ref, "app.js");
+});
+
 test("escapes a closing style tag when inlining external CSS into a <style> block", async () => {
   const html = '<!doctype html><html><head><link rel="stylesheet" href="x.css"></head><body></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -63,6 +76,18 @@ test("inlines local images referenced by src into data URIs", async () => {
   });
 
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
+});
+
+test("decodes percent-encoded local asset paths before resolving them", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html = '<!doctype html><html><body><img src="my%20image.png?v=1#crop"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/my image.png": png }),
+  });
+
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
+  assert.equal(warnings.length, 0);
 });
 
 test("rewrites url() and @import inside local CSS, resolving relative to the stylesheet", async () => {

@@ -168,7 +168,7 @@ export function createOpenOutput({ file, url, status }) {
 }
 
 async function openCommand(args) {
-  const file = args.find((arg) => !arg.startsWith("-"));
+  const file = firstPositionalArg(args);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi <html-file>`"]);
   }
@@ -193,7 +193,7 @@ export function shouldOpenBrowser(args, env) {
 }
 
 async function pollCommand(args) {
-  const file = args[0];
+  const file = firstPositionalArg(args, ["--agent-reply", "--timeout-ms"]);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi poll <html-file>`"]);
   }
@@ -305,7 +305,7 @@ function createFeedbackNextStep(file, layoutWarningCount) {
 }
 
 async function endCommand(args) {
-  const file = args[0];
+  const file = firstPositionalArg(args);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi end <html-file>`"]);
   }
@@ -320,7 +320,7 @@ async function endCommand(args) {
 // as-is for the browser to load, so the export needs network to render those. Lavish makes no
 // outbound requests - export is a pure local file transform, server-independent.
 async function exportCommand(args) {
-  const file = args.find((arg) => !arg.startsWith("-"));
+  const file = firstPositionalArg(args, ["--out"]);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi export <html-file>`"]);
   }
@@ -363,7 +363,7 @@ export function createExportOutput({ source, output, html, warnings }) {
 // which needs no account or API key, and returns the public URL plus the secret update_key for
 // managing the page later. Server-independent.
 async function shareCommand(args) {
-  const file = args.find((arg) => !arg.startsWith("-"));
+  const file = firstPositionalArg(args, ["--password", "--token"]);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi share <html-file>`"]);
   }
@@ -845,12 +845,42 @@ function pollResponseInterruptedError() {
   ]);
 }
 
-function flagValue(args, flag) {
-  const index = args.indexOf(flag);
-  if (index === -1) {
-    return null;
+function firstPositionalArg(args, valueFlags = []) {
+  const flags = new Set(valueFlags);
+  let positionalMode = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!positionalMode && arg === "--") {
+      positionalMode = true;
+      continue;
+    }
+    if (!positionalMode && isValueFlagToken(arg, flags)) {
+      if (!arg.includes("=")) i += 1;
+      continue;
+    }
+    if (!positionalMode && arg.startsWith("-")) {
+      continue;
+    }
+    return arg;
   }
-  return args[index + 1] || null;
+  return null;
+}
+
+function flagValue(args, flag) {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") return null;
+    if (arg === flag) return args[i + 1] || null;
+    if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1) || null;
+  }
+  return null;
+}
+
+function isValueFlagToken(arg, flags) {
+  for (const flag of flags) {
+    if (arg === flag || arg.startsWith(`${flag}=`)) return true;
+  }
+  return false;
 }
 
 function delay(ms) {
