@@ -305,6 +305,42 @@ test("warns when inline module scripts reference local template dynamic imports"
   );
 });
 
+test("redacts file URLs from inline module and import-map specifiers", async () => {
+  const html =
+    '<!doctype html><html><head><script type="module">' +
+    'import "file:///Users/kun/secret-module.js";\n' +
+    "export * from 'file:/Users/kun/secret-export.js';\n" +
+    "const lazy = () => import(`file:///Users/kun/secret-lazy.js`);\n" +
+    'import "./dep.js";\n' +
+    "</script>" +
+    '<script type="importmap">{"imports":{"secret":"file:///Users/kun/secret-map.js","app":"./app.js"}}</script>' +
+    "</head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /import "about:blank"/);
+  assert.match(out, /export \* from 'about:blank'/);
+  assert.match(out, /import\(`about:blank`\)/);
+  assert.match(out, /"secret":"about:blank"/);
+  assert.match(out, /"app":"\.\/app\.js"/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret-module.js" },
+      { kind: "file-url-redacted", ref: "file:/Users/kun/secret-export.js" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret-lazy.js" },
+      { kind: "inline-module-import", ref: "./dep.js" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret-map.js" },
+      { kind: "inline-importmap-local-ref", ref: "./app.js" },
+    ],
+  );
+});
+
 test("escapes a closing style tag when inlining external CSS into a <style> block", async () => {
   const html = '<!doctype html><html><head><link rel="stylesheet" href="x.css"></head><body></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -538,6 +574,57 @@ test("does not rewrite markup-like text inside legacy raw-text elements", async 
   assert.equal(warnings.length, 0);
 });
 
+test("leaves template and noscript resources inert while warning on local refs", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><template><img src="local.png"><link rel="stylesheet" href="theme.css"></template>' +
+    '<noscript><img src="noscript.png"></noscript><img src="live.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/local.png": Buffer.from("local"),
+        "/art/theme.css": "body{color:red}",
+        "/art/noscript.png": Buffer.from("noscript"),
+        "/art/live.png": png,
+      })(absPath);
+    },
+  });
+
+  assert.match(out, /<template><img src="local\.png"><link rel="stylesheet" href="theme\.css"><\/template>/);
+  assert.match(out, /<noscript><img src="noscript\.png"><\/noscript>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
+  assert.deepEqual(readPaths, ["/art/live.png"]);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inert-resource", ref: "local.png" },
+      { kind: "inert-resource", ref: "theme.css" },
+      { kind: "inert-resource", ref: "noscript.png" },
+    ],
+  );
+});
+
+test("redacts file URLs inside inert template content", async () => {
+  const html =
+    '<!doctype html><html><body><template><img src="file:///Users/kun/secret.png">' +
+    '<a href="file:/Users/kun/secret.txt">secret</a></template></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<template><img src="about:blank"><a href="about:blank">secret<\/a><\/template>/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["file-url-redacted", "file-url-redacted"],
+  );
+});
+
 test("does not rewrite markup-like text inside inlined stylesheet links", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
@@ -596,7 +683,8 @@ test("decodes HTML entities in local asset refs before resolving them", async ()
 test("resolves HTML asset references against the first document base href", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
-    '<!doctype html><html><head><template><base href="wrong/"></template><base href="assets/">' +
+    '<!doctype html><html><head><template><base href="wrong/"></template>' +
+    '<noscript><base href="wrong-noscript/"></noscript><base href="assets/">' +
     '<link rel="stylesheet" href="css/app.css"><link rel="icon" href="icon.svg">' +
     '<style>.inline{background:url(style.png)}</style><script src="app.js"></script></head><body>' +
     '<img src="pic.png"><div style="background:url(inline.png)"></div></body></html>';

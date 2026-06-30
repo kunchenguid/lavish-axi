@@ -60,6 +60,7 @@ const HTML_ENTITY_MAP = {
   tab: "\t",
 };
 const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title", "iframe", "xmp", "noembed", "noframes"]);
+const INERT_CONTENT_TAGS = new Set(["template", "noscript"]);
 const MEDIA_TAGS = new Set(["img", "source", "video", "audio", "track"]);
 const SVG_REF_TAGS = new Set(["use", "image"]);
 
@@ -137,6 +138,15 @@ async function transformMarkup(markup, baseDir, ctx) {
       continue;
     }
     const tagName = token.tag.toLowerCase();
+    if (INERT_CONTENT_TAGS.has(tagName) && !token.selfClosing) {
+      const close = findRawTextClose(markup, token.end, tagName);
+      if (close) {
+        const body = markup.slice(token.end, close.start);
+        result += await transformInertContentElement(token, body, close.raw, baseDir, ctx);
+        index = close.end;
+        continue;
+      }
+    }
     if (RAW_TEXT_TAGS.has(tagName) && !token.selfClosing) {
       const close = findRawTextClose(markup, token.end, tagName);
       if (close) {
@@ -147,6 +157,39 @@ async function transformMarkup(markup, baseDir, ctx) {
       }
     }
     result += await transformStartTag(token.tag, token.attrs, token.selfClosing, baseDir, ctx);
+    index = token.end;
+  }
+  return result;
+}
+
+async function transformInertContentElement(token, body, closeTag, baseDir, ctx) {
+  const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx);
+  return `${startTag}${transformInertMarkup(body, baseDir, ctx)}${closeTag}`;
+}
+
+function transformInertMarkup(markup, baseDir, ctx) {
+  let result = "";
+  let index = 0;
+  while (index < markup.length) {
+    const lt = markup.indexOf("<", index);
+    if (lt === -1) {
+      result += markup.slice(index);
+      break;
+    }
+    result += markup.slice(index, lt);
+    const token = readHtmlToken(markup, lt);
+    if (!token) {
+      result += markup[lt];
+      index = lt + 1;
+      continue;
+    }
+    if (token.type !== "start") {
+      result += token.raw;
+      index = token.end;
+      continue;
+    }
+    warnInertStartTagRefs(token.tag.toLowerCase(), token.attrs, baseDir, ctx);
+    result += formatStartTag(token.tag, scrubFileUrlAttrs(token.attrs, ctx), token.selfClosing);
     index = token.end;
   }
   return result;
@@ -281,9 +324,16 @@ function isCssStyleElementType(attrs) {
 async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   const src = getAttr(attrs, "src");
   if (!src) {
-    if (isModuleScript(attrs)) warnInlineModuleImports(body, baseDir, ctx);
-    if (isImportMapScript(attrs)) warnInlineImportMapLocalRefs(body, baseDir, ctx);
-    return `${await transformStartTag(tag, attrs, false, baseDir, ctx)}${body}${closeTag}`;
+    let inlineBody = body;
+    if (isModuleScript(attrs)) {
+      inlineBody = redactInlineModuleFileRefs(inlineBody, ctx);
+      warnInlineModuleImports(inlineBody, baseDir, ctx);
+    }
+    if (isImportMapScript(attrs)) {
+      inlineBody = redactInlineImportMapFileRefs(inlineBody, ctx);
+      warnInlineImportMapLocalRefs(inlineBody, baseDir, ctx);
+    }
+    return `${await transformStartTag(tag, attrs, false, baseDir, ctx)}${inlineBody}${closeTag}`;
   }
   if (isInjectedLavishSdkSrc(src)) return "";
   if (isModuleScript(attrs)) {
@@ -1297,7 +1347,7 @@ function resolveDocumentRefBase(html, ctx) {
 }
 
 function findFirstDocumentBaseHref(html) {
-  let templateDepth = 0;
+  let inertDepth = 0;
   let index = 0;
   while (index < html.length) {
     const lt = html.indexOf("<", index);
@@ -1307,16 +1357,16 @@ function findFirstDocumentBaseHref(html) {
       index = lt + 1;
       continue;
     }
-    if (token.type === "close" && token.tag.toLowerCase() === "template") {
-      templateDepth = Math.max(0, templateDepth - 1);
+    if (token.type === "close" && INERT_CONTENT_TAGS.has(token.tag.toLowerCase())) {
+      inertDepth = Math.max(0, inertDepth - 1);
       index = token.end;
       continue;
     }
     if (token.type === "start") {
       const tag = token.tag.toLowerCase();
-      if (tag === "template" && !token.selfClosing) {
-        templateDepth += 1;
-      } else if (templateDepth === 0 && tag === "base") {
+      if (INERT_CONTENT_TAGS.has(tag) && !token.selfClosing) {
+        inertDepth += 1;
+      } else if (inertDepth === 0 && tag === "base") {
         const href = getAttr(token.attrs, "href");
         if (href) return href;
       }
@@ -1566,11 +1616,90 @@ function warnUnsupportedFrame(ref, baseDir, ctx, options = {}) {
   }
 }
 
+function warnInertStartTagRefs(tagName, attrs, baseDir, ctx) {
+  if (MEDIA_TAGS.has(tagName)) {
+    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS);
+    warnInertAttrRef(attrs, "poster", baseDir, ctx, HTML_REF_OPTIONS);
+    warnInertSrcsetRefs(attrs, baseDir, ctx);
+  }
+  if (SVG_REF_TAGS.has(tagName)) {
+    warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS);
+    warnInertAttrRef(attrs, "xlink:href", baseDir, ctx, HTML_REF_OPTIONS);
+  }
+  if (tagName === "object") warnInertAttrRef(attrs, "data", baseDir, ctx, HTML_REF_OPTIONS);
+  if (tagName === "embed" || tagName === "script" || tagName === "iframe") {
+    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS);
+  }
+  if (tagName === "input" && getAttr(attrs, "type").trim().toLowerCase() === "image") {
+    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS);
+  }
+  if (tagName === "link") {
+    const rel = (getAttr(attrs, "rel") || "").toLowerCase().split(/\s+/);
+    if (
+      rel.includes("stylesheet") ||
+      rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value))
+    ) {
+      warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS);
+    }
+  }
+  warnInertStyleRefs(attrs, baseDir, ctx);
+}
+
+function warnInertAttrRef(attrs, name, baseDir, ctx, options = {}) {
+  const ref = getAttr(attrs, name);
+  if (ref) warnInertResource(ref, baseDir, ctx, options);
+}
+
+function warnInertSrcsetRefs(attrs, baseDir, ctx) {
+  const value = getAttr(attrs, "srcset");
+  if (!value) return;
+  for (const candidate of parseSrcsetCandidates(value)) {
+    warnInertResource(value.slice(candidate.urlStart, candidate.urlEnd), baseDir, ctx, HTML_REF_OPTIONS);
+  }
+}
+
+function warnInertStyleRefs(attrs, baseDir, ctx) {
+  const attr = findHtmlAttr(attrs, "style");
+  if (!attr || !attr.hasValue) return;
+  const decoded = decodeHtmlCharacterReferences(attr.value);
+  const seen = new Set();
+  for (const ref of findCssResourceRefs(decoded)) {
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    warnInertResource(ref, baseDir, ctx, { cssSyntax: true });
+  }
+}
+
+function warnInertResource(ref, baseDir, ctx, options = {}) {
+  if (shouldRedactUnresolvedRef(ref, options)) return;
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
+  if (descriptor.kind !== "file" && descriptor.kind !== "escape") return;
+  ctx.warnings.push({
+    kind: "inert-resource",
+    ref,
+    reason: "resources inside template or noscript content are left unchanged",
+  });
+}
+
 function warnInlineModuleImports(body, baseDir, ctx) {
   for (const ref of findInlineModuleImportRefs(body)) {
     if (!isRelativeModuleImport(ref)) continue;
     warnInlineModuleImport(ref, baseDir, ctx);
   }
+}
+
+function redactInlineModuleFileRefs(body, ctx) {
+  const refs = findInlineModuleImportRefTokens(body).filter((ref) => isFileSchemeJsRef(ref.value));
+  if (refs.length === 0) return body;
+  for (const ref of refs) ctx.warnings.push({ kind: "file-url-redacted", ref: ref.value });
+  let result = body;
+  for (let index = refs.length - 1; index >= 0; index -= 1) {
+    const ref = refs[index];
+    result = `${result.slice(0, ref.rawStart)}${quoteJsModuleSpecifier(REDACTED_FILE_REF, ref.quote)}${result.slice(
+      ref.rawEnd,
+    )}`;
+  }
+  return result;
 }
 
 function warnInlineImportMapLocalRefs(body, baseDir, ctx) {
@@ -1586,6 +1715,30 @@ function warnInlineImportMapLocalRefs(body, baseDir, ctx) {
       ctx.warnings.push({ kind: "outside-root", ref });
     }
   }
+}
+
+function redactInlineImportMapFileRefs(body, ctx) {
+  let map;
+  try {
+    map = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  let changed = false;
+  const redactImports = (imports) => {
+    if (!imports || typeof imports !== "object" || Array.isArray(imports)) return;
+    for (const [key, value] of Object.entries(imports)) {
+      if (typeof value !== "string" || !isFileSchemeRef(value)) continue;
+      ctx.warnings.push({ kind: "file-url-redacted", ref: value });
+      imports[key] = REDACTED_FILE_REF;
+      changed = true;
+    }
+  };
+  redactImports(map && map.imports);
+  if (map && map.scopes && typeof map.scopes === "object" && !Array.isArray(map.scopes)) {
+    for (const scopedImports of Object.values(map.scopes)) redactImports(scopedImports);
+  }
+  return changed ? JSON.stringify(map) : body;
 }
 
 function warnInlineModuleImport(ref, baseDir, ctx) {
@@ -1687,6 +1840,10 @@ const CLASSIC_SCRIPT_MIME_TYPES = new Set([
 ]);
 
 function findInlineModuleImportRefs(source) {
+  return findInlineModuleImportRefTokens(source).map((ref) => ref.value);
+}
+
+function findInlineModuleImportRefTokens(source) {
   const refs = [];
   let index = 0;
   while (index < source.length) {
@@ -1754,16 +1911,16 @@ function parseJsImport(source, index) {
   if (source[cursor] === "(") {
     cursor = skipJsWhitespaceAndComments(source, cursor + 1);
     if (source[cursor] === "`") {
-      const token = parseJsTemplateImport(source, cursor);
-      return { refs: token.value ? [token.value] : [], end: token.end };
+      const token = parseJsTemplateImportToken(source, cursor);
+      return { refs: token.value ? [token] : [], end: token.end };
     }
     if (source[cursor] !== '"' && source[cursor] !== "'") return { refs: [], end: cursor + 1 };
-    const token = parseJsString(source, cursor);
-    return { refs: [token.value], end: token.end };
+    const token = parseJsStringToken(source, cursor);
+    return { refs: [token], end: token.end };
   }
   if (source[cursor] === '"' || source[cursor] === "'") {
-    const token = parseJsString(source, cursor);
-    return { refs: [token.value], end: token.end };
+    const token = parseJsStringToken(source, cursor);
+    return { refs: [token], end: token.end };
   }
   const found = findJsImportFromRef(source, cursor);
   return { refs: found.ref ? [found.ref] : [], end: found.end };
@@ -1793,28 +1950,38 @@ function findJsImportFromRef(source, index) {
     if (source[cursor] === "(") parenDepth += 1;
     if (source[cursor] === ")") parenDepth = Math.max(0, parenDepth - 1);
     const topLevel = braceDepth === 0 && bracketDepth === 0 && parenDepth === 0;
-    if (topLevel && source[cursor] === ";") return { ref: "", end: cursor + 1 };
+    if (topLevel && source[cursor] === ";") return { ref: null, end: cursor + 1 };
     if (
       topLevel &&
       cursor !== index &&
       (startsJsKeyword(source, cursor, "import") || startsJsKeyword(source, cursor, "export"))
     ) {
-      return { ref: "", end: cursor };
+      return { ref: null, end: cursor };
     }
     if (topLevel && startsJsKeyword(source, cursor, "from")) {
       const refStart = skipJsWhitespaceAndComments(source, cursor + "from".length);
       if (source[refStart] === '"' || source[refStart] === "'") {
-        const token = parseJsString(source, refStart);
-        return { ref: token.value, end: token.end };
+        const token = parseJsStringToken(source, refStart);
+        return { ref: token, end: token.end };
       }
     }
     cursor += 1;
   }
-  return { ref: "", end: cursor };
+  return { ref: null, end: cursor };
 }
 
 function isRelativeModuleImport(ref) {
   return /^\.{1,2}\//.test(String(ref || "").trim());
+}
+
+function isFileSchemeJsRef(ref) {
+  return /^file:/i.test(normalizeJsRefForScheme(ref));
+}
+
+function normalizeJsRefForScheme(ref) {
+  return decodeJsEscapes(String(ref || ""))
+    .replace(/[\t\n\r]/g, "")
+    .trim();
 }
 
 function skipJsWhitespaceAndComments(source, index) {
@@ -1869,9 +2036,26 @@ function parseJsString(source, index) {
   return { value, end: source.length };
 }
 
-function parseJsTemplateImport(source, index) {
+function parseJsStringToken(source, index) {
+  const parsed = parseJsString(source, index);
+  return {
+    value: parsed.value,
+    quote: source[index],
+    rawStart: index,
+    rawEnd: parsed.end,
+    end: parsed.end,
+  };
+}
+
+function parseJsTemplateImportToken(source, index) {
   const end = skipJsTemplate(source, index);
-  return { value: source.slice(index + 1, Math.max(index + 1, end - 1)), end };
+  return {
+    value: source.slice(index + 1, Math.max(index + 1, end - 1)),
+    quote: "`",
+    rawStart: index,
+    rawEnd: end,
+    end,
+  };
 }
 
 function skipJsTemplate(source, index) {
@@ -1923,6 +2107,54 @@ function startsJsKeyword(source, index, keyword) {
 
 function isJsIdentChar(char) {
   return Boolean(char) && /[a-z0-9_$]/i.test(char);
+}
+
+function decodeJsEscapes(value) {
+  const input = String(value);
+  let result = "";
+  let index = 0;
+  while (index < input.length) {
+    if (input[index] !== "\\") {
+      result += input[index];
+      index += 1;
+      continue;
+    }
+    if (index + 1 >= input.length) {
+      result += "\\";
+      break;
+    }
+    const next = input[index + 1];
+    if (next === "\r" && input[index + 2] === "\n") {
+      index += 3;
+      continue;
+    }
+    if (/[\n\r]/.test(next)) {
+      index += 2;
+      continue;
+    }
+    if (next === "x" && /^[\da-f]{2}$/i.test(input.slice(index + 2, index + 4))) {
+      result += decodeNumericCharacterReference(Number.parseInt(input.slice(index + 2, index + 4), 16), "");
+      index += 4;
+      continue;
+    }
+    if (next === "u" && input[index + 2] === "{") {
+      const close = input.indexOf("}", index + 3);
+      const hex = close === -1 ? "" : input.slice(index + 3, close);
+      if (/^[\da-f]+$/i.test(hex)) {
+        result += decodeNumericCharacterReference(Number.parseInt(hex, 16), "");
+        index = close + 1;
+        continue;
+      }
+    }
+    if (next === "u" && /^[\da-f]{4}$/i.test(input.slice(index + 2, index + 6))) {
+      result += decodeNumericCharacterReference(Number.parseInt(input.slice(index + 2, index + 6), 16), "");
+      index += 6;
+      continue;
+    }
+    result += next;
+    index += 2;
+  }
+  return result;
 }
 
 // Read a local file, enforcing per-asset and per-bundle size caps so a huge local asset cannot
@@ -2316,6 +2548,18 @@ function quoteCssString(value, quote) {
     .replace(new RegExp(escapeRegExp(quote), "g"), `\\${quote}`)
     .replace(/\n/g, "\\a ")
     .replace(/\r/g, "\\d ")}${quote}`;
+}
+
+function quoteJsModuleSpecifier(value, quote) {
+  if (quote === "`") {
+    return `\`${String(value).replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${")}\``;
+  }
+  const preferred = quote === "'" ? "'" : '"';
+  return `${preferred}${String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(new RegExp(escapeRegExp(preferred), "g"), `\\${preferred}`)
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")}${preferred}`;
 }
 
 function escapeRegExp(value) {
