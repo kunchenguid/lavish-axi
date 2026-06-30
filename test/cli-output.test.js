@@ -687,7 +687,10 @@ test("share help distinguishes public default from password-protected shares", (
   assert.match(help, /PUBLIC by default/);
   assert.match(help, /Pass --password to publish a PRIVATE password-protected page/);
   assert.match(help, /viewers must supply the password to view/);
+  assert.match(help, /not blocked by CSP on ht-ml\.app/);
+  assert.match(help, /load over the viewer's network/);
   assert.doesNotMatch(help, /EVERYTHING PUBLISHED IS PUBLIC/);
+  assert.doesNotMatch(help, /load fine/);
   assert.match(homeShareHelp, /PUBLIC by default/);
   assert.match(homeShareHelp, /Pass --password to publish a PRIVATE password-protected page/);
   assert.doesNotMatch(homeShareHelp, /Everything published is public/);

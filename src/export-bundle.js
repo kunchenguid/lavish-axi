@@ -381,7 +381,10 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
           close ? scrubRawTextFileUrls(close.raw, ctx) : ""
         }`;
       } else {
-        result += transformInertRawTextElement(token, body, close ? close.raw : "", baseDir, ctx, options);
+        result += transformInertRawTextElement(token, body, close ? close.raw : "", baseDir, ctx, {
+          ...options,
+          inSvgNamespace: elementNamespace === "svg",
+        });
       }
       index = close ? close.end : markup.length;
       continue;
@@ -450,7 +453,7 @@ async function transformUnterminatedRawTextElement(token, body, baseDir, ctx, op
 
 function transformInertRawTextElement(token, body, closeTag, baseDir, ctx, options = {}) {
   if (options.warnLocalRefs !== false)
-    warnInertStartTagRefs(token.tag.toLowerCase(), token.attrs, baseDir, ctx, options);
+    warnInertStartTagRefs(token.tag.toLowerCase(), token.attrs, baseDir, ctx, options, options.inSvgNamespace === true);
   const startTag = formatStartTag(
     token.tag,
     scrubInertAttrs(token.tag.toLowerCase(), token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
@@ -2536,7 +2539,11 @@ function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}, inSvg
     warnInertAttrRef(attrs, "xlink:href", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
   if (tagName === "object") warnInertAttrRef(attrs, "data", baseDir, ctx, HTML_REF_OPTIONS, options);
-  if (tagName === "embed" || tagName === "script" || tagName === "iframe") {
+  if (tagName === "script" && inSvgNamespace) {
+    warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS, options);
+    warnInertAttrRef(attrs, "xlink:href", baseDir, ctx, HTML_REF_OPTIONS, options);
+  }
+  if (tagName === "embed" || (tagName === "script" && !inSvgNamespace) || tagName === "iframe") {
     warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
   if (tagName === "input" && getDecisionAttr(attrs, "type").trim().toLowerCase() === "image") {

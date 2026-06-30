@@ -2456,6 +2456,26 @@ test("sanitizes local SVG text before encoding it as a data URI", async () => {
   );
 });
 
+test("warns for nested SVG script href dependencies in inlined SVG assets", async () => {
+  const svg = '<svg><script href="local.js"></script><script xlink:href="legacy.js"></script></svg>';
+  const html = '<!doctype html><html><body><img src="icon.svg"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/icon.svg": svg }),
+  });
+  const decoded = decodeFirstSvgDataUri(out);
+
+  assert.match(decoded, /<script href="local\.js"><\/script>/);
+  assert.match(decoded, /<script xlink:href="legacy\.js"><\/script>/);
+  assert.deepEqual(
+    splitExportWarnings(warnings).unresolved.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "nested-svg-resource", ref: "local.js" },
+      { kind: "nested-svg-resource", ref: "legacy.js" },
+    ],
+  );
+});
+
 test("confineDir refuses to inline references that lexically escape the artifact directory", async () => {
   const html = '<!doctype html><html><head><link rel="stylesheet" href="../secret.css"></head><body></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
