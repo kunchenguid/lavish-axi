@@ -62,7 +62,9 @@ const HTML_ENTITY_MAP = {
 const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title", "iframe", "xmp", "noembed", "noframes"]);
 const INERT_CONTENT_TAGS = new Set(["template", "noscript"]);
 const MEDIA_TAGS = new Set(["img", "source", "video", "audio", "track"]);
-const SVG_REF_TAGS = new Set(["use", "image"]);
+const SVG_REF_TAGS = new Set(["use", "image", "feimage"]);
+const INERT_RESOURCE_REASON = "resources inside template or noscript content are left unchanged";
+const SRCDOC_RESOURCE_REASON = "iframe srcdoc nested HTML is left unchanged";
 
 /**
  * @param {string} html
@@ -171,7 +173,7 @@ async function transformMarkup(markup, baseDir, ctx) {
 }
 
 async function transformInertContentElement(token, body, closeTag, baseDir, ctx) {
-  const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx);
+  const startTag = formatStartTag(token.tag, scrubInertAttrs(token.attrs, baseDir, ctx), false);
   return `${startTag}${transformInertMarkup(body, baseDir, ctx)}${closeTag}`;
 }
 
@@ -204,7 +206,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       const body = markup.slice(token.end, bodyEnd);
       if (!close) warnUnterminatedRawText(tagName, ctx);
       if (INERT_CONTENT_TAGS.has(tagName)) {
-        const attrs = scrubFileUrlAttrs(token.attrs, ctx);
+        const attrs = scrubInertAttrs(token.attrs, baseDir, ctx, options);
         result += `${formatStartTag(token.tag, attrs, false)}${transformInertMarkup(body, baseDir, ctx, options)}${
           close ? close.raw : ""
         }`;
@@ -215,7 +217,11 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       continue;
     }
     if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx);
-    result += formatStartTag(token.tag, scrubFileUrlAttrs(token.attrs, ctx), token.selfClosing);
+    result += formatStartTag(
+      token.tag,
+      scrubInertAttrs(token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
+      token.selfClosing,
+    );
     index = token.end;
   }
   return result;
@@ -241,7 +247,11 @@ async function transformUnterminatedRawTextElement(token, body, baseDir, ctx) {
 
 function transformInertRawTextElement(token, body, closeTag, baseDir, ctx, options = {}) {
   if (options.warnLocalRefs !== false) warnInertStartTagRefs(token.tag.toLowerCase(), token.attrs, baseDir, ctx);
-  const startTag = formatStartTag(token.tag, scrubFileUrlAttrs(token.attrs, ctx), false);
+  const startTag = formatStartTag(
+    token.tag,
+    scrubInertAttrs(token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
+    false,
+  );
   return `${startTag}${scrubRawTextBodyWithoutInlining(
     token.tag.toLowerCase(),
     token.attrs,
@@ -257,7 +267,7 @@ function scrubRawTextBodyWithoutInlining(tagName, attrs, body, baseDir, ctx, opt
     const warningKind = options.warnLocalRefs === false ? null : "inert-resource";
     return scrubCssRefsWithoutInlining(body, baseDir, ctx, {
       localWarningKind: warningKind,
-      localWarningReason: "resources inside template or noscript content are left unchanged",
+      localWarningReason: options.localWarningReason || INERT_RESOURCE_REASON,
     });
   }
   if (tagName === "script") {
@@ -300,6 +310,23 @@ function scrubFileUrlAttrs(attrs, ctx) {
   return result;
 }
 
+function scrubInertAttrs(attrs, baseDir, ctx, options = {}) {
+  let result = scrubInertStyleAttr(attrs, baseDir, ctx, options);
+  result = scrubFileUrlAttrs(result, ctx);
+  return result;
+}
+
+function scrubInertStyleAttr(attrs, baseDir, ctx, options = {}) {
+  const attr = findHtmlAttr(attrs, "style");
+  if (!attr || !attr.hasValue) return attrs;
+  const decoded = decodeHtmlCharacterReferences(attr.value);
+  const scrubbed = scrubCssRefsWithoutInlining(decoded, baseDir, ctx, {
+    localWarningKind: options.warnLocalRefs === false ? null : "inert-resource",
+    localWarningReason: options.localWarningReason || INERT_RESOURCE_REASON,
+  });
+  return scrubbed === decoded ? attrs : replaceAttrTokenValue(attrs, attr, scrubbed);
+}
+
 async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
   if (tagName === "object") return inlineRenderAttr(attrs, "data", baseDir, ctx);
   if (tagName === "embed") return inlineRenderAttr(attrs, "src", baseDir, ctx);
@@ -307,7 +334,7 @@ async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
     if (getAttr(attrs, "type").trim().toLowerCase() !== "image") return attrs;
     return inlineRenderAttr(attrs, "src", baseDir, ctx);
   }
-  if (tagName === "iframe") return warnFrameSrc(attrs, baseDir, ctx);
+  if (tagName === "iframe") return scrubFrameSrcdoc(warnFrameSrc(attrs, baseDir, ctx), baseDir, ctx);
   return attrs;
 }
 
@@ -1813,6 +1840,14 @@ function warnFrameSrc(attrs, baseDir, ctx) {
   return replaceUnresolvedAttrRef(attrs, "src", ref);
 }
 
+function scrubFrameSrcdoc(attrs, baseDir, ctx) {
+  const attr = findHtmlAttr(attrs, "srcdoc");
+  if (!attr || !attr.hasValue) return attrs;
+  const decoded = decodeHtmlCharacterReferences(attr.value);
+  const scrubbed = transformInertMarkup(decoded, baseDir, ctx, { localWarningReason: SRCDOC_RESOURCE_REASON });
+  return scrubbed === decoded ? attrs : replaceAttrTokenValue(attrs, attr, scrubbed);
+}
+
 function warnUnsupportedFrame(ref, baseDir, ctx, options = {}) {
   const descriptor = resolveRef(ref, baseDir, ctx, options);
   if (descriptor.kind === "file") {
@@ -1826,22 +1861,22 @@ function warnUnsupportedFrame(ref, baseDir, ctx, options = {}) {
   }
 }
 
-function warnInertStartTagRefs(tagName, attrs, baseDir, ctx) {
+function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}) {
   if (MEDIA_TAGS.has(tagName)) {
-    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS);
-    if (tagName === "video") warnInertAttrRef(attrs, "poster", baseDir, ctx, HTML_REF_OPTIONS);
-    if (tagName === "img" || tagName === "source") warnInertSrcsetRefs(attrs, baseDir, ctx);
+    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
+    if (tagName === "video") warnInertAttrRef(attrs, "poster", baseDir, ctx, HTML_REF_OPTIONS, options);
+    if (tagName === "img" || tagName === "source") warnInertSrcsetRefs(attrs, baseDir, ctx, options);
   }
   if (SVG_REF_TAGS.has(tagName)) {
-    warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS);
-    warnInertAttrRef(attrs, "xlink:href", baseDir, ctx, HTML_REF_OPTIONS);
+    warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS, options);
+    warnInertAttrRef(attrs, "xlink:href", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
-  if (tagName === "object") warnInertAttrRef(attrs, "data", baseDir, ctx, HTML_REF_OPTIONS);
+  if (tagName === "object") warnInertAttrRef(attrs, "data", baseDir, ctx, HTML_REF_OPTIONS, options);
   if (tagName === "embed" || tagName === "script" || tagName === "iframe") {
-    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS);
+    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
   if (tagName === "input" && getAttr(attrs, "type").trim().toLowerCase() === "image") {
-    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS);
+    warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
   if (tagName === "link") {
     const rel = (getAttr(attrs, "rel") || "").toLowerCase().split(/\s+/);
@@ -1849,26 +1884,26 @@ function warnInertStartTagRefs(tagName, attrs, baseDir, ctx) {
       rel.includes("stylesheet") ||
       rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value))
     ) {
-      warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS);
+      warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS, options);
     }
   }
-  warnInertStyleRefs(attrs, baseDir, ctx);
+  warnInertStyleRefs(attrs, baseDir, ctx, options);
 }
 
-function warnInertAttrRef(attrs, name, baseDir, ctx, options = {}) {
+function warnInertAttrRef(attrs, name, baseDir, ctx, refOptions = {}, warningOptions = {}) {
   const ref = getAttr(attrs, name);
-  if (ref) warnInertResource(ref, baseDir, ctx, options);
+  if (ref) warnInertResource(ref, baseDir, ctx, refOptions, warningOptions);
 }
 
-function warnInertSrcsetRefs(attrs, baseDir, ctx) {
+function warnInertSrcsetRefs(attrs, baseDir, ctx, options = {}) {
   const value = getAttr(attrs, "srcset");
   if (!value) return;
   for (const candidate of parseSrcsetCandidates(value)) {
-    warnInertResource(value.slice(candidate.urlStart, candidate.urlEnd), baseDir, ctx, HTML_REF_OPTIONS);
+    warnInertResource(value.slice(candidate.urlStart, candidate.urlEnd), baseDir, ctx, HTML_REF_OPTIONS, options);
   }
 }
 
-function warnInertStyleRefs(attrs, baseDir, ctx) {
+function warnInertStyleRefs(attrs, baseDir, ctx, options = {}) {
   const attr = findHtmlAttr(attrs, "style");
   if (!attr || !attr.hasValue) return;
   const decoded = decodeHtmlCharacterReferences(attr.value);
@@ -1876,18 +1911,18 @@ function warnInertStyleRefs(attrs, baseDir, ctx) {
   for (const ref of findCssResourceRefs(decoded)) {
     if (seen.has(ref)) continue;
     seen.add(ref);
-    warnInertResource(ref, baseDir, ctx, { cssSyntax: true });
+    warnInertResource(ref, baseDir, ctx, { cssSyntax: true }, options);
   }
 }
 
-function warnInertResource(ref, baseDir, ctx, options = {}) {
-  if (shouldRedactUnresolvedRef(ref, options)) return;
-  const descriptor = resolveRef(ref, baseDir, ctx, options);
+function warnInertResource(ref, baseDir, ctx, refOptions = {}, warningOptions = {}) {
+  if (shouldRedactUnresolvedRef(ref, refOptions)) return;
+  const descriptor = resolveRef(ref, baseDir, ctx, refOptions);
   if (descriptor.kind !== "file" && descriptor.kind !== "escape") return;
   ctx.warnings.push({
     kind: "inert-resource",
     ref,
-    reason: "resources inside template or noscript content are left unchanged",
+    reason: warningOptions.localWarningReason || INERT_RESOURCE_REASON,
   });
 }
 

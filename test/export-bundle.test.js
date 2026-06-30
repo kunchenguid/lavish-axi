@@ -711,6 +711,34 @@ test("redacts file URLs inside inert template content", async () => {
   );
 });
 
+test("scrubs CSS-aware style attributes inside inert content without inlining", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><template style="background:u\\72l(file\\3a///Users/kun/template.png)">' +
+    "<div style='background:image-set(\"local.png\" 1x)'></div></template></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({ "/art/local.png": Buffer.from("local") })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(out, /file\\3a/i);
+  assert.match(out, /<template style="background:url\(about:blank\)">/);
+  assert.match(out, /<div style='background:image-set\("local\.png" 1x\)'><\/div>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file\\3a///Users/kun/template.png" },
+      { kind: "inert-resource", ref: "local.png" },
+    ],
+  );
+});
+
 test("scrubs and warns on CSS resources inside inert content without inlining", async () => {
   const html =
     '<!doctype html><html><body><template><style>.x{background:url(file:///Users/kun/secret.png)}.y{background:image-set("local.png" 1x)}</style></template></body></html>';
@@ -1756,6 +1784,51 @@ test("inlines local object embed and image input resources while warning for ifr
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [{ kind: "unsupported-frame", ref: "panel.html" }],
   );
+});
+
+test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><iframe srcdoc=\'<img src="local.png">' +
+    "<style>.x{background:u\\72l(file\\3a///Users/kun/secret.png)}</style>'></iframe></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({ "/art/local.png": Buffer.from("local") })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(out, /file\\3a/i);
+  assert.match(out, /srcdoc='<img src="local\.png"><style>\.x\{background:url\(about:blank\)\}<\/style>'/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inert-resource", ref: "local.png" },
+      { kind: "file-url-redacted", ref: "file\\3a///Users/kun/secret.png" },
+    ],
+  );
+});
+
+test("inlines local SVG feImage href resources", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><svg><filter><feImage href="fx.png" />' +
+    '<feImage xlink:href="fx2.png"></feImage></filter></svg></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/fx.png": png,
+      "/art/fx2.png": png,
+    }),
+  });
+
+  assert.match(out, /<feImage href="data:image\/png;base64,iVBORw==" \/>/);
+  assert.match(out, /<feImage xlink:href="data:image\/png;base64,iVBORw=="><\/feImage>/);
+  assert.equal(warnings.length, 0);
 });
 
 test("refuses to inline a local symlink that escapes the artifact directory", async () => {
