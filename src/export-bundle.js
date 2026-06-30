@@ -463,7 +463,7 @@ async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
 async function inlineRenderAttr(attrs, name, baseDir, ctx, options = {}) {
   const value = getAttr(attrs, name);
   if (!value) return attrs;
-  if (options.nestedHtml && isHtmlDocumentRef(value)) {
+  if (options.nestedHtml && (isHtmlDocumentRef(value) || isHtmlDocumentType(attrs))) {
     warnUnsupportedFrame(value, baseDir, ctx, HTML_REF_OPTIONS);
     return replaceUnresolvedAttrRef(attrs, name, value);
   }
@@ -2865,6 +2865,11 @@ function isInert(ref) {
 function isHtmlDocumentRef(ref) {
   const locator = normalizeRefForResolution(ref, HTML_REF_OPTIONS).trim();
   return [".html", ".htm", ".xhtml"].includes(path.extname(stripQueryAndHash(locator)).toLowerCase());
+}
+
+function isHtmlDocumentType(attrs) {
+  const type = getDecisionAttr(attrs, "type").trim().toLowerCase().split(";")[0].trim();
+  return type === "text/html" || type === "application/xhtml+xml";
 }
 
 function shouldRedactUnresolvedRef(ref, options = {}) {

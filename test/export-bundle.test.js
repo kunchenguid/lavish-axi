@@ -2275,6 +2275,37 @@ test("leaves object and embed HTML nested documents unresolved", async () => {
   );
 });
 
+test("leaves object and embed HTML MIME nested documents unresolved", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><object type="text/html" data="panel"></object>' +
+    '<embed type="application/xhtml+xml" src="widget">' +
+    '<object type="image/svg+xml" data="diagram.svg"></object></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/panel": "<p>Nested</p>",
+        "/art/widget": "<p>Nested</p>",
+        "/art/diagram.svg": "<svg></svg>",
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/diagram.svg"]);
+  assert.match(out, /<object type="text\/html" data="panel"><\/object>/);
+  assert.match(out, /<embed type="application\/xhtml\+xml" src="widget">/);
+  assert.match(out, /<object type="image\/svg\+xml" data="data:image\/svg\+xml;base64,[^"]+"><\/object>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-frame", ref: "panel" },
+      { kind: "unsupported-frame", ref: "widget" },
+    ],
+  );
+});
+
 test("records file iframe src as an unresolved frame before redacting it", async () => {
   const html = '<!doctype html><html><body><iframe src="file:///art/panel.html"></iframe></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
