@@ -139,6 +139,30 @@ test("leaves non-CSS style elements unchanged with warnings for local refs", asy
   );
 });
 
+test("redacts file URLs in non-CSS style element bodies without bundling", async () => {
+  const html =
+    '<!doctype html><html><head><style type="text/plain">.x{background:url(file:///Users/kun/secret.png)}.y{background:url(pic.png)}</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": Buffer.from("pic") }),
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(
+    out,
+    /<style type="text\/plain">\.x\{background:url\(about:blank\)\}\.y\{background:url\(pic\.png\)\}<\/style>/,
+  );
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+      { kind: "unsupported-style-type", ref: "pic.png" },
+    ],
+  );
+});
+
 test("inlines a local script src as an inline script and escapes closing tags", async () => {
   const html = '<!doctype html><html><body><script src="app.js"></script></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -233,6 +257,7 @@ test("warns when inline import maps reference local module URLs", async () => {
     [
       { kind: "inline-importmap-local-ref", ref: "./app.js" },
       { kind: "inline-importmap-local-ref", ref: "shared.js" },
+      { kind: "inline-importmap-local-ref", ref: "./scope/" },
       { kind: "inline-importmap-local-ref", ref: "../scoped.js" },
     ],
   );
@@ -313,7 +338,7 @@ test("redacts file URLs from inline module and import-map specifiers", async () 
     "const lazy = () => import(`file:///Users/kun/secret-lazy.js`);\n" +
     'import "./dep.js";\n' +
     "</script>" +
-    '<script type="importmap">{"imports":{"secret":"file:///Users/kun/secret-map.js","app":"./app.js"}}</script>' +
+    '<script type="importmap">{"imports":{"secret":"file:///Users/kun/secret-map.js","app":"./app.js"},"scopes":{"file:///Users/kun/secret-scope/":{"x":"./x.js"},"./local-scope/":{"y":"./y.js"}}}</script>' +
     "</head></html>";
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
@@ -328,6 +353,8 @@ test("redacts file URLs from inline module and import-map specifiers", async () 
   assert.match(out, /import\(`about:blank`\)/);
   assert.match(out, /"secret":"about:blank"/);
   assert.match(out, /"app":"\.\/app\.js"/);
+  assert.match(out, /"about:blank":\{"x":"\.\/x\.js"\}/);
+  assert.match(out, /"\.\/local-scope\/":\{"y":"\.\/y\.js"\}/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
@@ -336,7 +363,11 @@ test("redacts file URLs from inline module and import-map specifiers", async () 
       { kind: "file-url-redacted", ref: "file:///Users/kun/secret-lazy.js" },
       { kind: "inline-module-import", ref: "./dep.js" },
       { kind: "file-url-redacted", ref: "file:///Users/kun/secret-map.js" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret-scope/" },
       { kind: "inline-importmap-local-ref", ref: "./app.js" },
+      { kind: "inline-importmap-local-ref", ref: "./x.js" },
+      { kind: "inline-importmap-local-ref", ref: "./local-scope/" },
+      { kind: "inline-importmap-local-ref", ref: "./y.js" },
     ],
   );
 });
@@ -448,6 +479,32 @@ test("leaves unchanged srcset values byte-for-byte when no candidate is inlined"
   });
 
   assert.equal(out, html);
+  assert.equal(warnings.length, 0);
+});
+
+test("only inlines media attributes that the element can fetch", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><img poster="poster.png" srcset="small.png 1x">' +
+    '<audio src="audio.mp3" poster="audio-poster.png" srcset="audio-srcset.png 1x"></audio>' +
+    '<video poster="poster.png" src="video.mp4"></video><source srcset="small.png 1x"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/audio.mp3": Buffer.from("audio"),
+      "/art/poster.png": png,
+      "/art/small.png": png,
+      "/art/video.mp4": Buffer.from("video"),
+    }),
+  });
+
+  assert.match(out, /<img poster="poster\.png" srcset="data:image\/png;base64,iVBORw== 1x">/);
+  assert.match(
+    out,
+    /<audio src="data:audio\/mpeg;base64,YXVkaW8=" poster="audio-poster\.png" srcset="audio-srcset\.png 1x"><\/audio>/,
+  );
+  assert.match(out, /<video poster="data:image\/png;base64,iVBORw==" src="data:video\/mp4;base64,dmlkZW8="><\/video>/);
+  assert.match(out, /<source srcset="data:image\/png;base64,iVBORw== 1x">/);
   assert.equal(warnings.length, 0);
 });
 
@@ -574,6 +631,35 @@ test("does not rewrite markup-like text inside legacy raw-text elements", async 
   assert.equal(warnings.length, 0);
 });
 
+test("treats unterminated raw-text content as inert through EOF", async () => {
+  const html =
+    '<!doctype html><html><body><textarea><img src="local.png"><img src="file:///Users/kun/secret.png"><img src="live.png">';
+  const readPaths = [];
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/local.png": Buffer.from("local"),
+        "/art/live.png": Buffer.from("live"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<textarea><img src="local\.png"><img src="about:blank"><img src="live\.png">$/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unterminated-raw-text", ref: "textarea" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+    ],
+  );
+});
+
 test("leaves template and noscript resources inert while warning on local refs", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const readPaths = [];
@@ -622,6 +708,64 @@ test("redacts file URLs inside inert template content", async () => {
   assert.deepEqual(
     warnings.map((warning) => warning.kind),
     ["file-url-redacted", "file-url-redacted"],
+  );
+});
+
+test("scrubs and warns on CSS resources inside inert content without inlining", async () => {
+  const html =
+    '<!doctype html><html><body><template><style>.x{background:url(file:///Users/kun/secret.png)}.y{background:image-set("local.png" 1x)}</style></template></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({ "/art/local.png": Buffer.from("local") }),
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(
+    out,
+    /<template><style>\.x\{background:url\(about:blank\)\}\.y\{background:image-set\("local\.png" 1x\)\}<\/style><\/template>/,
+  );
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+      { kind: "inert-resource", ref: "local.png" },
+    ],
+  );
+});
+
+test("treats unterminated inert content as inert through EOF", async () => {
+  const html =
+    '<!doctype html><html><body><template><img src="local.png"><style>.x{background:url(file:///Users/kun/secret.png)}</style><img src="live.png">';
+  const readPaths = [];
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/local.png": Buffer.from("local"),
+        "/art/live.png": Buffer.from("live"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(
+    out,
+    /<template><img src="local\.png"><style>\.x\{background:url\(about:blank\)\}<\/style><img src="live\.png">$/,
+  );
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unterminated-raw-text", ref: "template" },
+      { kind: "inert-resource", ref: "local.png" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+      { kind: "inert-resource", ref: "live.png" },
+    ],
   );
 });
 
