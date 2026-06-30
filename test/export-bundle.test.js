@@ -853,6 +853,31 @@ test("redacts unresolved file URLs instead of leaking local paths", async () => 
   assert.ok(warnings.every((warning) => warning.kind === "outside-root"));
 });
 
+test("redacts remaining file URLs from arbitrary HTML attributes", async () => {
+  const secret = "file:///Users/kun/secret.png";
+  const escaped = "file:&#x2f;&#x2f;/Users/kun/escaped.png";
+  const html =
+    `<!doctype html><html><body><a href="${secret}">Download</a>` +
+    `<form action='${secret}'></form><object data=${secret}></object>` +
+    `<iframe src="${escaped}"></iframe><div data-note="prefix ${secret} suffix"></div></body></html>`;
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<a href="about:blank">Download<\/a>/);
+  assert.match(out, /<form action='about:blank'><\/form>/);
+  assert.match(out, /<object data="about:blank"><\/object>/);
+  assert.match(out, /<iframe src="about:blank"><\/iframe>/);
+  assert.match(out, /<div data-note="about:blank"><\/div>/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["file-url-redacted", "file-url-redacted", "file-url-redacted", "file-url-redacted", "file-url-redacted"],
+  );
+});
+
 test("refuses to inline a local symlink that escapes the artifact directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
   try {

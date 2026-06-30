@@ -80,6 +80,7 @@ const SVG_REF_TAG_RE = new RegExp(String.raw`<(use|image)(?=\s|\/|>)(${TAG_ATTRS
 const LINK_TAG_RE = new RegExp(String.raw`<link(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
 const START_TAG_RE = new RegExp(String.raw`<([a-z][\w:-]*)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
 const MARKUP_TAG_RE = new RegExp(String.raw`<\/?([a-z][\w:-]*)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
+const ATTR_VALUE_RE = /(^|\s)([^\s"'<>/=]+)(\s*=\s*)("[^"]*"|'[^']*'|[^\s"'>]+)/g;
 
 function rawTextElementPattern(tag) {
   return String.raw`<${tag}(?=\s|\/|>)${TAG_ATTRS_PATTERN}>[\s\S]*?<\/${tag}\s*>`;
@@ -173,7 +174,23 @@ async function transformMarkup(markup, baseDir, ctx) {
   });
   result = await inlineStyleAttrs(result, baseDir, ctx);
   result = await replaceAsync(result, LINK_TAG_RE, (match, attrs) => inlineLink(match, attrs, baseDir, ctx));
+  result = scrubFileUrlAttrs(result, ctx);
   return result;
+}
+
+function scrubFileUrlAttrs(markup, ctx) {
+  return markup.replace(START_TAG_RE, (match, tag, attrs) => {
+    let changed = false;
+    const next = attrs.replace(ATTR_VALUE_RE, (attrMatch, boundary, name, eq, raw) => {
+      const value = unquoteAttrValue(raw);
+      if (!containsFileUrl(value)) return attrMatch;
+      changed = true;
+      ctx.warnings.push({ kind: "file-url-redacted", ref: value });
+      const quote = raw.startsWith("'") ? "'" : '"';
+      return `${boundary}${name}${eq}${quoteAttrValuePreservingEntities(REDACTED_FILE_REF, quote)}`;
+    });
+    return changed ? formatStartTag(tag, next, isSelfClosingTag(match)) : match;
+  });
 }
 
 async function inlineStyleAttrs(markup, baseDir, ctx) {
@@ -1232,6 +1249,11 @@ function shouldRedactUnresolvedRef(ref) {
   return /^file:\/\//i.test(value) || /^file:\/\//i.test(decodeHtmlCharacterReferences(value));
 }
 
+function containsFileUrl(ref) {
+  const value = String(ref || "");
+  return /file:\/\//i.test(value) || /file:\/\//i.test(decodeHtmlCharacterReferences(value));
+}
+
 function replaceUnresolvedAttrRef(source, name, ref) {
   return shouldRedactUnresolvedRef(ref) ? replaceAttrValue(source, name, REDACTED_FILE_REF) : source;
 }
@@ -1348,6 +1370,17 @@ function replaceAttrValuePreservingEntities(source, name, value) {
     const preferredQuote = raw.startsWith("'") ? "'" : '"';
     return `${boundary}${prefix}${quoteAttrValuePreservingEntities(value, preferredQuote)}`;
   });
+}
+
+function unquoteAttrValue(raw) {
+  const value = String(raw || "");
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
 }
 
 function removeAttrs(attrs, names) {
