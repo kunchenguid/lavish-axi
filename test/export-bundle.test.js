@@ -540,6 +540,39 @@ test("resolves HTML asset references against the first document base href", asyn
   assert.equal(warnings.length, 0);
 });
 
+test("keeps trailing slashes in unquoted attribute values before tag close", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const readPaths = [];
+  const html = "<!doctype html><html><head><base href=assets/></head><body><img src=pic.png></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/assets/pic.png": png,
+        "/art/pic.png": Buffer.from("wrong"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/assets/pic.png"]);
+  assert.match(out, /<base href=assets\/>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
+  assert.equal(warnings.length, 0);
+
+  const trailingImage = "<!doctype html><html><body><img src=pic.png/></body></html>";
+  const trailing = await buildSelfContainedHtml(trailingImage, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.match(trailing.html, /<img src=pic\.png\/>/);
+  assert.deepEqual(
+    trailing.warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "load-failed", ref: "pic.png/" }],
+  );
+});
+
 test("leaves HTML asset references unchanged when the document base href is remote", async () => {
   const html =
     '<!doctype html><html><head><base href="https://cdn.example/assets/">' +
@@ -860,6 +893,35 @@ test("handles fetchable CSS image-set string operands", async () => {
     warnings.map((warning) => warning.kind),
     ["outside-root"],
   );
+});
+
+test("does not rewrite CSS URLs in conditional at-rule preludes", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const readPaths = [];
+  const html =
+    "<!doctype html><html><head><style>@supports (background:url(secret.png)){" +
+    ".supports{background:url(ok.png)}}" +
+    '@media (background:image-set("secret.png" 1x)){.media{background:image-set("ok.png" 1x)}}' +
+    "@container (background:url(secret.png)){.container{background:url(ok.png)}}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/ok.png": png,
+        "/art/secret.png": Buffer.from("secret"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/ok.png", "/art/ok.png", "/art/ok.png"]);
+  assert.match(out, /@supports \(background:url\(secret\.png\)\)/);
+  assert.match(out, /@media \(background:image-set\("secret\.png" 1x\)\)/);
+  assert.match(out, /@container \(background:url\(secret\.png\)\)/);
+  assert.match(out, /\.supports\{background:url\(data:image\/png;base64,iVBORw==\)\}/);
+  assert.match(out, /\.media\{background:image-set\("data:image\/png;base64,iVBORw==" 1x\)\}/);
+  assert.match(out, /\.container\{background:url\(data:image\/png;base64,iVBORw==\)\}/);
+  assert.equal(warnings.length, 0);
 });
 
 test("handles escaped urls and image-set operands inside inline styles", async () => {

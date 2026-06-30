@@ -637,6 +637,21 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
       continue;
     }
 
+    const conditionalBlock = parseCssConditionalAtRuleBlock(css, index);
+    if (conditionalBlock) {
+      result += css.slice(index, conditionalBlock.bodyStart);
+      result += await inlineCssUrls(
+        css.slice(conditionalBlock.bodyStart, conditionalBlock.bodyEnd),
+        baseDir,
+        ctx,
+        outputBaseDir,
+        options,
+      );
+      result += css.slice(conditionalBlock.bodyEnd, conditionalBlock.end);
+      index = conditionalBlock.end;
+      continue;
+    }
+
     const imageSet = parseCssImageSetFunction(css, index);
     if (imageSet) {
       result += css.slice(index, imageSet.argsStart);
@@ -742,6 +757,13 @@ function findCssResourceRefs(css) {
       const ruleEnd = findCssAtRuleEnd(css, index);
       if (ruleEnd === -1) break;
       index = ruleEnd + 1;
+      continue;
+    }
+
+    const conditionalBlock = parseCssConditionalAtRuleBlock(css, index);
+    if (conditionalBlock) {
+      refs.push(...findCssResourceRefs(css.slice(conditionalBlock.bodyStart, conditionalBlock.bodyEnd)));
+      index = conditionalBlock.end;
       continue;
     }
 
@@ -938,6 +960,61 @@ function parseCssImageSetFunction(css, index) {
   if (keywordEnd === -1 || css[paren] !== "(") return null;
   const close = findCssFunctionEnd(css, paren);
   return close === -1 ? null : { argsStart: paren + 1, argsEnd: close, end: close + 1 };
+}
+
+function parseCssConditionalAtRuleBlock(css, index) {
+  if (
+    !startsCssKeyword(css, index, "@supports") &&
+    !startsCssKeyword(css, index, "@media") &&
+    !startsCssKeyword(css, index, "@container")
+  ) {
+    return null;
+  }
+  const open = findCssAtRuleBlockStart(css, index);
+  if (open === -1) return null;
+  const close = findCssBlockEnd(css, open);
+  if (close === -1) return null;
+  return { bodyStart: open + 1, bodyEnd: close, end: close + 1 };
+}
+
+function findCssAtRuleBlockStart(css, index) {
+  let cursor = index;
+  while (cursor < css.length) {
+    if (css.startsWith("/*", cursor)) {
+      cursor = findCssCommentEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === '"' || css[cursor] === "'") {
+      cursor = findCssStringEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === ";") return -1;
+    if (css[cursor] === "{") return cursor;
+    cursor += 1;
+  }
+  return -1;
+}
+
+function findCssBlockEnd(css, openParen) {
+  let cursor = openParen;
+  let depth = 0;
+  while (cursor < css.length) {
+    if (css.startsWith("/*", cursor)) {
+      cursor = findCssCommentEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === '"' || css[cursor] === "'") {
+      cursor = findCssStringEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === "{") depth += 1;
+    if (css[cursor] === "}") {
+      depth -= 1;
+      if (depth === 0) return cursor;
+    }
+    cursor += 1;
+  }
+  return -1;
 }
 
 function findCssFunctionEnd(css, openParen) {
@@ -1145,7 +1222,7 @@ function readHtmlToken(html, index) {
   let attrsEnd = end;
   let cursor = end - 1;
   while (cursor > name.end && isHtmlSpace(html[cursor])) cursor -= 1;
-  const selfClosing = html[cursor] === "/";
+  const selfClosing = html[cursor] === "/" && isSelfClosingSlash(html, name.end, end, cursor);
   if (selfClosing) attrsEnd = cursor;
   return {
     type: "start",
@@ -1155,6 +1232,17 @@ function readHtmlToken(html, index) {
     raw: html.slice(index, end + 1),
     end: end + 1,
   };
+}
+
+function isSelfClosingSlash(html, attrsStart, tagEnd, slashIndex) {
+  const attrs = html.slice(attrsStart, tagEnd);
+  const slashOffset = slashIndex - attrsStart;
+  for (const attr of parseHtmlAttrs(attrs)) {
+    if (attr.hasValue && !attr.quote && attr.valueRawStart <= slashOffset && slashOffset < attr.valueRawEnd) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function readHtmlTagName(html, index) {
@@ -1315,9 +1403,14 @@ function resolveRef(ref, baseDir, ctx, options = {}) {
     const mapped = ctx.resolveAbsolute(localPath);
     return mapped ? { kind: "file", path: mapped, allowOutsideRoot: true } : { kind: "skip" };
   }
-  const resolved = path.resolve(base.dir, localPath);
+  const resolved = resolveLocalPathPreservingTrailingSlash(base.dir, localPath);
   if (ctx.confineDir && isOutside(ctx.confineDir, resolved)) return { kind: "escape", path: resolved };
   return { kind: "file", path: resolved };
+}
+
+function resolveLocalPathPreservingTrailingSlash(baseDir, localPath) {
+  const resolved = path.resolve(baseDir, localPath);
+  return localPath.endsWith("/") && !resolved.endsWith(path.sep) ? `${resolved}${path.sep}` : resolved;
 }
 
 async function loadText(ref, baseDir, ctx, options = {}) {
