@@ -249,7 +249,7 @@ async function transformMarkup(markup, baseDir, ctx) {
       baseDir,
       ctx,
       currentHtmlParent(openStack),
-      elementNamespace === "svg",
+      elementNamespace,
     );
     if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tagName)) pushHtmlParent(openStack, tagName, elementNamespace);
     index = token.end;
@@ -266,10 +266,6 @@ function isEffectiveSelfClosingTag(tagName, selfClosing, openStack = [], element
 
 function currentHtmlParent(openStack) {
   return openStack.length ? stackTag(openStack[openStack.length - 1]) : "";
-}
-
-function isSvgNamespace(openStack) {
-  return currentNamespace(openStack) === "svg";
 }
 
 function popHtmlParent(openStack, tagName) {
@@ -358,7 +354,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
     const elementNamespace = elementNamespaceForTag(tagName, openStack);
     const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing, openStack, elementNamespace);
     if (elementNamespace === "html" && tagName === PLAINTEXT_TAG && !effectiveSelfClosing) {
-      if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, isSvgNamespace(openStack));
+      if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, elementNamespace);
       result += transformInertRawTextElement(token, markup.slice(token.end), "", baseDir, ctx, {
         ...options,
         warnLocalRefs: false,
@@ -389,7 +385,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       index = close ? close.end : markup.length;
       continue;
     }
-    if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, elementNamespace === "svg");
+    if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, elementNamespace);
     result += formatStartTag(
       token.tag,
       scrubInertAttrs(tagName, token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
@@ -404,8 +400,9 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
 async function transformRawTextElement(token, body, closeTag, baseDir, ctx, options = {}) {
   const tagName = token.tag.toLowerCase();
   const safeCloseTag = scrubRawTextFileUrls(closeTag, ctx);
+  const namespace = options.inSvgNamespace ? "svg" : "html";
   if (tagName === "style") {
-    const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx);
+    const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx, "", namespace);
     if (!isCssStyleElementType(token.attrs)) {
       return `${startTag}${scrubUnsupportedStyleElementBody(body, baseDir, ctx)}${safeCloseTag}`;
     }
@@ -414,7 +411,7 @@ async function transformRawTextElement(token, body, closeTag, baseDir, ctx, opti
   if (tagName === "script" && options.inSvgNamespace)
     return inlineSvgScript(token.tag, token.attrs, body, safeCloseTag, baseDir, ctx);
   if (tagName === "script") return inlineScript(token.tag, token.attrs, body, safeCloseTag, baseDir, ctx);
-  return `${await transformStartTag(token.tag, token.attrs, false, baseDir, ctx)}${scrubRawTextBodyWithoutInlining(
+  return `${await transformStartTag(token.tag, token.attrs, false, baseDir, ctx, "", namespace)}${scrubRawTextBodyWithoutInlining(
     tagName,
     token.attrs,
     body,
@@ -426,7 +423,15 @@ async function transformRawTextElement(token, body, closeTag, baseDir, ctx, opti
 async function transformUnterminatedRawTextElement(token, body, baseDir, ctx, options = {}) {
   const tagName = token.tag.toLowerCase();
   if (tagName === "style") {
-    const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx, "", options.inSvgNamespace);
+    const startTag = await transformStartTag(
+      token.tag,
+      token.attrs,
+      false,
+      baseDir,
+      ctx,
+      "",
+      options.inSvgNamespace ? "svg" : "html",
+    );
     if (!isCssStyleElementType(token.attrs))
       return `${startTag}${scrubUnsupportedStyleElementBody(body, baseDir, ctx)}`;
     return `${startTag}${escapeRawText(await inlineCss(body, baseDir, ctx, 0, baseDir), "style")}`;
@@ -443,17 +448,32 @@ async function transformUnterminatedRawTextElement(token, body, baseDir, ctx, op
       baseDir,
       ctx,
       "",
-      options.inSvgNamespace,
+      options.inSvgNamespace ? "svg" : "html",
     );
     return `${startTag}${escapeRawText(scrubRawTextFileUrls(body, ctx), "script")}`;
   }
-  const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx, "", options.inSvgNamespace);
+  const startTag = await transformStartTag(
+    token.tag,
+    token.attrs,
+    false,
+    baseDir,
+    ctx,
+    "",
+    options.inSvgNamespace ? "svg" : "html",
+  );
   return `${startTag}${scrubRawTextBodyWithoutInlining(token.tag.toLowerCase(), token.attrs, body, baseDir, ctx)}`;
 }
 
 function transformInertRawTextElement(token, body, closeTag, baseDir, ctx, options = {}) {
   if (options.warnLocalRefs !== false)
-    warnInertStartTagRefs(token.tag.toLowerCase(), token.attrs, baseDir, ctx, options, options.inSvgNamespace === true);
+    warnInertStartTagRefs(
+      token.tag.toLowerCase(),
+      token.attrs,
+      baseDir,
+      ctx,
+      options,
+      options.inSvgNamespace ? "svg" : "html",
+    );
   const startTag = formatStartTag(
     token.tag,
     scrubInertAttrs(token.tag.toLowerCase(), token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
@@ -494,10 +514,13 @@ function scrubRawTextBodyWithoutInlining(tagName, attrs, body, baseDir, ctx, opt
   return scrubRawTextFileUrls(body, ctx);
 }
 
-async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTag = "", inSvgNamespace = false) {
+async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTag = "", namespace = "html") {
   const tagName = tag.toLowerCase();
+  const elementNamespace = namespace || "html";
+  const inHtmlNamespace = elementNamespace === "html";
+  const inSvgNamespace = elementNamespace === "svg";
   let next = attrs;
-  if (MEDIA_TAGS.has(tagName)) {
+  if (inHtmlNamespace && MEDIA_TAGS.has(tagName)) {
     next = await inlineMediaAttrs(tagName, next, baseDir, ctx, parentTag);
   }
   if (SVG_REF_TAGS.has(tagName) && inSvgNamespace) {
@@ -507,12 +530,12 @@ async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTa
   if (tagName === "script" && inSvgNamespace) {
     next = await inlineSvgScriptAttrs(next, baseDir, ctx);
   }
-  next = await inlineRenderResourceAttrs(tagName, next, baseDir, ctx);
+  if (inHtmlNamespace) next = await inlineRenderResourceAttrs(tagName, next, baseDir, ctx);
   next = await inlineStyleAttr(next, baseDir, ctx);
-  const isCspMetaTag = tagName === "meta" && isCspMeta(next);
+  const isCspMetaTag = inHtmlNamespace && tagName === "meta" && isCspMeta(next);
   if (isCspMetaTag) warnCspMeta(next, ctx);
-  if (tagName === "base") warnBaseHref(next, ctx);
-  if (tagName === "link") {
+  if (inHtmlNamespace && tagName === "base") warnBaseHref(next, ctx);
+  if (inHtmlNamespace && tagName === "link") {
     const linked = await inlineLink(next, baseDir, ctx);
     if (linked.replacement) return linked.replacement;
     next = linked.attrs;
@@ -735,7 +758,7 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
 }
 
 async function inlineSvgScript(tag, attrs, body, closeTag, baseDir, ctx) {
-  const startTag = await transformStartTag(tag, attrs, false, baseDir, ctx, "", true);
+  const startTag = await transformStartTag(tag, attrs, false, baseDir, ctx, "", "svg");
   const executable = isClassicScript(attrs) || isModuleScript(attrs);
   const scrubbed = executable ? scrubClassicScriptFileUrlComments(body, ctx) : scrubRawTextFileUrls(body, ctx);
   return `${startTag}${escapeRawText(scrubbed, "script")}${closeTag}`;
@@ -1855,6 +1878,30 @@ function scrubClassicScriptFileUrlComments(source, ctx) {
       index = end === -1 ? input.length : end + 2;
       continue;
     }
+    if (input.startsWith("<!--", index)) {
+      const end = input.indexOf("\n", index + 4);
+      const bodyEnd = end === -1 ? input.length : end;
+      result += `<!--${scrubFileUrlsInCommentBody(input.slice(index + 4, bodyEnd), ctx)}`;
+      if (end === -1) {
+        index = input.length;
+      } else {
+        result += "\n";
+        index = end + 1;
+      }
+      continue;
+    }
+    if (input.startsWith("-->", index) && isJsHtmlCloseCommentStart(input, index)) {
+      const end = input.indexOf("\n", index + 3);
+      const bodyEnd = end === -1 ? input.length : end;
+      result += `-->${scrubFileUrlsInCommentBody(input.slice(index + 3, bodyEnd), ctx)}`;
+      if (end === -1) {
+        index = input.length;
+      } else {
+        result += "\n";
+        index = end + 1;
+      }
+      continue;
+    }
     if (input[index] === '"' || input[index] === "'") {
       const end = parseJsString(input, index).end;
       result += input.slice(index, end);
@@ -1877,6 +1924,15 @@ function scrubClassicScriptFileUrlComments(source, ctx) {
     index += 1;
   }
   return result;
+}
+
+function isJsHtmlCloseCommentStart(input, index) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const char = input[cursor];
+    if (char === "\n" || char === "\r") return true;
+    if (char !== " " && char !== "\t" && char !== "\f" && char !== "\v") return false;
+  }
+  return true;
 }
 
 function findCssAtRuleEnd(css, index) {
@@ -2528,8 +2584,11 @@ function warnUnsupportedFrame(ref, baseDir, ctx, options = {}) {
   }
 }
 
-function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}, inSvgNamespace = false) {
-  if (MEDIA_TAGS.has(tagName)) {
+function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}, namespace = "html") {
+  const elementNamespace = namespace || "html";
+  const inHtmlNamespace = elementNamespace === "html";
+  const inSvgNamespace = elementNamespace === "svg";
+  if (inHtmlNamespace && MEDIA_TAGS.has(tagName)) {
     warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
     if (tagName === "video") warnInertAttrRef(attrs, "poster", baseDir, ctx, HTML_REF_OPTIONS, options);
     if (tagName === "img" || tagName === "source") warnInertSrcsetRefs(attrs, baseDir, ctx, options);
@@ -2538,18 +2597,18 @@ function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}, inSvg
     warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS, options);
     warnInertAttrRef(attrs, "xlink:href", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
-  if (tagName === "object") warnInertAttrRef(attrs, "data", baseDir, ctx, HTML_REF_OPTIONS, options);
+  if (inHtmlNamespace && tagName === "object") warnInertAttrRef(attrs, "data", baseDir, ctx, HTML_REF_OPTIONS, options);
   if (tagName === "script" && inSvgNamespace) {
     warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS, options);
     warnInertAttrRef(attrs, "xlink:href", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
-  if (tagName === "embed" || (tagName === "script" && !inSvgNamespace) || tagName === "iframe") {
+  if (inHtmlNamespace && (tagName === "embed" || tagName === "script" || tagName === "iframe")) {
     warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
-  if (tagName === "input" && getDecisionAttr(attrs, "type").trim().toLowerCase() === "image") {
+  if (inHtmlNamespace && tagName === "input" && getDecisionAttr(attrs, "type").trim().toLowerCase() === "image") {
     warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
-  if (tagName === "link") {
+  if (inHtmlNamespace && tagName === "link") {
     const rel = getTokenListAttr(attrs, "rel");
     if (
       rel.includes("stylesheet") ||

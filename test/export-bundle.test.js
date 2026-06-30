@@ -2194,6 +2194,37 @@ test("scrubs file URLs from classic script comments without touching string lite
   );
 });
 
+test("scrubs file URLs from classic script HTML-like comments", async () => {
+  const inlineComment = "file:///Users/kun/inline-html-comment.map";
+  const externalComment = "file:///Users/kun/external-html-comment.map";
+  const stringRef = "file:///Users/kun/string.txt";
+  const html =
+    "<!doctype html><html><body><script><!-- " +
+    inlineComment +
+    ' -->\nconst path = "' +
+    stringRef +
+    '";\n--> file:///Users/kun/close-comment.map\n</script><script src="app.js"></script></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/app.js": `<!-- ${externalComment} -->\nconst externalPath = "${stringRef}";`,
+    }),
+  });
+
+  assert.doesNotMatch(out, /inline-html-comment/);
+  assert.doesNotMatch(out, /external-html-comment/);
+  assert.doesNotMatch(out, /close-comment/);
+  assert.ok(out.includes(stringRef));
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: inlineComment },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/close-comment.map" },
+      { kind: "file-url-redacted", ref: externalComment },
+    ],
+  );
+});
+
 test("scrubs file URLs from module script comments without touching string literals", async () => {
   const commentRef = "file:///Users/kun/module.map";
   const stringRef = "file:///Users/kun/module-string.txt";
@@ -2372,6 +2403,30 @@ test("does not inline SVG ref tags outside an SVG ancestor", async () => {
   });
 
   assert.match(out, /<use href="icons\.svg#check"><\/use>/);
+  assert.equal(warnings.length, 0);
+});
+
+test("does not inline HTML resource attributes in foreign namespaces", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><svg><img src="secret.png"></svg>' +
+    '<math><object data="secret.svg"></object></math><img src="active.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/secret.png": Buffer.from("secret"),
+        "/art/secret.svg": "<svg></svg>",
+        "/art/active.png": Buffer.from("active"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/active.png"]);
+  assert.match(out, /<svg><img src="secret\.png"><\/svg>/);
+  assert.match(out, /<math><object data="secret\.svg"><\/object><\/math>/);
+  assert.match(out, /<img src="data:image\/png;base64,YWN0aXZl">/);
   assert.equal(warnings.length, 0);
 });
 
