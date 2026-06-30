@@ -178,6 +178,60 @@ test("decodes percent-encoded local asset paths before resolving them", async ()
   assert.equal(warnings.length, 0);
 });
 
+test("resolves HTML asset references against the first document base href", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><head><template><base href="wrong/"></template><base href="assets/">' +
+    '<link rel="stylesheet" href="css/app.css"><link rel="icon" href="icon.svg">' +
+    '<style>.inline{background:url(style.png)}</style><script src="app.js"></script></head><body>' +
+    '<img src="pic.png"><div style="background:url(inline.png)"></div></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/assets/css/app.css": ".hero{background:url(bg.png)}",
+      "/art/assets/css/bg.png": png,
+      "/art/assets/icon.svg": "<svg/>",
+      "/art/assets/style.png": png,
+      "/art/assets/app.js": "window.ready = true;",
+      "/art/assets/pic.png": png,
+      "/art/assets/inline.png": png,
+    }),
+  });
+
+  assert.match(out, /<base href="assets\/">/);
+  assert.match(out, /url\(data:image\/png;base64,iVBORw==\)/);
+  assert.match(out, /<link rel="icon" href="data:image\/svg\+xml;base64,/);
+  assert.match(out, /<script>window\.ready = true;<\/script>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
+  assert.match(out, /style="background:url\(data:image\/png;base64,iVBORw==\)"/);
+  assert.equal(warnings.length, 0);
+});
+
+test("leaves HTML asset references unchanged when the document base href is remote", async () => {
+  const html =
+    '<!doctype html><html><head><base href="https://cdn.example/assets/">' +
+    '<link rel="stylesheet" href="app.css"><style>.x{background:url(bg.png)}</style>' +
+    '<script src="app.js"></script></head><body><img src="pic.png">' +
+    '<div style="background:url(inline.png)"></div></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/app.css": "body{color:red}",
+      "/art/bg.png": Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      "/art/app.js": "window.ready = true;",
+      "/art/pic.png": Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      "/art/inline.png": Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    }),
+  });
+
+  assert.match(out, /<link rel="stylesheet" href="app\.css">/);
+  assert.match(out, /background:url\(bg\.png\)/);
+  assert.match(out, /<script src="app\.js"><\/script>/);
+  assert.match(out, /<img src="pic\.png">/);
+  assert.match(out, /style="background:url\(inline\.png\)"/);
+  assert.equal(warnings.length, 0);
+});
+
 test("rewrites url() and @import inside local CSS, resolving relative to the stylesheet", async () => {
   const woff = Buffer.from([0x77, 0x4f, 0x46, 0x32]);
   const html = '<!doctype html><html><head><link rel="stylesheet" href="css/app.css"></head><body></body></html>';
@@ -195,6 +249,25 @@ test("rewrites url() and @import inside local CSS, resolving relative to the sty
   assert.match(out, /url\(data:font\/woff2;base64,/);
   assert.match(out, /url\(data:image\/svg\+xml;base64,/);
   assert.doesNotMatch(out, /@import/);
+});
+
+test("records a warning when CSS import recursion reaches the max depth", async () => {
+  const html = '<!doctype html><html><head><link rel="stylesheet" href="css/app.css"></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    maxDepth: 0,
+    readLocalFile: localReader({
+      "/art/css/app.css": '@import "theme.css";.app{color:red}',
+      "/art/css/theme.css": ".theme{color:blue}",
+    }),
+  });
+
+  assert.match(out, /@import "css\/theme\.css";/);
+  assert.doesNotMatch(out, /\.theme\{color:blue\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "css-import-depth", ref: "theme.css" }],
+  );
 });
 
 test("inlines media-query CSS imports with parenthesized features", async () => {

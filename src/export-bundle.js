@@ -96,16 +96,16 @@ export function exportFileName(file) {
 }
 
 async function transform(html, ctx) {
-  const baseDir = ctx.baseDir;
+  const documentBase = resolveDocumentRefBase(html, ctx);
   let result = "";
   let lastIndex = 0;
   for (const match of html.matchAll(RAW_TEXT_OR_COMMENT_RE)) {
     const offset = match.index || 0;
-    result += await transformMarkup(html.slice(lastIndex, offset), baseDir, ctx);
-    result += await transformRawTextOrComment(match[0], baseDir, ctx);
+    result += await transformMarkup(html.slice(lastIndex, offset), documentBase, ctx);
+    result += await transformRawTextOrComment(match[0], documentBase, ctx);
     lastIndex = offset + match[0].length;
   }
-  result += await transformMarkup(html.slice(lastIndex), baseDir, ctx);
+  result += await transformMarkup(html.slice(lastIndex), documentBase, ctx);
   return result;
 }
 
@@ -270,6 +270,7 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
       if (!parsed) {
         result += rule;
       } else if (depth >= ctx.maxDepth) {
+        warnCssImportDepth(parsed.ref, baseDir, ctx);
         result += rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir);
       } else if (parsed.media && !isPlainCssMediaQueryList(parsed.media)) {
         warnUnsupportedCssImport(parsed.ref, baseDir, ctx, parsed.media);
@@ -357,12 +358,15 @@ function rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir) {
 
 function rebaseLocalCssRef(ref, baseDir, outputBaseDir) {
   const trimmed = String(ref || "").trim();
-  if (path.resolve(baseDir) === path.resolve(outputBaseDir)) return "";
+  const base = normalizeRefBase(baseDir);
+  const outputBase = normalizeRefBase(outputBaseDir);
+  if (base.kind !== "local" || outputBase.kind !== "local") return "";
+  if (path.resolve(base.dir) === path.resolve(outputBase.dir)) return "";
   if (!isRelativeLocalRef(trimmed)) return "";
   const { pathPart, suffix } = splitRefSuffix(trimmed);
   if (!pathPart) return "";
-  const absPath = path.resolve(baseDir, decodeLocalPath(pathPart));
-  const relative = path.relative(path.resolve(outputBaseDir), absPath);
+  const absPath = path.resolve(base.dir, decodeLocalPath(pathPart));
+  const relative = path.relative(path.resolve(outputBase.dir), absPath);
   if (!relative || path.isAbsolute(relative)) return "";
   return `${encodeRelativeRef(relative.split(path.sep).join("/"))}${suffix}`;
 }
@@ -533,10 +537,99 @@ function isCssIdentChar(char) {
 
 // --- resolution + loading ---------------------------------------------------
 
+function resolveDocumentRefBase(html, ctx) {
+  const href = findFirstDocumentBaseHref(html);
+  if (!href) return localRefBase(ctx.baseDir);
+  return refBaseFromHref(href, ctx.baseDir);
+}
+
+function findFirstDocumentBaseHref(html) {
+  let lastIndex = 0;
+  let templateDepth = 0;
+  for (const match of html.matchAll(RAW_TEXT_OR_COMMENT_RE)) {
+    const scanned = scanMarkupForBaseHref(html.slice(lastIndex, match.index || 0), templateDepth);
+    if (scanned.href !== null) return scanned.href;
+    templateDepth = scanned.templateDepth;
+    lastIndex = (match.index || 0) + match[0].length;
+  }
+  const scanned = scanMarkupForBaseHref(html.slice(lastIndex), templateDepth);
+  return scanned.href;
+}
+
+function scanMarkupForBaseHref(markup, templateDepth) {
+  let depth = templateDepth;
+  const tagRe = /<\/?([a-z][\w:-]*)([^<>]*?)>/gi;
+  for (const match of markup.matchAll(tagRe)) {
+    const tag = match[1].toLowerCase();
+    const isClose = /^<\//.test(match[0]);
+    if (tag === "template") {
+      if (isClose) {
+        depth = Math.max(0, depth - 1);
+      } else if (!/\/\s*>$/.test(match[0])) {
+        depth += 1;
+      }
+      continue;
+    }
+    if (!isClose && depth === 0 && tag === "base") {
+      const href = getAttr(match[2], "href");
+      if (href) return { href, templateDepth: depth };
+    }
+  }
+  return { href: null, templateDepth: depth };
+}
+
+function refBaseFromHref(href, documentDir) {
+  const trimmed = String(href || "").trim();
+  if (!trimmed || isInert(trimmed)) return localRefBase(documentDir);
+  if (trimmed.startsWith("//") || /^https?:\/\//i.test(trimmed)) return { kind: "remote" };
+  if (/^file:\/\//i.test(trimmed)) {
+    try {
+      const fileHref = stripQueryAndHash(trimmed);
+      return localRefBase(directoryFromBasePath(fileURLToPath(fileHref), fileHref));
+    } catch {
+      return { kind: "remote" };
+    }
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return { kind: "remote" };
+  const { pathPart } = splitRefSuffix(trimmed);
+  if (!pathPart) return localRefBase(documentDir);
+  if (trimmed.startsWith("/")) return { kind: "root", path: rootDirectoryFromBasePath(pathPart) };
+  return localRefBase(directoryFromBasePath(path.resolve(documentDir, decodeLocalPath(pathPart)), pathPart));
+}
+
+function directoryFromBasePath(absPath, ref) {
+  const value = String(ref || "");
+  return value.endsWith("/") ? absPath : path.dirname(absPath);
+}
+
+function rootDirectoryFromBasePath(ref) {
+  const decoded = decodeLocalPath(ref);
+  if (!decoded || decoded === "/") return "/";
+  const normalized = path.posix.normalize(decoded);
+  const directory = decoded.endsWith("/") ? normalized : path.posix.dirname(normalized);
+  return directory.endsWith("/") ? directory : `${directory}/`;
+}
+
+function localRefBase(dir) {
+  return { kind: "local", dir: path.resolve(dir) };
+}
+
+function normalizeRefBase(base) {
+  if (base && typeof base === "object" && typeof base.kind === "string") return base;
+  return localRefBase(base);
+}
+
+function rootRelativeRef(basePath, ref) {
+  const { pathPart, suffix } = splitRefSuffix(ref);
+  const joined = path.posix.normalize(path.posix.join(basePath, decodeLocalPath(pathPart)));
+  return `${joined.startsWith("/") ? joined : `/${joined}`}${suffix}`;
+}
+
 // Classify a reference. Remote and unsupported-scheme refs resolve to `skip`, meaning "leave the
 // reference exactly as written" - they are not fetched. Only local refs become `file`.
 function resolveRef(ref, baseDir, ctx) {
   const trimmed = String(ref).trim();
+  const base = normalizeRefBase(baseDir);
   if (isInert(trimmed)) return { kind: "skip" };
 
   // Remote: http(s) and protocol-relative URLs are left as references for the browser to load.
@@ -556,13 +649,14 @@ function resolveRef(ref, baseDir, ctx) {
   // Any other explicit scheme (ftp:, ws:, custom:) is left as a reference.
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return { kind: "skip" };
 
-  const localRef = stripQueryAndHash(trimmed);
-  const localPath = decodeLocalPath(localRef);
-  if (trimmed.startsWith("/")) {
+  if (base.kind === "remote") return { kind: "skip" };
+  const effectiveRef = base.kind === "root" && !trimmed.startsWith("/") ? rootRelativeRef(base.path, trimmed) : trimmed;
+  const localPath = decodeLocalPath(stripQueryAndHash(effectiveRef));
+  if (effectiveRef.startsWith("/")) {
     const mapped = ctx.resolveAbsolute(localPath);
     return mapped ? { kind: "file", path: mapped, allowOutsideRoot: true } : { kind: "skip" };
   }
-  const resolved = path.resolve(baseDir, localPath);
+  const resolved = path.resolve(base.dir, localPath);
   if (ctx.confineDir && isOutside(ctx.confineDir, resolved)) return { kind: "escape", path: resolved };
   return { kind: "file", path: resolved };
 }
@@ -623,6 +717,19 @@ function warnUnsupportedCssImport(ref, baseDir, ctx, tail) {
       kind: "unsupported-css-import",
       ref,
       reason: `CSS @import tail is left unchanged: ${tail}`,
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
+function warnCssImportDepth(ref, baseDir, ctx) {
+  const descriptor = resolveRef(ref, baseDir, ctx);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "css-import-depth",
+      ref,
+      reason: `CSS @import recursion reached max depth ${ctx.maxDepth}`,
     });
   } else if (descriptor.kind === "escape") {
     ctx.warnings.push({ kind: "outside-root", ref });
