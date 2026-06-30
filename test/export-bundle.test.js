@@ -97,6 +97,32 @@ test("leaves local module scripts as references with a warning", async () => {
   assert.equal(warnings[0].ref, "js/main.js");
 });
 
+test("leaves non-classic script src references unchanged with a warning", async () => {
+  const html =
+    '<!doctype html><html><head><script type="application/json" src="data.json"></script>' +
+    '<script type="importmap" src="map.json"></script><script type="text/javascript" src="app.js"></script></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/data.json": '{"secret":true}',
+      "/art/map.json": '{"imports":{}}',
+      "/art/app.js": "window.ready = true;",
+    }),
+  });
+
+  assert.match(out, /<script type="application\/json" src="data\.json"><\/script>/);
+  assert.match(out, /<script type="importmap" src="map\.json"><\/script>/);
+  assert.match(out, /<script type="text\/javascript">window\.ready = true;<\/script>/);
+  assert.doesNotMatch(out, /"secret":true|"imports"/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-script-type", ref: "data.json" },
+      { kind: "unsupported-script-type", ref: "map.json" },
+    ],
+  );
+});
+
 test("warns when inline module scripts reference local imports", async () => {
   const html =
     '<!doctype html><html><head><script type="module">' +
@@ -558,6 +584,23 @@ test("preserves inlined CSS import order before later layer statements", async (
   assert.equal(warnings.length, 0);
 });
 
+test("keeps earlier CSS imports external when a later remote import remains", async () => {
+  const html =
+    '<!doctype html><html><head><style>@import "a.css";@layer reset;' +
+    '@import "https://cdn.example/x.css";.app{color:red}</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/a.css": ".a{color:blue}" }),
+  });
+
+  assert.match(out, /@import "a\.css";@layer reset;@import "https:\/\/cdn\.example\/x\.css";\.app\{color:red\}/);
+  assert.doesNotMatch(out, /\.a\{color:blue\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "css-import-order", ref: "a.css" }],
+  );
+});
+
 test("leaves non-media CSS imports unchanged with a warning", async () => {
   const html =
     '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +
@@ -576,16 +619,18 @@ test("leaves non-media CSS imports unchanged with a warning", async () => {
   assert.match(out, /@import "theme\.css" layer\(theme\);/);
   assert.match(out, /@import url\("supported\.css"\) supports\(display: grid\);/);
   assert.match(out, /@import "bare\.css" layer;/);
-  assert.match(out, /@media print\{\.print\{color:black\}\}/);
+  assert.match(out, /@import "print\.css" print;/);
   assert.doesNotMatch(out, /\.theme\{color:red\}/);
   assert.doesNotMatch(out, /\.supported\{display:grid\}/);
   assert.doesNotMatch(out, /\.bare\{color:purple\}/);
+  assert.doesNotMatch(out, /\.print\{color:black\}/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
       { kind: "unsupported-css-import", ref: "theme.css" },
       { kind: "unsupported-css-import", ref: "supported.css" },
       { kind: "unsupported-css-import", ref: "bare.css" },
+      { kind: "css-import-order", ref: "print.css" },
     ],
   );
 });
@@ -659,6 +704,29 @@ test("keeps earlier CSS imports external when a later local import cannot inline
   ]);
 });
 
+test("keeps parent CSS imports external when nested imports cannot inline", async () => {
+  const html =
+    '<!doctype html><html><head><style>@import "a.css";@import "b.css" screen;' +
+    ".app{color:red}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/a.css": ".a{color:blue}",
+      "/art/b.css": '@import "missing.css";.b{color:green}',
+    }),
+  });
+
+  assert.match(out, /@import "a\.css";@import "b\.css" screen;\.app\{color:red\}/);
+  assert.doesNotMatch(out, /\.a\{color:blue\}/);
+  assert.doesNotMatch(out, /\.b\{color:green\}/);
+  assert.doesNotMatch(out, /@media screen\{@import/);
+  assert.deepEqual(warnings.map((warning) => `${warning.kind}:${warning.ref}`).sort(), [
+    "css-import-order:a.css",
+    "css-import-order:b.css",
+    "load-failed:missing.css",
+  ]);
+});
+
 test("stops reading consecutive CSS imports once the bundle cap is exhausted", async () => {
   const files = {
     "/art/a.css": "a".repeat(10),
@@ -724,7 +792,7 @@ test("rebases unresolved local refs from linked CSS to the HTML base", async () 
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
       { kind: "unsupported-css-import", ref: "theme.css" },
-      { kind: "load-failed", ref: "missing.css" },
+      { kind: "css-import-order", ref: "missing.css" },
       { kind: "too-large", ref: "bg.png" },
       { kind: "load-failed", ref: "missing.png" },
     ],

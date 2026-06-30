@@ -253,6 +253,10 @@ async function inlineScript(match, attrs, body, baseDir, ctx) {
     warnExternalModuleScript(src, baseDir, ctx, HTML_REF_OPTIONS);
     return replaceUnresolvedAttrRef(match, "src", src);
   }
+  if (!isClassicScript(attrs)) {
+    warnUnsupportedScriptType(src, baseDir, ctx, HTML_REF_OPTIONS);
+    return replaceUnresolvedAttrRef(match, "src", src);
+  }
   if (hasAttr(attrs, "defer") || hasAttr(attrs, "async")) {
     warnUnsupportedScriptTiming(src, baseDir, ctx, HTML_REF_OPTIONS);
     return replaceUnresolvedAttrRef(match, "src", src);
@@ -354,64 +358,155 @@ function isHtmlSpace(char) {
 
 async function inlineCss(css, baseDir, ctx, depth, outputBaseDir) {
   const withImports = await inlineCssImports(css, baseDir, ctx, depth, outputBaseDir);
-  return inlineCssUrls(withImports, baseDir, ctx, outputBaseDir);
+  return inlineCssUrls(withImports.css, baseDir, ctx, outputBaseDir);
 }
 
 async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
+  const prelude = collectCssPrelude(css);
+  const imports = prelude.segments.filter((segment) => segment.type === "import");
+  const startBytes = ctx.inlinedBytes;
+  const prepared = new Map();
+  const classifications = new Map();
+  let complete = true;
+  let failureIndex = -1;
+  let failureCause = "";
+
+  for (let importIndex = 0; importIndex < imports.length; importIndex += 1) {
+    const item = imports[importIndex];
+    const classification = classifyCssImport(item.parsed, baseDir, ctx, depth);
+    classifications.set(item, classification);
+    if (classification.kind !== "candidate") {
+      complete = false;
+      failureIndex = importIndex;
+      failureCause = classification.kind;
+      break;
+    }
+    const loaded = await loadTextFromDescriptor(classification.descriptor, item.parsed.ref, ctx);
+    if (!loaded) {
+      complete = false;
+      failureIndex = importIndex;
+      failureCause = "load";
+      break;
+    }
+    const inner = await prepareCssImportInline(loaded.text, loaded.baseDir, ctx, depth + 1, outputBaseDir);
+    if (!inner.inlineable) {
+      complete = false;
+      failureIndex = importIndex;
+      failureCause = "nested";
+      break;
+    }
+    prepared.set(item, item.parsed.media ? `@media ${item.parsed.media}{${inner.css}}` : inner.css);
+  }
+
+  if (!complete) ctx.inlinedBytes = startBytes;
+
+  let result = "";
+  for (const segment of prelude.segments) {
+    if (segment.type !== "import") {
+      result += segment.text;
+      continue;
+    }
+    if (complete) {
+      result += prepared.get(segment) || segment.rule;
+      continue;
+    }
+    warnExternalizedCssImport(
+      segment,
+      baseDir,
+      ctx,
+      depth,
+      imports.indexOf(segment),
+      failureIndex,
+      failureCause,
+      classifications.get(segment),
+    );
+    result += rebaseCssImportRule(segment.rule, segment.parsed, baseDir, outputBaseDir);
+  }
+
+  const body = rewriteLateCssImports(css.slice(prelude.bodyStart), baseDir, ctx, outputBaseDir);
+  return { css: result + body.css, complete: complete && body.complete };
+}
+
+async function prepareCssImportInline(css, baseDir, ctx, depth, outputBaseDir) {
+  const withImports = await inlineCssImports(css, baseDir, ctx, depth, outputBaseDir);
+  if (!withImports.complete) return { inlineable: false, css: "" };
+  return { inlineable: true, css: await inlineCssUrls(withImports.css, baseDir, ctx, outputBaseDir) };
+}
+
+function collectCssPrelude(css) {
+  const segments = [];
+  let index = 0;
+  while (index < css.length) {
+    const start = index;
+    const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
+    if (commentEnd !== -1) {
+      segments.push({ type: "text", text: css.slice(index, commentEnd) });
+      index = commentEnd;
+      continue;
+    }
+    if (/\s/.test(css[index])) {
+      index += 1;
+      while (index < css.length && /\s/.test(css[index])) index += 1;
+      segments.push({ type: "text", text: css.slice(start, index) });
+      continue;
+    }
+    if (startsCssKeyword(css, index, "@import")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd === -1) break;
+      const rule = css.slice(index, ruleEnd + 1);
+      const parsed = parseCssImportRule(rule);
+      if (!parsed) break;
+      segments.push({ type: "import", rule, parsed });
+      index = ruleEnd + 1;
+      continue;
+    }
+    if (startsCssKeyword(css, index, "@charset")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd === -1) break;
+      segments.push({ type: "text", text: css.slice(index, ruleEnd + 1) });
+      index = ruleEnd + 1;
+      continue;
+    }
+    if (startsCssKeyword(css, index, "@layer")) {
+      const statementEnd = findCssPreludeStatementEnd(css, index);
+      if (statementEnd !== -1 && css[statementEnd] === ";") {
+        segments.push({ type: "text", text: css.slice(index, statementEnd + 1) });
+        index = statementEnd + 1;
+        continue;
+      }
+    }
+    break;
+  }
+  return { segments, bodyStart: index };
+}
+
+function classifyCssImport(parsed, baseDir, ctx, depth) {
+  if (depth >= ctx.maxDepth) return { kind: "depth" };
+  if (parsed.media && !isPlainCssMediaQueryList(parsed.media)) return { kind: "unsupported" };
+  const descriptor = resolveRef(parsed.ref, baseDir, ctx);
+  return descriptor.kind === "file" ? { kind: "candidate", descriptor } : { kind: descriptor.kind, descriptor };
+}
+
+function warnExternalizedCssImport(item, baseDir, ctx, depth, importIndex, failureIndex, failureCause, classification) {
+  classification = classification || classifyCssImport(item.parsed, baseDir, ctx, depth);
+  if (classification.kind === "candidate") {
+    if (importIndex === failureIndex && failureCause === "load") return;
+    warnCssImportOrder(item.parsed.ref, classification.descriptor, ctx);
+    return;
+  }
+  if (classification.kind === "depth") {
+    warnCssImportDepth(item.parsed.ref, baseDir, ctx);
+  } else if (classification.kind === "unsupported") {
+    warnUnsupportedCssImport(item.parsed.ref, baseDir, ctx, item.parsed.media);
+  } else if (classification.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref: item.parsed.ref });
+  }
+}
+
+function rewriteLateCssImports(css, baseDir, ctx, outputBaseDir) {
   let result = "";
   let index = 0;
-  let pending = [];
-  let importPrelude = true;
-  let braceDepth = 0;
-
-  const flushPendingAsExternal = () => {
-    for (const item of pending) {
-      warnCssImportOrder(item.parsed.ref, item.descriptor, ctx);
-      result += rebaseCssImportRule(item.rule, item.parsed, baseDir, outputBaseDir);
-    }
-    pending = [];
-  };
-
-  const flushPendingInline = async () => {
-    if (!pending.length) return;
-    const prepared = [];
-    const startBytes = ctx.inlinedBytes;
-    let failed = false;
-
-    for (let pendingIndex = 0; pendingIndex < pending.length; pendingIndex += 1) {
-      const item = pending[pendingIndex];
-      const loaded = await loadTextFromDescriptor(item.descriptor, item.parsed.ref, ctx);
-      prepared.push({ ...item, loaded });
-      if (!loaded) {
-        failed = true;
-        for (const remaining of pending.slice(pendingIndex + 1)) {
-          prepared.push({ ...remaining, loaded: null, skipped: true });
-        }
-        break;
-      }
-    }
-
-    if (!failed) {
-      for (const item of prepared) {
-        const inner = await inlineCss(item.loaded.text, item.loaded.baseDir, ctx, depth + 1, outputBaseDir);
-        result += item.parsed.media ? `@media ${item.parsed.media}{${inner}}` : inner;
-      }
-    } else {
-      ctx.inlinedBytes = startBytes;
-      for (const item of prepared) {
-        if (item.loaded || item.skipped) warnCssImportOrder(item.parsed.ref, item.descriptor, ctx);
-        result += rebaseCssImportRule(item.rule, item.parsed, baseDir, outputBaseDir);
-      }
-    }
-    pending = [];
-  };
-
-  const enterCssBody = async () => {
-    if (!importPrelude || braceDepth !== 0) return;
-    importPrelude = false;
-    await flushPendingInline();
-  };
-
+  let complete = true;
   while (index < css.length) {
     const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
     if (commentEnd !== -1) {
@@ -420,14 +515,7 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
       continue;
     }
 
-    if (/\s/.test(css[index])) {
-      result += css[index];
-      index += 1;
-      continue;
-    }
-
     if (css[index] === '"' || css[index] === "'") {
-      await enterCssBody();
       const stringEnd = findCssStringEnd(css, index);
       result += css.slice(index, stringEnd);
       index = stringEnd;
@@ -442,66 +530,21 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
       }
       const rule = css.slice(index, ruleEnd + 1);
       const parsed = parseCssImportRule(rule);
-      if (!importPrelude || braceDepth !== 0) {
-        if (parsed) warnLateCssImport(parsed.ref, baseDir, ctx);
-        result += rule;
-      } else if (!parsed) {
-        flushPendingAsExternal();
-        importPrelude = false;
-        result += rule;
-      } else if (depth >= ctx.maxDepth) {
-        flushPendingAsExternal();
-        warnCssImportDepth(parsed.ref, baseDir, ctx);
-        result += rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir);
-      } else if (parsed.media && !isPlainCssMediaQueryList(parsed.media)) {
-        flushPendingAsExternal();
-        warnUnsupportedCssImport(parsed.ref, baseDir, ctx, parsed.media);
+      if (parsed) {
+        complete = false;
+        warnLateCssImport(parsed.ref, baseDir, ctx);
         result += rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir);
       } else {
-        const descriptor = resolveRef(parsed.ref, baseDir, ctx);
-        if (descriptor.kind !== "file") {
-          flushPendingAsExternal();
-          if (descriptor.kind === "escape") ctx.warnings.push({ kind: "outside-root", ref: parsed.ref });
-          result += rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir);
-        } else {
-          pending.push({ rule, parsed, descriptor });
-        }
+        result += rule;
       }
       index = ruleEnd + 1;
       continue;
     }
 
-    if (importPrelude && braceDepth === 0 && startsCssKeyword(css, index, "@charset")) {
-      const ruleEnd = findCssAtRuleEnd(css, index);
-      if (ruleEnd !== -1) {
-        await flushPendingInline();
-        result += css.slice(index, ruleEnd + 1);
-        index = ruleEnd + 1;
-        continue;
-      }
-    }
-
-    if (importPrelude && braceDepth === 0 && startsCssKeyword(css, index, "@layer")) {
-      const statementEnd = findCssPreludeStatementEnd(css, index);
-      if (statementEnd !== -1 && css[statementEnd] === ";") {
-        await flushPendingInline();
-        result += css.slice(index, statementEnd + 1);
-        index = statementEnd + 1;
-        continue;
-      }
-    }
-
-    await enterCssBody();
     result += css[index];
-    if (css[index] === "{") {
-      braceDepth += 1;
-    } else if (css[index] === "}") {
-      braceDepth = Math.max(0, braceDepth - 1);
-    }
     index += 1;
   }
-  await flushPendingInline();
-  return result;
+  return { css: result, complete };
 }
 
 async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
@@ -959,6 +1002,19 @@ function warnExternalModuleScript(ref, baseDir, ctx, options = {}) {
   }
 }
 
+function warnUnsupportedScriptType(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "unsupported-script-type",
+      ref,
+      reason: "non-classic script types are left as references",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
 function warnInlineModuleImports(body, baseDir, ctx) {
   for (const ref of findInlineModuleImportRefs(body)) {
     if (!isRelativeModuleImport(ref)) continue;
@@ -1033,6 +1089,32 @@ function warnLateCssImport(ref, baseDir, ctx) {
 function isModuleScript(attrs) {
   return getAttr(attrs, "type").trim().toLowerCase() === "module";
 }
+
+function isClassicScript(attrs) {
+  const type = getAttr(attrs, "type").trim().toLowerCase();
+  if (!type) return true;
+  const mime = type.split(";")[0].trim();
+  return CLASSIC_SCRIPT_MIME_TYPES.has(mime);
+}
+
+const CLASSIC_SCRIPT_MIME_TYPES = new Set([
+  "application/ecmascript",
+  "application/javascript",
+  "application/x-ecmascript",
+  "application/x-javascript",
+  "text/ecmascript",
+  "text/javascript",
+  "text/javascript1.0",
+  "text/javascript1.1",
+  "text/javascript1.2",
+  "text/javascript1.3",
+  "text/javascript1.4",
+  "text/javascript1.5",
+  "text/jscript",
+  "text/livescript",
+  "text/x-ecmascript",
+  "text/x-javascript",
+]);
 
 function findInlineModuleImportRefs(source) {
   const refs = [];
