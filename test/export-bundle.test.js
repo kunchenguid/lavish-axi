@@ -265,6 +265,24 @@ test("inlines local images referenced by src into data URIs", async () => {
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
 });
 
+test("does not rewrite markup-like text inside attribute values", async () => {
+  const html =
+    "<!doctype html><html><body><div data-template=\"<img src='secret.json'>\"></div>" +
+    '<img alt="debug src=secret.json"></body></html>';
+  const reads = [];
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      reads.push(absPath);
+      return Buffer.from("secret");
+    },
+  });
+
+  assert.equal(out, html);
+  assert.deepEqual(reads, []);
+  assert.deepEqual(warnings, []);
+});
+
 test("handles quoted greater-than characters in asset tags", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =

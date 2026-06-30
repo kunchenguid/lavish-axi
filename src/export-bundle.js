@@ -59,40 +59,9 @@ const HTML_ENTITY_MAP = {
   sol: "/",
   tab: "\t",
 };
-const TAG_ATTRS_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*`;
-const TAG_ATTRS_PATTERN_LAZY = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*?`;
-const RAW_TEXT_OR_COMMENT_RE = new RegExp(
-  [
-    String.raw`<!--[\s\S]*?-->`,
-    rawTextElementPattern("style"),
-    rawTextElementPattern("script"),
-    rawTextElementPattern("textarea"),
-    rawTextElementPattern("title"),
-  ].join("|"),
-  "gi",
-);
-const STYLE_SEGMENT_RE = new RegExp(String.raw`^<style(?=\s|\/|>)(${TAG_ATTRS_PATTERN})>([\s\S]*?)<\/style\s*>$`, "i");
-const SCRIPT_SEGMENT_RE = new RegExp(
-  String.raw`^<script(?=\s|\/|>)(${TAG_ATTRS_PATTERN})>([\s\S]*?)<\/script\s*>$`,
-  "i",
-);
-const RCDATA_SEGMENT_RE = new RegExp(
-  String.raw`^<(textarea|title)(?=\s|\/|>)(${TAG_ATTRS_PATTERN})>([\s\S]*?)(<\/\1\s*>)$`,
-  "i",
-);
-const MEDIA_TAG_RE = new RegExp(
-  String.raw`<(img|source|video|audio|track)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`,
-  "gi",
-);
-const SVG_REF_TAG_RE = new RegExp(String.raw`<(use|image)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
-const LINK_TAG_RE = new RegExp(String.raw`<link(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
-const START_TAG_RE = new RegExp(String.raw`<([a-z][\w:-]*)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
-const MARKUP_TAG_RE = new RegExp(String.raw`<\/?([a-z][\w:-]*)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
-const ATTR_VALUE_RE = /(^|\s)([^\s"'<>/=]+)(\s*=\s*)("[^"]*"|'[^']*'|[^\s"'>]+)/g;
-
-function rawTextElementPattern(tag) {
-  return String.raw`<${tag}(?=\s|\/|>)${TAG_ATTRS_PATTERN}>[\s\S]*?<\/${tag}\s*>`;
-}
+const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title"]);
+const MEDIA_TAGS = new Set(["img", "source", "video", "audio", "track"]);
+const SVG_REF_TAGS = new Set(["use", "image"]);
 
 /**
  * @param {string} html
@@ -143,97 +112,102 @@ export function exportFileName(file) {
 
 async function transform(html, ctx) {
   const documentBase = resolveDocumentRefBase(html, ctx);
-  let result = "";
-  let lastIndex = 0;
-  for (const match of html.matchAll(RAW_TEXT_OR_COMMENT_RE)) {
-    const offset = match.index || 0;
-    result += await transformMarkup(html.slice(lastIndex, offset), documentBase, ctx);
-    result += await transformRawTextOrComment(match[0], documentBase, ctx);
-    lastIndex = offset + match[0].length;
-  }
-  result += await transformMarkup(html.slice(lastIndex), documentBase, ctx);
-  return result;
-}
-
-async function transformRawTextOrComment(segment, baseDir, ctx) {
-  if (segment.startsWith("<!--")) return segment;
-  const style = segment.match(STYLE_SEGMENT_RE);
-  if (style) {
-    const [, attrs, css] = style;
-    const startTag = await transformRawTextStartTag("style", attrs, baseDir, ctx);
-    if (!isCssStyleElementType(attrs)) {
-      warnUnsupportedStyleElementType(attrs, css, baseDir, ctx);
-      return `${startTag}${css}</style>`;
-    }
-    return `${startTag}${escapeRawText(await inlineCss(css, baseDir, ctx, 0, baseDir), "style")}</style>`;
-  }
-  const script = segment.match(SCRIPT_SEGMENT_RE);
-  if (script) {
-    const [, attrs, body] = script;
-    return inlineScript(attrs, body, baseDir, ctx);
-  }
-  const rcdata = segment.match(RCDATA_SEGMENT_RE);
-  if (rcdata) {
-    const [, tag, attrs, body, endTag] = rcdata;
-    return `${await transformMarkup(`<${tag}${attrs}>`, baseDir, ctx)}${body}${endTag}`;
-  }
-  return segment;
-}
-
-async function transformRawTextStartTag(tag, attrs, baseDir, ctx) {
-  return transformMarkup(formatStartTag(tag, attrs, false), baseDir, ctx);
+  return transformMarkup(html, documentBase, ctx);
 }
 
 async function transformMarkup(markup, baseDir, ctx) {
-  let result = markup;
-  result = await replaceAsync(result, MEDIA_TAG_RE, async (match, tag, attrs) => {
-    return formatStartTag(tag, await inlineMediaAttrs(attrs, baseDir, ctx), isSelfClosingTag(match));
-  });
-  result = await replaceAsync(result, SVG_REF_TAG_RE, async (match, tag, attrs) => {
-    let next = await inlineAttr(attrs, "href", baseDir, ctx);
-    next = await inlineAttr(next, "xlink:href", baseDir, ctx);
-    return formatStartTag(tag, next, isSelfClosingTag(match));
-  });
-  result = await inlineRenderResourceTags(result, baseDir, ctx);
-  result = await inlineStyleAttrs(result, baseDir, ctx);
-  result = await replaceAsync(result, LINK_TAG_RE, (match, attrs) => inlineLink(match, attrs, baseDir, ctx));
-  result = scrubFileUrlAttrs(result, ctx);
+  let result = "";
+  let index = 0;
+  while (index < markup.length) {
+    const lt = markup.indexOf("<", index);
+    if (lt === -1) {
+      result += markup.slice(index);
+      break;
+    }
+    result += markup.slice(index, lt);
+    const token = readHtmlToken(markup, lt);
+    if (!token) {
+      result += markup[lt];
+      index = lt + 1;
+      continue;
+    }
+    if (token.type !== "start") {
+      result += token.raw;
+      index = token.end;
+      continue;
+    }
+    const tagName = token.tag.toLowerCase();
+    if (RAW_TEXT_TAGS.has(tagName) && !token.selfClosing) {
+      const close = findRawTextClose(markup, token.end, tagName);
+      if (close) {
+        const body = markup.slice(token.end, close.start);
+        result += await transformRawTextElement(token, body, close.raw, baseDir, ctx);
+        index = close.end;
+        continue;
+      }
+    }
+    result += await transformStartTag(token.tag, token.attrs, token.selfClosing, baseDir, ctx);
+    index = token.end;
+  }
   return result;
 }
 
-function scrubFileUrlAttrs(markup, ctx) {
-  return markup.replace(START_TAG_RE, (match, tag, attrs) => {
-    let changed = false;
-    const next = attrs.replace(ATTR_VALUE_RE, (attrMatch, boundary, name, eq, raw) => {
-      const value = unquoteAttrValue(raw);
-      if (!containsFileUrl(value)) return attrMatch;
-      changed = true;
-      ctx.warnings.push({ kind: "file-url-redacted", ref: value });
-      const quote = raw.startsWith("'") ? "'" : '"';
-      return `${boundary}${name}${eq}${quoteAttrValuePreservingEntities(REDACTED_FILE_REF, quote)}`;
-    });
-    return changed ? formatStartTag(tag, next, isSelfClosingTag(match)) : match;
-  });
+async function transformRawTextElement(token, body, closeTag, baseDir, ctx) {
+  const tagName = token.tag.toLowerCase();
+  if (tagName === "style") {
+    const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx);
+    if (!isCssStyleElementType(token.attrs)) {
+      warnUnsupportedStyleElementType(token.attrs, body, baseDir, ctx);
+      return `${startTag}${body}${closeTag}`;
+    }
+    return `${startTag}${escapeRawText(await inlineCss(body, baseDir, ctx, 0, baseDir), "style")}${closeTag}`;
+  }
+  if (tagName === "script") return inlineScript(token.tag, token.attrs, body, closeTag, baseDir, ctx);
+  return `${await transformStartTag(token.tag, token.attrs, false, baseDir, ctx)}${body}${closeTag}`;
 }
 
-async function inlineRenderResourceTags(markup, baseDir, ctx) {
-  return replaceAsync(markup, START_TAG_RE, async (match, tag, attrs) => {
-    const tagName = tag.toLowerCase();
-    if (tagName === "object") {
-      return formatStartTag(tag, await inlineRenderAttr(attrs, "data", baseDir, ctx), isSelfClosingTag(match));
-    }
-    if (tagName === "embed") {
-      return formatStartTag(tag, await inlineRenderAttr(attrs, "src", baseDir, ctx), isSelfClosingTag(match));
-    }
-    if (tagName === "input") {
-      if (getAttr(attrs, "type").trim().toLowerCase() !== "image") return match;
-      return formatStartTag(tag, await inlineRenderAttr(attrs, "src", baseDir, ctx), isSelfClosingTag(match));
-    }
-    if (tagName === "iframe") {
-      return formatStartTag(tag, warnFrameSrc(attrs, baseDir, ctx), isSelfClosingTag(match));
-    }
-    return match;
-  });
+async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx) {
+  const tagName = tag.toLowerCase();
+  let next = attrs;
+  if (MEDIA_TAGS.has(tagName)) {
+    next = await inlineMediaAttrs(next, baseDir, ctx);
+  }
+  if (SVG_REF_TAGS.has(tagName)) {
+    next = await inlineAttr(next, "href", baseDir, ctx);
+    next = await inlineAttr(next, "xlink:href", baseDir, ctx);
+  }
+  next = await inlineRenderResourceAttrs(tagName, next, baseDir, ctx);
+  next = await inlineStyleAttr(next, baseDir, ctx);
+  if (tagName === "link") {
+    const linked = await inlineLink(next, baseDir, ctx);
+    if (linked.replacement) return linked.replacement;
+    next = linked.attrs;
+  }
+  next = scrubFileUrlAttrs(next, ctx);
+  return formatStartTag(tag, next, selfClosing);
+}
+
+function scrubFileUrlAttrs(attrs, ctx) {
+  let result = attrs;
+  const parsed = parseHtmlAttrs(attrs);
+  for (let index = parsed.length - 1; index >= 0; index -= 1) {
+    const attr = parsed[index];
+    if (!attr.hasValue || !containsFileUrl(attr.value)) continue;
+    ctx.warnings.push({ kind: "file-url-redacted", ref: attr.value });
+    result = replaceAttrTokenValue(result, attr, REDACTED_FILE_REF, { preserveEntities: true });
+  }
+  return result;
+}
+
+async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
+  if (tagName === "object") return inlineRenderAttr(attrs, "data", baseDir, ctx);
+  if (tagName === "embed") return inlineRenderAttr(attrs, "src", baseDir, ctx);
+  if (tagName === "input") {
+    if (getAttr(attrs, "type").trim().toLowerCase() !== "image") return attrs;
+    return inlineRenderAttr(attrs, "src", baseDir, ctx);
+  }
+  if (tagName === "iframe") return warnFrameSrc(attrs, baseDir, ctx);
+  return attrs;
 }
 
 async function inlineRenderAttr(attrs, name, baseDir, ctx) {
@@ -242,52 +216,44 @@ async function inlineRenderAttr(attrs, name, baseDir, ctx) {
   return inlineAttr(attrs, name, baseDir, ctx);
 }
 
-async function inlineStyleAttrs(markup, baseDir, ctx) {
-  return replaceAsync(markup, START_TAG_RE, async (match, tag, attrs) => {
-    if (!/(^|\s)style\s*=/i.test(attrs)) return match;
-    const next = await replaceAsync(
-      attrs,
-      /(^|\s)(style\s*=\s*)("([^"]*)"|'([^']*)'|([^\s"'>]+))/gi,
-      async (attrMatch, boundary, prefix, _raw, dq, sq, unquoted) => {
-        const quote = sq !== undefined ? "'" : '"';
-        const value = dq ?? sq ?? unquoted;
-        const decoded = decodeHtmlCharacterReferences(value);
-        const rewritten = await inlineCssUrls(decoded, baseDir, ctx, baseDir, { decodeHtmlEntities: false });
-        return rewritten === decoded ? attrMatch : `${boundary}${prefix}${quoteAttrValue(rewritten, quote)}`;
-      },
-    );
-    return formatStartTag(tag, next, isSelfClosingTag(match));
-  });
+async function inlineStyleAttr(attrs, baseDir, ctx) {
+  const attr = findHtmlAttr(attrs, "style");
+  if (!attr || !attr.hasValue) return attrs;
+  const decoded = decodeHtmlCharacterReferences(attr.value);
+  const rewritten = await inlineCssUrls(decoded, baseDir, ctx, baseDir, { decodeHtmlEntities: false });
+  return rewritten === decoded ? attrs : replaceAttrTokenValue(attrs, attr, rewritten);
 }
 
-async function inlineLink(match, attrs, baseDir, ctx) {
+async function inlineLink(attrs, baseDir, ctx) {
   const rel = (getAttr(attrs, "rel") || "").toLowerCase().split(/\s+/);
   const href = getAttr(attrs, "href");
-  if (!href) return match;
+  if (!href) return { attrs };
 
   if (rel.includes("stylesheet")) {
     if (!isCssStylesheetType(attrs)) {
       warnUnsupportedStylesheetType(href, baseDir, ctx, HTML_REF_OPTIONS);
-      return replaceUnresolvedAttrRef(match, "href", href);
+      return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
     }
     if (isInactiveStylesheet(attrs, rel)) {
       warnInactiveStylesheet(href, baseDir, ctx, HTML_REF_OPTIONS);
-      return replaceUnresolvedAttrRef(match, "href", href);
+      return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
     }
     const loaded = await loadText(href, baseDir, ctx, HTML_REF_OPTIONS);
-    if (!loaded) return replaceUnresolvedAttrRef(match, "href", href);
+    if (!loaded) return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
     const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0, baseDir);
     const media = getAttr(attrs, "media");
-    return `<style${media ? ` media="${escapeAttr(media)}"` : ""}>${escapeRawText(css, "style")}</style>`;
+    return {
+      replacement: `<style${media ? ` media="${escapeAttr(media)}"` : ""}>${escapeRawText(css, "style")}</style>`,
+    };
   }
 
   if (rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value))) {
     const dataUri = await loadDataUri(href, baseDir, ctx, HTML_REF_OPTIONS);
-    if (!dataUri) return replaceUnresolvedAttrRef(match, "href", href);
-    return replaceAttrValue(match, "href", dataUri);
+    if (!dataUri) return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
+    return { attrs: replaceAttrValue(attrs, "href", dataUri) };
   }
 
-  return match;
+  return { attrs };
 }
 
 function isInactiveStylesheet(attrs, rel) {
@@ -304,37 +270,37 @@ function isCssStyleElementType(attrs) {
   return isCssStylesheetType(attrs);
 }
 
-async function inlineScript(attrs, body, baseDir, ctx) {
+async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   const src = getAttr(attrs, "src");
   if (!src) {
     if (isModuleScript(attrs)) warnInlineModuleImports(body, baseDir, ctx);
-    return `${await transformRawTextStartTag("script", attrs, baseDir, ctx)}${body}</script>`;
+    return `${await transformStartTag(tag, attrs, false, baseDir, ctx)}${body}${closeTag}`;
   }
   if (isInjectedLavishSdkSrc(src)) return "";
   if (isModuleScript(attrs)) {
     warnExternalModuleScript(src, baseDir, ctx, HTML_REF_OPTIONS);
-    const startTag = await transformMarkup(replaceUnresolvedAttrRef(`<script${attrs}>`, "src", src), baseDir, ctx);
-    return `${startTag}${body}</script>`;
+    const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
+    return `${startTag}${body}${closeTag}`;
   }
   if (!isClassicScript(attrs)) {
     warnUnsupportedScriptType(src, baseDir, ctx, HTML_REF_OPTIONS);
-    const startTag = await transformMarkup(replaceUnresolvedAttrRef(`<script${attrs}>`, "src", src), baseDir, ctx);
-    return `${startTag}${body}</script>`;
+    const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
+    return `${startTag}${body}${closeTag}`;
   }
   if (hasAttr(attrs, "defer") || hasAttr(attrs, "async")) {
     warnUnsupportedScriptTiming(src, baseDir, ctx, HTML_REF_OPTIONS);
-    const startTag = await transformMarkup(replaceUnresolvedAttrRef(`<script${attrs}>`, "src", src), baseDir, ctx);
-    return `${startTag}${body}</script>`;
+    const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
+    return `${startTag}${body}${closeTag}`;
   }
 
   const loaded = await loadText(src, baseDir, ctx, HTML_REF_OPTIONS);
   if (!loaded) {
-    const startTag = await transformMarkup(replaceUnresolvedAttrRef(`<script${attrs}>`, "src", src), baseDir, ctx);
-    return `${startTag}${body}</script>`;
+    const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
+    return `${startTag}${body}${closeTag}`;
   }
   const cleanedAttrs = removeAttrs(attrs, ["src", "integrity", "crossorigin"]);
-  const startTag = await transformRawTextStartTag("script", cleanedAttrs, baseDir, ctx);
-  return `${startTag}${escapeRawText(loaded.text, "script")}</script>`;
+  const startTag = await transformStartTag(tag, cleanedAttrs, false, baseDir, ctx);
+  return `${startTag}${escapeRawText(loaded.text, "script")}${closeTag}`;
 }
 
 async function inlineMediaAttrs(attrs, baseDir, ctx) {
@@ -1152,6 +1118,79 @@ function readCssEscape(input, index) {
   return { value: next, end: index + 2 };
 }
 
+function readHtmlToken(html, index) {
+  if (html[index] !== "<") return null;
+  if (html.startsWith("<!--", index)) {
+    const end = html.indexOf("-->", index + 4);
+    const tokenEnd = end === -1 ? html.length : end + 3;
+    return { type: "comment", raw: html.slice(index, tokenEnd), end: tokenEnd };
+  }
+  const next = html[index + 1] || "";
+  if (next === "!" || next === "?") {
+    const end = findHtmlTagEnd(html, index);
+    if (end === -1) return null;
+    return { type: "special", raw: html.slice(index, end + 1), end: end + 1 };
+  }
+  if (next === "/") {
+    const name = readHtmlTagName(html, index + 2);
+    if (!name) return null;
+    const end = findHtmlTagEnd(html, index);
+    if (end === -1) return null;
+    return { type: "close", tag: name.value, raw: html.slice(index, end + 1), end: end + 1 };
+  }
+  const name = readHtmlTagName(html, index + 1);
+  if (!name) return null;
+  const end = findHtmlTagEnd(html, index);
+  if (end === -1) return null;
+  let attrsEnd = end;
+  let cursor = end - 1;
+  while (cursor > name.end && isHtmlSpace(html[cursor])) cursor -= 1;
+  const selfClosing = html[cursor] === "/";
+  if (selfClosing) attrsEnd = cursor;
+  return {
+    type: "start",
+    tag: name.value,
+    attrs: html.slice(name.end, attrsEnd),
+    selfClosing,
+    raw: html.slice(index, end + 1),
+    end: end + 1,
+  };
+}
+
+function readHtmlTagName(html, index) {
+  if (!/[a-z]/i.test(html[index] || "")) return null;
+  let cursor = index + 1;
+  while (cursor < html.length && /[\w:-]/.test(html[cursor])) cursor += 1;
+  const value = html.slice(index, cursor);
+  const next = html[cursor] || "";
+  if (next && !/[\t\n\f\r />]/.test(next)) return null;
+  return { value, end: cursor };
+}
+
+function findHtmlTagEnd(html, index) {
+  let quote = "";
+  for (let cursor = index + 1; cursor < html.length; cursor += 1) {
+    const char = html[cursor];
+    if (quote) {
+      if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === ">") return cursor;
+  }
+  return -1;
+}
+
+function findRawTextClose(html, index, tag) {
+  const re = new RegExp(`</${escapeRegExp(tag)}\\s*>`, "gi");
+  re.lastIndex = index;
+  const match = re.exec(html);
+  return match ? { start: match.index, raw: match[0], end: match.index + match[0].length } : null;
+}
+
 // --- resolution + loading ---------------------------------------------------
 
 function resolveDocumentRefBase(html, ctx) {
@@ -1161,37 +1200,40 @@ function resolveDocumentRefBase(html, ctx) {
 }
 
 function findFirstDocumentBaseHref(html) {
-  let lastIndex = 0;
   let templateDepth = 0;
-  for (const match of html.matchAll(RAW_TEXT_OR_COMMENT_RE)) {
-    const scanned = scanMarkupForBaseHref(html.slice(lastIndex, match.index || 0), templateDepth);
-    if (scanned.href !== null) return scanned.href;
-    templateDepth = scanned.templateDepth;
-    lastIndex = (match.index || 0) + match[0].length;
-  }
-  const scanned = scanMarkupForBaseHref(html.slice(lastIndex), templateDepth);
-  return scanned.href;
-}
-
-function scanMarkupForBaseHref(markup, templateDepth) {
-  let depth = templateDepth;
-  for (const match of markup.matchAll(MARKUP_TAG_RE)) {
-    const tag = match[1].toLowerCase();
-    const isClose = /^<\//.test(match[0]);
-    if (tag === "template") {
-      if (isClose) {
-        depth = Math.max(0, depth - 1);
-      } else if (!/\/\s*>$/.test(match[0])) {
-        depth += 1;
-      }
+  let index = 0;
+  while (index < html.length) {
+    const lt = html.indexOf("<", index);
+    if (lt === -1) break;
+    const token = readHtmlToken(html, lt);
+    if (!token) {
+      index = lt + 1;
       continue;
     }
-    if (!isClose && depth === 0 && tag === "base") {
-      const href = getAttr(match[2], "href");
-      if (href) return { href, templateDepth: depth };
+    if (token.type === "close" && token.tag.toLowerCase() === "template") {
+      templateDepth = Math.max(0, templateDepth - 1);
+      index = token.end;
+      continue;
     }
+    if (token.type === "start") {
+      const tag = token.tag.toLowerCase();
+      if (tag === "template" && !token.selfClosing) {
+        templateDepth += 1;
+      } else if (templateDepth === 0 && tag === "base") {
+        const href = getAttr(token.attrs, "href");
+        if (href) return href;
+      }
+      if (RAW_TEXT_TAGS.has(tag) && !token.selfClosing) {
+        const close = findRawTextClose(html, token.end, tag);
+        if (close) {
+          index = close.end;
+          continue;
+        }
+      }
+    }
+    index = token.end;
   }
-  return { href: null, templateDepth: depth };
+  return null;
 }
 
 function refBaseFromHref(href, documentDir) {
@@ -1940,10 +1982,6 @@ function toBuffer(value) {
   return Buffer.from(value);
 }
 
-function isSelfClosingTag(tag) {
-  return /\/\s*>$/.test(tag);
-}
-
 function formatStartTag(tag, attrs, selfClosing) {
   if (selfClosing) return `<${tag}${String(attrs).replace(/\s+$/, "")} />`;
   return `<${tag}${attrs}>`;
@@ -1957,51 +1995,126 @@ function escapeRawText(text, tag) {
 }
 
 function getAttr(attrs, name) {
-  const match = String(attrs).match(
-    new RegExp(`(?:^|\\s)${escapeRegExp(name)}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i"),
-  );
-  if (!match) return "";
-  return match[2] ?? match[3] ?? match[4] ?? "";
+  const attr = findHtmlAttr(attrs, name);
+  return attr && attr.hasValue ? attr.value : "";
 }
 
 function hasAttr(attrs, name) {
-  return new RegExp(`(?:^|\\s)${escapeRegExp(name)}(?:\\s*=|(?=\\s|$))`, "i").test(String(attrs));
+  return Boolean(findHtmlAttr(attrs, name));
 }
 
 function replaceAttrValue(source, name, value) {
-  const re = new RegExp(`(^|\\s)(${escapeRegExp(name)}\\s*=\\s*)("[^"]*"|'[^']*'|[^\\s"'>]+)`, "i");
-  return source.replace(re, `$1$2"${escapeAttr(value)}"`);
+  const attr = findHtmlAttr(source, name);
+  return attr ? replaceAttrTokenValue(source, attr, value) : source;
 }
 
 function replaceAttrValuePreservingEntities(source, name, value) {
-  const re = new RegExp(`(^|\\s)(${escapeRegExp(name)}\\s*=\\s*)("[^"]*"|'[^']*'|[^\\s"'>]+)`, "i");
-  return source.replace(re, (match, boundary, prefix, raw) => {
-    const preferredQuote = raw.startsWith("'") ? "'" : '"';
-    return `${boundary}${prefix}${quoteAttrValuePreservingEntities(value, preferredQuote)}`;
-  });
-}
-
-function unquoteAttrValue(raw) {
-  const value = String(raw || "");
-  if (
-    value.length >= 2 &&
-    ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
-  ) {
-    return value.slice(1, -1);
-  }
-  return value;
+  const attr = findHtmlAttr(source, name);
+  return attr ? replaceAttrTokenValue(source, attr, value, { preserveEntities: true }) : source;
 }
 
 function removeAttrs(attrs, names) {
-  let result = attrs;
-  for (const name of names) {
-    result = result.replace(
-      new RegExp(`(^|\\s)${escapeRegExp(name)}(\\s*=\\s*("[^"]*"|'[^']*'|[^\\s"'>]+))?`, "gi"),
-      "$1",
-    );
+  const remove = new Set(names.map((name) => String(name).toLowerCase()));
+  const parsed = parseHtmlAttrs(attrs);
+  let result = "";
+  let lastIndex = 0;
+  for (const attr of parsed) {
+    if (!remove.has(attr.name.toLowerCase())) continue;
+    result += attrs.slice(lastIndex, attr.start);
+    lastIndex = attr.end;
   }
+  result += attrs.slice(lastIndex);
   const trimmed = result.trim();
   return trimmed ? ` ${trimmed}` : "";
+}
+
+function findHtmlAttr(attrs, name) {
+  const lower = String(name).toLowerCase();
+  return parseHtmlAttrs(attrs).find((attr) => attr.name.toLowerCase() === lower) || null;
+}
+
+function parseHtmlAttrs(attrs) {
+  const input = String(attrs || "");
+  const parsed = [];
+  let index = 0;
+  while (index < input.length) {
+    while (index < input.length && isHtmlSpace(input[index])) index += 1;
+    if (index >= input.length) break;
+    if (input[index] === "/") {
+      index += 1;
+      continue;
+    }
+    if (/[<>"'=]/.test(input[index])) {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (index < input.length && !/[\t\n\f\r />"'=]/.test(input[index])) index += 1;
+    if (index === start) {
+      index += 1;
+      continue;
+    }
+    const name = input.slice(start, index);
+    const nameEnd = index;
+    let cursor = index;
+    while (cursor < input.length && isHtmlSpace(input[cursor])) cursor += 1;
+    if (input[cursor] !== "=") {
+      parsed.push({
+        start,
+        end: nameEnd,
+        name,
+        nameEnd,
+        hasValue: false,
+        value: "",
+        valueRawStart: nameEnd,
+        valueRawEnd: nameEnd,
+        quote: "",
+      });
+      index = cursor;
+      continue;
+    }
+    cursor += 1;
+    while (cursor < input.length && isHtmlSpace(input[cursor])) cursor += 1;
+    const valueRawStart = cursor;
+    let valueStart = cursor;
+    let valueEnd;
+    let valueRawEnd;
+    let quote = "";
+    if (input[cursor] === '"' || input[cursor] === "'") {
+      quote = input[cursor];
+      valueStart = cursor + 1;
+      cursor += 1;
+      while (cursor < input.length && input[cursor] !== quote) cursor += 1;
+      valueEnd = cursor;
+      valueRawEnd = cursor < input.length ? cursor + 1 : cursor;
+    } else {
+      while (cursor < input.length && !/[\t\n\f\r >]/.test(input[cursor])) cursor += 1;
+      valueEnd = cursor;
+      valueRawEnd = cursor;
+    }
+    parsed.push({
+      start,
+      end: valueRawEnd,
+      name,
+      nameEnd,
+      hasValue: true,
+      value: input.slice(valueStart, valueEnd),
+      valueRawStart,
+      valueRawEnd,
+      quote,
+    });
+    index = valueRawEnd;
+  }
+  return parsed;
+}
+
+function replaceAttrTokenValue(source, attr, value, options = {}) {
+  const quote = attr.quote || '"';
+  const raw = options.preserveEntities ? quoteAttrValuePreservingEntities(value, quote) : quoteAttrValue(value, quote);
+  if (!attr.hasValue) {
+    return `${source.slice(0, attr.nameEnd)}=${raw}${source.slice(attr.nameEnd)}`;
+  }
+  return `${source.slice(0, attr.valueRawStart)}${raw}${source.slice(attr.valueRawEnd)}`;
 }
 
 function escapeAttr(value) {
@@ -2044,23 +2157,4 @@ function resolveBytes(optionValue, envValue, fallback) {
   const parsed = Number(envValue);
   if (Number.isInteger(parsed) && parsed > 0) return parsed;
   return fallback;
-}
-
-async function replaceAsync(input, regex, replacer) {
-  const matches = [];
-  input.replace(regex, (...args) => {
-    matches.push(args);
-    return "";
-  });
-  let result = "";
-  let lastIndex = 0;
-  for (const args of matches) {
-    const match = args[0];
-    const offset = args[args.length - 2];
-    result += input.slice(lastIndex, offset);
-    result += await replacer(...args);
-    lastIndex = offset + match.length;
-  }
-  result += input.slice(lastIndex);
-  return result;
 }
