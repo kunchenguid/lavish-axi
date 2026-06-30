@@ -860,6 +860,34 @@ test("redacts file URLs in closed raw-text bodies without tokenizing", async () 
   );
 });
 
+test("treats self-closing non-void raw-text and inert tags as open HTML elements", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><textarea/><img src="text-secret.png"></textarea>' +
+    '<template/><img src="template-secret.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/text-secret.png": Buffer.from("text-secret"),
+        "/art/template-secret.png": Buffer.from("template-secret"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /data:/);
+  assert.match(out, /<textarea><img src="text-secret\.png"><\/textarea><template><img src="template-secret\.png">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unterminated-raw-text", ref: "template" },
+      { kind: "inert-resource", ref: "template-secret.png" },
+    ],
+  );
+});
+
 test("treats unterminated raw-text content as inert through EOF", async () => {
   const html =
     '<!doctype html><html><body><textarea><img src="local.png"><img src="file:///Users/kun/secret.png"><img src="live.png">';
@@ -2306,6 +2334,36 @@ test("leaves object and embed HTML MIME nested documents unresolved", async () =
   );
 });
 
+test("leaves percent-encoded object and embed HTML nested documents unresolved", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><object data="panel%2Ehtml"></object>' +
+    '<embed src="widget%2Ehtm"><object data="diagram.svg"></object></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/panel.html": "<p>Nested</p>",
+        "/art/widget.htm": "<p>Nested</p>",
+        "/art/diagram.svg": "<svg></svg>",
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/diagram.svg"]);
+  assert.match(out, /<object data="panel%2Ehtml"><\/object>/);
+  assert.match(out, /<embed src="widget%2Ehtm">/);
+  assert.match(out, /<object data="data:image\/svg\+xml;base64,[^"]+"><\/object>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-frame", ref: "panel%2Ehtml" },
+      { kind: "unsupported-frame", ref: "widget%2Ehtm" },
+    ],
+  );
+});
+
 test("records file iframe src as an unresolved frame before redacting it", async () => {
   const html = '<!doctype html><html><body><iframe src="file:///art/panel.html"></iframe></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
@@ -2376,6 +2434,28 @@ test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
     [
       { kind: "srcdoc-resource", ref: "local.png" },
       { kind: "file-url-redacted", ref: "file\\3a///Users/kun/secret.png" },
+    ],
+  );
+});
+
+test("preserves CSP meta content inside iframe srcdoc while warning", async () => {
+  const html =
+    '<!doctype html><html><body><iframe srcdoc=\'<meta http-equiv="Content-Security-Policy" ' +
+    'content="img-src file:///Users/kun/policy"><img src="local.png">\'></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/local.png": Buffer.from("local") }),
+  });
+
+  assert.match(
+    out,
+    /srcdoc='<meta http-equiv="Content-Security-Policy" content="img-src file:\/\/\/Users\/kun\/policy"><img src="local\.png">'/,
+  );
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "csp-meta", ref: "img-src file:///Users/kun/policy" },
+      { kind: "srcdoc-resource", ref: "local.png" },
     ],
   );
 });

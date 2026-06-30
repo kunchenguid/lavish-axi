@@ -200,12 +200,13 @@ async function transformMarkup(markup, baseDir, ctx) {
       continue;
     }
     const tagName = token.tag.toLowerCase();
-    if (tagName === PLAINTEXT_TAG && !token.selfClosing) {
+    const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing, openStack);
+    if (tagName === PLAINTEXT_TAG && !effectiveSelfClosing) {
       result += await transformPlaintextElement(token, markup.slice(token.end), baseDir, ctx);
       index = markup.length;
       continue;
     }
-    if (INERT_CONTENT_TAGS.has(tagName) && !token.selfClosing) {
+    if (INERT_CONTENT_TAGS.has(tagName) && !effectiveSelfClosing) {
       const close = findContentClose(markup, token.end, tagName);
       if (close) {
         const body = markup.slice(token.end, close.start);
@@ -218,7 +219,7 @@ async function transformMarkup(markup, baseDir, ctx) {
       index = markup.length;
       continue;
     }
-    if (RAW_TEXT_TAGS.has(tagName) && !token.selfClosing) {
+    if (RAW_TEXT_TAGS.has(tagName) && !effectiveSelfClosing) {
       const close = findContentClose(markup, token.end, tagName);
       if (close) {
         const body = markup.slice(token.end, close.start);
@@ -239,10 +240,16 @@ async function transformMarkup(markup, baseDir, ctx) {
       ctx,
       currentHtmlParent(openStack),
     );
-    if (!token.selfClosing && !HTML_VOID_TAGS.has(tagName)) openStack.push(tagName);
+    if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tagName)) openStack.push(tagName);
     index = token.end;
   }
   return result;
+}
+
+function isEffectiveSelfClosingTag(tagName, selfClosing, openStack = []) {
+  if (!selfClosing) return false;
+  if (HTML_VOID_TAGS.has(tagName)) return true;
+  return tagName === "svg" || tagName === "math" || openStack.includes("svg") || openStack.includes("math");
 }
 
 function currentHtmlParent(openStack) {
@@ -269,6 +276,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
   const warnLocalRefs = options.warnLocalRefs !== false;
   let result = "";
   let index = 0;
+  const openStack = [];
   while (index < markup.length) {
     const lt = markup.indexOf("<", index);
     if (lt === -1) {
@@ -283,12 +291,14 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       continue;
     }
     if (token.type !== "start") {
+      if (token.type === "close") popHtmlParent(openStack, token.tag.toLowerCase());
       result += token.type === "comment" ? scrubHtmlComment(token.raw, ctx) : scrubRawTextFileUrls(token.raw, ctx);
       index = token.end;
       continue;
     }
     const tagName = token.tag.toLowerCase();
-    if (tagName === PLAINTEXT_TAG && !token.selfClosing) {
+    const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing, openStack);
+    if (tagName === PLAINTEXT_TAG && !effectiveSelfClosing) {
       if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options);
       result += transformInertRawTextElement(token, markup.slice(token.end), "", baseDir, ctx, {
         ...options,
@@ -297,7 +307,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       index = markup.length;
       continue;
     }
-    if ((INERT_CONTENT_TAGS.has(tagName) || RAW_TEXT_TAGS.has(tagName)) && !token.selfClosing) {
+    if ((INERT_CONTENT_TAGS.has(tagName) || RAW_TEXT_TAGS.has(tagName)) && !effectiveSelfClosing) {
       const close = findContentClose(markup, token.end, tagName);
       const bodyEnd = close ? close.start : markup.length;
       const body = markup.slice(token.end, bodyEnd);
@@ -319,6 +329,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       scrubInertAttrs(tagName, token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
       token.selfClosing,
     );
+    if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tagName)) openStack.push(tagName);
     index = token.end;
   }
   return result;
@@ -402,8 +413,15 @@ async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTa
     if (linked.replacement) return linked.replacement;
     next = linked.attrs;
   }
-  next = scrubFileUrlAttrs(next, ctx, isCspMetaTag ? { skipNames: ["content"] } : {});
+  next = scrubFileUrlAttrs(next, ctx, { skipNames: fileUrlScrubSkipNames(tagName, isCspMetaTag) });
   return formatStartTag(tag, next, selfClosing);
+}
+
+function fileUrlScrubSkipNames(tagName, isCspMetaTag) {
+  const names = [];
+  if (isCspMetaTag) names.push("content");
+  if (tagName === "iframe") names.push("srcdoc");
+  return names;
 }
 
 function warnBaseHref(attrs, ctx) {
@@ -430,7 +448,9 @@ function scrubFileUrlAttrs(attrs, ctx, options = {}) {
 function scrubInertAttrs(tagName, attrs, baseDir, ctx, options = {}) {
   let result = scrubInertStyleAttr(attrs, baseDir, ctx, options);
   if (tagName === "iframe") result = scrubFrameSrcdoc(result, baseDir, ctx, options);
-  result = scrubFileUrlAttrs(result, ctx);
+  const isCspMetaTag = tagName === "meta" && isCspMeta(result);
+  if (isCspMetaTag) warnCspMeta(result, ctx);
+  result = scrubFileUrlAttrs(result, ctx, { skipNames: fileUrlScrubSkipNames(tagName, isCspMetaTag) });
   return result;
 }
 
@@ -1852,13 +1872,14 @@ function findTemplateClose(html, index) {
     }
     if (token.type === "start") {
       const tagName = token.tag.toLowerCase();
-      if (tagName === "template" && !token.selfClosing) {
+      const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing);
+      if (tagName === "template" && !effectiveSelfClosing) {
         depth += 1;
         cursor = token.end;
         continue;
       }
-      if (tagName === PLAINTEXT_TAG && !token.selfClosing) return null;
-      if (RAW_TEXT_TAGS.has(tagName) && !token.selfClosing) {
+      if (tagName === PLAINTEXT_TAG && !effectiveSelfClosing) return null;
+      if (RAW_TEXT_TAGS.has(tagName) && !effectiveSelfClosing) {
         const close = findRawTextClose(html, token.end, tagName);
         if (!close) return null;
         cursor = close.end;
@@ -1896,13 +1917,14 @@ function findFirstDocumentBaseHref(html) {
     }
     if (token.type === "start") {
       const tag = token.tag.toLowerCase();
-      if (INERT_CONTENT_TAGS.has(tag) && !token.selfClosing) {
+      const effectiveSelfClosing = isEffectiveSelfClosingTag(tag, token.selfClosing);
+      if (INERT_CONTENT_TAGS.has(tag) && !effectiveSelfClosing) {
         inertDepth += 1;
       } else if (inertDepth === 0 && tag === "base") {
         const href = getAttr(token.attrs, "href");
         if (href) return href;
       }
-      if (RAW_TEXT_TAGS.has(tag) && !token.selfClosing) {
+      if (RAW_TEXT_TAGS.has(tag) && !effectiveSelfClosing) {
         const close = findRawTextClose(html, token.end, tag);
         if (close) {
           index = close.end;
@@ -1910,7 +1932,7 @@ function findFirstDocumentBaseHref(html) {
         }
         break;
       }
-      if (tag === PLAINTEXT_TAG && !token.selfClosing) break;
+      if (tag === PLAINTEXT_TAG && !effectiveSelfClosing) break;
     }
     index = token.end;
   }
@@ -2864,7 +2886,8 @@ function isInert(ref) {
 
 function isHtmlDocumentRef(ref) {
   const locator = normalizeRefForResolution(ref, HTML_REF_OPTIONS).trim();
-  return [".html", ".htm", ".xhtml"].includes(path.extname(stripQueryAndHash(locator)).toLowerCase());
+  const { pathPart } = splitRefSuffix(locator);
+  return [".html", ".htm", ".xhtml"].includes(path.extname(decodeLocalPath(pathPart)).toLowerCase());
 }
 
 function isHtmlDocumentType(attrs) {
