@@ -208,6 +208,57 @@ test("does not treat CSS strings or comments as url or import assets", async () 
   assert.equal(warnings.length, 0);
 });
 
+test("only rewrites url references inside real style attributes", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><div data-style="url(missing-data.png)" x-style="url(missing-x.png)">' +
+    'literal style="url(missing-text.png)"</div><div style="background:url(pic.png)"></div></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.match(out, /data-style="url\(missing-data\.png\)"/);
+  assert.match(out, /x-style="url\(missing-x\.png\)"/);
+  assert.match(out, /literal style="url\(missing-text\.png\)"/);
+  assert.match(out, /style="background:url\(data:image\/png;base64,iVBORw==\)"/);
+  assert.equal(warnings.length, 0);
+});
+
+test("rebases unresolved local refs from linked CSS to the HTML base", async () => {
+  const big = Buffer.alloc(2048, 1);
+  const html = '<!doctype html><html><head><link rel="stylesheet" href="css/app.css"></head><body></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    maxAssetBytes: 1024,
+    readLocalFile: localReader({
+      "/art/css/app.css":
+        '@import "theme.css" layer(theme);@import "missing.css";' +
+        ".hero{background:url(bg.png)}.missing{background:url(missing.png)}" +
+        ".remote{background:url(https://cdn.example/bg.png)}.frag{filter:url(#mask)}",
+      "/art/css/theme.css": ".theme{color:green}",
+      "/art/css/bg.png": big,
+    }),
+  });
+
+  assert.match(out, /@import "css\/theme\.css" layer\(theme\);/);
+  assert.match(out, /@import "css\/missing\.css";/);
+  assert.match(out, /background:url\(css\/bg\.png\)/);
+  assert.match(out, /background:url\(css\/missing\.png\)/);
+  assert.match(out, /background:url\(https:\/\/cdn\.example\/bg\.png\)/);
+  assert.match(out, /filter:url\(#mask\)/);
+  assert.doesNotMatch(out, /file:\/\//);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-css-import", ref: "theme.css" },
+      { kind: "load-failed", ref: "missing.css" },
+      { kind: "too-large", ref: "bg.png" },
+      { kind: "load-failed", ref: "missing.png" },
+    ],
+  );
+});
+
 test("leaves remote http(s) and protocol-relative references intact without fetching them", async () => {
   const html =
     "<!doctype html><html><head>" +

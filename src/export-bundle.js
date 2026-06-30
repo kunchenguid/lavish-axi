@@ -114,7 +114,7 @@ async function transformRawTextOrComment(segment, baseDir, ctx) {
   const style = segment.match(/^<style\b([^>]*)>([\s\S]*?)<\/style\s*>$/i);
   if (style) {
     const [, attrs, css] = style;
-    return `<style${attrs}>${escapeRawText(await inlineCss(css, baseDir, ctx, 0), "style")}</style>`;
+    return `<style${attrs}>${escapeRawText(await inlineCss(css, baseDir, ctx, 0, baseDir), "style")}</style>`;
   }
   const script = segment.match(/^<script\b([^>]*)>([\s\S]*?)<\/script\s*>$/i);
   if (script) {
@@ -134,16 +134,28 @@ async function transformMarkup(markup, baseDir, ctx) {
     next = await inlineAttr(next, "xlink:href", baseDir, ctx);
     return `<${tag}${next}>`;
   });
-  result = await replaceAsync(result, /style\s*=\s*("([^"]*)"|'([^']*)')/gi, async (match, _quoted, dq, sq) => {
-    const quote = dq !== undefined ? '"' : "'";
-    const value = dq !== undefined ? dq : sq;
-    if (!/url\(/i.test(value)) return match;
-    return `style=${quote}${await inlineCssUrls(value, baseDir, ctx)}${quote}`;
-  });
+  result = await inlineStyleAttrs(result, baseDir, ctx);
   result = await replaceAsync(result, /<link\b([^>]*?)\/?>/gi, (match, attrs) =>
     inlineLink(match, attrs, baseDir, ctx),
   );
   return result;
+}
+
+async function inlineStyleAttrs(markup, baseDir, ctx) {
+  return replaceAsync(markup, /<([a-z][\w:-]*)([^<>]*?)>/gi, async (match, tag, attrs) => {
+    if (!/(^|\s)style\s*=/i.test(attrs)) return match;
+    const next = await replaceAsync(
+      attrs,
+      /(^|\s)(style\s*=\s*)("([^"]*)"|'([^']*)')/gi,
+      async (attrMatch, boundary, prefix, _quoted, dq, sq) => {
+        const quote = dq !== undefined ? '"' : "'";
+        const value = dq !== undefined ? dq : sq;
+        if (!/url\(/i.test(value)) return attrMatch;
+        return `${boundary}${prefix}${quote}${await inlineCssUrls(value, baseDir, ctx, baseDir)}${quote}`;
+      },
+    );
+    return `<${tag}${next}>`;
+  });
 }
 
 async function inlineLink(match, attrs, baseDir, ctx) {
@@ -154,7 +166,7 @@ async function inlineLink(match, attrs, baseDir, ctx) {
   if (rel.includes("stylesheet")) {
     const loaded = await loadText(href, baseDir, ctx);
     if (!loaded) return match;
-    const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0);
+    const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0, baseDir);
     const media = getAttr(attrs, "media");
     return `<style${media ? ` media="${escapeAttr(media)}"` : ""}>${escapeRawText(css, "style")}</style>`;
   }
@@ -220,12 +232,12 @@ async function inlineSrcset(attrs, baseDir, ctx) {
   return replaceAttrValue(attrs, "srcset", out.join(", "));
 }
 
-async function inlineCss(css, baseDir, ctx, depth) {
-  const withImports = await inlineCssImports(css, baseDir, ctx, depth);
-  return inlineCssUrls(withImports, baseDir, ctx);
+async function inlineCss(css, baseDir, ctx, depth, outputBaseDir) {
+  const withImports = await inlineCssImports(css, baseDir, ctx, depth, outputBaseDir);
+  return inlineCssUrls(withImports, baseDir, ctx, outputBaseDir);
 }
 
-async function inlineCssImports(css, baseDir, ctx, depth) {
+async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
   let result = "";
   let index = 0;
   while (index < css.length) {
@@ -251,17 +263,19 @@ async function inlineCssImports(css, baseDir, ctx, depth) {
       }
       const rule = css.slice(index, ruleEnd + 1);
       const parsed = parseCssImportRule(rule);
-      if (!parsed || depth >= ctx.maxDepth) {
+      if (!parsed) {
         result += rule;
+      } else if (depth >= ctx.maxDepth) {
+        result += rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir);
       } else if (parsed.media && !isPlainCssMediaQueryList(parsed.media)) {
         warnUnsupportedCssImport(parsed.ref, baseDir, ctx, parsed.media);
-        result += rule;
+        result += rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir);
       } else {
         const loaded = await loadText(parsed.ref, baseDir, ctx);
         if (!loaded) {
-          result += rule;
+          result += rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir);
         } else {
-          const inner = await inlineCss(loaded.text, loaded.baseDir, ctx, depth + 1);
+          const inner = await inlineCss(loaded.text, loaded.baseDir, ctx, depth + 1, outputBaseDir);
           result += parsed.media ? `@media ${parsed.media}{${inner}}` : inner;
         }
       }
@@ -275,7 +289,7 @@ async function inlineCssImports(css, baseDir, ctx, depth) {
   return result;
 }
 
-async function inlineCssUrls(css, baseDir, ctx) {
+async function inlineCssUrls(css, baseDir, ctx, outputBaseDir) {
   let result = "";
   let index = 0;
   while (index < css.length) {
@@ -318,24 +332,73 @@ async function inlineCssUrls(css, baseDir, ctx) {
       continue;
     }
     const dataUri = await loadDataUri(trimmed, baseDir, ctx);
-    result += dataUri ? `url(${token.quote}${dataUri}${token.quote})` : token.raw;
+    result += dataUri
+      ? `url(${token.quote}${dataUri}${token.quote})`
+      : rebaseCssUrlToken(token, baseDir, outputBaseDir);
     index = token.end;
   }
   return result;
+}
+
+function rebaseCssUrlToken(token, baseDir, outputBaseDir) {
+  const rebased = rebaseLocalCssRef(token.ref, baseDir, outputBaseDir);
+  return rebased ? `url(${token.quote}${rebased}${token.quote})` : token.raw;
+}
+
+function rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir) {
+  const rebased = rebaseLocalCssRef(parsed.ref, baseDir, outputBaseDir);
+  if (!rebased) return rule;
+  return `${rule.slice(0, parsed.refStart)}${rebased}${rule.slice(parsed.refEnd)}`;
+}
+
+function rebaseLocalCssRef(ref, baseDir, outputBaseDir) {
+  const trimmed = String(ref || "").trim();
+  if (path.resolve(baseDir) === path.resolve(outputBaseDir)) return "";
+  if (!isRelativeLocalRef(trimmed)) return "";
+  const { pathPart, suffix } = splitRefSuffix(trimmed);
+  if (!pathPart) return "";
+  const absPath = path.resolve(baseDir, decodeLocalPath(pathPart));
+  const relative = path.relative(path.resolve(outputBaseDir), absPath);
+  if (!relative || path.isAbsolute(relative)) return "";
+  return `${encodeRelativeRef(relative.split(path.sep).join("/"))}${suffix}`;
+}
+
+function isRelativeLocalRef(ref) {
+  if (isInert(ref)) return false;
+  if (ref.startsWith("/") || ref.startsWith("//") || /^https?:\/\//i.test(ref)) return false;
+  return !/^[a-z][a-z0-9+.-]*:/i.test(ref);
+}
+
+function splitRefSuffix(ref) {
+  const match = String(ref).match(/^([^?#]*)(.*)$/s);
+  return { pathPart: match ? match[1] : ref, suffix: match ? match[2] : "" };
+}
+
+function encodeRelativeRef(ref) {
+  return String(ref)
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
 }
 
 function parseCssImportRule(rule) {
   let index = "@import".length;
   index = skipCssWhitespaceAndComments(rule, index);
   let ref;
+  let refStart;
+  let refEnd;
   if (startsCssKeyword(rule, index, "url")) {
     const token = parseCssUrlToken(rule, index);
     if (!token) return null;
     ref = token.ref.trim();
+    refStart = token.refStart;
+    refEnd = token.refEnd;
     index = token.end;
   } else if (rule[index] === '"' || rule[index] === "'") {
+    refStart = index + 1;
     const token = parseCssString(rule, index);
     ref = token.value;
+    refEnd = token.end - 1;
     index = token.end;
   } else {
     return null;
@@ -343,7 +406,7 @@ function parseCssImportRule(rule) {
   const semicolon = rule.lastIndexOf(";");
   if (semicolon === -1) return null;
   const media = rule.slice(skipCssWhitespaceAndComments(rule, index), semicolon).trim();
-  return { ref, media };
+  return { ref, media, refStart, refEnd };
 }
 
 function parseCssUrlToken(css, index) {
@@ -351,10 +414,14 @@ function parseCssUrlToken(css, index) {
   let cursor = skipCssWhitespace(css, index + 4);
   let quote = "";
   let ref;
+  let refStart;
+  let refEnd;
   if (css[cursor] === '"' || css[cursor] === "'") {
+    refStart = cursor + 1;
     const token = parseCssString(css, cursor);
     quote = css[cursor];
     ref = token.value;
+    refEnd = token.end - 1;
     cursor = skipCssWhitespace(css, token.end);
     if (css[cursor] !== ")") return null;
     cursor += 1;
@@ -366,9 +433,11 @@ function parseCssUrlToken(css, index) {
     }
     if (css[cursor] !== ")") return null;
     ref = css.slice(start, cursor);
+    refStart = start;
+    refEnd = cursor;
     cursor += 1;
   }
-  return { raw: css.slice(index, cursor), ref, quote, end: cursor };
+  return { raw: css.slice(index, cursor), ref, quote, end: cursor, refStart, refEnd };
 }
 
 function parseCssString(css, index) {
