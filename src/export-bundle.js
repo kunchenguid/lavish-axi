@@ -226,12 +226,16 @@ async function transformMarkup(markup, baseDir, ctx) {
       const close = findContentClose(markup, token.end, tagName);
       if (close) {
         const body = markup.slice(token.end, close.start);
-        result += await transformRawTextElement(token, body, close.raw, baseDir, ctx);
+        result += await transformRawTextElement(token, body, close.raw, baseDir, ctx, {
+          inSvgNamespace: elementNamespace === "svg",
+        });
         index = close.end;
         continue;
       }
       warnUnterminatedRawText(tagName, ctx);
-      result += await transformUnterminatedRawTextElement(token, markup.slice(token.end), baseDir, ctx);
+      result += await transformUnterminatedRawTextElement(token, markup.slice(token.end), baseDir, ctx, {
+        inSvgNamespace: elementNamespace === "svg",
+      });
       index = markup.length;
       continue;
     }
@@ -391,7 +395,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
   return result;
 }
 
-async function transformRawTextElement(token, body, closeTag, baseDir, ctx) {
+async function transformRawTextElement(token, body, closeTag, baseDir, ctx, options = {}) {
   const tagName = token.tag.toLowerCase();
   if (tagName === "style") {
     const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx);
@@ -400,6 +404,8 @@ async function transformRawTextElement(token, body, closeTag, baseDir, ctx) {
     }
     return `${startTag}${escapeRawText(await inlineCss(body, baseDir, ctx, 0, baseDir), "style")}${closeTag}`;
   }
+  if (tagName === "script" && options.inSvgNamespace)
+    return inlineSvgScript(token.tag, token.attrs, body, closeTag, baseDir, ctx);
   if (tagName === "script") return inlineScript(token.tag, token.attrs, body, closeTag, baseDir, ctx);
   return `${await transformStartTag(token.tag, token.attrs, false, baseDir, ctx)}${scrubRawTextBodyWithoutInlining(
     tagName,
@@ -410,8 +416,8 @@ async function transformRawTextElement(token, body, closeTag, baseDir, ctx) {
   )}${closeTag}`;
 }
 
-async function transformUnterminatedRawTextElement(token, body, baseDir, ctx) {
-  const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx);
+async function transformUnterminatedRawTextElement(token, body, baseDir, ctx, options = {}) {
+  const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx, "", options.inSvgNamespace);
   return `${startTag}${scrubRawTextBodyWithoutInlining(token.tag.toLowerCase(), token.attrs, body, baseDir, ctx)}`;
 }
 
@@ -467,6 +473,9 @@ async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTa
   if (SVG_REF_TAGS.has(tagName) && inSvgNamespace) {
     next = await inlineAttr(next, "href", baseDir, ctx);
     next = await inlineAttr(next, "xlink:href", baseDir, ctx);
+  }
+  if (tagName === "script" && inSvgNamespace) {
+    next = await inlineSvgScriptAttrs(next, baseDir, ctx);
   }
   next = await inlineRenderResourceAttrs(tagName, next, baseDir, ctx);
   next = await inlineStyleAttr(next, baseDir, ctx);
@@ -684,6 +693,20 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   const cleanedAttrs = removeAttrs(attrs, ["src", "integrity", "crossorigin"]);
   const startTag = await transformStartTag(tag, cleanedAttrs, false, baseDir, ctx);
   return `${startTag}${escapeRawText(scrubClassicScriptFileUrlComments(loaded.text, ctx), "script")}${closeTag}`;
+}
+
+async function inlineSvgScript(tag, attrs, body, closeTag, baseDir, ctx) {
+  const startTag = await transformStartTag(tag, attrs, false, baseDir, ctx, "", true);
+  const executable = isClassicScript(attrs) || isModuleScript(attrs);
+  const scrubbed = executable ? scrubClassicScriptFileUrlComments(body, ctx) : scrubRawTextFileUrls(body, ctx);
+  return `${startTag}${escapeRawText(scrubbed, "script")}${closeTag}`;
+}
+
+async function inlineSvgScriptAttrs(attrs, baseDir, ctx) {
+  let next = attrs;
+  next = await inlineAttr(next, "href", baseDir, ctx);
+  next = await inlineAttr(next, "xlink:href", baseDir, ctx);
+  return next;
 }
 
 async function inlineMediaAttrs(tagName, attrs, baseDir, ctx, parentTag = "") {
@@ -1602,6 +1625,7 @@ function parseCssConditionalAtRuleBlock(css, index) {
 
 function findCssAtRuleBlockStart(css, index) {
   let cursor = index;
+  let parenDepth = 0;
   while (cursor < css.length) {
     if (css.startsWith("/*", cursor)) {
       cursor = findCssCommentEnd(css, cursor);
@@ -1611,8 +1635,18 @@ function findCssAtRuleBlockStart(css, index) {
       cursor = findCssStringEnd(css, cursor);
       continue;
     }
-    if (css[cursor] === ";") return -1;
-    if (css[cursor] === "{") return cursor;
+    if (css[cursor] === "(") {
+      parenDepth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (css[cursor] === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      cursor += 1;
+      continue;
+    }
+    if (css[cursor] === ";" && parenDepth === 0) return -1;
+    if (css[cursor] === "{" && parenDepth === 0) return cursor;
     cursor += 1;
   }
   return -1;
@@ -1791,6 +1825,7 @@ function scrubClassicScriptFileUrlComments(source, ctx) {
 
 function findCssAtRuleEnd(css, index) {
   let cursor = index;
+  let parenDepth = 0;
   while (cursor < css.length) {
     if (css.startsWith("/*", cursor)) {
       cursor = findCssCommentEnd(css, cursor);
@@ -1800,7 +1835,17 @@ function findCssAtRuleEnd(css, index) {
       cursor = findCssStringEnd(css, cursor);
       continue;
     }
-    if (css[cursor] === ";") return cursor;
+    if (css[cursor] === "(") {
+      parenDepth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (css[cursor] === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      cursor += 1;
+      continue;
+    }
+    if (css[cursor] === ";" && parenDepth === 0) return cursor;
     cursor += 1;
   }
   return -1;
@@ -1808,6 +1853,7 @@ function findCssAtRuleEnd(css, index) {
 
 function findCssPreludeStatementEnd(css, index) {
   let cursor = index;
+  let parenDepth = 0;
   while (cursor < css.length) {
     if (css.startsWith("/*", cursor)) {
       cursor = findCssCommentEnd(css, cursor);
@@ -1817,7 +1863,17 @@ function findCssPreludeStatementEnd(css, index) {
       cursor = findCssStringEnd(css, cursor);
       continue;
     }
-    if (css[cursor] === ";" || css[cursor] === "{") return cursor;
+    if (css[cursor] === "(") {
+      parenDepth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (css[cursor] === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      cursor += 1;
+      continue;
+    }
+    if ((css[cursor] === ";" || css[cursor] === "{") && parenDepth === 0) return cursor;
     cursor += 1;
   }
   return -1;
@@ -2052,8 +2108,8 @@ function resolveDocumentRefBase(html, ctx) {
 }
 
 function findFirstDocumentBaseHref(html) {
-  let inertDepth = 0;
   let index = 0;
+  const openStack = [];
   while (index < html.length) {
     const lt = html.indexOf("<", index);
     if (lt === -1) break;
@@ -2062,29 +2118,37 @@ function findFirstDocumentBaseHref(html) {
       index = lt + 1;
       continue;
     }
-    if (token.type === "close" && INERT_CONTENT_TAGS.has(token.tag.toLowerCase())) {
-      inertDepth = Math.max(0, inertDepth - 1);
+    if (token.type === "close") {
+      popHtmlParent(openStack, token.tag.toLowerCase());
       index = token.end;
       continue;
     }
     if (token.type === "start") {
       const tag = token.tag.toLowerCase();
-      const effectiveSelfClosing = isEffectiveSelfClosingTag(tag, token.selfClosing);
-      if (INERT_CONTENT_TAGS.has(tag) && !effectiveSelfClosing) {
-        inertDepth += 1;
-      } else if (inertDepth === 0 && tag === "base") {
+      const elementNamespace = elementNamespaceForTag(tag, openStack);
+      const effectiveSelfClosing = isEffectiveSelfClosingTag(tag, token.selfClosing, openStack, elementNamespace);
+      if (elementNamespace === "html" && tag === "base") {
         const href = getAttr(token.attrs, "href");
         if (href) return href;
       }
-      if (RAW_TEXT_TAGS.has(tag) && !effectiveSelfClosing) {
-        const close = findRawTextClose(html, token.end, tag);
+      if (elementNamespace === "html" && tag === PLAINTEXT_TAG && !effectiveSelfClosing) break;
+      if (elementNamespace === "html" && INERT_CONTENT_TAGS.has(tag) && !effectiveSelfClosing) {
+        const close = findContentClose(html, token.end, tag);
         if (close) {
           index = close.end;
           continue;
         }
         break;
       }
-      if (tag === PLAINTEXT_TAG && !effectiveSelfClosing) break;
+      if (isRawTextElementForNamespace(tag, elementNamespace) && !effectiveSelfClosing) {
+        const close = findContentClose(html, token.end, tag);
+        if (close) {
+          index = close.end;
+          continue;
+        }
+        break;
+      }
+      if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tag)) pushHtmlParent(openStack, tag, elementNamespace);
     }
     index = token.end;
   }
@@ -2661,7 +2725,7 @@ function findInlineModuleImportRefTokens(source) {
       index = skipped;
       continue;
     }
-    if (startsJsKeyword(source, index, "import")) {
+    if (startsJsKeyword(source, index, "import") && !isJsPropertyAccessKeyword(source, index)) {
       const parsed = parseJsImport(source, index);
       refs.push(...parsed.refs);
       index = Math.max(parsed.end, index + "import".length);
@@ -2925,6 +2989,12 @@ function startsJsKeyword(source, index, keyword) {
   return !isJsIdentChar(before) && !isJsIdentChar(after);
 }
 
+function isJsPropertyAccessKeyword(source, index) {
+  let cursor = index - 1;
+  while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+  return source[cursor] === ".";
+}
+
 function isJsIdentChar(char) {
   return Boolean(char) && /[a-z0-9_$]/i.test(char);
 }
@@ -3135,11 +3205,15 @@ function normalizeCssRefForScheme(ref, options = {}) {
 }
 
 function decodeHtmlCharacterReferences(value) {
-  return String(value).replace(/&(?:#(\d+);?|#x([\da-f]+);?|([a-z][a-z0-9]+);)/gi, (match, decimal, hex, named) => {
-    if (decimal) return decodeNumericCharacterReference(Number.parseInt(decimal, 10), match);
-    if (hex) return decodeNumericCharacterReference(Number.parseInt(hex, 16), match);
-    return HTML_ENTITY_MAP[named.toLowerCase()] ?? match;
-  });
+  return String(value).replace(
+    /&(?:#(\d+);?|#x([\da-f]+);?|([a-z][a-z0-9]+);|([a-z][a-z0-9]+)(?=[^a-z0-9=]|$))/gi,
+    (match, decimal, hex, named, legacyNamed) => {
+      if (decimal) return decodeNumericCharacterReference(Number.parseInt(decimal, 10), match);
+      if (hex) return decodeNumericCharacterReference(Number.parseInt(hex, 16), match);
+      const entity = named || legacyNamed;
+      return HTML_ENTITY_MAP[entity.toLowerCase()] ?? match;
+    },
+  );
 }
 
 function decodeCssEscapes(value) {

@@ -2824,6 +2824,68 @@ test("inlines local SVG feImage href resources", async () => {
   assert.equal(warnings.length, 0);
 });
 
+test("redacts file URLs hidden behind semicolonless named entities", async () => {
+  const html = '<!doctype html><html><body><a href="file&colon///Users/kun/secret.png">secret</a></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, { baseDir: "/art" });
+
+  assert.match(out, /<a href="about:blank">secret<\/a>/);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: "file&colon///Users/kun/secret.png" }],
+  );
+});
+
+test("scrubs CSS import URLs that contain semicolons", async () => {
+  const html =
+    "<!doctype html><html><head><style>@import url(file:///Users/kun/secret.css;v);.ok{color:red}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, { baseDir: "/art", confineDir: "/art" });
+
+  assert.match(out, /@import url\(about:blank\);\.ok\{color:red\}/);
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "outside-root", ref: "file:///Users/kun/secret.css;v" }],
+  );
+});
+
+test("inlines SVG script href resources in SVG namespace", async () => {
+  const html =
+    '<!doctype html><html><body><svg><script href="app.js"></script><script xlink:href="app.js" /></svg></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/app.js": "console.log(1);" }),
+  });
+
+  assert.match(out, /<script href="data:text\/javascript;base64,Y29uc29sZS5sb2coMSk7"><\/script>/);
+  assert.match(out, /<script xlink:href="data:text\/javascript;base64,Y29uc29sZS5sb2coMSk7" \/>/);
+  assert.equal(warnings.length, 0);
+});
+
+test("ignores SVG base elements during document base discovery", async () => {
+  const html = '<!doctype html><html><body><svg><base href="assets/"></base></svg><img src="logo.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/logo.png": Buffer.from("logo") }),
+  });
+
+  assert.match(out, /<img src="data:image\/png;base64,bG9nbw==">/);
+  assert.equal(warnings.length, 0);
+});
+
+test("does not treat property import calls as module imports", async () => {
+  const html =
+    '<!doctype html><html><body><script type="module">loader.import("file:///Users/kun/config.json"); import "./dep.js";</script></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, { baseDir: "/art" });
+
+  assert.match(out, /loader\.import\("file:\/\/\/Users\/kun\/config\.json"\)/);
+  assert.doesNotMatch(out, /loader\.import\("about:blank"\)/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "inline-module-import", ref: "./dep.js" }],
+  );
+});
+
 test("refuses to inline a local symlink that escapes the artifact directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
   try {
