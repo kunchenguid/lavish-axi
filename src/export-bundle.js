@@ -64,6 +64,7 @@ const PLAINTEXT_TAG = "plaintext";
 const INERT_CONTENT_TAGS = new Set(["template", "noscript"]);
 const MEDIA_TAGS = new Set(["img", "source", "video", "audio", "track"]);
 const SVG_REF_TAGS = new Set(["use", "image", "feimage"]);
+const SVG_HTML_INTEGRATION_POINTS = new Set(["foreignobject", "desc", "title"]);
 const HTML_VOID_TAGS = new Set([
   "area",
   "base",
@@ -91,6 +92,7 @@ const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
   "inline-module-import",
   "load-failed",
   "module-external",
+  "nested-svg-resource",
   "outside-root",
   "preload-stylesheet",
   "srcdoc-resource",
@@ -200,13 +202,14 @@ async function transformMarkup(markup, baseDir, ctx) {
       continue;
     }
     const tagName = token.tag.toLowerCase();
-    const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing, openStack);
-    if (tagName === PLAINTEXT_TAG && !effectiveSelfClosing) {
+    const elementNamespace = elementNamespaceForTag(tagName, openStack);
+    const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing, openStack, elementNamespace);
+    if (elementNamespace === "html" && tagName === PLAINTEXT_TAG && !effectiveSelfClosing) {
       result += await transformPlaintextElement(token, markup.slice(token.end), baseDir, ctx);
       index = markup.length;
       continue;
     }
-    if (INERT_CONTENT_TAGS.has(tagName) && !effectiveSelfClosing) {
+    if (elementNamespace === "html" && INERT_CONTENT_TAGS.has(tagName) && !effectiveSelfClosing) {
       const close = findContentClose(markup, token.end, tagName);
       if (close) {
         const body = markup.slice(token.end, close.start);
@@ -219,7 +222,7 @@ async function transformMarkup(markup, baseDir, ctx) {
       index = markup.length;
       continue;
     }
-    if (RAW_TEXT_TAGS.has(tagName) && !effectiveSelfClosing) {
+    if (isRawTextElementForNamespace(tagName, elementNamespace) && !effectiveSelfClosing) {
       const close = findContentClose(markup, token.end, tagName);
       if (close) {
         const body = markup.slice(token.end, close.start);
@@ -239,31 +242,74 @@ async function transformMarkup(markup, baseDir, ctx) {
       baseDir,
       ctx,
       currentHtmlParent(openStack),
-      isSvgNamespace(openStack),
+      elementNamespace === "svg",
     );
-    if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tagName)) openStack.push(tagName);
+    if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tagName)) pushHtmlParent(openStack, tagName, elementNamespace);
     index = token.end;
   }
   return result;
 }
 
-function isEffectiveSelfClosingTag(tagName, selfClosing, openStack = []) {
+function isEffectiveSelfClosingTag(tagName, selfClosing, openStack = [], elementNamespace = null) {
   if (!selfClosing) return false;
   if (HTML_VOID_TAGS.has(tagName)) return true;
-  return tagName === "svg" || tagName === "math" || openStack.includes("svg") || openStack.includes("math");
+  const namespace = elementNamespace || elementNamespaceForTag(tagName, openStack);
+  return namespace === "svg" || namespace === "math";
 }
 
 function currentHtmlParent(openStack) {
-  return openStack.length ? openStack[openStack.length - 1] : "";
+  return openStack.length ? stackTag(openStack[openStack.length - 1]) : "";
 }
 
 function isSvgNamespace(openStack) {
-  return openStack.includes("svg");
+  return currentNamespace(openStack) === "svg";
 }
 
 function popHtmlParent(openStack, tagName) {
-  const index = openStack.lastIndexOf(tagName);
+  const index = findLastStackIndex(openStack, tagName);
   if (index !== -1) openStack.length = index;
+}
+
+function pushHtmlParent(openStack, tagName, elementNamespace) {
+  openStack.push({ tag: tagName, namespace: childNamespaceForTag(tagName, elementNamespace) });
+}
+
+function findLastStackIndex(openStack, tagName) {
+  for (let index = openStack.length - 1; index >= 0; index -= 1) {
+    if (stackTag(openStack[index]) === tagName) return index;
+  }
+  return -1;
+}
+
+function stackTag(entry) {
+  return typeof entry === "string" ? entry : entry.tag;
+}
+
+function currentNamespace(openStack) {
+  return openStack.length ? openStack[openStack.length - 1].namespace || "html" : "html";
+}
+
+function elementNamespaceForTag(tagName, openStack) {
+  const namespace = currentNamespace(openStack);
+  if (namespace !== "html") return namespace;
+  if (tagName === "svg") return "svg";
+  if (tagName === "math") return "math";
+  return "html";
+}
+
+function childNamespaceForTag(tagName, elementNamespace) {
+  if (elementNamespace === "html") {
+    if (tagName === "svg") return "svg";
+    if (tagName === "math") return "math";
+    return "html";
+  }
+  if (elementNamespace === "svg" && SVG_HTML_INTEGRATION_POINTS.has(tagName)) return "html";
+  return elementNamespace;
+}
+
+function isRawTextElementForNamespace(tagName, elementNamespace) {
+  if (elementNamespace === "html") return RAW_TEXT_TAGS.has(tagName);
+  return elementNamespace === "svg" && (tagName === "script" || tagName === "style");
 }
 
 async function transformInertContentElement(token, body, closeTag, baseDir, ctx) {
@@ -302,8 +348,9 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       continue;
     }
     const tagName = token.tag.toLowerCase();
-    const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing, openStack);
-    if (tagName === PLAINTEXT_TAG && !effectiveSelfClosing) {
+    const elementNamespace = elementNamespaceForTag(tagName, openStack);
+    const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing, openStack, elementNamespace);
+    if (elementNamespace === "html" && tagName === PLAINTEXT_TAG && !effectiveSelfClosing) {
       if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, isSvgNamespace(openStack));
       result += transformInertRawTextElement(token, markup.slice(token.end), "", baseDir, ctx, {
         ...options,
@@ -312,7 +359,11 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       index = markup.length;
       continue;
     }
-    if ((INERT_CONTENT_TAGS.has(tagName) || RAW_TEXT_TAGS.has(tagName)) && !effectiveSelfClosing) {
+    if (
+      ((elementNamespace === "html" && INERT_CONTENT_TAGS.has(tagName)) ||
+        isRawTextElementForNamespace(tagName, elementNamespace)) &&
+      !effectiveSelfClosing
+    ) {
       const close = findContentClose(markup, token.end, tagName);
       const bodyEnd = close ? close.start : markup.length;
       const body = markup.slice(token.end, bodyEnd);
@@ -328,13 +379,13 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       index = close ? close.end : markup.length;
       continue;
     }
-    if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, isSvgNamespace(openStack));
+    if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, elementNamespace === "svg");
     result += formatStartTag(
       token.tag,
       scrubInertAttrs(tagName, token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
       token.selfClosing,
     );
-    if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tagName)) openStack.push(tagName);
+    if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tagName)) pushHtmlParent(openStack, tagName, elementNamespace);
     index = token.end;
   }
   return result;
@@ -402,7 +453,7 @@ function scrubRawTextBodyWithoutInlining(tagName, attrs, body, baseDir, ctx, opt
       scrubbed = redactInlineImportMapFileRefs(scrubbed, ctx, { warnUnresolved: warnActiveScriptDependencies });
       if (warnActiveScriptDependencies) warnInlineImportMapLocalRefs(scrubbed, baseDir, ctx);
     }
-    return scrubRawTextFileUrls(scrubbed, ctx);
+    return escapeRawText(scrubRawTextFileUrls(scrubbed, ctx), "script");
   }
   return scrubRawTextFileUrls(body, ctx);
 }
@@ -605,29 +656,30 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
       warnInlineImportMapLocalRefs(inlineBody, baseDir, ctx);
     }
     if (isClassicScript(attrs)) inlineBody = scrubClassicScriptFileUrlComments(inlineBody, ctx);
-    return `${await transformStartTag(tag, attrs, false, baseDir, ctx)}${inlineBody}${closeTag}`;
+    if (!isClassicScript(attrs) && !isModuleScript(attrs)) inlineBody = scrubRawTextFileUrls(inlineBody, ctx);
+    return `${await transformStartTag(tag, attrs, false, baseDir, ctx)}${escapeRawText(inlineBody, "script")}${closeTag}`;
   }
   if (isInjectedLavishSdkSrc(src)) return "";
   if (isModuleScript(attrs)) {
     warnExternalModuleScript(src, baseDir, ctx, HTML_REF_OPTIONS);
     const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
-    return `${startTag}${scrubClassicScriptFileUrlComments(body, ctx)}${closeTag}`;
+    return `${startTag}${escapeRawText(scrubRawTextFileUrls(body, ctx), "script")}${closeTag}`;
   }
   if (!isClassicScript(attrs)) {
     warnUnsupportedScriptType(src, baseDir, ctx, HTML_REF_OPTIONS);
     const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
-    return `${startTag}${body}${closeTag}`;
+    return `${startTag}${escapeRawText(scrubRawTextFileUrls(body, ctx), "script")}${closeTag}`;
   }
   if (hasAttr(attrs, "defer") || hasAttr(attrs, "async")) {
     warnUnsupportedScriptTiming(src, baseDir, ctx, HTML_REF_OPTIONS);
     const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
-    return `${startTag}${body}${closeTag}`;
+    return `${startTag}${escapeRawText(scrubRawTextFileUrls(body, ctx), "script")}${closeTag}`;
   }
 
   const loaded = await loadText(src, baseDir, ctx, HTML_REF_OPTIONS);
   if (!loaded) {
     const startTag = await transformStartTag(tag, replaceUnresolvedAttrRef(attrs, "src", src), false, baseDir, ctx);
-    return `${startTag}${body}${closeTag}`;
+    return `${startTag}${escapeRawText(scrubRawTextFileUrls(body, ctx), "script")}${closeTag}`;
   }
   const cleanedAttrs = removeAttrs(attrs, ["src", "integrity", "crossorigin"]);
   const startTag = await transformStartTag(tag, cleanedAttrs, false, baseDir, ctx);
@@ -1227,7 +1279,7 @@ function scrubCssImageSetArgsWithoutInlining(args, baseDir, ctx, options) {
 function scrubCssRefWithoutInlining(ref, baseDir, ctx, options) {
   const refOptions = { cssSyntax: true, decodeHtmlEntities: Boolean(options.decodeHtmlEntities) };
   if (shouldRedactUnresolvedRef(ref, refOptions)) {
-    if (options.localWarningKind === "srcdoc-resource") {
+    if (shouldWarnRedactedLocalRefAsUnresolved(options)) {
       pushCssScrubWarning(ctx, options, {
         kind: options.localWarningKind,
         ref,
@@ -1249,6 +1301,10 @@ function scrubCssRefWithoutInlining(ref, baseDir, ctx, options) {
     pushCssScrubWarning(ctx, options, unresolvedDescriptorWarning(descriptor, ref));
   }
   return { replacement: "" };
+}
+
+function shouldWarnRedactedLocalRefAsUnresolved(options = {}) {
+  return options.localWarningKind === "srcdoc-resource" || options.localWarningKind === "nested-svg-resource";
 }
 
 function pushCssScrubWarning(ctx, options, warning) {
@@ -2168,7 +2224,18 @@ async function loadDataUri(ref, baseDir, ctx, options = {}) {
   const buffer = await readBudgeted(descriptor, ref, ctx);
   if (!buffer) return null;
   const mime = pickMime(descriptor.path);
-  return `${toDataUri(buffer, mime)}${mime === "image/svg+xml" ? fragmentSuffix(normalizeRefForResolution(ref, options)) : ""}`;
+  if (mime === "image/svg+xml") {
+    const svg = sanitizeSvgTextForDataUri(buffer.toString("utf8"), path.dirname(descriptor.path), ctx);
+    return `${toDataUri(Buffer.from(svg, "utf8"), mime)}${fragmentSuffix(normalizeRefForResolution(ref, options))}`;
+  }
+  return toDataUri(buffer, mime);
+}
+
+function sanitizeSvgTextForDataUri(svg, baseDir, ctx) {
+  return transformInertMarkup(svg, baseDir, ctx, {
+    localWarningKind: "nested-svg-resource",
+    localWarningReason: "nested SVG resources are left as references inside inlined SVG assets",
+  });
 }
 
 function warnUnsupportedScriptTiming(ref, baseDir, ctx, options = {}) {
@@ -2356,7 +2423,7 @@ function warnInertStyleRefs(attrs, baseDir, ctx, options = {}) {
 
 function warnInertResource(ref, baseDir, ctx, refOptions = {}, warningOptions = {}) {
   if (shouldRedactUnresolvedRef(ref, refOptions)) {
-    if (warningOptions.localWarningKind === "srcdoc-resource") {
+    if (shouldWarnRedactedLocalRefAsUnresolved(warningOptions)) {
       ctx.warnings.push({
         kind: warningOptions.localWarningKind,
         ref,

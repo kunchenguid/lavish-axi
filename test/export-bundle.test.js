@@ -19,6 +19,12 @@ function localReader(files) {
   };
 }
 
+function decodeFirstSvgDataUri(html) {
+  const match = html.match(/data:image\/svg\+xml;base64,([^"'>\s#]+)/);
+  assert.ok(match);
+  return Buffer.from(match[1], "base64").toString("utf8");
+}
+
 test("inlines a local stylesheet link as a <style> block", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body><p>Hi</p></body></html>';
@@ -509,6 +515,30 @@ test("redacts file URL import-map import keys", async () => {
       { kind: "file-url-redacted", ref: "file:///Users/kun/secret-key.js" },
       { kind: "inline-importmap-local-ref", ref: "./app.js" },
       { kind: "inline-importmap-local-ref", ref: "./ok.js" },
+    ],
+  );
+});
+
+test("escapes import-map JSON after redacting file refs", async () => {
+  const html =
+    '<!doctype html><html><head><script type="importmap">' +
+    '{"imports":{"leak":"file:///Users/kun/secret.js","safe":"<\\/script><img src=\\"secret.png\\">"}}' +
+    "</script></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.doesNotMatch(out, /file:\/\//i);
+  assert.doesNotMatch(out, /<\/script><img src=/);
+  assert.match(out, /<\\\/script><img src=\\"secret\.png\\">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inline-importmap-local-ref", ref: "file:///Users/kun/secret.js" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.js" },
+      { kind: "inline-importmap-local-ref", ref: '</script><img src="secret.png">' },
     ],
   );
 });
@@ -2090,6 +2120,36 @@ test("scrubs file URLs from module script comments without touching string liter
   );
 });
 
+test("scrubs file URLs from non-executable and preserved script bodies", async () => {
+  const html =
+    '<!doctype html><html><body><script type="application/json">{"path":"file:///Users/kun/data.json"}</script>' +
+    '<script type="speculationrules" src="rules.json">{"prefetch":["file:///Users/kun/prefetch.json"]}</script>' +
+    '<script defer src="app.js">const ignored = "file:///Users/kun/ignored.js";</script>' +
+    '<script src="missing.js">// file:///Users/kun/missing.map</script></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<script type="application\/json">\{"path":"about:blank"\}<\/script>/);
+  assert.match(out, /<script type="speculationrules" src="rules\.json">\{"prefetch":\["about:blank"\]\}<\/script>/);
+  assert.match(out, /<script defer src="app\.js">const ignored = "about:blank";<\/script>/);
+  assert.match(out, /<script src="missing\.js">\/\/ about:blank<\/script>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/data.json" },
+      { kind: "unsupported-script-type", ref: "rules.json" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/prefetch.json" },
+      { kind: "unsupported-script-timing", ref: "app.js" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/ignored.js" },
+      { kind: "load-failed", ref: "missing.js" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/missing.map" },
+    ],
+  );
+});
+
 test("resolves root-absolute references through resolveAbsolute (e.g. legacy /design assets)", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" href="/design/daisyui.css"></head><body></body></html>';
@@ -2219,6 +2279,32 @@ test("does not inline SVG ref tags outside an SVG ancestor", async () => {
   assert.equal(warnings.length, 0);
 });
 
+test("resumes HTML parsing inside SVG foreignObject", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><body><svg><foreignObject><script src="app.js" />' +
+    '<img src="secret.png"></script><img src="active.png"><use href="icon.svg"></use></foreignObject>' +
+    '<use href="icon.svg"></use></svg></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/app.js": "window.app = true;",
+        "/art/active.png": Buffer.from("active"),
+        "/art/icon.svg": "<svg></svg>",
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/app.js", "/art/active.png", "/art/icon.svg"]);
+  assert.doesNotMatch(out, /secret\.png/);
+  assert.match(out, /<script>window\.app = true;<\/script><img src="data:image\/png;base64,YWN0aXZl">/);
+  assert.match(out, /<foreignObject>.*<use href="icon\.svg"><\/use>/s);
+  assert.match(out, /<svg>.*<use href="data:image\/svg\+xml;base64,[^"]+"><\/use><\/svg>/s);
+  assert.equal(warnings.length, 0);
+});
+
 test("preserves self-closing SVG use and image tags when inlining references", async () => {
   const html =
     '<!doctype html><html><body><svg><use href="icons.svg#check"/><image href="icon.svg" /></svg></body></html>';
@@ -2234,6 +2320,44 @@ test("preserves self-closing SVG use and image tags when inlining references", a
   assert.match(out, /<image href="data:image\/svg\+xml;base64,[^"]+" \/>/);
   assert.doesNotMatch(out, /\/>>/);
   assert.equal(warnings.length, 0);
+});
+
+test("sanitizes local SVG text before encoding it as a data URI", async () => {
+  const svg =
+    '<svg><!-- file:///Users/kun/comment.txt --><image href="nested.png" />' +
+    "<style>.a{background:url(file:///Users/kun/secret.png)}.b{background:url(local.png)}</style></svg>";
+  const html = '<!doctype html><html><body><img src="icon.svg"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({ "/art/icon.svg": svg }),
+  });
+  const decoded = decodeFirstSvgDataUri(out);
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(decoded, /\/Users\/kun/);
+  assert.match(decoded, /<!-- about:blank -->/);
+  assert.match(decoded, /<image href="nested\.png" \/>/);
+  assert.match(decoded, /background:url\(about:blank\)/);
+  assert.match(decoded, /background:url\(local\.png\)/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/comment.txt" },
+      { kind: "nested-svg-resource", ref: "nested.png" },
+      { kind: "nested-svg-resource", ref: "file:///Users/kun/secret.png" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
+      { kind: "nested-svg-resource", ref: "local.png" },
+    ],
+  );
+  assert.deepEqual(
+    splitExportWarnings(warnings).unresolved.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "nested-svg-resource", ref: "nested.png" },
+      { kind: "nested-svg-resource", ref: "file:///Users/kun/secret.png" },
+      { kind: "nested-svg-resource", ref: "local.png" },
+    ],
+  );
 });
 
 test("confineDir refuses to inline references that lexically escape the artifact directory", async () => {
