@@ -144,6 +144,33 @@ test("inlines local images referenced by src into data URIs", async () => {
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
 });
 
+test("handles quoted greater-than characters in asset tags", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><head><link title="A > B" rel="stylesheet" href="theme.css">' +
+    '<style data-note="A > B">.hero{background:url(bg.png)}</style>' +
+    '<script data-note="A > B" src="app.js"></script></head><body>' +
+    '<img alt="A > B" src="pic.png"><svg><use data-note="A > B" href="icons.svg#check"/></svg>' +
+    "</body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/theme.css": "body{color:red}",
+      "/art/bg.png": png,
+      "/art/app.js": "window.ready = true;",
+      "/art/pic.png": png,
+      "/art/icons.svg": '<svg><symbol id="check"></symbol></svg>',
+    }),
+  });
+
+  assert.match(out, /<style>body\{color:red\}<\/style>/);
+  assert.match(out, /<style data-note="A > B">\.hero\{background:url\(data:image\/png;base64,iVBORw==\)\}<\/style>/);
+  assert.match(out, /<script data-note="A > B">window\.ready = true;<\/script>/);
+  assert.match(out, /<img alt="A > B" src="data:image\/png;base64,iVBORw==">/);
+  assert.match(out, /<use data-note="A > B" href="data:image\/svg\+xml;base64,[^"]+#check" \/>/);
+  assert.equal(warnings.length, 0);
+});
+
 test("parses srcset without splitting data URI candidates", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =

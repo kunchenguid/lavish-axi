@@ -418,6 +418,7 @@ test("overflow menu offers publishing a public ht-ml.app link via a share dialog
   assert.match(html, /id="shareUpdateKey"/);
   assert.match(html, /Everything published is public/);
   assert.match(css, /\.share-overlay/);
+  assert.match(css, /\.share-overlay\{[^}]*z-index:80;/);
   assert.match(css, /\.share-card/);
   assert.match(css, /box-shadow:var\(--shadow-floating\)/);
   // The codebase has no global [hidden] rule, so display-setting overlays need explicit

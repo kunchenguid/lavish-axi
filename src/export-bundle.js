@@ -45,8 +45,35 @@ const EXT_MIME = {
 const DEFAULT_MAX_DEPTH = 8;
 const DEFAULT_MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 25 * 1024 * 1024;
-const RAW_TEXT_OR_COMMENT_RE =
-  /<!--[\s\S]*?-->|<style(?=\s|\/|>)[^>]*>[\s\S]*?<\/style\s*>|<script(?=\s|\/|>)[^>]*>[\s\S]*?<\/script\s*>|<textarea(?=\s|\/|>)[^>]*>[\s\S]*?<\/textarea\s*>|<title(?=\s|\/|>)[^>]*>[\s\S]*?<\/title\s*>/gi;
+const TAG_ATTRS_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*`;
+const TAG_ATTRS_PATTERN_LAZY = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*?`;
+const RAW_TEXT_OR_COMMENT_RE = new RegExp(
+  [
+    String.raw`<!--[\s\S]*?-->`,
+    rawTextElementPattern("style"),
+    rawTextElementPattern("script"),
+    rawTextElementPattern("textarea"),
+    rawTextElementPattern("title"),
+  ].join("|"),
+  "gi",
+);
+const STYLE_SEGMENT_RE = new RegExp(String.raw`^<style(?=\s|\/|>)(${TAG_ATTRS_PATTERN})>([\s\S]*?)<\/style\s*>$`, "i");
+const SCRIPT_SEGMENT_RE = new RegExp(
+  String.raw`^<script(?=\s|\/|>)(${TAG_ATTRS_PATTERN})>([\s\S]*?)<\/script\s*>$`,
+  "i",
+);
+const MEDIA_TAG_RE = new RegExp(
+  String.raw`<(img|source|video|audio|track)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`,
+  "gi",
+);
+const SVG_REF_TAG_RE = new RegExp(String.raw`<(use|image)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
+const LINK_TAG_RE = new RegExp(String.raw`<link(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
+const START_TAG_RE = new RegExp(String.raw`<([a-z][\w:-]*)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
+const MARKUP_TAG_RE = new RegExp(String.raw`<\/?([a-z][\w:-]*)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`, "gi");
+
+function rawTextElementPattern(tag) {
+  return String.raw`<${tag}(?=\s|\/|>)${TAG_ATTRS_PATTERN}>[\s\S]*?<\/${tag}\s*>`;
+}
 
 /**
  * @param {string} html
@@ -111,12 +138,12 @@ async function transform(html, ctx) {
 
 async function transformRawTextOrComment(segment, baseDir, ctx) {
   if (segment.startsWith("<!--")) return segment;
-  const style = segment.match(/^<style(?=\s|\/|>)([^>]*)>([\s\S]*?)<\/style\s*>$/i);
+  const style = segment.match(STYLE_SEGMENT_RE);
   if (style) {
     const [, attrs, css] = style;
     return `<style${attrs}>${escapeRawText(await inlineCss(css, baseDir, ctx, 0, baseDir), "style")}</style>`;
   }
-  const script = segment.match(/^<script(?=\s|\/|>)([^>]*)>([\s\S]*?)<\/script\s*>$/i);
+  const script = segment.match(SCRIPT_SEGMENT_RE);
   if (script) {
     const [, attrs, body] = script;
     return inlineScript(segment, attrs, body, baseDir, ctx);
@@ -126,27 +153,21 @@ async function transformRawTextOrComment(segment, baseDir, ctx) {
 
 async function transformMarkup(markup, baseDir, ctx) {
   let result = markup;
-  result = await replaceAsync(
-    result,
-    /<(img|source|video|audio|track)(?=\s|\/|>)([^>]*?)\/?>/gi,
-    async (match, tag, attrs) => {
-      return formatStartTag(tag, await inlineMediaAttrs(attrs, baseDir, ctx), isSelfClosingTag(match));
-    },
-  );
-  result = await replaceAsync(result, /<(use|image)(?=\s|\/|>)([^>]*?)\/?>/gi, async (match, tag, attrs) => {
+  result = await replaceAsync(result, MEDIA_TAG_RE, async (match, tag, attrs) => {
+    return formatStartTag(tag, await inlineMediaAttrs(attrs, baseDir, ctx), isSelfClosingTag(match));
+  });
+  result = await replaceAsync(result, SVG_REF_TAG_RE, async (match, tag, attrs) => {
     let next = await inlineAttr(attrs, "href", baseDir, ctx);
     next = await inlineAttr(next, "xlink:href", baseDir, ctx);
     return formatStartTag(tag, next, isSelfClosingTag(match));
   });
   result = await inlineStyleAttrs(result, baseDir, ctx);
-  result = await replaceAsync(result, /<link(?=\s|\/|>)([^>]*?)\/?>/gi, (match, attrs) =>
-    inlineLink(match, attrs, baseDir, ctx),
-  );
+  result = await replaceAsync(result, LINK_TAG_RE, (match, attrs) => inlineLink(match, attrs, baseDir, ctx));
   return result;
 }
 
 async function inlineStyleAttrs(markup, baseDir, ctx) {
-  return replaceAsync(markup, /<([a-z][\w:-]*)([^<>]*?)>/gi, async (match, tag, attrs) => {
+  return replaceAsync(markup, START_TAG_RE, async (match, tag, attrs) => {
     if (!/(^|\s)style\s*=/i.test(attrs)) return match;
     const next = await replaceAsync(
       attrs,
@@ -158,7 +179,7 @@ async function inlineStyleAttrs(markup, baseDir, ctx) {
         return `${boundary}${prefix}${quote}${await inlineCssUrls(value, baseDir, ctx, baseDir)}${quote}`;
       },
     );
-    return `<${tag}${next}>`;
+    return formatStartTag(tag, next, isSelfClosingTag(match));
   });
 }
 
@@ -597,8 +618,7 @@ function findFirstDocumentBaseHref(html) {
 
 function scanMarkupForBaseHref(markup, templateDepth) {
   let depth = templateDepth;
-  const tagRe = /<\/?([a-z][\w:-]*)([^<>]*?)>/gi;
-  for (const match of markup.matchAll(tagRe)) {
+  for (const match of markup.matchAll(MARKUP_TAG_RE)) {
     const tag = match[1].toLowerCase();
     const isClose = /^<\//.test(match[0]);
     if (tag === "template") {
