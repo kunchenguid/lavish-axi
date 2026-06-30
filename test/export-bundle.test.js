@@ -509,6 +509,39 @@ test("inlines not media-condition CSS imports with parenthesized features", asyn
   assert.equal(warnings.length, 0);
 });
 
+test("only inlines CSS imports from the valid top-level import prelude", async () => {
+  const readPaths = [];
+  const html =
+    '<!doctype html><html><head><style>@charset "utf-8";@layer reset;@import "tokens.css";' +
+    '.app{color:red}@import "late.css";@media screen{@import "nested.css";}</style></head></html>';
+  const files = {
+    "/art/tokens.css": ".tokens{color:blue}",
+    "/art/late.css": ".late{color:purple}",
+    "/art/nested.css": ".nested{color:green}",
+  };
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return Buffer.from(files[absPath]);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/tokens.css"]);
+  assert.match(out, /@charset "utf-8";@layer reset;\.tokens\{color:blue\}\.app\{color:red\}/);
+  assert.match(out, /@import "late\.css";/);
+  assert.match(out, /@media screen\{@import "nested\.css";\}/);
+  assert.doesNotMatch(out, /\.late\{color:purple\}/);
+  assert.doesNotMatch(out, /\.nested\{color:green\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "late-css-import", ref: "late.css" },
+      { kind: "late-css-import", ref: "nested.css" },
+    ],
+  );
+});
+
 test("leaves non-media CSS imports unchanged with a warning", async () => {
   const html =
     '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +

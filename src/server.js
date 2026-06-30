@@ -258,7 +258,7 @@ export async function serve({
         confineDir: root,
         resolveAbsolute: resolveDesignAssetPath,
       });
-      res.setHeader("content-disposition", `attachment; filename="${exportFileName(session.file)}"`);
+      res.setHeader("content-disposition", exportContentDisposition(session.file));
       res.setHeader("x-lavish-export-warning-count", String(warnings.length));
       res.type("html").send(html);
     } catch (error) {
@@ -563,6 +563,27 @@ export function resolveDesignAssetPath(refPath) {
   if (existsSync(packaged)) return packaged;
   const source = fileURLToPath(asset.source);
   return existsSync(source) ? source : null;
+}
+
+export function exportContentDisposition(file) {
+  const filename = exportFileName(file);
+  return `attachment; filename="${sanitizeDispositionFilename(filename)}"; filename*=UTF-8''${encodeRfc5987Value(filename)}`;
+}
+
+function sanitizeDispositionFilename(filename) {
+  const fallback = Array.from(String(filename || ""), (char) => {
+    const codePoint = char.codePointAt(0) || 0;
+    if (codePoint < 0x20 || codePoint > 0x7e || char === '"' || char === "\\") return "_";
+    return char;
+  }).join("");
+  return fallback || "artifact.export.html";
+}
+
+function encodeRfc5987Value(value) {
+  return encodeURIComponent(String(value)).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }
 
 // Guard state-changing, outward-facing routes (publishing to a public host) against CSRF: a

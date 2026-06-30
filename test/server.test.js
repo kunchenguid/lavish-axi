@@ -9,6 +9,7 @@ import {
   createChromeHtml,
   createSdkJs,
   displayPathParts,
+  exportContentDisposition,
   hasLiveReloadRootOptIn,
   resolveArtifactAsset,
   resolveIdleTimeoutMs,
@@ -89,6 +90,13 @@ test("server serves chrome styles from a dedicated source file", async () => {
   assert.match(source, /chrome\.css/);
   assert.match(html, /<link rel="stylesheet" href="\/chrome\.css">/);
   assert.doesNotMatch(html, /<style>/);
+});
+
+test("export content disposition uses a safe fallback and encoded UTF-8 filename", () => {
+  assert.equal(
+    exportContentDisposition('/tmp/résumé "draft"\n.html'),
+    "attachment; filename=\"r_sum_ _draft__.export.html\"; filename*=UTF-8''r%C3%A9sum%C3%A9%20%22draft%22%0A.export.html",
+  );
 });
 
 test("artifact assets resolve within the artifact directory", () => {
@@ -1070,6 +1078,34 @@ test("GET /api/:key/export inlines local assets and leaves remote references int
     assert.doesNotMatch(body, /sdk\.js/);
     // remote stylesheet left intact (not fetched/inlined)
     assert.match(body, /<link rel="stylesheet" href="https:\/\/cdn\.example\/app\.css">/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/export sends a safe download filename header", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, 'résumé "draft".html');
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const exportRes = await fetch(`${base}/api/${session.key}/export`);
+
+    assert.equal(exportRes.status, 200);
+    assert.equal(
+      exportRes.headers.get("content-disposition"),
+      "attachment; filename=\"r_sum_ _draft_.export.html\"; filename*=UTF-8''r%C3%A9sum%C3%A9%20%22draft%22.export.html",
+    );
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

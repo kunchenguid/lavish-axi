@@ -359,6 +359,8 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
   let result = "";
   let index = 0;
   let pending = [];
+  let importPrelude = true;
+  let braceDepth = 0;
 
   const flushPendingAsExternal = () => {
     for (const item of pending) {
@@ -402,6 +404,12 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
     pending = [];
   };
 
+  const enterCssBody = async () => {
+    if (!importPrelude || braceDepth !== 0) return;
+    importPrelude = false;
+    await flushPendingInline();
+  };
+
   while (index < css.length) {
     const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
     if (commentEnd !== -1) {
@@ -417,7 +425,7 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
     }
 
     if (css[index] === '"' || css[index] === "'") {
-      await flushPendingInline();
+      await enterCssBody();
       const stringEnd = findCssStringEnd(css, index);
       result += css.slice(index, stringEnd);
       index = stringEnd;
@@ -432,8 +440,12 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
       }
       const rule = css.slice(index, ruleEnd + 1);
       const parsed = parseCssImportRule(rule);
-      if (!parsed) {
+      if (!importPrelude || braceDepth !== 0) {
+        if (parsed) warnLateCssImport(parsed.ref, baseDir, ctx);
+        result += rule;
+      } else if (!parsed) {
         flushPendingAsExternal();
+        importPrelude = false;
         result += rule;
       } else if (depth >= ctx.maxDepth) {
         flushPendingAsExternal();
@@ -457,8 +469,31 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
       continue;
     }
 
-    await flushPendingInline();
+    if (importPrelude && braceDepth === 0 && startsCssKeyword(css, index, "@charset")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd !== -1) {
+        result += css.slice(index, ruleEnd + 1);
+        index = ruleEnd + 1;
+        continue;
+      }
+    }
+
+    if (importPrelude && braceDepth === 0 && startsCssKeyword(css, index, "@layer")) {
+      const statementEnd = findCssPreludeStatementEnd(css, index);
+      if (statementEnd !== -1 && css[statementEnd] === ";") {
+        result += css.slice(index, statementEnd + 1);
+        index = statementEnd + 1;
+        continue;
+      }
+    }
+
+    await enterCssBody();
     result += css[index];
+    if (css[index] === "{") {
+      braceDepth += 1;
+    } else if (css[index] === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+    }
     index += 1;
   }
   await flushPendingInline();
@@ -665,6 +700,23 @@ function findCssAtRuleEnd(css, index) {
       continue;
     }
     if (css[cursor] === ";") return cursor;
+    cursor += 1;
+  }
+  return -1;
+}
+
+function findCssPreludeStatementEnd(css, index) {
+  let cursor = index;
+  while (cursor < css.length) {
+    if (css.startsWith("/*", cursor)) {
+      cursor = findCssCommentEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === '"' || css[cursor] === "'") {
+      cursor = findCssStringEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === ";" || css[cursor] === "{") return cursor;
     cursor += 1;
   }
   return -1;
@@ -955,6 +1007,19 @@ function warnCssImportOrder(ref, descriptor, ctx) {
       kind: "css-import-order",
       ref,
       reason: "CSS @import is left as a reference to preserve import ordering",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
+function warnLateCssImport(ref, baseDir, ctx) {
+  const descriptor = resolveRef(ref, baseDir, ctx);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "late-css-import",
+      ref,
+      reason: "CSS @import appears outside the valid top-level import prelude and is left unchanged",
     });
   } else if (descriptor.kind === "escape") {
     ctx.warnings.push({ kind: "outside-root", ref });
