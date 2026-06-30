@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -391,6 +392,43 @@ test("overflow menu offers reload, snapshot copy, and end session actions", asyn
   assert.match(html, /class="menu-item danger" id="end"[^<]*>.*End session/);
   assert.doesNotMatch(html, /End Session</);
   assert.match(js, /event\.key === "Escape"/);
+});
+
+test("overflow menu offers a standalone HTML export that downloads a portable file", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+
+  assert.match(html, /id="exportArtifact"[^<]*>.*Export standalone HTML/);
+  assert.match(js, /const exportArtifactButton/);
+  assert.match(js, /async function exportArtifact/);
+  assert.match(js, /fetch\("\/api\/" \+ key \+ "\/export"\)/);
+  assert.match(js, /link\.download = exportFileName\(\)/);
+  assert.match(js, /exportArtifactButton\.onclick = exportArtifact/);
+});
+
+test("overflow menu offers publishing a public ht-ml.app link via a share dialog", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+  const css = await chromeCssSource();
+
+  assert.match(html, /id="shareArtifact"[^<]*>.*Publish public link/);
+  assert.match(html, /id="shareDialog"/);
+  assert.match(html, /Publish to ht-ml\.app/);
+  assert.match(html, /id="sharePassword"/);
+  assert.match(html, /id="shareUpdateKey"/);
+  assert.match(html, /Everything published is public/);
+  assert.match(css, /\.share-overlay/);
+  assert.match(css, /\.share-card/);
+  assert.match(css, /box-shadow:var\(--shadow-floating\)/);
+  // The codebase has no global [hidden] rule, so display-setting overlays need explicit
+  // [hidden] rules or they show through before they should (e.g. the result block).
+  assert.match(css, /\.share-overlay\[hidden\]\{display:none;?\}/);
+  assert.match(css, /\.share-result\[hidden\]\{display:none;?\}/);
+  assert.match(js, /const shareArtifactButton/);
+  assert.match(js, /async function publishShare/);
+  assert.match(js, /fetch\("\/api\/" \+ key \+ "\/share"/);
+  assert.match(js, /shareUrlInput\.value = data\.url/);
+  assert.match(js, /shareUpdateKeyInput\.value = data\.update_key/);
 });
 
 test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
@@ -994,6 +1032,151 @@ test("/design serves local Tailwind and DaisyUI artifact assets", async () => {
     assert.match(await themes.text(), /luxury/);
   } finally {
     await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/export inlines local assets and leaves remote references intact", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(
+    artifact,
+    `<!doctype html><html><head><link rel="stylesheet" href="local.css">` +
+      `<link rel="stylesheet" href="https://cdn.example/app.css"></head>` +
+      `<body><img src="pic.png"><h1>Hi</h1><script src="/sdk.js?key=stale"></script></body></html>`,
+  );
+  await writeFile(path.join(dir, "local.css"), ".btn{color:green}");
+  await writeFile(path.join(dir, "pic.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const exportRes = await fetch(`${base}/api/${session.key}/export`);
+    assert.equal(exportRes.status, 200);
+    assert.match(exportRes.headers.get("content-disposition") || "", /attachment; filename="artifact\.export\.html"/);
+    const body = await exportRes.text();
+    // local stylesheet + image inlined
+    assert.match(body, /<style>\.btn\{color:green\}<\/style>/);
+    assert.match(body, /<img src="data:image\/png;base64,iVBORw==">/);
+    // injected SDK stripped
+    assert.doesNotMatch(body, /sdk\.js/);
+    // remote stylesheet left intact (not fetched/inlined)
+    assert.match(body, /<link rel="stylesheet" href="https:\/\/cdn\.example\/app\.css">/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/export returns 404 for an unknown session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/does-not-exist/export`);
+    assert.equal(res.status, 404);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share publishes the local-inlined artifact to ht-ml.app", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(
+    artifact,
+    '<!doctype html><html><head><link rel="stylesheet" href="local.css">' +
+      '<link rel="stylesheet" href="https://cdn.example/app.css"></head>' +
+      '<body><h1>Ship</h1><script src="/sdk.js?key=x"></script></body></html>',
+  );
+  await writeFile(path.join(dir, "local.css"), ".btn{color:red}");
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: "pw" }),
+    });
+    const body = await shareRes.json();
+
+    assert.equal(shareRes.status, 200);
+    assert.deepEqual(body, {
+      url: "https://abc123.ht-ml.app/",
+      site_id: "abc123",
+      update_key: "uk_secret",
+      status: "active",
+    });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, "POST");
+    assert.equal(requests[0].url, "/v1/sites");
+    // local stylesheet inlined, SDK stripped, remote stylesheet left intact (never fetched)
+    assert.match(requests[0].body.html_content, /<style>\.btn\{color:red\}<\/style>/);
+    assert.doesNotMatch(requests[0].body.html_content, /sdk\.js/);
+    assert.match(requests[0].body.html_content, /<link rel="stylesheet" href="https:\/\/cdn\.example\/app\.css">/);
+    assert.equal(requests[0].body.password, "pw");
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share rejects cross-origin browser requests", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><title>x</title><h1>Private</h1>\n");
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://attacker.example" },
+      body: JSON.stringify({}),
+    });
+    const body = await shareRes.json();
+
+    assert.equal(shareRes.status, 403);
+    assert.deepEqual(body, { error: "cross-origin share request rejected" });
+    assert.equal(requests.length, 0);
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -1776,3 +1959,43 @@ test("chrome client chat input sends on Enter and inserts newline on Shift+Enter
   assert.match(js, /event\.preventDefault\(\)/);
   assert.match(js, /sendQueued\(\)/);
 });
+
+async function startFakeHtmlApp(requests, responseBody = null) {
+  const body = responseBody ?? {
+    site_id: "abc123",
+    url: "https://abc123.ht-ml.app/",
+    update_key: "uk_secret",
+    status: "active",
+  };
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      requests.push({
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body: raw ? JSON.parse(raw) : null,
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : 0,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+function restoreEnv(name, value) {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}

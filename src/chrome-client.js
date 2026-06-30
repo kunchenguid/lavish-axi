@@ -24,6 +24,20 @@ const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("mo
 const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMenu"));
 const reloadArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("reloadArtifact"));
 const copySnapshotButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySnapshot"));
+const exportArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportArtifact"));
+const shareArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareArtifact"));
+const shareDialog = /** @type {HTMLDivElement} */ (document.getElementById("shareDialog"));
+const shareForm = /** @type {HTMLFormElement} */ (document.getElementById("shareForm"));
+const shareCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareClose"));
+const shareCancelButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareCancel"));
+const sharePublishButton = /** @type {HTMLButtonElement} */ (document.getElementById("sharePublish"));
+const sharePasswordInput = /** @type {HTMLInputElement} */ (document.getElementById("sharePassword"));
+const shareStatus = /** @type {HTMLDivElement} */ (document.getElementById("shareStatus"));
+const shareResult = /** @type {HTMLDivElement} */ (document.getElementById("shareResult"));
+const shareUrlInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUrl"));
+const shareUpdateKeyInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUpdateKey"));
+const copyShareUrlButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareUrl"));
+const copyUpdateKeyButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyUpdateKey"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
@@ -489,6 +503,91 @@ function copyDomSnapshot() {
   requestSnapshot("copy");
 }
 
+function exportFileName() {
+  const base = (filePath.split(/[\\/]/).pop() || "artifact.html").replace(/\.html?$/i, "");
+  return (base || "artifact") + ".export.html";
+}
+
+function setExportLabel(text) {
+  const label = exportArtifactButton.querySelector("span");
+  if (label) label.textContent = text;
+}
+
+async function exportArtifact() {
+  // The bundle inlines remote assets server-side, so it can take a moment - keep the menu open
+  // and narrate progress in place instead of closing it and leaving the user with no feedback.
+  exportArtifactButton.disabled = true;
+  setExportLabel("Exporting...");
+  try {
+    const response = await fetch("/api/" + key + "/export");
+    if (!response.ok) throw new Error("export failed");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = exportFileName();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    setExportLabel("Export standalone HTML");
+    closeMenus();
+  } catch {
+    setExportLabel("Export failed - retry");
+  } finally {
+    exportArtifactButton.disabled = false;
+  }
+}
+
+function openShareDialog() {
+  closeMenus();
+  shareDialog.hidden = false;
+  shareStatus.textContent = "";
+  shareStatus.classList.remove("error");
+  shareResult.hidden = true;
+  sharePasswordInput.focus();
+}
+
+function closeShareDialog() {
+  shareDialog.hidden = true;
+}
+
+async function copyToButton(value, button, label) {
+  await copyText(value);
+  button.textContent = "Copied";
+  setTimeout(() => {
+    button.textContent = label;
+  }, 1200);
+}
+
+async function publishShare(event) {
+  event.preventDefault();
+  sharePublishButton.disabled = true;
+  shareStatus.classList.remove("error");
+  shareStatus.textContent = "Publishing to ht-ml.app...";
+  shareResult.hidden = true;
+  try {
+    const response = await fetch("/api/" + key + "/share", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: sharePasswordInput.value }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "publish failed");
+    shareUrlInput.value = data.url || "";
+    shareUpdateKeyInput.value = data.update_key || "";
+    shareStatus.textContent = "Published. Anyone with the link can view this page.";
+    shareResult.hidden = false;
+    shareUrlInput.focus();
+    shareUrlInput.select();
+  } catch (error) {
+    shareStatus.classList.add("error");
+    shareStatus.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    sharePublishButton.disabled = false;
+  }
+}
+
 function resetFrame() {
   startLayoutGateCycle();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
@@ -575,6 +674,16 @@ chatInput.addEventListener("input", hideSendHint);
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
+exportArtifactButton.onclick = exportArtifact;
+shareArtifactButton.onclick = openShareDialog;
+shareCloseButton.onclick = closeShareDialog;
+shareCancelButton.onclick = closeShareDialog;
+shareForm.addEventListener("submit", publishShare);
+shareDialog.addEventListener("click", (event) => {
+  if (event.target === shareDialog) closeShareDialog();
+});
+copyShareUrlButton.onclick = () => copyToButton(shareUrlInput.value, copyShareUrlButton, "Copy URL");
+copyUpdateKeyButton.onclick = () => copyToButton(shareUpdateKeyInput.value, copyUpdateKeyButton, "Copy key");
 endButton.onclick = () => {
   closeMenus();
   endSession();
@@ -585,7 +694,13 @@ document.addEventListener("mousedown", (event) => {
   if (!sendMenu.hidden && !sendActions.contains(target)) setMenuOpen(sendCaret, sendMenu, false);
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeMenus();
+  if (event.key === "Escape") {
+    if (!shareDialog.hidden) {
+      closeShareDialog();
+    } else {
+      closeMenus();
+    }
+  }
 });
 frame.addEventListener("load", () => {
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });

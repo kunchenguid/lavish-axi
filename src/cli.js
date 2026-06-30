@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,13 +8,15 @@ import { fileURLToPath } from "node:url";
 import { AxiError, installSessionStartHooks, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
 
 import { createDesignOutput, DESIGN_SYSTEM_HINT } from "./design-reference.js";
+import { buildSelfContainedHtml, exportFileName } from "./export-bundle.js";
+import { publishToHtmlApp } from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
-import { serve } from "./server.js";
+import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup"]);
+const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -59,6 +61,8 @@ export async function run(argv) {
         design: designCommand,
         setup: setupCommand,
         server: serverCommand,
+        export: exportCommand,
+        share: shareCommand,
       },
       getCommandHelp,
     });
@@ -127,6 +131,8 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
       "Lavish serves the html file through a local express.js server. If your html needs to reference other filesystem assets such as images, CSS, fonts, and local scripts, copy them into the same directory as the HTML file, then reference them with relative paths from that directory. Never prepend `/` to those asset paths - root paths won't work",
       "Run `lavish-axi poll <html-file>` to wait for user feedback or browser-reported layout_warnings. It long-polls and stays silent until the user sends feedback, ends the session, or the real browser reports fresh layout_warnings, so leave it running - never kill it. Fix layout_warnings before involving the human. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost",
       "Run `lavish-axi end <html-file>` to end a session",
+      "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
+      "Run `lavish-axi share <html-file> [--password <pw>]` to publish the artifact as a PUBLIC page on ht-ml.app and get back a visitable URL anyone can open. Local assets are inlined; remote refs load over the network. It returns the public url plus a secret update_key for managing the page later. Everything published is public; users can also publish from the browser chrome's overflow menu",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
       DESIGN_SYSTEM_HINT,
@@ -307,6 +313,92 @@ async function endCommand(args) {
   const baseUrl = await ensureServer();
   const response = await postJson(`${baseUrl}/api/end`, { file: absolute });
   return { session: { file: absolute, status: response.status || "ended" } };
+}
+
+// Produce a portable copy of an artifact: one HTML file with its LOCAL assets (relative-path
+// stylesheets, scripts, images, fonts) inlined as data URIs. Remote CDN/font references are left
+// as-is for the browser to load, so the export needs network to render those. Lavish makes no
+// outbound requests - export is a pure local file transform, server-independent.
+async function exportCommand(args) {
+  const file = args.find((arg) => !arg.startsWith("-"));
+  if (!file) {
+    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi export <html-file>`"]);
+  }
+  await assertHtmlFile(file);
+  const absolute = await canonicalFile(file);
+  const root = path.dirname(absolute);
+  const output = path.resolve(flagValue(args, "--out") || path.join(root, exportFileName(absolute)));
+  const source = await readFile(absolute, "utf8");
+  const { html, warnings } = await buildSelfContainedHtml(source, {
+    baseDir: root,
+    confineDir: root,
+    resolveAbsolute: resolveDesignAssetPath,
+  });
+  await writeFile(output, html);
+  return createExportOutput({ source: absolute, output, html, warnings });
+}
+
+export function createExportOutput({ source, output, html, warnings }) {
+  const remaining = Array.isArray(warnings) ? warnings : [];
+  const result = {
+    export: {
+      source,
+      output,
+      bytes: Buffer.byteLength(html),
+      unresolved_local_assets: remaining.length,
+    },
+  };
+  if (remaining.length) {
+    result.unresolved_local_assets = remaining.map((warning) => ({ kind: warning.kind, ref: warning.ref }));
+    result.next_step =
+      "Some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); they will break once the file is moved. Remote CDN/font references are intentionally left as links and render where there is network access.";
+  } else {
+    result.next_step = `Wrote ${output}. Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
+  }
+  return result;
+}
+
+// Publish the artifact as a PUBLIC, visitable page on ht-ml.app. Builds the same local-inlined
+// HTML as `export` (remote refs left as links), then POSTs it to ht-ml.app's `/v1/sites` API,
+// which needs no account or API key, and returns the public URL plus the secret update_key for
+// managing the page later. Server-independent.
+async function shareCommand(args) {
+  const file = args.find((arg) => !arg.startsWith("-"));
+  if (!file) {
+    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi share <html-file>`"]);
+  }
+  await assertHtmlFile(file);
+  const absolute = await canonicalFile(file);
+  const password = flagValue(args, "--password") || undefined;
+  const token = flagValue(args, "--token") || undefined;
+  const root = path.dirname(absolute);
+  const source = await readFile(absolute, "utf8");
+  const { html, warnings } = await buildSelfContainedHtml(source, {
+    baseDir: root,
+    confineDir: root,
+    resolveAbsolute: resolveDesignAssetPath,
+  });
+  const site = await publishToHtmlApp(html, { password, token });
+  return createShareOutput({ source: absolute, site, warnings });
+}
+
+export function createShareOutput({ source, site, warnings }) {
+  const remaining = Array.isArray(warnings) ? warnings : [];
+  return {
+    share: {
+      source,
+      url: site.url,
+      site_id: site.site_id,
+      update_key: site.update_key,
+      status: site.status || "active",
+      public: true,
+      unresolved_local_assets: remaining.length,
+    },
+    next_step:
+      `Published a PUBLIC page that anyone with the link can view: ${site.url} - share this URL with the user. ` +
+      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
+      `ht-ml.app hosts the page, so it needs no Lavish server.`,
+  };
 }
 
 // Explicitly shut down the running Lavish Editor server. Unlike `end` (which closes a single
@@ -769,12 +861,14 @@ export function getCommandHelp(command) {
   return COMMAND_HELP[command] || null;
 }
 
-const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback, ends the session, or the browser reports fresh layout_warnings, staying silent while it waits - never kill it. Fix layout_warnings before involving the human. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.\n\n`;
+const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback, ends the session, or the browser reports fresh layout_warnings, staying silent while it waits - never kill it. Fix layout_warnings before involving the human. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.\n\n`;
 
 const COMMAND_HELP = {
   open: `Usage: lavish-axi <html-file> [--no-open] [--no-gate]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window. Use --no-gate to skip the open-time layout curtain for this browser open.\n`,
   poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts and browser-reported layout_warnings, then returns them to the agent. It stays silent while it waits - that is normal, never kill it. Fix layout_warnings before involving the human. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task and wait for it to finish; if it still gets killed or times out, just re-run it - queued feedback is never lost. Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again.\n`,
   end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session.\n`,
+  export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
+  share: `Usage: lavish-axi share <html-file> [--password <pw>] [--token <t>]\n\nPublish the artifact as a PUBLIC page on ht-ml.app and print a visitable URL anyone can open. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links, which load fine since ht-ml.app serves pages with no CSP), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the public url plus a secret update_key (shown once) for updating or deleting the page later. Pass --password to make the site private (viewers need the password). EVERYTHING PUBLISHED IS PUBLIC - the page may be indexed and scraped, so do not share secrets. Set LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token; it is never required. The annotation SDK is never included.\n`,
   stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
   playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
   design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. The strict priority order is: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, match the design system of the project the artifact is about, not necessarily your current working directory. If the artifact previews, proposes, or mocks a specific app's UI, use that app's own design system; (3) only when both come up empty, prefer the Lavish-recommended Tailwind + DaisyUI CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.\n`,

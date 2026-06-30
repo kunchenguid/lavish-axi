@@ -16,11 +16,13 @@ import {
   createCopilotCliAmbientContextScript,
   createCopilotCliSessionStartHook,
   createDesignOutput,
+  createExportOutput,
   createHomeOutput,
   createOpenOutput,
   createPollOutput,
   createPlaybookOutput,
   createServerSpawnOptions,
+  createShareOutput,
   fetchJson,
   getCommandHelp,
   normalizeArgv,
@@ -364,6 +366,133 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not pass --timeout-ms/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
+});
+
+test("export output reports the written file and reassures it needs no server", () => {
+  const output = createExportOutput({
+    source: "/tmp/report.html",
+    output: "/tmp/report.export.html",
+    html: "<html></html>",
+    warnings: [],
+  });
+
+  assert.equal(output.export.source, "/tmp/report.html");
+  assert.equal(output.export.output, "/tmp/report.export.html");
+  assert.equal(output.export.unresolved_local_assets, 0);
+  assert.equal(output.export.bytes, Buffer.byteLength("<html></html>"));
+  assert.match(output.next_step, /no Lavish server/);
+  assert.match(output.next_step, /remote CDN\/font references are left as links/);
+});
+
+test("export output surfaces local assets that could not be inlined", () => {
+  const output = createExportOutput({
+    source: "/tmp/report.html",
+    output: "/tmp/report.export.html",
+    html: "<html></html>",
+    warnings: [{ kind: "load-failed", ref: "./missing.png" }],
+  });
+
+  assert.deepEqual(output.unresolved_local_assets, [{ kind: "load-failed", ref: "./missing.png" }]);
+  assert.match(output.next_step, /LOCAL assets could not be inlined/);
+});
+
+test("export command writes a portable HTML file next to the artifact", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-export-test-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(`${dir}/theme.css`, ".btn{color:rebeccapurple}", "utf8");
+  await writeFile(
+    artifact,
+    '<!doctype html><html><head><link rel="stylesheet" href="theme.css">' +
+      '<link rel="stylesheet" href="https://cdn.example/app.css"></head><body><h1>Hi</h1></body></html>',
+    "utf8",
+  );
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "export", artifact],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: dir, LAVISH_AXI_TELEMETRY: "0" },
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /report\.export\.html/);
+    const exported = await readFile(`${dir}/report.export.html`, "utf8");
+    // local stylesheet inlined; remote stylesheet left as a link; SDK stripped
+    assert.match(exported, /<style>\.btn\{color:rebeccapurple\}<\/style>/);
+    assert.match(exported, /<link rel="stylesheet" href="https:\/\/cdn\.example\/app\.css">/);
+    assert.doesNotMatch(exported, /sdk\.js/);
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("share output reports the public url and the secret update key", () => {
+  const output = createShareOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
+    warnings: [],
+  });
+
+  assert.equal(output.share.source, "/tmp/report.html");
+  assert.equal(output.share.url, "https://x.ht-ml.app/");
+  assert.equal(output.share.update_key, "uk_secret");
+  assert.equal(output.share.public, true);
+  assert.match(output.next_step, /PUBLIC/);
+  assert.match(output.next_step, /update_key/);
+  assert.match(output.next_step, /x\.ht-ml\.app/);
+});
+
+test("share command publishes the artifact to ht-ml.app and returns the public url", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(`${dir}/theme.css`, ".btn{color:teal}", "utf8");
+  await writeFile(
+    artifact,
+    '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body><h1>Hi</h1></body></html>',
+    "utf8",
+  );
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  try {
+    // Use async spawn (not spawnSync): the child publishes to the fake ht-ml.app server hosted
+    // on this process's event loop, which spawnSync would block, deadlocking the request.
+    const child = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", artifact, "--password", "pw"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {
+          ...process.env,
+          LAVISH_AXI_STATE_DIR: dir,
+          LAVISH_AXI_TELEMETRY: "0",
+          LAVISH_AXI_HTML_APP_API_URL: `http://127.0.0.1:${htmlApp.port}`,
+        },
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    const code = await new Promise((resolve) => child.on("close", resolve));
+
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /abc123\.ht-ml\.app/);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "/v1/sites");
+    assert.match(requests[0].body.html_content, /<style>\.btn\{color:teal\}<\/style>/);
+    assert.equal(requests[0].body.password, "pw");
+  } finally {
+    await htmlApp.close();
+    await rm(dir, { force: true, recursive: true });
+  }
 });
 
 test("poll help warns agents to leave the long poll running", () => {
@@ -936,3 +1065,31 @@ test("stop command reports when no server is running", async () => {
     await rm(dir, { force: true, recursive: true });
   }
 });
+
+async function startFakeHtmlApp(requests) {
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          site_id: "abc123",
+          url: "https://abc123.ht-ml.app/",
+          update_key: "uk_secret",
+          status: "active",
+        }),
+      );
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : 0,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}

@@ -1,12 +1,16 @@
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import chokidar from "chokidar";
 import express from "express";
 
 import { createArtifactSdk, deriveLavishQueueKey, isNativeInteractiveControl } from "./artifact-sdk.js";
+import { buildSelfContainedHtml, exportFileName } from "./export-bundle.js";
+import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, hostForUrl, linkHost } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
@@ -232,6 +236,67 @@ export async function serve({
       }
       events.emit("agent-reply", req.params.key, text);
       res.json({ status: "sent" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Static export: inline the artifact's local assets into one portable HTML file the user can
+  // open from disk or host anywhere, with no dependency on this server. Remote CDN/font URLs are
+  // left as references for the browser to load, so the export needs network to render those.
+  app.get("/api/:key/export", async (req, res, next) => {
+    try {
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      const source = await readFile(session.file, "utf8");
+      const root = path.dirname(session.file);
+      const { html } = await buildSelfContainedHtml(source, {
+        baseDir: root,
+        confineDir: root,
+        resolveAbsolute: resolveDesignAssetPath,
+      });
+      res.setHeader("content-disposition", `attachment; filename="${exportFileName(session.file)}"`);
+      res.type("html").send(html);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Hosted share: build the local-inlined artifact and publish it to ht-ml.app, returning the
+  // public URL. Remote CDN/font references are left intact (ht-ml.app serves pages with no CSP, so
+  // they load fine). Publishing makes the page public on a third-party host, so this is gated
+  // behind a same-origin check - a cross-origin page must not be able to drive a publish via the
+  // loopback server.
+  app.post("/api/:key/share", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin share request rejected" });
+        return;
+      }
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      const body = req.body || {};
+      const source = await readFile(session.file, "utf8");
+      const root = path.dirname(session.file);
+      const { html } = await buildSelfContainedHtml(source, {
+        baseDir: root,
+        confineDir: root,
+        resolveAbsolute: resolveDesignAssetPath,
+      });
+      let site;
+      try {
+        site = await publishToHtmlApp(html, { password: body.password });
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      res.json(site);
     } catch (error) {
       next(error);
     }
@@ -485,6 +550,40 @@ async function readDesignAsset(asset) {
   }
 }
 
+// Map a legacy root-absolute `/design/<asset>` reference to the packaged design file on disk
+// (falling back to the node_modules source for source runs) so an export can inline it instead
+// of pointing back at this server's `/design` route.
+export function resolveDesignAssetPath(refPath) {
+  const match = /^\/design\/([^/?#]+)/.exec(refPath);
+  if (!match) return null;
+  const asset = designAssetUrls[match[1]];
+  if (!asset) return null;
+  const packaged = fileURLToPath(asset.packaged);
+  if (existsSync(packaged)) return packaged;
+  const source = fileURLToPath(asset.source);
+  return existsSync(source) ? source : null;
+}
+
+// Guard state-changing, outward-facing routes (publishing to a public host) against CSRF: a
+// browser attaches an Origin/Referer that must match this server's own origin.
+function isSameOriginRequest(req) {
+  const expectedOrigin = `${req.protocol}://${req.get("host")}`;
+  const origin = req.get("origin");
+  if (origin) {
+    return normalizeOrigin(origin) === expectedOrigin;
+  }
+  const referer = req.get("referer");
+  return !referer || normalizeOrigin(referer) === expectedOrigin;
+}
+
+function normalizeOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "";
+  }
+}
+
 export function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
@@ -616,6 +715,14 @@ const chromeIcons = {
     '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/>',
     15,
   ),
+  download: chromeIcon(
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+    15,
+  ),
+  globe: chromeIcon(
+    '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14.5 14.5 0 0 1 0 18a14.5 14.5 0 0 1 0-18z"/>',
+    15,
+  ),
   exit: chromeIcon(
     '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
     15,
@@ -695,8 +802,9 @@ export function createChromeHtml(session, { layoutGateEnabled = true } = {}) {
 <link rel="stylesheet" href="/chrome.css">
 </head>
 <body class="${bodyClass}">
-<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
+<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish public link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
 <div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe><div class="layout-issue-banner" id="layoutIssueBanner" hidden>This surface may have layout issues. Your agent has been notified.</div></div><aside class="panel"><h2>Conversation</h2><div class="chat" id="chatLog"></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><div class="annotation-pills" id="annotationPills"></div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="actions" id="sendActions"><span class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</span><div class="split"><button class="button send-main" id="send">Send to Agent</button><button class="button send-caret" id="sendCaret" type="button" title="Send options" aria-haspopup="menu" aria-expanded="false">${chromeIcons.caret}</button></div><div class="menu send-menu" id="sendMenu" hidden><button class="menu-item" id="sendFromMenu" type="button">${chromeIcons.send}<span>Send to Agent</span></button><button class="menu-item danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; end session</span></button></div></div></div></aside></div>
+<div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to ht-ml.app</div><h2 id="shareTitleText">Get a public link</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog">&times;</button></div><p class="share-copy">This uploads this artifact to ht-ml.app (with local assets inlined) and returns a public URL anyone can open. The Lavish annotation SDK is not included.</p><p class="share-note">Everything published is public - it may be indexed by search engines and read by crawlers, so don't publish secrets. Add a password to require it for viewing.</p><div class="share-grid"><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label>Public URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label>Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note">Keep the update key private. ht-ml.app returns it once and it is the only way to update or delete this page later.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>

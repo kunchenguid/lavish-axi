@@ -424,6 +424,178 @@ body.lavish {
   width: 208px;
   border-radius: 11px;
 }
+.share-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: var(--space-16);
+  background: rgba(15, 17, 21, 0.72);
+}
+.share-overlay[hidden] {
+  display: none;
+}
+.share-card {
+  width: min(520px, 100%);
+  max-height: min(760px, calc(100vh - 32px));
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--bg-panel);
+  color: var(--fg);
+  box-shadow: var(--shadow-floating);
+  padding: var(--space-12);
+}
+.share-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-8);
+  margin-bottom: var(--space-8);
+}
+.share-kicker {
+  color: var(--fg-label);
+  font-size: var(--text-xs);
+  font-weight: var(--w-bold);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+}
+.share-head h2 {
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-serif);
+  font-size: var(--text-2xl);
+  font-style: italic;
+  font-weight: var(--w-regular);
+  line-height: var(--lh-2xl);
+}
+.share-close {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+}
+.share-close:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+.share-copy,
+.share-note {
+  margin: 0 0 var(--space-8);
+  color: var(--fg-muted);
+}
+.share-note {
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+}
+.share-grid {
+  display: grid;
+  gap: var(--space-8);
+  margin-top: var(--space-10);
+}
+.share-grid label,
+.share-result label {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--w-bold);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+}
+.share-grid input,
+.share-result input {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: var(--w-regular);
+  letter-spacing: 0;
+  padding: 10px;
+  text-transform: none;
+}
+.share-grid input::placeholder {
+  color: var(--fg-label);
+}
+.share-status {
+  min-height: 20px;
+  margin-top: var(--space-8);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+.share-status.error {
+  color: var(--danger);
+}
+.share-result {
+  display: grid;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  padding: var(--space-8);
+}
+.share-result[hidden] {
+  display: none;
+}
+.share-copy-row {
+  display: flex;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.share-copy-row input {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.share-copy-btn {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--w-bold);
+  padding: 0 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.share-copy-btn:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+.share-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  margin-top: var(--space-12);
+}
+.share-cancel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--w-bold);
+  padding: 9px 14px;
+  cursor: pointer;
+}
+.share-cancel:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
 .layout {
   height: calc(100vh - var(--bar-h));
   min-height: 0;
@@ -738,5 +910,12 @@ body.layout-gate-active iframe#artifact {
   }
   .pill-preview {
     max-width: min(220px, 70vw);
+  }
+  .share-overlay {
+    align-items: start;
+    padding: var(--space-8);
+  }
+  .share-copy-row {
+    flex-direction: column;
   }
 }

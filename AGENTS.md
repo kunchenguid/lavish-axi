@@ -93,6 +93,25 @@ Hand-edited files in `dist/` won't trigger reloads.
 Run `lavish-axi server --verbose` (or set `LAVISH_AXI_DEBUG=1`) to log session and watcher events to stderr when diagnosing wedges.
 Detached server stdout/stderr is also appended to `server.log` in `LAVISH_AXI_STATE_DIR` (default `~/.lavish-axi/server.log`) for startup and crash diagnostics.
 
+### Export (local-asset inlining)
+
+`src/export-bundle.js` (`buildSelfContainedHtml`) turns an artifact into one portable HTML file by inlining only its **local** assets: local `<link rel="stylesheet">`/`<script src>` become inline `<style>`/`<script>`, and local images/fonts/icons, `file://` refs, and CSS `url(...)`/`@import` become data URIs (recursively, resolved relative to each stylesheet).
+**Remote references are deliberately left as-is** - `http(s)` and protocol-relative CDN/font URLs, and remote CSS `url(...)`, stay in the output and the browser loads them at render time.
+The transform therefore makes **no outbound requests** (no fetching, no SSRF); its only security surface is local file reading, which is confined to the artifact directory both lexically (`confineDir`) and by **real-path/symlink resolution** in the default `readLocalFile` (`guardedRead`), so a symlink inside the directory can't exfiltrate an outside file (e.g. `~/.ssh/id_rsa`) into a shared bundle.
+Local reads are bounded by per-asset (10 MB) and per-bundle (25 MB) caps (`LAVISH_AXI_EXPORT_MAX_ASSET_BYTES` / `_MAX_BUNDLE_BYTES`); the injected Lavish SDK is stripped; in-document fragment refs (`#a`, encoded `%23a`) are left alone; inlined `</script>`/`</style>` are escaped so they can't break out; and the transform records a `warnings` list (`load-failed`, `outside-root`, `too-large`) for **local** refs it could not inline rather than failing.
+The transform is dependency-injectable (`readLocalFile`, `resolveAbsolute`, `confineDir`, size caps) so it is testable without disk; the server passes `resolveAbsolute: resolveDesignAssetPath` to inline legacy `/design/*` references from the packaged assets.
+The browser surfaces it as an **Export standalone HTML** item in the chrome overflow menu, which `GET`s `/api/:key/export` and blob-downloads `<name>.export.html`; the CLI exposes the same transform as `lavish-axi export <html-file> [--out <path>]`, server-independently.
+Because remote CDN/font references are left as links, **a static export needs network to render those remote assets** - this is documented behavior. Lavish itself sets **no** `Content-Security-Policy` on any response (the sandboxed iframe relies on the `sandbox` attribute, not CSP).
+
+### Hosted sharing (ht-ml.app)
+
+`src/html-app.js` (`publishToHtmlApp`) publishes the local-inlined HTML to [ht-ml.app](https://ht-ml.app) - an HTML host with a REST API built for agents - and returns a public, visitable URL.
+It `POST`s the bundle to `POST {LAVISH_AXI_HTML_APP_API_URL or https://api.ht-ml.app}/v1/sites` as `{ html_content, password? }`; **creating a site needs no account or API key**.
+The response carries the public `url` plus a secret `update_key` (returned once, the only credential, used later to update or delete the page). An optional bearer token (`LAVISH_AXI_HTML_APP_TOKEN` / `--token`) is sent when set but is never required.
+Remote CDN/font references in the published page load fine because ht-ml.app serves hosted pages with no CSP and no sandbox header, so the hosted share renders whether or not the viewer's network reaches those CDNs.
+The browser surfaces a **Publish public link** overflow-menu item that opens a share dialog and `POST`s `/api/:key/share`; the route is **same-origin guarded** (`isSameOriginRequest`) because publishing is a state-changing, outward-facing action - a cross-origin page must not drive a publish through the loopback server. The CLI exposes `lavish-axi share <html-file> [--password <pw>] [--token <t>]`, server-independently.
+**Everything published is public** - the dialog and CLI output say so, and never include the annotation SDK.
+
 ### AXI integration
 
 The CLI is built on `axi-sdk-js` (`runAxiCli`).
