@@ -469,6 +469,19 @@ test("share output reports the public url and the secret update key", () => {
   assert.match(output.next_step, /x\.ht-ml\.app/);
 });
 
+test("share output surfaces local assets that could not be inlined", () => {
+  const output = createShareOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
+    warnings: [{ kind: "load-failed", ref: "./missing.png" }],
+  });
+
+  assert.equal(output.share.unresolved_local_assets, 1);
+  assert.deepEqual(output.unresolved_local_assets, [{ kind: "load-failed", ref: "./missing.png" }]);
+  assert.match(output.next_step, /LOCAL assets could not be inlined/);
+  assert.doesNotMatch(output.next_step, /share this URL/);
+});
+
 test("share command publishes the artifact to ht-ml.app and returns the public url", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
   const artifact = `${dir}/report.html`;

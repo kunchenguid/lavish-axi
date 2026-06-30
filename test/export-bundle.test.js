@@ -78,6 +78,26 @@ test("inlines local images referenced by src into data URIs", async () => {
   assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
 });
 
+test("does not rewrite markup-like text inside scripts, styles, or comments", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    "<!doctype html><html><head><style>.before{content:\"<img src='pic.png'>\"}</style></head><body>" +
+    "<script>const template = \"<img src='pic.png'>\";</script>" +
+    '<!-- <img src="pic.png"> -->' +
+    '<img src="pic.png" alt="x">' +
+    "</body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.match(out, /\.before\{content:"<img src='pic\.png'>"\}/);
+  assert.match(out, /const template = "<img src='pic\.png'>";/);
+  assert.match(out, /<!-- <img src="pic\.png"> -->/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="x">/);
+  assert.equal(warnings.length, 0);
+});
+
 test("decodes percent-encoded local asset paths before resolving them", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html = '<!doctype html><html><body><img src="my%20image.png?v=1#crop"></body></html>';
@@ -211,6 +231,17 @@ test("leaves in-document fragment references (including encoded %23) untouched",
 
   assert.match(out, /url\(%23grad\)/);
   assert.match(out, /url\(#m\)/);
+  assert.equal(warnings.length, 0);
+});
+
+test("preserves external SVG fragments when inlining local references", async () => {
+  const html = '<!doctype html><html><body><svg><use href="icons.svg#check"></use></svg></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/icons.svg": '<svg><symbol id="check"></symbol></svg>' }),
+  });
+
+  assert.match(out, /<use href="data:image\/svg\+xml;base64,[^"]+#check">/);
   assert.equal(warnings.length, 0);
 });
 

@@ -358,6 +358,13 @@ export function createExportOutput({ source, output, html, warnings }) {
   return result;
 }
 
+function assetWarningSummaries(warnings) {
+  return (Array.isArray(warnings) ? warnings : []).map((warning) => ({
+    kind: warning.kind,
+    ref: warning.ref,
+  }));
+}
+
 // Publish the artifact as a PUBLIC, visitable page on ht-ml.app. Builds the same local-inlined
 // HTML as `export` (remote refs left as links), then POSTs it to ht-ml.app's `/v1/sites` API,
 // which needs no account or API key, and returns the public URL plus the secret update_key for
@@ -384,7 +391,7 @@ async function shareCommand(args) {
 
 export function createShareOutput({ source, site, warnings }) {
   const remaining = Array.isArray(warnings) ? warnings : [];
-  return {
+  const result = {
     share: {
       source,
       url: site.url,
@@ -394,11 +401,20 @@ export function createShareOutput({ source, site, warnings }) {
       public: true,
       unresolved_local_assets: remaining.length,
     },
-    next_step:
+  };
+  if (remaining.length) {
+    result.unresolved_local_assets = assetWarningSummaries(remaining);
+    result.next_step =
+      `Published ${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it. ` +
+      `Remote CDN/font references are intentionally left as links and render where there is network access. ` +
+      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery).`;
+  } else {
+    result.next_step =
       `Published a PUBLIC page that anyone with the link can view: ${site.url} - share this URL with the user. ` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
-      `ht-ml.app hosts the page, so it needs no Lavish server.`,
-  };
+      `ht-ml.app hosts the page, so it needs no Lavish server.`;
+  }
+  return result;
 }
 
 // Explicitly shut down the running Lavish Editor server. Unlike `end` (which closes a single

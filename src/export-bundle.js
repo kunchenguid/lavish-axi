@@ -45,6 +45,8 @@ const EXT_MIME = {
 const DEFAULT_MAX_DEPTH = 8;
 const DEFAULT_MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 25 * 1024 * 1024;
+const RAW_TEXT_OR_COMMENT_RE =
+  /<!--[\s\S]*?-->|<style\b[^>]*>[\s\S]*?<\/style\s*>|<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
 
 /**
  * @param {string} html
@@ -95,15 +97,37 @@ export function exportFileName(file) {
 
 async function transform(html, ctx) {
   const baseDir = ctx.baseDir;
-  let result = stripLavishSdk(html);
-  result = await replaceAsync(result, /<style\b([^>]*)>([\s\S]*?)<\/style>/gi, async (match, attrs, css) => {
+  let result = "";
+  let lastIndex = 0;
+  for (const match of html.matchAll(RAW_TEXT_OR_COMMENT_RE)) {
+    const offset = match.index || 0;
+    result += await transformMarkup(html.slice(lastIndex, offset), baseDir, ctx);
+    result += await transformRawTextOrComment(match[0], baseDir, ctx);
+    lastIndex = offset + match[0].length;
+  }
+  result += await transformMarkup(html.slice(lastIndex), baseDir, ctx);
+  return result;
+}
+
+async function transformRawTextOrComment(segment, baseDir, ctx) {
+  if (segment.startsWith("<!--")) return segment;
+  const style = segment.match(/^<style\b([^>]*)>([\s\S]*?)<\/style\s*>$/i);
+  if (style) {
+    const [, attrs, css] = style;
     return `<style${attrs}>${escapeRawText(await inlineCss(css, baseDir, ctx, 0), "style")}</style>`;
-  });
+  }
+  const script = segment.match(/^<script\b([^>]*)>([\s\S]*?)<\/script\s*>$/i);
+  if (script) {
+    const [, attrs, body] = script;
+    return inlineScript(segment, attrs, body, baseDir, ctx);
+  }
+  return segment;
+}
+
+async function transformMarkup(markup, baseDir, ctx) {
+  let result = markup;
   result = await replaceAsync(result, /<link\b([^>]*?)\/?>/gi, (match, attrs) =>
     inlineLink(match, attrs, baseDir, ctx),
-  );
-  result = await replaceAsync(result, /<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (match, attrs, body) =>
-    inlineScript(match, attrs, body, baseDir, ctx),
   );
   result = await replaceAsync(result, /<(img|source|video|audio)\b([^>]*?)\/?>/gi, async (match, tag, attrs) => {
     return `<${tag}${await inlineMediaAttrs(attrs, baseDir, ctx)}>`;
@@ -120,14 +144,6 @@ async function transform(html, ctx) {
     return `style=${quote}${await inlineCssUrls(value, baseDir, ctx)}${quote}`;
   });
   return result;
-}
-
-// The SDK is appended only when the server serves the artifact; a file read from disk should
-// not carry it, but strip defensively so an exported page never points back at /sdk.js.
-function stripLavishSdk(html) {
-  return html.replace(/<script\b([^>]*)>\s*<\/script>/gi, (match, attrs) =>
-    isInjectedLavishSdkSrc(getAttr(attrs, "src")) ? "" : match,
-  );
 }
 
 async function inlineLink(match, attrs, baseDir, ctx) {
@@ -282,7 +298,8 @@ async function loadDataUri(ref, baseDir, ctx) {
   }
   const buffer = await readBudgeted(descriptor, ref, ctx);
   if (!buffer) return null;
-  return toDataUri(buffer, pickMime(descriptor.path));
+  const mime = pickMime(descriptor.path);
+  return `${toDataUri(buffer, mime)}${mime === "image/svg+xml" ? fragmentSuffix(ref) : ""}`;
 }
 
 function warnUnsupportedScriptTiming(ref, baseDir, ctx) {
@@ -396,6 +413,12 @@ function isOutside(root, target) {
 
 function stripQueryAndHash(ref) {
   return ref.replace(/[?#].*$/, "");
+}
+
+function fragmentSuffix(ref) {
+  const value = String(ref).trim();
+  const hashIndex = value.indexOf("#");
+  return hashIndex === -1 ? "" : value.slice(hashIndex);
 }
 
 function decodeLocalPath(ref) {
