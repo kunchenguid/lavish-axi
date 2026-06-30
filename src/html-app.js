@@ -1,9 +1,10 @@
 // Hosted sharing transport: publish a self-contained HTML page to ht-ml.app
-// (https://ht-ml.app), an HTML host with a REST API built for agents, and return the public
-// URL anyone can visit. Creation needs no account or API key - `POST /v1/sites` accepts the
-// HTML and returns a public `url` plus a secret `update_key` (the only credential, returned
-// once, used later to update or delete the page). An optional bearer token is supported for
-// callers who have one but is never required. Everything published is PUBLIC.
+// (https://ht-ml.app), an HTML host with a REST API built for agents, and return a visitable
+// share URL. Creation needs no account or API key - `POST /v1/sites` accepts the HTML and an
+// optional password, then returns a `url` plus a secret `update_key` (the only credential,
+// returned once, used later to update or delete the page). Shares are public by default; when
+// a password is supplied, viewers must enter it before viewing. An optional bearer token is
+// supported for callers who have one but is never required.
 
 const DEFAULT_API_URL = "https://api.ht-ml.app";
 const PUBLISH_TIMEOUT_MS = 30_000;

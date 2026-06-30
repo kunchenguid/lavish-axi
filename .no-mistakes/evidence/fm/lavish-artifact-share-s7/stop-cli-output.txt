@@ -1,0 +1,3 @@
+server:
+  status: stopped
+  port: 49387

@@ -274,8 +274,8 @@ export async function serve({
   });
 
   // Hosted share: build the local-inlined artifact and publish it to ht-ml.app, returning the
-  // public URL. Remote CDN/font references are left intact (ht-ml.app serves pages with no CSP, so
-  // they load fine). Publishing makes the page public on a third-party host, so this is gated
+  // share URL. Remote CDN/font references are left intact for the viewer's browser to load.
+  // Publishing creates a public third-party page unless a password is supplied, so this is gated
   // behind a same-origin check - a cross-origin page must not be able to drive a publish via the
   // loopback server.
   app.post("/api/:key/share", async (req, res, next) => {
@@ -599,7 +599,7 @@ function encodeRfc5987Value(value) {
   );
 }
 
-// Guard state-changing, outward-facing routes (publishing to a public host) against CSRF: a
+// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
 // browser attaches an Origin/Referer that must match this server's own origin.
 function isSameOriginRequest(req) {
   const expectedOrigin = `${req.protocol}://${req.get("host")}`;

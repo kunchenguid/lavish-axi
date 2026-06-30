@@ -1,0 +1,7 @@
+export:
+  source: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWB9DT3QYMFQ907SYPCEHD23/.no-mistakes/evidence/fm/lavish-artifact-share-s7/artifact/index.html
+  output: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWB9DT3QYMFQ907SYPCEHD23/.no-mistakes/evidence/fm/lavish-artifact-share-s7/artifact.export.html
+  bytes: 4457
+  unresolved_local_assets: 0
+  notices: 0
+next_step: "Wrote /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWB9DT3QYMFQ907SYPCEHD23/.no-mistakes/evidence/fm/lavish-artifact-share-s7/artifact.export.html. Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those."

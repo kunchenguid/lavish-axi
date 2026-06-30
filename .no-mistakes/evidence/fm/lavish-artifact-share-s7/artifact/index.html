@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Lavish Export Evidence</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdn.example.test/lavish-remote.css">
+    <script src="behavior.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Artifact sharing evidence</p>
+          <h1>Portable export keeps the review surface intact.</h1>
+          <p class="lede">
+            Local CSS, JavaScript, SVG, and CSS imports are expected to be inlined into one HTML file.
+            The remote stylesheet URL is expected to stay external.
+          </p>
+        </div>
+        <img class="badge" src="badge.svg" alt="Local SVG badge">
+      </section>
+
+      <section class="checks" aria-label="Export checks">
+        <article>
+          <span class="check-label">Local CSS</span>
+          <strong>Rendered from style.css and theme.css</strong>
+        </article>
+        <article>
+          <span class="check-label">Local script</span>
+          <strong id="runtime-status">JavaScript pending</strong>
+        </article>
+        <article>
+          <span class="check-label">Remote reference</span>
+          <strong>https://cdn.example.test/lavish-remote.css</strong>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

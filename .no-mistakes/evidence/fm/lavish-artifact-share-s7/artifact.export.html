@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Lavish Export Evidence</title>
+    <style>:root {
+  --ink: #172332;
+  --accent: #1f7a8c;
+}
+
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 20% 18%, rgba(255, 255, 255, 0.7), transparent 28rem),
+    linear-gradient(135deg, #f6f8fb 0%, #e8eef4 44%, #f8efe4 100%);
+  color: var(--ink);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.shell {
+  width: min(960px, calc(100vw - 48px));
+  border: 1px solid rgba(24, 42, 58, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 24px 70px rgba(24, 42, 58, 0.16);
+  padding: 28px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 148px;
+  align-items: center;
+  gap: 28px;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  max-width: 640px;
+  margin: 0;
+  font-size: clamp(34px, 5vw, 58px);
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.lede {
+  max-width: 640px;
+  margin: 16px 0 0;
+  color: #4c5b68;
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.badge {
+  width: 148px;
+  height: 148px;
+}
+
+.checks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 26px;
+}
+
+.checks article {
+  min-width: 0;
+  border: 1px solid rgba(24, 42, 58, 0.11);
+  border-radius: 8px;
+  background: #f9fbfd;
+  padding: 14px;
+}
+
+.check-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #738391;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.checks strong {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #152330;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    width: min(100vw - 24px, 520px);
+    padding: 20px;
+  }
+
+  .hero,
+  .checks {
+    grid-template-columns: 1fr;
+  }
+
+  .badge {
+    order: -1;
+    width: 104px;
+    height: 104px;
+  }
+}
+</style>
+    <link rel="stylesheet" href="https://cdn.example.test/lavish-remote.css">
+    <script>document.addEventListener("DOMContentLoaded", () => {
+  const status = document.getElementById("runtime-status");
+  if (status) status.textContent = "JavaScript inlined and running";
+  document.documentElement.dataset.lavishExportReady = "true";
+});
+</script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Artifact sharing evidence</p>
+          <h1>Portable export keeps the review surface intact.</h1>
+          <p class="lede">
+            Local CSS, JavaScript, SVG, and CSS imports are expected to be inlined into one HTML file.
+            The remote stylesheet URL is expected to stay external.
+          </p>
+        </div>
+        <img class="badge" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNDgiIGhlaWdodD0iMTQ4IiB2aWV3Qm94PSIwIDAgMTQ4IDE0OCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJMb2NhbCBTVkcgYmFkZ2UiPgogIDxkZWZzPgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMjAiIHkxPSIxMiIgeDI9IjEyOCIgeTI9IjEzMiIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgogICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjMUY3QThDIiAvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiNGMkIzNUQiIC8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogIDwvZGVmcz4KICA8cmVjdCB4PSI4IiB5PSI4IiB3aWR0aD0iMTMyIiBoZWlnaHQ9IjEzMiIgcng9IjI2IiBmaWxsPSJ1cmwoI2cpIiAvPgogIDxwYXRoIGQ9Ik00MCA3OGwyMSAyMSA0OC01NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIC8+Cjwvc3ZnPgo=" alt="Local SVG badge">
+      </section>
+
+      <section class="checks" aria-label="Export checks">
+        <article>
+          <span class="check-label">Local CSS</span>
+          <strong>Rendered from style.css and theme.css</strong>
+        </article>
+        <article>
+          <span class="check-label">Local script</span>
+          <strong id="runtime-status">JavaScript pending</strong>
+        </article>
+        <article>
+          <span class="check-label">Remote reference</span>
+          <strong>https://cdn.example.test/lavish-remote.css</strong>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "method": "POST",
+  "path": "/v1/sites",
+  "content_type": "application/json",
+  "user_agent": "lavish-axi",
+  "password_protected": true,
+  "password_value_recorded": false,
+  "html_bytes": 4457,
+  "html_checks": {
+    "has_inlined_style": true,
+    "has_inlined_script": true,
+    "has_inlined_svg_data_uri": true,
+    "preserves_remote_stylesheet": true,
+    "removes_local_stylesheet_ref": true,
+    "removes_local_script_ref": true,
+    "removes_local_image_ref": true
+  }
+}

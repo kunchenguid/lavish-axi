@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="148" height="148" viewBox="0 0 148 148" role="img" aria-label="Local SVG badge">
+  <defs>
+    <linearGradient id="g" x1="20" y1="12" x2="128" y2="132" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1F7A8C"/>
+      <stop offset="1" stop-color="#F2B35D"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="132" height="132" rx="26" fill="url(#g)"/>
+  <path d="M40 78l21 21 48-55" fill="none" stroke="#fff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
