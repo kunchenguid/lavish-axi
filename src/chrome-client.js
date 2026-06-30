@@ -513,14 +513,19 @@ function setExportLabel(text) {
   if (label) label.textContent = text;
 }
 
+function unresolvedAssetText(count) {
+  return count === 1 ? "1 unresolved asset" : `${count} unresolved assets`;
+}
+
 async function exportArtifact() {
-  // The bundle inlines remote assets server-side, so it can take a moment - keep the menu open
+  // The bundle inlines local assets server-side, so it can take a moment - keep the menu open
   // and narrate progress in place instead of closing it and leaving the user with no feedback.
   exportArtifactButton.disabled = true;
   setExportLabel("Exporting...");
   try {
     const response = await fetch("/api/" + key + "/export");
     if (!response.ok) throw new Error("export failed");
+    const warningCount = Number(response.headers.get("x-lavish-export-warning-count") || "0");
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -530,8 +535,12 @@ async function exportArtifact() {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    setExportLabel("Export standalone HTML");
-    closeMenus();
+    if (warningCount > 0) {
+      setExportLabel(`Exported with ${unresolvedAssetText(warningCount)}`);
+    } else {
+      setExportLabel("Export standalone HTML");
+      closeMenus();
+    }
   } catch {
     setExportLabel("Export failed - retry");
   } finally {
@@ -576,7 +585,11 @@ async function publishShare(event) {
     if (!response.ok) throw new Error(data.error || "publish failed");
     shareUrlInput.value = data.url || "";
     shareUpdateKeyInput.value = data.update_key || "";
-    shareStatus.textContent = "Published. Anyone with the link can view this page.";
+    const warningCount = Array.isArray(data.warnings) ? data.warnings.length : 0;
+    shareStatus.textContent =
+      warningCount > 0
+        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}.`
+        : "Published. Anyone with the link can view this page.";
     shareResult.hidden = false;
     shareUrlInput.focus();
     shareUrlInput.select();

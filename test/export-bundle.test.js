@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -128,6 +128,17 @@ test("strips the injected Lavish SDK script so exports do not phone home to the 
   assert.match(out, /<h1>Hi<\/h1>/);
 });
 
+test("keeps artifact dependencies that happen to be named sdk.js", async () => {
+  const html = '<!doctype html><html><body><script src="vendor/sdk.js"></script></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/vendor/sdk.js": "window.vendorSdk = true;" }),
+  });
+
+  assert.match(out, /<script>window\.vendorSdk = true;<\/script>/);
+  assert.equal(warnings.length, 0);
+});
+
 test("resolves root-absolute references through resolveAbsolute (e.g. legacy /design assets)", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" href="/design/daisyui.css"></head><body></body></html>';
@@ -138,6 +149,31 @@ test("resolves root-absolute references through resolveAbsolute (e.g. legacy /de
   });
 
   assert.match(out, /<style>\.btn\{color:blue\}<\/style>/);
+});
+
+test("default reader allows trusted root-absolute mapped design assets outside the artifact root", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
+  try {
+    const artDir = path.join(root, "art");
+    const designDir = path.join(root, "pkg", "design");
+    await mkdir(artDir, { recursive: true });
+    await mkdir(designDir, { recursive: true });
+    const designAsset = path.join(designDir, "daisyui.css");
+    await writeFile(designAsset, ".btn{color:blue}");
+
+    const html =
+      '<!doctype html><html><head><link rel="stylesheet" href="/design/daisyui.css"></head><body></body></html>';
+    const { html: out, warnings } = await buildSelfContainedHtml(html, {
+      baseDir: artDir,
+      confineDir: artDir,
+      resolveAbsolute: (refPath) => (refPath === "/design/daisyui.css" ? designAsset : null),
+    });
+
+    assert.match(out, /<style>\.btn\{color:blue\}<\/style>/);
+    assert.equal(warnings.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("leaves in-document fragment references (including encoded %23) untouched", async () => {
@@ -201,6 +237,30 @@ test("skips a local asset that exceeds the per-asset size cap and leaves it as a
   assert.match(out, /<img src="big\.png">/);
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0].kind, "too-large");
+});
+
+test("default reader rejects oversized assets before attempting to read them", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
+  const big = path.join(root, "big.png");
+  try {
+    await writeFile(big, Buffer.alloc(2048, 1));
+    await chmod(big, 0);
+
+    const html = '<!doctype html><html><body><img src="big.png"></body></html>';
+    const { html: out, warnings } = await buildSelfContainedHtml(html, {
+      baseDir: root,
+      confineDir: root,
+      maxAssetBytes: 1024,
+    });
+
+    assert.match(out, /<img src="big\.png">/);
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].kind, "too-large");
+    assert.match(warnings[0].reason || "", /per-asset cap/);
+  } finally {
+    await chmod(big, 0o600).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("exportFileName derives a portable .export.html name", () => {

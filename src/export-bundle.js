@@ -1,4 +1,4 @@
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,7 +50,7 @@ const DEFAULT_MAX_BUNDLE_BYTES = 25 * 1024 * 1024;
  * @param {string} html
  * @param {object} [options]
  * @param {string} [options.baseDir] Directory to resolve relative references against.
- * @param {(absPath: string) => Promise<Uint8Array>} [options.readLocalFile] Read a local file (default applies the real-path confinement guard).
+ * @param {(absPath: string, readOptions?: { allowOutsideRoot?: boolean, maxAssetBytes?: number, maxBundleBytes?: number, maxBundleRemaining?: number }) => Promise<Uint8Array>} [options.readLocalFile] Read a local file (default applies the real-path confinement guard).
  * @param {(refPath: string) => (string|null)} [options.resolveAbsolute] Map a root-absolute ref (e.g. /design/x.css) to a local path.
  * @param {string} [options.confineDir] Reject local refs that resolve (lexically or via symlink) outside this directory.
  * @param {number} [options.maxAssetBytes] Per-asset inline cap; larger local files are left as references with a warning.
@@ -63,7 +63,10 @@ export async function buildSelfContainedHtml(html, options = {}) {
   const ctx = {
     baseDir: options.baseDir || process.cwd(),
     confineDir,
-    readLocalFile: options.readLocalFile || ((absPath) => guardedRead(absPath, confineDir)),
+    readLocalFile:
+      options.readLocalFile ||
+      ((absPath, readOptions = {}) =>
+        guardedRead(absPath, readOptions.allowOutsideRoot ? null : confineDir, readOptions)),
     resolveAbsolute: typeof options.resolveAbsolute === "function" ? options.resolveAbsolute : () => null,
     maxAssetBytes: resolveBytes(
       options.maxAssetBytes,
@@ -122,9 +125,8 @@ async function transform(html, ctx) {
 // The SDK is appended only when the server serves the artifact; a file read from disk should
 // not carry it, but strip defensively so an exported page never points back at /sdk.js.
 function stripLavishSdk(html) {
-  return html.replace(
-    /<script\b[^>]*\bsrc\s*=\s*("[^"]*\/sdk\.js[^"]*"|'[^']*\/sdk\.js[^']*')[^>]*>\s*<\/script>/gi,
-    "",
+  return html.replace(/<script\b([^>]*)>\s*<\/script>/gi, (match, attrs) =>
+    isInjectedLavishSdkSrc(getAttr(attrs, "src")) ? "" : match,
   );
 }
 
@@ -153,7 +155,7 @@ async function inlineLink(match, attrs, baseDir, ctx) {
 async function inlineScript(match, attrs, body, baseDir, ctx) {
   const src = getAttr(attrs, "src");
   if (!src) return match;
-  if (/\/sdk\.js(\?|"|'|$)/i.test(src)) return "";
+  if (isInjectedLavishSdkSrc(src)) return "";
 
   const loaded = await loadText(src, baseDir, ctx);
   if (!loaded) return match;
@@ -249,7 +251,7 @@ function resolveRef(ref, baseDir, ctx) {
   const localRef = stripQueryAndHash(trimmed);
   if (trimmed.startsWith("/")) {
     const mapped = ctx.resolveAbsolute(localRef);
-    return mapped ? { kind: "file", path: mapped } : { kind: "skip" };
+    return mapped ? { kind: "file", path: mapped, allowOutsideRoot: true } : { kind: "skip" };
   }
   const resolved = path.resolve(baseDir, localRef);
   if (ctx.confineDir && isOutside(ctx.confineDir, resolved)) return { kind: "escape", path: resolved };
@@ -262,7 +264,7 @@ async function loadText(ref, baseDir, ctx) {
     if (descriptor.kind === "escape") ctx.warnings.push({ kind: "outside-root", ref });
     return null;
   }
-  const buffer = await readBudgeted(descriptor.path, ref, ctx);
+  const buffer = await readBudgeted(descriptor, ref, ctx);
   if (!buffer) return null;
   return { text: buffer.toString("utf8"), baseDir: path.dirname(descriptor.path) };
 }
@@ -273,20 +275,34 @@ async function loadDataUri(ref, baseDir, ctx) {
     if (descriptor.kind === "escape") ctx.warnings.push({ kind: "outside-root", ref });
     return null;
   }
-  const buffer = await readBudgeted(descriptor.path, ref, ctx);
+  const buffer = await readBudgeted(descriptor, ref, ctx);
   if (!buffer) return null;
   return toDataUri(buffer, pickMime(descriptor.path));
 }
 
 // Read a local file, enforcing per-asset and per-bundle size caps so a huge local asset cannot
 // blow up memory or the bundle. The real-path confinement guard lives in the default readLocalFile.
-async function readBudgeted(absPath, ref, ctx) {
+async function readBudgeted(descriptor, ref, ctx) {
+  const remainingBundleBytes = ctx.maxBundleBytes - ctx.inlinedBytes;
+  if (remainingBundleBytes <= 0) {
+    ctx.warnings.push({ kind: "too-large", ref, reason: `would exceed per-bundle cap ${ctx.maxBundleBytes}` });
+    return null;
+  }
   let buffer;
   try {
-    buffer = toBuffer(await ctx.readLocalFile(absPath));
+    buffer = toBuffer(
+      await ctx.readLocalFile(descriptor.path, {
+        allowOutsideRoot: Boolean(descriptor.allowOutsideRoot),
+        maxAssetBytes: ctx.maxAssetBytes,
+        maxBundleBytes: ctx.maxBundleBytes,
+        maxBundleRemaining: remainingBundleBytes,
+      }),
+    );
   } catch (error) {
     if (error && error.code === "OUTSIDE_ROOT") {
       ctx.warnings.push({ kind: "outside-root", ref });
+    } else if (error && error.code === "TOO_LARGE") {
+      ctx.warnings.push({ kind: "too-large", ref, reason: error instanceof Error ? error.message : String(error) });
     } else {
       ctx.warnings.push({ kind: "load-failed", ref, reason: error instanceof Error ? error.message : String(error) });
     }
@@ -311,7 +327,7 @@ async function readBudgeted(absPath, ref, ctx) {
 // Default local read: resolve the real (symlink-followed) path and refuse to read anything that
 // escapes the artifact directory, so a symlink inside the directory cannot exfiltrate an outside
 // file (e.g. ~/.ssh/id_rsa) into an exported or publicly shared bundle.
-async function guardedRead(absPath, confineDir) {
+async function guardedRead(absPath, confineDir, readOptions = {}) {
   const real = await realpath(absPath);
   if (confineDir) {
     let root;
@@ -326,6 +342,17 @@ async function guardedRead(absPath, confineDir) {
       });
     }
   }
+  const stats = await stat(real);
+  if (Number.isFinite(readOptions.maxAssetBytes) && stats.size > readOptions.maxAssetBytes) {
+    throw Object.assign(new Error(`${stats.size} bytes exceeds per-asset cap ${readOptions.maxAssetBytes}`), {
+      code: "TOO_LARGE",
+    });
+  }
+  if (Number.isFinite(readOptions.maxBundleRemaining) && stats.size > readOptions.maxBundleRemaining) {
+    throw Object.assign(new Error(`would exceed per-bundle cap ${readOptions.maxBundleBytes}`), {
+      code: "TOO_LARGE",
+    });
+  }
   return readFile(real);
 }
 
@@ -335,6 +362,13 @@ function isInert(ref) {
   // `#a` and its percent-encoded form `%23a` are in-document fragment references (e.g. SVG
   // filter/mask ids), not fetchable resources, so leave them untouched.
   return !ref || ref.startsWith("#") || /^%23/i.test(ref) || /^(data|blob|about|javascript|mailto|tel):/i.test(ref);
+}
+
+function isInjectedLavishSdkSrc(src) {
+  const value = String(src || "").trim();
+  if (!value.startsWith("/sdk.js?")) return false;
+  const params = new URLSearchParams(value.slice("/sdk.js?".length));
+  return params.has("key");
 }
 
 function isOutside(root, target) {

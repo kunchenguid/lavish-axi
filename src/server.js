@@ -253,12 +253,14 @@ export async function serve({
       }
       const source = await readFile(session.file, "utf8");
       const root = path.dirname(session.file);
-      const { html } = await buildSelfContainedHtml(source, {
+      const { html, warnings } = await buildSelfContainedHtml(source, {
         baseDir: root,
         confineDir: root,
         resolveAbsolute: resolveDesignAssetPath,
       });
       res.setHeader("content-disposition", `attachment; filename="${exportFileName(session.file)}"`);
+      res.setHeader("x-lavish-export-warning-count", String(warnings.length));
+      if (warnings.length) res.setHeader("x-lavish-export-warnings", encodeURIComponent(JSON.stringify(warnings)));
       res.type("html").send(html);
     } catch (error) {
       next(error);
@@ -284,7 +286,7 @@ export async function serve({
       const body = req.body || {};
       const source = await readFile(session.file, "utf8");
       const root = path.dirname(session.file);
-      const { html } = await buildSelfContainedHtml(source, {
+      const { html, warnings } = await buildSelfContainedHtml(source, {
         baseDir: root,
         confineDir: root,
         resolveAbsolute: resolveDesignAssetPath,
@@ -296,7 +298,7 @@ export async function serve({
         res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
         return;
       }
-      res.json(site);
+      res.json(warnings.length ? { ...site, warnings } : site);
     } catch (error) {
       next(error);
     }

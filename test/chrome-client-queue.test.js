@@ -61,6 +61,7 @@ async function createChromeHarness({
       scrollTop: 0,
       scrollHeight: 0,
       dataset: {},
+      onclick: null,
       classList: {
         add(...names) {
           for (const name of names) classes.add(name);
@@ -91,9 +92,20 @@ async function createChromeHarness({
       querySelectorAll() {
         return [];
       },
+      querySelector(selector) {
+        if (selector !== "span") return null;
+        const childId = `${id}:span`;
+        if (!elements.has(childId)) element(childId);
+        return elements.get(childId);
+      },
       appendChild(child) {
         child.parentElement = this;
         return child;
+      },
+      click(event = {}) {
+        this.clicked = true;
+        if (typeof this.onclick === "function") return this.onclick(event);
+        return undefined;
       },
       remove() {},
       focus() {
@@ -131,6 +143,12 @@ async function createChromeHarness({
     location: { reload() {} },
     navigator: {},
     setTimeout: fakeSetTimeout,
+    URL: {
+      createObjectURL() {
+        return "blob:lavish-test";
+      },
+      revokeObjectURL() {},
+    },
     EventSource: class FakeEventSource {
       constructor(url) {
         this.url = url;
@@ -262,6 +280,47 @@ test("chrome client posts layout warnings from the artifact iframe", async () =>
       },
     ],
   });
+});
+
+test("chrome client surfaces export warnings from the server response", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      headers: {
+        get(name) {
+          if (name.toLowerCase() === "x-lavish-export-warning-count") return "1";
+          return null;
+        },
+      },
+      blob: async () => ({}),
+    }),
+  });
+
+  await chrome.element("exportArtifact").onclick();
+  await flushPromises();
+
+  assert.equal(chrome.element("exportArtifact").querySelector("span").textContent, "Exported with 1 unresolved asset");
+});
+
+test("chrome client surfaces share warnings from the server response", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        url: "https://abc123.ht-ml.app/",
+        update_key: "uk_secret",
+        warnings: [{ kind: "load-failed", ref: "missing.png" }],
+      }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+  assert.equal(typeof submit, "function");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.equal(chrome.element("shareStatus").textContent, "Published with 1 unresolved local asset.");
+  assert.equal(chrome.element("shareResult").hidden, false);
 });
 
 test("chrome client registers message listener before loading the artifact iframe", async () => {

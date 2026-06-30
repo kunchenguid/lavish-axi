@@ -1075,6 +1075,38 @@ test("GET /api/:key/export inlines local assets and leaves remote references int
   }
 });
 
+test("GET /api/:key/export reports unresolved local asset warnings", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, '<!doctype html><html><body><img src="missing.png"></body></html>');
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const exportRes = await fetch(`${base}/api/${session.key}/export`);
+    const body = await exportRes.text();
+    const warnings = JSON.parse(decodeURIComponent(exportRes.headers.get("x-lavish-export-warnings") || "%5B%5D"));
+
+    assert.equal(exportRes.status, 200);
+    assert.equal(exportRes.headers.get("x-lavish-export-warning-count"), "1");
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].kind, "load-failed");
+    assert.equal(warnings[0].ref, "missing.png");
+    assert.match(warnings[0].reason || "", /ENOENT/);
+    assert.match(body, /<img src="missing\.png">/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GET /api/:key/export returns 404 for an unknown session", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
@@ -1135,6 +1167,49 @@ test("POST /api/:key/share publishes the local-inlined artifact to ht-ml.app", a
     assert.doesNotMatch(requests[0].body.html_content, /sdk\.js/);
     assert.match(requests[0].body.html_content, /<link rel="stylesheet" href="https:\/\/cdn\.example\/app\.css">/);
     assert.equal(requests[0].body.password, "pw");
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share returns unresolved local asset warnings", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, '<!doctype html><html><body><img src="missing.png"><h1>Ship</h1></body></html>');
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const body = await shareRes.json();
+
+    assert.equal(shareRes.status, 200);
+    assert.equal(body.url, "https://abc123.ht-ml.app/");
+    assert.equal(body.warnings.length, 1);
+    assert.equal(body.warnings[0].kind, "load-failed");
+    assert.equal(body.warnings[0].ref, "missing.png");
+    assert.match(body.warnings[0].reason || "", /ENOENT/);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].body.html_content, /<img src="missing\.png">/);
   } finally {
     await server.close();
     await htmlApp.close();
