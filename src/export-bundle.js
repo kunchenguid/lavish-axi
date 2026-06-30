@@ -99,6 +99,7 @@ const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
   "srcdoc-resource",
   "too-large",
   "unmapped-root-absolute",
+  "unterminated-script-src",
   "unsupported-css-import",
   "unsupported-frame",
   "unsupported-script-timing",
@@ -193,7 +194,7 @@ async function transformMarkup(markup, baseDir, ctx) {
     }
     if (token.type === "close") {
       popHtmlParent(openStack, token.tag.toLowerCase());
-      result += token.raw;
+      result += scrubRawTextFileUrls(token.raw, ctx);
       index = token.end;
       continue;
     }
@@ -320,7 +321,7 @@ function isRawTextElementForNamespace(tagName, elementNamespace) {
 async function transformInertContentElement(token, body, closeTag, baseDir, ctx) {
   const tagName = token.tag.toLowerCase();
   const startTag = formatStartTag(token.tag, scrubInertAttrs(tagName, token.attrs, baseDir, ctx), false);
-  return `${startTag}${transformInertMarkup(body, baseDir, ctx)}${closeTag}`;
+  return `${startTag}${transformInertMarkup(body, baseDir, ctx)}${scrubRawTextFileUrls(closeTag, ctx)}`;
 }
 
 async function transformPlaintextElement(token, body, baseDir, ctx) {
@@ -376,7 +377,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       if (INERT_CONTENT_TAGS.has(tagName)) {
         const attrs = scrubInertAttrs(tagName, token.attrs, baseDir, ctx, options);
         result += `${formatStartTag(token.tag, attrs, false)}${transformInertMarkup(body, baseDir, ctx, options)}${
-          close ? close.raw : ""
+          close ? scrubRawTextFileUrls(close.raw, ctx) : ""
         }`;
       } else {
         result += transformInertRawTextElement(token, body, close ? close.raw : "", baseDir, ctx, options);
@@ -398,26 +399,50 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
 
 async function transformRawTextElement(token, body, closeTag, baseDir, ctx, options = {}) {
   const tagName = token.tag.toLowerCase();
+  const safeCloseTag = scrubRawTextFileUrls(closeTag, ctx);
   if (tagName === "style") {
     const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx);
     if (!isCssStyleElementType(token.attrs)) {
-      return `${startTag}${scrubUnsupportedStyleElementBody(body, baseDir, ctx)}${closeTag}`;
+      return `${startTag}${scrubUnsupportedStyleElementBody(body, baseDir, ctx)}${safeCloseTag}`;
     }
-    return `${startTag}${escapeRawText(await inlineCss(body, baseDir, ctx, 0, baseDir), "style")}${closeTag}`;
+    return `${startTag}${escapeRawText(await inlineCss(body, baseDir, ctx, 0, baseDir), "style")}${safeCloseTag}`;
   }
   if (tagName === "script" && options.inSvgNamespace)
-    return inlineSvgScript(token.tag, token.attrs, body, closeTag, baseDir, ctx);
-  if (tagName === "script") return inlineScript(token.tag, token.attrs, body, closeTag, baseDir, ctx);
+    return inlineSvgScript(token.tag, token.attrs, body, safeCloseTag, baseDir, ctx);
+  if (tagName === "script") return inlineScript(token.tag, token.attrs, body, safeCloseTag, baseDir, ctx);
   return `${await transformStartTag(token.tag, token.attrs, false, baseDir, ctx)}${scrubRawTextBodyWithoutInlining(
     tagName,
     token.attrs,
     body,
     baseDir,
     ctx,
-  )}${closeTag}`;
+  )}${safeCloseTag}`;
 }
 
 async function transformUnterminatedRawTextElement(token, body, baseDir, ctx, options = {}) {
+  const tagName = token.tag.toLowerCase();
+  if (tagName === "style") {
+    const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx, "", options.inSvgNamespace);
+    if (!isCssStyleElementType(token.attrs))
+      return `${startTag}${scrubUnsupportedStyleElementBody(body, baseDir, ctx)}`;
+    return `${startTag}${escapeRawText(await inlineCss(body, baseDir, ctx, 0, baseDir), "style")}`;
+  }
+  if (tagName === "script") {
+    if (options.inSvgNamespace) return inlineSvgScript(token.tag, token.attrs, body, "", baseDir, ctx);
+    const src = getAttr(token.attrs, "src");
+    if (!src) return inlineScript(token.tag, token.attrs, body, "", baseDir, ctx);
+    warnUnterminatedScriptSrc(src, baseDir, ctx, HTML_REF_OPTIONS);
+    const startTag = await transformStartTag(
+      token.tag,
+      replaceUnresolvedAttrRef(token.attrs, "src", src),
+      false,
+      baseDir,
+      ctx,
+      "",
+      options.inSvgNamespace,
+    );
+    return `${startTag}${escapeRawText(scrubRawTextFileUrls(body, ctx), "script")}`;
+  }
   const startTag = await transformStartTag(token.tag, token.attrs, false, baseDir, ctx, "", options.inSvgNamespace);
   return `${startTag}${scrubRawTextBodyWithoutInlining(token.tag.toLowerCase(), token.attrs, body, baseDir, ctx)}`;
 }
@@ -437,7 +462,7 @@ function transformInertRawTextElement(token, body, closeTag, baseDir, ctx, optio
     baseDir,
     ctx,
     options,
-  )}${closeTag}`;
+  )}${scrubRawTextFileUrls(closeTag, ctx)}`;
 }
 
 function scrubRawTextBodyWithoutInlining(tagName, attrs, body, baseDir, ctx, options = {}) {
@@ -714,9 +739,26 @@ async function inlineSvgScript(tag, attrs, body, closeTag, baseDir, ctx) {
 
 async function inlineSvgScriptAttrs(attrs, baseDir, ctx) {
   let next = attrs;
-  next = await inlineAttr(next, "href", baseDir, ctx);
-  next = await inlineAttr(next, "xlink:href", baseDir, ctx);
+  next = await inlineSvgScriptAttr(next, "href", baseDir, ctx);
+  next = await inlineSvgScriptAttr(next, "xlink:href", baseDir, ctx);
   return next;
+}
+
+async function inlineSvgScriptAttr(attrs, name, baseDir, ctx) {
+  const value = getAttr(attrs, name);
+  if (!value) return attrs;
+  const descriptor = resolveRef(value, baseDir, ctx, HTML_REF_OPTIONS);
+  if (descriptor.kind !== "file") {
+    warnUnresolvedDescriptor(descriptor, value, ctx);
+    return replaceUnresolvedAttrRef(attrs, name, value);
+  }
+  const buffer = await readBudgeted(descriptor, value, ctx);
+  if (!buffer) return replaceUnresolvedAttrRef(attrs, name, value);
+  const text = scrubClassicScriptFileUrlComments(buffer.toString("utf8"), ctx);
+  const dataUri = `${toDataUri(Buffer.from(text, "utf8"), pickMime(descriptor.path))}${fragmentSuffix(
+    normalizeRefForResolution(value, HTML_REF_OPTIONS),
+  )}`;
+  return replaceAttrValue(attrs, name, dataUri);
 }
 
 async function inlineMediaAttrs(tagName, attrs, baseDir, ctx, parentTag = "") {
@@ -2397,6 +2439,19 @@ function warnExternalModuleScript(ref, baseDir, ctx, options = {}) {
   }
 }
 
+function warnUnterminatedScriptSrc(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "unterminated-script-src",
+      ref,
+      reason: "unterminated script src is left as a reference to preserve raw-text parsing",
+    });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
+  }
+}
+
 function warnUnsupportedScriptType(ref, baseDir, ctx, options = {}) {
   const descriptor = resolveRef(ref, baseDir, ctx, options);
   if (descriptor.kind === "file") {
@@ -2482,7 +2537,8 @@ function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}, inSvg
     const rel = getTokenListAttr(attrs, "rel");
     if (
       rel.includes("stylesheet") ||
-      rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value))
+      rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value)) ||
+      isFetchableLinkRel(rel)
     ) {
       warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS, options);
     }

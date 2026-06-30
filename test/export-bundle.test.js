@@ -1023,6 +1023,36 @@ test("treats unterminated raw-text content as inert through EOF", async () => {
   );
 });
 
+test("reports unterminated active script src while leaving following markup inert", async () => {
+  const readPaths = [];
+  const html = '<!doctype html><html><body><script src="app.js" /><img src="secret.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({
+        "/art/app.js": "console.log(1);",
+        "/art/secret.png": Buffer.from("secret"),
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, []);
+  assert.doesNotMatch(out, /data:/);
+  assert.match(out, /<script src="app\.js" ><img src="secret\.png">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unterminated-raw-text", ref: "script" },
+      { kind: "unterminated-script-src", ref: "app.js" },
+    ],
+  );
+  assert.deepEqual(
+    splitExportWarnings(warnings).unresolved.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "unterminated-script-src", ref: "app.js" }],
+  );
+});
+
 test("treats plaintext content as inert through EOF", async () => {
   const readPaths = [];
   const html =
@@ -1415,6 +1445,24 @@ test("closes raw-text elements on end tags with attributes", async () => {
   assert.deepEqual(readPaths, ["/art/pic.png"]);
   assert.match(out, /<\/script type=x><img src="data:image\/png;base64,cGlj">/);
   assert.equal(warnings.length, 0);
+});
+
+test("scrubs file URLs from close-tag raw text", async () => {
+  const html =
+    '<!doctype html><html><body><script>console.log(1)</script data-path="file:///Users/kun/script.map">' +
+    "<div></div data-path='file:///Users/kun/div.txt'></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, { baseDir: "/art" });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<\/script data-path="about:blank">/);
+  assert.match(out, /<\/div data-path='about:blank'>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file:///Users/kun/script.map" },
+      { kind: "file-url-redacted", ref: "file:///Users/kun/div.txt" },
+    ],
+  );
 });
 
 test("keeps inert raw-text bodies text-only while scrubbing file URLs", async () => {
@@ -2779,6 +2827,34 @@ test("reports raw-text script refs inside active iframe srcdoc as unresolved", a
   );
 });
 
+test("reports fetchable links inside active iframe srcdoc as unresolved", async () => {
+  const html =
+    '<!doctype html><html><body><iframe srcdoc=\'<link rel="modulepreload" href="app.js">' +
+    '<link rel="preload" as="font" href="font.woff2"><link rel="manifest" href="manifest.webmanifest">\'></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.match(out, /srcdoc='<link rel="modulepreload" href="app\.js">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "srcdoc-resource", ref: "app.js" },
+      { kind: "srcdoc-resource", ref: "font.woff2" },
+      { kind: "srcdoc-resource", ref: "manifest.webmanifest" },
+    ],
+  );
+  assert.deepEqual(
+    splitExportWarnings(warnings).unresolved.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "srcdoc-resource", ref: "app.js" },
+      { kind: "srcdoc-resource", ref: "font.woff2" },
+      { kind: "srcdoc-resource", ref: "manifest.webmanifest" },
+    ],
+  );
+});
+
 test("preserves CSP meta content inside iframe srcdoc while warning", async () => {
   const html =
     '<!doctype html><html><body><iframe srcdoc=\'<meta http-equiv="Content-Security-Policy" ' +
@@ -2908,6 +2984,27 @@ test("inlines SVG script href resources in SVG namespace", async () => {
   assert.match(out, /<script href="data:text\/javascript;base64,Y29uc29sZS5sb2coMSk7"><\/script>/);
   assert.match(out, /<script xlink:href="data:text\/javascript;base64,Y29uc29sZS5sb2coMSk7" \/>/);
   assert.equal(warnings.length, 0);
+});
+
+test("scrubs file URLs from inlined SVG script href resources", async () => {
+  const html = '<!doctype html><html><body><svg><script href="app.js"></script></svg></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/app.js": '//# sourceMappingURL=file:///Users/kun/app.map\nconst path = "file:///Users/kun/string.txt";',
+    }),
+  });
+  const match = out.match(/href="data:text\/javascript;base64,([^"]+)"/);
+  assert.ok(match);
+  const script = Buffer.from(match[1], "base64").toString("utf8");
+
+  assert.doesNotMatch(script, /sourceMappingURL=file:\/\/\/Users/);
+  assert.match(script, /sourceMappingURL=about:blank/);
+  assert.match(script, /"file:\/\/\/Users\/kun\/string\.txt"/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: "file:///Users/kun/app.map" }],
+  );
 });
 
 test("ignores SVG base elements during document base discovery", async () => {
