@@ -608,7 +608,7 @@ function isSameOriginRequest(req) {
     return normalizeOrigin(origin) === expectedOrigin;
   }
   const referer = req.get("referer");
-  return !referer || normalizeOrigin(referer) === expectedOrigin;
+  return Boolean(referer) && normalizeOrigin(referer) === expectedOrigin;
 }
 
 function normalizeOrigin(value) {

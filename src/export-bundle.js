@@ -239,6 +239,7 @@ async function transformMarkup(markup, baseDir, ctx) {
       baseDir,
       ctx,
       currentHtmlParent(openStack),
+      isSvgNamespace(openStack),
     );
     if (!effectiveSelfClosing && !HTML_VOID_TAGS.has(tagName)) openStack.push(tagName);
     index = token.end;
@@ -254,6 +255,10 @@ function isEffectiveSelfClosingTag(tagName, selfClosing, openStack = []) {
 
 function currentHtmlParent(openStack) {
   return openStack.length ? openStack[openStack.length - 1] : "";
+}
+
+function isSvgNamespace(openStack) {
+  return openStack.includes("svg");
 }
 
 function popHtmlParent(openStack, tagName) {
@@ -299,7 +304,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
     const tagName = token.tag.toLowerCase();
     const effectiveSelfClosing = isEffectiveSelfClosingTag(tagName, token.selfClosing, openStack);
     if (tagName === PLAINTEXT_TAG && !effectiveSelfClosing) {
-      if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options);
+      if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, isSvgNamespace(openStack));
       result += transformInertRawTextElement(token, markup.slice(token.end), "", baseDir, ctx, {
         ...options,
         warnLocalRefs: false,
@@ -323,7 +328,7 @@ function transformInertMarkup(markup, baseDir, ctx, options = {}) {
       index = close ? close.end : markup.length;
       continue;
     }
-    if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options);
+    if (warnLocalRefs) warnInertStartTagRefs(tagName, token.attrs, baseDir, ctx, options, isSvgNamespace(openStack));
     result += formatStartTag(
       token.tag,
       scrubInertAttrs(tagName, token.attrs, baseDir, ctx, { ...options, warnLocalRefs: false }),
@@ -393,13 +398,13 @@ function scrubRawTextBodyWithoutInlining(tagName, attrs, body, baseDir, ctx, opt
   return scrubRawTextFileUrls(body, ctx);
 }
 
-async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTag = "") {
+async function transformStartTag(tag, attrs, selfClosing, baseDir, ctx, parentTag = "", inSvgNamespace = false) {
   const tagName = tag.toLowerCase();
   let next = attrs;
   if (MEDIA_TAGS.has(tagName)) {
     next = await inlineMediaAttrs(tagName, next, baseDir, ctx, parentTag);
   }
-  if (SVG_REF_TAGS.has(tagName)) {
+  if (SVG_REF_TAGS.has(tagName) && inSvgNamespace) {
     next = await inlineAttr(next, "href", baseDir, ctx);
     next = await inlineAttr(next, "xlink:href", baseDir, ctx);
   }
@@ -1211,6 +1216,13 @@ function scrubCssImageSetArgsWithoutInlining(args, baseDir, ctx, options) {
 function scrubCssRefWithoutInlining(ref, baseDir, ctx, options) {
   const refOptions = { cssSyntax: true, decodeHtmlEntities: Boolean(options.decodeHtmlEntities) };
   if (shouldRedactUnresolvedRef(ref, refOptions)) {
+    if (options.localWarningKind === "srcdoc-resource") {
+      pushCssScrubWarning(ctx, options, {
+        kind: options.localWarningKind,
+        ref,
+        reason: options.localWarningReason || SRCDOC_RESOURCE_REASON,
+      });
+    }
     pushCssScrubWarning(ctx, options, { kind: "file-url-redacted", ref });
     return { replacement: REDACTED_FILE_REF };
   }
@@ -1627,10 +1639,35 @@ function scrubCssComment(raw, ctx) {
 }
 
 function scrubFileUrlsInCommentBody(text, ctx) {
-  return String(text).replace(/(^|[^a-z0-9+.-])(file:[^\s"'<>)]*)/gi, (_match, prefix, ref) => {
+  const input = String(text);
+  let result = "";
+  let index = 0;
+  while (index < input.length) {
+    if (isTextUrlDelimiter(input[index])) {
+      result += input[index];
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (index < input.length && !isTextUrlDelimiter(input[index])) index += 1;
+    result += scrubFileUrlsInTextToken(input.slice(start, index), ctx);
+  }
+  return result;
+}
+
+function isTextUrlDelimiter(char) {
+  return `\t\n\f\r "'<>()=[]{}`.includes(char);
+}
+
+function scrubFileUrlsInTextToken(token, ctx) {
+  for (let index = 0; index < token.length; index += 1) {
+    if (index > 0 && /[a-z0-9+.-]/i.test(token[index - 1])) continue;
+    const ref = token.slice(index);
+    if (!isFileSchemeRef(ref, { cssSyntax: true, decodeHtmlEntities: true })) continue;
     ctx.warnings.push({ kind: "file-url-redacted", ref });
-    return `${prefix}${REDACTED_FILE_REF}`;
-  });
+    return `${token.slice(0, index)}${REDACTED_FILE_REF}`;
+  }
+  return token;
 }
 
 function scrubRawTextFileUrls(text, ctx) {
@@ -2203,13 +2240,13 @@ function warnUnsupportedFrame(ref, baseDir, ctx, options = {}) {
   }
 }
 
-function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}) {
+function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}, inSvgNamespace = false) {
   if (MEDIA_TAGS.has(tagName)) {
     warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
     if (tagName === "video") warnInertAttrRef(attrs, "poster", baseDir, ctx, HTML_REF_OPTIONS, options);
     if (tagName === "img" || tagName === "source") warnInertSrcsetRefs(attrs, baseDir, ctx, options);
   }
-  if (SVG_REF_TAGS.has(tagName)) {
+  if (SVG_REF_TAGS.has(tagName) && inSvgNamespace) {
     warnInertAttrRef(attrs, "href", baseDir, ctx, HTML_REF_OPTIONS, options);
     warnInertAttrRef(attrs, "xlink:href", baseDir, ctx, HTML_REF_OPTIONS, options);
   }

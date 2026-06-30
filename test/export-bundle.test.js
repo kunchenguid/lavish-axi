@@ -772,6 +772,29 @@ test("redacts file URLs inside HTML and CSS comments", async () => {
   );
 });
 
+test("redacts normalized file URLs inside text regions", async () => {
+  const html =
+    "<!doctype html><html><head><!-- local file&#58///Users/kun/comment.png -->" +
+    "<style>/* css file\\3a///Users/kun/style.css */.x{color:red}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(out, /file&#58|file\\3a/i);
+  assert.match(out, /<!-- local about:blank -->/);
+  assert.match(out, /\/\* css about:blank \*\//);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: "file&#58///Users/kun/comment.png" },
+      { kind: "file-url-redacted", ref: "file\\3a///Users/kun/style.css" },
+    ],
+  );
+});
+
 test("redacts file URLs inside special HTML tokens", async () => {
   const html =
     '<!doctype html SYSTEM "file:///Users/kun/secret.dtd"><html><body>' +
@@ -2077,6 +2100,17 @@ test("preserves external SVG fragments when inlining local references", async ()
   assert.equal(warnings.length, 0);
 });
 
+test("does not inline SVG ref tags outside an SVG ancestor", async () => {
+  const html = '<!doctype html><html><body><use href="icons.svg#check"></use></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/icons.svg": '<svg><symbol id="check"></symbol></svg>' }),
+  });
+
+  assert.match(out, /<use href="icons\.svg#check"><\/use>/);
+  assert.equal(warnings.length, 0);
+});
+
 test("preserves self-closing SVG use and image tags when inlining references", async () => {
   const html =
     '<!doctype html><html><body><svg><use href="icons.svg#check"/><image href="icon.svg" /></svg></body></html>';
@@ -2433,6 +2467,7 @@ test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
       { kind: "srcdoc-resource", ref: "local.png" },
+      { kind: "srcdoc-resource", ref: "file\\3a///Users/kun/secret.png" },
       { kind: "file-url-redacted", ref: "file\\3a///Users/kun/secret.png" },
     ],
   );

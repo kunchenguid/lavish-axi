@@ -1215,7 +1215,7 @@ test("POST /api/:key/share publishes the local-inlined artifact to ht-ml.app", a
 
     const shareRes = await fetch(`${base}/api/${session.key}/share`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({ password: "pw" }),
     });
     const body = await shareRes.json();
@@ -1265,7 +1265,7 @@ test("POST /api/:key/share returns unresolved local asset warnings", async () =>
 
     const shareRes = await fetch(`${base}/api/${session.key}/share`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({}),
     });
     const body = await shareRes.json();
@@ -1311,6 +1311,44 @@ test("POST /api/:key/share rejects cross-origin browser requests", async () => {
     const shareRes = await fetch(`${base}/api/${session.key}/share`, {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://attacker.example" },
+      body: JSON.stringify({}),
+    });
+    const body = await shareRes.json();
+
+    assert.equal(shareRes.status, 403);
+    assert.deepEqual(body, { error: "cross-origin share request rejected" });
+    assert.equal(requests.length, 0);
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share rejects requests without provenance headers", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><title>x</title><h1>Private</h1>\n");
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     });
     const body = await shareRes.json();
