@@ -161,6 +161,10 @@ async function transformRawTextOrComment(segment, baseDir, ctx) {
   if (style) {
     const [, attrs, css] = style;
     const startTag = await transformRawTextStartTag("style", attrs, baseDir, ctx);
+    if (!isCssStyleElementType(attrs)) {
+      warnUnsupportedStyleElementType(attrs, css, baseDir, ctx);
+      return `${startTag}${css}</style>`;
+    }
     return `${startTag}${escapeRawText(await inlineCss(css, baseDir, ctx, 0, baseDir), "style")}</style>`;
   }
   const script = segment.match(SCRIPT_SEGMENT_RE);
@@ -294,6 +298,10 @@ function isCssStylesheetType(attrs) {
   const type = getAttr(attrs, "type").trim().toLowerCase();
   if (!type) return true;
   return type.split(";")[0].trim() === "text/css";
+}
+
+function isCssStyleElementType(attrs) {
+  return isCssStylesheetType(attrs);
 }
 
 async function inlineScript(attrs, body, baseDir, ctx) {
@@ -458,7 +466,7 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
       if (!inner.inlineable) {
         complete = false;
         failureIndex = importIndex;
-        failureCause = "nested";
+        failureCause = inner.reason || "nested";
         break;
       }
       prepared.set(item, item.parsed.media ? `@media ${item.parsed.media}{${inner.css}}` : inner.css);
@@ -491,12 +499,14 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
   }
 
   const body = rewriteLateCssImports(css.slice(prelude.bodyStart), baseDir, ctx, outputBaseDir);
-  return { css: result + body.css, complete: complete && body.complete };
+  return { css: result + body.css, complete: complete && body.complete, hasNamespace: prelude.hasNamespace };
 }
 
 async function prepareCssImportInline(css, baseDir, ctx, depth, outputBaseDir) {
   const withImports = await inlineCssImports(css, baseDir, ctx, depth, outputBaseDir);
-  if (!withImports.complete) return { inlineable: false, css: "" };
+  if (!withImports.complete)
+    return { inlineable: false, css: "", reason: withImports.hasNamespace ? "namespace" : "nested" };
+  if (withImports.hasNamespace) return { inlineable: false, css: "", reason: "namespace" };
   return { inlineable: true, css: await inlineCssUrls(withImports.css, baseDir, ctx, outputBaseDir) };
 }
 
@@ -736,6 +746,90 @@ async function inlineCssImageSetArgs(args, baseDir, ctx, outputBaseDir, options 
     index += 1;
   }
   return result;
+}
+
+function findCssResourceRefs(css) {
+  const refs = [];
+  let index = 0;
+  while (index < css.length) {
+    const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
+    if (commentEnd !== -1) {
+      index = commentEnd;
+      continue;
+    }
+
+    if (css[index] === '"' || css[index] === "'") {
+      index = findCssStringEnd(css, index);
+      continue;
+    }
+
+    if (startsCssKeyword(css, index, "@import")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd === -1) break;
+      const parsed = parseCssImportRule(css.slice(index, ruleEnd + 1));
+      if (parsed) refs.push(parsed.ref);
+      index = ruleEnd + 1;
+      continue;
+    }
+
+    if (startsCssKeyword(css, index, "@namespace")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd === -1) break;
+      index = ruleEnd + 1;
+      continue;
+    }
+
+    const imageSet = parseCssImageSetFunction(css, index);
+    if (imageSet) {
+      refs.push(...findCssImageSetArgRefs(css.slice(imageSet.argsStart, imageSet.argsEnd)));
+      index = imageSet.end;
+      continue;
+    }
+
+    const token = parseCssUrlToken(css, index);
+    if (token) {
+      refs.push(token.ref);
+      index = token.end;
+      continue;
+    }
+
+    index += 1;
+  }
+  return refs;
+}
+
+function findCssImageSetArgRefs(args) {
+  const refs = [];
+  let index = 0;
+  let depth = 0;
+  while (index < args.length) {
+    const commentEnd = args.startsWith("/*", index) ? findCssCommentEnd(args, index) : -1;
+    if (commentEnd !== -1) {
+      index = commentEnd;
+      continue;
+    }
+
+    if (depth === 0) {
+      const token = parseCssUrlToken(args, index);
+      if (token) {
+        refs.push(token.ref);
+        index = token.end;
+        continue;
+      }
+    }
+
+    if (args[index] === '"' || args[index] === "'") {
+      const token = parseCssString(args, index);
+      if (depth === 0) refs.push(token.value);
+      index = token.end;
+      continue;
+    }
+
+    if (args[index] === "(") depth += 1;
+    if (args[index] === ")") depth = Math.max(0, depth - 1);
+    index += 1;
+  }
+  return refs;
 }
 
 async function rewriteCssStringUrlOperand(ref, baseDir, ctx, outputBaseDir, options = {}) {
@@ -1273,6 +1367,24 @@ function warnUnsupportedStylesheetType(ref, baseDir, ctx, options = {}) {
     });
   } else if (descriptor.kind === "escape") {
     ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
+function warnUnsupportedStyleElementType(attrs, css, baseDir, ctx) {
+  const seen = new Set();
+  for (const ref of findCssResourceRefs(css)) {
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    const descriptor = resolveRef(ref, baseDir, ctx, { cssSyntax: true });
+    if (descriptor.kind === "file") {
+      ctx.warnings.push({
+        kind: "unsupported-style-type",
+        ref,
+        reason: "non-CSS style elements are left unchanged",
+      });
+    } else if (descriptor.kind === "escape") {
+      ctx.warnings.push({ kind: "outside-root", ref });
+    }
   }
 }
 

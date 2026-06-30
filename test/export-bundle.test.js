@@ -86,6 +86,32 @@ test("leaves non-CSS stylesheet links external with warnings", async () => {
   );
 });
 
+test("leaves non-CSS style elements unchanged with warnings for local refs", async () => {
+  const html =
+    '<!doctype html><html><head><style type="application/json">.json{background:url(pic.png)}</style>' +
+    '<style type="text/tailwindcss">.tw{background:image-set("tailwind.png" 1x)}</style>' +
+    '<style type="text/css">.css{background:url(ok.png)}</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/pic.png": Buffer.from("pic"),
+      "/art/tailwind.png": Buffer.from("tailwind"),
+      "/art/ok.png": Buffer.from("ok"),
+    }),
+  });
+
+  assert.match(out, /<style type="application\/json">\.json\{background:url\(pic\.png\)\}<\/style>/);
+  assert.match(out, /<style type="text\/tailwindcss">\.tw\{background:image-set\("tailwind\.png" 1x\)\}<\/style>/);
+  assert.match(out, /<style type="text\/css">\.css\{background:url\(data:image\/png;base64,b2s=\)\}<\/style>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-style-type", ref: "pic.png" },
+      { kind: "unsupported-style-type", ref: "tailwind.png" },
+    ],
+  );
+});
+
 test("inlines a local script src as an inline script and escapes closing tags", async () => {
   const html = '<!doctype html><html><body><script src="app.js"></script></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -676,6 +702,23 @@ test("keeps CSS imports external before namespace declarations", async () => {
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [{ kind: "css-import-order", ref: "a.css" }],
+  );
+});
+
+test("keeps CSS imports external when imported stylesheets contain namespaces", async () => {
+  const html = '<!doctype html><html><head><style>@import "ns.css";.app{color:red}</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/ns.css": "@namespace svg url(http://www.w3.org/2000/svg);svg|a{fill:red}",
+    }),
+  });
+
+  assert.match(out, /@import "ns\.css";\.app\{color:red\}/);
+  assert.doesNotMatch(out, /@namespace svg/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "css-import-order", ref: "ns.css" }],
   );
 });
 
