@@ -491,6 +491,38 @@ test("warns when inline module scripts reference local template dynamic imports"
   );
 });
 
+test("warns when classic scripts reference local dynamic imports", async () => {
+  const html =
+    "<!doctype html><html><head><script>" +
+    'const local = () => import("./lazy.js");\n' +
+    "const templated = () => import(`./templated.js`);\n" +
+    'const remote = () => import("https://cdn.example/remote.js");\n' +
+    'loader.import("./property.js");\n' +
+    'import "./static.js";\n' +
+    "</script>" +
+    '<script src="js/app.js"></script></head><body><svg><script href="svg/app.js"></script>' +
+    '<script>const svgLocal = () => import("./svg-lazy.js");</script></svg></body></html>';
+  const { warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/js/app.js":
+        'const externalLocal = () => import("./external-lazy.js");\nconst externalPkg = () => import("pkg");',
+      "/art/svg/app.js": 'const svgExternalLocal = () => import("./svg-external-lazy.js");',
+    }),
+  });
+
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inline-module-import", ref: "./lazy.js" },
+      { kind: "inline-module-import", ref: "./templated.js" },
+      { kind: "inline-module-import", ref: "./external-lazy.js" },
+      { kind: "inline-module-import", ref: "./svg-external-lazy.js" },
+      { kind: "inline-module-import", ref: "./svg-lazy.js" },
+    ],
+  );
+});
+
 test("redacts file URLs from inline module and import-map specifiers", async () => {
   const html =
     '<!doctype html><html><head><script type="module">' +
@@ -2934,18 +2966,23 @@ test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
 test("reports raw-text script refs inside active iframe srcdoc as unresolved", async () => {
   const html =
     '<!doctype html><html><body><iframe srcdoc=\'<script src="local.js"></script>' +
-    '<script type="module">import "./dep.js";</script>\'></iframe></body></html>';
+    '<script type="module">import "./dep.js";</script>' +
+    '<script>const lazy = () => import("./lazy.js");</script>\'></iframe></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: localReader({}),
   });
 
-  assert.match(out, /srcdoc='<script src="local\.js"><\/script><script type="module">import "\.\/dep\.js";<\/script>'/);
+  assert.match(
+    out,
+    /srcdoc='<script src="local\.js"><\/script><script type="module">import "\.\/dep\.js";<\/script><script>const lazy = \(\) => import\("\.\/lazy\.js"\);<\/script>'/,
+  );
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
       { kind: "srcdoc-resource", ref: "local.js" },
       { kind: "inline-module-import", ref: "./dep.js" },
+      { kind: "inline-module-import", ref: "./lazy.js" },
     ],
   );
   assert.deepEqual(
@@ -2953,6 +2990,7 @@ test("reports raw-text script refs inside active iframe srcdoc as unresolved", a
     [
       { kind: "srcdoc-resource", ref: "local.js" },
       { kind: "inline-module-import", ref: "./dep.js" },
+      { kind: "inline-module-import", ref: "./lazy.js" },
     ],
   );
 });

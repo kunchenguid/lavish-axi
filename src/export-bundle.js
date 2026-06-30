@@ -513,6 +513,7 @@ function scrubRawTextBodyWithoutInlining(tagName, attrs, body, baseDir, ctx, opt
       scrubbed = redactInlineImportMapFileRefs(scrubbed, ctx, { warnUnresolved: warnActiveScriptDependencies });
       if (warnActiveScriptDependencies) warnInlineImportMapLocalRefs(scrubbed, baseDir, ctx);
     }
+    if (warnActiveScriptDependencies && isClassicScript(attrs)) warnClassicScriptDynamicImports(scrubbed, baseDir, ctx);
     return escapeRawText(scrubRawTextFileUrls(scrubbed, ctx), "script");
   }
   return scrubRawTextFileUrls(body, ctx);
@@ -730,7 +731,10 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
       inlineBody = redactInlineImportMapFileRefs(inlineBody, ctx, { warnUnresolved: true });
       warnInlineImportMapLocalRefs(inlineBody, baseDir, ctx);
     }
-    if (isClassicScript(attrs)) inlineBody = scrubClassicScriptFileUrlComments(inlineBody, ctx);
+    if (isClassicScript(attrs)) {
+      warnClassicScriptDynamicImports(inlineBody, baseDir, ctx);
+      inlineBody = scrubClassicScriptFileUrlComments(inlineBody, ctx);
+    }
     if (!isClassicScript(attrs) && !isModuleScript(attrs)) inlineBody = scrubRawTextFileUrls(inlineBody, ctx);
     return `${await transformStartTag(tag, attrs, false, baseDir, ctx)}${escapeRawText(inlineBody, "script")}${closeTag}`;
   }
@@ -758,12 +762,14 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   }
   const cleanedAttrs = removeAttrs(attrs, ["src", "integrity", "crossorigin"]);
   const startTag = await transformStartTag(tag, cleanedAttrs, false, baseDir, ctx);
+  warnClassicScriptDynamicImports(loaded.text, loaded.baseDir, ctx);
   return `${startTag}${escapeRawText(scrubClassicScriptFileUrlComments(loaded.text, ctx), "script")}${closeTag}`;
 }
 
 async function inlineSvgScript(tag, attrs, body, closeTag, baseDir, ctx) {
   const startTag = await transformStartTag(tag, attrs, false, baseDir, ctx, "", "svg");
   const executable = isClassicScript(attrs) || isModuleScript(attrs);
+  if (isClassicScript(attrs)) warnClassicScriptDynamicImports(body, baseDir, ctx);
   const scrubbed = executable ? scrubClassicScriptFileUrlComments(body, ctx) : scrubRawTextFileUrls(body, ctx);
   return `${startTag}${escapeRawText(scrubbed, "script")}${closeTag}`;
 }
@@ -785,7 +791,9 @@ async function inlineSvgScriptAttr(attrs, name, baseDir, ctx) {
   }
   const buffer = await readBudgeted(descriptor, value, ctx);
   if (!buffer) return replaceUnresolvedAttrRef(attrs, name, value);
-  const text = scrubClassicScriptFileUrlComments(buffer.toString("utf8"), ctx);
+  const rawText = buffer.toString("utf8");
+  if (isClassicScript(attrs)) warnClassicScriptDynamicImports(rawText, path.dirname(descriptor.path), ctx);
+  const text = scrubClassicScriptFileUrlComments(rawText, ctx);
   const dataUri = `${toDataUri(Buffer.from(text, "utf8"), pickMime(descriptor.path))}${fragmentSuffix(
     normalizeRefForResolution(value, HTML_REF_OPTIONS),
   )}`;
@@ -2681,6 +2689,14 @@ function warnInlineModuleImports(body, baseDir, ctx) {
   }
 }
 
+function warnClassicScriptDynamicImports(body, baseDir, ctx) {
+  for (const ref of findInlineDynamicImportRefs(body)) {
+    const normalized = normalizeJsRefForScheme(ref);
+    if (!isLocalModuleImport(normalized)) continue;
+    warnInlineModuleImport(normalized, baseDir, ctx);
+  }
+}
+
 function redactInlineModuleFileRefs(body, ctx, options = {}) {
   const refs = findInlineModuleImportRefTokens(body).filter((ref) => isFileSchemeJsRef(ref.value));
   if (refs.length === 0) return body;
@@ -2881,6 +2897,12 @@ function findInlineModuleImportRefs(source) {
   return findInlineModuleImportRefTokens(source).map((ref) => ref.value);
 }
 
+function findInlineDynamicImportRefs(source) {
+  return findInlineModuleImportRefTokens(source)
+    .filter((ref) => ref.importKind === "dynamic")
+    .map((ref) => ref.value);
+}
+
 function findInlineModuleImportRefTokens(source) {
   const refs = [];
   let index = 0;
@@ -2958,14 +2980,17 @@ function parseJsImport(source, index) {
     cursor = skipJsWhitespaceAndComments(source, cursor + 1);
     if (source[cursor] === "`") {
       const token = parseJsTemplateImportToken(source, cursor);
+      token.importKind = "dynamic";
       return { refs: token.value ? [token] : [], end: token.end };
     }
     if (source[cursor] !== '"' && source[cursor] !== "'") return { refs: [], end: cursor + 1 };
     const token = parseJsStringToken(source, cursor);
+    token.importKind = "dynamic";
     return { refs: [token], end: token.end };
   }
   if (source[cursor] === '"' || source[cursor] === "'") {
     const token = parseJsStringToken(source, cursor);
+    token.importKind = "bare";
     return { refs: [token], end: token.end };
   }
   const found = findJsImportFromRef(source, cursor);
