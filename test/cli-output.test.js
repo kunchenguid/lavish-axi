@@ -469,6 +469,20 @@ test("share output reports the public url and the secret update key", () => {
   assert.match(output.next_step, /x\.ht-ml\.app/);
 });
 
+test("password-protected share output tells viewers they also need the password", () => {
+  const output = createShareOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
+    warnings: [],
+    passwordProtected: true,
+  });
+
+  assert.equal(output.share.password_protected, true);
+  assert.match(output.next_step, /PASSWORD-PROTECTED/);
+  assert.match(output.next_step, /viewers also need the password/);
+  assert.doesNotMatch(output.next_step, /anyone with the link can view/);
+});
+
 test("share output surfaces local assets that could not be inlined", () => {
   const output = createShareOutput({
     source: "/tmp/report.html",
@@ -480,6 +494,19 @@ test("share output surfaces local assets that could not be inlined", () => {
   assert.deepEqual(output.unresolved_local_assets, [{ kind: "load-failed", ref: "./missing.png" }]);
   assert.match(output.next_step, /LOCAL assets could not be inlined/);
   assert.doesNotMatch(output.next_step, /share this URL/);
+});
+
+test("password-protected share output with unresolved assets still mentions the password", () => {
+  const output = createShareOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
+    warnings: [{ kind: "load-failed", ref: "./missing.png" }],
+    passwordProtected: true,
+  });
+
+  assert.match(output.next_step, /PASSWORD-PROTECTED/);
+  assert.match(output.next_step, /viewers also need the password/);
+  assert.doesNotMatch(output.next_step, /anyone with the link can view/);
 });
 
 test("share command publishes the artifact to ht-ml.app and returns the public url", async () => {
@@ -522,6 +549,8 @@ test("share command publishes the artifact to ht-ml.app and returns the public u
 
     assert.equal(code, 0, stderr);
     assert.match(stdout, /abc123\.ht-ml\.app/);
+    assert.match(stdout, /PASSWORD-PROTECTED/);
+    assert.match(stdout, /viewers also need the password/);
     assert.equal(requests.length, 1);
     assert.equal(requests[0].url, "/v1/sites");
     assert.match(requests[0].body.html_content, /<style>\.btn\{color:teal\}<\/style>/);

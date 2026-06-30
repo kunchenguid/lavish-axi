@@ -126,9 +126,6 @@ async function transformRawTextOrComment(segment, baseDir, ctx) {
 
 async function transformMarkup(markup, baseDir, ctx) {
   let result = markup;
-  result = await replaceAsync(result, /<link\b([^>]*?)\/?>/gi, (match, attrs) =>
-    inlineLink(match, attrs, baseDir, ctx),
-  );
   result = await replaceAsync(result, /<(img|source|video|audio)\b([^>]*?)\/?>/gi, async (match, tag, attrs) => {
     return `<${tag}${await inlineMediaAttrs(attrs, baseDir, ctx)}>`;
   });
@@ -143,6 +140,9 @@ async function transformMarkup(markup, baseDir, ctx) {
     if (!/url\(/i.test(value)) return match;
     return `style=${quote}${await inlineCssUrls(value, baseDir, ctx)}${quote}`;
   });
+  result = await replaceAsync(result, /<link\b([^>]*?)\/?>/gi, (match, attrs) =>
+    inlineLink(match, attrs, baseDir, ctx),
+  );
   return result;
 }
 
@@ -217,30 +217,213 @@ async function inlineSrcset(attrs, baseDir, ctx) {
 }
 
 async function inlineCss(css, baseDir, ctx, depth) {
-  const withImports = await replaceAsync(
-    css,
-    /@import\s+(?:url\(\s*(['"]?)([^'")]+)\1\s*\)|(['"])([^'"]+)\3)([^;]*);/gi,
-    async (match, _q1, urlRef, _q2, strRef, mediaRaw) => {
-      const ref = urlRef ?? strRef;
-      if (depth >= ctx.maxDepth) return match;
-      const loaded = await loadText(ref, baseDir, ctx);
-      if (!loaded) return match;
-      const inner = await inlineCss(loaded.text, loaded.baseDir, ctx, depth + 1);
-      const media = (mediaRaw || "").trim();
-      return media ? `@media ${media}{${inner}}` : inner;
-    },
-  );
+  const withImports = await inlineCssImports(css, baseDir, ctx, depth);
   return inlineCssUrls(withImports, baseDir, ctx);
 }
 
+async function inlineCssImports(css, baseDir, ctx, depth) {
+  let result = "";
+  let index = 0;
+  while (index < css.length) {
+    const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
+    if (commentEnd !== -1) {
+      result += css.slice(index, commentEnd);
+      index = commentEnd;
+      continue;
+    }
+
+    if (css[index] === '"' || css[index] === "'") {
+      const stringEnd = findCssStringEnd(css, index);
+      result += css.slice(index, stringEnd);
+      index = stringEnd;
+      continue;
+    }
+
+    if (startsCssKeyword(css, index, "@import")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd === -1) {
+        result += css.slice(index);
+        break;
+      }
+      const rule = css.slice(index, ruleEnd + 1);
+      const parsed = parseCssImportRule(rule);
+      if (!parsed || depth >= ctx.maxDepth) {
+        result += rule;
+      } else {
+        const loaded = await loadText(parsed.ref, baseDir, ctx);
+        if (!loaded) {
+          result += rule;
+        } else {
+          const inner = await inlineCss(loaded.text, loaded.baseDir, ctx, depth + 1);
+          result += parsed.media ? `@media ${parsed.media}{${inner}}` : inner;
+        }
+      }
+      index = ruleEnd + 1;
+      continue;
+    }
+
+    result += css[index];
+    index += 1;
+  }
+  return result;
+}
+
 async function inlineCssUrls(css, baseDir, ctx) {
-  return replaceAsync(css, /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, async (match, quote, ref) => {
-    const trimmed = ref.trim();
-    if (isInert(trimmed)) return match;
+  let result = "";
+  let index = 0;
+  while (index < css.length) {
+    const commentEnd = css.startsWith("/*", index) ? findCssCommentEnd(css, index) : -1;
+    if (commentEnd !== -1) {
+      result += css.slice(index, commentEnd);
+      index = commentEnd;
+      continue;
+    }
+
+    if (css[index] === '"' || css[index] === "'") {
+      const stringEnd = findCssStringEnd(css, index);
+      result += css.slice(index, stringEnd);
+      index = stringEnd;
+      continue;
+    }
+
+    const token = parseCssUrlToken(css, index);
+    if (!token) {
+      result += css[index];
+      index += 1;
+      continue;
+    }
+
+    const trimmed = token.ref.trim();
+    if (isInert(trimmed)) {
+      result += token.raw;
+      index = token.end;
+      continue;
+    }
     const dataUri = await loadDataUri(trimmed, baseDir, ctx);
-    if (!dataUri) return match;
-    return `url(${quote}${dataUri}${quote})`;
-  });
+    result += dataUri ? `url(${token.quote}${dataUri}${token.quote})` : token.raw;
+    index = token.end;
+  }
+  return result;
+}
+
+function parseCssImportRule(rule) {
+  let index = "@import".length;
+  index = skipCssWhitespaceAndComments(rule, index);
+  let ref;
+  if (startsCssKeyword(rule, index, "url")) {
+    const token = parseCssUrlToken(rule, index);
+    if (!token) return null;
+    ref = token.ref.trim();
+    index = token.end;
+  } else if (rule[index] === '"' || rule[index] === "'") {
+    const token = parseCssString(rule, index);
+    ref = token.value;
+    index = token.end;
+  } else {
+    return null;
+  }
+  const semicolon = rule.lastIndexOf(";");
+  if (semicolon === -1) return null;
+  const media = rule.slice(skipCssWhitespaceAndComments(rule, index), semicolon).trim();
+  return { ref, media };
+}
+
+function parseCssUrlToken(css, index) {
+  if (!startsCssKeyword(css, index, "url") || css[index + 3] !== "(") return null;
+  let cursor = skipCssWhitespace(css, index + 4);
+  let quote = "";
+  let ref;
+  if (css[cursor] === '"' || css[cursor] === "'") {
+    const token = parseCssString(css, cursor);
+    quote = css[cursor];
+    ref = token.value;
+    cursor = skipCssWhitespace(css, token.end);
+    if (css[cursor] !== ")") return null;
+    cursor += 1;
+  } else {
+    const start = cursor;
+    while (cursor < css.length && css[cursor] !== ")") {
+      if (css[cursor] === '"' || css[cursor] === "'") return null;
+      cursor += css[cursor] === "\\" ? 2 : 1;
+    }
+    if (css[cursor] !== ")") return null;
+    ref = css.slice(start, cursor);
+    cursor += 1;
+  }
+  return { raw: css.slice(index, cursor), ref, quote, end: cursor };
+}
+
+function parseCssString(css, index) {
+  const quote = css[index];
+  let cursor = index + 1;
+  let value = "";
+  while (cursor < css.length) {
+    const char = css[cursor];
+    if (char === "\\") {
+      value += css.slice(cursor, Math.min(cursor + 2, css.length));
+      cursor += 2;
+      continue;
+    }
+    if (char === quote) {
+      return { value, end: cursor + 1 };
+    }
+    value += char;
+    cursor += 1;
+  }
+  return { value, end: css.length };
+}
+
+function findCssStringEnd(css, index) {
+  return parseCssString(css, index).end;
+}
+
+function findCssCommentEnd(css, index) {
+  const end = css.indexOf("*/", index + 2);
+  return end === -1 ? css.length : end + 2;
+}
+
+function findCssAtRuleEnd(css, index) {
+  let cursor = index;
+  while (cursor < css.length) {
+    if (css.startsWith("/*", cursor)) {
+      cursor = findCssCommentEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === '"' || css[cursor] === "'") {
+      cursor = findCssStringEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === ";") return cursor;
+    cursor += 1;
+  }
+  return -1;
+}
+
+function skipCssWhitespace(css, index) {
+  let cursor = index;
+  while (cursor < css.length && /\s/.test(css[cursor])) cursor += 1;
+  return cursor;
+}
+
+function skipCssWhitespaceAndComments(css, index) {
+  let cursor = index;
+  while (cursor < css.length) {
+    const next = skipCssWhitespace(css, cursor);
+    if (!css.startsWith("/*", next)) return next;
+    cursor = findCssCommentEnd(css, next);
+  }
+  return cursor;
+}
+
+function startsCssKeyword(css, index, keyword) {
+  if (css.slice(index, index + keyword.length).toLowerCase() !== keyword.toLowerCase()) return false;
+  const before = css[index - 1] || "";
+  const after = css[index + keyword.length] || "";
+  return !isCssIdentChar(before) && !isCssIdentChar(after);
+}
+
+function isCssIdentChar(char) {
+  return Boolean(char) && /[a-z0-9_-]/i.test(char);
 }
 
 // --- resolution + loading ---------------------------------------------------

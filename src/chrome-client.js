@@ -575,6 +575,7 @@ async function publishShare(event) {
   shareStatus.classList.remove("error");
   shareStatus.textContent = "Publishing to ht-ml.app...";
   shareResult.hidden = true;
+  const passwordProtected = Boolean(sharePasswordInput.value);
   try {
     const response = await fetch("/api/" + key + "/share", {
       method: "POST",
@@ -588,8 +589,10 @@ async function publishShare(event) {
     const warningCount = Array.isArray(data.warnings) ? data.warnings.length : 0;
     shareStatus.textContent =
       warningCount > 0
-        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}.`
-        : "Published. Anyone with the link can view this page.";
+        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
+        : passwordProtected
+          ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
+          : "Published. Anyone with the link can view this page.";
     shareResult.hidden = false;
     shareUrlInput.focus();
     shareUrlInput.select();

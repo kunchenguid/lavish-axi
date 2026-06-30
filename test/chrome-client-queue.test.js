@@ -323,6 +323,29 @@ test("chrome client surfaces share warnings from the server response", async () 
   assert.equal(chrome.element("shareResult").hidden, false);
 });
 
+test("chrome client says password-protected shares also require the password", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        url: "https://abc123.ht-ml.app/",
+        update_key: "uk_secret",
+      }),
+    }),
+  });
+  chrome.element("sharePassword").value = "pw";
+  const submit = chrome.element("shareForm").listeners.get("submit");
+  assert.equal(typeof submit, "function");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.equal(
+    chrome.element("shareStatus").textContent,
+    "Published. This page is PASSWORD-PROTECTED; viewers also need the password.",
+  );
+});
+
 test("chrome client registers message listener before loading the artifact iframe", async () => {
   const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
 

@@ -98,6 +98,25 @@ test("does not rewrite markup-like text inside scripts, styles, or comments", as
   assert.equal(warnings.length, 0);
 });
 
+test("does not rewrite markup-like text inside inlined stylesheet links", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body>' +
+    '<img src="pic.png" alt="real">' +
+    "</body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/theme.css": '.badge{content:"<img src=\'pic.png\'>"}/* <img src="missing.png"> */',
+      "/art/pic.png": png,
+    }),
+  });
+
+  assert.match(out, /<style>\.badge\{content:"<img src='pic\.png'>"\}\/\* <img src="missing\.png"> \*\/<\/style>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==" alt="real">/);
+  assert.equal(warnings.length, 0);
+});
+
 test("decodes percent-encoded local asset paths before resolving them", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html = '<!doctype html><html><body><img src="my%20image.png?v=1#crop"></body></html>';
@@ -127,6 +146,25 @@ test("rewrites url() and @import inside local CSS, resolving relative to the sty
   assert.match(out, /url\(data:font\/woff2;base64,/);
   assert.match(out, /url\(data:image\/svg\+xml;base64,/);
   assert.doesNotMatch(out, /@import/);
+});
+
+test("does not treat CSS strings or comments as url or import assets", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    "<!doctype html><html><head>" +
+    '<style>.label{content:"url(missing-string.png)"}/* url(missing-comment.png) */' +
+    '/* @import "missing-comment.css"; */.icon{background:url(icon.png)}</style>' +
+    "</head><body></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/icon.png": png }),
+  });
+
+  assert.match(out, /content:"url\(missing-string\.png\)"/);
+  assert.match(out, /\/\* url\(missing-comment\.png\) \*\//);
+  assert.match(out, /\/\* @import "missing-comment\.css"; \*\//);
+  assert.match(out, /background:url\(data:image\/png;base64,iVBORw==\)/);
+  assert.equal(warnings.length, 0);
 });
 
 test("leaves remote http(s) and protocol-relative references intact without fetching them", async () => {

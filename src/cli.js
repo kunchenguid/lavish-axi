@@ -386,10 +386,10 @@ async function shareCommand(args) {
     resolveAbsolute: resolveDesignAssetPath,
   });
   const site = await publishToHtmlApp(html, { password, token });
-  return createShareOutput({ source: absolute, site, warnings });
+  return createShareOutput({ source: absolute, site, warnings, passwordProtected: Boolean(password) });
 }
 
-export function createShareOutput({ source, site, warnings }) {
+export function createShareOutput({ source, site, warnings, passwordProtected = false }) {
   const remaining = Array.isArray(warnings) ? warnings : [];
   const result = {
     share: {
@@ -399,15 +399,22 @@ export function createShareOutput({ source, site, warnings }) {
       update_key: site.update_key,
       status: site.status || "active",
       public: true,
+      password_protected: Boolean(passwordProtected),
       unresolved_local_assets: remaining.length,
     },
   };
+  const passwordNote = passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : "";
   if (remaining.length) {
     result.unresolved_local_assets = assetWarningSummaries(remaining);
     result.next_step =
-      `Published ${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it. ` +
+      `Published ${passwordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote} ` +
       `Remote CDN/font references are intentionally left as links and render where there is network access. ` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery).`;
+  } else if (passwordProtected) {
+    result.next_step =
+      `Published a PASSWORD-PROTECTED page: ${site.url} - share this URL with the user and provide the password separately; viewers also need the password. ` +
+      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
+      `ht-ml.app hosts the page, so it needs no Lavish server.`;
   } else {
     result.next_step =
       `Published a PUBLIC page that anyone with the link can view: ${site.url} - share this URL with the user. ` +
