@@ -1158,6 +1158,25 @@ test("ignores base href inside unterminated raw text", async () => {
   );
 });
 
+test("keeps inert raw-text bodies text-only while scrubbing file URLs", async () => {
+  const html =
+    "<!doctype html><html><body><template><script>const html = \"<a href='file:///Users/kun/secret.txt'><img src='local.png'>\";</script></template></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/local.png": Buffer.from("local") }),
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(
+    out,
+    /<template><script>const html = "<a href='about:blank'><img src='local\.png'>";<\/script><\/template>/,
+  );
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: "file:///Users/kun/secret.txt" }],
+  );
+});
+
 test("leaves HTML asset references unchanged when the document base href is remote", async () => {
   const html =
     '<!doctype html><html><head><base href="https://cdn.example/assets/">' +
@@ -2190,7 +2209,7 @@ test("scrubs iframe srcdoc refs without bundling nested HTML", async () => {
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [
-      { kind: "inert-resource", ref: "local.png" },
+      { kind: "srcdoc-resource", ref: "local.png" },
       { kind: "file-url-redacted", ref: "file\\3a///Users/kun/secret.png" },
     ],
   );

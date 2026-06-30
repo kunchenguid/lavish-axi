@@ -396,6 +396,19 @@ test("export output surfaces local assets that could not be inlined", () => {
   assert.match(output.next_step, /LOCAL assets could not be inlined/);
 });
 
+test("export output counts active srcdoc refs as unresolved assets", () => {
+  const output = createExportOutput({
+    source: "/tmp/report.html",
+    output: "/tmp/report.export.html",
+    html: "<html></html>",
+    warnings: [{ kind: "srcdoc-resource", ref: "local.png" }],
+  });
+
+  assert.equal(output.export.unresolved_local_assets, 1);
+  assert.deepEqual(output.unresolved_local_assets, [{ kind: "srcdoc-resource", ref: "local.png" }]);
+  assert.equal("notices" in output, false);
+});
+
 test("export output separates unresolved assets from notices", () => {
   const output = createExportOutput({
     source: "/tmp/report.html",

@@ -517,6 +517,18 @@ function unresolvedAssetText(count) {
   return count === 1 ? "1 unresolved asset" : `${count} unresolved assets`;
 }
 
+function noticeText(count) {
+  return count === 1 ? "1 notice" : `${count} notices`;
+}
+
+function exportWarningText(unresolvedCount, noticeCount) {
+  if (unresolvedCount > 0 && noticeCount > 0) {
+    return `${unresolvedAssetText(unresolvedCount)} and ${noticeText(noticeCount)}`;
+  }
+  if (unresolvedCount > 0) return unresolvedAssetText(unresolvedCount);
+  return noticeText(noticeCount);
+}
+
 async function exportArtifact() {
   // The bundle inlines local assets server-side, so it can take a moment - keep the menu open
   // and narrate progress in place instead of closing it and leaving the user with no feedback.
@@ -526,6 +538,7 @@ async function exportArtifact() {
     const response = await fetch("/api/" + key + "/export");
     if (!response.ok) throw new Error("export failed");
     const warningCount = Number(response.headers.get("x-lavish-export-warning-count") || "0");
+    const noticeCount = Number(response.headers.get("x-lavish-export-notice-count") || "0");
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -535,8 +548,8 @@ async function exportArtifact() {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    if (warningCount > 0) {
-      setExportLabel(`Exported with ${unresolvedAssetText(warningCount)}`);
+    if (warningCount > 0 || noticeCount > 0) {
+      setExportLabel(`Exported with ${exportWarningText(warningCount, noticeCount)}`);
     } else {
       setExportLabel("Export standalone HTML");
       closeMenus();
@@ -554,6 +567,7 @@ function openShareDialog() {
   shareStatus.textContent = "";
   shareStatus.classList.remove("error");
   shareResult.hidden = true;
+  sharePasswordInput.value = "";
   sharePasswordInput.focus();
 }
 
@@ -591,12 +605,12 @@ async function publishShare(event) {
     const notices = Array.isArray(data.notices) ? data.notices : [];
     const warningCount = unresolvedAssets.length;
     const noticeCount = notices.length;
-    const noticeText = noticeCount ? `${noticeCount === 1 ? "1 notice" : `${noticeCount} notices`}` : "";
+    const noticeSummary = noticeCount ? noticeText(noticeCount) : "";
     shareStatus.textContent =
       warningCount > 0
-        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}${noticeText ? ` and ${noticeText}` : ""}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
+        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}${noticeSummary ? ` and ${noticeSummary}` : ""}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
         : noticeCount > 0
-          ? `Published with ${noticeText}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
+          ? `Published with ${noticeSummary}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
           : passwordProtected
             ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
             : "Published. Anyone with the link can view this page.";

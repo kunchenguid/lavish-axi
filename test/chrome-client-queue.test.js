@@ -302,6 +302,51 @@ test("chrome client surfaces export warnings from the server response", async ()
   assert.equal(chrome.element("exportArtifact").querySelector("span").textContent, "Exported with 1 unresolved asset");
 });
 
+test("chrome client surfaces export notices from the server response", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      headers: {
+        get(name) {
+          if (name.toLowerCase() === "x-lavish-export-warning-count") return "0";
+          if (name.toLowerCase() === "x-lavish-export-notice-count") return "1";
+          return null;
+        },
+      },
+      blob: async () => ({}),
+    }),
+  });
+
+  await chrome.element("exportArtifact").onclick();
+  await flushPromises();
+
+  assert.equal(chrome.element("exportArtifact").querySelector("span").textContent, "Exported with 1 notice");
+});
+
+test("chrome client includes export notices alongside unresolved assets", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      headers: {
+        get(name) {
+          if (name.toLowerCase() === "x-lavish-export-warning-count") return "2";
+          if (name.toLowerCase() === "x-lavish-export-notice-count") return "1";
+          return null;
+        },
+      },
+      blob: async () => ({}),
+    }),
+  });
+
+  await chrome.element("exportArtifact").onclick();
+  await flushPromises();
+
+  assert.equal(
+    chrome.element("exportArtifact").querySelector("span").textContent,
+    "Exported with 2 unresolved assets and 1 notice",
+  );
+});
+
 test("chrome client surfaces share warnings from the server response", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async () => ({
@@ -348,6 +393,35 @@ test("chrome client does not count share notices as unresolved assets", async ()
 
   assert.equal(chrome.element("shareStatus").textContent, "Published with 1 notice.");
   assert.equal(chrome.element("shareResult").hidden, false);
+});
+
+test("chrome client clears stale share passwords when opening a fresh dialog", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.element("sharePassword").value = "old-password";
+  chrome.element("shareArtifact").onclick();
+
+  assert.equal(chrome.element("sharePassword").value, "");
+});
+
+test("chrome client preserves share passwords during an in-dialog retry", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      json: async () => ({ error: "publish failed" }),
+    }),
+  });
+
+  chrome.element("shareArtifact").onclick();
+  chrome.element("sharePassword").value = "pw";
+  const submit = chrome.element("shareForm").listeners.get("submit");
+  assert.equal(typeof submit, "function");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.equal(chrome.element("sharePassword").value, "pw");
+  assert.equal(chrome.element("shareStatus").textContent, "publish failed");
 });
 
 test("chrome client says password-protected shares also require the password", async () => {
