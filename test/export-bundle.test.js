@@ -59,6 +59,33 @@ test("leaves inactive stylesheet links external with warnings", async () => {
   );
 });
 
+test("leaves non-CSS stylesheet links external with warnings", async () => {
+  const html =
+    '<!doctype html><html><head><link rel="stylesheet" type="application/json" href="secrets.json">' +
+    '<link rel="stylesheet" type="text/tailwindcss" href="tailwind.css">' +
+    '<link rel="stylesheet" type="text/css" href="theme.css"></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/secrets.json": '{"secret":true}',
+      "/art/tailwind.css": "@tailwind utilities;",
+      "/art/theme.css": "body{color:red}",
+    }),
+  });
+
+  assert.match(out, /<link rel="stylesheet" type="application\/json" href="secrets\.json">/);
+  assert.match(out, /<link rel="stylesheet" type="text\/tailwindcss" href="tailwind\.css">/);
+  assert.match(out, /<style>body\{color:red\}<\/style>/);
+  assert.doesNotMatch(out, /"secret":true|@tailwind utilities/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-stylesheet-type", ref: "secrets.json" },
+      { kind: "unsupported-stylesheet-type", ref: "tailwind.css" },
+    ],
+  );
+});
+
 test("inlines a local script src as an inline script and escapes closing tags", async () => {
   const html = '<!doctype html><html><body><script src="app.js"></script></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -778,7 +805,8 @@ test("handles escaped urls and image-set operands inside inline styles", async (
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
     '<!doctype html><html><body><div style="background:u\\72l(file\\3a///Users/kun/secret.png)"></div>' +
-    "<div style='background:image-set(\"local.png\" 1x)'></div></body></html>";
+    "<div style='background:image-set(\"local.png\" 1x)'></div>" +
+    '<div style="background:image-set(&quot;local.png&quot; 1x)"></div></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     confineDir: "/art",
@@ -789,6 +817,7 @@ test("handles escaped urls and image-set operands inside inline styles", async (
   assert.doesNotMatch(out, /file\\3a/i);
   assert.match(out, /style="background:url\(about:blank\)"/);
   assert.match(out, /style='background:image-set\("data:image\/png;base64,iVBORw==" 1x\)'/);
+  assert.match(out, /style="background:image-set\(&quot;data:image\/png;base64,iVBORw==&quot; 1x\)"/);
   assert.deepEqual(
     warnings.map((warning) => warning.kind),
     ["outside-root"],
@@ -844,6 +873,26 @@ test("processes RCDATA start tag attributes while leaving text content inert", a
   assert.deepEqual(
     warnings.map((warning) => warning.kind),
     ["outside-root", "outside-root"],
+  );
+});
+
+test("processes raw-text start tag attributes while leaving content inert", async () => {
+  const html =
+    '<!doctype html><html><head><style data-path="file:///Users/kun/style-secret.css">' +
+    '.x{content:"<img src=\\"missing-style.png\\">"}</style>' +
+    '<script data-path="file:///Users/kun/script-secret.txt">const html = "<img src=\\"missing-script.png\\">";</script>' +
+    "</head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<style data-path="about:blank">\.x\{content:"<img src=\\"missing-style\.png\\">"\}<\/style>/);
+  assert.match(out, /<script data-path="about:blank">const html = "<img src=\\"missing-script\.png\\">";<\/script>/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["file-url-redacted", "file-url-redacted"],
   );
 });
 

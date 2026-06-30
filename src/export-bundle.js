@@ -160,12 +160,13 @@ async function transformRawTextOrComment(segment, baseDir, ctx) {
   const style = segment.match(STYLE_SEGMENT_RE);
   if (style) {
     const [, attrs, css] = style;
-    return `<style${attrs}>${escapeRawText(await inlineCss(css, baseDir, ctx, 0, baseDir), "style")}</style>`;
+    const startTag = await transformRawTextStartTag("style", attrs, baseDir, ctx);
+    return `${startTag}${escapeRawText(await inlineCss(css, baseDir, ctx, 0, baseDir), "style")}</style>`;
   }
   const script = segment.match(SCRIPT_SEGMENT_RE);
   if (script) {
     const [, attrs, body] = script;
-    return inlineScript(segment, attrs, body, baseDir, ctx);
+    return inlineScript(attrs, body, baseDir, ctx);
   }
   const rcdata = segment.match(RCDATA_SEGMENT_RE);
   if (rcdata) {
@@ -173,6 +174,10 @@ async function transformRawTextOrComment(segment, baseDir, ctx) {
     return `${await transformMarkup(`<${tag}${attrs}>`, baseDir, ctx)}${body}${endTag}`;
   }
   return segment;
+}
+
+async function transformRawTextStartTag(tag, attrs, baseDir, ctx) {
+  return transformMarkup(formatStartTag(tag, attrs, false), baseDir, ctx);
 }
 
 async function transformMarkup(markup, baseDir, ctx) {
@@ -242,8 +247,9 @@ async function inlineStyleAttrs(markup, baseDir, ctx) {
       async (attrMatch, boundary, prefix, _raw, dq, sq, unquoted) => {
         const quote = sq !== undefined ? "'" : '"';
         const value = dq ?? sq ?? unquoted;
-        const rewritten = await inlineCssUrls(value, baseDir, ctx, baseDir, HTML_REF_OPTIONS);
-        return rewritten === value ? attrMatch : `${boundary}${prefix}${quote}${rewritten}${quote}`;
+        const decoded = decodeHtmlCharacterReferences(value);
+        const rewritten = await inlineCssUrls(decoded, baseDir, ctx, baseDir, { decodeHtmlEntities: false });
+        return rewritten === decoded ? attrMatch : `${boundary}${prefix}${quoteAttrValue(rewritten, quote)}`;
       },
     );
     return formatStartTag(tag, next, isSelfClosingTag(match));
@@ -256,6 +262,10 @@ async function inlineLink(match, attrs, baseDir, ctx) {
   if (!href) return match;
 
   if (rel.includes("stylesheet")) {
+    if (!isCssStylesheetType(attrs)) {
+      warnUnsupportedStylesheetType(href, baseDir, ctx, HTML_REF_OPTIONS);
+      return replaceUnresolvedAttrRef(match, "href", href);
+    }
     if (isInactiveStylesheet(attrs, rel)) {
       warnInactiveStylesheet(href, baseDir, ctx, HTML_REF_OPTIONS);
       return replaceUnresolvedAttrRef(match, "href", href);
@@ -280,30 +290,43 @@ function isInactiveStylesheet(attrs, rel) {
   return hasAttr(attrs, "disabled") || rel.includes("alternate");
 }
 
-async function inlineScript(match, attrs, body, baseDir, ctx) {
+function isCssStylesheetType(attrs) {
+  const type = getAttr(attrs, "type").trim().toLowerCase();
+  if (!type) return true;
+  return type.split(";")[0].trim() === "text/css";
+}
+
+async function inlineScript(attrs, body, baseDir, ctx) {
   const src = getAttr(attrs, "src");
   if (!src) {
     if (isModuleScript(attrs)) warnInlineModuleImports(body, baseDir, ctx);
-    return match;
+    return `${await transformRawTextStartTag("script", attrs, baseDir, ctx)}${body}</script>`;
   }
   if (isInjectedLavishSdkSrc(src)) return "";
   if (isModuleScript(attrs)) {
     warnExternalModuleScript(src, baseDir, ctx, HTML_REF_OPTIONS);
-    return replaceUnresolvedAttrRef(match, "src", src);
+    const startTag = await transformMarkup(replaceUnresolvedAttrRef(`<script${attrs}>`, "src", src), baseDir, ctx);
+    return `${startTag}${body}</script>`;
   }
   if (!isClassicScript(attrs)) {
     warnUnsupportedScriptType(src, baseDir, ctx, HTML_REF_OPTIONS);
-    return replaceUnresolvedAttrRef(match, "src", src);
+    const startTag = await transformMarkup(replaceUnresolvedAttrRef(`<script${attrs}>`, "src", src), baseDir, ctx);
+    return `${startTag}${body}</script>`;
   }
   if (hasAttr(attrs, "defer") || hasAttr(attrs, "async")) {
     warnUnsupportedScriptTiming(src, baseDir, ctx, HTML_REF_OPTIONS);
-    return replaceUnresolvedAttrRef(match, "src", src);
+    const startTag = await transformMarkup(replaceUnresolvedAttrRef(`<script${attrs}>`, "src", src), baseDir, ctx);
+    return `${startTag}${body}</script>`;
   }
 
   const loaded = await loadText(src, baseDir, ctx, HTML_REF_OPTIONS);
-  if (!loaded) return replaceUnresolvedAttrRef(match, "src", src);
+  if (!loaded) {
+    const startTag = await transformMarkup(replaceUnresolvedAttrRef(`<script${attrs}>`, "src", src), baseDir, ctx);
+    return `${startTag}${body}</script>`;
+  }
   const cleanedAttrs = removeAttrs(attrs, ["src", "integrity", "crossorigin"]);
-  return `<script${cleanedAttrs}>${escapeRawText(loaded.text, "script")}</script>`;
+  const startTag = await transformRawTextStartTag("script", cleanedAttrs, baseDir, ctx);
+  return `${startTag}${escapeRawText(loaded.text, "script")}</script>`;
 }
 
 async function inlineMediaAttrs(attrs, baseDir, ctx) {
@@ -1240,6 +1263,19 @@ function warnUnsupportedScriptType(ref, baseDir, ctx, options = {}) {
   }
 }
 
+function warnUnsupportedStylesheetType(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "unsupported-stylesheet-type",
+      ref,
+      reason: "non-CSS stylesheet links are left as references",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
 function warnFrameSrc(attrs, baseDir, ctx) {
   const ref = getAttr(attrs, "src");
   if (!ref) return attrs;
@@ -1866,6 +1902,17 @@ function quoteAttrValuePreservingEntities(value, preferredQuote) {
   const alternateQuote = preferredQuote === '"' ? "'" : '"';
   if (!text.includes(alternateQuote)) return `${alternateQuote}${text}${alternateQuote}`;
   return `"${text.replace(/"/g, "&quot;")}"`;
+}
+
+function quoteAttrValue(value, preferredQuote) {
+  const quote = preferredQuote === "'" ? "'" : '"';
+  return `${quote}${escapeAttrForQuote(value, quote)}${quote}`;
+}
+
+function escapeAttrForQuote(value, quote) {
+  let escaped = String(value).replace(/&/g, "&amp;");
+  escaped = quote === '"' ? escaped.replace(/"/g, "&quot;") : escaped.replace(/'/g, "&#39;");
+  return escaped;
 }
 
 function quoteCssString(value, quote) {
