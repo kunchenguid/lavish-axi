@@ -14,11 +14,26 @@ function portablePathKey(absPath) {
 }
 
 function portableFileUrl(absPath) {
-  return pathToFileURL(path.resolve(absPath)).href;
+  const href = pathToFileURL(path.resolve(absPath)).href;
+  return /[/\\]$/.test(String(absPath)) && !href.endsWith("/") ? `${href}/` : href;
 }
 
 function cssEscapedFileUrl(absPath) {
   return portableFileUrl(absPath).replace(/^file:/i, "file\\3a");
+}
+
+function singleSlashFileUrl(absPath) {
+  return portableFileUrl(absPath).replace(/^file:\/\/\//i, "file:/");
+}
+
+function htmlSlashEscapedFileUrl(absPath) {
+  return portableFileUrl(absPath).replaceAll("/", "&#x2f;");
+}
+
+function namedEntityFileUrl(absPath) {
+  return portableFileUrl(absPath)
+    .replace(/^file:/i, "file&colon;")
+    .replaceAll("/", "&sol;");
 }
 
 function localReader(files) {
@@ -1862,9 +1877,11 @@ test("does not treat CSS strings or comments as url or import assets", async () 
 });
 
 test("redacts file URLs inside CSS url tokens with comments", async () => {
+  const importRef = portableFileUrl("/Users/kun/import.css");
+  const secretRef = portableFileUrl("/Users/kun/secret.png");
   const html =
-    '<!doctype html><html><head><style>@import url(/*x*/"file:///Users/kun/import.css");' +
-    ".x{background:url(/*x*/file:///Users/kun/secret.png/*y*/)}</style></head></html>";
+    `<!doctype html><html><head><style>@import url(/*x*/"${importRef}");` +
+    `.x{background:url(/*x*/${secretRef}/*y*/)}</style></head></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     confineDir: "/art",
@@ -1881,9 +1898,10 @@ test("redacts file URLs inside CSS url tokens with comments", async () => {
 
 test("handles fetchable CSS image-set string operands", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const secretRef = portableFileUrl("/Users/kun/secret.png");
   const html =
     '<!doctype html><html><head><style>.hero{content:"file:///Users/kun/text.png";' +
-    'background:image-set("local.png" 1x, "file:///Users/kun/secret.png" 2x);' +
+    `background:image-set("local.png" 1x, "${secretRef}" 2x);` +
     'border-image:-webkit-image-set("local.png" 1x)}</style></head></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
@@ -1962,8 +1980,9 @@ test("redacts file URLs in conditional CSS at-rule preludes", async () => {
 
 test("handles escaped urls and image-set operands inside inline styles", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const secretRef = cssEscapedFileUrl("/Users/kun/secret.png");
   const html =
-    '<!doctype html><html><body><div style="background:u\\72l(file\\3a///Users/kun/secret.png)"></div>' +
+    `<!doctype html><html><body><div style="background:u\\72l(${secretRef})"></div>` +
     "<div style='background:image-set(\"local.png\" 1x)'></div>" +
     '<div style="background:image-set(&quot;local.png&quot; 1x)"></div></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
@@ -2033,10 +2052,12 @@ test("rewrites url references inside unquoted style attributes", async () => {
 });
 
 test("processes RCDATA start tag attributes while leaving text content inert", async () => {
+  const titleRef = portableFileUrl("/Users/kun/title.png");
+  const textareaRef = portableFileUrl("/Users/kun/textarea.png");
   const html =
-    '<!doctype html><html><head><title style="background:url(file:///Users/kun/title.png)">' +
+    `<!doctype html><html><head><title style="background:url(${titleRef})">` +
     '<img src="missing-title.png"></title></head><body>' +
-    '<textarea style="background:url(file:///Users/kun/textarea.png)"><img src="missing-textarea.png"></textarea>' +
+    `<textarea style="background:url(${textareaRef})"><img src="missing-textarea.png"></textarea>` +
     "</body></html>";
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
@@ -2367,8 +2388,8 @@ test("resolves root-absolute references through resolveAbsolute (e.g. legacy /de
 });
 
 test("resolves HTML asset references against a single-slash file base href", async () => {
-  const html =
-    '<!doctype html><html><head><base href="file:/art/assets/"></head><body><img src="logo.png"></body></html>';
+  const baseHref = singleSlashFileUrl("/art/assets/");
+  const html = `<!doctype html><html><head><base href="${baseHref}"></head><body><img src="logo.png"></body></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     readLocalFile: localReader({ "/art/assets/logo.png": Buffer.from("logo") }),
@@ -2378,7 +2399,7 @@ test("resolves HTML asset references against a single-slash file base href", asy
   assert.match(out, /<img src="data:image\/png;base64,bG9nbw==">/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
-    [{ kind: "file-url-redacted", ref: "file:/art/assets/" }],
+    [{ kind: "file-url-redacted", ref: baseHref }],
   );
 });
 
@@ -2623,7 +2644,7 @@ test("confineDir refuses to inline references that lexically escape the artifact
 
 test("redacts unresolved file URLs instead of leaking local paths", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
-  const secret = "file:///Users/kun/secret.png";
+  const secret = portableFileUrl("/Users/kun/secret.png");
   const html =
     `<!doctype html><html><head><link rel="icon" href="${secret}">` +
     `<script defer src="${secret}"></script><style>@import "${secret}";` +
@@ -2647,7 +2668,7 @@ test("redacts unresolved file URLs instead of leaking local paths", async () => 
 });
 
 test("reports unparseable file URLs before redacting active assets", async () => {
-  const ref = "file://server/share.png";
+  const ref = "file:///%E0%A4%A";
   const readPaths = [];
   const { html: out, warnings } = await buildSelfContainedHtml(`<img src="${ref}">`, {
     baseDir: "/art",
@@ -2674,10 +2695,10 @@ test("reports unparseable file URLs before redacting active assets", async () =>
 });
 
 test("redacts remaining file URLs from arbitrary HTML attributes", async () => {
-  const secret = "file:///Users/kun/secret.png";
-  const escaped = "file:&#x2f;&#x2f;/Users/kun/escaped.png";
-  const singleSlash = "file:/Users/kun/single-slash.png";
-  const namedEntities = "file&colon;&sol;&sol;&sol;Users/kun/named-entity.png";
+  const secret = portableFileUrl("/Users/kun/secret.png");
+  const escaped = htmlSlashEscapedFileUrl("/Users/kun/escaped.png");
+  const singleSlash = singleSlashFileUrl("/Users/kun/single-slash.png");
+  const namedEntities = namedEntityFileUrl("/Users/kun/named-entity.png");
   const html =
     `<!doctype html><html><body><a href="${secret}">Download</a>` +
     `<form action='${secret}'></form><object data=${secret}></object><embed src=${singleSlash}>` +
