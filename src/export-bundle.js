@@ -3,15 +3,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Builds a portable copy of a Lavish artifact by inlining only its LOCAL assets - files on disk
-// the artifact references by relative path, file:// URL, or a trusted root-absolute resolver - as
-// inline <style>/<script> blocks and data URIs. Remote references (http(s) CDN/font URLs,
+// the artifact references by relative path, fetchable file:// URL, or a trusted root-absolute
+// resolver - as inline <style>/<script> blocks and data URIs. Remote references (http(s) CDN/font URLs,
 // protocol-relative URLs, CSS url() pointing at the network) are deliberately LEFT AS-IS: the
 // browser loads them at render time, so the export and the hosted share render correctly wherever
 // there is network access. Because nothing remote is ever fetched, the transform makes no outbound
 // requests (no SSRF) and stays a small, deterministic local-file rewrite. The only security surface
 // is local file reading, which is confined to the artifact directory both lexically and by
 // real-path/symlink resolution, except for caller-provided trusted resolver mappings such as
-// packaged /design assets.
+// packaged /design assets. File URLs that are not safely inlined as local assets are redacted to
+// about:blank before they can leak absolute local paths.
 
 const EXT_MIME = {
   ".css": "text/css",

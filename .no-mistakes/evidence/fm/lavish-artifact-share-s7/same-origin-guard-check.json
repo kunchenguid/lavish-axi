@@ -1,0 +1,16 @@
+{
+  "server": "http://127.0.0.1:49388",
+  "share_path": "/api/a3989903ca9772e1/share",
+  "checks": [
+    {
+      "name": "missing_origin_and_referer",
+      "status": 403,
+      "body": "{\"error\":\"cross-origin share request rejected\"}"
+    },
+    {
+      "name": "cross_origin",
+      "status": 403,
+      "body": "{\"error\":\"cross-origin share request rejected\"}"
+    }
+  ]
+}
