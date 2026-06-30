@@ -464,6 +464,7 @@ test("share output reports the public url and the secret update key", () => {
   assert.equal(output.share.url, "https://x.ht-ml.app/");
   assert.equal(output.share.update_key, "uk_secret");
   assert.equal(output.share.public, true);
+  assert.equal(output.share.visibility, "public");
   assert.match(output.next_step, /PUBLIC/);
   assert.match(output.next_step, /update_key/);
   assert.match(output.next_step, /x\.ht-ml\.app/);
@@ -478,6 +479,8 @@ test("password-protected share output tells viewers they also need the password"
   });
 
   assert.equal(output.share.password_protected, true);
+  assert.equal(output.share.public, false);
+  assert.equal(output.share.visibility, "private");
   assert.match(output.next_step, /PASSWORD-PROTECTED/);
   assert.match(output.next_step, /viewers also need the password/);
   assert.doesNotMatch(output.next_step, /anyone with the link can view/);
@@ -504,6 +507,8 @@ test("password-protected share output with unresolved assets still mentions the 
     passwordProtected: true,
   });
 
+  assert.equal(output.share.public, false);
+  assert.equal(output.share.visibility, "private");
   assert.match(output.next_step, /PASSWORD-PROTECTED/);
   assert.match(output.next_step, /viewers also need the password/);
   assert.doesNotMatch(output.next_step, /anyone with the link can view/);

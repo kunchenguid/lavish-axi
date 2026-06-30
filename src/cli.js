@@ -365,9 +365,9 @@ function assetWarningSummaries(warnings) {
   }));
 }
 
-// Publish the artifact as a PUBLIC, visitable page on ht-ml.app. Builds the same local-inlined
+// Publish the artifact as a visitable page on ht-ml.app. Builds the same local-inlined
 // HTML as `export` (remote refs left as links), then POSTs it to ht-ml.app's `/v1/sites` API,
-// which needs no account or API key, and returns the public URL plus the secret update_key for
+// which needs no account or API key, and returns the share URL plus the secret update_key for
 // managing the page later. Server-independent.
 async function shareCommand(args) {
   const file = firstPositionalArg(args, ["--password", "--token"]);
@@ -391,6 +391,7 @@ async function shareCommand(args) {
 
 export function createShareOutput({ source, site, warnings, passwordProtected = false }) {
   const remaining = Array.isArray(warnings) ? warnings : [];
+  const isPasswordProtected = Boolean(passwordProtected);
   const result = {
     share: {
       source,
@@ -398,19 +399,20 @@ export function createShareOutput({ source, site, warnings, passwordProtected = 
       site_id: site.site_id,
       update_key: site.update_key,
       status: site.status || "active",
-      public: true,
-      password_protected: Boolean(passwordProtected),
+      public: !isPasswordProtected,
+      visibility: isPasswordProtected ? "private" : "public",
+      password_protected: isPasswordProtected,
       unresolved_local_assets: remaining.length,
     },
   };
-  const passwordNote = passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : "";
+  const passwordNote = isPasswordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : "";
   if (remaining.length) {
     result.unresolved_local_assets = assetWarningSummaries(remaining);
     result.next_step =
-      `Published ${passwordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote} ` +
+      `Published ${isPasswordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote} ` +
       `Remote CDN/font references are intentionally left as links and render where there is network access. ` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery).`;
-  } else if (passwordProtected) {
+  } else if (isPasswordProtected) {
     result.next_step =
       `Published a PASSWORD-PROTECTED page: ${site.url} - share this URL with the user and provide the password separately; viewers also need the password. ` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +

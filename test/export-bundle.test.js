@@ -168,6 +168,28 @@ test("warns when inline module scripts reference local re-exports", async () => 
   );
 });
 
+test("warns when inline module scripts reference local template dynamic imports", async () => {
+  const html =
+    '<!doctype html><html><head><script type="module">' +
+    "const staticLocal = () => import(`./templated.js`);\n" +
+    "const interpolatedLocal = (name) => import(`../${name}.js`);\n" +
+    "const remote = () => import(`https://cdn.example/remote.js`);\n" +
+    "const pkg = () => import(`pkg`);\n" +
+    "</script></head></html>";
+  const { warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art/components",
+    readLocalFile: localReader({}),
+  });
+
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "inline-module-import", ref: "./templated.js" },
+      { kind: "inline-module-import", ref: "../${name}.js" },
+    ],
+  );
+});
+
 test("escapes a closing style tag when inlining external CSS into a <style> block", async () => {
   const html = '<!doctype html><html><head><link rel="stylesheet" href="x.css"></head><body></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {

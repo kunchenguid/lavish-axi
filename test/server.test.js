@@ -414,17 +414,20 @@ test("overflow menu offers a standalone HTML export that downloads a portable fi
   assert.match(js, /exportArtifactButton\.onclick = exportArtifact/);
 });
 
-test("overflow menu offers publishing a public ht-ml.app link via a share dialog", async () => {
+test("overflow menu offers publishing an ht-ml.app link via a share dialog", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
   const css = await chromeCssSource();
 
-  assert.match(html, /id="shareArtifact"[^<]*>.*Publish public link/);
+  assert.match(html, /id="shareArtifact"[^<]*>.*Publish link/);
   assert.match(html, /id="shareDialog"/);
   assert.match(html, /Publish to ht-ml\.app/);
   assert.match(html, /id="sharePassword"/);
   assert.match(html, /id="shareUpdateKey"/);
-  assert.match(html, /Everything published is public/);
+  assert.match(html, /Without a password, the page is PUBLIC/);
+  assert.match(html, /With a password, the page is PRIVATE/);
+  assert.doesNotMatch(html, /Everything published is public/);
+  assert.doesNotMatch(html, /Get a public link/);
   assert.match(css, /\.share-overlay/);
   assert.match(css, /\.share-overlay\{[^}]*z-index:80;/);
   assert.match(css, /\.share-card/);

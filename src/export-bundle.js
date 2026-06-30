@@ -1253,6 +1253,10 @@ function parseJsImport(source, index) {
   if (source[cursor] === ".") return { refs: [], end: cursor + 1 };
   if (source[cursor] === "(") {
     cursor = skipJsWhitespaceAndComments(source, cursor + 1);
+    if (source[cursor] === "`") {
+      const token = parseJsTemplateImport(source, cursor);
+      return { refs: token.value ? [token.value] : [], end: token.end };
+    }
     if (source[cursor] !== '"' && source[cursor] !== "'") return { refs: [], end: cursor + 1 };
     const token = parseJsString(source, cursor);
     return { refs: [token.value], end: token.end };
@@ -1363,6 +1367,11 @@ function parseJsString(source, index) {
     cursor += 1;
   }
   return { value, end: source.length };
+}
+
+function parseJsTemplateImport(source, index) {
+  const end = skipJsTemplate(source, index);
+  return { value: source.slice(index + 1, Math.max(index + 1, end - 1)), end };
 }
 
 function skipJsTemplate(source, index) {
