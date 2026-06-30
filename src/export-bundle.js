@@ -54,8 +54,10 @@ const HTML_ENTITY_MAP = {
   gt: ">",
   lt: "<",
   nbsp: "\u00a0",
+  newline: "\n",
   quot: '"',
   sol: "/",
+  tab: "\t",
 };
 const TAG_ATTRS_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*`;
 const TAG_ATTRS_PATTERN_LAZY = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*?`;
@@ -590,7 +592,7 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
       index = token.end;
       continue;
     }
-    const dataUri = await loadDataUri(trimmed, baseDir, ctx, options);
+    const dataUri = await loadDataUri(trimmed, baseDir, ctx, { ...options, cssSyntax: true });
     result += dataUri
       ? `url(${token.quote}${dataUri}${token.quote})`
       : rebaseCssUrlToken(token, baseDir, outputBaseDir);
@@ -600,13 +602,15 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
 }
 
 function rebaseCssUrlToken(token, baseDir, outputBaseDir) {
-  if (shouldRedactUnresolvedRef(token.ref)) return `url(${token.quote}${REDACTED_FILE_REF}${token.quote})`;
+  if (shouldRedactUnresolvedRef(token.ref, { cssSyntax: true })) {
+    return `url(${token.quote}${REDACTED_FILE_REF}${token.quote})`;
+  }
   const rebased = rebaseLocalCssRef(token.ref, baseDir, outputBaseDir);
   return rebased ? `url(${token.quote}${rebased}${token.quote})` : token.raw;
 }
 
 function rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir) {
-  if (shouldRedactUnresolvedRef(parsed.ref)) {
+  if (shouldRedactUnresolvedRef(parsed.ref, { cssSyntax: true })) {
     return `${rule.slice(0, parsed.refStart)}${REDACTED_FILE_REF}${rule.slice(parsed.refEnd)}`;
   }
   const rebased = rebaseLocalCssRef(parsed.ref, baseDir, outputBaseDir);
@@ -904,16 +908,17 @@ function rootRelativeRef(basePath, ref) {
 // reference exactly as written" - they are not fetched. Only local refs become `file`.
 function resolveRef(ref, baseDir, ctx, options = {}) {
   const trimmed = normalizeRefForResolution(ref, options).trim();
+  const schemeRef = normalizeRefForScheme(ref, options);
   const base = normalizeRefBase(baseDir);
-  if (isInert(trimmed)) return { kind: "skip" };
+  if (isInert(schemeRef || trimmed)) return { kind: "skip" };
 
   // Remote: http(s) and protocol-relative URLs are left as references for the browser to load.
-  if (trimmed.startsWith("//") || /^https?:\/\//i.test(trimmed)) return { kind: "skip" };
+  if (schemeRef.startsWith("//") || /^https?:\/\//i.test(schemeRef)) return { kind: "skip" };
 
   // Local file: URLs are inlined like any other local asset, subject to the confinement guard.
-  if (isFileSchemeRef(trimmed)) {
+  if (isFileSchemeRef(ref, options)) {
     try {
-      const resolved = fileURLToPath(decodeHtmlCharacterReferences(trimmed).replace(/#.*$/, ""));
+      const resolved = fileURLToPath(schemeRef.replace(/#.*$/, ""));
       if (ctx.confineDir && isOutside(ctx.confineDir, resolved)) return { kind: "escape", path: resolved };
       return { kind: "file", path: resolved };
     } catch {
@@ -922,7 +927,7 @@ function resolveRef(ref, baseDir, ctx, options = {}) {
   }
 
   // Any other explicit scheme (ftp:, ws:, custom:) is left as a reference.
-  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return { kind: "skip" };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(schemeRef)) return { kind: "skip" };
 
   if (base.kind === "remote") return { kind: "skip" };
   const effectiveRef = base.kind === "root" && !trimmed.startsWith("/") ? rootRelativeRef(base.path, trimmed) : trimmed;
@@ -1395,16 +1400,16 @@ function isInert(ref) {
   return !ref || ref.startsWith("#") || /^%23/i.test(ref) || /^(data|blob|about|javascript|mailto|tel):/i.test(ref);
 }
 
-function shouldRedactUnresolvedRef(ref) {
-  return isFileSchemeRef(ref);
+function shouldRedactUnresolvedRef(ref, options = {}) {
+  return isFileSchemeRef(ref, options);
 }
 
 function containsFileUrl(ref) {
-  return /(^|[^a-z0-9+.-])file:/i.test(decodeHtmlCharacterReferences(String(ref || "")));
+  return /(^|[^a-z0-9+.-])file:/i.test(normalizeHtmlRefForScheme(ref));
 }
 
-function isFileSchemeRef(ref) {
-  return /^file:/i.test(decodeHtmlCharacterReferences(String(ref || "").trim()));
+function isFileSchemeRef(ref, options = {}) {
+  return /^file:/i.test(normalizeRefForScheme(ref, options));
 }
 
 function replaceUnresolvedAttrRef(source, name, ref) {
@@ -1438,12 +1443,70 @@ function normalizeRefForResolution(ref, options = {}) {
   return options.decodeHtmlEntities ? decodeHtmlCharacterReferences(value) : value;
 }
 
+function normalizeRefForScheme(ref, options = {}) {
+  return options.cssSyntax ? normalizeCssRefForScheme(ref, options) : normalizeHtmlRefForScheme(ref);
+}
+
+function normalizeHtmlRefForScheme(ref) {
+  return decodeHtmlCharacterReferences(String(ref || ""))
+    .replace(/[\t\n\r]/g, "")
+    .trim();
+}
+
+function normalizeCssRefForScheme(ref, options = {}) {
+  const value = options.decodeHtmlEntities ? decodeHtmlCharacterReferences(String(ref || "")) : String(ref || "");
+  return decodeCssEscapes(value)
+    .replace(/[\t\n\f\r ]/g, "")
+    .trim();
+}
+
 function decodeHtmlCharacterReferences(value) {
-  return String(value).replace(/&(#(\d+)|#x([\da-f]+)|[a-z]+);/gi, (match, entity, decimal, hex) => {
+  return String(value).replace(/&(#(\d+)|#x([\da-f]+)|[a-z][a-z0-9]+);/gi, (match, entity, decimal, hex) => {
     if (decimal) return decodeNumericCharacterReference(Number.parseInt(decimal, 10), match);
     if (hex) return decodeNumericCharacterReference(Number.parseInt(hex, 16), match);
     return HTML_ENTITY_MAP[entity.toLowerCase()] ?? match;
   });
+}
+
+function decodeCssEscapes(value) {
+  const input = String(value);
+  let result = "";
+  let index = 0;
+  while (index < input.length) {
+    if (input[index] !== "\\") {
+      result += input[index];
+      index += 1;
+      continue;
+    }
+    if (index + 1 >= input.length) {
+      result += "\\";
+      break;
+    }
+    const next = input[index + 1];
+    if (next === "\r" && input[index + 2] === "\n") {
+      index += 3;
+      continue;
+    }
+    if (/[\n\r\f]/.test(next)) {
+      index += 2;
+      continue;
+    }
+    if (/[\da-f]/i.test(next)) {
+      let cursor = index + 1;
+      let hex = "";
+      while (cursor < input.length && hex.length < 6 && /[\da-f]/i.test(input[cursor])) {
+        hex += input[cursor];
+        cursor += 1;
+      }
+      result += decodeNumericCharacterReference(Number.parseInt(hex, 16), "");
+      if (cursor < input.length && /[\t\n\f\r ]/.test(input[cursor])) cursor += 1;
+      index = cursor;
+      continue;
+    }
+    result += next;
+    index += 2;
+  }
+  return result;
 }
 
 function decodeNumericCharacterReference(codePoint, fallback) {

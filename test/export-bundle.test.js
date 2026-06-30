@@ -1009,6 +1009,26 @@ test("redacts remaining file URLs from arbitrary HTML attributes", async () => {
   );
 });
 
+test("redacts browser-normalized file schemes in attributes and CSS urls", async () => {
+  const html =
+    "<!doctype html><html><head><style>.x{background:url(file\\3a///Users/kun/css-secret.png)}</style></head>" +
+    '<body><a href="fi&#x09;le:///Users/kun/attr-secret.png">Download</a></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(out, /file\\3a/i);
+  assert.doesNotMatch(out, /fi&#x09;le/i);
+  assert.match(out, /background:url\(about:blank\)/);
+  assert.match(out, /<a href="about:blank">Download<\/a>/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["outside-root", "file-url-redacted"],
+  );
+});
+
 test("refuses to inline a local symlink that escapes the artifact directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
   try {
