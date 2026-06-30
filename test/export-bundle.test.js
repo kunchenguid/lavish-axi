@@ -32,6 +32,19 @@ test("inlines a local stylesheet link as a <style> block", async () => {
   assert.equal(warnings.length, 0);
 });
 
+test("decodes control attributes before stylesheet decisions", async () => {
+  const html =
+    '<!doctype html><html><head><link rel="style&#115;heet" href="theme.css"></head><body><p>Hi</p></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/theme.css": "body{color:red}" }),
+  });
+
+  assert.match(out, /<style>body\{color:red\}<\/style>/);
+  assert.doesNotMatch(out, /<link\b/);
+  assert.equal(warnings.length, 0);
+});
+
 test("leaves inactive stylesheet links external with warnings", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" disabled href="disabled.css">' +

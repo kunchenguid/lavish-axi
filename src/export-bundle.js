@@ -371,7 +371,7 @@ async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
   if (tagName === "object") return inlineRenderAttr(attrs, "data", baseDir, ctx);
   if (tagName === "embed") return inlineRenderAttr(attrs, "src", baseDir, ctx);
   if (tagName === "input") {
-    if (getAttr(attrs, "type").trim().toLowerCase() !== "image") return attrs;
+    if (getDecisionAttr(attrs, "type").trim().toLowerCase() !== "image") return attrs;
     return inlineRenderAttr(attrs, "src", baseDir, ctx);
   }
   if (tagName === "iframe") return scrubFrameSrcdoc(warnFrameSrc(attrs, baseDir, ctx), baseDir, ctx);
@@ -391,7 +391,7 @@ async function inlineStyleAttr(attrs, baseDir, ctx) {
 }
 
 async function inlineLink(attrs, baseDir, ctx) {
-  const rel = (getAttr(attrs, "rel") || "").toLowerCase().split(/\s+/);
+  const rel = getTokenListAttr(attrs, "rel");
   const href = getAttr(attrs, "href");
   if (!href) return { attrs };
 
@@ -411,7 +411,7 @@ async function inlineLink(attrs, baseDir, ctx) {
     const loaded = await loadText(href, baseDir, ctx, HTML_REF_OPTIONS);
     if (!loaded) return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
     const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0, baseDir);
-    const media = getAttr(attrs, "media");
+    const media = getDecisionAttr(attrs, "media");
     return {
       replacement: `<style${media ? ` media="${escapeAttr(media)}"` : ""}>${escapeRawText(css, "style")}</style>`,
     };
@@ -435,7 +435,7 @@ function hasStylesheetBehaviorAttrs(attrs) {
 }
 
 function isCssStylesheetType(attrs) {
-  const type = getAttr(attrs, "type").trim().toLowerCase();
+  const type = getDecisionAttr(attrs, "type").trim().toLowerCase();
   if (!type) return true;
   return type.split(";")[0].trim() === "text/css";
 }
@@ -1986,11 +1986,11 @@ function warnInertStartTagRefs(tagName, attrs, baseDir, ctx, options = {}) {
   if (tagName === "embed" || tagName === "script" || tagName === "iframe") {
     warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
-  if (tagName === "input" && getAttr(attrs, "type").trim().toLowerCase() === "image") {
+  if (tagName === "input" && getDecisionAttr(attrs, "type").trim().toLowerCase() === "image") {
     warnInertAttrRef(attrs, "src", baseDir, ctx, HTML_REF_OPTIONS, options);
   }
   if (tagName === "link") {
-    const rel = (getAttr(attrs, "rel") || "").toLowerCase().split(/\s+/);
+    const rel = getTokenListAttr(attrs, "rel");
     if (
       rel.includes("stylesheet") ||
       rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value))
@@ -2193,15 +2193,15 @@ function warnUnterminatedRawText(tagName, ctx) {
 }
 
 function isModuleScript(attrs) {
-  return getAttr(attrs, "type").trim().toLowerCase() === "module";
+  return getDecisionAttr(attrs, "type").trim().toLowerCase() === "module";
 }
 
 function isImportMapScript(attrs) {
-  return getAttr(attrs, "type").trim().toLowerCase() === "importmap";
+  return getDecisionAttr(attrs, "type").trim().toLowerCase() === "importmap";
 }
 
 function isClassicScript(attrs) {
-  const type = getAttr(attrs, "type").trim().toLowerCase();
+  const type = getDecisionAttr(attrs, "type").trim().toLowerCase();
   if (!type) return true;
   const mime = type.split(";")[0].trim();
   return CLASSIC_SCRIPT_MIME_TYPES.has(mime);
@@ -2794,6 +2794,15 @@ function escapeRawText(text, tag) {
 function getAttr(attrs, name) {
   const attr = findHtmlAttr(attrs, name);
   return attr && attr.hasValue ? attr.value : "";
+}
+
+function getDecisionAttr(attrs, name) {
+  const value = getAttr(attrs, name);
+  return value ? decodeHtmlCharacterReferences(value) : "";
+}
+
+function getTokenListAttr(attrs, name) {
+  return getDecisionAttr(attrs, name).toLowerCase().split(/\s+/).filter(Boolean);
 }
 
 function hasAttr(attrs, name) {
