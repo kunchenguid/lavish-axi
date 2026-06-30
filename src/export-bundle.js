@@ -400,31 +400,37 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
   let failureIndex = -1;
   let failureCause = "";
 
-  for (let importIndex = 0; importIndex < imports.length; importIndex += 1) {
-    const item = imports[importIndex];
-    const classification = classifyCssImport(item.parsed, baseDir, ctx, depth);
-    classifications.set(item, classification);
-    if (classification.kind !== "candidate") {
-      complete = false;
-      failureIndex = importIndex;
-      failureCause = classification.kind;
-      break;
+  if (prelude.hasNamespace && imports.length > 0) {
+    complete = false;
+    failureIndex = 0;
+    failureCause = "namespace";
+  } else {
+    for (let importIndex = 0; importIndex < imports.length; importIndex += 1) {
+      const item = imports[importIndex];
+      const classification = classifyCssImport(item.parsed, baseDir, ctx, depth);
+      classifications.set(item, classification);
+      if (classification.kind !== "candidate") {
+        complete = false;
+        failureIndex = importIndex;
+        failureCause = classification.kind;
+        break;
+      }
+      const loaded = await loadTextFromDescriptor(classification.descriptor, item.parsed.ref, ctx);
+      if (!loaded) {
+        complete = false;
+        failureIndex = importIndex;
+        failureCause = "load";
+        break;
+      }
+      const inner = await prepareCssImportInline(loaded.text, loaded.baseDir, ctx, depth + 1, outputBaseDir);
+      if (!inner.inlineable) {
+        complete = false;
+        failureIndex = importIndex;
+        failureCause = "nested";
+        break;
+      }
+      prepared.set(item, item.parsed.media ? `@media ${item.parsed.media}{${inner.css}}` : inner.css);
     }
-    const loaded = await loadTextFromDescriptor(classification.descriptor, item.parsed.ref, ctx);
-    if (!loaded) {
-      complete = false;
-      failureIndex = importIndex;
-      failureCause = "load";
-      break;
-    }
-    const inner = await prepareCssImportInline(loaded.text, loaded.baseDir, ctx, depth + 1, outputBaseDir);
-    if (!inner.inlineable) {
-      complete = false;
-      failureIndex = importIndex;
-      failureCause = "nested";
-      break;
-    }
-    prepared.set(item, item.parsed.media ? `@media ${item.parsed.media}{${inner.css}}` : inner.css);
   }
 
   if (!complete) ctx.inlinedBytes = startBytes;
@@ -504,9 +510,16 @@ function collectCssPrelude(css) {
         continue;
       }
     }
+    if (startsCssKeyword(css, index, "@namespace")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd === -1) break;
+      segments.push({ type: "namespace", text: css.slice(index, ruleEnd + 1) });
+      index = ruleEnd + 1;
+      continue;
+    }
     break;
   }
-  return { segments, bodyStart: index };
+  return { segments, bodyStart: index, hasNamespace: segments.some((segment) => segment.type === "namespace") };
 }
 
 function classifyCssImport(parsed, baseDir, ctx, depth) {
@@ -605,6 +618,21 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
       continue;
     }
 
+    const imageSet = parseCssImageSetFunction(css, index);
+    if (imageSet) {
+      result += css.slice(index, imageSet.argsStart);
+      result += await inlineCssImageSetArgs(
+        css.slice(imageSet.argsStart, imageSet.argsEnd),
+        baseDir,
+        ctx,
+        outputBaseDir,
+        options,
+      );
+      result += css.slice(imageSet.argsEnd, imageSet.end);
+      index = imageSet.end;
+      continue;
+    }
+
     const token = parseCssUrlToken(css, index);
     if (!token) {
       result += css[index];
@@ -612,20 +640,71 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
       continue;
     }
 
-    const trimmed = token.ref.trim();
-    const refForResolution = options.decodeHtmlEntities ? decodeHtmlCharacterReferences(trimmed) : trimmed;
-    if (isInert(refForResolution)) {
-      result += token.raw;
-      index = token.end;
-      continue;
-    }
-    const dataUri = await loadDataUri(trimmed, baseDir, ctx, { ...options, cssSyntax: true });
-    result += dataUri
-      ? `url(${token.quote}${dataUri}${token.quote})`
-      : rebaseCssUrlToken(token, baseDir, outputBaseDir);
+    result += await rewriteCssUrlToken(token, baseDir, ctx, outputBaseDir, options);
     index = token.end;
   }
   return result;
+}
+
+async function rewriteCssUrlToken(token, baseDir, ctx, outputBaseDir, options = {}) {
+  const trimmed = token.ref.trim();
+  const refForResolution = options.decodeHtmlEntities ? decodeHtmlCharacterReferences(trimmed) : trimmed;
+  if (isInert(refForResolution)) return token.raw;
+  const dataUri = await loadDataUri(trimmed, baseDir, ctx, { ...options, cssSyntax: true });
+  return dataUri ? `url(${token.quote}${dataUri}${token.quote})` : rebaseCssUrlToken(token, baseDir, outputBaseDir);
+}
+
+async function inlineCssImageSetArgs(args, baseDir, ctx, outputBaseDir, options = {}) {
+  let result = "";
+  let index = 0;
+  let depth = 0;
+  while (index < args.length) {
+    const commentEnd = args.startsWith("/*", index) ? findCssCommentEnd(args, index) : -1;
+    if (commentEnd !== -1) {
+      result += args.slice(index, commentEnd);
+      index = commentEnd;
+      continue;
+    }
+
+    if (depth === 0) {
+      const token = parseCssUrlToken(args, index);
+      if (token) {
+        result += await rewriteCssUrlToken(token, baseDir, ctx, outputBaseDir, options);
+        index = token.end;
+        continue;
+      }
+    }
+
+    if (args[index] === '"' || args[index] === "'") {
+      const token = parseCssString(args, index);
+      if (depth === 0) {
+        const rewritten = await rewriteCssStringUrlOperand(token.value, baseDir, ctx, outputBaseDir, options);
+        result += rewritten.changed ? quoteCssString(rewritten.value, args[index]) : args.slice(index, token.end);
+      } else {
+        result += args.slice(index, token.end);
+      }
+      index = token.end;
+      continue;
+    }
+
+    if (args[index] === "(") depth += 1;
+    if (args[index] === ")") depth = Math.max(0, depth - 1);
+    result += args[index];
+    index += 1;
+  }
+  return result;
+}
+
+async function rewriteCssStringUrlOperand(ref, baseDir, ctx, outputBaseDir, options = {}) {
+  const trimmed = String(ref || "").trim();
+  const refForResolution = normalizeRefForResolution(trimmed, { ...options, cssSyntax: true }).trim();
+  if (isInert(refForResolution)) return { changed: false, value: ref };
+  const dataUri = await loadDataUri(trimmed, baseDir, ctx, { ...options, cssSyntax: true });
+  if (dataUri) return { changed: true, value: dataUri };
+  if (shouldRedactUnresolvedRef(trimmed, { ...options, cssSyntax: true }))
+    return { changed: true, value: REDACTED_FILE_REF };
+  const rebased = rebaseLocalCssRef(trimmed, baseDir, outputBaseDir, { ...options, cssSyntax: true });
+  return rebased ? { changed: true, value: rebased } : { changed: false, value: ref };
 }
 
 function rebaseCssUrlToken(token, baseDir, outputBaseDir) {
@@ -709,8 +788,9 @@ function parseCssImportRule(rule) {
 
 function parseCssUrlToken(css, index) {
   const keywordEnd = cssKeywordEnd(css, index, "url");
-  if (keywordEnd === -1 || css[keywordEnd] !== "(") return null;
-  let cursor = skipCssWhitespace(css, keywordEnd + 1);
+  const paren = keywordEnd === -1 ? -1 : skipCssWhitespaceAndComments(css, keywordEnd);
+  if (keywordEnd === -1 || css[paren] !== "(") return null;
+  let cursor = skipCssWhitespaceAndComments(css, paren + 1);
   let quote = "";
   let ref;
   let refStart;
@@ -721,14 +801,23 @@ function parseCssUrlToken(css, index) {
     quote = css[cursor];
     ref = token.value;
     refEnd = token.end - 1;
-    cursor = skipCssWhitespace(css, token.end);
+    cursor = skipCssWhitespaceAndComments(css, token.end);
     if (css[cursor] !== ")") return null;
     cursor += 1;
   } else {
     const start = cursor;
     while (cursor < css.length && css[cursor] !== ")") {
       if (css[cursor] === '"' || css[cursor] === "'") return null;
-      cursor += css[cursor] === "\\" ? 2 : 1;
+      if (css.startsWith("/*", cursor) || /\s/.test(css[cursor])) {
+        const close = skipCssWhitespaceAndComments(css, cursor);
+        if (css[close] !== ")") return null;
+        ref = css.slice(start, cursor);
+        refStart = start;
+        refEnd = cursor;
+        cursor = close + 1;
+        return { raw: css.slice(index, cursor), ref, quote, end: cursor, refStart, refEnd };
+      }
+      cursor = css[cursor] === "\\" ? readCssEscape(css, cursor).end : cursor + 1;
     }
     if (css[cursor] !== ")") return null;
     ref = css.slice(start, cursor);
@@ -737,6 +826,37 @@ function parseCssUrlToken(css, index) {
     cursor += 1;
   }
   return { raw: css.slice(index, cursor), ref, quote, end: cursor, refStart, refEnd };
+}
+
+function parseCssImageSetFunction(css, index) {
+  let keywordEnd = cssKeywordEnd(css, index, "image-set");
+  if (keywordEnd === -1) keywordEnd = cssKeywordEnd(css, index, "-webkit-image-set");
+  const paren = keywordEnd === -1 ? -1 : skipCssWhitespaceAndComments(css, keywordEnd);
+  if (keywordEnd === -1 || css[paren] !== "(") return null;
+  const close = findCssFunctionEnd(css, paren);
+  return close === -1 ? null : { argsStart: paren + 1, argsEnd: close, end: close + 1 };
+}
+
+function findCssFunctionEnd(css, openParen) {
+  let cursor = openParen;
+  let depth = 0;
+  while (cursor < css.length) {
+    if (css.startsWith("/*", cursor)) {
+      cursor = findCssCommentEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === '"' || css[cursor] === "'") {
+      cursor = findCssStringEnd(css, cursor);
+      continue;
+    }
+    if (css[cursor] === "(") depth += 1;
+    if (css[cursor] === ")") {
+      depth -= 1;
+      if (depth === 0) return cursor;
+    }
+    cursor += 1;
+  }
+  return -1;
 }
 
 function parseCssString(css, index) {
@@ -1726,6 +1846,14 @@ function quoteAttrValuePreservingEntities(value, preferredQuote) {
   const alternateQuote = preferredQuote === '"' ? "'" : '"';
   if (!text.includes(alternateQuote)) return `${alternateQuote}${text}${alternateQuote}`;
   return `"${text.replace(/"/g, "&quot;")}"`;
+}
+
+function quoteCssString(value, quote) {
+  return `${quote}${String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(new RegExp(escapeRegExp(quote), "g"), `\\${quote}`)
+    .replace(/\n/g, "\\a ")
+    .replace(/\r/g, "\\d ")}${quote}`;
 }
 
 function escapeRegExp(value) {

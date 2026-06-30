@@ -105,12 +105,15 @@ Because remote CDN/font references are left as links, **a static export needs ne
 
 ### Hosted sharing (ht-ml.app)
 
-`src/html-app.js` (`publishToHtmlApp`) publishes the local-inlined HTML to [ht-ml.app](https://ht-ml.app) - an HTML host with a REST API built for agents - and returns a public, visitable URL.
+`src/html-app.js` (`publishToHtmlApp`) publishes the local-inlined HTML to [ht-ml.app](https://ht-ml.app) - an HTML host with a REST API built for agents - and returns a visitable URL.
 It `POST`s the bundle to `POST {LAVISH_AXI_HTML_APP_API_URL or https://api.ht-ml.app}/v1/sites` as `{ html_content, password? }`; **creating a site needs no account or API key**.
 The response carries the public `url` plus a secret `update_key` (returned once, the only credential, used later to update or delete the page). An optional bearer token (`LAVISH_AXI_HTML_APP_TOKEN` / `--token`) is sent when set but is never required.
 Remote CDN/font references in the published page load fine because ht-ml.app serves hosted pages with no CSP and no sandbox header, so the hosted share renders whether or not the viewer's network reaches those CDNs.
-The browser surfaces a **Publish public link** overflow-menu item that opens a share dialog and `POST`s `/api/:key/share`; the route is **same-origin guarded** (`isSameOriginRequest`) because publishing is a state-changing, outward-facing action - a cross-origin page must not drive a publish through the loopback server. The CLI exposes `lavish-axi share <html-file> [--password <pw>] [--token <t>]`, server-independently.
-**Everything published is public** - the dialog and CLI output say so, and never include the annotation SDK.
+The browser surfaces a **Publish link** overflow-menu item that opens a share dialog and `POST`s `/api/:key/share`; the route is **same-origin guarded** (`isSameOriginRequest`) because publishing is a state-changing, outward-facing action - a cross-origin page must not drive a publish through the loopback server.
+The CLI exposes `lavish-axi share <html-file> [--password <pw>] [--token <t>]`, server-independently.
+Published pages are **PUBLIC by default** - anyone with the link can view them.
+When `--password` or a browser-dialog password is set, the page is **PRIVATE and password-protected** - viewers must supply the password to view, and runtime output reports `public: false`.
+Hosted shares never include the annotation SDK.
 
 ### AXI integration
 

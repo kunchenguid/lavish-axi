@@ -635,6 +635,23 @@ test("keeps earlier CSS imports external when a later remote import remains", as
   );
 });
 
+test("keeps CSS imports external before namespace declarations", async () => {
+  const html =
+    '<!doctype html><html><head><style>@import "a.css";@namespace svg url(http://www.w3.org/2000/svg);' +
+    "svg|a{fill:red}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/a.css": ".a{color:blue}" }),
+  });
+
+  assert.match(out, /@import "a\.css";@namespace svg url\(http:\/\/www\.w3\.org\/2000\/svg\);svg\|a\{fill:red\}/);
+  assert.doesNotMatch(out, /\.a\{color:blue\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "css-import-order", ref: "a.css" }],
+  );
+});
+
 test("leaves non-media CSS imports unchanged with a warning", async () => {
   const html =
     '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +
@@ -702,6 +719,46 @@ test("does not treat CSS strings or comments as url or import assets", async () 
   assert.match(out, /\/\* @import "missing-comment\.css"; \*\//);
   assert.match(out, /background:url\(data:image\/png;base64,iVBORw==\)/);
   assert.equal(warnings.length, 0);
+});
+
+test("redacts file URLs inside CSS url tokens with comments", async () => {
+  const html =
+    '<!doctype html><html><head><style>@import url(/*x*/"file:///Users/kun/import.css");' +
+    ".x{background:url(/*x*/file:///Users/kun/secret.png/*y*/)}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /@import url\(\/\*x\*\/"about:blank"\);/);
+  assert.match(out, /background:url\(about:blank\)/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["outside-root", "outside-root"],
+  );
+});
+
+test("handles fetchable CSS image-set string operands", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><head><style>.hero{content:"file:///Users/kun/text.png";' +
+    'background:image-set("local.png" 1x, "file:///Users/kun/secret.png" 2x);' +
+    'border-image:-webkit-image-set("local.png" 1x)}</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({ "/art/local.png": png }),
+  });
+
+  assert.match(out, /content:"file:\/\/\/Users\/kun\/text\.png"/);
+  assert.match(out, /image-set\("data:image\/png;base64,iVBORw==" 1x, "about:blank" 2x\)/);
+  assert.match(out, /-webkit-image-set\("data:image\/png;base64,iVBORw==" 1x\)/);
+  assert.doesNotMatch(out, /secret\.png/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["outside-root"],
+  );
 });
 
 test("only rewrites url references inside real style attributes", async () => {
