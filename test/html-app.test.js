@@ -105,3 +105,31 @@ test("publishToHtmlApp surfaces an error detail returned by the API", async () =
 
   await assert.rejects(() => publishToHtmlApp("", { fetch: fetchImpl, env: {} }), /html_content is required/);
 });
+
+test("publishToHtmlApp keeps the timeout active while reading the response body", async () => {
+  let textStarted = false;
+  /** @type {any} */
+  const fetchImpl = async (_url, init) => ({
+    ok: true,
+    status: 200,
+    text: async () => {
+      textStarted = true;
+      await new Promise((resolve, reject) => {
+        const abort = () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        };
+        if (init.signal.aborted) {
+          abort();
+          return;
+        }
+        init.signal.addEventListener("abort", abort, { once: true });
+      });
+      return "";
+    },
+  });
+
+  await assert.rejects(() => publishToHtmlApp("<h1>Hi</h1>", { fetch: fetchImpl, env: {}, timeoutMs: 1 }), /timed out/);
+  assert.equal(textStarted, true);
+});

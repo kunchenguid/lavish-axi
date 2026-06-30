@@ -45,6 +45,7 @@ const EXT_MIME = {
 const DEFAULT_MAX_DEPTH = 8;
 const DEFAULT_MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 25 * 1024 * 1024;
+const REDACTED_FILE_REF = "about:blank";
 const TAG_ATTRS_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*`;
 const TAG_ATTRS_PATTERN_LAZY = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*?`;
 const RAW_TEXT_OR_COMMENT_RE = new RegExp(
@@ -191,10 +192,10 @@ async function inlineLink(match, attrs, baseDir, ctx) {
   if (rel.includes("stylesheet")) {
     if (isInactiveStylesheet(attrs, rel)) {
       warnInactiveStylesheet(href, baseDir, ctx);
-      return match;
+      return replaceUnresolvedAttrRef(match, "href", href);
     }
     const loaded = await loadText(href, baseDir, ctx);
-    if (!loaded) return match;
+    if (!loaded) return replaceUnresolvedAttrRef(match, "href", href);
     const css = await inlineCss(loaded.text, loaded.baseDir, ctx, 0, baseDir);
     const media = getAttr(attrs, "media");
     return `<style${media ? ` media="${escapeAttr(media)}"` : ""}>${escapeRawText(css, "style")}</style>`;
@@ -202,7 +203,7 @@ async function inlineLink(match, attrs, baseDir, ctx) {
 
   if (rel.some((value) => ["icon", "shortcut", "apple-touch-icon", "mask-icon"].includes(value))) {
     const dataUri = await loadDataUri(href, baseDir, ctx);
-    if (!dataUri) return match;
+    if (!dataUri) return replaceUnresolvedAttrRef(match, "href", href);
     return replaceAttrValue(match, "href", dataUri);
   }
 
@@ -222,15 +223,15 @@ async function inlineScript(match, attrs, body, baseDir, ctx) {
   if (isInjectedLavishSdkSrc(src)) return "";
   if (isModuleScript(attrs)) {
     warnExternalModuleScript(src, baseDir, ctx);
-    return match;
+    return replaceUnresolvedAttrRef(match, "src", src);
   }
   if (hasAttr(attrs, "defer") || hasAttr(attrs, "async")) {
     warnUnsupportedScriptTiming(src, baseDir, ctx);
-    return match;
+    return replaceUnresolvedAttrRef(match, "src", src);
   }
 
   const loaded = await loadText(src, baseDir, ctx);
-  if (!loaded) return match;
+  if (!loaded) return replaceUnresolvedAttrRef(match, "src", src);
   const cleanedAttrs = removeAttrs(attrs, ["src", "integrity", "crossorigin"]);
   return `<script${cleanedAttrs}>${escapeRawText(loaded.text, "script")}</script>`;
 }
@@ -246,7 +247,7 @@ async function inlineAttr(attrs, name, baseDir, ctx) {
   const value = getAttr(attrs, name);
   if (!value) return attrs;
   const dataUri = await loadDataUri(value, baseDir, ctx);
-  if (!dataUri) return attrs;
+  if (!dataUri) return replaceUnresolvedAttrRef(attrs, name, value);
   return replaceAttrValue(attrs, name, dataUri);
 }
 
@@ -264,8 +265,15 @@ async function inlineSrcset(attrs, baseDir, ctx) {
       result += ref;
     } else {
       const dataUri = await loadDataUri(ref, baseDir, ctx);
-      if (dataUri) changed = true;
-      result += dataUri || ref;
+      if (dataUri) {
+        changed = true;
+        result += dataUri;
+      } else if (shouldRedactUnresolvedRef(ref)) {
+        changed = true;
+        result += REDACTED_FILE_REF;
+      } else {
+        result += ref;
+      }
     }
     lastIndex = candidate.urlEnd;
   }
@@ -281,7 +289,21 @@ function parseSrcsetCandidates(value) {
     if (index >= value.length) break;
 
     const urlStart = index;
-    while (index < value.length && !isHtmlSpace(value[index])) index += 1;
+    const dataUrl = value.slice(index, index + "data:".length).toLowerCase() === "data:";
+    let sawDataPayloadComma = false;
+    while (index < value.length) {
+      const char = value[index];
+      if (isHtmlSpace(char)) break;
+      if (char === ",") {
+        if (!dataUrl) break;
+        if (!sawDataPayloadComma) {
+          sawDataPayloadComma = true;
+        } else if (isSrcsetCandidateSeparator(value, index)) {
+          break;
+        }
+      }
+      index += 1;
+    }
     let urlEnd = index;
     while (urlEnd > urlStart && value[urlEnd - 1] === ",") urlEnd -= 1;
     if (urlEnd > urlStart) candidates.push({ urlStart, urlEnd });
@@ -290,6 +312,12 @@ function parseSrcsetCandidates(value) {
     if (index < value.length && value[index] === ",") index += 1;
   }
   return candidates;
+}
+
+function isSrcsetCandidateSeparator(value, commaIndex) {
+  let cursor = commaIndex + 1;
+  while (cursor < value.length && isHtmlSpace(value[cursor])) cursor += 1;
+  return cursor >= value.length || cursor > commaIndex + 1;
 }
 
 function isHtmlSpace(char) {
@@ -406,11 +434,15 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir) {
 }
 
 function rebaseCssUrlToken(token, baseDir, outputBaseDir) {
+  if (shouldRedactUnresolvedRef(token.ref)) return `url(${token.quote}${REDACTED_FILE_REF}${token.quote})`;
   const rebased = rebaseLocalCssRef(token.ref, baseDir, outputBaseDir);
   return rebased ? `url(${token.quote}${rebased}${token.quote})` : token.raw;
 }
 
 function rebaseCssImportRule(rule, parsed, baseDir, outputBaseDir) {
+  if (shouldRedactUnresolvedRef(parsed.ref)) {
+    return `${rule.slice(0, parsed.refStart)}${REDACTED_FILE_REF}${rule.slice(parsed.refEnd)}`;
+  }
   const rebased = rebaseLocalCssRef(parsed.ref, baseDir, outputBaseDir);
   if (!rebased) return rule;
   return `${rule.slice(0, parsed.refStart)}${rebased}${rule.slice(parsed.refEnd)}`;
@@ -587,8 +619,7 @@ function startsUnsupportedCssImportTail(tail) {
   let cursor = index;
   while (cursor < tail.length && isCssIdentChar(tail[cursor])) cursor += 1;
   const ident = tail.slice(index, cursor).toLowerCase();
-  const next = skipCssWhitespaceAndComments(tail, cursor);
-  return ident === "layer" || ident === "supports" || tail[next] === "(";
+  return tail[cursor] === "(" && (ident === "layer" || ident === "supports" || cursor > index);
 }
 
 function isCssIdentChar(char) {
@@ -1090,6 +1121,14 @@ function isInert(ref) {
   // `#a` and its percent-encoded form `%23a` are in-document fragment references (e.g. SVG
   // filter/mask ids), not fetchable resources, so leave them untouched.
   return !ref || ref.startsWith("#") || /^%23/i.test(ref) || /^(data|blob|about|javascript|mailto|tel):/i.test(ref);
+}
+
+function shouldRedactUnresolvedRef(ref) {
+  return /^file:\/\//i.test(String(ref || "").trim());
+}
+
+function replaceUnresolvedAttrRef(source, name, ref) {
+  return shouldRedactUnresolvedRef(ref) ? replaceAttrValue(source, name, REDACTED_FILE_REF) : source;
 }
 
 function isInjectedLavishSdkSrc(src) {

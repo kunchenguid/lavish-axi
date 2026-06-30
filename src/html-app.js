@@ -43,6 +43,7 @@ export async function publishToHtmlApp(html, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs || PUBLISH_TIMEOUT_MS);
   let response;
+  let text;
   try {
     response = await fetchImpl(`${apiUrl}/v1/sites`, {
       method: "POST",
@@ -50,6 +51,7 @@ export async function publishToHtmlApp(html, options = {}) {
       body: JSON.stringify(createHtmlAppPayload(html, options)),
       signal: controller.signal,
     });
+    text = await response.text();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("ht-ml.app publish timed out", { cause: error });
@@ -61,7 +63,6 @@ export async function publishToHtmlApp(html, options = {}) {
     clearTimeout(timeout);
   }
 
-  const text = await response.text();
   const data = text ? parseJson(text) : {};
   if (!response.ok) {
     throw new Error(`ht-ml.app publish failed: ${describeError(response.status, data, text)}`);

@@ -189,6 +189,19 @@ test("parses srcset without splitting data URI candidates", async () => {
   assert.equal(warnings.length, 0);
 });
 
+test("parses srcset candidates without descriptors", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html = '<!doctype html><html><body><img srcset="small.png, large.png 2x"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/small.png": png, "/art/large.png": png }),
+  });
+
+  assert.match(out, /srcset="data:image\/png;base64,iVBORw==, data:image\/png;base64,iVBORw== 2x"/);
+  assert.doesNotMatch(out, /small\.png|large\.png/);
+  assert.equal(warnings.length, 0);
+});
+
 test("leaves unchanged srcset values byte-for-byte when no candidate is inlined", async () => {
   const html =
     '<!doctype html><html><body><img srcset="https://cdn.example/pic.png?a=1&amp;b=2 1x, data:image/png;base64,AAAA 2x"></body></html>';
@@ -440,6 +453,18 @@ test("inlines media-query CSS imports with parenthesized features", async () => 
   assert.equal(warnings.length, 0);
 });
 
+test("inlines not media-condition CSS imports with parenthesized features", async () => {
+  const html = '<!doctype html><html><head><style>@import "narrow.css" not (hover);</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/narrow.css": ".narrow{color:red}" }),
+  });
+
+  assert.match(out, /@media not \(hover\)\{\.narrow\{color:red\}\}/);
+  assert.doesNotMatch(out, /@import/);
+  assert.equal(warnings.length, 0);
+});
+
 test("leaves non-media CSS imports unchanged with a warning", async () => {
   const html =
     '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +
@@ -681,6 +706,31 @@ test("confineDir refuses to inline references that lexically escape the artifact
   assert.match(out, /<link rel="stylesheet" href="\.\.\/secret\.css">/);
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0].kind, "outside-root");
+});
+
+test("redacts unresolved file URLs instead of leaking local paths", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const secret = "file:///Users/kun/secret.png";
+  const html =
+    `<!doctype html><html><head><link rel="icon" href="${secret}">` +
+    `<script defer src="${secret}"></script><style>@import "${secret}";` +
+    `.x{background:url("${secret}")}</style></head><body>` +
+    `<img src="${secret}" srcset="${secret} 1x, pic.png 2x"></body></html>`;
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({ "/art/pic.png": png }),
+  });
+
+  assert.doesNotMatch(out, /file:\/\//);
+  assert.doesNotMatch(out, /\/Users\/kun\/secret\.png/);
+  assert.match(out, /<link rel="icon" href="about:blank">/);
+  assert.match(out, /<script defer src="about:blank"><\/script>/);
+  assert.match(out, /@import "about:blank";/);
+  assert.match(out, /background:url\("about:blank"\)/);
+  assert.match(out, /<img src="about:blank" srcset="about:blank 1x, data:image\/png;base64,iVBORw== 2x">/);
+  assert.equal(warnings.length, 6);
+  assert.ok(warnings.every((warning) => warning.kind === "outside-root"));
 });
 
 test("refuses to inline a local symlink that escapes the artifact directory", async () => {
