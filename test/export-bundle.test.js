@@ -652,6 +652,19 @@ test("keeps CSS imports external before namespace declarations", async () => {
   );
 });
 
+test("leaves namespace url identifiers unchanged", async () => {
+  const html =
+    "<!doctype html><html><head><style>@namespace icon url(ns.xml);icon|glyph{fill:red}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/ns.xml": "namespace" }),
+  });
+
+  assert.match(out, /@namespace icon url\(ns\.xml\);icon\|glyph\{fill:red\}/);
+  assert.doesNotMatch(out, /data:application\/octet-stream/);
+  assert.equal(warnings.length, 0);
+});
+
 test("leaves non-media CSS imports unchanged with a warning", async () => {
   const html =
     '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +
@@ -761,6 +774,27 @@ test("handles fetchable CSS image-set string operands", async () => {
   );
 });
 
+test("handles escaped urls and image-set operands inside inline styles", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html =
+    '<!doctype html><html><body><div style="background:u\\72l(file\\3a///Users/kun/secret.png)"></div>' +
+    "<div style='background:image-set(\"local.png\" 1x)'></div></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+    readLocalFile: localReader({ "/art/local.png": png }),
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.doesNotMatch(out, /file\\3a/i);
+  assert.match(out, /style="background:url\(about:blank\)"/);
+  assert.match(out, /style='background:image-set\("data:image\/png;base64,iVBORw==" 1x\)'/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["outside-root"],
+  );
+});
+
 test("only rewrites url references inside real style attributes", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const html =
@@ -791,6 +825,26 @@ test("rewrites url references inside unquoted style attributes", async () => {
   assert.match(out, /style="background:url\(data:image\/png;base64,iVBORw==\)"/);
   assert.match(out, /data-style=background:url\(missing-data\.png\)/);
   assert.equal(warnings.length, 0);
+});
+
+test("processes RCDATA start tag attributes while leaving text content inert", async () => {
+  const html =
+    '<!doctype html><html><head><title style="background:url(file:///Users/kun/title.png)">' +
+    '<img src="missing-title.png"></title></head><body>' +
+    '<textarea style="background:url(file:///Users/kun/textarea.png)"><img src="missing-textarea.png"></textarea>' +
+    "</body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    confineDir: "/art",
+  });
+
+  assert.doesNotMatch(out, /\/Users\/kun/);
+  assert.match(out, /<title style="background:url\(about:blank\)"><img src="missing-title\.png"><\/title>/);
+  assert.match(out, /<textarea style="background:url\(about:blank\)"><img src="missing-textarea\.png"><\/textarea>/);
+  assert.deepEqual(
+    warnings.map((warning) => warning.kind),
+    ["outside-root", "outside-root"],
+  );
 });
 
 test("keeps earlier CSS imports external when a later local import cannot inline", async () => {

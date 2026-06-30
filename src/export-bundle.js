@@ -76,6 +76,10 @@ const SCRIPT_SEGMENT_RE = new RegExp(
   String.raw`^<script(?=\s|\/|>)(${TAG_ATTRS_PATTERN})>([\s\S]*?)<\/script\s*>$`,
   "i",
 );
+const RCDATA_SEGMENT_RE = new RegExp(
+  String.raw`^<(textarea|title)(?=\s|\/|>)(${TAG_ATTRS_PATTERN})>([\s\S]*?)(<\/\1\s*>)$`,
+  "i",
+);
 const MEDIA_TAG_RE = new RegExp(
   String.raw`<(img|source|video|audio|track)(?=\s|\/|>)(${TAG_ATTRS_PATTERN_LAZY})\/?>`,
   "gi",
@@ -163,6 +167,11 @@ async function transformRawTextOrComment(segment, baseDir, ctx) {
     const [, attrs, body] = script;
     return inlineScript(segment, attrs, body, baseDir, ctx);
   }
+  const rcdata = segment.match(RCDATA_SEGMENT_RE);
+  if (rcdata) {
+    const [, tag, attrs, body, endTag] = rcdata;
+    return `${await transformMarkup(`<${tag}${attrs}>`, baseDir, ctx)}${body}${endTag}`;
+  }
   return segment;
 }
 
@@ -233,8 +242,8 @@ async function inlineStyleAttrs(markup, baseDir, ctx) {
       async (attrMatch, boundary, prefix, _raw, dq, sq, unquoted) => {
         const quote = sq !== undefined ? "'" : '"';
         const value = dq ?? sq ?? unquoted;
-        if (!/url\(/i.test(value)) return attrMatch;
-        return `${boundary}${prefix}${quote}${await inlineCssUrls(value, baseDir, ctx, baseDir, HTML_REF_OPTIONS)}${quote}`;
+        const rewritten = await inlineCssUrls(value, baseDir, ctx, baseDir, HTML_REF_OPTIONS);
+        return rewritten === value ? attrMatch : `${boundary}${prefix}${quote}${rewritten}${quote}`;
       },
     );
     return formatStartTag(tag, next, isSelfClosingTag(match));
@@ -608,6 +617,17 @@ async function inlineCssUrls(css, baseDir, ctx, outputBaseDir, options = {}) {
     }
 
     if (startsCssKeyword(css, index, "@import")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd === -1) {
+        result += css.slice(index);
+        break;
+      }
+      result += css.slice(index, ruleEnd + 1);
+      index = ruleEnd + 1;
+      continue;
+    }
+
+    if (startsCssKeyword(css, index, "@namespace")) {
       const ruleEnd = findCssAtRuleEnd(css, index);
       if (ruleEnd === -1) {
         result += css.slice(index);
