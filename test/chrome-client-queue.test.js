@@ -346,6 +346,31 @@ test("chrome client says password-protected shares also require the password", a
   );
 });
 
+test("chrome client treats a whitespace-only share password as public", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (_url, init) => {
+      posts.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        json: async () => ({
+          url: "https://abc123.ht-ml.app/",
+          update_key: "uk_secret",
+        }),
+      };
+    },
+  });
+  chrome.element("sharePassword").value = "   ";
+  const submit = chrome.element("shareForm").listeners.get("submit");
+  assert.equal(typeof submit, "function");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.deepEqual(posts, [{}]);
+  assert.equal(chrome.element("shareStatus").textContent, "Published. Anyone with the link can view this page.");
+});
+
 test("chrome client registers message listener before loading the artifact iframe", async () => {
   const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
 

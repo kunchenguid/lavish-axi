@@ -376,8 +376,8 @@ async function shareCommand(args) {
   }
   await assertHtmlFile(file);
   const absolute = await canonicalFile(file);
-  const password = flagValue(args, "--password") || undefined;
-  const token = flagValue(args, "--token") || undefined;
+  const password = optionalFlagString(flagValue(args, "--password"));
+  const token = optionalFlagString(flagValue(args, "--token"));
   const root = path.dirname(absolute);
   const source = await readFile(absolute, "utf8");
   const { html, warnings } = await buildSelfContainedHtml(source, {
@@ -897,6 +897,11 @@ function flagValue(args, flag) {
     if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1) || null;
   }
   return null;
+}
+
+function optionalFlagString(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || undefined;
 }
 
 function isValueFlagToken(arg, flags) {

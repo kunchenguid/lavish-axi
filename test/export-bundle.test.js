@@ -56,6 +56,20 @@ test("leaves deferred local scripts as references with a warning", async () => {
   assert.equal(warnings[0].ref, "app.js");
 });
 
+test("leaves local module scripts as references with a warning", async () => {
+  const html = '<!doctype html><html><head><script type="module" src="js/main.js"></script></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/js/main.js": 'import "./dep.js";\nwindow.ready = true;' }),
+  });
+
+  assert.match(out, /<script type="module" src="js\/main\.js"><\/script>/);
+  assert.doesNotMatch(out, /window\.ready/);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].kind, "module-external");
+  assert.equal(warnings[0].ref, "js/main.js");
+});
+
 test("escapes a closing style tag when inlining external CSS into a <style> block", async () => {
   const html = '<!doctype html><html><head><link rel="stylesheet" href="x.css"></head><body></body></html>';
   const { html: out } = await buildSelfContainedHtml(html, {
@@ -146,6 +160,33 @@ test("rewrites url() and @import inside local CSS, resolving relative to the sty
   assert.match(out, /url\(data:font\/woff2;base64,/);
   assert.match(out, /url\(data:image\/svg\+xml;base64,/);
   assert.doesNotMatch(out, /@import/);
+});
+
+test("leaves non-media CSS imports unchanged with a warning", async () => {
+  const html =
+    '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +
+    '@import url("supported.css") supports(display: grid);@import "print.css" print;</style></head></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/theme.css": ".theme{color:red}",
+      "/art/supported.css": ".supported{display:grid}",
+      "/art/print.css": ".print{color:black}",
+    }),
+  });
+
+  assert.match(out, /@import "theme\.css" layer\(theme\);/);
+  assert.match(out, /@import url\("supported\.css"\) supports\(display: grid\);/);
+  assert.match(out, /@media print\{\.print\{color:black\}\}/);
+  assert.doesNotMatch(out, /\.theme\{color:red\}/);
+  assert.doesNotMatch(out, /\.supported\{display:grid\}/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-css-import", ref: "theme.css" },
+      { kind: "unsupported-css-import", ref: "supported.css" },
+    ],
+  );
 });
 
 test("does not treat CSS strings or comments as url or import assets", async () => {

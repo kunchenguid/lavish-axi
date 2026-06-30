@@ -293,7 +293,7 @@ export async function serve({
       });
       let site;
       try {
-        site = await publishToHtmlApp(html, { password: body.password });
+        site = await publishToHtmlApp(html, { password: optionalBodyString(body.password) });
       } catch (error) {
         res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
         return;
@@ -584,6 +584,11 @@ function normalizeOrigin(value) {
   } catch {
     return "";
   }
+}
+
+function optionalBodyString(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || undefined;
 }
 
 export function resolveArtifactAsset(root, assetPath) {

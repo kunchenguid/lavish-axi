@@ -561,6 +561,49 @@ test("share command publishes the artifact to ht-ml.app and returns the public u
   }
 });
 
+test("share command treats a whitespace-only password as public", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  try {
+    const child = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", "--password", "   ", artifact],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {
+          ...process.env,
+          LAVISH_AXI_STATE_DIR: dir,
+          LAVISH_AXI_TELEMETRY: "0",
+          LAVISH_AXI_HTML_APP_API_URL: `http://127.0.0.1:${htmlApp.port}`,
+        },
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    const code = await new Promise((resolve) => child.on("close", resolve));
+
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /PUBLIC/);
+    assert.match(stdout, /anyone with the link can view/);
+    assert.doesNotMatch(stdout, /PASSWORD-PROTECTED/);
+    assert.equal(requests.length, 1);
+    assert.equal("password" in requests[0].body, false);
+  } finally {
+    await htmlApp.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
 test("poll help warns agents to leave the long poll running", () => {
   const help = getCommandHelp("poll");
 

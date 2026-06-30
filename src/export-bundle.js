@@ -172,6 +172,10 @@ async function inlineScript(match, attrs, body, baseDir, ctx) {
   const src = getAttr(attrs, "src");
   if (!src) return match;
   if (isInjectedLavishSdkSrc(src)) return "";
+  if (isModuleScript(attrs)) {
+    warnExternalModuleScript(src, baseDir, ctx);
+    return match;
+  }
   if (hasAttr(attrs, "defer") || hasAttr(attrs, "async")) {
     warnUnsupportedScriptTiming(src, baseDir, ctx);
     return match;
@@ -249,6 +253,9 @@ async function inlineCssImports(css, baseDir, ctx, depth) {
       const parsed = parseCssImportRule(rule);
       if (!parsed || depth >= ctx.maxDepth) {
         result += rule;
+      } else if (parsed.media && !isPlainCssMediaQueryList(parsed.media)) {
+        warnUnsupportedCssImport(parsed.ref, baseDir, ctx, parsed.media);
+        result += rule;
       } else {
         const loaded = await loadText(parsed.ref, baseDir, ctx);
         if (!loaded) {
@@ -283,6 +290,17 @@ async function inlineCssUrls(css, baseDir, ctx) {
       const stringEnd = findCssStringEnd(css, index);
       result += css.slice(index, stringEnd);
       index = stringEnd;
+      continue;
+    }
+
+    if (startsCssKeyword(css, index, "@import")) {
+      const ruleEnd = findCssAtRuleEnd(css, index);
+      if (ruleEnd === -1) {
+        result += css.slice(index);
+        break;
+      }
+      result += css.slice(index, ruleEnd + 1);
+      index = ruleEnd + 1;
       continue;
     }
 
@@ -422,6 +440,45 @@ function startsCssKeyword(css, index, keyword) {
   return !isCssIdentChar(before) && !isCssIdentChar(after);
 }
 
+function isPlainCssMediaQueryList(tail) {
+  return !hasTopLevelCssImportFunction(tail);
+}
+
+function hasTopLevelCssImportFunction(tail) {
+  let index = 0;
+  let depth = 0;
+  while (index < tail.length) {
+    if (tail.startsWith("/*", index)) {
+      index = findCssCommentEnd(tail, index);
+      continue;
+    }
+    if (tail[index] === '"' || tail[index] === "'") {
+      index = findCssStringEnd(tail, index);
+      continue;
+    }
+    if (tail[index] === "(") {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (tail[index] === ")") {
+      depth = Math.max(0, depth - 1);
+      index += 1;
+      continue;
+    }
+    if (depth === 0 && isCssIdentChar(tail[index])) {
+      const start = index;
+      while (index < tail.length && isCssIdentChar(tail[index])) index += 1;
+      const ident = tail.slice(start, index).toLowerCase();
+      const next = skipCssWhitespace(tail, index);
+      if (ident === "layer" || ident === "supports" || tail[next] === "(") return true;
+      continue;
+    }
+    index += 1;
+  }
+  return false;
+}
+
 function isCssIdentChar(char) {
   return Boolean(char) && /[a-z0-9_-]/i.test(char);
 }
@@ -496,6 +553,36 @@ function warnUnsupportedScriptTiming(ref, baseDir, ctx) {
   } else if (descriptor.kind === "escape") {
     ctx.warnings.push({ kind: "outside-root", ref });
   }
+}
+
+function warnExternalModuleScript(ref, baseDir, ctx) {
+  const descriptor = resolveRef(ref, baseDir, ctx);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "module-external",
+      ref,
+      reason: "module scripts are left as references to preserve relative imports",
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
+function warnUnsupportedCssImport(ref, baseDir, ctx, tail) {
+  const descriptor = resolveRef(ref, baseDir, ctx);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "unsupported-css-import",
+      ref,
+      reason: `CSS @import tail is left unchanged: ${tail}`,
+    });
+  } else if (descriptor.kind === "escape") {
+    ctx.warnings.push({ kind: "outside-root", ref });
+  }
+}
+
+function isModuleScript(attrs) {
+  return getAttr(attrs, "type").trim().toLowerCase() === "module";
 }
 
 // Read a local file, enforcing per-asset and per-bundle size caps so a huge local asset cannot

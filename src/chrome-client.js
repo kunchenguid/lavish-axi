@@ -575,12 +575,13 @@ async function publishShare(event) {
   shareStatus.classList.remove("error");
   shareStatus.textContent = "Publishing to ht-ml.app...";
   shareResult.hidden = true;
-  const passwordProtected = Boolean(sharePasswordInput.value);
+  const password = sharePasswordInput.value.trim();
+  const passwordProtected = Boolean(password);
   try {
     const response = await fetch("/api/" + key + "/share", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password: sharePasswordInput.value }),
+      body: JSON.stringify(password ? { password } : {}),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "publish failed");
