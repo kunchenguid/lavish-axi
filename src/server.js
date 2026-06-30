@@ -568,7 +568,7 @@ async function readDesignAsset(asset) {
 // (falling back to the node_modules source for source runs) so an export can inline it instead
 // of pointing back at this server's `/design` route.
 export function resolveDesignAssetPath(refPath) {
-  const match = /^\/design\/([^/?#]+)/.exec(refPath);
+  const match = /^\/design\/([^/?#]+)(?:[?#].*)?$/.exec(refPath);
   if (!match) return null;
   const asset = designAssetUrls[match[1]];
   if (!asset) return null;

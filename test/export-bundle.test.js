@@ -1998,6 +1998,37 @@ test("keeps artifact dependencies that happen to be named sdk.js", async () => {
   assert.equal(warnings.length, 0);
 });
 
+test("scrubs file URLs from classic script comments without touching string literals", async () => {
+  const inlineComment = "file:///Users/kun/inline.map";
+  const externalComment = "file:///Users/kun/external.map";
+  const inlineString = "file:///Users/kun/inline-string.txt";
+  const externalString = "file:///Users/kun/external-string.txt";
+  const html =
+    "<!doctype html><html><body><script>//# sourceMappingURL=" +
+    inlineComment +
+    '\nconst inlinePath = "' +
+    inlineString +
+    '";</script><script src="app.js"></script></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/app.js": `/* ${externalComment} */\nconst externalPath = "${externalString}";`,
+    }),
+  });
+
+  assert.doesNotMatch(out, /sourceMappingURL=file:\/\/\/Users/);
+  assert.doesNotMatch(out, /\/Users\/kun\/external\.map/);
+  assert.ok(out.includes(inlineString));
+  assert.ok(out.includes(externalString));
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "file-url-redacted", ref: inlineComment },
+      { kind: "file-url-redacted", ref: externalComment },
+    ],
+  );
+});
+
 test("resolves root-absolute references through resolveAbsolute (e.g. legacy /design assets)", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" href="/design/daisyui.css"></head><body></body></html>';
@@ -2008,6 +2039,22 @@ test("resolves root-absolute references through resolveAbsolute (e.g. legacy /de
   });
 
   assert.match(out, /<style>\.btn\{color:blue\}<\/style>/);
+});
+
+test("resolves HTML asset references against a single-slash file base href", async () => {
+  const html =
+    '<!doctype html><html><head><base href="file:/art/assets/"></head><body><img src="logo.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({ "/art/assets/logo.png": Buffer.from("logo") }),
+  });
+
+  assert.match(out, /<base href="about:blank">/);
+  assert.match(out, /<img src="data:image\/png;base64,bG9nbw==">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "file-url-redacted", ref: "file:/art/assets/" }],
+  );
 });
 
 test("warns on unmapped root-absolute refs while leaving them unchanged", async () => {

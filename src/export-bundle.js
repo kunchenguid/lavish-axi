@@ -594,6 +594,7 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
       inlineBody = redactInlineImportMapFileRefs(inlineBody, ctx);
       warnInlineImportMapLocalRefs(inlineBody, baseDir, ctx);
     }
+    if (isClassicScript(attrs)) inlineBody = scrubClassicScriptFileUrlComments(inlineBody, ctx);
     return `${await transformStartTag(tag, attrs, false, baseDir, ctx)}${inlineBody}${closeTag}`;
   }
   if (isInjectedLavishSdkSrc(src)) return "";
@@ -620,7 +621,7 @@ async function inlineScript(tag, attrs, body, closeTag, baseDir, ctx) {
   }
   const cleanedAttrs = removeAttrs(attrs, ["src", "integrity", "crossorigin"]);
   const startTag = await transformStartTag(tag, cleanedAttrs, false, baseDir, ctx);
-  return `${startTag}${escapeRawText(loaded.text, "script")}${closeTag}`;
+  return `${startTag}${escapeRawText(scrubClassicScriptFileUrlComments(loaded.text, ctx), "script")}${closeTag}`;
 }
 
 async function inlineMediaAttrs(tagName, attrs, baseDir, ctx, parentTag = "") {
@@ -1674,6 +1675,54 @@ function scrubRawTextFileUrls(text, ctx) {
   return scrubFileUrlsInCommentBody(text, ctx);
 }
 
+function scrubClassicScriptFileUrlComments(source, ctx) {
+  const input = String(source);
+  let result = "";
+  let index = 0;
+  while (index < input.length) {
+    if (input.startsWith("//", index)) {
+      const end = input.indexOf("\n", index + 2);
+      const bodyEnd = end === -1 ? input.length : end;
+      result += `//${scrubFileUrlsInCommentBody(input.slice(index + 2, bodyEnd), ctx)}`;
+      if (end === -1) {
+        index = input.length;
+      } else {
+        result += "\n";
+        index = end + 1;
+      }
+      continue;
+    }
+    if (input.startsWith("/*", index)) {
+      const end = input.indexOf("*/", index + 2);
+      const bodyEnd = end === -1 ? input.length : end;
+      result += `/*${scrubFileUrlsInCommentBody(input.slice(index + 2, bodyEnd), ctx)}${end === -1 ? "" : "*/"}`;
+      index = end === -1 ? input.length : end + 2;
+      continue;
+    }
+    if (input[index] === '"' || input[index] === "'") {
+      const end = parseJsString(input, index).end;
+      result += input.slice(index, end);
+      index = end;
+      continue;
+    }
+    if (input[index] === "`") {
+      const end = skipJsTemplate(input, index);
+      result += input.slice(index, end);
+      index = end;
+      continue;
+    }
+    if (input[index] === "/" && isLikelyJsRegexStart(input, index)) {
+      const end = skipJsRegex(input, index);
+      result += input.slice(index, end);
+      index = end;
+      continue;
+    }
+    result += input[index];
+    index += 1;
+  }
+  return result;
+}
+
 function findCssAtRuleEnd(css, index) {
   let cursor = index;
   while (cursor < css.length) {
@@ -1978,17 +2027,18 @@ function findFirstDocumentBaseHref(html) {
 
 function refBaseFromHref(href, documentDir) {
   const trimmed = decodeHtmlCharacterReferences(String(href || "").trim());
-  if (!trimmed || isInert(trimmed)) return localRefBase(documentDir);
-  if (trimmed.startsWith("//") || /^https?:\/\//i.test(trimmed)) return { kind: "remote" };
-  if (/^file:\/\//i.test(trimmed)) {
+  const schemeRef = normalizeRefForScheme(trimmed, HTML_REF_OPTIONS);
+  if (!trimmed || isInert(schemeRef || trimmed)) return localRefBase(documentDir);
+  if (schemeRef.startsWith("//") || /^https?:\/\//i.test(schemeRef)) return { kind: "remote" };
+  if (isFileSchemeRef(trimmed, HTML_REF_OPTIONS)) {
     try {
-      const fileHref = stripQueryAndHash(trimmed);
+      const fileHref = stripQueryAndHash(schemeRef);
       return localRefBase(directoryFromBasePath(fileURLToPath(fileHref), fileHref));
     } catch {
       return { kind: "remote" };
     }
   }
-  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return { kind: "remote" };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(schemeRef)) return { kind: "remote" };
   const { pathPart } = splitRefSuffix(trimmed);
   if (!pathPart) return localRefBase(documentDir);
   if (trimmed.startsWith("/")) return { kind: "root", path: rootDirectoryFromBasePath(pathPart) };

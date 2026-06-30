@@ -12,6 +12,7 @@ import {
   exportContentDisposition,
   hasLiveReloadRootOptIn,
   resolveArtifactAsset,
+  resolveDesignAssetPath,
   resolveIdleTimeoutMs,
   resolveWatchTarget,
   serve,
@@ -1046,6 +1047,11 @@ test("/design serves local Tailwind and DaisyUI artifact assets", async () => {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("design asset resolver only trusts exact packaged design asset paths", () => {
+  assert.equal(resolveDesignAssetPath("/design/daisyui.css/extra"), null);
+  assert.equal(resolveDesignAssetPath("/design/tailwindcss-browser.js/extra"), null);
 });
 
 test("GET /api/:key/export inlines local assets and leaves remote references intact", async () => {
