@@ -143,6 +143,38 @@ test("leaves preload-as-style links external with warnings", async () => {
   );
 });
 
+test("warns for local fetchable link hints left external", async () => {
+  const html =
+    '<!doctype html><html><head><link rel="preload" as="font" href="font.woff2">' +
+    '<link rel="modulepreload" href="app.js"><link rel="prefetch" href="next.html">' +
+    '<link rel="manifest" href="manifest.webmanifest"><link rel="preload" as="script" href="https://cdn.example/app.js"></head></html>';
+  const readPaths = [];
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      throw new Error(`unexpected read: ${absPath}`);
+    },
+  });
+
+  assert.match(out, /<link rel="preload" as="font" href="font\.woff2">/);
+  assert.match(out, /<link rel="modulepreload" href="app\.js">/);
+  assert.match(out, /<link rel="prefetch" href="next\.html">/);
+  assert.match(out, /<link rel="manifest" href="manifest\.webmanifest">/);
+  assert.match(out, /<link rel="preload" as="script" href="https:\/\/cdn\.example\/app\.js">/);
+  assert.deepEqual(readPaths, []);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "fetchable-link", ref: "font.woff2" },
+      { kind: "fetchable-link", ref: "app.js" },
+      { kind: "fetchable-link", ref: "next.html" },
+      { kind: "fetchable-link", ref: "manifest.webmanifest" },
+    ],
+  );
+  assert.equal(splitExportWarnings(warnings).unresolved.length, 4);
+});
+
 test("leaves non-CSS stylesheet links external with warnings", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" type="application/json" href="secrets.json">' +
@@ -1367,6 +1399,22 @@ test("ignores base href inside unterminated raw text", async () => {
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
     [{ kind: "unterminated-raw-text", ref: "script" }],
   );
+});
+
+test("closes raw-text elements on end tags with attributes", async () => {
+  const readPaths = [];
+  const html = '<!doctype html><html><body><script>console.log(1)</script type=x><img src="pic.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(absPath);
+      return localReader({ "/art/pic.png": Buffer.from("pic") })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/pic.png"]);
+  assert.match(out, /<\/script type=x><img src="data:image\/png;base64,cGlj">/);
+  assert.equal(warnings.length, 0);
 });
 
 test("keeps inert raw-text bodies text-only while scrubbing file URLs", async () => {

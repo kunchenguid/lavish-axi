@@ -87,6 +87,7 @@ const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
   "behavioral-stylesheet",
   "css-import-depth",
   "css-import-order",
+  "fetchable-link",
   "inactive-stylesheet",
   "inline-importmap-local-ref",
   "inline-module-import",
@@ -610,7 +611,16 @@ async function inlineLink(attrs, baseDir, ctx) {
     return { attrs: replaceAttrValue(attrs, "href", dataUri) };
   }
 
+  if (isFetchableLinkRel(rel)) {
+    warnFetchableLink(href, baseDir, ctx, HTML_REF_OPTIONS);
+    return { attrs: replaceUnresolvedAttrRef(attrs, "href", href) };
+  }
+
   return { attrs };
+}
+
+function isFetchableLinkRel(rel) {
+  return rel.some((value) => ["preload", "modulepreload", "prefetch", "manifest"].includes(value));
 }
 
 function isInactiveStylesheet(attrs, rel) {
@@ -2050,10 +2060,17 @@ function findHtmlTagEnd(html, index) {
 }
 
 function findRawTextClose(html, index, tag) {
-  const re = new RegExp(`</${escapeRegExp(tag)}\\s*>`, "gi");
-  re.lastIndex = index;
-  const match = re.exec(html);
-  return match ? { start: match.index, raw: match[0], end: match.index + match[0].length } : null;
+  let cursor = index;
+  while (cursor < html.length) {
+    const lt = html.indexOf("</", cursor);
+    if (lt === -1) return null;
+    const token = readHtmlToken(html, lt);
+    if (token?.type === "close" && token.tag.toLowerCase() === tag) {
+      return { start: lt, raw: token.raw, end: token.end };
+    }
+    cursor = lt + 2;
+  }
+  return null;
 }
 
 function findContentClose(html, index, tag) {
@@ -2348,6 +2365,19 @@ function warnPreloadStylesheet(ref, baseDir, ctx, options = {}) {
       kind: "preload-stylesheet",
       ref,
       reason: "preload-as-style links are left as references to preserve activation behavior",
+    });
+  } else {
+    warnUnresolvedDescriptor(descriptor, ref, ctx);
+  }
+}
+
+function warnFetchableLink(ref, baseDir, ctx, options = {}) {
+  const descriptor = resolveRef(ref, baseDir, ctx, options);
+  if (descriptor.kind === "file") {
+    ctx.warnings.push({
+      kind: "fetchable-link",
+      ref,
+      reason: "fetchable link hints are left as references",
     });
   } else {
     warnUnresolvedDescriptor(descriptor, ref, ctx);
