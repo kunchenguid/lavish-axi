@@ -50,10 +50,12 @@ const HTML_REF_OPTIONS = { decodeHtmlEntities: true };
 const HTML_ENTITY_MAP = {
   amp: "&",
   apos: "'",
+  colon: ":",
   gt: ">",
   lt: "<",
   nbsp: "\u00a0",
   quot: '"',
+  sol: "/",
 };
 const TAG_ATTRS_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*`;
 const TAG_ATTRS_PATTERN_LAZY = String.raw`(?:"[^"]*"|'[^']*'|[^"'>])*?`;
@@ -472,6 +474,7 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
     if (importPrelude && braceDepth === 0 && startsCssKeyword(css, index, "@charset")) {
       const ruleEnd = findCssAtRuleEnd(css, index);
       if (ruleEnd !== -1) {
+        await flushPendingInline();
         result += css.slice(index, ruleEnd + 1);
         index = ruleEnd + 1;
         continue;
@@ -481,6 +484,7 @@ async function inlineCssImports(css, baseDir, ctx, depth, outputBaseDir) {
     if (importPrelude && braceDepth === 0 && startsCssKeyword(css, index, "@layer")) {
       const statementEnd = findCssPreludeStatementEnd(css, index);
       if (statementEnd !== -1 && css[statementEnd] === ";") {
+        await flushPendingInline();
         result += css.slice(index, statementEnd + 1);
         index = statementEnd + 1;
         continue;
@@ -863,10 +867,10 @@ function resolveRef(ref, baseDir, ctx, options = {}) {
   // Remote: http(s) and protocol-relative URLs are left as references for the browser to load.
   if (trimmed.startsWith("//") || /^https?:\/\//i.test(trimmed)) return { kind: "skip" };
 
-  // Local file:// URLs are inlined like any other local asset, subject to the confinement guard.
-  if (/^file:\/\//i.test(trimmed)) {
+  // Local file: URLs are inlined like any other local asset, subject to the confinement guard.
+  if (isFileSchemeRef(trimmed)) {
     try {
-      const resolved = fileURLToPath(trimmed.replace(/#.*$/, ""));
+      const resolved = fileURLToPath(decodeHtmlCharacterReferences(trimmed).replace(/#.*$/, ""));
       if (ctx.confineDir && isOutside(ctx.confineDir, resolved)) return { kind: "escape", path: resolved };
       return { kind: "file", path: resolved };
     } catch {
@@ -1310,13 +1314,15 @@ function isInert(ref) {
 }
 
 function shouldRedactUnresolvedRef(ref) {
-  const value = String(ref || "").trim();
-  return /^file:\/\//i.test(value) || /^file:\/\//i.test(decodeHtmlCharacterReferences(value));
+  return isFileSchemeRef(ref);
 }
 
 function containsFileUrl(ref) {
-  const value = String(ref || "");
-  return /file:\/\//i.test(value) || /file:\/\//i.test(decodeHtmlCharacterReferences(value));
+  return /(^|[^a-z0-9+.-])file:/i.test(decodeHtmlCharacterReferences(String(ref || "")));
+}
+
+function isFileSchemeRef(ref) {
+  return /^file:/i.test(decodeHtmlCharacterReferences(String(ref || "").trim()));
 }
 
 function replaceUnresolvedAttrRef(source, name, ref) {

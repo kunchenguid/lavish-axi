@@ -542,6 +542,22 @@ test("only inlines CSS imports from the valid top-level import prelude", async (
   );
 });
 
+test("preserves inlined CSS import order before later layer statements", async () => {
+  const html =
+    '<!doctype html><html><head><style>@import "a.css";@layer reset;@import "b.css";' +
+    ".app{color:red}</style></head></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/a.css": ".a{color:blue}",
+      "/art/b.css": ".b{color:green}",
+    }),
+  });
+
+  assert.match(out, /\.a\{color:blue\}@layer reset;\.b\{color:green\}\.app\{color:red\}/);
+  assert.equal(warnings.length, 0);
+});
+
 test("leaves non-media CSS imports unchanged with a warning", async () => {
   const html =
     '<!doctype html><html><head><style>@import "theme.css" layer(theme);' +
@@ -889,25 +905,39 @@ test("redacts unresolved file URLs instead of leaking local paths", async () => 
 test("redacts remaining file URLs from arbitrary HTML attributes", async () => {
   const secret = "file:///Users/kun/secret.png";
   const escaped = "file:&#x2f;&#x2f;/Users/kun/escaped.png";
+  const singleSlash = "file:/Users/kun/single-slash.png";
+  const namedEntities = "file&colon;&sol;&sol;&sol;Users/kun/named-entity.png";
   const html =
     `<!doctype html><html><body><a href="${secret}">Download</a>` +
-    `<form action='${secret}'></form><object data=${secret}></object>` +
-    `<iframe src="${escaped}"></iframe><div data-note="prefix ${secret} suffix"></div></body></html>`;
+    `<form action='${secret}'></form><object data=${secret}></object><embed src=${singleSlash}>` +
+    `<iframe src="${escaped}"></iframe><area href='${namedEntities}'>` +
+    `<div data-note="prefix ${secret} suffix"></div></body></html>`;
   const { html: out, warnings } = await buildSelfContainedHtml(html, {
     baseDir: "/art",
     confineDir: "/art",
   });
 
   assert.doesNotMatch(out, /file:/i);
+  assert.doesNotMatch(out, /file&colon;/i);
   assert.doesNotMatch(out, /\/Users\/kun/);
   assert.match(out, /<a href="about:blank">Download<\/a>/);
   assert.match(out, /<form action='about:blank'><\/form>/);
   assert.match(out, /<object data="about:blank"><\/object>/);
+  assert.match(out, /<embed src="about:blank">/);
   assert.match(out, /<iframe src="about:blank"><\/iframe>/);
+  assert.match(out, /<area href='about:blank'>/);
   assert.match(out, /<div data-note="about:blank"><\/div>/);
   assert.deepEqual(
     warnings.map((warning) => warning.kind),
-    ["file-url-redacted", "file-url-redacted", "file-url-redacted", "file-url-redacted", "file-url-redacted"],
+    [
+      "file-url-redacted",
+      "file-url-redacted",
+      "file-url-redacted",
+      "file-url-redacted",
+      "file-url-redacted",
+      "file-url-redacted",
+      "file-url-redacted",
+    ],
   );
 });
 
