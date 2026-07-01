@@ -745,6 +745,88 @@ test("layout warning feedback tells agents to fix layout before involving the hu
   assert.match(output.next_step, /before involving the human/);
 });
 
+test("persistent layout warnings after a failed fix attempt permit proceeding to the human", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [],
+      layout_warnings: [
+        {
+          selector: "main > header > strong",
+          kind: "overlapping-text",
+          overflowPx: 0,
+          viewportWidth: 720,
+          severity: "warning",
+          persistent: true,
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /already reported in a prior poll/);
+  assert.match(output.next_step, /fine to proceed to the human with a short note/);
+  assert.doesNotMatch(output.next_step, /fix horizontal overflow/);
+});
+
+test("low-severity text-flow warnings permit proceeding to the human without looping", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [],
+      layout_warnings: [
+        {
+          selector: "main > header > code",
+          kind: "overlapping-text",
+          overflowPx: 0,
+          viewportWidth: 720,
+          severity: "warning",
+          persistent: false,
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /low-severity layout warning/);
+  assert.match(output.next_step, /fine to proceed to the human with a note/);
+  assert.doesNotMatch(output.next_step, /fix horizontal overflow/);
+});
+
+test("a mix of fresh error-severity and persistent warnings still mandates a fix pass", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [],
+      layout_warnings: [
+        {
+          selector: "html",
+          kind: "page-horizontal-overflow",
+          overflowPx: 16,
+          viewportWidth: 720,
+          severity: "error",
+          persistent: false,
+        },
+        {
+          selector: ".badge",
+          kind: "clipped-text",
+          overflowPx: 12,
+          viewportWidth: 720,
+          severity: "error",
+          persistent: true,
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /2 layout warnings detected - fix horizontal overflow/);
+  assert.match(output.next_step, /before involving the human/);
+});
+
 test("poll wait messages tell watching agents the silence is normal", () => {
   const banner = pollWaitBannerText("/tmp/report.html");
   assert.match(banner, /\[lavish-axi\]/);

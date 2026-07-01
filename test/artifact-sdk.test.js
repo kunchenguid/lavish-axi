@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveLavishQueueKey, isNativeInteractiveControl } from "../src/artifact-sdk.js";
+import {
+  classifyHorizontalOverflow,
+  classifyVerticalOverflow,
+  deriveLavishQueueKey,
+  fragmentsSignificantlyOverlap,
+  isNativeInteractiveControl,
+} from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
   const el = {
@@ -147,4 +153,103 @@ test("deriveLavishQueueKey keys named selects as fields", () => {
   node("form", { id: "deploy" }, [select]);
 
   assert.equal(deriveLavishQueueKey(select), "field:form:deploy:region");
+});
+
+test("fragmentsSignificantlyOverlap ignores the reflow gap in a wrapped inline phrase's bounding box", () => {
+  // A <strong> that wraps across two lines reports one getClientRects() rect per line: the end
+  // of line 1 near the right edge, then the continuation at the left edge of line 2. The union
+  // bounding box of those two rects spans the full width between them - a naive bounding-box
+  // check would treat anything sitting in that phantom middle area as overlapping, even though
+  // nothing is actually rendered there.
+  const wrappedFragments = [
+    { left: 620, right: 900, top: 100, bottom: 120, width: 280, height: 20 },
+    { left: 0, right: 260, top: 120, bottom: 140, width: 260, height: 20 },
+  ];
+  const siblingInThePhantomGap = [{ left: 300, right: 600, top: 100, bottom: 120, width: 300, height: 20 }];
+
+  assert.equal(fragmentsSignificantlyOverlap(wrappedFragments, siblingInThePhantomGap), false);
+});
+
+test("fragmentsSignificantlyOverlap flags real pixel intersection between rendered fragments", () => {
+  const elFragments = [{ left: 0, right: 100, top: 0, bottom: 20, width: 100, height: 20 }];
+  const otherFragments = [{ left: 40, right: 140, top: 5, bottom: 25, width: 100, height: 20 }];
+
+  assert.equal(fragmentsSignificantlyOverlap(elFragments, otherFragments), true);
+});
+
+test("fragmentsSignificantlyOverlap ignores sub-threshold seam overlap between adjacent lines", () => {
+  const elFragments = [{ left: 0, right: 200, top: 0, bottom: 20, width: 200, height: 20 }];
+  const barelyTouchingFragments = [{ left: 199, right: 210, top: 0, bottom: 20, width: 11, height: 20 }];
+
+  assert.equal(fragmentsSignificantlyOverlap(elFragments, barelyTouchingFragments), false);
+});
+
+test("classifyVerticalOverflow flags a fixed-height badge whose wrapped label spills out with default overflow", () => {
+  // DaisyUI-style badges/pills rarely set overflow-y at all, so it stays at its default
+  // "visible" - the wrapped second word isn't clipped, it just spills outside the pill shape.
+  const finding = classifyVerticalOverflow({
+    scrollHeight: 40,
+    clientHeight: 24,
+    overflowY: "visible",
+    hasText: true,
+    isTruncated: false,
+  });
+
+  assert.deepEqual(finding, { overflowPx: 16, kind: "clipped-text", clips: false });
+});
+
+test("classifyVerticalOverflow marks hidden/clip overflow-y as a hard clip", () => {
+  const finding = classifyVerticalOverflow({
+    scrollHeight: 40,
+    clientHeight: 24,
+    overflowY: "hidden",
+    hasText: true,
+    isTruncated: false,
+  });
+
+  assert.deepEqual(finding, { overflowPx: 16, kind: "clipped-text", clips: true });
+});
+
+test("classifyVerticalOverflow ignores intentionally scrollable containers", () => {
+  const finding = classifyVerticalOverflow({
+    scrollHeight: 400,
+    clientHeight: 200,
+    overflowY: "auto",
+    hasText: true,
+    isTruncated: false,
+  });
+
+  assert.equal(finding, null);
+});
+
+test("classifyVerticalOverflow ignores boxes that simply grow to fit their content", () => {
+  const finding = classifyVerticalOverflow({
+    scrollHeight: 100,
+    clientHeight: 100,
+    overflowY: "visible",
+    hasText: true,
+    isTruncated: false,
+  });
+
+  assert.equal(finding, null);
+});
+
+test("classifyHorizontalOverflow still distinguishes clipped text from generic scroll overflow", () => {
+  const clipped = classifyHorizontalOverflow({
+    scrollWidth: 300,
+    clientWidth: 200,
+    overflowX: "hidden",
+    hasText: true,
+    isTruncated: false,
+  });
+  assert.deepEqual(clipped, { overflowPx: 100, kind: "clipped-text" });
+
+  const genericScroll = classifyHorizontalOverflow({
+    scrollWidth: 300,
+    clientWidth: 200,
+    overflowX: "visible",
+    hasText: true,
+    isTruncated: false,
+  });
+  assert.deepEqual(genericScroll, { overflowPx: 100, kind: "element-scroll-overflow" });
 });

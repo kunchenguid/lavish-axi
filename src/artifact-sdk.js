@@ -113,6 +113,58 @@ export function isNativeInteractiveControl(el) {
   );
 }
 
+function rectAreaOf(rect) {
+  return Math.max(0, rect.width) * Math.max(0, rect.height);
+}
+
+function intersectionAreaOf(a, b) {
+  const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+  const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  return width * height;
+}
+
+// Wrapped inline text (a bold phrase or code token that breaks across a line) reports one
+// getBoundingClientRect() spanning both lines, so a bounding-box intersection test "overlaps"
+// every element sitting in the reflow gap between the fragments even though nothing is actually
+// drawn there. Comparing real per-line fragments (getClientRects()) instead only flags overlap
+// where rendered pixels of unrelated elements actually collide.
+export function fragmentsSignificantlyOverlap(fragmentsA, fragmentsB, { minAreaRatio = 0.25, minAreaPx = 24 } = {}) {
+  for (const a of fragmentsA) {
+    const threshold = Math.min(rectAreaOf(a) * minAreaRatio, minAreaPx);
+    for (const b of fragmentsB) {
+      if (intersectionAreaOf(a, b) >= threshold) return true;
+    }
+  }
+  return false;
+}
+
+// scrollWidth/scrollHeight can only exceed clientWidth/clientHeight when something constrains
+// the box's size (a fixed height/width, or a flex/grid item smaller than its content) - a box
+// that simply grows to fit its content always has scrollHeight === clientHeight, so this never
+// false-positives on ordinary auto-sized elements.
+export function classifyHorizontalOverflow({ scrollWidth, clientWidth, overflowX, hasText, isTruncated, epsilon = 1 }) {
+  const overflowPx = clientWidth > 0 ? scrollWidth - clientWidth : 0;
+  if (overflowPx <= epsilon) return null;
+  const clipsText = hasText && (overflowX === "hidden" || overflowX === "clip") && !isTruncated;
+  return { overflowPx, kind: clipsText ? "clipped-text" : "element-scroll-overflow" };
+}
+
+// Fixed-size badges/buttons/pills usually leave overflow at its default "visible" rather than
+// "hidden" - the text doesn't get clipped, it spills out of the box and overlaps neighboring
+// content, which is just as broken. Only "auto"/"scroll" are treated as intentional (the user
+// can reach the content), so those are the only values this ignores. `clips` distinguishes a
+// hard clip (hidden/clip - content invisible) from a visible spill: a spill's overflow bubbles
+// into every unconstrained block ancestor's own scrollHeight too, so callers must dedup those
+// against the innermost element actually responsible before reporting.
+export function classifyVerticalOverflow({ scrollHeight, clientHeight, overflowY, hasText, isTruncated, epsilon = 1 }) {
+  const overflowPx = clientHeight > 0 ? scrollHeight - clientHeight : 0;
+  if (overflowPx <= epsilon) return null;
+  const scrollable = overflowY === "auto" || overflowY === "scroll";
+  if (scrollable || !hasText || isTruncated) return null;
+  const clips = overflowY === "hidden" || overflowY === "clip";
+  return { overflowPx, kind: "clipped-text", clips };
+}
+
 export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNativeInteractiveControl) {
   let annotationMode = true;
   let hovered = null;
@@ -358,12 +410,6 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
     return Math.max(0, rect.width) * Math.max(0, rect.height);
   }
 
-  function intersectionArea(a, b) {
-    const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
-    const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
-    return width * height;
-  }
-
   function isVisibleForLayoutAudit(el, rect = el.getBoundingClientRect()) {
     if (!el || isLavishUi(el) || rect.width <= 0 || rect.height <= 0) return false;
     const style = getComputedStyle(el);
@@ -436,42 +482,57 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
     return style.textOverflow === "ellipsis" || Number.parseInt(style.webkitLineClamp || "0", 10) > 0;
   }
 
-  function auditElementOverflow(el, viewportWidth, findings, seen) {
+  function auditElementOverflow(el, viewportWidth, findings, seen, spillCandidates) {
     if (el === document.body || el === document.documentElement || hasIntentionalHorizontalScrollerAncestor(el)) return;
 
     const rect = el.getBoundingClientRect();
     if (!isVisibleForLayoutAudit(el, rect)) return;
 
     const style = getComputedStyle(el);
-    const scrollOverflowPx = el.clientWidth > 0 ? el.scrollWidth - el.clientWidth : 0;
-    if (scrollOverflowPx > layoutAuditOverflowEpsilon) {
-      const clipsText =
-        hasReadableText(el) &&
-        (style.overflowX === "hidden" || style.overflowX === "clip") &&
-        !isIntentionalTextTruncation(style);
+    const hasText = hasReadableText(el);
+    const isTruncated = isIntentionalTextTruncation(style);
+
+    const horizontal = classifyHorizontalOverflow({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      overflowX: style.overflowX,
+      hasText,
+      isTruncated,
+      epsilon: layoutAuditOverflowEpsilon,
+    });
+    if (horizontal) {
       pushLayoutFinding(findings, seen, {
         selector: selector(el),
-        kind: clipsText ? "clipped-text" : "element-scroll-overflow",
-        overflowPx: scrollOverflowPx,
+        kind: horizontal.kind,
+        overflowPx: horizontal.overflowPx,
         viewportWidth,
-        severity: clipsText ? "error" : overflowSeverity(scrollOverflowPx),
+        severity: horizontal.kind === "clipped-text" ? "error" : overflowSeverity(horizontal.overflowPx),
       });
     }
 
-    const verticalClipPx = el.clientHeight > 0 ? el.scrollHeight - el.clientHeight : 0;
-    if (
-      verticalClipPx > layoutAuditOverflowEpsilon &&
-      hasReadableText(el) &&
-      (style.overflowY === "hidden" || style.overflowY === "clip") &&
-      !isIntentionalTextTruncation(style)
-    ) {
-      pushLayoutFinding(findings, seen, {
-        selector: selector(el),
-        kind: "clipped-text",
-        overflowPx: verticalClipPx,
-        viewportWidth,
-        severity: "error",
-      });
+    const vertical = classifyVerticalOverflow({
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      overflowY: style.overflowY,
+      hasText,
+      isTruncated,
+      epsilon: layoutAuditOverflowEpsilon,
+    });
+    if (vertical) {
+      if (vertical.clips) {
+        pushLayoutFinding(findings, seen, {
+          selector: selector(el),
+          kind: vertical.kind,
+          overflowPx: vertical.overflowPx,
+          viewportWidth,
+          severity: "error",
+        });
+      } else {
+        // A visible-overflow spill bubbles into every unconstrained block ancestor's own
+        // scrollHeight too (section > .badge-row > .badge all measure it), so defer these
+        // until the full walk finishes and only report the innermost element responsible.
+        spillCandidates.push({ el, selector: selector(el), overflowPx: vertical.overflowPx, viewportWidth });
+      }
     }
 
     const parent = el.parentElement;
@@ -493,40 +554,73 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
     }
   }
 
+  // Keep only the innermost spill candidate in each ancestor chain - an ancestor's finding is
+  // fully explained by a descendant's, so reporting both is redundant noise pointing the fix at
+  // the wrong element.
+  function resolveSpillCandidates(spillCandidates, findings, seen) {
+    for (const candidate of spillCandidates) {
+      const explainedByDescendant = spillCandidates.some(
+        (other) => other.el !== candidate.el && candidate.el.contains(other.el),
+      );
+      if (explainedByDescendant) continue;
+      pushLayoutFinding(findings, seen, {
+        selector: candidate.selector,
+        kind: "clipped-text",
+        overflowPx: candidate.overflowPx,
+        viewportWidth: candidate.viewportWidth,
+        severity: "error",
+      });
+    }
+  }
+
+  // getClientRects() returns one rect per rendered line fragment; falls back to the bounding
+  // rect for elements the browser doesn't fragment (e.g. replaced elements).
+  function elementLineFragments(el) {
+    const rects = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0);
+    if (rects.length) return rects;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? [rect] : [];
+  }
+
   function auditOverlappingText(elements, viewportWidth, findings, seen) {
     const candidates = elements
       .filter((el) => el.children.length === 0 && hasReadableText(el))
       .filter((el) => isVisibleForLayoutAudit(el))
+      .filter((el) => getComputedStyle(el).position === "static")
       .slice(0, 200);
 
     for (const el of candidates) {
-      const rect = el.getBoundingClientRect();
-      if (rectArea(rect) < 16) continue;
-      const points = [
-        { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
-        { x: rect.left + Math.min(4, rect.width / 2), y: rect.top + Math.min(4, rect.height / 2) },
-        { x: rect.right - Math.min(4, rect.width / 2), y: rect.bottom - Math.min(4, rect.height / 2) },
-      ];
-      for (const point of points) {
-        if (point.x < 0 || point.y < 0 || point.x > viewportWidth || point.y > window.innerHeight) continue;
-        const top = document.elementFromPoint(point.x, point.y);
-        if (!(top instanceof Element) || top === el || el.contains(top) || top.contains(el) || isLavishUi(top))
-          continue;
-        if (hasIntentionalHorizontalScrollerAncestor(top)) continue;
-        const elPosition = getComputedStyle(el).position;
-        const topPosition = getComputedStyle(top).position;
-        if (elPosition !== "static" || topPosition !== "static") continue;
-        const topRect = top.getBoundingClientRect();
-        const overlapArea = intersectionArea(rect, topRect);
-        if (overlapArea < Math.min(rectArea(rect) * 0.25, 24)) continue;
-        pushLayoutFinding(findings, seen, {
-          selector: selector(el),
-          kind: "overlapping-text",
-          overflowPx: 0,
-          viewportWidth,
-          severity: "error",
-        });
-        break;
+      const fragments = elementLineFragments(el);
+      let flagged = false;
+
+      for (const rect of fragments) {
+        if (flagged) break;
+        if (rectArea(rect) < 16) continue;
+        const points = [
+          { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+          { x: rect.left + Math.min(4, rect.width / 2), y: rect.top + Math.min(4, rect.height / 2) },
+          { x: rect.right - Math.min(4, rect.width / 2), y: rect.bottom - Math.min(4, rect.height / 2) },
+        ];
+        for (const point of points) {
+          if (point.x < 0 || point.y < 0 || point.x > viewportWidth || point.y > window.innerHeight) continue;
+          const top = document.elementFromPoint(point.x, point.y);
+          if (!(top instanceof Element) || top === el || el.contains(top) || top.contains(el) || isLavishUi(top))
+            continue;
+          if (hasIntentionalHorizontalScrollerAncestor(top)) continue;
+          if (getComputedStyle(top).position !== "static") continue;
+          if (!fragmentsSignificantlyOverlap([rect], elementLineFragments(top))) continue;
+          pushLayoutFinding(findings, seen, {
+            selector: selector(el),
+            kind: "overlapping-text",
+            overflowPx: 0,
+            viewportWidth,
+            // Heuristic and sampling-based even after fragment-aware matching, so it stays a
+            // warning rather than holding the open-time gate the way a real clip/overflow does.
+            severity: "warning",
+          });
+          flagged = true;
+          break;
+        }
       }
     }
   }
@@ -547,7 +641,9 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
     }
 
     const elements = collectLayoutAuditElements();
-    for (const el of elements) auditElementOverflow(el, viewportWidth, findings, seen);
+    const spillCandidates = [];
+    for (const el of elements) auditElementOverflow(el, viewportWidth, findings, seen, spillCandidates);
+    resolveSpillCandidates(spillCandidates, findings, seen);
     auditOverlappingText(elements, viewportWidth, findings, seen);
     return findings;
   }

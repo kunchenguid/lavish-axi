@@ -38,6 +38,7 @@ export class SessionStore {
       pending_prompts: existing.pending_prompts || 0,
       prompts: existingPrompts,
       layout_warnings: [],
+      delivered_layout_warning_keys: existing.delivered_layout_warning_keys || [],
       dom_snapshot: existing.dom_snapshot || "",
       chat: existing.chat || [],
       updated_at: new Date().toISOString(),
@@ -74,7 +75,11 @@ export class SessionStore {
     if (!session) {
       return null;
     }
-    const layoutWarnings = normalizeLayoutWarnings(payload.layout_warnings || payload.layoutWarnings || []);
+    const deliveredKeys = new Set(session.delivered_layout_warning_keys || []);
+    const layoutWarnings = normalizeLayoutWarnings(
+      payload.layout_warnings || payload.layoutWarnings || [],
+      deliveredKeys,
+    );
     const previousSignature = JSON.stringify(session.layout_warnings || []);
     const nextSignature = JSON.stringify(layoutWarnings);
     if (previousSignature === nextSignature) {
@@ -114,6 +119,11 @@ export class SessionStore {
     session.layout_warnings = [];
     session.pending_prompts = 0;
     session.dom_snapshot = "";
+    if (layoutWarnings.length > 0) {
+      const deliveredKeys = new Set(session.delivered_layout_warning_keys || []);
+      for (const warning of layoutWarnings) deliveredKeys.add(layoutWarningKey(warning));
+      session.delivered_layout_warning_keys = [...deliveredKeys].slice(-200);
+    }
     if (session.status !== "ended") {
       session.status = "open";
     }
@@ -186,17 +196,29 @@ function normalizePrompt(prompt) {
   return normalized;
 }
 
-function normalizeLayoutWarnings(layoutWarnings) {
+function layoutWarningKey(warning) {
+  return `${warning.kind}:${warning.selector}`;
+}
+
+// A finding whose key was already delivered to the agent in a prior poll is marked persistent
+// so the agent can tell a fix attempt didn't clear it, instead of treating a reload's re-report
+// of the identical warning as fresh.
+function normalizeLayoutWarnings(layoutWarnings, deliveredKeys = new Set()) {
   if (!Array.isArray(layoutWarnings)) return [];
   return layoutWarnings
     .filter((warning) => warning && typeof warning === "object" && !Array.isArray(warning))
-    .map((warning) => ({
-      selector: String(warning.selector || ""),
-      kind: String(warning.kind || "layout-warning"),
-      overflowPx: normalizeFiniteNumber(warning.overflowPx),
-      viewportWidth: normalizeFiniteNumber(warning.viewportWidth),
-      severity: warning.severity === "warning" ? "warning" : "error",
-    }));
+    .map((warning) => {
+      const selector = String(warning.selector || "");
+      const kind = String(warning.kind || "layout-warning");
+      return {
+        selector,
+        kind,
+        overflowPx: normalizeFiniteNumber(warning.overflowPx),
+        viewportWidth: normalizeFiniteNumber(warning.viewportWidth),
+        severity: warning.severity === "warning" ? "warning" : "error",
+        persistent: deliveredKeys.has(layoutWarningKey({ kind, selector })),
+      };
+    });
 }
 
 function normalizeFiniteNumber(value) {

@@ -8,7 +8,14 @@ import { fileURLToPath } from "node:url";
 import chokidar from "chokidar";
 import express from "express";
 
-import { createArtifactSdk, deriveLavishQueueKey, isNativeInteractiveControl } from "./artifact-sdk.js";
+import {
+  classifyHorizontalOverflow,
+  classifyVerticalOverflow,
+  createArtifactSdk,
+  deriveLavishQueueKey,
+  fragmentsSignificantlyOverlap,
+  isNativeInteractiveControl,
+} from "./artifact-sdk.js";
 import {
   buildSelfContainedHtml,
   exportFileName,
@@ -861,6 +868,9 @@ const key=${JSON.stringify(key)};
 void key;
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
+const fragmentsSignificantlyOverlap=${fragmentsSignificantlyOverlap.toString()};
+const classifyHorizontalOverflow=${classifyHorizontalOverflow.toString()};
+const classifyVerticalOverflow=${classifyVerticalOverflow.toString()};
 (${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl);
 })();`;
 }

@@ -290,7 +290,7 @@ export function createPollOutput({ file, response }) {
       dom_snapshot: response.dom_snapshot || "",
       prompts: response.prompts || [],
       ...(layoutWarnings.length > 0 ? { layout_warnings: layoutWarnings } : {}),
-      next_step: createFeedbackNextStep(file, layoutWarnings.length),
+      next_step: createFeedbackNextStep(file, layoutWarnings),
     };
   }
   if (response.status === "ended") {
@@ -302,12 +302,31 @@ export function createPollOutput({ file, response }) {
   };
 }
 
-function createFeedbackNextStep(file, layoutWarningCount) {
+function createFeedbackNextStep(file, layoutWarnings) {
+  const count = layoutWarnings.length;
   const layoutPrefix =
-    layoutWarningCount > 0
-      ? `${layoutWarningCount} layout warning${layoutWarningCount === 1 ? "" : "s"} detected - fix horizontal overflow, clipped text, or overlapping unreadable content in ${file}, then reload or re-open the artifact and re-check before involving the human. `
-      : `Apply the requested changes to ${file}. `;
+    count > 0 ? layoutWarningsPrefix(file, layoutWarnings) : `Apply the requested changes to ${file}. `;
   return `${layoutPrefix}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms unless the user ended the session. The poll waits silently until the user sends more feedback, ends the session, or reports fresh layout_warnings - never kill it. If your harness limits how long a foreground command may run, run the poll as a background task; if it still gets killed or times out, just re-run it - queued feedback is never lost.`;
+}
+
+// A finding stays worth a fix-and-recheck loop only while it's both new (not already reported to
+// this agent) and error-severity (overflow/clipped content, not the more heuristic overlap
+// detector). Once every current finding fails one of those tests - a prior fix attempt didn't
+// clear it, or it's a low-severity text-flow finding - looping edits and reloads further is more
+// disruptive than useful, so the guidance permits proceeding to the human with a note instead.
+function layoutWarningsPrefix(file, layoutWarnings) {
+  const count = layoutWarnings.length;
+  const plural = count === 1 ? "" : "s";
+  const allPersistent = layoutWarnings.every((warning) => warning.persistent);
+  const allLowSeverity = layoutWarnings.every((warning) => warning.severity !== "error");
+
+  if (allPersistent) {
+    return `${count} layout warning${plural} detected, and every one was already reported in a prior poll and is still unresolved - if you already attempted a fix, it is fine to proceed to the human with a short note about what remains instead of looping further edits and reloads. `;
+  }
+  if (allLowSeverity) {
+    return `${count} low-severity layout warning${plural} detected (no error-severity findings) - fix them if the cause is obvious in ${file}, otherwise it is fine to proceed to the human with a note instead of iterating further. `;
+  }
+  return `${count} layout warning${plural} detected - fix horizontal overflow, clipped text, or overlapping unreadable content in ${file}, then reload or re-open the artifact and re-check before involving the human. `;
 }
 
 async function endCommand(args) {
