@@ -154,4 +154,6 @@ No need to explicitly document the telemetry behaviors.
 - For text annotations, `prompt.selector` is the common ancestor/container selector, not the complete identity. Use the `target` range boundaries and snapshot context to locate the exact selected text.
 - `SessionStore` re-reads and re-writes the entire `state.json` on every operation. There's no in-memory cache and no locking - acceptable because writes are infrequent and serialized through the single server process.
 - Tests use `LAVISH_AXI_STATE_DIR` and ephemeral ports to stay isolated. When adding tests that spin up the server, do the same.
-- Circular close buttons (`.pill-close`, `.share-close`) render their `×` as an inline SVG (two symmetric strokes), not a `×`/`&times;` text glyph. Font metrics put a text glyph's optical center off from its geometric center even under flex centering, so it always looks slightly off-center in a circle; the SVG centers exactly via flex + equal viewBox margins. Follow this pattern for any new circular icon-only button.
+- Circular close buttons (`.pill-close`, `.share-close`) render an inline SVG x mark with two symmetric strokes, not a text `x`/`&times;` glyph.
+  Font metrics put text glyphs off from the geometric center even under flex centering, while the SVG centers via flex plus equal viewBox margins.
+  Keep the SVG strokes on `currentColor` so existing hover color rules still apply, and follow this pattern for any new circular icon-only button.

@@ -1,0 +1,54 @@
+{
+  "url": "http://127.0.0.1:49387/session/69ca9217e4ddffc1?no-gate=1",
+  "devicePixelRatio": 1,
+  "results": {
+    "pillClose": {
+      "buttonSelector": ".pill-close",
+      "ariaLabel": "Remove queued prompt",
+      "buttonSize": {
+        "width": 18,
+        "height": 18
+      },
+      "svgSize": {
+        "width": 10,
+        "height": 10
+      },
+      "svgGapsPx": {
+        "left": 4,
+        "right": 4,
+        "top": 4,
+        "bottom": 4
+      },
+      "centerDeltaPx": {
+        "x": 0,
+        "y": 0
+      },
+      "pathStroke": "currentColor",
+      "pathLineCap": "round"
+    },
+    "shareClose": {
+      "buttonSelector": ".share-close",
+      "ariaLabel": "Close publish dialog",
+      "buttonSize": {
+        "width": 30,
+        "height": 30
+      },
+      "svgSize": {
+        "width": 14,
+        "height": 14
+      },
+      "svgGapsPx": {
+        "left": 8,
+        "right": 8,
+        "top": 8,
+        "bottom": 8
+      },
+      "centerDeltaPx": {
+        "x": 0,
+        "y": 0
+      },
+      "pathStroke": "currentColor",
+      "pathLineCap": "round"
+    }
+  }
+}
