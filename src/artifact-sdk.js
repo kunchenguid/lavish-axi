@@ -287,7 +287,6 @@ export function createArtifactSdk(
     const initial = readViewBox(svg) || (bbox ? { x: bbox.x, y: bbox.y, w: bbox.width, h: bbox.height } : null);
     if (!initial) return null;
     svg.setAttribute("viewBox", `${initial.x} ${initial.y} ${initial.w} ${initial.h}`);
-    svg.style.touchAction = "none";
 
     const view = { ...initial };
     let frozen = false;
@@ -351,6 +350,7 @@ export function createArtifactSdk(
       frozen = !!next;
       panning = null;
       svg.style.cursor = frozen ? "" : "grab";
+      svg.style.touchAction = frozen ? "" : "none";
     }
     setFrozen(false);
 
@@ -385,6 +385,18 @@ export function createArtifactSdk(
         mermaidViewports.set(svg, viewport);
       }
     }
+  }
+
+  let mermaidEnhanceScheduled = false;
+  function scheduleMermaidEnhance() {
+    if (mermaidEnhanceScheduled) return;
+    mermaidEnhanceScheduled = true;
+    const run = () => {
+      mermaidEnhanceScheduled = false;
+      enhanceMermaid();
+    };
+    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(run);
+    else window.setTimeout(run, 50);
   }
 
   function setMermaidFrozen(frozen) {
@@ -1123,6 +1135,6 @@ export function createArtifactSdk(
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", enhanceMermaid, { once: true });
   }
-  const mermaidObserver = new MutationObserver(() => enhanceMermaid());
+  const mermaidObserver = new MutationObserver(() => scheduleMermaidEnhance());
   mermaidObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
