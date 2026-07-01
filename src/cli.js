@@ -421,23 +421,26 @@ export function createShareOutput({ source, site, warnings, passwordProtected = 
   if (unresolved.length) result.unresolved_local_assets = assetWarningSummaries(unresolved);
   if (notices.length) result.notices = assetWarningSummaries(notices);
   const noticeNote = notices.length ? " Export notices are available in notices." : "";
+  const hostNote =
+    "ht-ml.app (https://ht-ml.app), a third-party host not part of Lavish, hosts the page, so it needs no Lavish server.";
   if (unresolved.length) {
     result.next_step =
       `Published ${isPasswordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote}${noticeNote} ` +
       `Remote CDN/font references are intentionally left as links and render where there is network access. ` +
-      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery).`;
+      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
+      hostNote;
   } else if (isPasswordProtected) {
     result.next_step =
       `Published a PASSWORD-PROTECTED page: ${site.url} - share this URL with the user and provide the password separately; viewers also need the password. ` +
       `${noticeNote ? `${noticeNote} ` : ""}` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
-      `ht-ml.app (https://ht-ml.app), a third-party host not part of Lavish, hosts the page, so it needs no Lavish server.`;
+      hostNote;
   } else {
     result.next_step =
       `Published a PUBLIC page that anyone with the link can view: ${site.url} - share this URL with the user. ` +
       `${noticeNote ? `${noticeNote} ` : ""}` +
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
-      `ht-ml.app (https://ht-ml.app), a third-party host not part of Lavish, hosts the page, so it needs no Lavish server.`;
+      hostNote;
   }
   return result;
 }
