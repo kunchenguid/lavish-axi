@@ -374,9 +374,10 @@ function assetWarningSummaries(warnings) {
   return exportWarningSummaries(warnings);
 }
 
-// Publish the artifact as a visitable page on ht-ml.app. Builds the same local-inlined
+// Publish the artifact as a visitable page on third-party ht-ml.app. Builds the same local-inlined
 // HTML as `export` (remote refs left as links), then POSTs it to ht-ml.app's `/v1/sites` API,
-// which needs no account or API key, and returns the share URL plus the secret update_key for
+// sending the artifact to ht-ml.app's servers. The service is not part of Lavish, needs no
+// account or API key, and returns the share URL plus the secret update_key for
 // managing the page later. Server-independent.
 async function shareCommand(args) {
   const file = firstPositionalArg(args, ["--password", "--token"]);

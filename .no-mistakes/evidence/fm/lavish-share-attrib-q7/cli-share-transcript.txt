@@ -1,0 +1,53 @@
+# CLI share attribution evidence
+Fake ht-ml.app API URL: local test server only
+## Help
+$ node bin/lavish-axi.js share --help
+exit: 0
+Usage: lavish-axi share <html-file> [--password <pw>] [--token <t>]
+
+Publish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for updating or deleting the page later. Set LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token; it is never required. The annotation SDK is never included.
+## Public share
+$ node bin/lavish-axi.js share /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWE7YW0V9KNWM4KPJ3KJPPGD/.no-mistakes/evidence/fm/lavish-share-attrib-q7/share-dialog-e2e.html
+exit: 0
+share:
+  source: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWE7YW0V9KNWM4KPJ3KJPPGD/.no-mistakes/evidence/fm/lavish-share-attrib-q7/share-dialog-e2e.html
+  url: "https://public.ht-ml.app/"
+  site_id: public
+  update_key: uk_public_secret
+  status: active
+  public: true
+  visibility: public
+  password_protected: false
+  unresolved_local_assets: 0
+  notices: 0
+next_step: "Published a PUBLIC page that anyone with the link can view: https://public.ht-ml.app/ - share this URL with the user. The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ht-ml.app (https://ht-ml.app), a third-party host not part of Lavish, hosts the page, so it needs no Lavish server."
+## Password-protected share
+$ node bin/lavish-axi.js share /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWE7YW0V9KNWM4KPJ3KJPPGD/.no-mistakes/evidence/fm/lavish-share-attrib-q7/share-dialog-e2e.html --password review-password
+exit: 0
+share:
+  source: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWE7YW0V9KNWM4KPJ3KJPPGD/.no-mistakes/evidence/fm/lavish-share-attrib-q7/share-dialog-e2e.html
+  url: "https://private.ht-ml.app/"
+  site_id: private
+  update_key: uk_private_secret
+  status: active
+  public: false
+  visibility: private
+  password_protected: true
+  unresolved_local_assets: 0
+  notices: 0
+next_step: "Published a PASSWORD-PROTECTED page: https://private.ht-ml.app/ - share this URL with the user and provide the password separately; viewers also need the password. The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ht-ml.app (https://ht-ml.app), a third-party host not part of Lavish, hosts the page, so it needs no Lavish server."
+## Fake API requests observed
+[
+  {
+    "method": "POST",
+    "url": "/v1/sites",
+    "has_html_content": true,
+    "password": null
+  },
+  {
+    "method": "POST",
+    "url": "/v1/sites",
+    "has_html_content": true,
+    "password": "review-password"
+  }
+]

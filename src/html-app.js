@@ -1,10 +1,10 @@
 // Hosted sharing transport: publish a self-contained HTML page to ht-ml.app
-// (https://ht-ml.app), an HTML host with a REST API built for agents, and return a visitable
-// share URL. Creation needs no account or API key - `POST /v1/sites` accepts the HTML and an
-// optional password, then returns a `url` plus a secret `update_key` (the only credential,
-// returned once, used later to update or delete the page). Shares are public by default; when
-// a password is supplied, viewers must enter it before viewing. An optional bearer token is
-// supported for callers who have one but is never required.
+// (https://ht-ml.app), a third-party hosting service not part of Lavish, and return a visitable
+// share URL. Creation needs no account or API key - `POST /v1/sites` sends the HTML to
+// ht-ml.app's servers with an optional password, then returns a `url` plus a secret
+// `update_key` (the only credential, returned once, used later to update or delete the page).
+// Shares are public by default; when a password is supplied, viewers must enter it before viewing.
+// An optional bearer token is supported for callers who have one but is never required.
 
 const DEFAULT_API_URL = "https://api.ht-ml.app";
 const PUBLISH_TIMEOUT_MS = 30_000;
@@ -21,8 +21,8 @@ export function createHtmlAppPayload(html, options = {}) {
 }
 
 /**
- * Publish HTML to ht-ml.app and return the live site.
- * @param {string} html The (ideally self-contained) HTML to host.
+ * Publish HTML to the third-party ht-ml.app service and return the live site.
+ * @param {string} html The (ideally self-contained) HTML to send to the host.
  * @param {object} [options]
  * @param {string} [options.password] Make the site private behind this password.
  * @param {string} [options.token] Optional bearer token (never required to create a site).

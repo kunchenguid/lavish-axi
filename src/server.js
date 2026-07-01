@@ -273,8 +273,10 @@ export async function serve({
     }
   });
 
-  // Hosted share: build the local-inlined artifact and publish it to ht-ml.app, returning the
-  // share URL. Remote CDN/font references are left intact for the viewer's browser to load.
+  // Hosted share: build the local-inlined artifact and publish it to ht-ml.app, a third-party
+  // hosting service not part of Lavish, returning the share URL. Publishing sends the artifact
+  // to ht-ml.app's servers. Remote CDN/font references are left intact for the viewer's browser
+  // to load.
   // Publishing creates a public third-party page unless a password is supplied, so this is gated
   // behind a same-origin check - a cross-origin page must not be able to drive a publish via the
   // loopback server.

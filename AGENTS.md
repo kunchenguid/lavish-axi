@@ -71,7 +71,7 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
    The split-button menu also offers "Send & end session", which submits queued prompts first and ends only after the POST succeeds.
    The annotation card textarea follows the same convention: Enter queues the annotation (equivalent to clicking "Queue"); Shift+Enter inserts a newline; Ctrl+Enter (Cmd+Enter on macOS) queues the annotation and immediately sends all queued prompts, and the card shows a small hint for these shortcuts.
 7. The chrome top bar exposes annotation mode as an `Annotate` switch and keeps editing actions in an overflow menu: the home-shortened artifact path with a copy affordance, reload artifact, copy DOM snapshot, export standalone HTML, publish link, and end session.
-   Copy path still copies the absolute canonical path, copy DOM snapshot requests a fresh iframe snapshot before writing to the clipboard, export downloads the local-inlined bundle, and publish opens the ht-ml.app share dialog.
+   Copy path still copies the absolute canonical path, copy DOM snapshot requests a fresh iframe snapshot before writing to the clipboard, export downloads the local-inlined bundle, and publish opens the ht-ml.app share dialog with a linked service name and an up-front third-party disclosure.
 8. `lavish-axi poll <file.html>` (`pollCommand`) hits `GET /api/poll`.
    If queued prompts or layout warnings exist, including prompts queued before an ended session, it records that an agent has observed the session and returns them immediately; otherwise it marks the session as actively listening and long-polls on an `EventEmitter` until a `feedback` or `ended` event fires.
    Poll output includes `layout_warnings` only when the browser reported current findings, and the agent-facing `next_step` tells agents to fix layout warnings before involving the human.
@@ -108,11 +108,11 @@ Lavish itself sets **no** `Content-Security-Policy` on any response (the sandbox
 
 ### Hosted sharing (ht-ml.app)
 
-`src/html-app.js` (`publishToHtmlApp`) publishes the local-inlined HTML to [ht-ml.app](https://ht-ml.app) - an HTML host with a REST API built for agents - and returns a visitable URL.
-It `POST`s the bundle to `POST {LAVISH_AXI_HTML_APP_API_URL or https://api.ht-ml.app}/v1/sites` as `{ html_content, password? }`; **creating a site needs no account or API key**.
+`src/html-app.js` (`publishToHtmlApp`) publishes the local-inlined HTML to [ht-ml.app](https://ht-ml.app), a third-party hosting service not part of Lavish, and returns a visitable URL.
+It sends the bundle to ht-ml.app's servers with `POST {LAVISH_AXI_HTML_APP_API_URL or https://api.ht-ml.app}/v1/sites` as `{ html_content, password? }`; **creating a site needs no account or API key**.
 The response carries the share `url` plus a secret `update_key` (returned once, the only credential, used later to update or delete the page). An optional bearer token (`LAVISH_AXI_HTML_APP_TOKEN` / `--token`) is sent when set but is never required.
 Remote CDN/font references in the published page load over the network because ht-ml.app serves hosted pages with no CSP and no sandbox header; the viewer browser still needs network access to those CDNs to render them.
-The browser surfaces a **Publish link** overflow-menu item that opens a share dialog and `POST`s `/api/:key/share`; the route is **same-origin guarded** (`isSameOriginRequest`) because publishing is a state-changing, outward-facing action - a cross-origin page must not drive a publish through the loopback server.
+The browser surfaces a **Publish link** overflow-menu item that opens a share dialog with a linked ht-ml.app mention and an up-front third-party disclosure, then `POST`s `/api/:key/share`; the route is **same-origin guarded** (`isSameOriginRequest`) because publishing is a state-changing, outward-facing action - a cross-origin page must not drive a publish through the loopback server.
 The CLI exposes `lavish-axi share <html-file> [--password <pw>] [--token <t>]`, server-independently.
 Published pages are **PUBLIC by default** - anyone with the link can view them.
 When `--password` or a browser-dialog password is set, the page is **PRIVATE and password-protected** - viewers must supply the password to view, and runtime output reports `public: false`.

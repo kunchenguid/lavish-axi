@@ -1,0 +1,3 @@
+result: "{\"dialogHidden\":false,\"kickerText\":\"Publish to ht-ml.app\",\"linkText\":\"ht-ml.app\",\"href\":\"https://ht-ml.app/\",\"target\":\"_blank\",\"rel\":\"noopener noreferrer\",\"textDecorationLine\":\"underline\",\"color\":\"rgb(140, 150, 170)\",\"notes\":[\"ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.\",\"Do not publish secrets. The Lavish annotation SDK is not included.\",\"Keep the update key private. ht-ml.app returns it once and it is the only way to update or delete this page later.\"],\"copyBeforeExistingDescription\":true}"
+help[1]:
+  Run `chrome-devtools-axi snapshot` to see current page state
