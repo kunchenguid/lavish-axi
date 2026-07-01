@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.33](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.32...lavish-axi-v0.1.33) (2026-07-01)
+
+
+### Features
+
+* add artifact export and hosted sharing ([#123](https://github.com/kunchenguid/lavish-axi/issues/123)) ([d7deba1](https://github.com/kunchenguid/lavish-axi/commit/d7deba16aec45a5752a853303f60b5c8dc45e535))
+* **cli:** add GitHub Copilot CLI session start hook support ([#106](https://github.com/kunchenguid/lavish-axi/issues/106)) ([0b3e28e](https://github.com/kunchenguid/lavish-axi/commit/0b3e28eae0a139540b7b274293cea98d49961dc4))
+* **cli:** tell agents to screenshot existing UI instead of describing it ([#113](https://github.com/kunchenguid/lavish-axi/issues/113)) ([2189f60](https://github.com/kunchenguid/lavish-axi/commit/2189f601b147062a69633381d893886a2201361b))
+* disclose ht-ml.app in share flows ([#126](https://github.com/kunchenguid/lavish-axi/issues/126)) ([cd6016a](https://github.com/kunchenguid/lavish-axi/commit/cd6016a3381ad713c5340db0bf8b53e36ed3ef9c))
+
+
+### Bug Fixes
+
+* **chrome:** center circular close button icons ([#125](https://github.com/kunchenguid/lavish-axi/issues/125)) ([47deaef](https://github.com/kunchenguid/lavish-axi/commit/47deaef107cac56deda4dcab5e9c6d903f9e42b4))
+
 ## [0.1.32](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.31...lavish-axi-v0.1.32) (2026-06-27)
 
 
