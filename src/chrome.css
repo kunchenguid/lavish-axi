@@ -461,6 +461,16 @@ body.lavish {
   letter-spacing: var(--track-label);
   text-transform: uppercase;
 }
+.share-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 2px;
+}
+.share-link:hover {
+  color: var(--accent-hover);
+  text-decoration-color: currentColor;
+}
 .share-head h2 {
   margin: var(--space-2) 0 0;
   font-family: var(--font-serif);

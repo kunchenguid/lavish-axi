@@ -422,7 +422,11 @@ test("overflow menu offers publishing an ht-ml.app link via a share dialog", asy
 
   assert.match(html, /id="shareArtifact"[^<]*>.*Publish link/);
   assert.match(html, /id="shareDialog"/);
-  assert.match(html, /Publish to ht-ml\.app/);
+  assert.match(
+    html,
+    /Publish to <a class="share-link" href="https:\/\/ht-ml\.app" target="_blank" rel="noopener noreferrer">ht-ml\.app<\/a>/,
+  );
+  assert.match(html, /third-party hosting service, not part of Lavish/);
   assert.match(html, /id="sharePassword"/);
   assert.match(html, /id="shareUpdateKey"/);
   assert.match(html, /Without a password, the page is PUBLIC/);
@@ -432,6 +436,7 @@ test("overflow menu offers publishing an ht-ml.app link via a share dialog", asy
   assert.match(css, /\.share-overlay/);
   assert.match(css, /\.share-overlay\{[^}]*z-index:80;/);
   assert.match(css, /\.share-card/);
+  assert.match(css, /\.share-link/);
   assert.match(css, /box-shadow:var\(--shadow-floating\)/);
   // The codebase has no global [hidden] rule, so display-setting overlays need explicit
   // [hidden] rules or they show through before they should (e.g. the result block).
