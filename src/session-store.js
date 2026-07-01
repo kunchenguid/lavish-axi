@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
+
 export class SessionStore {
   constructor(file) {
     this.file = file;
@@ -249,5 +251,7 @@ function normalizeFiniteNumber(value) {
 
 function normalizeTarget(target) {
   if (!target || typeof target !== "object" || Array.isArray(target)) return null;
+  if (target.type === "mermaid-node") return normalizeMermaidNodeTarget(target);
+  // text-range and any other/legacy target shapes pass through unchanged.
   return JSON.parse(JSON.stringify(target));
 }

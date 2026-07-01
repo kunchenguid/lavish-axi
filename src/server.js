@@ -17,6 +17,7 @@ import {
   isNativeInteractiveControl,
   resolveVisibleSpillCandidates,
 } from "./artifact-sdk.js";
+import { isMermaidSvg, mermaidNodeFrom, readNodeLabel } from "./mermaid-node.js";
 import {
   buildSelfContainedHtml,
   exportFileName,
@@ -887,7 +888,11 @@ const fragmentsSignificantlyOverlap=${fragmentsSignificantlyOverlap.toString()};
 const resolveVisibleSpillCandidates=${resolveVisibleSpillCandidates.toString()};
 const classifyHorizontalOverflow=${classifyHorizontalOverflow.toString()};
 const classifyVerticalOverflow=${classifyVerticalOverflow.toString()};
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl);
+const isMermaidSvg=${isMermaidSvg.toString()};
+const readNodeLabel=${readNodeLabel.toString()};
+const mermaidNodeFrom=${mermaidNodeFrom.toString()};
+const mermaidHelpers={ isMermaidSvg, readNodeLabel, mermaidNodeFrom };
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers);
 })();`;
 }
 

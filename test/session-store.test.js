@@ -72,6 +72,53 @@ test("queued text selection prompts preserve range anchors", async () => {
   }
 });
 
+test("queued mermaid node prompts preserve node identity and drop unknown fields", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<div class='mermaid'>graph TD; A-->B;</div>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const target = {
+      type: "mermaid-node",
+      diagramId: "mermaid-7",
+      nodeId: "flowchart-HomeAgentChat-3",
+      label: "HomeAgentChat",
+      selector: "svg#mermaid-7 > g > g.node",
+      // A hostile/legacy field that must be stripped by the normalizer:
+      injected: { nested: "should not survive" },
+    };
+
+    await store.queuePrompts(session.key, {
+      prompts: [
+        {
+          uid: "",
+          prompt: "This is where the orphan happens",
+          selector: target.selector,
+          tag: "mermaid-node",
+          text: target.label,
+          target,
+        },
+      ],
+    });
+
+    const result = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(result.prompts.length, 1);
+    assert.deepEqual(result.prompts[0].target, {
+      type: "mermaid-node",
+      diagramId: "mermaid-7",
+      nodeId: "flowchart-HomeAgentChat-3",
+      label: "HomeAgentChat",
+      selector: "svg#mermaid-7 > g > g.node",
+    });
+    assert.equal(result.prompts[0].tag, "mermaid-node");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("layout warnings are returned as feedback and then cleared", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

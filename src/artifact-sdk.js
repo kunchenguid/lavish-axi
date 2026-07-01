@@ -1,4 +1,6 @@
-/* global CSS, Element, ResizeObserver, document, getComputedStyle, parent, window */
+/* global CSS, Element, MutationObserver, ResizeObserver, document, getComputedStyle, parent, window */
+
+import * as mermaidHelpers from "./mermaid-node.js";
 
 export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 
@@ -189,7 +191,12 @@ export function resolveVisibleSpillCandidates(spillCandidates, { epsilon = 1 } =
   );
 }
 
-export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNativeInteractiveControl) {
+export function createArtifactSdk(
+  deriveQueueKey,
+  isNativeInteractive = isNativeInteractiveControl,
+  mermaid = mermaidHelpers,
+) {
+  const { isMermaidSvg, mermaidNodeFrom } = mermaid;
   let annotationMode = true;
   let hovered = null;
   let selected = null;
@@ -201,6 +208,13 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
   function uid(el) {
     if (!ids.has(el)) ids.set(el, String(++counter));
     return ids.get(el);
+  }
+
+  function escapeAnnotationText(value) {
+    return String(value).replace(
+      /[&<>"']/g,
+      (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char],
+    );
   }
 
   function selector(el) {
@@ -229,12 +243,154 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
   }
 
   function context(el) {
-    return {
+    const base = {
       uid: uid(el),
       selector: selector(el),
       tag: (el.tagName || "").toLowerCase(),
       text: (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
     };
+
+    const mermaidNode = mermaidNodeFrom(el, selector);
+    if (mermaidNode) {
+      base.tag = "mermaid-node";
+      base.text = mermaidNode.label || base.text;
+      base.target = mermaidNode;
+    }
+
+    return base;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mermaid diagram enhancement: pan/zoom in explore mode, freeze in annotate
+  // mode. All of this operates on the rendered SVG only; the saved artifact is
+  // never modified, so a diagram still renders identically when opened directly.
+  // Node identity/label extraction lives in the injected `mermaid` helpers so it
+  // can be unit tested and shared with the server-side target validator.
+  // ---------------------------------------------------------------------------
+
+  const mermaidViewports = new WeakMap();
+
+  function findMermaidSvgs() {
+    const svgs = new Set();
+    for (const svg of document.querySelectorAll("svg")) {
+      if (isMermaidSvg(svg)) svgs.add(svg);
+    }
+    return [...svgs];
+  }
+
+  // A minimal, dependency-free viewBox-based pan/zoom. Kept small on purpose:
+  // "nodes only" annotation plus freeze-on-annotate means we do not need
+  // momentum, gestures, or a full pan/zoom library here. svg-pan-zoom is a
+  // documented drop-in upgrade if richer interaction is wanted later.
+  function createViewport(svg) {
+    const bbox = svg.getBBox ? safeBBox(svg) : null;
+    const initial = readViewBox(svg) || (bbox ? { x: bbox.x, y: bbox.y, w: bbox.width, h: bbox.height } : null);
+    if (!initial) return null;
+    svg.setAttribute("viewBox", `${initial.x} ${initial.y} ${initial.w} ${initial.h}`);
+    svg.style.touchAction = "none";
+
+    const view = { ...initial };
+    let frozen = false;
+    let panning = null;
+
+    function apply() {
+      svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+    }
+    function reset() {
+      Object.assign(view, initial);
+      apply();
+    }
+    function zoomAt(clientX, clientY, factor) {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const px = (clientX - rect.left) / rect.width;
+      const py = (clientY - rect.top) / rect.height;
+      const fx = view.x + view.w * px;
+      const fy = view.y + view.h * py;
+      const next = Math.min(Math.max(view.w * factor, initial.w / 40), initial.w * 8);
+      const scale = next / view.w;
+      view.w = next;
+      view.h *= scale;
+      view.x = fx - (fx - view.x) * scale;
+      view.y = fy - (fy - view.y) * scale;
+      apply();
+    }
+
+    function onWheel(event) {
+      if (frozen) return;
+      event.preventDefault();
+      zoomAt(event.clientX, event.clientY, event.deltaY > 0 ? 1.15 : 1 / 1.15);
+    }
+    function onPointerDown(event) {
+      if (frozen || event.button !== 0) return;
+      panning = { x: event.clientX, y: event.clientY, vx: view.x, vy: view.y };
+      svg.setPointerCapture?.(event.pointerId);
+      svg.style.cursor = "grabbing";
+    }
+    function onPointerMove(event) {
+      if (!panning) return;
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      view.x = panning.vx - ((event.clientX - panning.x) / rect.width) * view.w;
+      view.y = panning.vy - ((event.clientY - panning.y) / rect.height) * view.h;
+      apply();
+    }
+    function onPointerUp(event) {
+      panning = null;
+      svg.releasePointerCapture?.(event.pointerId);
+      svg.style.cursor = frozen ? "" : "grab";
+    }
+
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    svg.addEventListener("pointerdown", onPointerDown);
+    svg.addEventListener("pointermove", onPointerMove);
+    svg.addEventListener("pointerup", onPointerUp);
+    svg.addEventListener("pointercancel", onPointerUp);
+
+    function setFrozen(next) {
+      frozen = !!next;
+      panning = null;
+      svg.style.cursor = frozen ? "" : "grab";
+    }
+    setFrozen(false);
+
+    return { reset, setFrozen };
+  }
+
+  function safeBBox(svg) {
+    try {
+      return svg.getBBox();
+    } catch {
+      return null;
+    }
+  }
+
+  function readViewBox(svg) {
+    const raw = svg.getAttribute?.("viewBox");
+    if (!raw) return null;
+    const parts = raw
+      .trim()
+      .split(/[\s,]+/)
+      .map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+    return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
+  }
+
+  function enhanceMermaid() {
+    for (const svg of findMermaidSvgs()) {
+      if (mermaidViewports.has(svg)) continue;
+      const viewport = createViewport(svg);
+      if (viewport) {
+        viewport.setFrozen(annotationMode);
+        mermaidViewports.set(svg, viewport);
+      }
+    }
+  }
+
+  function setMermaidFrozen(frozen) {
+    for (const svg of findMermaidSvgs()) {
+      mermaidViewports.get(svg)?.setFrozen(frozen);
+    }
   }
 
   function closestElement(node) {
@@ -353,6 +509,10 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
     }
     if (!annotationMode && style) style.remove();
     if (!annotationMode) closeCard();
+
+    // Freeze Mermaid pan/zoom while annotating so nodes sit at stable screen
+    // positions and a click resolves cleanly to one node instead of panning.
+    setMermaidFrozen(annotationMode);
   }
 
   function queuePrompt(prompt, options = {}) {
@@ -794,11 +954,19 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
     const rect = options.range ? options.range.getBoundingClientRect() : target.getBoundingClientRect();
     const card = document.createElement("div");
     card.className = "lavish-annotation-card";
-    const heading = c.tag === "text" ? "Annotate text" : "Annotate &lt;" + c.tag + "&gt;";
+    const nodeLabel = c.tag === "mermaid-node" ? c.target?.label || c.text || "" : "";
+    const heading =
+      c.tag === "text"
+        ? "Annotate text"
+        : c.tag === "mermaid-node"
+          ? "Annotate node" + (nodeLabel ? ": " + escapeAnnotationText(nodeLabel) : "")
+          : "Annotate &lt;" + c.tag + "&gt;";
     const placeholder =
       c.tag === "text"
         ? "Tell the agent what to change about this text..."
-        : "Tell the agent what to change about this element...";
+        : c.tag === "mermaid-node"
+          ? "Tell the agent what to change about this diagram node..."
+          : "Tell the agent what to change about this element...";
     card.innerHTML =
       '<div class="lavish-heading">' +
       heading +
@@ -948,4 +1116,13 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
   } else {
     startLayoutAudit();
   }
+
+  // Mermaid renders asynchronously (and can re-render on theme/resize), so we
+  // enhance on load, again shortly after, and whenever the DOM adds new SVGs.
+  enhanceMermaid();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", enhanceMermaid, { once: true });
+  }
+  const mermaidObserver = new MutationObserver(() => enhanceMermaid());
+  mermaidObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
