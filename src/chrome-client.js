@@ -123,7 +123,7 @@ function render() {
         escapeHtml(prompt.prompt) +
         '</span><button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
         index +
-        '">×</button></div><div class="pill-tooltip">' +
+        '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
         (prompt.selector
           ? '<div class="tooltip-label">Target</div><div class="pill-tooltip-target">' +
             escapeHtml(prompt.selector) +

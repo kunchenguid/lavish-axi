@@ -470,6 +470,9 @@ body.lavish {
   line-height: var(--lh-2xl);
 }
 .share-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 30px;
   height: 30px;
   border: 1px solid var(--border);
@@ -478,8 +481,10 @@ body.lavish {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  font-size: 20px;
-  line-height: 1;
+  padding: 0;
+}
+.share-close svg {
+  display: block;
 }
 .share-close:hover {
   color: var(--fg);
@@ -737,6 +742,9 @@ body.lavish {
   text-overflow: ellipsis;
 }
 .pill-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 18px;
   height: 18px;
   border: 0;
@@ -744,9 +752,10 @@ body.lavish {
   padding: 0;
   background: var(--border);
   color: var(--fg-muted);
-  line-height: 18px;
-  font-size: 14px;
   cursor: pointer;
+}
+.pill-close svg {
+  display: block;
 }
 .pill-tooltip {
   display: none;
