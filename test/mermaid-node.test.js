@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isMermaidSvg, mermaidNodeFrom, normalizeMermaidNodeTarget, readNodeLabel } from "../src/mermaid-node.js";
+import {
+  isMermaidSvg,
+  mermaidNodeElement,
+  mermaidNodeFrom,
+  normalizeMermaidNodeTarget,
+  readNodeLabel,
+} from "../src/mermaid-node.js";
 
 // readNodeLabel swaps <br> for `document.createTextNode(" ")`; provide the
 // minimal document surface it needs so the multi-line path runs under node:test.
@@ -189,6 +195,25 @@ test("readNodeLabel collapses whitespace and truncates to 120 chars", () => {
 test("readNodeLabel returns empty string for a missing label element", () => {
   assert.equal(readNodeLabel(null), "");
   assert.equal(readNodeLabel(undefined), "");
+});
+
+// ---------------------------------------------------------------------------
+// mermaidNodeElement
+// ---------------------------------------------------------------------------
+
+test("mermaidNodeElement resolves the <g> node from an inner element and itself", () => {
+  const { rect, g } = diagram();
+  assert.equal(mermaidNodeElement(rect), g);
+  assert.equal(mermaidNodeElement(g), g);
+});
+
+test("mermaidNodeElement returns null outside a mermaid node", () => {
+  assert.equal(mermaidNodeElement(null), null);
+  assert.equal(mermaidNodeElement(el("g", { className: "node" })), null); // no svg ancestor
+
+  const g = el("g", { id: "n1", className: "node" });
+  el("svg", { id: "hand-drawn", children: [g] });
+  assert.equal(mermaidNodeElement(g), null); // non-mermaid svg
 });
 
 // ---------------------------------------------------------------------------

@@ -180,8 +180,28 @@ test("annotation hover remains active while another element is selected", () => 
   const js = createSdkJs("abc");
 
   assert.doesNotMatch(js, /\|\|selected\)return/);
-  assert.match(js, /if \(event\.target === selected\) return/);
+  assert.match(js, /if \(target === selected\) return/);
   assert.match(js, /if \(hovered && hovered !== selected\) clearHighlight\(hovered\)/);
+});
+
+test("artifact SDK injects every shared mermaid node helper as a same-scope const", () => {
+  const js = createSdkJs("abc");
+
+  for (const name of ["isMermaidSvg", "readNodeLabel", "mermaidNodeElement", "mermaidNodeFrom"]) {
+    assert.match(js, new RegExp(`const ${name}=`));
+  }
+  // mermaidNodeFrom calls mermaidNodeElement, so the resolver must reach the
+  // SDK's mermaidHelpers bundle or the browser would ReferenceError on click.
+  assert.match(js, /const mermaidHelpers=\{[^}]*mermaidNodeElement[^}]*\}/);
+});
+
+test("annotation hover and click resolve to the same Mermaid node element", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /function annotationTargetEl/);
+  assert.match(js, /mermaidNodeElement\(el\) \|\| el/);
+  assert.match(js, /hovered = target/);
+  assert.match(js, /anchor = annotationTargetEl\(target\)/);
 });
 
 test("annotation mode forces the artifact cursor to default", () => {

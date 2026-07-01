@@ -196,7 +196,7 @@ export function createArtifactSdk(
   isNativeInteractive = isNativeInteractiveControl,
   mermaid = mermaidHelpers,
 ) {
-  const { isMermaidSvg, mermaidNodeFrom } = mermaid;
+  const { isMermaidSvg, mermaidNodeFrom, mermaidNodeElement } = mermaid;
   let annotationMode = true;
   let hovered = null;
   let selected = null;
@@ -258,6 +258,13 @@ export function createArtifactSdk(
     }
 
     return base;
+  }
+
+  // Hover and click must outline the exact element they annotate. Clicking inside
+  // a Mermaid diagram annotates the whole <g> node, so resolve a raw event target
+  // up to that node before highlighting; every other element annotates itself.
+  function annotationTargetEl(el) {
+    return mermaidNodeElement(el) || el;
   }
 
   // ---------------------------------------------------------------------------
@@ -956,14 +963,16 @@ export function createArtifactSdk(
     closeCard();
 
     const c = options.context || context(target);
+    let anchor = target;
     if (options.range) {
       highlightTextRange(options.range);
     } else {
-      selected = target;
+      anchor = annotationTargetEl(target);
+      selected = anchor;
       highlightElement(selected);
     }
 
-    const rect = options.range ? options.range.getBoundingClientRect() : target.getBoundingClientRect();
+    const rect = options.range ? options.range.getBoundingClientRect() : anchor.getBoundingClientRect();
     const card = document.createElement("div");
     card.className = "lavish-annotation-card";
     const nodeLabel = c.tag === "mermaid-node" ? c.target?.label || c.text || "" : "";
@@ -1062,9 +1071,10 @@ export function createArtifactSdk(
         isInteractiveControl(event.target)
       )
         return;
-      if (event.target === selected) return;
+      const target = annotationTargetEl(event.target);
+      if (target === selected) return;
       if (hovered && hovered !== selected) clearHighlight(hovered);
-      hovered = event.target;
+      hovered = target;
       highlightElement(hovered);
     },
     true,

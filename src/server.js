@@ -17,7 +17,7 @@ import {
   isNativeInteractiveControl,
   resolveVisibleSpillCandidates,
 } from "./artifact-sdk.js";
-import { isMermaidSvg, mermaidNodeFrom, readNodeLabel } from "./mermaid-node.js";
+import * as mermaidNode from "./mermaid-node.js";
 import {
   buildSelfContainedHtml,
   exportFileName,
@@ -879,6 +879,13 @@ export function createChromeHtml(session, { layoutGateEnabled = true } = {}) {
 }
 
 export function createSdkJs(key) {
+  // Serialize every helper exported by mermaid-node.js as a same-scope const so
+  // cross-helper calls (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the
+  // browser. Deriving this from the module's exports — rather than a hand-kept
+  // list — means adding a helper can never silently ReferenceError at runtime.
+  const mermaidHelperEntries = Object.entries(mermaidNode).filter(([, value]) => typeof value === "function");
+  const mermaidHelperDecls = mermaidHelperEntries.map(([name, fn]) => `const ${name}=${fn.toString()};`).join("\n");
+  const mermaidHelperKeys = mermaidHelperEntries.map(([name]) => name).join(", ");
   return `(() => {
 const key=${JSON.stringify(key)};
 void key;
@@ -888,10 +895,8 @@ const fragmentsSignificantlyOverlap=${fragmentsSignificantlyOverlap.toString()};
 const resolveVisibleSpillCandidates=${resolveVisibleSpillCandidates.toString()};
 const classifyHorizontalOverflow=${classifyHorizontalOverflow.toString()};
 const classifyVerticalOverflow=${classifyVerticalOverflow.toString()};
-const isMermaidSvg=${isMermaidSvg.toString()};
-const readNodeLabel=${readNodeLabel.toString()};
-const mermaidNodeFrom=${mermaidNodeFrom.toString()};
-const mermaidHelpers={ isMermaidSvg, readNodeLabel, mermaidNodeFrom };
+${mermaidHelperDecls}
+const mermaidHelpers={ ${mermaidHelperKeys} };
 (${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers);
 })();`;
 }
