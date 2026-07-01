@@ -31,10 +31,10 @@ HTML is the new markdown. Lavish is the new editor for your HTML artifacts.
 Agents are good at producing rich HTML artifacts, but the human-agent collaboration loop on such artifacts is lacking and falls back into screenshots and long responses for “tell me what to change.”
 That loses the thing HTML is best at: interactivity.
 
-Lavish Editor opens agent-generated HTML files in a local browser, lets you pinpoint elements or selected text and send feedback to the agent to address.
+Lavish Editor opens agent-generated HTML files in a local browser, lets you pinpoint elements, selected text, or Mermaid diagram nodes and send feedback to the agent to address.
 
 - **Local-first** - Review local HTML artifacts with a local CLI and no cloud dependency in the core feedback loop; hosted sharing through third-party ht-ml.app is explicit and opt-in.
-- **Human-AI collaboration** - Annotate elements, selected text ranges, and send messages to the agent without leaving Lavish Editor.
+- **Human-AI collaboration** - Annotate elements, selected text ranges, and Mermaid diagram nodes, and send messages to the agent without leaving Lavish Editor.
 - **Battery included** - Lavish Editor teaches your agent good visualization for common use cases such as product or technical plans, design explorations and more out of the box.
 
 Lavish Editor is an [AXI](https://axi.md), which means -
@@ -164,6 +164,7 @@ pnpm link
   Agent-initiated ends keep reopening normally, same as before.
   `lavish-axi poll`'s `ended` response and the `feedback` response for the final batch before an end both carry `next_step` guidance telling the agent to stop polling and deliver remaining updates in chat instead of reopening.
 - **Precise targets** - Text annotations include selected text plus range anchors, so agents are not limited to whole-element selectors.
+- **Mermaid diagrams** - Rendered Mermaid diagrams become pannable and zoomable while you explore (drag to pan, scroll to zoom) and freeze when you turn on annotation so a click lands on a single node. Clicking a node annotates the whole node and sends the agent its diagram id, node id, and rendered label instead of just a CSS selector. Lavish only enhances the live render, so the saved HTML still opens identically anywhere.
 - **Server cleanup** - The detached server stops after the last session ends when nothing is connected, or after `LAVISH_AXI_IDLE_TIMEOUT_MS` (default 30 minutes) with no browser or poll connections.
   Set `LAVISH_AXI_IDLE_TIMEOUT_MS=0` or `off` to disable idle self-shutdown.
 - **Local-first state** - Session state stays under `~/.lavish-axi/` by default, or `LAVISH_AXI_STATE_DIR` when set.
