@@ -1565,7 +1565,7 @@ test("a user-initiated end via the keyed route blocks a plain reopen but honors 
     });
     const { key, url: originalUrl } = await open.json();
 
-    // The browser chrome's "End session" / "Send & end session" both hit this keyed route.
+    // The browser chrome's plain "End session" hits this keyed route.
     await fetch(`${base}/api/${key}/end`, { method: "POST" });
 
     const blocked = await fetch(`${base}/api/sessions`, {
