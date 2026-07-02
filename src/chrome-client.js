@@ -328,21 +328,21 @@ async function submitQueued() {
     submitQueuedAgain = false;
     if (!succeeded) {
       endAfterSubmit = false;
-    } else if (shouldSubmitAgain && queued.length) {
+    } else if (!ended && shouldSubmitAgain && queued.length) {
       submitQueued();
-    } else if (endAfterSubmit) {
-      endAfterSubmit = false;
-      await endSession();
     }
   }
 }
 
 async function submitQueuedOnce() {
   const prompts = queued.slice();
+  const shouldEndSession = endAfterSubmit;
+  const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
+  if (shouldEndSession) body.endSession = true;
   const response = await fetch("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot }),
+    body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error("failed to submit queued prompts");
   for (const prompt of prompts) {
@@ -351,6 +351,11 @@ async function submitQueuedOnce() {
   }
   persistQueuedPrompts();
   render();
+  if (shouldEndSession) {
+    endAfterSubmit = false;
+    markSessionEnded();
+    return;
+  }
   if (agentPresence === "listening") setAgentPresence("working");
 }
 
@@ -474,6 +479,11 @@ async function endSession() {
   if (ended) return;
   const response = await fetch("/api/" + key + "/end", { method: "POST" });
   if (!response.ok) throw new Error("failed to end session");
+  markSessionEnded();
+}
+
+function markSessionEnded() {
+  if (ended) return;
   ended = true;
   closeMenus();
   annotationSwitch.disabled = true;

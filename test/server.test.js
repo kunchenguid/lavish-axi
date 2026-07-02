@@ -574,10 +574,10 @@ test("send and end submits queued prompts before ending the session", async () =
 
   assert.match(js, /let endAfterSubmit = false/);
   assert.match(js, /sendQueued\(true\)/);
-  assert.doesNotMatch(js, /const shouldEndAfterSubmit = endAfterSubmit/);
-  assert.doesNotMatch(js, /if \(shouldEndAfterSubmit\) await endSession\(\)/);
+  assert.match(js, /if \(shouldEndSession\) body\.endSession = true/);
+  assert.match(js, /if \(shouldEndSession\) \{\n {4}endAfterSubmit = false;\n {4}markSessionEnded\(\)/);
   assert.match(js, /if \(!succeeded\) \{\n {6}endAfterSubmit = false/);
-  assert.match(js, /\} else if \(endAfterSubmit\) \{\n {6}endAfterSubmit = false;\n {6}await endSession\(\)/);
+  assert.doesNotMatch(js, /await endSession\(\)/);
 });
 
 test("chrome only marks session ended after the end request succeeds", async () => {
@@ -585,7 +585,7 @@ test("chrome only marks session ended after the end request succeeds", async () 
 
   assert.match(js, /const response = await fetch\("\/api\/" \+ key \+ "\/end", \{ method: "POST" \}\)/);
   assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\)/);
-  assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\);\n {2}ended = true/);
+  assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\);\n {2}markSessionEnded\(\)/);
 });
 
 test("chrome shows a waiting banner when no agent has attached", async () => {
@@ -766,7 +766,7 @@ test("chrome submits prompts queued during an in-flight submit", async () => {
   assert.match(js, /let submitQueuedAgain = false/);
   assert.match(js, /submitQueuedAgain = true/);
   assert.match(js, /const shouldSubmitAgain = submitQueuedAgain/);
-  assert.match(js, /else if \(shouldSubmitAgain && queued\.length\) \{\n {6}submitQueued\(\)/);
+  assert.match(js, /else if \(!ended && shouldSubmitAgain && queued\.length\) \{\n {6}submitQueued\(\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
@@ -1672,6 +1672,55 @@ test("poll on an ended session reports who ended it", async () => {
     const body = await polled.json();
     assert.equal(body.status, "ended");
     assert.equal(body.ended_by, "user");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("send-and-end prompt submissions wake active polls with ended attribution", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "waiting");
+      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
+      assert.equal(await presence.next(), "listening");
+
+      const submitted = await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          domSnapshot: 'uid=1 h1 "Hello"',
+          endSession: true,
+          prompts: [{ prompt: "bye", tag: "message" }],
+        }),
+      });
+      assert.equal(submitted.status, 200);
+
+      const feedback = await poll;
+      assert.equal(feedback.status, "feedback");
+      assert.equal(feedback.session_ended, true);
+      assert.equal(feedback.ended_by, "user");
+      assert.equal(feedback.prompts.length, 1);
+
+      const ended = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      const endedBody = await ended.json();
+      assert.equal(endedBody.status, "ended");
+      assert.equal(endedBody.ended_by, "user");
+    } finally {
+      await presence.close();
+    }
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

@@ -310,12 +310,17 @@ export function createPollOutput({ file, response }) {
   if (response.status === "feedback") {
     const layoutWarnings = Array.isArray(response.layout_warnings) ? response.layout_warnings : [];
     const sessionEnded = Boolean(response.session_ended);
+    const endedBy = typeof response.ended_by === "string" ? response.ended_by : undefined;
     return {
-      session: { file, status: "feedback", ...(sessionEnded ? { session_ended: true } : {}) },
+      session: {
+        file,
+        status: "feedback",
+        ...(sessionEnded ? { session_ended: true, ...(endedBy ? { ended_by: endedBy } : {}) } : {}),
+      },
       dom_snapshot: response.dom_snapshot || "",
       prompts: response.prompts || [],
       ...(layoutWarnings.length > 0 ? { layout_warnings: layoutWarnings } : {}),
-      next_step: createFeedbackNextStep(file, layoutWarnings, sessionEnded),
+      next_step: createFeedbackNextStep(file, layoutWarnings, sessionEnded, endedBy),
     };
   }
   if (response.status === "ended") {
@@ -330,12 +335,15 @@ export function createPollOutput({ file, response }) {
   };
 }
 
-function createFeedbackNextStep(file, layoutWarnings, sessionEnded) {
+function createFeedbackNextStep(file, layoutWarnings, sessionEnded, endedBy) {
   const count = layoutWarnings.length;
   if (sessionEnded) {
     const layoutNote =
       count > 0 ? `${count} layout warning${count === 1 ? "" : "s"} arrived alongside this final feedback. ` : "";
-    return `${layoutNote}This was the last feedback before the user ended the session. Stop polling ${file} and do not reopen it - deliver any remaining updates directly in this conversation instead. Only run \`lavish-axi ${file} --reopen\` if the user explicitly asks for further review or something genuinely important needs their visual attention.`;
+    if (endedBy === "user") {
+      return `${layoutNote}This was the last feedback before the user ended the session. Stop polling ${file} and do not reopen it - deliver any remaining updates directly in this conversation instead. Only run \`lavish-axi ${file} --reopen\` if the user explicitly asks for further review or something genuinely important needs their visual attention.`;
+    }
+    return `${layoutNote}This was the last feedback before the Lavish Editor session ended. Stop polling ${file}. Deliver any remaining updates directly in this conversation, or run \`lavish-axi ${file}\` to open a fresh session if the user needs further visual review.`;
   }
   const layoutPrefix =
     count > 0 ? layoutWarningsPrefix(file, layoutWarnings) : `Apply the requested changes to ${file}. `;

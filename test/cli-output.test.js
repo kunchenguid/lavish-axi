@@ -803,10 +803,31 @@ test("the final feedback batch before a user end flags session_ended and skips t
   });
 
   assert.equal(output.session.session_ended, true);
+  assert.equal(output.session.ended_by, "user");
   assert.match(output.next_step, /last feedback before the user ended the session/);
   assert.match(output.next_step, /Stop polling \/tmp\/report\.html and do not reopen it/);
   assert.match(output.next_step, /lavish-axi \/tmp\/report\.html --reopen/);
   assert.doesNotMatch(output.next_step, /reload or re-open/);
+});
+
+test("the final feedback batch before an agent end preserves ended_by and allows plain reopen", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "bye" }],
+      session_ended: true,
+      ended_by: "agent",
+    },
+  });
+
+  assert.equal(output.session.session_ended, true);
+  assert.equal(output.session.ended_by, "agent");
+  assert.match(output.next_step, /last feedback before the Lavish Editor session ended/);
+  assert.match(output.next_step, /lavish-axi \/tmp\/report\.html`\s+to open a fresh session/);
+  assert.doesNotMatch(output.next_step, /--reopen/);
+  assert.doesNotMatch(output.next_step, /user ended this Lavish Editor session/);
 });
 
 test("persistent layout warnings after a failed fix attempt permit proceeding to the human", () => {

@@ -353,6 +353,34 @@ test("the final feedback batch before an end flags session_ended with who ended 
   }
 });
 
+test("queued prompts can atomically carry a browser end intent", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, {
+      domSnapshot: 'uid=1 h1 "Hello"',
+      endSession: true,
+      prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "Freeform message" }],
+    });
+
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(first.session_ended, true);
+    assert.equal(first.ended_by, "user");
+    assert.equal(first.prompts.length, 1);
+
+    const second = await store.takeFeedback(session.key);
+    assert.equal(second.status, "ended");
+    assert.equal(second.ended_by, "user");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("late layout warnings do not reopen ended sessions", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

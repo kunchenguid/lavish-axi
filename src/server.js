@@ -210,13 +210,16 @@ export async function serve({
 
   app.post("/api/:key/prompts", async (req, res, next) => {
     try {
+      const shouldEndSession = Boolean(req.body?.endSession || req.body?.end_session);
       const session = await store.queuePrompts(req.params.key, req.body || {});
       if (!session) {
         res.status(404).json({ error: "session not found" });
         return;
       }
-      events.emit("feedback", req.params.key);
+      if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      events.emit(shouldEndSession ? "ended" : "feedback", req.params.key);
       res.json({ status: "queued", pending_prompts: session.pending_prompts });
+      if (shouldEndSession) await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);
     }
