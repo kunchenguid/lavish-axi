@@ -23,6 +23,7 @@ import {
   createPlaybookOutput,
   createServerSpawnOptions,
   createShareOutput,
+  createUserEndedOpenOutput,
   fetchJson,
   getCommandHelp,
   normalizeArgv,
@@ -369,6 +370,22 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not pass --timeout-ms/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
+  assert.match(output.next_step, /If the user ends the session, stop polling and do not reopen it/);
+  assert.match(output.next_step, /--reopen/);
+});
+
+test("a user-ended open refuses with a status agents can branch on, not a URL to open", () => {
+  const output = createUserEndedOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://localhost:4387/session/abc123",
+  });
+
+  assert.equal(output.session.file, "/tmp/artifact.html");
+  assert.equal(output.session.status, "user-ended");
+  assert.match(output.next_step, /user explicitly ended this Lavish Editor session from the browser/);
+  assert.match(output.next_step, /did not reopen it/);
+  assert.match(output.next_step, /Do not reopen unless the user asks for further review/);
+  assert.match(output.next_step, /lavish-axi \/tmp\/artifact\.html --reopen/);
 });
 
 test("export output reports the written file and reassures it needs no server", () => {
@@ -743,6 +760,53 @@ test("layout warning feedback tells agents to fix layout before involving the hu
   assert.match(output.next_step, /1 layout warning detected/);
   assert.match(output.next_step, /fix horizontal overflow/);
   assert.match(output.next_step, /before involving the human/);
+  assert.doesNotMatch(output.next_step, /reload or re-open/);
+});
+
+test("a poll reporting the session ended by the user tells the agent to stop and not reopen", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: { status: "ended", ended_by: "user" },
+  });
+
+  assert.equal(output.session.status, "ended");
+  assert.equal(output.session.ended_by, "user");
+  assert.match(output.next_step, /user ended this Lavish Editor session/);
+  assert.match(output.next_step, /Stop polling/);
+  assert.match(output.next_step, /do not run `lavish-axi \/tmp\/report\.html` to reopen it/);
+  assert.match(output.next_step, /deliver any remaining updates directly in this conversation/i);
+  assert.match(output.next_step, /lavish-axi \/tmp\/report\.html --reopen/);
+});
+
+test("a poll reporting an agent-ended session allows a plain reopen if still needed", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: { status: "ended", ended_by: "agent" },
+  });
+
+  assert.equal(output.session.ended_by, "agent");
+  assert.match(output.next_step, /Stop polling/);
+  assert.match(output.next_step, /lavish-axi \/tmp\/report\.html`\s+to open a fresh session/);
+  assert.doesNotMatch(output.next_step, /--reopen/);
+});
+
+test("the final feedback batch before a user end flags session_ended and skips the reopen instruction", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "bye" }],
+      session_ended: true,
+      ended_by: "user",
+    },
+  });
+
+  assert.equal(output.session.session_ended, true);
+  assert.match(output.next_step, /last feedback before the user ended the session/);
+  assert.match(output.next_step, /Stop polling \/tmp\/report\.html and do not reopen it/);
+  assert.match(output.next_step, /lavish-axi \/tmp\/report\.html --reopen/);
+  assert.doesNotMatch(output.next_step, /reload or re-open/);
 });
 
 test("persistent layout warnings after a failed fix attempt permit proceeding to the human", () => {
@@ -1244,6 +1308,7 @@ test("open can resume a session without opening another browser window", () => {
   assert.equal(shouldOpenBrowser(["artifact.html"], {}), true);
   assert.match(getCommandHelp("open"), /--no-open/);
   assert.match(getCommandHelp("open"), /--no-gate/);
+  assert.match(getCommandHelp("open"), /--reopen/);
   assert.match(getCommandHelp("playbook"), /diagram/);
   assert.match(getCommandHelp("playbook"), /code/);
   assert.match(getCommandHelp("playbook"), /input/);

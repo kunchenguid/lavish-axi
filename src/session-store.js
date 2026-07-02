@@ -114,14 +114,18 @@ export class SessionStore {
     // agent, so deliver them before reporting the ended state; the next poll then sees ended.
     const prompts = session.prompts || [];
     const layoutWarnings = session.layout_warnings || [];
+    const alreadyEnded = session.status === "ended";
     if (prompts.length === 0 && layoutWarnings.length === 0) {
-      return session.status === "ended" ? { status: "ended" } : { status: "waiting" };
+      return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
     }
     const result = {
       status: "feedback",
       dom_snapshot: session.dom_snapshot || "",
       prompts,
       ...(layoutWarnings.length > 0 ? { layout_warnings: layoutWarnings } : {}),
+      // This is the final delivery before the session shows as ended - flag it so the agent
+      // knows not to expect (or force) a reopened browser afterward.
+      ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
     };
     session.prompts = [];
     session.layout_warnings = [];
@@ -132,7 +136,7 @@ export class SessionStore {
       for (const warning of layoutWarnings) deliveredKeys.add(layoutWarningKey(warning));
       session.delivered_layout_warning_keys = [...deliveredKeys].slice(-200);
     }
-    if (session.status !== "ended") {
+    if (!alreadyEnded) {
       session.status = "open";
     }
     session.updated_at = new Date().toISOString();
@@ -140,13 +144,17 @@ export class SessionStore {
     return result;
   }
 
-  async endSession(key) {
+  // `endedBy` distinguishes a human ending review from the browser chrome ("user") from an
+  // agent explicitly closing the loop via `lavish-axi end` ("agent"). Only a user-initiated end
+  // blocks a plain reopen - see `SessionStore` callers in server.js.
+  async endSession(key, endedBy = "agent") {
     const state = await this.readState();
     const session = state.sessions[key];
     if (!session) {
       return null;
     }
     session.status = "ended";
+    session.ended_by = endedBy === "user" ? "user" : "agent";
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
     return session;

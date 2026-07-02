@@ -108,9 +108,20 @@ export async function serve({
     try {
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
+      const reopen = Boolean(req.body.reopen);
+      const existing = await store.findByKey(key);
+      // A user-initiated end (browser "End session"/"Send & end session") means the human
+      // deliberately closed the review surface. Silently reopening it on the next
+      // `lavish-axi <file>` is the exact behavior this route exists to prevent - require an
+      // explicit `reopen` opt-in instead of reviving it automatically. Agent-initiated ends
+      // (`lavish-axi end`) keep reviving on the next open, same as before this change.
+      if (existing?.status === "ended" && existing.ended_by === "user" && !reopen) {
+        logEvent?.(`session open blocked (user-ended) key=${key} file=${file}`);
+        res.json({ key, file, url: existing.url, status: "user-ended" });
+        return;
+      }
       const sessionUrl = `http://${hostForUrl(linkHostName)}:${publicPort}/session/${key}`;
       const url = shouldDisableLayoutGateOpen(req.body || {}) ? appendNoGateParam(sessionUrl) : sessionUrl;
-      const existing = await store.findByKey(key);
       const session = await store.upsertSession(file, sessionUrl);
       if (existing?.status === "ended") {
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
@@ -229,7 +240,7 @@ export async function serve({
 
   app.post("/api/:key/end", async (req, res, next) => {
     try {
-      await store.endSession(req.params.key);
+      await store.endSession(req.params.key, "user");
       clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       events.emit("ended", req.params.key);
       res.json({ status: "ended" });
@@ -330,7 +341,7 @@ export async function serve({
     try {
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
-      await store.endSession(key);
+      await store.endSession(key, "agent");
       clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       events.emit("ended", key);
       res.json({ status: "ended" });
