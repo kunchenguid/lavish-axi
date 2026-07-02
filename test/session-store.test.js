@@ -325,6 +325,27 @@ test("ending a session as the user is recorded distinctly from an agent end", as
   }
 });
 
+test("agent cleanup cannot overwrite an existing user end", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.endSession(session.key, "user");
+    const ended = await store.endSession(session.key, "agent");
+
+    assert.equal(ended.ended_by, "user");
+    const result = await store.takeFeedback(session.key);
+    assert.equal(result.status, "ended");
+    assert.equal(result.ended_by, "user");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("the final feedback batch before an end flags session_ended with who ended it", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

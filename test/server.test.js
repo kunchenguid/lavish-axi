@@ -1599,6 +1599,55 @@ test("a user-initiated end via the keyed route blocks a plain reopen but honors 
   }
 });
 
+test("an agent cleanup after a user end still blocks a plain reopen", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  const keepAlive = path.join(dir, "keep-alive.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  await writeFile(keepAlive, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: keepAlive }),
+    });
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key, url: originalUrl } = await open.json();
+
+    await fetch(`${base}/api/${key}/end`, { method: "POST" });
+    await fetch(`${base}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+
+    const blocked = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const blockedBody = await blocked.json();
+    assert.equal(blocked.status, 200);
+    assert.equal(blockedBody.status, "user-ended");
+    assert.equal(blockedBody.key, key);
+    assert.equal(blockedBody.url, originalUrl);
+
+    const ended = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const endedBody = await ended.json();
+    assert.equal(endedBody.status, "ended");
+    assert.equal(endedBody.ended_by, "user");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("an agent-initiated end via the file-based route reopens normally without the reopen flag", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

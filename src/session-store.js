@@ -156,8 +156,10 @@ export class SessionStore {
     if (!session) {
       return null;
     }
+    const existingEndedBy = session.status === "ended" ? session.ended_by : undefined;
+    const nextEndedBy = endedBy === "user" || existingEndedBy === "user" ? "user" : "agent";
     session.status = "ended";
-    session.ended_by = endedBy === "user" ? "user" : "agent";
+    session.ended_by = nextEndedBy;
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
     return session;
