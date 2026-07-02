@@ -15,6 +15,7 @@ import {
   deriveLavishQueueKey,
   fragmentsSignificantlyOverlap,
   isNativeInteractiveControl,
+  resolveVisibleSpillCandidates,
 } from "./artifact-sdk.js";
 import {
   buildSelfContainedHtml,
@@ -869,6 +870,7 @@ void key;
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const fragmentsSignificantlyOverlap=${fragmentsSignificantlyOverlap.toString()};
+const resolveVisibleSpillCandidates=${resolveVisibleSpillCandidates.toString()};
 const classifyHorizontalOverflow=${classifyHorizontalOverflow.toString()};
 const classifyVerticalOverflow=${classifyVerticalOverflow.toString()};
 (${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl);

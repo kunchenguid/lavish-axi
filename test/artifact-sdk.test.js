@@ -7,6 +7,7 @@ import {
   deriveLavishQueueKey,
   fragmentsSignificantlyOverlap,
   isNativeInteractiveControl,
+  resolveVisibleSpillCandidates,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -29,6 +30,14 @@ function node(tag, attrs = {}, children = []) {
     },
     matches(selector) {
       return matchesSelectorList(this, selector);
+    },
+    contains(other) {
+      let current = other;
+      while (current) {
+        if (current === this) return true;
+        current = current.parentElement;
+      }
+      return false;
     },
   };
   if (attrs.id) el.id = attrs.id;
@@ -232,6 +241,36 @@ test("classifyVerticalOverflow ignores boxes that simply grow to fit their conte
   });
 
   assert.equal(finding, null);
+});
+
+test("resolveVisibleSpillCandidates keeps the deepest candidate for one bubbled spill", () => {
+  const badge = node("span");
+  const row = node("div", {}, [badge]);
+  const section = node("section", {}, [row]);
+  const candidates = [
+    { el: section, selector: "section", overflowPx: 16, spillBottom: 140 },
+    { el: row, selector: ".row", overflowPx: 16, spillBottom: 140 },
+    { el: badge, selector: ".badge", overflowPx: 16, spillBottom: 140 },
+  ];
+
+  assert.deepEqual(
+    resolveVisibleSpillCandidates(candidates).map((candidate) => candidate.selector),
+    [".badge"],
+  );
+});
+
+test("resolveVisibleSpillCandidates preserves ancestors with independent overflow", () => {
+  const badge = node("span");
+  const section = node("section", {}, [badge]);
+  const candidates = [
+    { el: section, selector: "section", overflowPx: 48, spillBottom: 220 },
+    { el: badge, selector: ".badge", overflowPx: 16, spillBottom: 140 },
+  ];
+
+  assert.deepEqual(
+    resolveVisibleSpillCandidates(candidates).map((candidate) => candidate.selector),
+    ["section", ".badge"],
+  );
 });
 
 test("classifyHorizontalOverflow still distinguishes clipped text from generic scroll overflow", () => {

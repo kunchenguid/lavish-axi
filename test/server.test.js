@@ -680,11 +680,9 @@ test("artifact SDK audits layout after fonts and ResizeObserver settle", () => {
 test("artifact SDK dedups cascading visible-overflow spills to the innermost element", () => {
   const js = createSdkJs("abc");
 
-  // A fixed-size box's visible overflow bubbles into every unconstrained block ancestor's own
-  // scrollHeight, so the audit must defer those "spill" findings and only report the deepest
-  // element responsible instead of flagging every ancestor in the chain.
   assert.match(js, /function resolveSpillCandidates/);
-  assert.match(js, /explainedByDescendant/);
+  assert.match(js, /function resolveVisibleSpillCandidates/);
+  assert.match(js, /spillBottom/);
   assert.match(js, /candidate\.el\.contains\(other\.el\)/);
 });
 

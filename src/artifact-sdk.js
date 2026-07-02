@@ -165,6 +165,30 @@ export function classifyVerticalOverflow({ scrollHeight, clientHeight, overflowY
   return { overflowPx, kind: "clipped-text", clips };
 }
 
+export function resolveVisibleSpillCandidates(spillCandidates, { epsilon = 1 } = {}) {
+  function spillBottomEdge(candidate) {
+    const explicit = Number(candidate.spillBottom);
+    if (Number.isFinite(explicit)) return explicit;
+    const rectBottom = Number(candidate.rect?.bottom);
+    const overflowPx = Number(candidate.overflowPx);
+    if (!Number.isFinite(rectBottom) || !Number.isFinite(overflowPx)) return null;
+    return rectBottom + overflowPx;
+  }
+
+  function sameSpillEdge(candidate, other) {
+    const candidateBottom = spillBottomEdge(candidate);
+    const otherBottom = spillBottomEdge(other);
+    return candidateBottom !== null && otherBottom !== null && Math.abs(candidateBottom - otherBottom) <= epsilon;
+  }
+
+  return spillCandidates.filter(
+    (candidate) =>
+      !spillCandidates.some(
+        (other) => other.el !== candidate.el && candidate.el.contains(other.el) && sameSpillEdge(candidate, other),
+      ),
+  );
+}
+
 export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNativeInteractiveControl) {
   let annotationMode = true;
   let hovered = null;
@@ -528,10 +552,13 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
           severity: "error",
         });
       } else {
-        // A visible-overflow spill bubbles into every unconstrained block ancestor's own
-        // scrollHeight too (section > .badge-row > .badge all measure it), so defer these
-        // until the full walk finishes and only report the innermost element responsible.
-        spillCandidates.push({ el, selector: selector(el), overflowPx: vertical.overflowPx, viewportWidth });
+        spillCandidates.push({
+          el,
+          selector: selector(el),
+          overflowPx: vertical.overflowPx,
+          viewportWidth,
+          spillBottom: rect.bottom + vertical.overflowPx,
+        });
       }
     }
 
@@ -554,15 +581,8 @@ export function createArtifactSdk(deriveQueueKey, isNativeInteractive = isNative
     }
   }
 
-  // Keep only the innermost spill candidate in each ancestor chain - an ancestor's finding is
-  // fully explained by a descendant's, so reporting both is redundant noise pointing the fix at
-  // the wrong element.
   function resolveSpillCandidates(spillCandidates, findings, seen) {
-    for (const candidate of spillCandidates) {
-      const explainedByDescendant = spillCandidates.some(
-        (other) => other.el !== candidate.el && candidate.el.contains(other.el),
-      );
-      if (explainedByDescendant) continue;
+    for (const candidate of resolveVisibleSpillCandidates(spillCandidates, { epsilon: layoutAuditOverflowEpsilon })) {
       pushLayoutFinding(findings, seen, {
         selector: candidate.selector,
         kind: "clipped-text",
