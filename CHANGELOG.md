@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.34](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.33...lavish-axi-v0.1.34) (2026-07-02)
+
+
+### Bug Fixes
+
+* improve layout audit accuracy and warning persistence ([#129](https://github.com/kunchenguid/lavish-axi/issues/129)) ([6d91f4b](https://github.com/kunchenguid/lavish-axi/commit/6d91f4b5f4fe6c198b7599a71041bf25a9f295b2))
+
 ## [0.1.33](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.32...lavish-axi-v0.1.33) (2026-07-01)
 
 
