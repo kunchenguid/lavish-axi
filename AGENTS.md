@@ -44,7 +44,8 @@ Port defaults to 4387 (`LAVISH_AXI_PORT`).
 The detached server does not run forever.
 It shuts itself down once no browser chrome (SSE) and no agent poll have been connected for `LAVISH_AXI_IDLE_TIMEOUT_MS` (default 30 minutes; set `0`/`off` to disable), and immediately when the last open session ends while nothing is connected (a still-attached browser or poll defers cleanup to the idle timer instead).
 `lavish-axi stop` (`stopCommand`) explicitly `POST /shutdown`s the server on the default port, accepts `--port`, and reports `stopped`, `stopping`, `not-running`, or `not-lavish`.
-Because cleanup keys off live connections rather than session status, the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json`.
+Because cleanup keys off live connections rather than session status, the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json` when the session is still resumable.
+A session the user ended from the browser is not resumed by a plain open; `/api/sessions` returns `status: "user-ended"` unless the request opts in with `reopen: true`.
 
 State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`). All sessions across all projects share this one file, keyed by a sha256 prefix of the canonicalized file path - so the CLI never needs opaque session IDs; the canonical HTML path _is_ the identity (`src/session-store.js:sessionKey`).
 
@@ -69,11 +70,11 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
    The chrome POSTs those findings to `/api/:key/layout-warnings`; changed non-empty warnings are stored in `SessionStore`, mark the session as `feedback`, and emit the same `feedback` event as human prompts so a fresh warning wakes an active poll.
    `takeFeedback` delivers layout warnings alongside human prompts, remembers delivered `kind:selector` keys for repeat detection, clears current warnings after delivery, and leaves human feedback additive and unchanged.
 6. User actions in the iframe `postMessage` to the chrome (queue prompts, request snapshot, end session).
-   The chrome stores queued prompts in tab `sessionStorage`, replaces unsent prompts that share the SDK-internal `_lavishQueueKey`, strips that internal field before POSTing collected prompts to `/api/:key/prompts`, removes sent prompts only after a successful response, queues them in the session store, and emits a `feedback` event.
+   The chrome stores queued prompts in tab `sessionStorage`, replaces unsent prompts that share the SDK-internal `_lavishQueueKey`, strips that internal field before POSTing collected prompts to `/api/:key/prompts`, removes sent prompts only after a successful response, queues them in the session store, and emits a `feedback` event for normal sends or an `ended` event when the body includes `endSession: true`.
    Text selection prompts use `tag: "text"` and preserve a structured `target` with `type: "text-range"`, selected text, `commonAncestorSelector`, and start/end boundary anchors.
    In the chrome composer, Enter sends queued prompts (equivalent to clicking "Send to Agent"); Shift+Enter inserts a newline.
    Sending an empty composer stays enabled, shows an inline hint, and focuses the composer instead of disabling the button.
-   The split-button menu also offers "Send & end session", which submits queued prompts first and ends only after the POST succeeds.
+   The split-button menu also offers "Send & end session", which submits queued prompts with an `endSession` flag and marks the chrome ended only after that POST succeeds.
    The annotation card textarea follows the same convention: Enter queues the annotation (equivalent to clicking "Queue"); Shift+Enter inserts a newline; Ctrl+Enter (Cmd+Enter on macOS) queues the annotation and immediately sends all queued prompts, and the card shows a small hint for these shortcuts.
 7. The chrome top bar exposes annotation mode as an `Annotate` switch and keeps editing actions in an overflow menu: the home-shortened artifact path with a copy affordance, reload artifact, copy DOM snapshot, export standalone HTML, publish link, and end session.
    Copy path still copies the absolute canonical path, copy DOM snapshot requests a fresh iframe snapshot before writing to the clipboard, export downloads the local-inlined bundle, and publish opens the ht-ml.app share dialog with a linked service name and an up-front third-party disclosure.

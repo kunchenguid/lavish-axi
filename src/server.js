@@ -52,9 +52,9 @@ const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 
 // A detached server should not live forever. When no browser chrome (SSE) and no agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
-// `lavish-axi <file>` invocation re-spawns a fresh server and adopts the session from
-// state.json. Set LAVISH_AXI_IDLE_TIMEOUT_MS to 0/off to disable, or to a custom millisecond
-// budget.
+// `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
+// state.json. Browser-ended sessions still require the explicit --reopen opt-in. Set
+// LAVISH_AXI_IDLE_TIMEOUT_MS to 0/off to disable, or to a custom millisecond budget.
 export function resolveIdleTimeoutMs(env = process.env) {
   const raw = env.LAVISH_AXI_IDLE_TIMEOUT_MS?.trim();
   if (raw === undefined || raw === "") return DEFAULT_IDLE_TIMEOUT_MS;

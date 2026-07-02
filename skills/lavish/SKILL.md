@@ -37,7 +37,7 @@ Use lavish-axi when the user asks for a visual artifact, HTML explainer, interac
 4. If poll returns `layout_warnings`, follow the returned `next_step`: fix and re-check fresh error-severity findings, but proceed with a note instead of looping when every current warning is persistent or low-severity.
 5. Apply human feedback, then poll again with `--agent-reply "<message>"` to reply in the browser and keep the loop going.
 6. Run `npx -y lavish-axi end <html-file>` when the review is finished.
-7. If the user ends the session from the browser instead, `lavish-axi <html-file>` refuses to reopen it and says so - only pass `--reopen` when the user asks for further review or something genuinely important needs their visual attention. Otherwise deliver remaining updates directly in this conversation.
+7. If the user ends the session from the browser instead, `npx -y lavish-axi <html-file>` refuses to reopen it and says so - only pass `--reopen` when the user asks for further review or something genuinely important needs their visual attention. Otherwise deliver remaining updates directly in this conversation.
 
 ## Visual guidance
 
