@@ -75,17 +75,25 @@ export class SessionStore {
     if (!session) {
       return null;
     }
-    const deliveredKeys = new Set(session.delivered_layout_warning_keys || []);
+    const deliveredWarningKeys = session.delivered_layout_warning_keys || [];
+    const deliveredKeys = new Set(deliveredWarningKeys);
     const layoutWarnings = normalizeLayoutWarnings(
       payload.layout_warnings || payload.layoutWarnings || [],
       deliveredKeys,
     );
+    const activeWarningKeys = new Set(layoutWarnings.map(layoutWarningKey));
+    const nextDeliveredWarningKeys = deliveredWarningKeys.filter((key) => activeWarningKeys.has(key)).slice(-200);
+    const deliveredKeysChanged =
+      nextDeliveredWarningKeys.length !== deliveredWarningKeys.length ||
+      nextDeliveredWarningKeys.some((key, index) => key !== deliveredWarningKeys[index]);
     const previousSignature = JSON.stringify(session.layout_warnings || []);
     const nextSignature = JSON.stringify(layoutWarnings);
-    if (previousSignature === nextSignature) {
+    const warningsChanged = previousSignature !== nextSignature;
+    if (!warningsChanged && !deliveredKeysChanged) {
       return { session, changed: false, hasWarnings: layoutWarnings.length > 0 };
     }
     session.layout_warnings = layoutWarnings;
+    session.delivered_layout_warning_keys = nextDeliveredWarningKeys;
     if (layoutWarnings.length > 0 && session.status !== "ended") {
       session.status = "feedback";
     } else if ((session.prompts || []).length === 0 && session.status !== "ended") {
@@ -93,7 +101,7 @@ export class SessionStore {
     }
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
-    return { session, changed: true, hasWarnings: layoutWarnings.length > 0 };
+    return { session, changed: warningsChanged, hasWarnings: layoutWarnings.length > 0 };
   }
 
   async takeFeedback(key) {

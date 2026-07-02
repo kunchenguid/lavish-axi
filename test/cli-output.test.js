@@ -827,6 +827,39 @@ test("a mix of fresh error-severity and persistent warnings still mandates a fix
   assert.match(output.next_step, /before involving the human/);
 });
 
+test("a mix of persistent errors and fresh low-severity warnings permits proceeding", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [],
+      layout_warnings: [
+        {
+          selector: ".badge",
+          kind: "clipped-text",
+          overflowPx: 12,
+          viewportWidth: 720,
+          severity: "error",
+          persistent: true,
+        },
+        {
+          selector: "main > header > code",
+          kind: "overlapping-text",
+          overflowPx: 0,
+          viewportWidth: 720,
+          severity: "warning",
+          persistent: false,
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /no fresh error-severity findings/);
+  assert.match(output.next_step, /fine to proceed to the human with a note/);
+  assert.doesNotMatch(output.next_step, /fix horizontal overflow/);
+});
+
 test("poll wait messages tell watching agents the silence is normal", () => {
   const banner = pollWaitBannerText("/tmp/report.html");
   assert.match(banner, /\[lavish-axi\]/);

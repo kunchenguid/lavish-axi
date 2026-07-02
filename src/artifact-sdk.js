@@ -113,22 +113,22 @@ export function isNativeInteractiveControl(el) {
   );
 }
 
-function rectAreaOf(rect) {
-  return Math.max(0, rect.width) * Math.max(0, rect.height);
-}
-
-function intersectionAreaOf(a, b) {
-  const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
-  const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
-  return width * height;
-}
-
 // Wrapped inline text (a bold phrase or code token that breaks across a line) reports one
 // getBoundingClientRect() spanning both lines, so a bounding-box intersection test "overlaps"
 // every element sitting in the reflow gap between the fragments even though nothing is actually
 // drawn there. Comparing real per-line fragments (getClientRects()) instead only flags overlap
 // where rendered pixels of unrelated elements actually collide.
 export function fragmentsSignificantlyOverlap(fragmentsA, fragmentsB, { minAreaRatio = 0.25, minAreaPx = 24 } = {}) {
+  function rectAreaOf(rect) {
+    return Math.max(0, rect.width) * Math.max(0, rect.height);
+  }
+
+  function intersectionAreaOf(a, b) {
+    const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    return width * height;
+  }
+
   for (const a of fragmentsA) {
     const threshold = Math.min(rectAreaOf(a) * minAreaRatio, minAreaPx);
     for (const b of fragmentsB) {

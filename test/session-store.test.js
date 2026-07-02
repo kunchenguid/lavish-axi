@@ -145,6 +145,36 @@ test("a warning re-reported after the agent already received it is marked persis
   }
 });
 
+test("a warning is fresh again after a clean audit resolves it", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const warning = {
+      selector: "main > header > strong",
+      kind: "overlapping-text",
+      overflowPx: 0,
+      viewportWidth: 720,
+      severity: "warning",
+    };
+
+    await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
+    await store.takeFeedback(session.key);
+    const clean = await store.recordLayoutWarnings(session.key, { layout_warnings: [] });
+    await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
+
+    const result = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(clean.hasWarnings, false);
+    assert.equal(result.layout_warnings[0].persistent, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("persistence memory survives reopening the same artifact", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

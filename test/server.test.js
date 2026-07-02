@@ -694,6 +694,8 @@ test("artifact SDK uses per-fragment rects, not the bounding box, for overlap de
   assert.match(js, /function elementLineFragments/);
   assert.match(js, /el\.getClientRects\(\)/);
   assert.match(js, /fragmentsSignificantlyOverlap/);
+  assert.match(js, /function rectAreaOf\(rect\)/);
+  assert.match(js, /function intersectionAreaOf\(a, b\)/);
 });
 
 test("artifact SDK reports its scroll position and restores it on request", () => {

@@ -319,12 +319,16 @@ function layoutWarningsPrefix(file, layoutWarnings) {
   const plural = count === 1 ? "" : "s";
   const allPersistent = layoutWarnings.every((warning) => warning.persistent);
   const allLowSeverity = layoutWarnings.every((warning) => warning.severity !== "error");
+  const allRepeatOrLowSeverity = layoutWarnings.every((warning) => warning.persistent || warning.severity !== "error");
 
   if (allPersistent) {
     return `${count} layout warning${plural} detected, and every one was already reported in a prior poll and is still unresolved - if you already attempted a fix, it is fine to proceed to the human with a short note about what remains instead of looping further edits and reloads. `;
   }
   if (allLowSeverity) {
     return `${count} low-severity layout warning${plural} detected (no error-severity findings) - fix them if the cause is obvious in ${file}, otherwise it is fine to proceed to the human with a note instead of iterating further. `;
+  }
+  if (allRepeatOrLowSeverity) {
+    return `${count} layout warning${plural} detected, with no fresh error-severity findings - fix any obvious low-severity issue in ${file}, otherwise it is fine to proceed to the human with a note instead of iterating further. `;
   }
   return `${count} layout warning${plural} detected - fix horizontal overflow, clipped text, or overlapping unreadable content in ${file}, then reload or re-open the artifact and re-check before involving the human. `;
 }
