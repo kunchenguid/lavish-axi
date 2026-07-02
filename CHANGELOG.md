@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.35](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.34...lavish-axi-v0.1.35) (2026-07-02)
+
+
+### Bug Fixes
+
+* respect user-ended Lavish sessions ([#132](https://github.com/kunchenguid/lavish-axi/issues/132)) ([8ca248b](https://github.com/kunchenguid/lavish-axi/commit/8ca248bc4334316460566fccdd1ef33353b74626))
+
 ## [0.1.34](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.33...lavish-axi-v0.1.34) (2026-07-02)
 
 
