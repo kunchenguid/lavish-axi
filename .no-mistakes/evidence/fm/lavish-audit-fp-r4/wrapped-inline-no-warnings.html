@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wrapped inline audit repro</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #f6f1e8;
+      color: #1c2430;
+      font: 17px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(460px, calc(100vw - 48px));
+      padding: 28px;
+      border: 1px solid #d8c8ad;
+      background: #fffaf0;
+      box-shadow: 0 18px 60px rgb(62 45 17 / 12%);
+    }
+    h1 { margin: 0 0 14px; font-size: 26px; line-height: 1.1; }
+    p { margin: 0; }
+    strong, code {
+      color: #673c12;
+      background: #f1dfbd;
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .94em; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Healthy Wrapped Inline Text</h1>
+    <p>
+      This paragraph intentionally contains a
+      <strong>long bold phrase that wraps naturally across a line</strong>
+      beside a <code>short-code-token</code>.
+      The wrapped inline fragments are healthy text flow and should not report overlapping-text.
+    </p>
+  </main>
+</body>
+</html>

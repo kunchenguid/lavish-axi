@@ -1,0 +1,8 @@
+session:
+  file: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWG1H50KRGGZRFRZAYNKMH5A/.no-mistakes/evidence/fm/lavish-audit-fp-r4/visible-spill-one-warning.html
+  status: feedback
+dom_snapshot: ""
+prompts[0]:
+layout_warnings[1]{selector,kind,overflowPx,viewportWidth,severity,persistent}:
+  span#spilling-badge,clipped-text,14,920,error,true
+next_step: "1 layout warning detected, and every one was already reported in a prior poll and is still unresolved - if you already attempted a fix, it is fine to proceed to the human with a short note about what remains instead of looping further edits and reloads. Do not respond to the user just yet. Now you must run `lavish-axi poll /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWG1H50KRGGZRFRZAYNKMH5A/.no-mistakes/evidence/fm/lavish-audit-fp-r4/visible-spill-one-warning.html --agent-reply \"<message for the user>\"` without --timeout-ms unless the user ended the session. The poll waits silently until the user sends more feedback, ends the session, or reports fresh layout_warnings - never kill it. If your harness limits how long a foreground command may run, run the poll as a background task; if it still gets killed or times out, just re-run it - queued feedback is never lost."

@@ -1,0 +1,4 @@
+session:
+  file: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWG1H50KRGGZRFRZAYNKMH5A/.no-mistakes/evidence/fm/lavish-audit-fp-r4/wrapped-inline-no-warnings.html
+  status: waiting
+next_step: "No user feedback arrived before the optional timeout. Run `lavish-axi poll /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWG1H50KRGGZRFRZAYNKMH5A/.no-mistakes/evidence/fm/lavish-audit-fp-r4/wrapped-inline-no-warnings.html` without --timeout-ms to wait indefinitely - queued feedback is never lost, so re-running the poll is always safe."

@@ -1,0 +1,17 @@
+{
+  "port": 55649,
+  "wrappedHtml": "/Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWG1H50KRGGZRFRZAYNKMH5A/.no-mistakes/evidence/fm/lavish-audit-fp-r4/wrapped-inline-no-warnings.html",
+  "spillHtml": "/Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWG1H50KRGGZRFRZAYNKMH5A/.no-mistakes/evidence/fm/lavish-audit-fp-r4/visible-spill-one-warning.html",
+  "checks": [
+    "wrapped inline page loaded in Chrome and CLI poll returned waiting with no layout_warnings",
+    "fixed-height visible-overflow badge produced one fresh clipped-text warning on the badge",
+    "the same badge warning became persistent on repeat poll and next_step stopped mandating a loop"
+  ],
+  "artifacts": [
+    "wrapped-inline-no-warnings.png",
+    "wrapped-inline-poll.txt",
+    "visible-spill-one-warning.png",
+    "visible-spill-first-poll.txt",
+    "visible-spill-repeat-poll.txt"
+  ]
+}

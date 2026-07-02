@@ -66,7 +66,7 @@ ${home.help[home.help.length - 1]}
 3. Run \`npx -y lavish-axi poll <html-file>\` to long-poll for the user's annotations, queued prompts, and browser-reported \`layout_warnings\`.
    The poll stays silent until the user acts or the real browser reports fresh layout warnings - leave it running, never kill it.
    If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.
-4. If poll returns \`layout_warnings\`, fix overflow, clipped text, or overlapping unreadable content and re-check before involving the human.
+4. If poll returns \`layout_warnings\`, follow the returned \`next_step\`: fix and re-check fresh error-severity findings, but proceed with a note instead of looping when every current warning is persistent or low-severity.
 5. Apply human feedback, then poll again with \`--agent-reply "<message>"\` to reply in the browser and keep the loop going.
 6. Run \`npx -y lavish-axi end <html-file>\` when the review is finished.
 
