@@ -56,6 +56,7 @@ export class SessionStore {
     }
     const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
     const shouldEndSession = Boolean(payload.endSession || payload.end_session);
+    const alreadyEnded = session.status === "ended";
     const normalizedPrompts = prompts.map(normalizePrompt);
     const userMessages = normalizedPrompts
       .filter((prompt) => prompt.tag === "message" && prompt.prompt)
@@ -64,7 +65,7 @@ export class SessionStore {
     session.chat = [...(session.chat || []), ...userMessages];
     session.pending_prompts = session.prompts.length;
     session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-    session.status = shouldEndSession ? "ended" : "feedback";
+    session.status = shouldEndSession || alreadyEnded ? "ended" : "feedback";
     if (shouldEndSession) session.ended_by = "user";
     session.updated_at = new Date().toISOString();
     await this.writeState(state);

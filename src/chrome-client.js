@@ -328,8 +328,13 @@ async function submitQueued() {
     submitQueuedAgain = false;
     if (!succeeded) {
       endAfterSubmit = false;
-    } else if (!ended && shouldSubmitAgain && queued.length) {
-      submitQueued();
+    } else if (!ended && shouldSubmitAgain) {
+      if (queued.length) {
+        submitQueued();
+      } else if (endAfterSubmit) {
+        endAfterSubmit = false;
+        endSession();
+      }
     }
   }
 }

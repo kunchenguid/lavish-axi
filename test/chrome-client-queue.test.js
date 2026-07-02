@@ -711,3 +711,48 @@ test("chrome send and end carries the end intent with queued prompts", async () 
   assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("chatInput").disabled, true);
 });
+
+test("chrome send and end during an in-flight submit still ends after the submit drains the queue", async () => {
+  const posts = [];
+  let resolveFirstPost = () => {};
+  const firstPost = new Promise((resolve) => {
+    resolveFirstPost = () => resolve();
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (posts.length === 1) await firstPost;
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" },
+  });
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  assert.equal(posts.length, 1);
+
+  chrome.element("sendAndEnd").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  assert.equal(posts.length, 1);
+
+  resolveFirstPost();
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    posts.map((post) => post.url),
+    ["/api/abc/prompts", "/api/abc/end"],
+  );
+  assert.deepEqual(posts[0].body, {
+    prompts: [{ prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" }],
+    domSnapshot: "uid=1 body",
+  });
+  assert.equal(posts[1].body, null);
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(chrome.element("chatInput").disabled, true);
+});
