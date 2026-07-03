@@ -5,9 +5,9 @@ import vm from "node:vm";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string }} HarnessSessionData */
 /** @type {HarnessSessionData} */
-const defaultSessionData = { key: "abc", file: "/tmp/artifact.html" };
+const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
 
 async function createChromeHarness({
   fetchImpl = async () => ({ ok: true }),
@@ -811,6 +811,22 @@ test("plain 'i' and other modifier combos do not toggle annotation mode", async 
   assert.equal(otherKeyEvent.defaultPrevented, false);
 
   assert.equal(framePostCount(), before);
+});
+
+test("chrome client reads the mode toggle hotkey from the session bootstrap", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "k" },
+  });
+
+  const oldHotkeyEvent = chrome.dispatchDocumentKeydown({ key: "i", metaKey: true });
+  assert.equal(oldHotkeyEvent.defaultPrevented, false);
+  assert.equal(chrome.element("annotation")["aria-pressed"], undefined);
+
+  const bootstrapHotkeyEvent = chrome.dispatchDocumentKeydown({ key: "K", metaKey: true });
+  assert.equal(bootstrapHotkeyEvent.defaultPrevented, true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
 });
 
 test("chrome client toggles annotation mode when the artifact SDK requests it via postMessage", async () => {

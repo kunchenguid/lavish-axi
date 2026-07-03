@@ -230,7 +230,11 @@ test("artifact SDK registers a capture-phase document keydown listener for the m
 test("chrome client toggles annotation mode via Cmd/Ctrl+I and on request from the artifact SDK", async () => {
   const js = await chromeClientSource();
 
-  assert.match(js, /const MODE_TOGGLE_HOTKEY_KEY = "i";/);
+  assert.match(
+    js,
+    /const MODE_TOGGLE_HOTKEY_KEY = String\(sessionData\.modeToggleHotkeyKey \|\| ""\)\.toLowerCase\(\);/,
+  );
+  assert.doesNotMatch(js, /const MODE_TOGGLE_HOTKEY_KEY = "i";/);
   assert.match(js, /function isModeToggleHotkeyEvent\(event\)/);
   assert.match(js, /function toggleAnnotationMode\(\)/);
   assert.match(js, /annotationSwitch\.onclick = toggleAnnotationMode;/);
@@ -244,6 +248,7 @@ test("chrome client toggles annotation mode via Cmd/Ctrl+I and on request from t
 test("the annotate switch exposes the mode toggle hotkey as a discoverable tooltip", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
+  assert.match(html, /"modeToggleHotkeyKey":"i"/);
   assert.match(html, /id="annotation"[^>]*title="Toggle annotate\/explore mode \(⌘I \/ Ctrl\+I\)"/);
 });
 

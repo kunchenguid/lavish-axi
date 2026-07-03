@@ -7,13 +7,7 @@ const filePath = String(sessionData.file || "");
 const queueStorageKey = "lavish-axi:queued:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
-
-// One config constant for the annotate/explore mode toggle hotkey. Registered as a
-// document-level capture-phase keydown listener in both this chrome and the sandboxed artifact
-// SDK (src/artifact-sdk.js) - the two documents are cross-origin sandboxed and cannot see each
-// other's key events, so both need their own listener bound to the same key. Keep this in sync
-// with the copy in artifact-sdk.js and the tooltip text in server.js's chrome HTML template.
-const MODE_TOGGLE_HOTKEY_KEY = "i";
+const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 
 function isModeToggleHotkeyEvent(event) {
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;

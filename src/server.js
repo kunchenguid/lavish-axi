@@ -856,6 +856,7 @@ export function createChromeHtml(session, { layoutGateEnabled = true } = {}) {
     file: session.file,
     initialChat: session.chat || [],
     layoutGateEnabled,
+    modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
   });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
   const bodyClass = layoutGateEnabled ? "lavish layout-gate-active" : "lavish";
