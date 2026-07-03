@@ -799,11 +799,6 @@ const chromeIcons = {
   ),
   send: chromeIcon('<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/>', 14),
   caret: chromeIcon('<path d="m6 9 6 6 6-6"/>', 13, 2),
-  sun: chromeIcon(
-    '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
-    14,
-  ),
-  system: chromeIcon('<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 20h8M12 17v3"/>', 14),
 };
 
 // Display the path with the home directory shortened to "~", split so the directory part can

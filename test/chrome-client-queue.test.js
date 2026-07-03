@@ -140,7 +140,6 @@ async function createChromeHarness({
     },
   };
 
-  const localStorageData = new Map();
   const mediaQueryListeners = [];
   const systemMediaQueryList = {
     media: "(prefers-color-scheme: dark)",
@@ -203,17 +202,6 @@ async function createChromeHarness({
         return true;
       },
     },
-    localStorage: {
-      getItem(key) {
-        return localStorageData.has(key) ? localStorageData.get(key) : null;
-      },
-      setItem(key, value) {
-        localStorageData.set(key, String(value));
-      },
-      removeItem(key) {
-        localStorageData.delete(key);
-      },
-    },
     sessionStorage: {
       getItem(key) {
         return storage.has(key) ? storage.get(key) : null;
@@ -272,16 +260,6 @@ async function createChromeHarness({
     },
     runTimers,
     srcLoads,
-    setSystemTheme(dark) {
-      systemMediaQueryList.matches = dark === "dark";
-      for (const handler of [...mediaQueryListeners]) handler({ matches: systemMediaQueryList.matches });
-    },
-    themePreference() {
-      return localStorageData.get("lavish-axi:theme") || "system";
-    },
-    resolvedTheme() {
-      return element("html").getAttribute("data-theme");
-    },
   };
 }
 
