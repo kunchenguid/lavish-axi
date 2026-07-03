@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lavish Mode Hotkey Review</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #211f1c;
+      background: #f6f1e8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 32px;
+      background:
+        linear-gradient(135deg, rgba(140, 91, 51, 0.12), transparent 34%),
+        linear-gradient(315deg, rgba(69, 93, 105, 0.14), transparent 38%),
+        #f6f1e8;
+    }
+
+    main {
+      width: min(880px, 100%);
+      margin: 0 auto;
+      padding: 28px;
+      border: 1px solid rgba(33, 31, 28, 0.16);
+      border-radius: 8px;
+      background: rgba(255, 252, 246, 0.92);
+      box-shadow: 0 18px 50px rgba(33, 31, 28, 0.14);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    p {
+      max-width: 66ch;
+      margin: 0 0 18px;
+      line-height: 1.55;
+    }
+
+    .target {
+      margin: 24px 0;
+      padding: 22px;
+      border: 2px solid #a67648;
+      border-radius: 8px;
+      background: #fff7eb;
+    }
+
+    .target h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    .controls {
+      display: grid;
+      gap: 14px;
+      padding: 18px;
+      border: 1px solid rgba(33, 31, 28, 0.14);
+      border-radius: 8px;
+      background: #eef4f1;
+    }
+
+    label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+    }
+
+    input[type="checkbox"] {
+      width: 22px;
+      height: 22px;
+      accent-color: #5c7f72;
+    }
+
+    button {
+      width: fit-content;
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 6px;
+      color: white;
+      background: #5c7f72;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .status {
+      min-height: 24px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #35493f;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Lavish Mode Hotkey Review</h1>
+    <p>
+      This document is served through Lavish Editor to prove that Cmd/Ctrl+I flips between annotate and explore mode from chrome focus, iframe focus, and the annotation-card textarea.
+    </p>
+
+    <section id="comment-target" class="target" tabindex="0">
+      <h2>Comment target</h2>
+      <p>
+        In annotate mode, clicking this region opens the Lavish annotation card. The hotkey should close the card by reusing the same mode switch path.
+      </p>
+    </section>
+
+    <section class="controls" aria-label="Interactive controls">
+      <label>
+        <input id="review-checkbox" type="checkbox">
+        Native checkbox inside sandboxed artifact
+      </label>
+      <button id="review-button" type="button">Click artifact button</button>
+      <div id="control-status" class="status" aria-live="polite">checkbox: off, button clicks: 0</div>
+    </section>
+  </main>
+
+  <script>
+    const checkbox = document.getElementById("review-checkbox");
+    const button = document.getElementById("review-button");
+    const status = document.getElementById("control-status");
+    let clicks = 0;
+
+    function renderStatus() {
+      status.textContent = `checkbox: ${checkbox.checked ? "on" : "off"}, button clicks: ${clicks}`;
+    }
+
+    checkbox.addEventListener("change", renderStatus);
+    button.addEventListener("click", () => {
+      clicks += 1;
+      renderStatus();
+    });
+  </script>
+</body>
+</html>
