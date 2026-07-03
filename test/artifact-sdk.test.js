@@ -6,6 +6,7 @@ import {
   classifyVerticalOverflow,
   deriveLavishQueueKey,
   fragmentsSignificantlyOverlap,
+  isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   resolveVisibleSpillCandidates,
 } from "../src/artifact-sdk.js";
@@ -291,4 +292,20 @@ test("classifyHorizontalOverflow still distinguishes clipped text from generic s
     isTruncated: false,
   });
   assert.deepEqual(genericScroll, { overflowPx: 100, kind: "element-scroll-overflow" });
+});
+
+test("isModeToggleHotkeyEvent matches Cmd/Ctrl+I regardless of case", () => {
+  assert.equal(isModeToggleHotkeyEvent({ key: "i", metaKey: true }), true);
+  assert.equal(isModeToggleHotkeyEvent({ key: "I", ctrlKey: true }), true);
+  assert.equal(isModeToggleHotkeyEvent({ key: "i", metaKey: true, ctrlKey: true }), true);
+});
+
+test("isModeToggleHotkeyEvent requires a modifier so plain typing is unaffected", () => {
+  assert.equal(isModeToggleHotkeyEvent({ key: "i" }), false);
+  assert.equal(isModeToggleHotkeyEvent({ key: "i", shiftKey: true }), false);
+});
+
+test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () => {
+  assert.equal(isModeToggleHotkeyEvent({ key: "e", metaKey: true }), false);
+  assert.equal(isModeToggleHotkeyEvent({ key: "Enter", metaKey: true }), false);
 });

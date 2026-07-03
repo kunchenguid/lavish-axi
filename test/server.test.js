@@ -212,6 +212,41 @@ test("annotation mode forces the artifact cursor to default", () => {
   assert.match(js, /setAnnotationMode\(enabled\)/);
 });
 
+test("artifact SDK registers a capture-phase document keydown listener for the mode toggle hotkey", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /const MODE_TOGGLE_HOTKEY_KEY="i"/);
+  assert.match(js, /function isModeToggleHotkeyEvent\(event\)/);
+  assert.match(js, /if \(!isModeToggleHotkeyEvent\(event\)\) return;/);
+  assert.match(js, /parent\.postMessage\(\{ type: "lavish:toggleAnnotationMode" \}, "\*"\);/);
+  // Registered with the capture flag so it fires regardless of where focus is inside the
+  // sandboxed artifact document, without a duplicate call sneaking in un-captured.
+  assert.match(
+    js,
+    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isModeToggleHotkeyEvent\(event\)\) return;\s*event\.preventDefault\(\);\s*parent\.postMessage\(\{ type: "lavish:toggleAnnotationMode" \}, "\*"\);\s*\},\s*true,?\s*\);/,
+  );
+});
+
+test("chrome client toggles annotation mode via Cmd/Ctrl+I and on request from the artifact SDK", async () => {
+  const js = await chromeClientSource();
+
+  assert.match(js, /const MODE_TOGGLE_HOTKEY_KEY = "i";/);
+  assert.match(js, /function isModeToggleHotkeyEvent\(event\)/);
+  assert.match(js, /function toggleAnnotationMode\(\)/);
+  assert.match(js, /annotationSwitch\.onclick = toggleAnnotationMode;/);
+  assert.match(js, /if \(msg\.type === "lavish:toggleAnnotationMode"\) toggleAnnotationMode\(\);/);
+  assert.match(
+    js,
+    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isModeToggleHotkeyEvent\(event\)\) return;\s*event\.preventDefault\(\);\s*toggleAnnotationMode\(\);\s*\},\s*true,?\s*\);/,
+  );
+});
+
+test("the annotate switch exposes the mode toggle hotkey as a discoverable tooltip", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /id="annotation"[^>]*title="Toggle annotate\/explore mode \(⌘I \/ Ctrl\+I\)"/);
+});
+
 test("artifact SDK lets marked feedback controls handle their own clicks", () => {
   const js = createSdkJs("abc");
 

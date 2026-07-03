@@ -8,6 +8,17 @@ const queueStorageKey = "lavish-axi:queued:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 
+// One config constant for the annotate/explore mode toggle hotkey. Registered as a
+// document-level capture-phase keydown listener in both this chrome and the sandboxed artifact
+// SDK (src/artifact-sdk.js) - the two documents are cross-origin sandboxed and cannot see each
+// other's key events, so both need their own listener bound to the same key. Keep this in sync
+// with the copy in artifact-sdk.js and the tooltip text in server.js's chrome HTML template.
+const MODE_TOGGLE_HOTKEY_KEY = "i";
+
+function isModeToggleHotkeyEvent(event) {
+  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
+}
+
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
 const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
 const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"));
@@ -701,15 +712,18 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
+  if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
 });
 
 loadFrame();
 
-annotationSwitch.onclick = () => {
+function toggleAnnotationMode() {
   annotation = !annotation;
   annotationSwitch.setAttribute("aria-pressed", String(annotation));
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
-};
+}
+
+annotationSwitch.onclick = toggleAnnotationMode;
 
 sendButton.onclick = () => sendQueued(false);
 sendFromMenuButton.onclick = () => sendQueued(false);
@@ -754,6 +768,17 @@ document.addEventListener("keydown", (event) => {
     }
   }
 });
+// Capture phase so the mode hotkey fires no matter where focus is in the chrome - including
+// mid-keystroke in chatInput or an annotation-card textarea - without disturbing normal typing.
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (!isModeToggleHotkeyEvent(event)) return;
+    event.preventDefault();
+    toggleAnnotationMode();
+  },
+  true,
+);
 frame.addEventListener("load", () => {
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.

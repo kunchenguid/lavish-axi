@@ -19,6 +19,7 @@ async function createChromeHarness({
   const postedToFrame = [];
   const eventSources = [];
   const windowListeners = new Map();
+  const documentListeners = new Map();
   const elements = new Map();
   const timers = new Map();
   const srcLoads = [];
@@ -165,7 +166,10 @@ async function createChromeHarness({
       getElementById(id) {
         return element(id);
       },
-      addEventListener() {},
+      addEventListener(type, handler, capture) {
+        if (!documentListeners.has(type)) documentListeners.set(type, []);
+        documentListeners.get(type).push({ handler, capture: Boolean(capture) });
+      },
       createElement(tag) {
         const el = element(`${tag}-${elements.size}`);
         el.tagName = tag.toUpperCase();
@@ -207,6 +211,24 @@ async function createChromeHarness({
       const handler = windowListeners.get("message");
       assert.ok(handler, "chrome-client registered a message handler");
       handler({ source: frame.contentWindow, data });
+    },
+    dispatchDocumentKeydown(eventProps) {
+      const handlers = documentListeners.get("keydown") || [];
+      assert.ok(handlers.length > 0, "chrome-client registered a document keydown handler");
+      const event = {
+        key: "",
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        isComposing: false,
+        defaultPrevented: false,
+        ...eventProps,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      for (const { handler } of handlers) handler(event);
+      return event;
     },
     queued() {
       return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
@@ -755,4 +777,53 @@ test("chrome send and end during an in-flight submit still ends after the submit
   assert.equal(posts[1].body, null);
   assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("chatInput").disabled, true);
+});
+
+test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of focus", async () => {
+  const chrome = await createChromeHarness();
+
+  const metaEvent = chrome.dispatchDocumentKeydown({ key: "i", metaKey: true });
+  assert.equal(metaEvent.defaultPrevented, true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+
+  const ctrlEvent = chrome.dispatchDocumentKeydown({ key: "I", ctrlKey: true });
+  assert.equal(ctrlEvent.defaultPrevented, true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "true");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, true);
+});
+
+test("plain 'i' and other modifier combos do not toggle annotation mode", async () => {
+  const chrome = await createChromeHarness();
+  const framePostCount = () => chrome.postedToFrame.length;
+  const before = framePostCount();
+
+  const bareEvent = chrome.dispatchDocumentKeydown({ key: "i" });
+  assert.equal(bareEvent.defaultPrevented, false);
+  assert.equal(chrome.element("annotation")["aria-pressed"], undefined);
+
+  const shiftEvent = chrome.dispatchDocumentKeydown({ key: "i", shiftKey: true });
+  assert.equal(shiftEvent.defaultPrevented, false);
+
+  const otherKeyEvent = chrome.dispatchDocumentKeydown({ key: "s", metaKey: true });
+  assert.equal(otherKeyEvent.defaultPrevented, false);
+
+  assert.equal(framePostCount(), before);
+});
+
+test("chrome client toggles annotation mode when the artifact SDK requests it via postMessage", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({ type: "lavish:toggleAnnotationMode" });
+
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+
+  chrome.sendFrameMessage({ type: "lavish:toggleAnnotationMode" });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "true");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, true);
 });

@@ -4,6 +4,17 @@ import * as mermaidHelpers from "./mermaid-node.js";
 
 export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 
+// One config constant for the annotate/explore mode toggle hotkey - kept in sync with the copy
+// in chrome-client.js. The chrome and this sandboxed artifact document are cross-origin
+// sandboxed and cannot see each other's key events, so each registers its own document-level
+// capture-phase keydown listener bound to the same key; whichever one catches it drives the
+// shared mode state (this side asks the chrome to toggle via postMessage).
+export const MODE_TOGGLE_HOTKEY_KEY = "i";
+
+export function isModeToggleHotkeyEvent(event) {
+  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
+}
+
 // Derive the browser-only replacement key used to collapse unsent updates for the same input.
 // The key is stripped by the chrome before prompts are sent to the server or returned by poll.
 export function deriveLavishQueueKey(element, options = {}) {
@@ -1045,6 +1056,20 @@ export function createArtifactSdk(
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
     }
   });
+
+  // Capture phase so the mode hotkey fires no matter where focus is inside the artifact -
+  // including a checkbox, button, link, or the annotation-card textarea - without disturbing
+  // normal typing. This SDK doesn't own the mode state; it asks the chrome to toggle the same
+  // state the on-screen switch drives, via the same postMessage protocol as setAnnotationMode.
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!isModeToggleHotkeyEvent(event)) return;
+      event.preventDefault();
+      parent.postMessage({ type: "lavish:toggleAnnotationMode" }, "*");
+    },
+    true,
+  );
 
   // Report scroll position to the chrome so it can be restored across hot reloads.
   // The iframe is sandboxed without same-origin, so the chrome can't read scrollY directly.
