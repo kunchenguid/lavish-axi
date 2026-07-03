@@ -7,6 +7,7 @@ export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 export const MODE_TOGGLE_HOTKEY_KEY = "i";
 
 export function isModeToggleHotkeyEvent(event) {
+  if (event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
 }
 

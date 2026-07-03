@@ -305,6 +305,11 @@ test("isModeToggleHotkeyEvent requires a modifier so plain typing is unaffected"
   assert.equal(isModeToggleHotkeyEvent({ key: "i", shiftKey: true }), false);
 });
 
+test("isModeToggleHotkeyEvent rejects extra shift or alt modifiers", () => {
+  assert.equal(isModeToggleHotkeyEvent({ key: "i", ctrlKey: true, shiftKey: true }), false);
+  assert.equal(isModeToggleHotkeyEvent({ key: "i", metaKey: true, altKey: true }), false);
+});
+
 test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () => {
   assert.equal(isModeToggleHotkeyEvent({ key: "e", metaKey: true }), false);
   assert.equal(isModeToggleHotkeyEvent({ key: "Enter", metaKey: true }), false);

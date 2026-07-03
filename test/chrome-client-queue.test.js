@@ -807,6 +807,12 @@ test("plain 'i' and other modifier combos do not toggle annotation mode", async 
   const shiftEvent = chrome.dispatchDocumentKeydown({ key: "i", shiftKey: true });
   assert.equal(shiftEvent.defaultPrevented, false);
 
+  const ctrlShiftEvent = chrome.dispatchDocumentKeydown({ key: "i", ctrlKey: true, shiftKey: true });
+  assert.equal(ctrlShiftEvent.defaultPrevented, false);
+
+  const metaAltEvent = chrome.dispatchDocumentKeydown({ key: "i", metaKey: true, altKey: true });
+  assert.equal(metaAltEvent.defaultPrevented, false);
+
   const otherKeyEvent = chrome.dispatchDocumentKeydown({ key: "s", metaKey: true });
   assert.equal(otherKeyEvent.defaultPrevented, false);
 

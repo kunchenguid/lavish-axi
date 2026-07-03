@@ -10,6 +10,7 @@ const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initial
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 
 function isModeToggleHotkeyEvent(event) {
+  if (event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
 }
 
