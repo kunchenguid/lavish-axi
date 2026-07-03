@@ -106,11 +106,7 @@ export async function resolveSystemAppearance(platform = process.platform, { exe
  */
 export async function buildThemeDirective(
   themePref,
-  {
-    resolvedAppearance = null,
-    resolveSystemAppearance: resolve = resolveSystemAppearance,
-    platform = process.platform,
-  } = {},
+  { resolvedAppearance, resolveSystemAppearance: resolve = resolveSystemAppearance, platform = process.platform } = {},
 ) {
   if (themePref === null || themePref === undefined) return null;
   if (themePref === "light") {
@@ -120,7 +116,7 @@ export async function buildThemeDirective(
     return "The user prefers a dark appearance - bake a legible dark theme into the artifact. Do not pin a light theme.";
   }
   if (themePref === "system") {
-    const appearance = resolvedAppearance !== null ? resolvedAppearance : await resolve(platform);
+    const appearance = resolvedAppearance !== undefined ? resolvedAppearance : await resolve(platform);
     if (appearance === "light") {
       return "The user follows the OS appearance; their device is currently in light mode - bake a legible light theme into the artifact. The baked theme will not track live OS toggles.";
     }

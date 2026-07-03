@@ -140,19 +140,10 @@ async function createChromeHarness({
     },
   };
 
-  const mediaQueryListeners = [];
   const systemMediaQueryList = {
     media: "(prefers-color-scheme: dark)",
     matches: false,
-    addEventListener(type, handler) {
-      if (type === "change") mediaQueryListeners.push(handler);
-    },
-    removeEventListener(type, handler) {
-      if (type === "change") {
-        const index = mediaQueryListeners.indexOf(handler);
-        if (index !== -1) mediaQueryListeners.splice(index, 1);
-      }
-    },
+    addEventListener() {},
   };
   function matchMedia(media) {
     if (String(media).includes("prefers-color-scheme")) return systemMediaQueryList;
