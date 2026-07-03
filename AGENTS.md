@@ -130,7 +130,7 @@ Hosted shares never include the annotation SDK.
 ### AXI integration
 
 The CLI is built on `axi-sdk-js` (`runAxiCli`).
-The `home()` callback returns the rich object shown when the user runs `lavish-axi` with no arguments - this is the same TOON-serialized output that lands in the agent's optional `SessionStart` hook after `lavish-axi setup hooks` (`sessions`, `visual_guidance`, `playbooks`, `help`).
+The `home()` callback returns the rich object shown when the user runs `lavish-axi` with no arguments - this is the same TOON-serialized output that lands in the agent's optional `SessionStart` hook after `lavish-axi setup hooks` (`sessions`, `visual_guidance`, `playbooks`, `theme_preference`, `help`).
 Top-level `--help` returns the same static guidance without dynamic sessions, `lavish-axi playbook [playbook_id]` exposes focused artifact guidance, and `lavish-axi design` prints a content-to-playbook router, copy-pasteable Tailwind/DaisyUI CDN URLs, Mermaid diagram tooling, an optional layout safety CSS snippet, and the DaisyUI component reference as a fallback after user-specified and subject-project design sources come up empty.
 That design output recommends `data-theme="luxury"` as the default DaisyUI theme and warns that `@apply`ing DaisyUI classes inside `<style type="text/tailwindcss">` aborts the Tailwind browser-runtime compile.
 `src/skill.js` renders the installable Agent Skill from the same home output, rewriting command examples to non-interactive `npx -y lavish-axi ...` invocations, omitting live session state, and including Hermes Agent frontmatter metadata for categorization.
