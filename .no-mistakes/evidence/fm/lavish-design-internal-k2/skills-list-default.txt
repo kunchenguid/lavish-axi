@@ -1,0 +1,20 @@
+
+│
+●   codex  Agent detected — installing non-interactively
+[?25l│
+◇  Source: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWMJ8S9NSSMZGTHVX2YEVYKW
+[?25h[?25l│
+◇  Local path validated
+[?25h[?25l│
+◇  Found 1 skill
+[?25h
+│
+◇  Available Skills
+│
+│    lavish
+│
+│      Turn complex or visual agent responses into rich, reviewable HTML artifacts the user can annotate and send feedback on, using the lavish-axi CLI. Use when about to give a plan, comparison, diagram, table, code diff, report, or anything easier to grasp visually than as prose.
+
+│
+└  Use --skill <name> to install specific skills
+

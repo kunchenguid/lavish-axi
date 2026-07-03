@@ -135,6 +135,8 @@ Top-level `--help` returns the same static guidance without dynamic sessions, `l
 That design output recommends `data-theme="luxury"` as the default DaisyUI theme and warns that `@apply`ing DaisyUI classes inside `<style type="text/tailwindcss">` aborts the Tailwind browser-runtime compile.
 `src/skill.js` renders the installable Agent Skill from the same home output, rewriting command examples to non-interactive `npx -y lavish-axi ...` invocations, omitting live session state, and including Hermes Agent frontmatter metadata for categorization.
 The generated skill intentionally omits a `version` frontmatter field because release-please updates `package.json` without regenerating `skills/lavish/SKILL.md`.
+`skills/lavish/SKILL.md` is the only public Agent Skill shipped through npm.
+The repository-local `.agents/skills/lavish-design/SKILL.md` brand skill is internal and must keep `metadata.internal: true` so `npx skills add ... --list` and skills.sh hide it unless `INSTALL_INTERNAL_SKILLS=1` is set.
 The playbook guidance tells agents that one artifact can combine several playbooks and must open each matching playbook before writing HTML.
 Diagram guidance names hand-built div/flexbox boxes-and-arrows as an anti-pattern and points flow, architecture, state, and sequence diagrams to Mermaid unless SVG is needed.
 The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.html"]` by `normalizeArgv`.
