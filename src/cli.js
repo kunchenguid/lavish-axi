@@ -7,7 +7,12 @@ import { fileURLToPath } from "node:url";
 
 import { AxiError, installSessionStartHooks, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
 
-import { createDesignOutput, DESIGN_SYSTEM_HINT } from "./design-reference.js";
+import {
+  buildThemeDirective,
+  createDesignOutput,
+  DESIGN_SYSTEM_HINT,
+  resolveSystemAppearance,
+} from "./design-reference.js";
 import {
   buildSelfContainedHtml,
   exportFileName,
@@ -18,10 +23,31 @@ import { publishToHtmlApp } from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
-import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
+import {
+  ALLOWED_THEME_PREFERENCES,
+  canonicalFile,
+  getRawThemePreference,
+  getThemePreference,
+  normalizeThemePreference,
+  sessionKey,
+  SessionStore,
+  setThemePreference,
+} from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+const COMMANDS = new Set([
+  "open",
+  "poll",
+  "end",
+  "stop",
+  "server",
+  "playbook",
+  "design",
+  "setup",
+  "export",
+  "share",
+  "config",
+]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -56,6 +82,8 @@ export async function run(argv) {
           bin: process.argv[1] || "lavish-axi",
           sessions: isTopLevelHelp ? [] : await visibleSessions(),
           includeSessions: !isTopLevelHelp,
+          themePreference: await readHomeThemePreference(),
+          themeDirective: await readHomeThemeDirective(),
         }),
       commands: {
         open: openCommand,
@@ -68,6 +96,7 @@ export async function run(argv) {
         server: serverCommand,
         export: exportCommand,
         share: shareCommand,
+        config: configCommand,
       },
       getCommandHelp,
     });
@@ -109,7 +138,38 @@ export function telemetryCommandName(argv) {
   return normalized[0] && !normalized[0].startsWith("-") ? normalized[0] : "home";
 }
 
-export function createHomeOutput({ bin, sessions, includeSessions = true }) {
+async function readHomeThemePreference() {
+  try {
+    const store = new SessionStore(stateFile());
+    return await getThemePreference(store);
+  } catch {
+    return null;
+  }
+}
+
+async function readHomeThemeDirective() {
+  try {
+    const store = new SessionStore(stateFile());
+    // Read the raw stored value, not the normalized one: an unset preference
+    // (raw = null) must NOT emit a directive, so a vanilla install never nags
+    // the agent. An explicit `system` does get a directive after we resolve
+    // the current OS appearance.
+    const raw = await getRawThemePreference(store);
+    if (raw === null) return null;
+    const resolved = raw === "system" ? await resolveSystemAppearance() : null;
+    return await buildThemeDirective(raw, { resolvedAppearance: resolved });
+  } catch {
+    return null;
+  }
+}
+
+export function createHomeOutput({
+  bin,
+  sessions,
+  includeSessions = true,
+  themePreference = null,
+  themeDirective = null,
+}) {
   return {
     bin: collapseHomeDirectory(bin, os.homedir()),
     description: DESCRIPTION,
@@ -131,6 +191,10 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
       "When the artifact would describe existing or current UI or state, show it instead: capture screenshots of the real pages (run the app read-only if needed) and embed them, rather than explaining the current look in prose; reserve prose for what cannot be shown such as rationale, trade-offs, and open questions",
     ],
     playbooks: listPlaybooks(),
+    theme_preference: {
+      preference: themePreference,
+      directive: themeDirective,
+    },
     help: [
       "Run `lavish-axi <html-file>` to open or resume a Lavish Editor session. If the user explicitly ended the session from the browser, this refuses to reopen it and explains why instead of reopening uninvited - pass `--reopen` only when the user asks for further review or something important needs their visual attention",
       "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
@@ -140,6 +204,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true }) {
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
       "Run `lavish-axi share <html-file> [--password <pw>] [--token <t>]` to publish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and get back a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Local assets are inlined; remote refs load over the network. It returns the url plus a secret update_key for managing the page later. Use --token or LAVISH_AXI_HTML_APP_TOKEN only when you have an optional bearer token; it is never required. Users can also publish from the browser chrome's overflow menu",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
+      "Run `lavish-axi config [theme [system|light|dark]]` to read or set the device-wide theme preference stored in ~/.lavish-axi/state.json. The preference drives the editor chrome (and is surfaced to agents as artifact generation guidance, not a runtime override). `system` (the default) live-follows the OS appearance in the chrome; `light` and `dark` pin it. There is no in-browser theme toggle",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
       DESIGN_SYSTEM_HINT,
       "Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, product or technical plan, comparison, report, or browser-based feedback loop",
@@ -525,6 +590,39 @@ export async function stopCommand(args) {
   return shutdownServerOnPort(port, { baseUrl, currentVersion: VERSION });
 }
 
+export async function configCommand(args) {
+  const store = new SessionStore(stateFile());
+  const sub = args[0];
+
+  if (sub === undefined || sub === "") {
+    const config = await store.getConfig();
+    return { config };
+  }
+
+  if (sub !== "theme") {
+    throw new AxiError(`Unknown config subcommand: ${JSON.stringify(sub)}. Known: theme.`, "VALIDATION_ERROR", [
+      `Usage: lavish-axi config [theme [system|light|dark]]`,
+    ]);
+  }
+
+  const value = args[1];
+  if (value === undefined) {
+    const theme = await getThemePreference(store);
+    return { config: { theme } };
+  }
+
+  let theme;
+  try {
+    theme = normalizeThemePreference(value);
+  } catch (error) {
+    throw new AxiError(error && error.message ? error.message : String(error), "VALIDATION_ERROR", [
+      `Allowed theme values: ${ALLOWED_THEME_PREFERENCES.join(", ")}.`,
+    ]);
+  }
+  await setThemePreference(store, theme);
+  return { config: { theme } };
+}
+
 export async function shutdownServerOnPort(
   port,
   {
@@ -558,7 +656,10 @@ async function playbookCommand(args) {
 }
 
 async function designCommand() {
-  return createDesignOutput();
+  return createDesignOutput({
+    themePreference: await readHomeThemePreference(),
+    themeDirective: await readHomeThemeDirective(),
+  });
 }
 
 async function setupCommand(args) {
@@ -1012,7 +1113,7 @@ export function getCommandHelp(command) {
   return COMMAND_HELP[command] || null;
 }
 
-const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback, ends the session, or the browser reports fresh layout_warnings, staying silent while it waits - never kill it. Fix and re-check fresh error-severity layout_warnings before involving the human; persistent or low-severity findings may be surfaced with a note when the cause is not obvious. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost. When the user ends a session from the browser, stop polling and do not reopen it uninvited - pass --reopen to <html-file> only when the user asks for further review or something important needs their visual attention.\n\n`;
+const TOP_LEVEL_HELP = `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi config [theme [system|light|dark]]\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback, ends the session, or the browser reports fresh layout_warnings, staying silent while it waits - never kill it. Fix and re-check fresh error-severity layout_warnings before involving the human; persistent or low-severity findings may be surfaced with a note when the cause is not obvious. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost. When the user ends a session from the browser, stop polling and do not reopen it uninvited - pass --reopen to <html-file> only when the user asks for further review or something important needs their visual attention.\n\n`;
 
 const COMMAND_HELP = {
   open: `Usage: lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window. Use --no-gate to skip the open-time layout curtain for this browser open. If the user explicitly ended the session from the browser, this refuses to reopen it and returns guidance instead - pass --reopen to force it open when the user asks for further review or something important needs their visual attention. Sessions ended by the agent (\`lavish-axi end\`) reopen normally without the flag.\n`,
@@ -1021,6 +1122,7 @@ const COMMAND_HELP = {
   export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
   share: `Usage: lavish-axi share <html-file> [--password <pw>] [--token <t>]\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for updating or deleting the page later. Set LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token; it is never required. The annotation SDK is never included.\n`,
   stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
+  config: `Usage: lavish-axi config [theme [system|light|dark]]\n\nRead or set the device-wide Lavish theme preference stored in ~/.lavish-axi/state.json. Bare \`lavish-axi config\` prints the full config object; \`lavish-axi config theme\` prints just the theme; \`lavish-axi config theme <value>\` sets it. Allowed values: system (default - live-follow prefers-color-scheme in the chrome), light, dark. The preference drives the editor chrome and is surfaced to agents as artifact generation guidance; Lavish does not inject a runtime content-theme override, so artifacts stay portable.\n`,
   playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
   design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. The strict priority order is: (1) if the user asked for a specific look or named design system, follow that; (2) otherwise, match the design system of the project the artifact is about, not necessarily your current working directory. If the artifact previews, proposes, or mocks a specific app's UI, use that app's own design system; (3) only when both come up empty, prefer the Lavish-recommended Tailwind + DaisyUI CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.\n`,
   setup: `Usage: lavish-axi setup hooks\n\nInstall or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context.\n`,

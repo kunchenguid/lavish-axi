@@ -1462,6 +1462,45 @@ test("stop command reports when no server is running", async () => {
   }
 });
 
+test("home output surfaces a theme_preference block that mirrors the agent guidance contract", () => {
+  const unset = createHomeOutput({ bin: "lavish-axi", sessions: [] });
+  const dark = createHomeOutput({
+    bin: "lavish-axi",
+    sessions: [],
+    themePreference: "dark",
+    themeDirective: "The user prefers a dark appearance - bake a legible dark theme into the artifact.",
+  });
+  const systemLight = createHomeOutput({
+    bin: "lavish-axi",
+    sessions: [],
+    themePreference: "system",
+    themeDirective:
+      "The user follows the OS appearance; their device is currently in light mode - bake a legible light theme into the artifact.",
+  });
+
+  // Unset (default install) never gets a directive: vanilla installs must not nag the agent.
+  assert.deepEqual(unset.theme_preference, { preference: null, directive: null });
+  assert.equal(dark.theme_preference.preference, "dark");
+  assert.match(dark.theme_preference.directive, /dark appearance/i);
+  assert.equal(systemLight.theme_preference.preference, "system");
+  assert.match(systemLight.theme_preference.directive, /currently in light mode/i);
+
+  // The help text still mentions how the agent should pick the directive up.
+  assert.ok(dark.help.some((item) => /theme_preference\.directive|config theme|device level/i.test(item)));
+});
+
+test("design output surfaces a theme_preference block and updated theme_usage guidance", () => {
+  const output = createDesignOutput({
+    themePreference: "system",
+    themeDirective: "Resolved directive for system with no OS hint available.",
+  });
+
+  assert.equal(output.theme_preference.preference, "system");
+  assert.match(output.theme_preference.directive, /Resolved directive for system/);
+  assert.ok(output.theme_usage.some((item) => /honor.*theme_preference\.directive|config theme/i.test(item)));
+  assert.ok(output.theme_usage.some((item) => /statically baked theme cannot live-follow/i.test(item)));
+});
+
 async function startFakeHtmlApp(requests) {
   const server = createServer((req, res) => {
     let raw = "";

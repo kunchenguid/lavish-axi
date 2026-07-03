@@ -386,22 +386,24 @@ test("chrome html inlines a no-FOUC theme script that resolves data-theme before
   const bodyStart = html.indexOf("<body");
   assert.ok(headEnd > 0 && bodyStart > headEnd, "chrome html has a <head> before <body>");
   const head = html.slice(0, headEnd);
-  assert.match(head, /<script>[^]*lavish-axi:theme[^]*<\/script>/);
+  assert.match(head, /<script>[^]*data-theme-pref[^]*<\/script>/);
   assert.match(head, /prefers-color-scheme:\s*dark/);
   assert.match(head, /data-theme/);
 });
 
-test("chrome html includes a three-state theme switch in the top bar", () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+test("chrome html surfaces the device theme preference via data-theme-pref", () => {
+  const lightHtml = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, { themePref: "light" });
+  const darkHtml = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, { themePref: "dark" });
+  const systemHtml = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
-  assert.match(html, /id="themeSwitch"/);
-  assert.match(html, /id="themeSystem"[^>]*aria-pressed="true"/);
-  assert.match(html, /id="themeLight"[^>]*aria-pressed="false"/);
-  assert.match(html, /id="themeDark"[^>]*aria-pressed="false"/);
-  // The switch lives inside the top bar, before the annotate switch.
-  const switchIndex = html.indexOf('id="themeSwitch"');
-  const annotateIndex = html.indexOf('id="annotation"');
-  assert.ok(switchIndex > 0 && annotateIndex > switchIndex, "theme switch precedes the annotate switch");
+  assert.match(lightHtml, /<html\s+data-theme-pref="light">/);
+  assert.match(darkHtml, /<html\s+data-theme-pref="dark">/);
+  assert.match(systemHtml, /<html\s+data-theme-pref="system">/);
+  // There is no in-browser theme toggle: the device preference is the only control.
+  assert.doesNotMatch(systemHtml, /id="themeSwitch"/);
+  assert.doesNotMatch(systemHtml, /id="themeSystem"/);
+  assert.doesNotMatch(systemHtml, /id="themeLight"/);
+  assert.doesNotMatch(systemHtml, /id="themeDark"/);
 });
 
 test("chrome css defaults to dark and defines a cohesive light theme keyed by data-theme", async () => {

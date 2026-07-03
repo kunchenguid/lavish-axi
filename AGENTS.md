@@ -155,10 +155,21 @@ No need to explicitly document the telemetry behaviors.
 
 - The editor chrome (`src/chrome.css`, injected by `src/server.js:createChromeHtml`) themes itself for light and dark.
   All chrome design tokens live as CSS custom properties on `:root` (the dark default, with `color-scheme: dark`) and a cohesive light counterpart is defined on `:root[data-theme="light"]` (with `color-scheme: light`).
-  `createChromeHtml` inlines a tiny head script that reads `localStorage["lavish-axi:theme"]` and sets `document.documentElement` `data-theme` before paint to avoid a flash of the wrong theme.
-  `src/chrome-client.js` owns the runtime theme logic: a three-state System/Light/Dark segmented control in the top bar, preference persisted in `localStorage` under `lavish-axi:theme` (`"system"` is stored by removing the key), and a live `matchMedia("(prefers-color-scheme: dark)")` listener that only reapplies the theme while the preference is System.
+  `createChromeHtml` accepts a `themePref` option sourced from the device-wide `config.theme` in `state.json` and embeds it as a `data-theme-pref="<system|light|dark>"` attribute on the served `<html>`; a tiny inline head script reads that attribute and sets `document.documentElement` `data-theme` before paint to avoid a flash of the wrong theme.
+  `src/chrome-client.js` reads `themePref` from the attribute and reapplies it as `data-theme` on every load, then keeps a live `matchMedia("(prefers-color-scheme: dark)")` listener that only re-resolves the theme while the preference is `system`. There is no in-browser theme switch: the only control surface is `lavish-axi config theme <system|light|dark>`.
   Theme-aware surfaces (hover backgrounds, the ended-session scrim, the layout-issue banner, the send-caret divider) route through `--hover`, `--scrim`, `--banner-bg`/`--banner-border`/`--banner-fg`, and `--accent-divider` so each theme can set a fitting value; do not reintroduce hardcoded dark-only colors in chrome rules.
   The user-authored artifact inside the iframe is never themed by the chrome - it keeps its own colors and `color-scheme`.
+- The device-wide theme preference lives in `state.json` under a top-level `config` object and is read via `SessionStore.getConfig` / `setConfig` plus the `getThemePreference` / `setThemePreference` helpers in `src/session-store.js`.
+  Allowed values are `system` (default, live-follow the OS in the chrome), `light`, and `dark`; `normalizeThemePreference` validates and lowercases the input.
+  The `config` object is preserved through every `SessionStore.readState` -> `writeState` round-trip, so any theme write survives subsequent session writes (covered by a regression test).
+- Artifact content theming is **generation guidance, not runtime override**.
+  Lavish does not inject a content stylesheet, does not modify the served artifact's HTML/CSS, and exposes no per-artifact opt-out: artifacts stay byte-identical to their on-disk form (apart from the SDK script tag), so they render the same inside Lavish and when opened directly.
+  The CLI surface (home and `design` outputs) includes a `theme_preference: { preference, directive }` block so the agent can read what the user set.
+  - `light` / `dark`: a concrete "bake this look into the artifact" directive.
+  - `system` resolved at CLI time: the OS appearance is read at the moment the home/design command runs (`resolveSystemAppearance` in `src/appearance.js` uses `osascript` on macOS, the `AppsUseLightTheme` registry value on Windows, and `gsettings get org.gnome.desktop.interface color-scheme` on Linux) and folded into a concrete "currently in light/dark mode" directive.
+  - `system` unresolved (no supported query available): a neutral "follow `prefers-color-scheme` in your CSS" directive, since a statically baked theme cannot live-track later OS toggles.
+  - Unset / default install: no directive emitted, so a vanilla install never nags the agent.
+    When the directive is absent the choice of theme is the agent's, following the existing design-priority rules.
 - `canonicalFile` runs `realpath`, so symlinks resolve to their target before becoming session keys. Two paths that refer to the same file always collapse to one session.
 - The SDK injected into artifacts lives in `src/artifact-sdk.js` and is wrapped by `createSdkJs`.
   It executes inside an iframe sandboxed with `allow-scripts allow-forms allow-popups allow-downloads` (no `allow-same-origin`), so it cannot read the chrome's DOM - communication is `postMessage` only.

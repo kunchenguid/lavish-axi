@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { SessionStore } from "../src/session-store.js";
+import {
+  SessionStore,
+  getRawThemePreference,
+  getThemePreference,
+  normalizeThemePreference,
+  setThemePreference,
+} from "../src/session-store.js";
 
 function feedbackResult(result) {
   assert.equal(result.status, "feedback");
@@ -584,6 +590,72 @@ test("freeform user prompts are stored in session chat history", async () => {
     assert.deepEqual(
       updated.chat.map((item) => [item.role, item.text]),
       [["user", "Please make this clearer"]],
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a session upsert after a config write preserves the config (readState regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-session-config-"));
+  const stateFile = path.join(dir, "state.json");
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>hi</body></html>");
+  const store = new SessionStore(stateFile);
+
+  try {
+    await setThemePreference(store, "dark");
+    assert.equal(await getThemePreference(store), "dark");
+
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/keep-config");
+    assert.equal(await getThemePreference(store), "dark", "config must survive the next session write");
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "", prompt: "note", selector: "", tag: "message", text: "after-config" }],
+    });
+    assert.equal(await getThemePreference(store), "dark", "config must survive a second write too");
+
+    await setThemePreference(store, "light");
+    assert.equal(await getThemePreference(store), "light");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("normalizeThemePreference validates the allowed set and defaults to system", () => {
+  assert.equal(normalizeThemePreference(undefined), "system");
+  assert.equal(normalizeThemePreference(""), "system");
+  assert.equal(normalizeThemePreference(null), "system");
+  assert.equal(normalizeThemePreference("  Dark "), "dark");
+  assert.throws(() => normalizeThemePreference("sepia"), /Invalid theme preference/);
+  assert.throws(() => normalizeThemePreference("high-contrast"), /Invalid theme preference/);
+});
+
+test("getRawThemePreference returns null when unset and the stored value when set", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-raw-theme-"));
+  const stateFile = path.join(dir, "state.json");
+  const store = new SessionStore(stateFile);
+
+  try {
+    assert.equal(
+      await getRawThemePreference(store),
+      null,
+      "unset must surface as null so the home directive is omitted",
+    );
+    assert.equal(
+      await getThemePreference(store),
+      "system",
+      "normalized getter still defaults to system for chrome injection",
+    );
+
+    await setThemePreference(store, "dark");
+    assert.equal(await getRawThemePreference(store), "dark");
+    assert.equal(await getThemePreference(store), "dark");
+
+    await setThemePreference(store, "system");
+    assert.equal(
+      await getRawThemePreference(store),
+      "system",
+      "explicitly-set system must surface as 'system' so the home directive resolves the OS appearance",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

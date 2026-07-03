@@ -183,10 +183,10 @@ export class SessionStore {
     try {
       const raw = await readFile(this.file, "utf8");
       const parsed = JSON.parse(raw);
-      return { sessions: parsed.sessions || {} };
+      return { sessions: parsed.sessions || {}, config: parsed.config || {} };
     } catch (error) {
       if (error && error.code === "ENOENT") {
-        return { sessions: {} };
+        return { sessions: {}, config: {} };
       }
       throw error;
     }
@@ -195,6 +195,58 @@ export class SessionStore {
   async writeState(state) {
     await writeFile(this.file, `${JSON.stringify(state, null, 2)}\n`);
   }
+
+  async getConfig() {
+    const state = await this.readState();
+    return state.config || {};
+  }
+
+  async setConfig(patch) {
+    const state = await this.readState();
+    const next = { ...state, config: { ...(state.config || {}), ...patch } };
+    await this.writeState(next);
+    return next.config;
+  }
+}
+
+export const ALLOWED_THEME_PREFERENCES = /** @type {const} */ (["system", "light", "dark"]);
+
+export function normalizeThemePreference(value) {
+  if (value === null || value === undefined || value === "") return "system";
+  const normalized = String(value).trim().toLowerCase();
+  if (!ALLOWED_THEME_PREFERENCES.includes(/** @type {any} */ (normalized))) {
+    throw new Error(
+      `Invalid theme preference: ${JSON.stringify(value)}. Allowed: ${ALLOWED_THEME_PREFERENCES.join(", ")}.`,
+    );
+  }
+  return /** @type {"system" | "light" | "dark"} */ (normalized);
+}
+
+export async function getThemePreference(store) {
+  const config = await store.getConfig();
+  return normalizeThemePreference(config.theme);
+}
+
+/**
+ * Read the raw theme value from `state.json` without applying the
+ * `system` default. Returns the stored string (validated against the
+ * allowed set) or `null` when the user has never set a preference - so
+ * callers can distinguish "explicitly set to system" from "never set".
+ *
+ * @param {SessionStore} store
+ * @returns {Promise<"system" | "light" | "dark" | null>}
+ */
+export async function getRawThemePreference(store) {
+  const config = await store.getConfig();
+  const raw = config.theme;
+  if (raw === null || raw === undefined) return null;
+  return normalizeThemePreference(raw);
+}
+
+export async function setThemePreference(store, value) {
+  const theme = normalizeThemePreference(value);
+  await store.setConfig({ theme });
+  return theme;
 }
 
 export async function canonicalFile(file) {

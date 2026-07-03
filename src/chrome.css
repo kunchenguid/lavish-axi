@@ -199,43 +199,6 @@ body {
 .spacer {
   flex: 1;
 }
-.theme-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-pill);
-  background: var(--bg-elevated);
-  flex-shrink: 0;
-}
-.theme-seg {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--fg-dim);
-  cursor: pointer;
-  padding: 0;
-  transition:
-    background 120ms var(--ease),
-    color 120ms var(--ease);
-}
-.theme-seg:hover:not([aria-pressed="true"]) {
-  background: var(--hover);
-  color: var(--fg);
-}
-.theme-seg[aria-pressed="true"] {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-.theme-seg:focus-visible {
-  outline: var(--annotate-outline);
-  outline-offset: 1px;
-}
 .annotate-switch {
   display: inline-flex;
   align-items: center;
