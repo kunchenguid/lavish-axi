@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.36](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.35...lavish-axi-v0.1.36) (2026-07-03)
+
+
+### Features
+
+* **chrome:** add annotate/explore mode hotkey ([#138](https://github.com/kunchenguid/lavish-axi/issues/138)) ([9d3e4f2](https://github.com/kunchenguid/lavish-axi/commit/9d3e4f28132c969d0d1975ee526c3beb33a47259))
+* **sdk:** first-class zoomable, annotatable mermaid diagrams ([#124](https://github.com/kunchenguid/lavish-axi/issues/124)) ([e295450](https://github.com/kunchenguid/lavish-axi/commit/e2954503e11d334bf2135f7c64902ea59056ec33))
+
 ## [0.1.35](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.34...lavish-axi-v0.1.35) (2026-07-02)
 
 
