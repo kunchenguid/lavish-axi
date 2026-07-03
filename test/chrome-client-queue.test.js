@@ -843,3 +843,20 @@ test("chrome client toggles annotation mode when the artifact SDK requests it vi
   assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
   assert.equal(chrome.postedToFrame.at(-1).enabled, true);
 });
+
+test("chrome client ignores annotation mode toggles after the session ends", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.dispatchDocumentKeydown({ key: "i", metaKey: true });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+
+  chrome.sendFrameMessage({ type: "lavish:endSession" });
+  await flushPromises();
+  const afterEndPostCount = chrome.postedToFrame.length;
+
+  chrome.dispatchDocumentKeydown({ key: "i", metaKey: true });
+  chrome.sendFrameMessage({ type: "lavish:toggleAnnotationMode" });
+
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.postedToFrame.length, afterEndPostCount);
+});

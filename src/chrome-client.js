@@ -712,6 +712,7 @@ window.addEventListener("message", (event) => {
 loadFrame();
 
 function toggleAnnotationMode() {
+  if (ended) return;
   annotation = !annotation;
   annotationSwitch.setAttribute("aria-pressed", String(annotation));
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
