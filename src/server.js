@@ -862,9 +862,21 @@ const LAVISH_DEFAULT_FAVICON =
   "<link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>\u{1F48E}</text></svg>\">";
 
 function readTagAttr(tag, name) {
-  const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
-  if (!match) return "";
-  return (match[2] ?? match[3] ?? match[4] ?? "").trim();
+  // Tokenize real attributes rather than searching for the bare name anywhere in
+  // the tag: a `\b`-anchored name matches attribute-name suffixes (e.g. `href`
+  // inside `data-href`) and names that appear inside another attribute's quoted
+  // value (e.g. `href=` inside a `title="... href=x"`), both of which would make
+  // us adopt the wrong href. Walking whole `name="value"` pairs consumes each
+  // value as one unit, so only genuine attribute names are matched.
+  const attrRe = /([a-z][\w:-]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+  const target = name.toLowerCase();
+  let match;
+  while ((match = attrRe.exec(tag)) !== null) {
+    if (match[1].toLowerCase() === target) {
+      return (match[3] ?? match[4] ?? match[5] ?? "").trim();
+    }
+  }
+  return "";
 }
 
 // Pull a tab favicon + title out of the artifact's own <head>. Lavish renders the

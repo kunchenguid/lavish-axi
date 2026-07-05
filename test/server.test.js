@@ -2589,3 +2589,19 @@ test("extractArtifactHead does not hang on an unterminated link tag", () => {
   assert.ok(elapsedMs < 1000, `expected linear scan, took ${elapsedMs}ms`);
   assert.match(result.faviconTag, /data:image\/svg\+xml/);
 });
+
+test("extractArtifactHead reads the real href, not one hidden in another attribute", () => {
+  // A `data-href` (longer attribute name) must not be mistaken for `href`; the
+  // real, relative href should win and fall back to the default favicon.
+  const dataHref = extractArtifactHead(
+    '<head><link rel="icon" data-href="data:image/png,decoy" href="favicon.png"></head>',
+  );
+  assert.match(dataHref.faviconTag, /data:image\/svg\+xml/, "data-href decoy must not be adopted");
+
+  // A `href=` sequence inside another attribute's quoted value must not be
+  // adopted either; the genuine absolute href should be used.
+  const inValue = extractArtifactHead(
+    '<head><link rel="icon" title="see href=data:image/png,decoy" href="https://cdn.example.com/logo.png"></head>',
+  );
+  assert.equal(inValue.faviconTag, '<link rel="icon" href="https://cdn.example.com/logo.png">');
+});
