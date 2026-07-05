@@ -2566,9 +2566,7 @@ test("extractArtifactHead reconstructs a clean tag and drops artifact-supplied a
   assert.equal(hostile.faviconTag, '<link rel="icon" href="data:text/css,x">');
   assert.doesNotMatch(hostile.faviconTag, /onload|onerror|steal|stylesheet/i);
 
-  const breakout = extractArtifactHead(
-    `<head><link rel='icon' href='data:image/png,x" onload="steal()'></head>`,
-  );
+  const breakout = extractArtifactHead(`<head><link rel='icon' href='data:image/png,x" onload="steal()'></head>`);
   assert.doesNotMatch(breakout.faviconTag, /onload="/i);
   assert.match(breakout.faviconTag, /^<link rel="icon" href="[^"]*">$/);
   assert.match(breakout.faviconTag, /&quot;/);
