@@ -877,7 +877,7 @@ function readTagAttr(tag, name) {
 export function extractArtifactHead(html) {
   const head = String(html || "").slice(0, 10000);
   let faviconTag = LAVISH_DEFAULT_FAVICON;
-  const linkTags = head.match(/<link\b(?:"[^"]*"|'[^']*'|[^>])*>/gi) || [];
+  const linkTags = head.match(/<link\b(?:"[^"]*"|'[^']*'|[^"'>])*>/gi) || [];
   const iconTag = linkTags.find((tag) => /(^|\s)icon(\s|$)/i.test(readTagAttr(tag, "rel")));
   const iconHref = iconTag ? readTagAttr(iconTag, "href") : "";
   if (iconHref && /^(data:|https?:|\/\/)/i.test(iconHref)) {

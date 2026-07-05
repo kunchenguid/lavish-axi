@@ -2583,3 +2583,11 @@ test("extractArtifactHead falls back to the default for missing or relative favi
   const relative = extractArtifactHead('<head><link rel="icon" href="favicon.png"></head>');
   assert.match(relative.faviconTag, /data:image\/svg\+xml/);
 });
+
+test("extractArtifactHead does not hang on an unterminated link tag", () => {
+  const start = process.hrtime.bigint();
+  const result = extractArtifactHead("<head><link " + '"'.repeat(60000));
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(elapsedMs < 1000, `expected linear scan, took ${elapsedMs}ms`);
+  assert.match(result.faviconTag, /data:image\/svg\+xml/);
+});
