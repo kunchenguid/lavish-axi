@@ -660,12 +660,16 @@ test("chrome shows a waiting banner when no agent has attached", async () => {
   assert.match(css, /\.presence-banner\{/);
 });
 
-test("chrome puts queued annotations inside the chat composer as preview pills", async () => {
+test("chrome puts queued annotations above the chat composer as preview pills", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
   const css = await chromeCssSource();
 
   assert.match(html, /id="annotationPills"/);
+  assert.match(
+    html,
+    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="annotation-pills" id="annotationPills"><\/div><\/div><div class="composer">/,
+  );
   assert.match(js, /class="pill/);
   assert.match(js, /pill-preview/);
   assert.match(js, /removeQueuedPrompt/);
@@ -674,6 +678,19 @@ test("chrome puts queued annotations inside the chat composer as preview pills",
   assert.doesNotMatch(js, /togglePill/);
   assert.doesNotMatch(js, /pill-detail/);
   assert.doesNotMatch(html, /<h2>Queued Annotations<\/h2>/);
+});
+
+test("chrome scrolls queued prompts above a sticky composer footer", async () => {
+  const css = await chromeCssSource();
+
+  assert.match(css, /\.panel-scroll\{[^}]*flex:1 1 auto/);
+  assert.match(css, /\.panel-scroll\{[^}]*min-height:0/);
+  assert.match(css, /\.panel-scroll\{[^}]*overflow-y:auto/);
+  assert.match(css, /\.chat\{[^}]*overflow:visible/);
+  assert.match(css, /\.annotation-pills\{[^}]*flex:0 0 auto/);
+  assert.match(css, /\.composer\{[^}]*position:sticky/);
+  assert.match(css, /\.composer\{[^}]*bottom:0/);
+  assert.match(css, /\.composer\{[^}]*flex-shrink:0/);
 });
 
 test("chrome omits clear queue button because pills can be removed individually", async () => {
@@ -711,6 +728,7 @@ test("composer textarea is sized within the right panel", async () => {
 
   assert.match(css, /\.layout\{[^}]*min-height:0/);
   assert.match(css, /\.panel\{[^}]*min-height:0/);
+  assert.match(css, /\.panel-scroll\{[^}]*min-height:0/);
   assert.match(css, /\.chat\{[^}]*min-height:0/);
   assert.match(css, /\.composer\{[^}]*min-width:0/);
   assert.match(css, /\.composer\{[^}]*flex-shrink:0/);

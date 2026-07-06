@@ -15,6 +15,7 @@ function isModeToggleHotkeyEvent(event) {
 }
 
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
+const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
 const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
 const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"));
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
@@ -146,6 +147,7 @@ function render() {
     closeButton.addEventListener("click", (event) => removeQueuedPrompt(Number(closeButton.dataset.index), event));
   }
   updateSendState();
+  scrollPanelToBottom();
 }
 
 function updateSendState() {
@@ -211,7 +213,7 @@ function addChat(role, text) {
   el.className = "bubble " + role;
   el.innerHTML = "<small>" + (role === "agent" ? "Agent" : "You") + "</small><div>" + escapeHtml(text) + "</div>";
   chatLog.appendChild(el);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  scrollPanelToBottom();
 }
 
 function syncChat(chat) {
@@ -221,7 +223,7 @@ function syncChat(chat) {
 
   for (const item of chat) addChat(item.role, item.text);
   if (workingBubble) chatLog.appendChild(workingBubble);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  scrollPanelToBottom();
 }
 
 function setAgentPresence(state) {
@@ -241,7 +243,11 @@ function setAgentPresence(state) {
     workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
     chatLog.appendChild(workingBubble);
   }
-  chatLog.scrollTop = chatLog.scrollHeight;
+  scrollPanelToBottom();
+}
+
+function scrollPanelToBottom() {
+  panelScroll.scrollTop = panelScroll.scrollHeight;
 }
 
 function removeQueuedPrompt(index, event) {
