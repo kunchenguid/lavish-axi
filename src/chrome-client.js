@@ -525,14 +525,20 @@ function flushStateWrite() {
     console.warn("[lavish] artifact state exceeds 1 MiB; write skipped");
     return;
   }
-  stateWriteSettled = fetch("/api/" + key + "/state", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body,
-  }).then(
-    () => undefined,
-    () => undefined,
-  );
+  // Chain on the previous write: overlapping POSTs can complete out of order, letting an
+  // older payload overwrite a newer one and break last-write-wins.
+  stateWriteSettled = stateWriteSettled
+    .then(() =>
+      fetch("/api/" + key + "/state", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+    )
+    .then(
+      () => undefined,
+      () => undefined,
+    );
 }
 
 function respondWithState(id) {

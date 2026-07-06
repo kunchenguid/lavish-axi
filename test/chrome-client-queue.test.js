@@ -960,6 +960,37 @@ test("chrome client skips state writes above the server's 1 MiB cap", async () =
   );
 });
 
+test("chrome client serializes state writes so an older POST cannot land after a newer one", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      const entry = { body: init?.body, release: () => {} };
+      posts.push(entry);
+      await new Promise((resolve) => {
+        entry.release = () => resolve(undefined);
+      });
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:setState", state: { seq: 1 } });
+  chrome.runTimers(250);
+  await flushPromises();
+  assert.equal(posts.length, 1);
+
+  chrome.sendFrameMessage({ type: "lavish:setState", state: { seq: 2 } });
+  chrome.runTimers(250);
+  await flushPromises();
+  assert.equal(posts.length, 1, "second write must wait for the first POST to settle");
+
+  posts[0].release();
+  await flushPromises();
+  await flushPromises();
+  assert.equal(posts.length, 2);
+  assert.deepEqual(JSON.parse(posts[1].body), { seq: 2 });
+  posts[1].release();
+});
+
 test("chrome client answers getState only after an in-flight state write settles", async () => {
   const requests = [];
   let releaseWrite = () => {};
