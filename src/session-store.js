@@ -7,6 +7,30 @@ import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
 export class SessionStore {
   constructor(file) {
     this.file = file;
+    this.mutationQueue = Promise.resolve();
+  }
+
+  // Every mutation is a read-modify-write of the full state file; two overlapping mutations
+  // (e.g. a debounced artifact-state write racing queued prompts) would each read a snapshot
+  // and the later write would silently drop the earlier one's changes. Serializing them keeps
+  // the last-write-wins semantics per field instead of per file. Mutations call skipWrite()
+  // when they bail without changes (e.g. unknown session) so the file is not rewritten.
+  mutateState(mutation) {
+    const run = this.mutationQueue.then(async () => {
+      const state = await this.readState();
+      let write = true;
+      const result = await mutation(state, () => {
+        write = false;
+      });
+      if (write) await this.writeState(state);
+      return result;
+    });
+    // A failed mutation must not wedge the queue for subsequent ones.
+    this.mutationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   async listSessions() {
@@ -28,144 +52,150 @@ export class SessionStore {
   async upsertSession(file, url) {
     const absolute = await canonicalFile(file);
     const key = sessionKey(absolute);
-    const state = await this.readState();
-    const existing = state.sessions[key] || {};
-    const existingPrompts = existing.prompts || [];
-    const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
-    const session = {
-      key,
-      file: absolute,
-      url,
-      status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
-      pending_prompts: existing.pending_prompts || 0,
-      prompts: existingPrompts,
-      layout_warnings: [],
-      delivered_layout_warning_keys: existing.delivered_layout_warning_keys || [],
-      dom_snapshot: existing.dom_snapshot || "",
-      chat: existing.chat || [],
-      state: existing.state ?? null,
-      updated_at: new Date().toISOString(),
-    };
-    state.sessions[key] = session;
-    await this.writeState(state);
-    return session;
+    return this.mutateState(async (state) => {
+      const existing = state.sessions[key] || {};
+      const existingPrompts = existing.prompts || [];
+      const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
+      const session = {
+        key,
+        file: absolute,
+        url,
+        status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
+        pending_prompts: existing.pending_prompts || 0,
+        prompts: existingPrompts,
+        layout_warnings: [],
+        delivered_layout_warning_keys: existing.delivered_layout_warning_keys || [],
+        dom_snapshot: existing.dom_snapshot || "",
+        chat: existing.chat || [],
+        state: existing.state ?? null,
+        updated_at: new Date().toISOString(),
+      };
+      state.sessions[key] = session;
+      return session;
+    });
   }
 
   async queuePrompts(key, payload) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
-    const shouldEndSession = Boolean(payload.endSession || payload.end_session);
-    const alreadyEnded = session.status === "ended";
-    const normalizedPrompts = prompts.map(normalizePrompt);
-    const userMessages = normalizedPrompts
-      .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-      .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
-    session.prompts = [...(session.prompts || []), ...normalizedPrompts];
-    session.chat = [...(session.chat || []), ...userMessages];
-    session.pending_prompts = session.prompts.length;
-    session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-    session.status = shouldEndSession || alreadyEnded ? "ended" : "feedback";
-    if (shouldEndSession) session.ended_by = "user";
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.mutateState(async (state, skipWrite) => {
+      const session = state.sessions[key];
+      if (!session) {
+        skipWrite();
+        return null;
+      }
+      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      const shouldEndSession = Boolean(payload.endSession || payload.end_session);
+      const alreadyEnded = session.status === "ended";
+      const normalizedPrompts = prompts.map(normalizePrompt);
+      const userMessages = normalizedPrompts
+        .filter((prompt) => prompt.tag === "message" && prompt.prompt)
+        .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+      session.prompts = [...(session.prompts || []), ...normalizedPrompts];
+      session.chat = [...(session.chat || []), ...userMessages];
+      session.pending_prompts = session.prompts.length;
+      session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
+      session.status = shouldEndSession || alreadyEnded ? "ended" : "feedback";
+      if (shouldEndSession) session.ended_by = "user";
+      session.updated_at = new Date().toISOString();
+      return session;
+    });
   }
 
   async recordLayoutWarnings(key, payload) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const deliveredWarningKeys = session.delivered_layout_warning_keys || [];
-    const deliveredKeys = new Set(deliveredWarningKeys);
-    const layoutWarnings = normalizeLayoutWarnings(
-      payload.layout_warnings || payload.layoutWarnings || [],
-      deliveredKeys,
-    );
-    const activeWarningKeys = new Set(layoutWarnings.map(layoutWarningKey));
-    const nextDeliveredWarningKeys = deliveredWarningKeys.filter((key) => activeWarningKeys.has(key)).slice(-200);
-    const deliveredKeysChanged =
-      nextDeliveredWarningKeys.length !== deliveredWarningKeys.length ||
-      nextDeliveredWarningKeys.some((key, index) => key !== deliveredWarningKeys[index]);
-    const previousSignature = JSON.stringify(session.layout_warnings || []);
-    const nextSignature = JSON.stringify(layoutWarnings);
-    const warningsChanged = previousSignature !== nextSignature;
-    if (!warningsChanged && !deliveredKeysChanged) {
-      return { session, changed: false, hasWarnings: layoutWarnings.length > 0 };
-    }
-    session.layout_warnings = layoutWarnings;
-    session.delivered_layout_warning_keys = nextDeliveredWarningKeys;
-    if (layoutWarnings.length > 0 && session.status !== "ended") {
-      session.status = "feedback";
-    } else if ((session.prompts || []).length === 0 && session.status !== "ended") {
-      session.status = "open";
-    }
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return { session, changed: warningsChanged, hasWarnings: layoutWarnings.length > 0 };
+    return this.mutateState(async (state, skipWrite) => {
+      const session = state.sessions[key];
+      if (!session) {
+        skipWrite();
+        return null;
+      }
+      const deliveredWarningKeys = session.delivered_layout_warning_keys || [];
+      const deliveredKeys = new Set(deliveredWarningKeys);
+      const layoutWarnings = normalizeLayoutWarnings(
+        payload.layout_warnings || payload.layoutWarnings || [],
+        deliveredKeys,
+      );
+      const activeWarningKeys = new Set(layoutWarnings.map(layoutWarningKey));
+      const nextDeliveredWarningKeys = deliveredWarningKeys.filter((key) => activeWarningKeys.has(key)).slice(-200);
+      const deliveredKeysChanged =
+        nextDeliveredWarningKeys.length !== deliveredWarningKeys.length ||
+        nextDeliveredWarningKeys.some((key, index) => key !== deliveredWarningKeys[index]);
+      const previousSignature = JSON.stringify(session.layout_warnings || []);
+      const nextSignature = JSON.stringify(layoutWarnings);
+      const warningsChanged = previousSignature !== nextSignature;
+      if (!warningsChanged && !deliveredKeysChanged) {
+        skipWrite();
+        return { session, changed: false, hasWarnings: layoutWarnings.length > 0 };
+      }
+      session.layout_warnings = layoutWarnings;
+      session.delivered_layout_warning_keys = nextDeliveredWarningKeys;
+      if (layoutWarnings.length > 0 && session.status !== "ended") {
+        session.status = "feedback";
+      } else if ((session.prompts || []).length === 0 && session.status !== "ended") {
+        session.status = "open";
+      }
+      session.updated_at = new Date().toISOString();
+      return { session, changed: warningsChanged, hasWarnings: layoutWarnings.length > 0 };
+    });
   }
 
   async takeFeedback(key) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return { status: "missing" };
-    }
-    // Prompts queued before the session ended (e.g. "Send & end session") must still reach the
-    // agent, so deliver them before reporting the ended state; the next poll then sees ended.
-    const prompts = session.prompts || [];
-    const layoutWarnings = session.layout_warnings || [];
-    const alreadyEnded = session.status === "ended";
-    if (prompts.length === 0 && layoutWarnings.length === 0) {
-      return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
-    }
-    const result = {
-      status: "feedback",
-      dom_snapshot: session.dom_snapshot || "",
-      prompts,
-      ...(layoutWarnings.length > 0 ? { layout_warnings: layoutWarnings } : {}),
-      // This is the final delivery before the session shows as ended - flag it so the agent
-      // knows not to expect (or force) a reopened browser afterward.
-      ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
-    };
-    session.prompts = [];
-    session.layout_warnings = [];
-    session.pending_prompts = 0;
-    session.dom_snapshot = "";
-    if (layoutWarnings.length > 0) {
-      const deliveredKeys = new Set(session.delivered_layout_warning_keys || []);
-      for (const warning of layoutWarnings) deliveredKeys.add(layoutWarningKey(warning));
-      session.delivered_layout_warning_keys = [...deliveredKeys].slice(-200);
-    }
-    if (!alreadyEnded) {
-      session.status = "open";
-    }
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return result;
+    return this.mutateState(async (state, skipWrite) => {
+      const session = state.sessions[key];
+      if (!session) {
+        skipWrite();
+        return { status: "missing" };
+      }
+      // Prompts queued before the session ended (e.g. "Send & end session") must still reach the
+      // agent, so deliver them before reporting the ended state; the next poll then sees ended.
+      const prompts = session.prompts || [];
+      const layoutWarnings = session.layout_warnings || [];
+      const alreadyEnded = session.status === "ended";
+      if (prompts.length === 0 && layoutWarnings.length === 0) {
+        skipWrite();
+        return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
+      }
+      const result = {
+        status: "feedback",
+        dom_snapshot: session.dom_snapshot || "",
+        prompts,
+        ...(layoutWarnings.length > 0 ? { layout_warnings: layoutWarnings } : {}),
+        // This is the final delivery before the session shows as ended - flag it so the agent
+        // knows not to expect (or force) a reopened browser afterward.
+        ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
+      };
+      session.prompts = [];
+      session.layout_warnings = [];
+      session.pending_prompts = 0;
+      session.dom_snapshot = "";
+      if (layoutWarnings.length > 0) {
+        const deliveredKeys = new Set(session.delivered_layout_warning_keys || []);
+        for (const warning of layoutWarnings) deliveredKeys.add(layoutWarningKey(warning));
+        session.delivered_layout_warning_keys = [...deliveredKeys].slice(-200);
+      }
+      if (!alreadyEnded) {
+        session.status = "open";
+      }
+      session.updated_at = new Date().toISOString();
+      return result;
+    });
   }
 
   // `endedBy` distinguishes a human ending review from the browser chrome ("user") from an
   // agent explicitly closing the loop via `lavish-axi end` ("agent"). Only a user-initiated end
   // blocks a plain reopen - see `SessionStore` callers in server.js.
   async endSession(key, endedBy = "agent") {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const existingEndedBy = session.status === "ended" ? session.ended_by : undefined;
-    const nextEndedBy = endedBy === "user" || existingEndedBy === "user" ? "user" : "agent";
-    session.status = "ended";
-    session.ended_by = nextEndedBy;
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.mutateState(async (state, skipWrite) => {
+      const session = state.sessions[key];
+      if (!session) {
+        skipWrite();
+        return null;
+      }
+      const existingEndedBy = session.status === "ended" ? session.ended_by : undefined;
+      const nextEndedBy = endedBy === "user" || existingEndedBy === "user" ? "user" : "agent";
+      session.status = "ended";
+      session.ended_by = nextEndedBy;
+      session.updated_at = new Date().toISOString();
+      return session;
+    });
   }
 
   // Opaque per-session key/value state owned by the artifact. The artifact iframe runs in an
@@ -181,27 +211,32 @@ export class SessionStore {
   }
 
   async setArtifactState(key, value) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    session.state = value ?? null;
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.mutateState(async (state, skipWrite) => {
+      const session = state.sessions[key];
+      if (!session) {
+        skipWrite();
+        return null;
+      }
+      session.state = value ?? null;
+      session.updated_at = new Date().toISOString();
+      return session;
+    });
   }
 
   async addAgentReply(key, text) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    session.chat = [...(session.chat || []), { role: "agent", text: String(text || ""), at: new Date().toISOString() }];
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.mutateState(async (state, skipWrite) => {
+      const session = state.sessions[key];
+      if (!session) {
+        skipWrite();
+        return null;
+      }
+      session.chat = [
+        ...(session.chat || []),
+        { role: "agent", text: String(text || ""), at: new Date().toISOString() },
+      ];
+      session.updated_at = new Date().toISOString();
+      return session;
+    });
   }
 
   async readState() {

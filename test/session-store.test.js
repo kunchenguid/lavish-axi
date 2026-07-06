@@ -623,3 +623,34 @@ test("artifact state operations no-op on an unknown session", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("overlapping mutations are serialized so neither write is lost", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    // Fire a debounced-style artifact state write and a prompt queue without awaiting in
+    // between: unserialized read-modify-write cycles would let the later write clobber the
+    // earlier one's field.
+    await Promise.all([
+      store.setArtifactState(session.key, { step: 3 }),
+      store.queuePrompts(session.key, {
+        domSnapshot: 'uid=1 h1 "Hello"',
+        prompts: [{ uid: "1", prompt: "Keep this", selector: "h1", tag: "h1", text: "Hello" }],
+      }),
+      store.setArtifactState(session.key, { step: 4 }),
+    ]);
+
+    assert.deepEqual(await store.getArtifactState(session.key), { step: 4 });
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(feedback.prompts.length, 1);
+    assert.equal(feedback.prompts[0].prompt, "Keep this");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
