@@ -517,6 +517,7 @@ function flushStateWrite() {
   try {
     body = JSON.stringify(state ?? null);
   } catch {
+    console.warn("[lavish] artifact state is not JSON-serializable (e.g. cyclic or BigInt); write skipped");
     return;
   }
   // Mirrors the server's ARTIFACT_STATE_MAX_BYTES cap (1 MiB): an oversized payload would
