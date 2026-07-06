@@ -519,6 +519,12 @@ function flushStateWrite() {
   } catch {
     return;
   }
+  // Mirrors the server's ARTIFACT_STATE_MAX_BYTES cap (1 MiB): an oversized payload would
+  // only earn a 413, so skip the POST instead of re-sending it on every debounce flush.
+  if (new TextEncoder().encode(body).length > 1024 * 1024) {
+    console.warn("[lavish] artifact state exceeds 1 MiB; write skipped");
+    return;
+  }
   stateWriteSettled = fetch("/api/" + key + "/state", {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -179,6 +179,7 @@ async function createChromeHarness({
         return true;
       },
     },
+    TextEncoder,
     sessionStorage: {
       getItem(key) {
         return storage.has(key) ? storage.get(key) : null;
@@ -933,6 +934,30 @@ test("chrome client resolves getState to null when the server has no state or er
 
   const reply = chrome.postedToFrame.find((message) => message.type === "lavish:state");
   assert.deepEqual(JSON.parse(JSON.stringify(reply)), { type: "lavish:state", id: "req-2", state: null });
+});
+
+test("chrome client skips state writes above the server's 1 MiB cap", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      posts.push({ url, method: init?.method });
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:setState", state: { blob: "x".repeat(1024 * 1024 + 64) } });
+  chrome.runTimers(250);
+  await flushPromises();
+  assert.equal(posts.length, 0);
+
+  // The skipped write must not wedge subsequent, normal-sized writes.
+  chrome.sendFrameMessage({ type: "lavish:setState", state: { step: 1 } });
+  chrome.runTimers(250);
+  await flushPromises();
+  assert.deepEqual(
+    posts.map((post) => post.method),
+    ["POST"],
+  );
 });
 
 test("chrome client answers getState only after an in-flight state write settles", async () => {
