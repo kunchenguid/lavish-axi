@@ -200,14 +200,18 @@ export class SessionStore {
 
   // Opaque per-session key/value state owned by the artifact. The artifact iframe runs in an
   // opaque origin (no allow-same-origin), so localStorage/IndexedDB throw inside it; persisting
-  // here lets artifact state survive reloads without relaxing the sandbox.
+  // here lets artifact state survive reloads without relaxing the sandbox. Reads go through the
+  // mutation queue (read-only) so they never observe a partially-written file or overtake a
+  // write that was already accepted.
   async getArtifactState(key) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    return session.state ?? null;
+    return this.mutateState(async (state, skipWrite) => {
+      skipWrite();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      return session.state ?? null;
+    });
   }
 
   async setArtifactState(key, value) {

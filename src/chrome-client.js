@@ -511,10 +511,18 @@ function flushStateWrite() {
   const state = pendingState;
   hasPendingState = false;
   pendingState = undefined;
+  // postMessage structured-clones values JSON can't represent (e.g. BigInt); dropping the
+  // write beats throwing in the timer callback or clobbering persisted state with null.
+  let body;
+  try {
+    body = JSON.stringify(state ?? null);
+  } catch {
+    return;
+  }
   stateWriteSettled = fetch("/api/" + key + "/state", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(state ?? null),
+    body,
   }).then(
     () => undefined,
     () => undefined,
