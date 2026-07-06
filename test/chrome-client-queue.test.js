@@ -934,3 +934,45 @@ test("chrome client resolves getState to null when the server has no state or er
   const reply = chrome.postedToFrame.find((message) => message.type === "lavish:state");
   assert.deepEqual(JSON.parse(JSON.stringify(reply)), { type: "lavish:state", id: "req-2", state: null });
 });
+
+test("chrome client answers getState only after an in-flight state write settles", async () => {
+  const requests = [];
+  let releaseWrite = () => {};
+  const writeGate = new Promise((resolve) => {
+    releaseWrite = () => resolve(undefined);
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      const method = init?.method || "GET";
+      requests.push(method);
+      if (method === "POST") {
+        await writeGate;
+        return { ok: true };
+      }
+      return { ok: true, json: async () => ({ step: "written" }) };
+    },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:setState", state: { step: "written" } });
+  chrome.runTimers(250);
+  await flushPromises();
+
+  chrome.sendFrameMessage({ type: "lavish:getState", id: "req-3" });
+  await flushPromises();
+
+  // The read must not race the in-flight write, or it would return the previous server value.
+  assert.deepEqual(requests, ["POST"]);
+
+  releaseWrite();
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(requests, ["POST", "GET"]);
+  const reply = chrome.postedToFrame.find((message) => message.type === "lavish:state");
+  assert.deepEqual(JSON.parse(JSON.stringify(reply)), {
+    type: "lavish:state",
+    id: "req-3",
+    state: { step: "written" },
+  });
+});

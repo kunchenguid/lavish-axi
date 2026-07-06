@@ -493,6 +493,9 @@ let pendingState;
 let hasPendingState = false;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let stateWriteTimer;
+// Reads await the last flushed POST so a getState racing an in-flight write cannot
+// return the previous server value after the artifact already saw the newer one.
+let stateWriteSettled = Promise.resolve();
 
 function scheduleStateWrite(state) {
   pendingState = state;
@@ -508,11 +511,14 @@ function flushStateWrite() {
   const state = pendingState;
   hasPendingState = false;
   pendingState = undefined;
-  fetch("/api/" + key + "/state", {
+  stateWriteSettled = fetch("/api/" + key + "/state", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(state ?? null),
-  }).catch(() => {});
+  }).then(
+    () => undefined,
+    () => undefined,
+  );
 }
 
 function respondWithState(id) {
@@ -520,7 +526,8 @@ function respondWithState(id) {
     postToFrame({ type: "lavish:state", id, state: pendingState ?? null });
     return;
   }
-  fetch("/api/" + key + "/state")
+  stateWriteSettled
+    .then(() => fetch("/api/" + key + "/state"))
     .then((response) => (response.ok ? response.json() : null))
     .catch(() => null)
     .then((state) => postToFrame({ type: "lavish:state", id, state: state ?? null }));

@@ -582,18 +582,39 @@ export function createArtifactSdk(
 
   function getState() {
     return new Promise((resolve) => {
+      // Opened standalone (no embedding chrome): there is no host to answer, so resolve
+      // immediately instead of waiting out the retry window.
+      if (window.parent === window) {
+        resolve(null);
+        return;
+      }
       const id = "lavish-state-" + ++stateRequestCounter;
       let settled = false;
+      /** @type {number | undefined} */
+      let retryTimer;
       const finish = (value) => {
         if (settled) return;
         settled = true;
+        if (retryTimer !== undefined) window.clearTimeout(retryTimer);
         pendingStateRequests.delete(id);
         resolve(value === undefined ? null : value);
       };
       pendingStateRequests.set(id, finish);
-      // Resolve null if the host never replies (e.g. an older chrome that ignores getState).
-      window.setTimeout(() => finish(null), 4000);
-      parent.postMessage({ type: "lavish:getState", id }, "*");
+      // A null resolution makes callers hydrate defaults, and their next setState would
+      // overwrite the real saved state - so retry a possibly-lost request a few times and
+      // only give up on a host that never answers (e.g. an older chrome ignoring getState).
+      let attempts = 0;
+      const request = () => {
+        if (settled) return;
+        attempts += 1;
+        if (attempts > 3) {
+          finish(null);
+          return;
+        }
+        parent.postMessage({ type: "lavish:getState", id }, "*");
+        retryTimer = window.setTimeout(request, attempts * 1000);
+      };
+      request();
     });
   }
 
