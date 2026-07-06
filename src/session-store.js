@@ -33,20 +33,28 @@ export class SessionStore {
     return run;
   }
 
+  // Reads are serialized through the mutation queue too (read-only via skipWrite): writeFile
+  // truncates before writing, so an unserialized read racing a write can see partial JSON.
   async listSessions() {
-    const state = await this.readState();
-    return Object.values(state.sessions).sort((a, b) => a.file.localeCompare(b.file));
+    return this.mutateState(async (state, skipWrite) => {
+      skipWrite();
+      return Object.values(state.sessions).sort((a, b) => a.file.localeCompare(b.file));
+    });
   }
 
   async findByFile(file) {
     const absolute = await canonicalFile(file);
-    const state = await this.readState();
-    return state.sessions[sessionKey(absolute)] || null;
+    return this.mutateState(async (state, skipWrite) => {
+      skipWrite();
+      return state.sessions[sessionKey(absolute)] || null;
+    });
   }
 
   async findByKey(key) {
-    const state = await this.readState();
-    return state.sessions[key] || null;
+    return this.mutateState(async (state, skipWrite) => {
+      skipWrite();
+      return state.sessions[key] || null;
+    });
   }
 
   async upsertSession(file, url) {
