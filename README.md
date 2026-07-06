@@ -140,7 +140,9 @@ pnpm link
   That fallback guidance recommends DaisyUI's `luxury` theme by default, warns not to `@apply` DaisyUI classes inside Tailwind browser-runtime style blocks, includes an optional layout safety CSS snippet for dense nested grid/flex layouts, and provides a pinned Mermaid CDN snippet with initialization for flows, architecture, state, and sequence diagrams.
 - **Open-time layout gate** - The browser chrome masks each artifact until the real in-iframe layout audit reports no error-severity findings.
   Warning-only artifacts reveal normally; error findings notify the agent through the same `layout_warnings` poll path and keep the curtain up until a clean reload.
-  The user can click **Show anyway**, and a bounded safety timeout reveals with a persistent layout-issues banner so review is never blocked indefinitely.
+  The user can click **Show anyway**, and a bounded safety timeout reveals with a layout-issues banner so review is never blocked indefinitely.
+  When a slow audit lands clean after that timeout, the banner clears instead of sticking, so a heavy artifact that just finished late is not mislabeled.
+  The timeout defaults to 12s; raise it with `LAVISH_AXI_LAYOUT_GATE_MAX_HOLD_MS` on slow machines or heavy CDN-backed artifacts (the client caps it at 60s).
 - **Layout warnings** - After fonts load and layout settles, the injected SDK audits the real browser render for page horizontal overflow, element overflow, clipped or visibly spilling text, and overlapping text.
   Intentional horizontal scrollers using `overflow-x: auto` or `scroll` are excluded from horizontal checks, and `overflow-y: auto` or `scroll` is treated as intentional for vertical overflow.
   Current findings are returned from `lavish-axi poll` as `layout_warnings` with `selector`, `kind`, `overflowPx`, `viewportWidth`, `severity`, and `persistent`.

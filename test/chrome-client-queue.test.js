@@ -591,6 +591,40 @@ test("layout gate timeout reveals with a persistent layout issue banner", async 
   assert.match(chrome.element("layoutIssueBanner").textContent, /may have layout issues/);
 });
 
+test("layout gate timeout banner clears when a late clean audit lands", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
+  });
+
+  // The safety timeout fires before any audit reports - the false-positive banner shows.
+  chrome.runTimers(25);
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
+
+  // The audit finishes late and reports no errors; the banner must clear, not stick.
+  chrome.sendFrameMessage({ type: "lavish:layoutWarnings", layout_warnings: [] });
+  await flushPromises();
+
+  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
+});
+
+test("layout gate timeout banner stays when a late audit still reports errors", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
+  });
+
+  chrome.runTimers(25);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
+
+  chrome.sendFrameMessage({
+    type: "lavish:layoutWarnings",
+    layout_warnings: [{ selector: "html", kind: "content-overlap", severity: "error" }],
+  });
+  await flushPromises();
+
+  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
+});
+
 test("layout gate timeout re-arms on reload", async () => {
   const chrome = await createChromeHarness({
     sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
@@ -699,6 +733,62 @@ test("chrome client strips the internal queue key before posting prompts", async
     domSnapshot: "uid=1 body",
   });
   assert.equal(chrome.queued().length, 0);
+});
+
+test("send submits without a snapshot when the iframe bridge never replies", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      posts.push({ url, body: JSON.parse(init.body) });
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Do it", selector: "#x", tag: "choice", text: "X" },
+  });
+  chrome.element("send").onclick();
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:requestSnapshot");
+  assert.equal(posts.length, 0);
+
+  // The bridge is wedged and never posts lavish:snapshot - the fallback timer submits anyway.
+  chrome.runTimers(4000);
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, "/api/abc/prompts");
+  assert.deepEqual(posts[0].body.prompts, [{ prompt: "Do it", selector: "#x", tag: "choice", text: "X" }]);
+  assert.equal(posts[0].body.domSnapshot, "");
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /without a page snapshot/);
+  assert.equal(chrome.queued().length, 0);
+});
+
+test("a normal snapshot reply cancels the send fallback so it never double-submits", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      posts.push({ url, body: JSON.parse(init.body) });
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Do it", selector: "#x", tag: "choice", text: "X" },
+  });
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.domSnapshot, "uid=1 body");
+
+  // The fallback timer was cleared by the reply, so firing timers must not submit again.
+  chrome.runTimers(4000);
+  await flushPromises();
+  assert.equal(posts.length, 1);
 });
 
 test("chrome send and end carries the end intent with queued prompts", async () => {

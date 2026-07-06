@@ -67,6 +67,23 @@ export function resolveIdleTimeoutMs(env = process.env) {
   return value;
 }
 
+const DEFAULT_LAYOUT_GATE_MAX_HOLD_MS = 12_000;
+
+// The open-time layout gate curtains each artifact until the in-iframe audit reports it is
+// clean, then reveals it. When the audit does not report within this window the gate reveals
+// anyway with a "may have layout issues" banner. The artifact iframe is same-origin with the
+// chrome and shares one main thread, so a heavy artifact (the recommended DaisyUI + Tailwind
+// browser-runtime CDN stack, or several opened at once) can starve that thread and finish the
+// audit after the deadline, tripping a false-positive banner. Raise this to give slow machines
+// more headroom; the client clamps it to a 60s ceiling.
+export function resolveLayoutGateMaxHoldMs(env = process.env) {
+  const raw = env.LAVISH_AXI_LAYOUT_GATE_MAX_HOLD_MS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_LAYOUT_GATE_MAX_HOLD_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_LAYOUT_GATE_MAX_HOLD_MS;
+  return value;
+}
+
 export async function serve({
   port,
   stateFile,
@@ -75,6 +92,7 @@ export async function serve({
   log = null,
   pollHeartbeatMs = 15_000,
   idleTimeoutMs = resolveIdleTimeoutMs(),
+  layoutGateMaxHoldMs = resolveLayoutGateMaxHoldMs(),
   host = bindHost(),
   linkHost: linkHostName = linkHost(),
 }) {
@@ -370,6 +388,7 @@ export async function serve({
       res.type("html").send(
         createChromeHtml(session, {
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
+          layoutGateMaxHoldMs,
           faviconTag,
           title: title ? `${title} · Lavish` : "Lavish Editor",
         }),
@@ -902,15 +921,20 @@ export function extractArtifactHead(html) {
   return { faviconTag, title };
 }
 
+/**
+ * @param {*} session
+ * @param {{ layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, faviconTag?: string, title?: string }} [options]
+ */
 export function createChromeHtml(
   session,
-  { layoutGateEnabled = true, faviconTag = LAVISH_DEFAULT_FAVICON, title = "Lavish Editor" } = {},
+  { layoutGateEnabled = true, layoutGateMaxHoldMs, faviconTag = LAVISH_DEFAULT_FAVICON, title = "Lavish Editor" } = {},
 ) {
   const sessionJson = jsonScript({
     key: session.key,
     file: session.file,
     initialChat: session.chat || [],
     layoutGateEnabled,
+    layoutGateMaxHoldMs,
     modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
   });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);

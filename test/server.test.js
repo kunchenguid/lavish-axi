@@ -15,6 +15,7 @@ import {
   resolveArtifactAsset,
   resolveDesignAssetPath,
   resolveIdleTimeoutMs,
+  resolveLayoutGateMaxHoldMs,
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
@@ -575,6 +576,18 @@ test("chrome bootstraps persisted chat history so missed replies still appear", 
   assert.match(html, /Persisted reply/);
 });
 
+test("chrome bootstrap carries a configured layout gate hold time", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, { layoutGateMaxHoldMs: 30_000 });
+
+  assert.match(html, /"layoutGateMaxHoldMs":30000/);
+});
+
+test("chrome bootstrap omits the layout gate hold time when it is not configured", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.doesNotMatch(html, /layoutGateMaxHoldMs/);
+});
+
 test("chrome client renders persisted chat history", async () => {
   const js = await chromeClientSource();
 
@@ -612,7 +625,7 @@ test("sending with an empty composer nudges instead of blocking", async () => {
   const css = await chromeCssSource();
 
   assert.match(html, /class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.</);
-  assert.match(js, /function showSendHint\(\)/);
+  assert.match(js, /function showSendHint\(/);
   assert.match(js, /sendHint\.hidden = false/);
   assert.match(js, /chatInput\.focus\(\)/);
   assert.match(css, /\.send-hint\{/);
@@ -910,6 +923,31 @@ test("session URLs can disable the layout gate for one open", async () => {
     assert.match(chrome, /<body class="lavish">/);
     assert.match(chrome, /id="layoutGateOverlay" hidden/);
     assert.match(chrome, /"layoutGateEnabled":false/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("served chrome carries the configured layout gate hold time", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    layoutGateMaxHoldMs: 45_000,
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const body = await res.json();
+    const chrome = await (await fetch(body.url)).text();
+    assert.match(chrome, /"layoutGateMaxHoldMs":45000/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1480,6 +1518,15 @@ test("resolveIdleTimeoutMs defaults, parses, and only explicit opt-outs disable"
   assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "-1" }), 30 * 60_000);
   assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "30000ms" }), 30 * 60_000);
   assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "later" }), 30 * 60_000);
+});
+
+test("resolveLayoutGateMaxHoldMs defaults to 12s and honors a positive numeric override", () => {
+  assert.equal(resolveLayoutGateMaxHoldMs({}), 12_000);
+  assert.equal(resolveLayoutGateMaxHoldMs({ LAVISH_AXI_LAYOUT_GATE_MAX_HOLD_MS: "" }), 12_000);
+  assert.equal(resolveLayoutGateMaxHoldMs({ LAVISH_AXI_LAYOUT_GATE_MAX_HOLD_MS: "30000" }), 30_000);
+  assert.equal(resolveLayoutGateMaxHoldMs({ LAVISH_AXI_LAYOUT_GATE_MAX_HOLD_MS: "0" }), 12_000);
+  assert.equal(resolveLayoutGateMaxHoldMs({ LAVISH_AXI_LAYOUT_GATE_MAX_HOLD_MS: "-5" }), 12_000);
+  assert.equal(resolveLayoutGateMaxHoldMs({ LAVISH_AXI_LAYOUT_GATE_MAX_HOLD_MS: "soon" }), 12_000);
 });
 
 async function expectDoneWithin(server, ms) {

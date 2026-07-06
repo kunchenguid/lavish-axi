@@ -72,10 +72,20 @@ const layoutGateMaxHoldMs =
 let layoutGateVisible = false;
 let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
+// The safety timeout revealed the artifact before the audit reported. Set so a late audit
+// result can still reconcile the banner instead of being ignored as a stale post-reveal event.
+let layoutGateTimedOut = false;
 let layoutGateCycle = 0;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let layoutGateTimer;
 const snapshotRequests = [];
+// A submit is waiting on the iframe's snapshot reply. If the sandboxed bridge is starved or
+// wedged the reply never comes, so a fallback timer submits without the DOM snapshot rather
+// than letting Send silently do nothing.
+let awaitingSubmitSnapshot = false;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let submitSnapshotTimer;
+const submitSnapshotTimeoutMs = 4_000;
 let endAfterSubmit = false;
 let workingBubble = null;
 let submitQueuedPromise = null;
@@ -154,7 +164,10 @@ function updateSendState() {
   sendFromMenuButton.disabled = sendButton.disabled;
 }
 
-function showSendHint() {
+const defaultSendHintText = "Write a message or annotate an element first.";
+
+function showSendHint(message = defaultSendHintText) {
+  sendHint.textContent = message;
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);
   sendHintTimer = setTimeout(() => {
@@ -287,7 +300,23 @@ function postToFrame(message) {
 
 function requestSnapshot(action) {
   snapshotRequests.push(action);
+  if (action === "submit") armSubmitSnapshotFallback();
   postToFrame({ type: "lavish:requestSnapshot" });
+}
+
+function armSubmitSnapshotFallback() {
+  awaitingSubmitSnapshot = true;
+  clearTimeout(submitSnapshotTimer);
+  submitSnapshotTimer = setTimeout(() => {
+    if (!awaitingSubmitSnapshot) return;
+    awaitingSubmitSnapshot = false;
+    const index = snapshotRequests.indexOf("submit");
+    if (index !== -1) snapshotRequests.splice(index, 1);
+    pendingSnapshot = "";
+    showSendHint("Sent without a page snapshot - the preview didn't respond.");
+    submitQueued();
+  }, submitSnapshotTimeoutMs);
+  submitSnapshotTimer?.unref?.();
 }
 
 function sendQueued(endAfter) {
@@ -419,6 +448,7 @@ function revealLayoutGate({ showBanner = false, bannerText = undefined } = {}) {
 function forceRevealLayoutGate(reason) {
   if (!layoutGateEnabled || ended) return;
   if (reason === "manual") layoutGateManuallyBypassed = true;
+  if (reason === "timeout") layoutGateTimedOut = true;
   const bannerText =
     reason === "timeout"
       ? "This surface may have layout issues. Lavish revealed it after the safety timeout so review is never blocked."
@@ -431,6 +461,7 @@ function startLayoutGateCycle() {
 
   layoutGateCycle += 1;
   layoutGateArmed = true;
+  layoutGateTimedOut = false;
   setLayoutIssueBanner(false);
   setLayoutGateCard("checking");
   setLayoutGateActive(true);
@@ -450,7 +481,11 @@ function handleLayoutWarningsForGate(layoutWarnings) {
 
   if (!layoutGateEnabled) return;
 
-  if (layoutGateManuallyBypassed) {
+  // Once the gate has already been revealed early - the user clicked "Show anyway", or the
+  // safety timeout fired before the audit ever reported - a later audit result still decides
+  // the banner: a clean result clears the false positive, real errors keep the warning shown.
+  // Without this, a timeout reveal ignored every subsequent audit and the banner was sticky.
+  if (layoutGateManuallyBypassed || layoutGateTimedOut) {
     setLayoutIssueBanner(hasErrors);
     return;
   }
@@ -691,6 +726,12 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:snapshot") {
     const snapshotAction = snapshotRequests.shift() || "submit";
+    if (snapshotAction === "submit") {
+      // The fallback timer already submitted this one without a snapshot; ignore the late reply.
+      if (!awaitingSubmitSnapshot) return;
+      awaitingSubmitSnapshot = false;
+      clearTimeout(submitSnapshotTimer);
+    }
     if (snapshotAction === "copy") {
       copyText(msg.snapshot || "");
     } else {
