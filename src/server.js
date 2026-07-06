@@ -97,7 +97,9 @@ export async function serve({
   const jsonParser = express.json({ limit: "2mb" });
   const lenientJsonParser = express.json({ strict: false, limit: "2mb" });
   app.use((req, res, next) => {
-    if (req.method === "POST" && /^\/api\/[^/]+\/state$/.test(req.path)) {
+    // Trailing slash included: Express non-strict routing still routes it to the state handler,
+    // so it must get the same lenient parser or primitive bodies start failing there.
+    if (req.method === "POST" && /^\/api\/[^/]+\/state\/?$/.test(req.path)) {
       return lenientJsonParser(req, res, next);
     }
     return jsonParser(req, res, next);
@@ -274,7 +276,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      res.json(await store.getArtifactState(req.params.key));
+      res.json(session.state ?? null);
     } catch (error) {
       next(error);
     }

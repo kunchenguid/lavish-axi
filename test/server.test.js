@@ -2646,6 +2646,16 @@ test("artifact state round-trips through the server", async () => {
       assert.deepEqual(await readPrimitive.json(), primitive);
     }
 
+    // Express non-strict routing also routes the trailing-slash path here; it must get the
+    // same lenient parser or primitive bodies fail on it.
+    const trailingSlash = await fetch(`${base}/api/${session.key}/state/`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify("ready"),
+    });
+    assert.equal(trailingSlash.status, 204);
+    assert.deepEqual(await (await fetch(`${base}/api/${session.key}/state`)).json(), "ready");
+
     const clear = await fetch(`${base}/api/${session.key}/state`, {
       method: "POST",
       headers: { "content-type": "application/json" },
