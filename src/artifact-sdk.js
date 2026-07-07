@@ -1102,7 +1102,9 @@ export function createArtifactSdk(
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
     }
-    if (msg.type === "lavish:state" && pendingStateRequests.has(msg.id)) {
+    // Only the embedding chrome may answer getState: any window can post into the iframe,
+    // and a spoofed reply would hydrate the artifact with attacker-chosen state.
+    if (msg.type === "lavish:state" && event.source === window.parent && pendingStateRequests.has(msg.id)) {
       pendingStateRequests.get(msg.id)(msg.state ?? null);
     }
   });
