@@ -558,10 +558,13 @@ test("chrome queued-prompt pills use the preview mock steel treatment", async ()
 test("chrome includes a chat-like prompt composer and agent reply listener", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
+  const css = await chromeCssSource();
 
   assert.match(html, /id="chatLog"/);
   assert.match(html, /id="chatInput"/);
   assert.match(js, /agent-reply/);
+  assert.match(css, /\.chat:empty::before\{/);
+  assert.match(css, /Agent hasn't sent a message yet/);
 });
 
 test("chrome bootstraps persisted chat history so missed replies still appear", () => {
