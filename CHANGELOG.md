@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.37](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.36...lavish-axi-v0.1.37) (2026-07-07)
+
+
+### Features
+
+* **server:** surface artifact favicon and title on the Lavish tab ([#116](https://github.com/kunchenguid/lavish-axi/issues/116)) ([8b9f79f](https://github.com/kunchenguid/lavish-axi/commit/8b9f79f0c36523403cec8e05b89b500a2e8902bd))
+
+
+### Bug Fixes
+
+* **chrome:** keep composer visible with long feedback queues ([#146](https://github.com/kunchenguid/lavish-axi/issues/146)) ([a36aeb6](https://github.com/kunchenguid/lavish-axi/commit/a36aeb676eef161bd58b227a1e171fa2f6b5e071))
+
 ## [0.1.36](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.35...lavish-axi-v0.1.36) (2026-07-03)
 
 
