@@ -6,10 +6,10 @@ This page documents the contract that backend must implement.
 
 ## Configuration
 
-| Env var | Purpose |
-|---|---|
-| `LAVISH_AXI_HTML_APP_API_URL` | Base URL of your share backend. Defaults to `https://api.ht-ml.app`; trailing slashes are stripped. |
-| `LAVISH_AXI_HTML_APP_TOKEN` | Optional bearer token, sent as `Authorization: Bearer <token>`. Also settable per call with `--token`. |
+| Env var                       | Purpose                                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `LAVISH_AXI_HTML_APP_API_URL` | Base URL of your share backend. Defaults to `https://api.ht-ml.app`; trailing slashes are stripped.    |
+| `LAVISH_AXI_HTML_APP_TOKEN`   | Optional bearer token, sent as `Authorization: Bearer <token>`. Also settable per call with `--token`. |
 
 ## Contract
 
@@ -50,8 +50,7 @@ The request times out after 30 seconds.
 export default {
   async fetch(req, env) {
     const { pathname } = new URL(req.url);
-    if (req.method !== "POST" || pathname !== "/v1/sites")
-      return new Response("Not found", { status: 404 });
+    if (req.method !== "POST" || pathname !== "/v1/sites") return new Response("Not found", { status: 404 });
 
     // Require the bearer token — an open endpoint hosts arbitrary HTML on your domain.
     if ((req.headers.get("authorization") || "") !== `Bearer ${env.SHARE_TOKEN}`)
