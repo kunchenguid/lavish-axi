@@ -404,25 +404,18 @@ body.lavish {
   opacity: 0.55;
   cursor: not-allowed;
 }
-.split {
+.button-danger {
   display: inline-flex;
-  align-items: stretch;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  color: var(--danger);
 }
-.send-main {
-  border-radius: var(--radius-md) 0 0 var(--radius-md);
+.button-danger:hover:not(:disabled) {
+  background: rgba(240, 100, 100, 0.1);
 }
-.send-caret {
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  padding: 9px;
-  border-left: 1px solid rgba(23, 19, 10, 0.22);
-  display: grid;
-  place-items: center;
-}
-.send-menu {
-  right: 0;
-  bottom: 44px;
-  width: 208px;
-  border-radius: 11px;
+.button-danger > svg {
+  flex-shrink: 0;
 }
 .share-overlay {
   position: fixed;
