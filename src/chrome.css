@@ -845,16 +845,22 @@ body.lavish {
   align-items: center;
   gap: 8px;
   justify-content: flex-end;
+  min-width: 0;
   position: relative;
 }
 .send-hint {
-  margin-right: auto;
   color: var(--fg-faint);
   font-size: 11px;
   line-height: 1.35;
 }
 .send-hint[hidden] {
   display: none;
+}
+@media (max-width: 320px) {
+  .composer {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
 }
 .ended-overlay {
   position: fixed;
