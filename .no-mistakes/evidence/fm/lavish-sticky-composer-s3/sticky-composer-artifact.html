@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sticky Composer Verification</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f7f3ea;
+        color: #17191f;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px;
+      }
+      main {
+        width: min(680px, 100%);
+        display: grid;
+        gap: 18px;
+      }
+      h1 {
+        margin: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        font-size: clamp(28px, 6vw, 54px);
+        line-height: 1.18;
+        letter-spacing: 0;
+      }
+      p {
+        margin: 0;
+        max-width: 56ch;
+        line-height: 1.55;
+        color: #4c5568;
+      }
+      button {
+        justify-self: start;
+        border: 0;
+        border-radius: 8px;
+        background: #14171f;
+        color: white;
+        font: inherit;
+        font-weight: 700;
+        padding: 12px 16px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Review queue stress surface</h1>
+      <p>
+        This evidence artifact queues a long list of user-style feedback items through the real
+        Lavish SDK so the chrome conversation panel can be verified at constrained viewports.
+      </p>
+      <button id="queueMany" type="button">Queue 36 feedback items</button>
+    </main>
+    <script>
+      document.getElementById("queueMany").addEventListener("click", () => {
+        for (let index = 1; index <= 36; index += 1) {
+          window.lavish.queuePrompt(`Feedback item ${index}: keep this queued note visible in the scroll region.`, {
+            selector: `#stress-target-${index}`,
+            tag: "annotation",
+            text: `Stress item ${index}`,
+          });
+        }
+      });
+    </script>
+  </body>
+</html>
