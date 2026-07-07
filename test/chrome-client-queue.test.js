@@ -61,6 +61,7 @@ async function createChromeHarness({
       textContent: "",
       scrollTop: 0,
       scrollHeight: 0,
+      scrolledIntoView: null,
       dataset: {},
       onclick: null,
       classList: {
@@ -101,6 +102,7 @@ async function createChromeHarness({
       },
       appendChild(child) {
         child.parentElement = this;
+        this.lastAppendedChild = child;
         return child;
       },
       click(event = {}) {
@@ -113,6 +115,9 @@ async function createChromeHarness({
         this.focused = true;
       },
       select() {},
+      scrollIntoView(options) {
+        this.scrolledIntoView = options;
+      },
       listeners,
     };
     elements.set(id, el);
@@ -264,6 +269,28 @@ test("chrome client replaces queued prompts with the same internal key", async (
   );
   assert.match(chrome.element("annotationPills").innerHTML, /Use plan B/);
   assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /Use plan A/);
+});
+
+test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {
+  const chrome = await createChromeHarness();
+  const panelScroll = chrome.element("panelScroll");
+  panelScroll.scrollHeight = 1800;
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Review the title", selector: "h1", tag: "annotation", text: "Title" },
+  });
+  assert.equal(panelScroll.scrollTop, 1800);
+
+  panelScroll.scrollTop = 640;
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({ text: "I updated the title." }),
+  });
+
+  const bubble = chrome.element("chatLog").lastAppendedChild;
+  assert.equal(bubble.scrolledIntoView.block, "nearest");
+  assert.equal(bubble.scrolledIntoView.inline, "nearest");
+  assert.equal(panelScroll.scrollTop, 640);
 });
 
 test("chrome client posts layout warnings from the artifact iframe", async () => {

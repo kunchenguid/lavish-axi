@@ -703,12 +703,17 @@ test("chrome omits clear queue button because pills can be removed individually"
 
 test("annotation pill tooltip separates target and prompt details", async () => {
   const js = await chromeClientSource();
+  const css = await chromeCssSource();
 
   assert.match(js, /tooltip-label/);
   assert.match(js, /Target/);
   assert.match(js, /Prompt/);
   assert.match(js, /pill-tooltip-target/);
   assert.match(js, /pill-tooltip-prompt/);
+  assert.match(css, /\.pill-wrap\{[^}]*width:min\(320px,100%\)/);
+  assert.match(css, /\.pill-tooltip\{[^}]*position:static/);
+  assert.match(css, /\.pill-tooltip\{[^}]*width:100%/);
+  assert.doesNotMatch(css, /\.pill-tooltip\{[^}]*position:absolute/);
 });
 
 test("chrome client script is valid JavaScript", async () => {

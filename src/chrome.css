@@ -747,7 +747,10 @@ body.lavish {
   display: none;
 }
 .pill-wrap {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: min(320px, 100%);
   max-width: 100%;
 }
 .pill {
@@ -788,11 +791,10 @@ body.lavish {
 }
 .pill-tooltip {
   display: none;
-  position: absolute;
+  position: static;
   z-index: 5;
-  left: 0;
-  bottom: calc(100% + 8px);
-  width: min(320px, 80vw);
+  width: 100%;
+  margin-top: 8px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   background: var(--bg-bar);
