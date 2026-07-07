@@ -284,7 +284,13 @@ export async function serve({
 
   app.post("/api/:key/state", async (req, res, next) => {
     try {
-      const value = req.body === undefined ? null : req.body;
+      // An unparsed body (missing/mismatched content-type) must not clear persisted state by
+      // coercing to null; explicit clears send a JSON `null` body.
+      const value = req.body;
+      if (value === undefined) {
+        res.status(400).json({ error: "missing JSON body; send null to clear state" });
+        return;
+      }
       if (Buffer.byteLength(JSON.stringify(value ?? null)) > ARTIFACT_STATE_MAX_BYTES) {
         res.status(413).json({ error: "artifact state too large", limit: ARTIFACT_STATE_MAX_BYTES });
         return;

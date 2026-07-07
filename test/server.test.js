@@ -2656,6 +2656,15 @@ test("artifact state round-trips through the server", async () => {
     assert.equal(trailingSlash.status, 204);
     assert.deepEqual(await (await fetch(`${base}/api/${session.key}/state`)).json(), "ready");
 
+    // An unparsed body (no JSON content-type) must not silently clear persisted state.
+    const unparsed = await fetch(`${base}/api/${session.key}/state`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "whoops",
+    });
+    assert.equal(unparsed.status, 400);
+    assert.deepEqual(await (await fetch(`${base}/api/${session.key}/state`)).json(), "ready");
+
     const clear = await fetch(`${base}/api/${session.key}/state`, {
       method: "POST",
       headers: { "content-type": "application/json" },
