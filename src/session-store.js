@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
@@ -264,8 +264,13 @@ export class SessionStore {
     }
   }
 
+  // Atomic temp-file + rename: writeFile truncates in place, so a cross-process reader (e.g.
+  // a CLI invocation while the detached server writes) could otherwise parse torn JSON. The
+  // pid suffix keeps concurrent writers from sharing a temp file.
   async writeState(state) {
-    await writeFile(this.file, `${JSON.stringify(state, null, 2)}\n`);
+    const tmp = `${this.file}.${process.pid}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`);
+    await rename(tmp, this.file);
   }
 }
 

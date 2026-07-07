@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -650,6 +650,25 @@ test("overlapping mutations are serialized so neither write is lost", async () =
     const feedback = feedbackResult(await store.takeFeedback(session.key));
     assert.equal(feedback.prompts.length, 1);
     assert.equal(feedback.prompts[0].prompt, "Keep this");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("state writes are atomic: no temp files linger and the file is always parseable", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await Promise.all(Array.from({ length: 20 }, (_, i) => store.setArtifactState(session.key, { seq: i })));
+
+    const entries = await readdir(dir);
+    assert.deepEqual(entries.sort(), ["artifact.html", "state.json"]);
+    JSON.parse(await readFile(stateFile, "utf8"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
