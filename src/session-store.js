@@ -33,8 +33,9 @@ export class SessionStore {
     return run;
   }
 
-  // Reads are serialized through the mutation queue too (read-only via skipWrite): writeFile
-  // truncates before writing, so an unserialized read racing a write can see partial JSON.
+  // Reads are serialized through the mutation queue too (read-only via skipWrite): writes are
+  // atomic (temp file + rename), but an unserialized read could still return a stale snapshot
+  // that overtakes a mutation this process already accepted.
   async listSessions() {
     return this.mutateState(async (state, skipWrite) => {
       skipWrite();

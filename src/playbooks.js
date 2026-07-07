@@ -199,7 +199,7 @@ export const PLAYBOOKS = [
       "Use data-lavish-question on a question wrapper or pass queueKey when multiple pre-send updates should replace the prior unsent answer for the same question.",
       "Pass options such as tag, text, selector, target, data, queueKey, or element when they help the agent understand exactly what the user chose.",
       "Call window.lavish.sendQueuedPrompts() only when the control should immediately send committed feedback instead of waiting for the user to press Send to Agent.",
-      "Persist progress that must survive a reload - checklist ticks, wizard step, partially built selections - with window.lavish.setState(stateObject) on change and `await window.lavish.getState()` on load; these store opaque JSON server-side per session, so state outlives reloads, restarts, and reopening the same file.",
+      "Persist progress that must survive a reload - checklist ticks, wizard step, partially built selections - with window.lavish.setState(state) on change (any JSON value, not just objects) and `await window.lavish.getState()` on load; these store opaque JSON server-side per session, so state outlives reloads, restarts, and reopening the same file.",
       "Make queued prompts specific enough that the agent can act without asking a follow-up question.",
       "Keep native browser controls accessible and readable on mobile.",
     ],
@@ -207,7 +207,7 @@ export const PLAYBOOKS = [
       "Do not queue one prompt per radio change, checkbox toggle, dropdown change, or choice-button click when the user can still change their mind.",
       "Do not create controls whose queued prompt is unclear or too vague to execute.",
       "Do not hide the difference between selected locally and queued for the agent.",
-      "Do not rely on localStorage, sessionStorage, or IndexedDB to remember artifact state - the iframe sandbox makes them throw and your writes are silently lost on reload; use window.lavish.setState/getState instead.",
+      "Do not rely on localStorage, sessionStorage, or IndexedDB to remember artifact state - the sandboxed iframe's opaque origin makes access throw, so nothing persists across reloads (and a try/catch hides the failure); use window.lavish.setState/getState instead.",
       "Do not require interaction for content the user only needs to read.",
     ],
     lavish_notes: [
