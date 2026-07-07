@@ -1,0 +1,1 @@
+2026-07-07: Synced docs for conversation empty state / first-poll agent-reply context. Updated README.md and AGENTS.md; verified skill freshness, Prettier, diff whitespace, and targeted server test.

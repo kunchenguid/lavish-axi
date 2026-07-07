@@ -75,6 +75,7 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
    Text selection prompts use `tag: "text"` and preserve a structured `target` with `type: "text-range"`, selected text, `commonAncestorSelector`, and start/end boundary anchors.
    Mermaid diagram-node prompts use `tag: "mermaid-node"` and preserve a structured `target` with `type: "mermaid-node"`, the Mermaid `diagramId` and `nodeId`, the rendered `label`, and a `selector`, so the annotation anchors to node identity and survives a re-render that reshuffles the SVG.
    The conversation panel keeps chat bubbles and queued prompt preview pills in a scrollable region above the sticky composer, so a long queue cannot push the textarea or send controls out of view.
+   When there are no chat bubbles, the panel shows a CSS-only empty-state note that the agent has not sent a message yet and nudges the user to annotate the artifact or type below.
    In the chrome composer, Enter sends queued prompts (equivalent to clicking "Send to Agent"); Shift+Enter inserts a newline.
    Sending an empty composer stays enabled, shows an inline hint, and focuses the composer instead of disabling the button.
    The split-button menu also offers "Send & end session", which submits queued prompts with an `endSession` flag and marks the chrome ended only after that POST succeeds.
@@ -92,6 +93,7 @@ State lives at `~/.lavish-axi/state.json` (override with `LAVISH_AXI_STATE_DIR`)
 9. The `/events/:key` SSE stream emits `agent-presence` states: `waiting` before any poll has attached, `listening` while a poll is active, and `working` after a poll has delivered feedback and released.
    The chrome uses this state to show the waiting banner, allow queued feedback while waiting or listening, and block sends only while working.
 10. `--agent-reply` posts a chat message into the session before polling, so the agent's reply renders in the browser conversation panel via the `/events/:key` SSE stream.
+    The generated skill recommends using it on the first poll with a one-line summary so the first-open Conversation panel starts with context; later polls use it for replies.
 
 ### Live reload
 
