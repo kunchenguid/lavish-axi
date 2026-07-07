@@ -591,6 +591,22 @@ test("layout gate timeout reveals with a persistent layout issue banner", async 
   assert.match(chrome.element("layoutIssueBanner").textContent, /may have layout issues/);
 });
 
+test("layout gate timeout is clamped to 60s when a larger hold is configured", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 90_000 },
+  });
+
+  // A hold above the 60s ceiling must not extend the safety timeout - the timer is armed at the
+  // clamp, not the configured value, so firing at 90s reveals nothing.
+  chrome.runTimers(90_000);
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+
+  // The clamped timer fires the reveal at 60s instead.
+  chrome.runTimers(60_000);
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
+});
+
 test("layout gate timeout banner clears when a late clean audit lands", async () => {
   const chrome = await createChromeHarness({
     sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
