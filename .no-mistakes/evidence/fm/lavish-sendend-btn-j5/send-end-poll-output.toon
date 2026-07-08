@@ -1,0 +1,9 @@
+session:
+  file: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWZENR1HN5XVRHAM5645KC7E/.no-mistakes/evidence/fm/lavish-sendend-btn-j5/send-end-artifact.html
+  status: feedback
+  session_ended: true
+  ended_by: user
+dom_snapshot: "uid=1 body \"Lavish composer evidence This artifact is intentionally simple so the browser ev\"\n  uid=2 main \"Lavish composer evidence This artifact is intentionally simple so the browser ev\"\n    uid=3 h1 \"Lavish composer evidence\"\n    uid=4 p \"This artifact is intentionally simple so the browser evidence focuses on the rev\"\n  uid=5 script"
+prompts[1]{uid,prompt,selector,tag,text}:
+  "",Final Send & End evidence message,"",message,Freeform message
+next_step: This was the last feedback before the user ended the session. Stop polling /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWZENR1HN5XVRHAM5645KC7E/.no-mistakes/evidence/fm/lavish-sendend-btn-j5/send-end-artifact.html and do not reopen it - deliver any remaining updates directly in this conversation instead. Only run `lavish-axi /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWZENR1HN5XVRHAM5645KC7E/.no-mistakes/evidence/fm/lavish-sendend-btn-j5/send-end-artifact.html --reopen` if the user explicitly asks for further review or something genuinely important needs their visual attention.
