@@ -761,6 +761,26 @@ test("chrome send and end carries the end intent with queued prompts", async () 
   assert.equal(chrome.element("chatInput").disabled, true);
 });
 
+test("chrome send and end with an empty composer nudges instead of ending", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true };
+    },
+  });
+  chrome.element("sendHint").hidden = true;
+
+  chrome.element("sendAndEnd").onclick();
+  await flushPromises();
+
+  assert.equal(posts.length, 0);
+  assert.equal(chrome.postedToFrame.length, 0);
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.equal(chrome.element("chatInput").focused, true);
+  assert.equal(chrome.element("chatInput").disabled, false);
+});
+
 test("chrome send and end during an in-flight submit still ends after the submit drains the queue", async () => {
   const posts = [];
   let resolveFirstPost = () => {};
