@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.38](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.37...lavish-axi-v0.1.38) (2026-07-08)
+
+
+### Bug Fixes
+
+* make Send & End a top-level composer action ([#153](https://github.com/kunchenguid/lavish-axi/issues/153)) ([094bb40](https://github.com/kunchenguid/lavish-axi/commit/094bb40170e1718f3f8badbd627dbea6dd0b9536))
+
 ## [0.1.37](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.36...lavish-axi-v0.1.37) (2026-07-07)
 
 
