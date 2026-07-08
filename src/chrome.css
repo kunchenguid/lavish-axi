@@ -652,6 +652,14 @@ body.lavish {
   flex-direction: column;
   gap: 10px;
 }
+
+.chat:empty::before {
+  content: "Agent hasn't sent a message yet. Click an element in the artifact to annotate, or type below to start.";
+  margin-top: 2px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
 .bubble {
   max-width: 85%;
   border-radius: var(--radius-xl);

@@ -560,6 +560,9 @@ test("chrome includes a chat-like prompt composer and agent reply listener", asy
   const js = await chromeClientSource();
 
   assert.match(html, /id="chatLog"/);
+  const css = await chromeCssSource();
+  assert.match(css, /\.chat:empty::before\{/);
+  assert.match(css, /Agent hasn't sent a message yet/);
   assert.match(html, /id="chatInput"/);
   assert.match(js, /agent-reply/);
 });

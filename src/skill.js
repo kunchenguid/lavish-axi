@@ -64,6 +64,7 @@ ${home.help[home.help.length - 1]}
 1. Create the HTML artifact (default location \`.lavish/<name>.html\` in the working directory).
 2. Run \`npx -y lavish-axi <html-file>\` to open or resume a review session in the browser.
 3. Run \`npx -y lavish-axi poll <html-file>\` to long-poll for the user's annotations, queued prompts, and browser-reported \`layout_warnings\`.
+   On the first poll, prefer \`--agent-reply "<one-line summary of what you built and what to review first>"\` so the conversation panel opens with context.
    The poll stays silent until the user acts or the real browser reports fresh layout warnings - leave it running, never kill it.
    If your harness limits how long a foreground command may run, run the poll as a background task; if it gets killed or times out anyway, just re-run it - queued feedback is never lost.
 4. If poll returns \`layout_warnings\`, follow the returned \`next_step\`: fix and re-check fresh error-severity findings, but proceed with a note instead of looping when every current warning is persistent or low-severity.
