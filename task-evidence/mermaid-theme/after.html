@@ -43,27 +43,43 @@
 
       const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.textContent }));
       let applied;
+      let rendering = false;
+      let queued = false;
+      function queueRender() {
+        queued = true;
+        if (rendering) return;
+        void render();
+      }
       async function render() {
-        const theme = pageIsDark() ? "dark" : "default";
-        if (theme === applied) return;
-        applied = theme;
-        mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
-        for (const { el, src } of diagrams) {
-          el.removeAttribute("data-processed");
-          el.textContent = src;
+        rendering = true;
+        try {
+          while (queued) {
+            queued = false;
+            const theme = pageIsDark() ? "dark" : "default";
+            if (theme === applied) continue;
+            mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
+            for (const { el, src } of diagrams) {
+              el.removeAttribute("data-processed");
+              el.textContent = src;
+            }
+            await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+            applied = theme;
+          }
+        } finally {
+          rendering = false;
+          if (queued) queueRender();
         }
-        await mermaid.run({ nodes: diagrams.map((d) => d.el) });
       }
 
       // First render once stylesheets are applied (no wrong-theme flash), then keep
       // the diagrams in sync with page-theme toggles and OS light/dark changes.
-      if (document.readyState === "complete") render();
-      else window.addEventListener("load", render, { once: true });
-      new MutationObserver(render).observe(document.documentElement, {
+      if (document.readyState === "complete") queueRender();
+      else window.addEventListener("load", queueRender, { once: true });
+      new MutationObserver(queueRender).observe(document.documentElement, {
         attributes: true,
         attributeFilter: ["data-theme", "class", "style"],
       });
-      darkQuery.addEventListener("change", render);
+      darkQuery.addEventListener("change", queueRender);
     </script>
   </head>
   <body class="min-h-screen bg-base-100 text-base-content">

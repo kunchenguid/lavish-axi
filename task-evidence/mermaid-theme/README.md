@@ -6,6 +6,8 @@ rendering in a fixed theme.
 All screenshots were captured from the real browser view through the real `lavish-axi` flow
 (served chrome + sandboxed artifact iframe), using the same artifact structure for BEFORE and
 AFTER so only the Mermaid init snippet differs.
+The screenshots demonstrate the visual theming behavior; `after.html` now reproduces the final
+serialized rerender implementation, which is also covered by the automated regression test.
 
 The page defaults to DaisyUI `data-theme="luxury"` (dark) with a Dark/Light toggle that stamps
 `data-theme` on the root element, mimicking a viewer theme toggle. The host OS preference was
@@ -28,6 +30,6 @@ tracks the _page_ background, not the OS setting.
 
 ## Reproduce
 
-`before.html` and `after.html` are the exact artifacts used. `after.html` embeds the shipped
-theme-aware snippet verbatim (`src/design-reference.js` `MERMAID_CDN_SNIPPET`). Open either with
+`before.html` reproduces the fixed-theme behavior and `after.html` embeds the shipped theme-aware
+snippet verbatim (`src/design-reference.js` `MERMAID_CDN_SNIPPET`). Open either with
 `lavish-axi <file>` and toggle Dark/Light.

@@ -5,6 +5,9 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+process.env.LAVISH_AXI_HOST = "127.0.0.1";
+process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
+
 import {
   createChromeHtml,
   createSdkJs,
