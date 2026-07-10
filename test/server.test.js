@@ -2281,6 +2281,49 @@ test("SSE agent-presence resets to waiting after ending and reopening a session"
   }
 });
 
+test("SSE agent-presence returns to waiting after an agent reply", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "waiting");
+
+      await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+      });
+      // A poll that drains the feedback and releases leaves presence "working".
+      await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+      assert.equal(await presence.next(), "working");
+
+      // The reply concludes that work. Without a clear here, presence stays "working"
+      // forever (the chrome disables Send) until some future poll happens to attach.
+      await fetch(`${base}/api/${key}/agent-reply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "done - applied your feedback" }),
+      });
+      assert.equal(await presence.next(), "waiting");
+    } finally {
+      await presence.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("SSE agent-presence stays working when resuming an open session", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
