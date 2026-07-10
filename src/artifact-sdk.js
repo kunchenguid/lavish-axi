@@ -390,69 +390,113 @@ export function createArtifactSdk(
     return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
   }
 
-  // "Edit as whiteboard" affordance. Only diagrams inside a `.mermaid`
-  // container get the button: the whiteboard needs the diagram's Mermaid
-  // source, which the server recovers from the artifact file by matching the
-  // container's position among `.mermaid` elements in document order. The
-  // button lives inside the container, so a Mermaid re-render (which replaces
-  // the container's children) removes it and the next enhance pass re-adds it.
-  const whiteboardHoverWiredContainers = new WeakSet();
+  // Inline whiteboard embedding. Each rendered diagram inside a `.mermaid`
+  // container is replaced, at view time only, by a nested sandboxed iframe
+  // hosting the Excalidraw whiteboard frame - the artifact file keeps its
+  // Mermaid source and still renders plain diagrams when opened standalone or
+  // exported. The index of the container among `.mermaid` elements in document
+  // order is the diagram's identity; the server recovers the matching source
+  // from the artifact file. This SDK holds no whiteboard logic: it relays
+  // `lavish-whiteboard:*` messages between each nested frame and the chrome,
+  // stamping the index so the chrome can serve many whiteboards at once.
+  const whiteboardEmbeds = new Map(); // container -> { iframe, index }
 
   function mermaidContainerIndex(container) {
     return [...document.querySelectorAll(".mermaid")].indexOf(container);
   }
 
-  function currentWhiteboardButton(container) {
-    return container.querySelector('button[data-lavish-ui="whiteboard-open"]');
+  function whiteboardEmbedHeightPx(svgRect) {
+    const headerPx = 96;
+    const min = 360;
+    const max = Math.max(min, Math.round((window.innerHeight || 800) * 0.8));
+    return Math.max(min, Math.min(Math.round(svgRect.height) + headerPx, max));
   }
 
-  function setWhiteboardButtonVisible(container, visible) {
-    const button = currentWhiteboardButton(container);
-    if (!button) return;
-    button.style.opacity = visible ? "1" : "0";
-    button.style.pointerEvents = visible ? "auto" : "none";
-  }
-
-  function attachWhiteboardButton(svg) {
+  function embedWhiteboard(svg) {
     const container = svg.closest(".mermaid");
-    if (!container || currentWhiteboardButton(container)) return;
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "Edit as whiteboard";
-    button.setAttribute("data-lavish-ui", "whiteboard-open");
-    button.title = "Open this diagram as an editable Excalidraw whiteboard";
-    button.style.cssText =
-      "position:absolute;top:8px;right:8px;z-index:5;border:0;border-radius:8px;padding:5px 10px;" +
-      "font:600 12px/1.2 ui-sans-serif,system-ui,sans-serif;background:#f4c95d;color:#17130a;" +
-      "cursor:pointer;opacity:0;pointer-events:none;transition:opacity .15s;box-shadow:0 2px 10px rgba(0,0,0,.18)";
-    if (getComputedStyle(container).position === "static") {
-      container.style.position = "relative";
+    if (!container) return;
+    const existing = whiteboardEmbeds.get(container);
+    if (existing && existing.iframe.isConnected) {
+      existing.index = mermaidContainerIndex(container);
+      return;
     }
-    button.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      parent.postMessage(
-        { type: "lavish:openWhiteboard", diagramIndex: mermaidContainerIndex(container), diagramId: svg.id || "" },
-        "*",
-      );
-    };
-    button.addEventListener("focus", () => setWhiteboardButtonVisible(container, true));
-    container.appendChild(button);
-
-    // Hover wiring lives on the container (once), while the button is re-added
-    // after every Mermaid re-render replaces the container's children - the
-    // handlers resolve the current button instead of closing over a stale one.
-    if (!whiteboardHoverWiredContainers.has(container)) {
-      whiteboardHoverWiredContainers.add(container);
-      container.addEventListener("mouseenter", () => setWhiteboardButtonVisible(container, true));
-      container.addEventListener("mouseleave", () => setWhiteboardButtonVisible(container, false));
+    const index = mermaidContainerIndex(container);
+    if (index < 0) return;
+    const rect = svg.getBoundingClientRect();
+    // Mermaid renders asynchronously; a zero-ish rect means this svg has not
+    // been laid out yet. Skip it and retry shortly - layout completion does
+    // not necessarily mutate the DOM again, so the observer alone is not a
+    // guaranteed wake-up.
+    if (rect.height < 40) {
+      window.setTimeout(scheduleMermaidEnhance, 150);
+      return;
     }
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("data-lavish-ui", "whiteboard-inline");
+    iframe.setAttribute("title", "Excalidraw whiteboard");
+    // Stricter than (and independent of) this artifact frame's own sandbox.
+    iframe.setAttribute("sandbox", "allow-scripts allow-popups");
+    iframe.src = "/whiteboard-frame";
+    iframe.style.cssText =
+      `display:block;width:100%;height:${whiteboardEmbedHeightPx(rect)}px;border:1px solid rgba(128,128,128,.35);` +
+      "border-radius:12px;background:transparent";
+    // The design snippet re-renders Mermaid inside the container on theme
+    // changes, so the frame lives as a sibling: re-renders stay harmless
+    // inside the hidden container instead of destroying the editor.
+    container.style.display = "none";
+    container.insertAdjacentElement("afterend", iframe);
+    whiteboardEmbeds.set(container, { iframe, index, diagramId: svg.id || "" });
   }
+
+  function whiteboardEmbedEntries() {
+    return [...whiteboardEmbeds.values()].filter((entry) => entry.iframe.isConnected);
+  }
+
+  function whiteboardEntryByIndex(index) {
+    return whiteboardEmbedEntries().find((entry) => entry.index === Number(index)) || null;
+  }
+
+  window.addEventListener("message", (event) => {
+    // Up: nested whiteboard frame -> chrome, stamped with the diagram index
+    // derived from which frame sent it (never trusted from the payload).
+    const fromEntry = whiteboardEmbedEntries().find((entry) => entry.iframe.contentWindow === event.source);
+    if (fromEntry) {
+      const msg = event.data || {};
+      if (typeof msg.type === "string" && msg.type.indexOf("lavish-whiteboard:") === 0) {
+        parent.postMessage(
+          {
+            type: "lavish:whiteboardRelay",
+            diagramIndex: fromEntry.index,
+            diagramId: fromEntry.diagramId,
+            message: msg,
+          },
+          "*",
+        );
+      }
+      return;
+    }
+    // Down: chrome -> a nested whiteboard frame, addressed by index.
+    const msg = event.data || {};
+    if (msg.type === "lavish:whiteboardDeliver") {
+      const target = whiteboardEntryByIndex(msg.diagramIndex);
+      if (target && target.iframe.contentWindow) target.iframe.contentWindow.postMessage(msg.message, "*");
+    }
+    // While the chrome overlay edits a diagram fullscreen, its inline frame is
+    // parked on about:blank so two editors never autosave the same sidecar;
+    // resume reboots the frame, which re-inits from the latest saved scene.
+    if (msg.type === "lavish:suspendWhiteboard") {
+      const target = whiteboardEntryByIndex(msg.diagramIndex);
+      if (target) target.iframe.src = "about:blank";
+    }
+    if (msg.type === "lavish:resumeWhiteboard") {
+      const target = whiteboardEntryByIndex(msg.diagramIndex);
+      if (target) target.iframe.src = "/whiteboard-frame";
+    }
+  });
 
   function enhanceMermaid() {
     for (const svg of findMermaidSvgs()) {
-      attachWhiteboardButton(svg);
+      embedWhiteboard(svg);
       if (mermaidViewports.has(svg)) continue;
       const viewport = createViewport(svg);
       if (viewport) {

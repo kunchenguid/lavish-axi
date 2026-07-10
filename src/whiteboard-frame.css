@@ -115,3 +115,52 @@ body[data-lavish-whiteboard-theme="dark"] {
   flex: 1;
   min-height: 0;
 }
+
+/* Inline placement: no chrome close control floats over the header, so drop
+   the reserved right padding; the fullscreen action takes that corner. */
+body[data-lavish-whiteboard-mode="inline"] #wbHeader {
+  padding-right: 12px;
+}
+
+#wbFullscreen {
+  background: transparent;
+  border: 1px solid rgba(128, 128, 128, 0.45);
+  color: inherit;
+  font-weight: 600;
+}
+
+body[data-lavish-whiteboard-theme="dark"] #wbFullscreen:hover,
+#wbFullscreen:hover {
+  background: rgba(128, 128, 128, 0.15);
+}
+
+/* Click-catcher that keeps an inline whiteboard in view mode until the user
+   opts in, so embedded canvases never trap page scrolling. */
+.wb-activate {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 18px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.wb-activate-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(23, 19, 10, 0.72);
+  color: #f4c95d;
+  border: 1px solid rgba(244, 201, 93, 0.55);
+  opacity: 0.85;
+}
+
+.wb-activate:hover .wb-activate-label,
+.wb-activate:focus-visible .wb-activate-label {
+  opacity: 1;
+}

@@ -1,16 +1,20 @@
 /* global document, window, FileReader, location */
 
-// Browser entry for the whiteboard frame - the page the chrome hosts in a
-// dedicated sandboxed iframe (`allow-scripts allow-popups`, no
-// `allow-same-origin`) when the user opens a Mermaid diagram as an editable
-// Excalidraw whiteboard. Bundled by `scripts/build.js` (esbuild) together with
-// Excalidraw, the Mermaid converter, its own exactly-pinned mermaid, and React
-// into `dist/whiteboard/whiteboard.js`, so nothing here loads from the network.
+// Browser entry for the whiteboard frame. It runs in two placements, both
+// sandboxed (`allow-scripts allow-popups`, no `allow-same-origin`): inline,
+// where the artifact SDK embeds one frame in place of each rendered Mermaid
+// diagram and relays messages between this frame and the chrome; and overlay,
+// where the chrome hosts one frame full-viewport (reached from the inline
+// frame's fullscreen action). The `mode` field of the init message selects the
+// placement-specific UI; everything else is identical. Bundled by
+// `scripts/build.js` (esbuild) together with Excalidraw, the Mermaid
+// converter, its own exactly-pinned mermaid, and React into
+// `dist/whiteboard/whiteboard.js`, so nothing here loads from the network.
 //
 // The frame owns all whiteboard UI. It holds no server access: every byte in
-// and out travels over postMessage with the chrome, which does the same-origin
-// fetches. Untrusted Mermaid text therefore renders only inside this opaque
-// origin, exactly like the artifact iframe.
+// and out travels over postMessage (relayed by the SDK when inline), and the
+// chrome does the same-origin fetches. Untrusted Mermaid text therefore
+// renders only inside opaque origins, exactly like the artifact iframe.
 
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import { convertToExcalidrawElements, Excalidraw, exportToBlob, restore } from "@excalidraw/excalidraw";
@@ -29,6 +33,7 @@ import {
 const SAVE_DEBOUNCE_MS = 800;
 
 const state = {
+  mode: "overlay",
   diagramIndex: 0,
   diagramId: "",
   // Hash of the Mermaid source this scene was converted from. Stays at the old
@@ -43,6 +48,9 @@ const state = {
   api: null,
   saveTimer: 0,
   queueBusy: false,
+  // Inline frames boot locked (view mode) so a page full of embedded
+  // whiteboards scrolls normally; the first click on the canvas unlocks it.
+  setLocked: null,
 };
 
 function post(message) {
@@ -63,8 +71,9 @@ function setBanner(id, text) {
   banner.hidden = !text;
 }
 
-function buildShell(theme) {
+function buildShell(theme, mode) {
   document.body.dataset.lavishWhiteboardTheme = theme;
+  document.body.dataset.lavishWhiteboardMode = mode;
   const shell = el("div", { id: "wbShell" });
   const header = el("header", { id: "wbHeader" });
   const title = el("div", { id: "wbTitle", textContent: "Whiteboard" });
@@ -74,10 +83,22 @@ function buildShell(theme) {
     autocomplete: "off",
   });
   const queueButton = el("button", { id: "wbQueue", type: "button", textContent: "Queue feedback" });
-  // The chrome overlay renders the close control on top of this header's
-  // right edge (it must work even when this frame fails to boot), so the
-  // header reserves that space via CSS instead of adding its own close.
+  // In overlay mode the chrome renders the close control on top of this
+  // header's right edge (it must work even when this frame fails to boot), so
+  // the header reserves that space via CSS instead of adding its own close.
+  // Inline frames offer a fullscreen action instead, which asks the chrome to
+  // reopen this diagram in the overlay.
   header.append(title, note, queueButton);
+  if (mode === "inline") {
+    const fullscreenButton = el("button", {
+      id: "wbFullscreen",
+      type: "button",
+      textContent: "Fullscreen",
+      title: "Open this whiteboard full screen",
+    });
+    fullscreenButton.onclick = () => post({ type: "lavish-whiteboard:maximize", diagramIndex: state.diagramIndex });
+    header.append(fullscreenButton);
+  }
   const fallbackBanner = el("div", { id: "wbFallbackBanner", className: "wb-banner", hidden: true });
   const staleBanner = el("div", { id: "wbStaleBanner", className: "wb-banner wb-banner-warn", hidden: true });
   const status = el("div", { id: "wbStatus", className: "wb-status", hidden: true });
@@ -154,30 +175,71 @@ function onLinkOpen(element, event) {
   }
 }
 
+// Inline frames start locked in view mode behind a click-catcher: a page of
+// embedded whiteboards must scroll like a page, not trap every wheel event in
+// canvas zoom. The first click unlocks this one editor.
+function EditorApp({ elements, appState, files, theme, startLocked }) {
+  const [locked, setLocked] = React.useState(startLocked);
+  state.setLocked = setLocked;
+  return React.createElement(
+    "div",
+    { style: { position: "relative", width: "100%", height: "100%" } },
+    React.createElement(Excalidraw, {
+      initialData: { elements, appState, files: files || undefined, scrollToContent: true },
+      theme,
+      viewModeEnabled: locked,
+      onChange: scheduleSave,
+      onLinkOpen,
+      excalidrawAPI: (api) => {
+        state.api = api;
+        // Fit the whole scene into the frame - inline frames are far smaller
+        // than the scene's natural 100% size, and a zoomed-in corner of a
+        // diagram reads as broken.
+        window.setTimeout(() => {
+          try {
+            api.scrollToContent(api.getSceneElements(), { fitToContent: true });
+          } catch {
+            // scrollToContent is cosmetic; initialData already centered us.
+          }
+        }, 0);
+      },
+      UIOptions: {
+        canvasActions: {
+          loadScene: false,
+          saveToActiveFile: false,
+          toggleTheme: false,
+        },
+      },
+    }),
+    locked
+      ? React.createElement(
+          "div",
+          {
+            className: "wb-activate",
+            role: "button",
+            tabIndex: 0,
+            onClick: () => setLocked(false),
+            onKeyDown: (event) => {
+              if (event.key === "Enter" || event.key === " ") setLocked(false);
+            },
+          },
+          React.createElement("span", { className: "wb-activate-label" }, "Click to edit"),
+        )
+      : null,
+  );
+}
+
 function mountEditor({ elements, appState, files, theme }) {
   const editorHost = document.getElementById("wbEditor");
   const root = createRoot(editorHost);
   root.render(
-    React.createElement(
-      "div",
-      { style: { width: "100%", height: "100%" } },
-      React.createElement(Excalidraw, {
-        initialData: { elements, appState, files: files || undefined, scrollToContent: true },
-        theme,
-        onChange: scheduleSave,
-        onLinkOpen,
-        excalidrawAPI: (api) => {
-          state.api = api;
-        },
-        UIOptions: {
-          canvasActions: {
-            loadScene: false,
-            saveToActiveFile: false,
-            toggleTheme: false,
-          },
-        },
-      }),
-    ),
+    React.createElement(EditorApp, {
+      elements,
+      appState,
+      files,
+      theme,
+      startLocked: state.mode === "inline",
+    }),
   );
 }
 
@@ -341,6 +403,7 @@ function resetQueueButton() {
 }
 
 async function handleInit(init) {
+  state.mode = init.mode === "inline" ? "inline" : "overlay";
   state.diagramIndex = Number(init.diagramIndex) || 0;
   state.diagramId = String(init.diagramId || "");
   state.currentSource = String(init.source || "");
@@ -389,7 +452,7 @@ function main() {
     const msg = event.data || {};
     if (msg.type === "lavish-whiteboard:init" && !initialized) {
       initialized = true;
-      buildShell(msg.theme === "dark" ? "dark" : "light");
+      buildShell(msg.theme === "dark" ? "dark" : "light", msg.mode === "inline" ? "inline" : "overlay");
       handleInit(msg);
     }
     if (msg.type === "lavish-whiteboard:sourceChanged") handleSourceChanged(msg);
