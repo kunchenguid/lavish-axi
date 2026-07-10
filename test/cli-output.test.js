@@ -312,6 +312,7 @@ test("design output emits a theme-aware Mermaid init that re-renders on page-the
   assert.match(snippet, /mermaid\.run/);
   assert.match(snippet, /MutationObserver/);
   assert.match(snippet, /data-theme/);
+  assert.match(snippet, /document\.addEventListener\(["']change["'],\s*queueRender,\s*true\)/);
   assert.match(snippet, /addEventListener\(["']change["']/);
 });
 
@@ -323,7 +324,7 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   let dark = false;
   let observedThemeMutations = false;
   const observedThemeTargets = [];
-  let mutationCallback = () => {};
+  const documentListeners = new Map();
   const initializedThemes = [];
   const mediaListeners = [];
   const pendingRenders = [];
@@ -351,6 +352,10 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     querySelectorAll() {
       return [diagram];
     },
+    addEventListener(type, callback, capture) {
+      assert.equal(type, "change");
+      documentListeners.set(type, { callback, capture });
+    },
   };
   const darkQuery = {
     get matches() {
@@ -370,9 +375,8 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     },
   };
   class TestMutationObserver {
-    constructor(callback) {
+    constructor() {
       observedThemeMutations = true;
-      mutationCallback = callback;
     }
 
     observe(target) {
@@ -411,9 +415,12 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   assert.equal(mediaListeners.length, 1);
   assert.equal(observedThemeMutations, true);
   assert.deepEqual(observedThemeTargets, [document.documentElement, document.body]);
+  const changeListener = documentListeners.get("change");
+  assert.equal(typeof changeListener?.callback, "function");
+  assert.equal(changeListener?.capture, true);
   assert.deepEqual(initializedThemes, ["default"]);
   dark = true;
-  mutationCallback();
+  changeListener.callback();
   assert.equal(maxActiveRenders, 1);
   assert.deepEqual(initializedThemes, ["default"]);
 

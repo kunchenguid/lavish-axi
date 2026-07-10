@@ -90,6 +90,7 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
       attributeFilter: ["data-theme", "class", "style"],
     });
   }
+  document.addEventListener("change", queueRender, true);
   darkQuery.addEventListener("change", queueRender);
 </script>`;
 

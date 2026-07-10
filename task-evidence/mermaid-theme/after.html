@@ -83,6 +83,7 @@
           attributeFilter: ["data-theme", "class", "style"],
         });
       }
+      document.addEventListener("change", queueRender, true);
       darkQuery.addEventListener("change", queueRender);
     </script>
   </head>
