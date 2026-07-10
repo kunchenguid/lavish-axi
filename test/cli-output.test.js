@@ -332,6 +332,8 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   const initializedThemes = [];
   const mediaListeners = [];
   const pendingRenders = [];
+  const loggedRenderErrors = [];
+  let nextRenderError;
   let activeRenders = 0;
   let maxActiveRenders = 0;
   let bodyColor = "white";
@@ -405,6 +407,12 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     run() {
       activeRenders += 1;
       maxActiveRenders = Math.max(maxActiveRenders, activeRenders);
+      if (nextRenderError) {
+        const error = nextRenderError;
+        nextRenderError = undefined;
+        activeRenders -= 1;
+        return Promise.reject(error);
+      }
       return new Promise((resolve) => {
         pendingRenders.push(() => {
           activeRenders -= 1;
@@ -419,7 +427,7 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     finish();
   }
 
-  new Function("mermaid", "window", "document", "MutationObserver", "getComputedStyle", snippet)(
+  new Function("mermaid", "window", "document", "MutationObserver", "getComputedStyle", "console", snippet)(
     mermaid,
     window,
     document,
@@ -428,6 +436,7 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
       backgroundColor: element === document.body ? bodyColor : rootColor,
       colorScheme: element === document.documentElement ? rootColorScheme : "normal",
     }),
+    { error: (...args) => loggedRenderErrors.push(args) },
   );
 
   assert.equal(mediaListeners.length, 1);
@@ -469,6 +478,19 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   rootColorScheme = "dark";
   transitionListener.callback({ propertyName: "background-color" });
   assert.deepEqual(initializedThemes, ["default", "dark", "default", "dark"]);
+  finishNextRender();
+  await Promise.resolve();
+
+  const renderError = new Error("invalid Mermaid syntax");
+  nextRenderError = renderError;
+  rootColorScheme = "light";
+  transitionListener.callback({ propertyName: "background-color" });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(loggedRenderErrors, [["Mermaid diagram render failed:", renderError]]);
+
+  changeListener.callback();
+  assert.equal(activeRenders, 1);
   finishNextRender();
   await Promise.resolve();
 });

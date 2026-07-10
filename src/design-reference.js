@@ -86,7 +86,12 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
           el.removeAttribute("data-processed");
           el.textContent = src;
         }
-        await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+        try {
+          await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+        } catch (error) {
+          console.error("Mermaid diagram render failed:", error);
+          return;
+        }
         applied = theme;
       }
     } finally {

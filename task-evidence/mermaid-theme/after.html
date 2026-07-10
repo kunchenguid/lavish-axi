@@ -79,7 +79,12 @@
               el.removeAttribute("data-processed");
               el.textContent = src;
             }
-            await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+            try {
+              await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+            } catch (error) {
+              console.error("Mermaid diagram render failed:", error);
+              return;
+            }
             applied = theme;
           }
         } finally {
