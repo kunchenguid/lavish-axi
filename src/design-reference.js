@@ -82,10 +82,14 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
   // the diagrams in sync with page-theme toggles and OS light/dark changes.
   if (document.readyState === "complete") queueRender();
   else window.addEventListener("load", queueRender, { once: true });
-  new MutationObserver(queueRender).observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme", "class", "style"],
-  });
+  const themeObserver = new MutationObserver(queueRender);
+  for (const el of [document.documentElement, document.body]) {
+    if (!el) continue;
+    themeObserver.observe(el, {
+      attributes: true,
+      attributeFilter: ["data-theme", "class", "style"],
+    });
+  }
   darkQuery.addEventListener("change", queueRender);
 </script>`;
 

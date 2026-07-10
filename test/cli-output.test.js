@@ -322,6 +322,7 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     .replace(/^\s*import mermaid from "[^"]+";\n/m, "");
   let dark = false;
   let observedThemeMutations = false;
+  const observedThemeTargets = [];
   let mutationCallback = () => {};
   const initializedThemes = [];
   const mediaListeners = [];
@@ -374,7 +375,9 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
       mutationCallback = callback;
     }
 
-    observe() {}
+    observe(target) {
+      observedThemeTargets.push(target);
+    }
   }
   const mermaid = {
     initialize({ theme }) {
@@ -407,6 +410,7 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
 
   assert.equal(mediaListeners.length, 1);
   assert.equal(observedThemeMutations, true);
+  assert.deepEqual(observedThemeTargets, [document.documentElement, document.body]);
   assert.deepEqual(initializedThemes, ["default"]);
   dark = true;
   mutationCallback();
