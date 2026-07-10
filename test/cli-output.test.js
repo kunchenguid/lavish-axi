@@ -975,6 +975,55 @@ test("layout warning feedback tells agents to fix layout before involving the hu
   assert.doesNotMatch(output.next_step, /reload or re-open/);
 });
 
+test("whiteboard feedback tells agents to read the summary, inspect files when needed, and update the Mermaid source", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [
+        {
+          uid: "",
+          prompt: "Whiteboard edits to diagram 1:\nMoved rectangle (Auth)",
+          selector: "",
+          tag: "whiteboard",
+          text: "Whiteboard: diagram 1",
+          target: {
+            type: "excalidraw-scene",
+            diagramIndex: 0,
+            diagramId: "mermaid-1",
+            sourceHash: "abc",
+            scenePath: "/state/whiteboards/k/0.excalidraw",
+            previewPath: "/state/whiteboards/k/0.png",
+            imageFallback: false,
+            stats: { added: 0, removed: 0, moved: 1, relabeled: 0, drawn: 0 },
+          },
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /whiteboard edits \(tag "whiteboard"\)/);
+  assert.match(output.next_step, /read the edit summary in the prompt text first/);
+  assert.match(output.next_step, /scenePath/);
+  assert.match(output.next_step, /previewPath/);
+  assert.match(output.next_step, /Mermaid source stays authoritative/);
+  assert.match(output.next_step, /never try to write the \.excalidraw scene back/);
+});
+
+test("non-whiteboard feedback does not mention whiteboard guidance", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [{ uid: "", prompt: "Tighten this", selector: "h1", tag: "h1", text: "Title" }],
+    },
+  });
+
+  assert.doesNotMatch(output.next_step, /whiteboard/i);
+});
+
 test("a poll reporting the session ended by the user tells the agent to stop and not reopen", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",

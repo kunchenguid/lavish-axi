@@ -12,6 +12,7 @@
     "skills/lavish",
     "lavish-editor-marketing/renders/lavish-editor-marketing.gif",
     "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
     "README.md"
   ],
   "scripts": {
@@ -37,12 +38,17 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@excalidraw/excalidraw": "0.18.1",
+    "@excalidraw/mermaid-to-excalidraw": "2.2.2",
     "@types/node": "^25.6.2",
     "esbuild": "^0.28.0",
     "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.6.0",
+    "mermaid": "11.12.1",
     "prettier": "^3.8.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "typescript": "^5.9.3"
   },
   "engines": {

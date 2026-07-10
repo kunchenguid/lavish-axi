@@ -390,8 +390,69 @@ export function createArtifactSdk(
     return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
   }
 
+  // "Edit as whiteboard" affordance. Only diagrams inside a `.mermaid`
+  // container get the button: the whiteboard needs the diagram's Mermaid
+  // source, which the server recovers from the artifact file by matching the
+  // container's position among `.mermaid` elements in document order. The
+  // button lives inside the container, so a Mermaid re-render (which replaces
+  // the container's children) removes it and the next enhance pass re-adds it.
+  const whiteboardHoverWiredContainers = new WeakSet();
+
+  function mermaidContainerIndex(container) {
+    return [...document.querySelectorAll(".mermaid")].indexOf(container);
+  }
+
+  function currentWhiteboardButton(container) {
+    return container.querySelector('button[data-lavish-ui="whiteboard-open"]');
+  }
+
+  function setWhiteboardButtonVisible(container, visible) {
+    const button = currentWhiteboardButton(container);
+    if (!button) return;
+    button.style.opacity = visible ? "1" : "0";
+    button.style.pointerEvents = visible ? "auto" : "none";
+  }
+
+  function attachWhiteboardButton(svg) {
+    const container = svg.closest(".mermaid");
+    if (!container || currentWhiteboardButton(container)) return;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Edit as whiteboard";
+    button.setAttribute("data-lavish-ui", "whiteboard-open");
+    button.title = "Open this diagram as an editable Excalidraw whiteboard";
+    button.style.cssText =
+      "position:absolute;top:8px;right:8px;z-index:5;border:0;border-radius:8px;padding:5px 10px;" +
+      "font:600 12px/1.2 ui-sans-serif,system-ui,sans-serif;background:#f4c95d;color:#17130a;" +
+      "cursor:pointer;opacity:0;pointer-events:none;transition:opacity .15s;box-shadow:0 2px 10px rgba(0,0,0,.18)";
+    if (getComputedStyle(container).position === "static") {
+      container.style.position = "relative";
+    }
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      parent.postMessage(
+        { type: "lavish:openWhiteboard", diagramIndex: mermaidContainerIndex(container), diagramId: svg.id || "" },
+        "*",
+      );
+    };
+    button.addEventListener("focus", () => setWhiteboardButtonVisible(container, true));
+    container.appendChild(button);
+
+    // Hover wiring lives on the container (once), while the button is re-added
+    // after every Mermaid re-render replaces the container's children - the
+    // handlers resolve the current button instead of closing over a stale one.
+    if (!whiteboardHoverWiredContainers.has(container)) {
+      whiteboardHoverWiredContainers.add(container);
+      container.addEventListener("mouseenter", () => setWhiteboardButtonVisible(container, true));
+      container.addEventListener("mouseleave", () => setWhiteboardButtonVisible(container, false));
+    }
+  }
+
   function enhanceMermaid() {
     for (const svg of findMermaidSvgs()) {
+      attachWhiteboardButton(svg);
       if (mermaidViewports.has(svg)) continue;
       const viewport = createViewport(svg);
       if (viewport) {

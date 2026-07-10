@@ -1,0 +1,117 @@
+/* Shell chrome for the whiteboard frame. Bundled into dist/whiteboard/whiteboard.css
+   together with Excalidraw's own stylesheet by scripts/build.js. */
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family:
+    Geist,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  background: #fffbf3;
+  color: #17130a;
+}
+
+body[data-lavish-whiteboard-theme="dark"] {
+  background: #0f1115;
+  color: #f7f3ea;
+}
+
+#wbShell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+#wbHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Right padding reserves room for the chrome overlay's close control,
+     which floats above this header from outside the iframe. */
+  padding: 8px 52px 8px 12px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+  flex: none;
+}
+
+#wbTitle {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#wbNote {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.45);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+#wbHeader button {
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  background: #f4c95d;
+  color: #17130a;
+}
+
+#wbHeader button:hover {
+  background: #ffd877;
+}
+
+#wbHeader button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.wb-banner {
+  flex: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  background: rgba(96, 165, 250, 0.16);
+  border-bottom: 1px solid rgba(96, 165, 250, 0.4);
+}
+
+.wb-banner-warn {
+  background: rgba(244, 201, 93, 0.18);
+  border-bottom-color: rgba(244, 201, 93, 0.55);
+}
+
+.wb-banner button {
+  margin-left: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.wb-status {
+  flex: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  background: rgba(52, 211, 153, 0.14);
+  border-bottom: 1px solid rgba(52, 211, 153, 0.4);
+}
+
+#wbEditor {
+  flex: 1;
+  min-height: 0;
+}

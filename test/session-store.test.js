@@ -119,6 +119,57 @@ test("queued mermaid node prompts preserve node identity and drop unknown fields
   }
 });
 
+test("queued whiteboard prompts normalize the excalidraw-scene target to its fixed shape", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<div class='mermaid'>graph TD; A-->B;</div>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    await store.queuePrompts(session.key, {
+      prompts: [
+        {
+          uid: "",
+          prompt: "Whiteboard edits:\nMoved rectangle (Auth)",
+          selector: "",
+          tag: "whiteboard",
+          text: "Whiteboard edits",
+          target: {
+            type: "excalidraw-scene",
+            diagramIndex: "1",
+            diagramId: "mermaid-2",
+            sourceHash: "abc123def4567890",
+            scenePath: "/state/whiteboards/k/1.excalidraw",
+            previewPath: "/state/whiteboards/k/1.png",
+            imageFallback: false,
+            stats: { added: 1, removed: 0, moved: 2, relabeled: 0, drawn: 1 },
+            hostile: { nested: "should not survive" },
+          },
+        },
+      ],
+    });
+
+    const result = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(result.prompts.length, 1);
+    assert.equal(result.prompts[0].tag, "whiteboard");
+    assert.deepEqual(result.prompts[0].target, {
+      type: "excalidraw-scene",
+      diagramIndex: 1,
+      diagramId: "mermaid-2",
+      sourceHash: "abc123def4567890",
+      scenePath: "/state/whiteboards/k/1.excalidraw",
+      previewPath: "/state/whiteboards/k/1.png",
+      imageFallback: false,
+      stats: { added: 1, removed: 0, moved: 2, relabeled: 0, drawn: 1 },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("layout warnings are returned as feedback and then cleared", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

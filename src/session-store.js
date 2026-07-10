@@ -3,6 +3,7 @@ import { readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
+import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./whiteboard-core.js";
 
 export class SessionStore {
   constructor(file) {
@@ -252,6 +253,7 @@ function normalizeFiniteNumber(value) {
 function normalizeTarget(target) {
   if (!target || typeof target !== "object" || Array.isArray(target)) return null;
   if (target.type === "mermaid-node") return normalizeMermaidNodeTarget(target);
+  if (target.type === EXCALIDRAW_SCENE_TARGET_TYPE) return normalizeExcalidrawSceneTarget(target);
   // text-range and any other/legacy target shapes pass through unchanged.
   return JSON.parse(JSON.stringify(target));
 }

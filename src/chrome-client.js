@@ -53,6 +53,10 @@ const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementB
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
 const layoutIssueBanner = /** @type {HTMLDivElement} */ (document.getElementById("layoutIssueBanner"));
 const sendHint = /** @type {HTMLDivElement} */ (document.getElementById("sendHint"));
+const whiteboardOverlay = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardOverlay"));
+const whiteboardFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("whiteboardFrame"));
+const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("whiteboardClose"));
+const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
@@ -503,6 +507,7 @@ function markSessionEnded() {
   if (ended) return;
   ended = true;
   closeMenus();
+  closeWhiteboard();
   annotationSwitch.disabled = true;
   moreButton.disabled = true;
   chatInput.disabled = true;
@@ -658,6 +663,200 @@ function resetFrame() {
   frame.src = artifactSrc || frame.src;
 }
 
+// ---------------------------------------------------------------------------
+// Whiteboard overlay. The chrome owns the overlay lifecycle and every server
+// round trip (the sandboxed whiteboard frame has an opaque origin, so all its
+// data travels over postMessage); the frame owns the editor UI itself.
+// ---------------------------------------------------------------------------
+
+/** @type {{ index: number, diagramId: string, source: string, sourceHash: string } | null} */
+let whiteboardCurrent = null;
+/** @type {object | null} */
+let pendingWhiteboardInit = null;
+
+function whiteboardTheme() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function postToWhiteboard(message) {
+  if (whiteboardFrame.contentWindow) whiteboardFrame.contentWindow.postMessage(message, "*");
+}
+
+async function fetchMermaidSources() {
+  const response = await fetch("/api/" + key + "/mermaid-sources");
+  if (!response.ok) throw new Error("could not read the artifact's Mermaid sources");
+  const data = await response.json();
+  return Array.isArray(data.sources) ? data.sources : [];
+}
+
+function showWhiteboardError(text) {
+  whiteboardError.textContent = text;
+  whiteboardError.hidden = false;
+  whiteboardOverlay.hidden = false;
+}
+
+async function openWhiteboard(request) {
+  if (ended) return;
+  const index = Number(request.diagramIndex);
+  if (!Number.isInteger(index) || index < 0) {
+    showWhiteboardError("Could not locate this diagram's Mermaid source in the artifact file.");
+    return;
+  }
+  try {
+    const sources = await fetchMermaidSources();
+    const source = sources.find((item) => item.index === index);
+    if (!source) throw new Error("this diagram's Mermaid source was not found in the artifact file");
+    const savedResponse = await fetch("/api/" + key + "/whiteboard/" + index);
+    const saved = savedResponse.ok ? (await savedResponse.json()).whiteboard : null;
+    whiteboardCurrent = {
+      index,
+      diagramId: String(request.diagramId || ""),
+      source: String(source.source || ""),
+      sourceHash: String(source.hash || ""),
+    };
+    pendingWhiteboardInit = {
+      type: "lavish-whiteboard:init",
+      diagramIndex: index,
+      diagramId: whiteboardCurrent.diagramId,
+      source: whiteboardCurrent.source,
+      sourceHash: whiteboardCurrent.sourceHash,
+      saved,
+      theme: whiteboardTheme(),
+    };
+    whiteboardError.hidden = true;
+    whiteboardOverlay.hidden = false;
+    // A fresh document per open: the frame boots, posts ready, and receives
+    // the pending init - no stale editor state can leak between opens.
+    whiteboardFrame.src = "/whiteboard-frame";
+  } catch (error) {
+    whiteboardCurrent = null;
+    pendingWhiteboardInit = null;
+    showWhiteboardError("Could not open the whiteboard: " + (error instanceof Error ? error.message : String(error)));
+  }
+}
+
+function closeWhiteboard() {
+  whiteboardOverlay.hidden = true;
+  whiteboardError.hidden = true;
+  whiteboardFrame.src = "about:blank";
+  whiteboardCurrent = null;
+  pendingWhiteboardInit = null;
+}
+
+async function saveWhiteboardScene(message) {
+  if (!whiteboardCurrent) return;
+  const response = await fetch("/api/" + key + "/whiteboard/" + whiteboardCurrent.index, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      source_hash: String(message.sourceHash || ""),
+      scene: message.scene || null,
+      baseline: message.baseline || null,
+    }),
+  });
+  if (!response.ok) throw new Error("failed to save whiteboard scene");
+}
+
+function whiteboardSummaryText(summaryLines) {
+  return (Array.isArray(summaryLines) ? summaryLines : [])
+    .filter((line) => typeof line === "string")
+    .slice(0, 50)
+    .map((line) => line.slice(0, 300))
+    .join("\n");
+}
+
+async function queueWhiteboardFeedback(message) {
+  if (!whiteboardCurrent) return;
+  const index = whiteboardCurrent.index;
+  const diagramId = whiteboardCurrent.diagramId;
+  try {
+    // Persist the exact reviewed state before queueing, so the paths in the
+    // prompt point at what the user actually saw.
+    await saveWhiteboardScene(message);
+    const response = await fetch("/api/" + key + "/whiteboard/" + index + "/feedback-files", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scene: message.scene || null, pngDataUrl: String(message.pngDataUrl || "") }),
+    });
+    if (!response.ok) throw new Error("failed to write whiteboard feedback files");
+    const files = await response.json();
+    const note = String(message.note || "").slice(0, 4000);
+    const summary = whiteboardSummaryText(message.summaryLines);
+    const promptText =
+      (note ? note + "\n\n" : "") +
+      "Whiteboard edits to diagram " +
+      (index + 1) +
+      (diagramId ? " (" + diagramId + ")" : "") +
+      ":\n" +
+      (summary || "(no summary)") +
+      "\n\nEdited scene JSON: " +
+      String(files.scene_path || "") +
+      (files.preview_path ? "\nPNG preview: " + String(files.preview_path) : "");
+    enqueuePrompt({
+      uid: "",
+      prompt: promptText,
+      selector: "",
+      tag: "whiteboard",
+      text: "Whiteboard: diagram " + (index + 1),
+      target: {
+        type: "excalidraw-scene",
+        diagramIndex: index,
+        diagramId,
+        sourceHash: String(message.sourceHash || ""),
+        scenePath: String(files.scene_path || ""),
+        previewPath: String(files.preview_path || ""),
+        imageFallback: Boolean(message.imageFallback),
+        stats: message.stats && typeof message.stats === "object" ? message.stats : {},
+      },
+      // Re-queueing the same diagram's whiteboard before sending replaces the
+      // earlier unsent prompt instead of stacking duplicates.
+      [internalQueueKeyField]: "whiteboard:" + index,
+    });
+    postToWhiteboard({ type: "lavish-whiteboard:queueResult", ok: true });
+    closeWhiteboard();
+  } catch (error) {
+    postToWhiteboard({
+      type: "lavish-whiteboard:queueResult",
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+// After a live reload, tell an open whiteboard when its diagram's source
+// changed underneath it so the frame can surface staleness (never silently
+// merge). Missing sources (diagram deleted) also count as a change.
+async function refreshWhiteboardSource() {
+  if (!whiteboardCurrent) return;
+  try {
+    const sources = await fetchMermaidSources();
+    const source = sources.find((item) => item.index === whiteboardCurrent.index);
+    const nextHash = source ? String(source.hash || "") : "";
+    if (nextHash !== whiteboardCurrent.sourceHash) {
+      whiteboardCurrent.source = source ? String(source.source || "") : "";
+      whiteboardCurrent.sourceHash = nextHash;
+      postToWhiteboard({
+        type: "lavish-whiteboard:sourceChanged",
+        source: whiteboardCurrent.source,
+        sourceHash: whiteboardCurrent.sourceHash,
+      });
+    }
+  } catch {
+    // Best effort - the staleness banner also re-arms on the next open.
+  }
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== whiteboardFrame.contentWindow) return;
+  const msg = event.data || {};
+  if (msg.type === "lavish-whiteboard:ready" && pendingWhiteboardInit) {
+    postToWhiteboard(pendingWhiteboardInit);
+  }
+  if (msg.type === "lavish-whiteboard:save") saveWhiteboardScene(msg).catch(() => {});
+  if (msg.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(msg);
+  if (msg.type === "lavish-whiteboard:close") closeWhiteboard();
+});
+
 function loadFrame() {
   if (artifactSrc) frame.src = artifactSrc;
 }
@@ -714,6 +913,7 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
+  if (msg.type === "lavish:openWhiteboard") openWhiteboard(msg);
 });
 
 loadFrame();
@@ -758,9 +958,12 @@ document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
 });
+whiteboardCloseButton.onclick = closeWhiteboard;
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    if (!shareDialog.hidden) {
+    if (!whiteboardOverlay.hidden) {
+      closeWhiteboard();
+    } else if (!shareDialog.hidden) {
       closeShareDialog();
     } else {
       closeMenus();
@@ -787,7 +990,10 @@ frame.addEventListener("load", () => {
 initializeLayoutGate();
 
 const events = new EventSource("/events/" + key);
-events.addEventListener("reload", () => resetFrame());
+events.addEventListener("reload", () => {
+  resetFrame();
+  refreshWhiteboardSource();
+});
 events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
