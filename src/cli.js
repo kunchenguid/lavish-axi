@@ -38,11 +38,7 @@ export const VERSION =
   JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 export function detectInvokingAgent(env = process.env) {
-  return Object.keys(env).some(
-    (key) => key === "CODEX_SANDBOX" || key === "CODEX_THREAD_ID" || key.startsWith("CODEX_"),
-  )
-    ? "codex"
-    : "generic";
+  return ["CODEX_SANDBOX", "CODEX_THREAD_ID"].some((key) => Object.hasOwn(env, key)) ? "codex" : "generic";
 }
 
 function pollExecutionGuidance({ waitForBackground = false, agent = "generic" } = {}) {

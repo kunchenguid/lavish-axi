@@ -163,9 +163,11 @@ test("home output keeps static skill poll guidance agent-neutral", () => {
   assert.match(pollHelp, /queued feedback is never lost/);
 });
 
-test("invoking agent detection recognizes Codex environment variables", () => {
+test("invoking agent detection recognizes Codex runtime markers only", () => {
   assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_SANDBOX: "seatbelt" }), "codex");
   assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_THREAD_ID: "thread" }), "codex");
+  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_HOME: "/tmp/codex" }), "generic");
+  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_EXPERIMENTAL_FEATURE: "1" }), "generic");
   assert.equal(detectInvokingAgent({ PATH: "/bin" }), "generic");
 });
 
