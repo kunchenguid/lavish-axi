@@ -18,8 +18,12 @@ async function createChromeHarness({
   storage = new Map(),
   beginLoadResponses = [],
   handoffResponses = [],
+  innerWidth = 1200,
+  localStorageValues = new Map(),
+  panelWidthHelpers = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
+  const localStorageMap = new Map(localStorageValues);
   const postedToFrame = [];
   const postedToWhiteboard = [];
   const inlineWhiteboards = [];
@@ -35,6 +39,7 @@ async function createChromeHarness({
   let nextTimerId = 1;
   let reloadCount = 0;
   let artifactRevision = 0;
+  let currentInnerWidth = innerWidth;
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -97,13 +102,30 @@ async function createChromeHarness({
         contains(name) {
           return classes.has(name);
         },
+        has(name) {
+          return classes.has(name);
+        },
         toString() {
           return [...classes].join(" ");
         },
       },
-      style: {},
+      style: {
+        setProperty(name, value) {
+          this[name] = String(value);
+        },
+        getPropertyValue(name) {
+          const value = this[name];
+          return value === undefined ? "" : String(value);
+        },
+        removeProperty(name) {
+          delete this[name];
+        },
+      },
       setAttribute(name, value) {
         this[name] = String(value);
+      },
+      getAttribute(name) {
+        return Object.hasOwn(this, name) ? this[name] : null;
       },
       addEventListener(type, handler) {
         listeners.set(type, handler);
@@ -232,6 +254,17 @@ async function createChromeHarness({
     return fetchImpl(url, init);
   };
 
+  const localStorageApi = {
+    getItem(key) {
+      return localStorageMap.has(key) ? localStorageMap.get(key) : null;
+    },
+    setItem(key, value) {
+      localStorageMap.set(key, String(value));
+    },
+    removeItem(key) {
+      localStorageMap.delete(key);
+    },
+  };
   const context = {
     clearTimeout: fakeClearTimeout,
     console,
@@ -262,12 +295,21 @@ async function createChromeHarness({
     },
     document: {
       body: element("body"),
+      get documentElement() {
+        return element("html");
+      },
       getElementById(id) {
         return element(id);
       },
       addEventListener(type, handler, capture) {
         if (!documentListeners.has(type)) documentListeners.set(type, []);
         documentListeners.get(type).push({ handler, capture: Boolean(capture) });
+      },
+      removeEventListener(type, handler) {
+        const list = documentListeners.get(type);
+        if (!list) return;
+        const index = list.findIndex((entry) => entry.handler === handler);
+        if (index !== -1) list.splice(index, 1);
       },
       createElement(tag) {
         const el = element(`${tag}-${elements.size}`);
@@ -296,8 +338,39 @@ async function createChromeHarness({
         if (!windowListeners.has(type)) windowListeners.set(type, []);
         windowListeners.get(type).push(handler);
       },
+      removeEventListener(type, handler) {
+        const list = windowListeners.get(type);
+        if (!list) return;
+        const index = list.indexOf(handler);
+        if (index !== -1) list.splice(index, 1);
+      },
+      dispatchEvent(event) {
+        const list = windowListeners.get(event.type) || [];
+        for (const handler of list) handler(event);
+        return !event.defaultPrevented;
+      },
+      get innerWidth() {
+        return currentInnerWidth;
+      },
+      set innerWidth(value) {
+        currentInnerWidth = Number(value);
+      },
+      localStorage: localStorageApi,
     },
+    localStorage: localStorageApi,
   };
+  if (panelWidthHelpers) {
+    context.LavishPanelWidth = panelWidthHelpers;
+  } else {
+    const helpers = await import("../src/panel-width.js");
+    context.LavishPanelWidth = {
+      PANEL_DEFAULTS: helpers.PANEL_DEFAULTS,
+      PANEL_STORAGE_KEY: helpers.PANEL_STORAGE_KEY,
+      clampPanelWidth: helpers.clampPanelWidth,
+      loadStoredPanelWidth: helpers.loadStoredPanelWidth,
+      savePanelWidth: helpers.savePanelWidth,
+    };
+  }
 
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
   await flushPromises();
@@ -338,13 +411,13 @@ async function createChromeHarness({
       for (const handler of handlers) handler({ source: frame.contentWindow, data: message });
     },
     sendWhiteboardMessage(data) {
-      const handlers = windowListeners.get("message") || [];
-      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
+      const handlers = windowListeners.get("message");
+      assert.ok(handlers && handlers.length > 0, "chrome-client registered a message handler");
       for (const handler of handlers) handler({ source: whiteboardFrame.contentWindow, data });
     },
     sendInlineWhiteboardMessage(whiteboard, data) {
-      const handlers = windowListeners.get("message") || [];
-      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
+      const handlers = windowListeners.get("message");
+      assert.ok(handlers && handlers.length > 0, "chrome-client registered a message handler");
       for (const handler of handlers) handler({ source: whiteboard.source, data });
     },
     dispatchDocumentKeydown(eventProps) {
@@ -384,6 +457,84 @@ async function createChromeHarness({
     beginRequests,
     artifactBeginRequests,
     artifactLoadToken: frameLoadToken,
+    panelWidthPx() {
+      const value = element("html").style["--panel-w"];
+      return value ? Number(String(value).replace("px", "")) : null;
+    },
+    splitterAriaValueNow() {
+      return Number(element("splitter").getAttribute("aria-valuenow"));
+    },
+    isDraggingSplitter() {
+      return Boolean(element("body").classList.has("dragging-splitter"));
+    },
+    storedPanelWidth() {
+      return localStorageMap.get("lavish-axi:panel-w") ?? null;
+    },
+    setInnerWidth(value) {
+      currentInnerWidth = Number(value);
+    },
+    dispatchWindowResize() {
+      const handlers = windowListeners.get("resize") || [];
+      for (const handler of handlers) handler({});
+    },
+    fireSplitterPointer(
+      type,
+      {
+        clientX = 600,
+        pointerId = 1,
+        button = 0,
+        metaKey = false,
+        ctrlKey = false,
+        altKey = false,
+        shiftKey = false,
+      } = {},
+    ) {
+      const splitter = element("splitter");
+      const pointerdownHandler = splitter.listeners.get("pointerdown");
+      if (type === "pointerdown") {
+        if (!pointerdownHandler)
+          throw new Error("chrome-client did not register a pointerdown handler on the splitter");
+      }
+      const event = {
+        type,
+        pointerId,
+        clientX,
+        button,
+        metaKey,
+        ctrlKey,
+        altKey,
+        shiftKey,
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      if (type === "pointerdown") {
+        pointerdownHandler(event);
+        return event;
+      }
+      // Drag listeners live on `window`, not `document`, so dispatch via the
+      // fake window's event listener map to match how the chrome wires them.
+      const winHandlers = windowListeners.get(type) || [];
+      assert.ok(winHandlers.length > 0, `chrome-client did not register a window ${type} handler`);
+      for (const handler of winHandlers) handler(event);
+      return event;
+    },
+    fireSplitterEvent(type, eventProps = {}) {
+      const splitter = element("splitter");
+      const handler = splitter.listeners.get(type);
+      if (!handler) throw new Error(`chrome-client did not register a ${type} handler on the splitter`);
+      const event = {
+        key: "",
+        defaultPrevented: false,
+        ...eventProps,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      handler(event);
+      return event;
+    },
   };
 }
 
@@ -2219,4 +2370,135 @@ test("a local asset failure inside the artifact is reported as a fatal artifact 
   const failure = posts.find((post) => post.url === "/api/abc/artifact-failures");
   assert.equal(failure.body.failures[0].kind, "artifact-asset-unavailable");
   assert.match(failure.body.failures[0].detail, /logo\.png/);
+});
+
+test("chrome client applies a stored panel width on init and re-clamps it to the viewport", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1000,
+    localStorageValues: new Map([["lavish-axi:panel-w", "500"]]),
+  });
+
+  // 60% of 1000 = 600, so 500 sits inside the allowed range.
+  assert.equal(chrome.panelWidthPx(), 500);
+  assert.equal(chrome.splitterAriaValueNow(), 500);
+  assert.equal(chrome.storedPanelWidth(), "500");
+});
+
+test("chrome client falls back to the default and rewrites the corrupt stored value", async () => {
+  const chrome = await createChromeHarness({
+    localStorageValues: new Map([["lavish-axi:panel-w", "not-a-number"]]),
+  });
+
+  assert.equal(chrome.panelWidthPx(), 360);
+  // A corrupt value is replaced with the computed fallback so subsequent reloads
+  // don't have to repeat the recovery.
+  assert.equal(chrome.storedPanelWidth(), "360");
+});
+
+test("chrome client clamps a stored width that exceeds the viewport on init", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1000,
+    localStorageValues: new Map([["lavish-axi:panel-w", "5000"]]),
+  });
+
+  // 60% of 1000 = 600, the cap.
+  assert.equal(chrome.panelWidthPx(), 600);
+  // The clamped value should be persisted back so the next load does the same.
+  assert.equal(chrome.storedPanelWidth(), "600");
+});
+
+test("chrome client drags the splitter to a new width and persists the result", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  chrome.fireSplitterPointer("pointerdown", { clientX: 800 });
+  assert.equal(chrome.isDraggingSplitter(), true);
+  // initial move from the same pointerdown (cursor 800px from the left in a 1200px viewport -> 400px panel)
+  assert.equal(chrome.panelWidthPx(), 400);
+
+  chrome.fireSplitterPointer("pointermove", { clientX: 700 });
+  assert.equal(chrome.panelWidthPx(), 500);
+  assert.equal(chrome.splitterAriaValueNow(), 500);
+
+  chrome.fireSplitterPointer("pointerup", { clientX: 700 });
+  assert.equal(chrome.isDraggingSplitter(), false);
+  assert.equal(chrome.storedPanelWidth(), "500");
+});
+
+test("chrome client ignores right-clicks when starting a splitter drag", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  chrome.fireSplitterPointer("pointerdown", { clientX: 800, button: 2 });
+  assert.equal(chrome.isDraggingSplitter(), false);
+  assert.equal(chrome.panelWidthPx(), 360);
+});
+
+test("chrome client ignores modifier-keyed pointerdowns so the browser keeps its shortcuts", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  chrome.fireSplitterPointer("pointerdown", { clientX: 800, metaKey: true });
+  assert.equal(chrome.isDraggingSplitter(), false);
+});
+
+test("chrome client ignores pointermove for a different pointer than the active drag", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  chrome.fireSplitterPointer("pointerdown", { clientX: 900, pointerId: 7 });
+  assert.equal(chrome.isDraggingSplitter(), true);
+  chrome.fireSplitterPointer("pointermove", { clientX: 600, pointerId: 99 });
+  // Different pointerId should be ignored; width should still reflect the last accepted move.
+  assert.equal(chrome.panelWidthPx(), 300);
+});
+
+test("chrome client resets the panel width on splitter double-click and persists the default", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1200,
+    localStorageValues: new Map([["lavish-axi:panel-w", "500"]]),
+  });
+  assert.equal(chrome.panelWidthPx(), 500);
+
+  chrome.fireSplitterEvent("dblclick", {});
+  assert.equal(chrome.panelWidthPx(), 360);
+  assert.equal(chrome.storedPanelWidth(), "360");
+});
+
+test("chrome client re-clamps the panel width when the window resizes", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1200,
+    localStorageValues: new Map([["lavish-axi:panel-w", "600"]]),
+  });
+  assert.equal(chrome.panelWidthPx(), 600);
+
+  // Shrink the viewport below the stored width; the panel must clamp.
+  chrome.setInnerWidth(800);
+  // 60% of 800 = 480
+  chrome.dispatchWindowResize();
+  assert.equal(chrome.panelWidthPx(), 480);
+  assert.equal(chrome.storedPanelWidth(), "480");
+});
+
+test("chrome client keyboard arrow keys resize the panel by 8px (40 with shift)", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+  assert.equal(chrome.panelWidthPx(), 360);
+
+  chrome.fireSplitterEvent("keydown", { key: "ArrowRight" });
+  // ArrowRight narrows the panel by 8px.
+  assert.equal(chrome.panelWidthPx(), 352);
+  assert.equal(chrome.storedPanelWidth(), "352");
+
+  chrome.fireSplitterEvent("keydown", { key: "ArrowLeft", shiftKey: true });
+  // ArrowLeft widens the panel by 40px when shift is held.
+  assert.equal(chrome.panelWidthPx(), 392);
+  assert.equal(chrome.storedPanelWidth(), "392");
+});
+
+test("chrome client Enter/Space on the splitter resets the panel to the default", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1200,
+    localStorageValues: new Map([["lavish-axi:panel-w", "500"]]),
+  });
+  assert.equal(chrome.panelWidthPx(), 500);
+
+  chrome.fireSplitterEvent("keydown", { key: "Enter" });
+  assert.equal(chrome.panelWidthPx(), 360);
+  assert.equal(chrome.storedPanelWidth(), "360");
 });

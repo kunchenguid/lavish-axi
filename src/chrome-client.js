@@ -19,6 +19,7 @@ function isModeToggleHotkeyEvent(event) {
 }
 
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
+const splitter = /** @type {HTMLDivElement} */ (document.getElementById("splitter"));
 const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
 const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
 const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"));
@@ -1862,6 +1863,137 @@ frame.addEventListener("load", () => {
 });
 
 initializeLayoutGate();
+
+const panelWidth = globalThis.LavishPanelWidth;
+let currentPanelWidth = panelWidth ? panelWidth.PANEL_DEFAULTS.default : 360;
+let splitterDragPointerId = null;
+
+function applyPanelWidth(px) {
+  const width = Math.round(Number(px) || 0);
+  if (!width) return;
+  currentPanelWidth = width;
+  document.documentElement.style.setProperty("--panel-w", width + "px");
+  if (splitter) {
+    splitter.setAttribute("aria-valuenow", String(width));
+  }
+}
+
+function commitPanelWidth() {
+  if (!panelWidth) return;
+  panelWidth.savePanelWidth(safeLocalStorage(), currentPanelWidth);
+}
+
+function clampPanelWidthForViewport(px) {
+  if (!panelWidth) return px;
+  return panelWidth.clampPanelWidth(px, window.innerWidth);
+}
+
+function syncPanelWidthToViewport() {
+  const clamped = clampPanelWidthForViewport(currentPanelWidth);
+  if (clamped !== currentPanelWidth) {
+    applyPanelWidth(clamped);
+    commitPanelWidth();
+  }
+}
+
+function safeLocalStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function startSplitterDrag(event) {
+  if (!panelWidth || !splitter) return;
+  // Pointer events arrive for mouse, pen, and touch - guard against right/middle clicks
+  // and modifier-driven drags that would interfere with normal browser gestures.
+  if (event.button !== undefined && event.button !== 0) return;
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  event.preventDefault();
+  splitterDragPointerId = event.pointerId;
+  document.body.classList.add("dragging-splitter");
+  // Listen on `window`, not `document`: pointer events dispatched on window
+  // do not bubble to document, and during a drag the cursor frequently enters
+  // the artifact iframe (whose pointer events we disable via the
+  // `dragging-splitter` class). Window-level listeners are the only way to
+  // keep the drag live while the cursor is over the iframe.
+  window.addEventListener("pointermove", onSplitterMove);
+  window.addEventListener("pointerup", endSplitterDrag);
+  window.addEventListener("pointercancel", endSplitterDrag);
+  // Apply the initial drag position immediately so the panel follows the cursor
+  // from the first frame, even when the user starts mid-element.
+  onSplitterMove(event);
+}
+
+function onSplitterMove(event) {
+  if (event.pointerId !== undefined && splitterDragPointerId !== null && event.pointerId !== splitterDragPointerId) {
+    return;
+  }
+  const proposed = window.innerWidth - event.clientX;
+  applyPanelWidth(clampPanelWidthForViewport(proposed));
+}
+
+function endSplitterDrag(event) {
+  if (
+    event &&
+    event.pointerId !== undefined &&
+    splitterDragPointerId !== null &&
+    event.pointerId !== splitterDragPointerId
+  ) {
+    return;
+  }
+  if (event && typeof event.preventDefault === "function") event.preventDefault();
+  splitterDragPointerId = null;
+  document.body.classList.remove("dragging-splitter");
+  window.removeEventListener("pointermove", onSplitterMove);
+  window.removeEventListener("pointerup", endSplitterDrag);
+  window.removeEventListener("pointercancel", endSplitterDrag);
+  commitPanelWidth();
+}
+
+function resetPanelWidth() {
+  if (!panelWidth) return;
+  applyPanelWidth(panelWidth.PANEL_DEFAULTS.default);
+  commitPanelWidth();
+}
+
+function initializePanelWidth() {
+  if (!panelWidth) return;
+  const storage = safeLocalStorage();
+  const stored = panelWidth.loadStoredPanelWidth(storage, window.innerWidth);
+  applyPanelWidth(stored);
+  // Always commit on init so a stored value that was clamped (or fell back to the
+  // default) replaces the now-stale raw entry - next reload reads a sensible number.
+  commitPanelWidth();
+  if (splitter) {
+    splitter.addEventListener("pointerdown", startSplitterDrag);
+    splitter.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      resetPanelWidth();
+    });
+    // Keyboard support matches the click affordances: arrow keys resize by the
+    // small step, page up/down resize by the large step, Home/End jump to the
+    // min/default maximum, Escape cancels the drag.
+    splitter.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        resetPanelWidth();
+        return;
+      }
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const direction = event.key === "ArrowLeft" ? 1 : -1;
+        const step = event.shiftKey ? 40 : 8;
+        applyPanelWidth(clampPanelWidthForViewport(currentPanelWidth + direction * step));
+        commitPanelWidth();
+      }
+    });
+  }
+  window.addEventListener("resize", syncPanelWidthToViewport);
+}
+
+initializePanelWidth();
 
 const events = new EventSource("/events/" + key);
 events.addEventListener("reload", () => {
