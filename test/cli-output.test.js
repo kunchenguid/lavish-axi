@@ -218,7 +218,6 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.match(output.diagram_tooling.use_when, /hand-built div\/flexbox boxes/);
   assert.match(output.diagram_tooling.mermaid_cdn_snippet, /cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+/);
   assert.match(output.diagram_tooling.mermaid_cdn_snippet, /mermaid\.initialize/);
-  assert.match(output.diagram_tooling.mermaid_cdn_snippet, /startOnLoad: true/);
   assert.match(
     output.diagram_tooling.cdn_urls.mermaid,
     /^https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+\/dist\/mermaid\.esm\.min\.mjs$/,
@@ -278,6 +277,39 @@ test("diagram playbook names the hand-built flow anti-pattern", () => {
   assert.ok(output.playbook.pitfalls.some((item) => /hand-build boxes-and-arrows/i.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => /div\/flexbox/i.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => /does not auto-route edges/i.test(item)));
+});
+
+test("diagram playbook tells agents to keep Mermaid theming in sync with the page theme", () => {
+  const output = createPlaybookOutput(["diagram"]);
+
+  assert.ok(
+    output.playbook.design_rules.some(
+      (item) => /mermaid/i.test(item) && /theme/i.test(item) && /re-render/i.test(item),
+    ),
+    "diagram playbook must tell agents to theme Mermaid to the page and re-render on theme change",
+  );
+});
+
+test("design output emits a theme-aware Mermaid init that re-renders on page-theme change", () => {
+  const snippet = createDesignOutput().diagram_tooling.mermaid_cdn_snippet;
+
+  // The old bug: a single hardcoded Mermaid theme that ignores the page theme.
+  assert.doesNotMatch(snippet, /theme:\s*["']base["']/);
+
+  // It must choose the Mermaid theme from the page's effective light/dark
+  // appearance, covering both a data-theme toggle and the OS preference.
+  assert.match(snippet, /prefers-color-scheme:\s*dark/);
+  assert.match(snippet, /["']dark["']/);
+  assert.match(snippet, /["']default["']/);
+  assert.match(snippet, /backgroundColor/);
+
+  // Mermaid does not restyle an already-rendered SVG, so the snippet must
+  // re-render: it drives rendering itself and reacts to theme changes.
+  assert.match(snippet, /startOnLoad:\s*false/);
+  assert.match(snippet, /mermaid\.run/);
+  assert.match(snippet, /MutationObserver/);
+  assert.match(snippet, /data-theme/);
+  assert.match(snippet, /addEventListener\(["']change["']/);
 });
 
 test("playbook detail output returns focused Lavish-native guidance", () => {

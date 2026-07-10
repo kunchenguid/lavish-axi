@@ -22,6 +22,7 @@ export const PLAYBOOKS = [
       "Use page-scoped class names and avoid generic names like .node that can collide with diagram libraries.",
       "Prefer top-down flow for multi-step diagrams unless the flow is genuinely linear and short.",
       "Quote labels that contain punctuation or code-like names, and use explicit line breaks where the renderer supports them.",
+      "Initialize Mermaid to match the page theme and re-render when the theme changes: pick the Mermaid theme from the effective page appearance (light or dark) at render time, and use the theme-aware `lavish-axi design` Mermaid snippet rather than hardcoding a single theme, since Mermaid does not restyle an already-rendered SVG when the viewer toggles the page theme.",
     ],
     pitfalls: [
       "Do not cram every file or function into one diagram when a layered explanation would be clearer.",

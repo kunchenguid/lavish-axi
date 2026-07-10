@@ -19,11 +19,58 @@ export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URL
 export const MERMAID_CDN_SNIPPET = `<script type="module">
   import mermaid from "${MERMAID_CDN_URL}";
 
-  mermaid.initialize({
-    startOnLoad: true,
-    theme: "base",
-    securityLevel: "strict",
+  // Render Mermaid in a theme that matches the artifact page, and re-render when
+  // the viewer flips the page theme - Mermaid never restyles an already-rendered
+  // SVG on its own, so a fixed theme clashes in either light or dark mode.
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+  // Normalize any CSS color the browser produces (rgb, oklch, hsl, named, ...)
+  // to [r, g, b, a] bytes via a 1x1 canvas, so parsing never breaks on modern
+  // color syntaxes like DaisyUI's oklch() values.
+  const paint = document.createElement("canvas").getContext("2d");
+  function toRgba(color) {
+    paint.clearRect(0, 0, 1, 1);
+    paint.fillStyle = "#000";
+    paint.fillStyle = color;
+    paint.fillRect(0, 0, 1, 1);
+    return paint.getImageData(0, 0, 1, 1).data;
+  }
+
+  function pageIsDark() {
+    // Trust the actually-rendered page background so this works with any theming
+    // mechanism: prefers-color-scheme, a data-theme attribute, or plain CSS.
+    for (const el of [document.body, document.documentElement]) {
+      if (!el) continue;
+      const [r, g, b, a] = toRgba(getComputedStyle(el).backgroundColor);
+      if (a === 0) continue; // transparent layer: check the next one down
+      return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
+    }
+    return darkQuery.matches;
+  }
+
+  const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.textContent }));
+  let applied;
+  async function render() {
+    const theme = pageIsDark() ? "dark" : "default";
+    if (theme === applied) return;
+    applied = theme;
+    mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
+    for (const { el, src } of diagrams) {
+      el.removeAttribute("data-processed");
+      el.textContent = src;
+    }
+    await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+  }
+
+  // First render once stylesheets are applied (no wrong-theme flash), then keep
+  // the diagrams in sync with page-theme toggles and OS light/dark changes.
+  if (document.readyState === "complete") render();
+  else window.addEventListener("load", render, { once: true });
+  new MutationObserver(render).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme", "class", "style"],
   });
+  darkQuery.addEventListener("change", render);
 </script>`;
 
 export const LAYOUT_SAFETY_CSS_SNIPPET = `<style>
