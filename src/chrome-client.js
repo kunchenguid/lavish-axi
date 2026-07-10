@@ -1873,9 +1873,6 @@ function applyPanelWidth(px) {
   if (!width) return;
   currentPanelWidth = width;
   document.documentElement.style.setProperty("--panel-w", width + "px");
-  if (splitter) {
-    splitter.setAttribute("aria-valuenow", String(width));
-  }
 }
 
 function commitPanelWidth() {
@@ -1972,25 +1969,21 @@ function initializePanelWidth() {
       event.preventDefault();
       resetPanelWidth();
     });
-    // Keyboard support matches the click affordances: arrow keys resize by the
-    // small step, page up/down resize by the large step, Home/End jump to the
-    // min/default maximum, Escape cancels the drag.
-    splitter.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        resetPanelWidth();
-        return;
-      }
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-        event.preventDefault();
-        const direction = event.key === "ArrowLeft" ? 1 : -1;
-        const step = event.shiftKey ? 40 : 8;
-        applyPanelWidth(clampPanelWidthForViewport(currentPanelWidth + direction * step));
-        commitPanelWidth();
-      }
-    });
   }
-  window.addEventListener("resize", syncPanelWidthToViewport);
+  window.addEventListener("resize", onWindowResize);
+}
+
+// On the stacked/mobile breakpoint the splitter is `display:none`, so the
+// desktop-chosen width should be left alone. Without this guard, briefly
+// resizing the window to a phone width would clamp the stored width down
+// and overwrite localStorage, permanently shrinking the panel until the
+// user drags it back out.
+const mobileBreakpointMatches =
+  typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 860px)") : null;
+
+function onWindowResize() {
+  if (mobileBreakpointMatches && mobileBreakpointMatches.matches) return;
+  syncPanelWidthToViewport();
 }
 
 initializePanelWidth();

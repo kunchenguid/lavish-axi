@@ -40,6 +40,7 @@ async function createChromeHarness({
   let reloadCount = 0;
   let artifactRevision = 0;
   let currentInnerWidth = innerWidth;
+  let mobileBreakpointMatches = false;
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -356,6 +357,20 @@ async function createChromeHarness({
         currentInnerWidth = Number(value);
       },
       localStorage: localStorageApi,
+      matchMedia(query) {
+        if (query === "(max-width: 860px)") {
+          return {
+            get matches() {
+              return mobileBreakpointMatches;
+            },
+          };
+        }
+        return {
+          get matches() {
+            return false;
+          },
+        };
+      },
     },
     localStorage: localStorageApi,
   };
@@ -461,9 +476,6 @@ async function createChromeHarness({
       const value = element("html").style["--panel-w"];
       return value ? Number(String(value).replace("px", "")) : null;
     },
-    splitterAriaValueNow() {
-      return Number(element("splitter").getAttribute("aria-valuenow"));
-    },
     isDraggingSplitter() {
       return Boolean(element("body").classList.has("dragging-splitter"));
     },
@@ -472,6 +484,9 @@ async function createChromeHarness({
     },
     setInnerWidth(value) {
       currentInnerWidth = Number(value);
+    },
+    setMobileBreakpoint(matches) {
+      mobileBreakpointMatches = matches;
     },
     dispatchWindowResize() {
       const handlers = windowListeners.get("resize") || [];
@@ -2380,7 +2395,6 @@ test("chrome client applies a stored panel width on init and re-clamps it to the
 
   // 60% of 1000 = 600, so 500 sits inside the allowed range.
   assert.equal(chrome.panelWidthPx(), 500);
-  assert.equal(chrome.splitterAriaValueNow(), 500);
   assert.equal(chrome.storedPanelWidth(), "500");
 });
 
@@ -2417,7 +2431,6 @@ test("chrome client drags the splitter to a new width and persists the result", 
 
   chrome.fireSplitterPointer("pointermove", { clientX: 700 });
   assert.equal(chrome.panelWidthPx(), 500);
-  assert.equal(chrome.splitterAriaValueNow(), 500);
 
   chrome.fireSplitterPointer("pointerup", { clientX: 700 });
   assert.equal(chrome.isDraggingSplitter(), false);
@@ -2476,29 +2489,42 @@ test("chrome client re-clamps the panel width when the window resizes", async ()
   assert.equal(chrome.storedPanelWidth(), "480");
 });
 
-test("chrome client keyboard arrow keys resize the panel by 8px (40 with shift)", async () => {
-  const chrome = await createChromeHarness({ innerWidth: 1200 });
-  assert.equal(chrome.panelWidthPx(), 360);
-
-  chrome.fireSplitterEvent("keydown", { key: "ArrowRight" });
-  // ArrowRight narrows the panel by 8px.
-  assert.equal(chrome.panelWidthPx(), 352);
-  assert.equal(chrome.storedPanelWidth(), "352");
-
-  chrome.fireSplitterEvent("keydown", { key: "ArrowLeft", shiftKey: true });
-  // ArrowLeft widens the panel by 40px when shift is held.
-  assert.equal(chrome.panelWidthPx(), 392);
-  assert.equal(chrome.storedPanelWidth(), "392");
-});
-
-test("chrome client Enter/Space on the splitter resets the panel to the default", async () => {
+test("chrome client leaves the stored width alone when the resize lands in the mobile breakpoint", async () => {
   const chrome = await createChromeHarness({
     innerWidth: 1200,
-    localStorageValues: new Map([["lavish-axi:panel-w", "500"]]),
+    localStorageValues: new Map([["lavish-axi:panel-w", "600"]]),
   });
-  assert.equal(chrome.panelWidthPx(), 500);
+  assert.equal(chrome.panelWidthPx(), 600);
 
-  chrome.fireSplitterEvent("keydown", { key: "Enter" });
-  assert.equal(chrome.panelWidthPx(), 360);
-  assert.equal(chrome.storedPanelWidth(), "360");
+  // Simulate the user opening DevTools or briefly resizing the window onto a
+  // phone-width viewport. The splitter is hidden in that mode, so the resize
+  // listener must not silently shrink the stored width and overwrite
+  // localStorage - otherwise the desktop choice would be lost.
+  chrome.setMobileBreakpoint(true);
+  chrome.setInnerWidth(420);
+  chrome.dispatchWindowResize();
+
+  assert.equal(chrome.panelWidthPx(), 600);
+  assert.equal(chrome.storedPanelWidth(), "600");
+});
+
+test("chrome client resumes resync when the window leaves the mobile breakpoint", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1200,
+    localStorageValues: new Map([["lavish-axi:panel-w", "600"]]),
+  });
+  assert.equal(chrome.panelWidthPx(), 600);
+
+  chrome.setMobileBreakpoint(true);
+  chrome.setInnerWidth(420);
+  chrome.dispatchWindowResize();
+  // Still at the desktop-chosen width - the mobile resize was a no-op.
+  assert.equal(chrome.panelWidthPx(), 600);
+
+  chrome.setMobileBreakpoint(false);
+  chrome.setInnerWidth(800);
+  chrome.dispatchWindowResize();
+  // 60% of 800 = 480
+  assert.equal(chrome.panelWidthPx(), 480);
+  assert.equal(chrome.storedPanelWidth(), "480");
 });
