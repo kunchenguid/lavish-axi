@@ -1940,7 +1940,6 @@ function endSplitterDrag(event) {
   ) {
     return;
   }
-  if (event && typeof event.preventDefault === "function") event.preventDefault();
   splitterDragPointerId = null;
   document.body.classList.remove("dragging-splitter");
   window.removeEventListener("pointermove", onSplitterMove);
@@ -1958,15 +1957,15 @@ function resetPanelWidth() {
 function initializePanelWidth() {
   if (!panelWidth) return;
   const storage = safeLocalStorage();
+  const rawStored = storage ? storage.getItem(panelWidth.PANEL_STORAGE_KEY) : null;
   const stored = panelWidth.loadStoredPanelWidth(storage, window.innerWidth);
   applyPanelWidth(stored);
-  // Always commit on init so a stored value that was clamped (or fell back to the
-  // default) replaces the now-stale raw entry - next reload reads a sensible number.
-  commitPanelWidth();
+  if (rawStored === null || String(stored) !== rawStored) {
+    commitPanelWidth();
+  }
   if (splitter) {
     splitter.addEventListener("pointerdown", startSplitterDrag);
-    splitter.addEventListener("dblclick", (event) => {
-      event.preventDefault();
+    splitter.addEventListener("dblclick", () => {
       resetPanelWidth();
     });
   }

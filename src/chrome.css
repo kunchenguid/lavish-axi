@@ -919,14 +919,9 @@ body.lavish {
 }
 .splitter:hover::after,
 .splitter:hover::before,
-.splitter:focus-visible::after,
-.splitter:focus-visible::before,
 body.dragging-splitter .splitter::after,
 body.dragging-splitter .splitter::before {
   opacity: 1;
-}
-.splitter:focus-visible {
-  outline: none;
 }
 body.dragging-splitter {
   cursor: col-resize;

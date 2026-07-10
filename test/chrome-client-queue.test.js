@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+import { PANEL_STORAGE_KEY } from "../src/panel-width.js";
+
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
 /** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number }} HarnessSessionData */
@@ -20,7 +22,6 @@ async function createChromeHarness({
   handoffResponses = [],
   innerWidth = 1200,
   localStorageValues = new Map(),
-  panelWidthHelpers = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   const localStorageMap = new Map(localStorageValues);
@@ -261,11 +262,13 @@ async function createChromeHarness({
     },
     setItem(key, value) {
       localStorageMap.set(key, String(value));
+      localStorageWriteCount += 1;
     },
     removeItem(key) {
       localStorageMap.delete(key);
     },
   };
+  let localStorageWriteCount = 0;
   const context = {
     clearTimeout: fakeClearTimeout,
     console,
@@ -374,18 +377,14 @@ async function createChromeHarness({
     },
     localStorage: localStorageApi,
   };
-  if (panelWidthHelpers) {
-    context.LavishPanelWidth = panelWidthHelpers;
-  } else {
-    const helpers = await import("../src/panel-width.js");
-    context.LavishPanelWidth = {
-      PANEL_DEFAULTS: helpers.PANEL_DEFAULTS,
-      PANEL_STORAGE_KEY: helpers.PANEL_STORAGE_KEY,
-      clampPanelWidth: helpers.clampPanelWidth,
-      loadStoredPanelWidth: helpers.loadStoredPanelWidth,
-      savePanelWidth: helpers.savePanelWidth,
-    };
-  }
+  const helpers = await import("../src/panel-width.js");
+  context.LavishPanelWidth = {
+    PANEL_DEFAULTS: helpers.PANEL_DEFAULTS,
+    PANEL_STORAGE_KEY: helpers.PANEL_STORAGE_KEY,
+    clampPanelWidth: helpers.clampPanelWidth,
+    loadStoredPanelWidth: helpers.loadStoredPanelWidth,
+    savePanelWidth: helpers.savePanelWidth,
+  };
 
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
   await flushPromises();
@@ -480,7 +479,10 @@ async function createChromeHarness({
       return Boolean(element("body").classList.has("dragging-splitter"));
     },
     storedPanelWidth() {
-      return localStorageMap.get("lavish-axi:panel-w") ?? null;
+      return localStorageMap.get(PANEL_STORAGE_KEY) ?? null;
+    },
+    localStorageWriteCount() {
+      return localStorageWriteCount;
     },
     setInnerWidth(value) {
       currentInnerWidth = Number(value);
@@ -2390,17 +2392,20 @@ test("a local asset failure inside the artifact is reported as a fatal artifact 
 test("chrome client applies a stored panel width on init and re-clamps it to the viewport", async () => {
   const chrome = await createChromeHarness({
     innerWidth: 1000,
-    localStorageValues: new Map([["lavish-axi:panel-w", "500"]]),
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "500"]]),
   });
 
   // 60% of 1000 = 600, so 500 sits inside the allowed range.
   assert.equal(chrome.panelWidthPx(), 500);
   assert.equal(chrome.storedPanelWidth(), "500");
+  // The stored value already satisfied the clamp, so the init commit must be
+  // a no-op and skip the localStorage write entirely.
+  assert.equal(chrome.localStorageWriteCount(), 0);
 });
 
 test("chrome client falls back to the default and rewrites the corrupt stored value", async () => {
   const chrome = await createChromeHarness({
-    localStorageValues: new Map([["lavish-axi:panel-w", "not-a-number"]]),
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "not-a-number"]]),
   });
 
   assert.equal(chrome.panelWidthPx(), 360);
@@ -2412,7 +2417,7 @@ test("chrome client falls back to the default and rewrites the corrupt stored va
 test("chrome client clamps a stored width that exceeds the viewport on init", async () => {
   const chrome = await createChromeHarness({
     innerWidth: 1000,
-    localStorageValues: new Map([["lavish-axi:panel-w", "5000"]]),
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "5000"]]),
   });
 
   // 60% of 1000 = 600, the cap.
@@ -2435,6 +2440,22 @@ test("chrome client drags the splitter to a new width and persists the result", 
   chrome.fireSplitterPointer("pointerup", { clientX: 700 });
   assert.equal(chrome.isDraggingSplitter(), false);
   assert.equal(chrome.storedPanelWidth(), "500");
+});
+
+test("chrome client does not preventDefault on pointerup so the dblclick chain still fires", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  // pointerdown still prevents default - the chrome uses that to suppress
+  // focus and text selection when the user grabs the splitter.
+  const downEvent = chrome.fireSplitterPointer("pointerdown", { clientX: 800 });
+  assert.equal(downEvent.defaultPrevented, true);
+
+  // pointerup must NOT preventDefault. The browser's default action for
+  // pointerup synthesizes the click event that dblclick depends on; calling
+  // preventDefault here would silently break the "double-click to reset"
+  // affordance documented on the splitter.
+  const upEvent = chrome.fireSplitterPointer("pointerup", { clientX: 700 });
+  assert.equal(upEvent.defaultPrevented, false);
 });
 
 test("chrome client ignores right-clicks when starting a splitter drag", async () => {
@@ -2465,7 +2486,7 @@ test("chrome client ignores pointermove for a different pointer than the active 
 test("chrome client resets the panel width on splitter double-click and persists the default", async () => {
   const chrome = await createChromeHarness({
     innerWidth: 1200,
-    localStorageValues: new Map([["lavish-axi:panel-w", "500"]]),
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "500"]]),
   });
   assert.equal(chrome.panelWidthPx(), 500);
 
@@ -2477,7 +2498,7 @@ test("chrome client resets the panel width on splitter double-click and persists
 test("chrome client re-clamps the panel width when the window resizes", async () => {
   const chrome = await createChromeHarness({
     innerWidth: 1200,
-    localStorageValues: new Map([["lavish-axi:panel-w", "600"]]),
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "600"]]),
   });
   assert.equal(chrome.panelWidthPx(), 600);
 
@@ -2492,7 +2513,7 @@ test("chrome client re-clamps the panel width when the window resizes", async ()
 test("chrome client leaves the stored width alone when the resize lands in the mobile breakpoint", async () => {
   const chrome = await createChromeHarness({
     innerWidth: 1200,
-    localStorageValues: new Map([["lavish-axi:panel-w", "600"]]),
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "600"]]),
   });
   assert.equal(chrome.panelWidthPx(), 600);
 
@@ -2511,7 +2532,7 @@ test("chrome client leaves the stored width alone when the resize lands in the m
 test("chrome client resumes resync when the window leaves the mobile breakpoint", async () => {
   const chrome = await createChromeHarness({
     innerWidth: 1200,
-    localStorageValues: new Map([["lavish-axi:panel-w", "600"]]),
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "600"]]),
   });
   assert.equal(chrome.panelWidthPx(), 600);
 
