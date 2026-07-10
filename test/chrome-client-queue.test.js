@@ -22,6 +22,7 @@ async function createChromeHarness({
   handoffResponses = [],
   innerWidth = 1200,
   localStorageValues = new Map(),
+  localStorageGetItemThrows = false,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   const localStorageMap = new Map(localStorageValues);
@@ -258,6 +259,7 @@ async function createChromeHarness({
 
   const localStorageApi = {
     getItem(key) {
+      if (localStorageGetItemThrows) throw new Error("getItem blocked");
       return localStorageMap.has(key) ? localStorageMap.get(key) : null;
     },
     setItem(key, value) {
@@ -2424,6 +2426,17 @@ test("chrome client clamps a stored width that exceeds the viewport on init", as
   assert.equal(chrome.panelWidthPx(), 600);
   // The clamped value should be persisted back so the next load does the same.
   assert.equal(chrome.storedPanelWidth(), "600");
+});
+
+test("chrome client survives a localStorage.getItem that throws and still commits the default", async () => {
+  const chrome = await createChromeHarness({ localStorageGetItemThrows: true });
+
+  // getItem threw, so the chrome must still apply the default width instead
+  // of crashing during init.
+  assert.equal(chrome.panelWidthPx(), 360);
+  // And the self-heal commit should still write the default so a subsequent
+  // reload (with a working storage) lands on the same value.
+  assert.equal(chrome.storedPanelWidth(), "360");
 });
 
 test("chrome client drags the splitter to a new width and persists the result", async () => {

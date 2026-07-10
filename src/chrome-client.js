@@ -1957,7 +1957,14 @@ function resetPanelWidth() {
 function initializePanelWidth() {
   if (!panelWidth) return;
   const storage = safeLocalStorage();
-  const rawStored = storage ? storage.getItem(panelWidth.PANEL_STORAGE_KEY) : null;
+  let rawStored = null;
+  if (storage) {
+    try {
+      rawStored = storage.getItem(panelWidth.PANEL_STORAGE_KEY);
+    } catch {
+      rawStored = null;
+    }
+  }
   const stored = panelWidth.loadStoredPanelWidth(storage, window.innerWidth);
   applyPanelWidth(stored);
   if (rawStored === null || String(stored) !== rawStored) {
