@@ -52,7 +52,7 @@ Use lavish-axi when the user asks for a visual artifact, HTML explainer, interac
 
 Run `npx -y lavish-axi playbook <id>` for focused, detailed guidance on any of these.
 One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so MUST open each matching playbook before writing HTML.
-For flows, architecture, state, or sequence diagrams, do not hand-build boxes-and-arrows from div/flexbox; open the diagram playbook and use Mermaid unless SVG is needed for richly annotated nodes.
+For flows, architecture, state, or sequence diagrams, do not hand-build boxes-and-arrows from div/flexbox; open the diagram playbook and use the theme-aware Mermaid snippet from `npx -y lavish-axi design` unless SVG is needed for richly annotated nodes.
 
 - `diagram` - Map relationships, flows, state, and architecture
 - `table` - Turn dense records into scan-friendly review surfaces
