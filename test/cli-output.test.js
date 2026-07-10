@@ -312,6 +312,115 @@ test("design output emits a theme-aware Mermaid init that re-renders on page-the
   assert.match(snippet, /addEventListener\(["']change["']/);
 });
 
+test("theme-aware Mermaid snippet serializes rapid theme-change renders", async () => {
+  const snippet = createDesignOutput()
+    .diagram_tooling.mermaid_cdn_snippet.replace(/^<script type="module">\n/, "")
+    .replace(/\n<\/script>$/, "")
+    .replace(/^\s*import mermaid from "[^"]+";\n/m, "");
+  let dark = false;
+  let observedThemeMutations = false;
+  let mutationCallback = () => {};
+  const initializedThemes = [];
+  const mediaListeners = [];
+  const pendingRenders = [];
+  let activeRenders = 0;
+  let maxActiveRenders = 0;
+  const paint = {
+    clearRect() {},
+    set fillStyle(_) {},
+    fillRect() {},
+    getImageData() {
+      return { data: dark ? [0, 0, 0, 255] : [255, 255, 255, 255] };
+    },
+  };
+  const diagram = {
+    textContent: "flowchart TD\\n  A --> B",
+    removeAttribute() {},
+  };
+  const document = {
+    body: {},
+    documentElement: {},
+    readyState: "complete",
+    createElement() {
+      return { getContext: () => paint };
+    },
+    querySelectorAll() {
+      return [diagram];
+    },
+  };
+  const darkQuery = {
+    get matches() {
+      return dark;
+    },
+    addEventListener(type, callback) {
+      assert.equal(type, "change");
+      mediaListeners.push(callback);
+    },
+  };
+  const window = {
+    matchMedia() {
+      return darkQuery;
+    },
+    addEventListener() {
+      assert.fail("the snippet should render immediately after document load");
+    },
+  };
+  class TestMutationObserver {
+    constructor(callback) {
+      observedThemeMutations = true;
+      mutationCallback = callback;
+    }
+
+    observe() {}
+  }
+  const mermaid = {
+    initialize({ theme }) {
+      initializedThemes.push(theme);
+    },
+    run() {
+      activeRenders += 1;
+      maxActiveRenders = Math.max(maxActiveRenders, activeRenders);
+      return new Promise((resolve) => {
+        pendingRenders.push(() => {
+          activeRenders -= 1;
+          resolve();
+        });
+      });
+    },
+  };
+  function finishNextRender() {
+    const finish = pendingRenders.shift();
+    if (!finish) throw new Error("expected a pending Mermaid render");
+    finish();
+  }
+
+  new Function("mermaid", "window", "document", "MutationObserver", "getComputedStyle", snippet)(
+    mermaid,
+    window,
+    document,
+    TestMutationObserver,
+    () => ({ backgroundColor: dark ? "black" : "white" }),
+  );
+
+  assert.equal(mediaListeners.length, 1);
+  assert.equal(observedThemeMutations, true);
+  assert.deepEqual(initializedThemes, ["default"]);
+  dark = true;
+  mutationCallback();
+  assert.equal(maxActiveRenders, 1);
+  assert.deepEqual(initializedThemes, ["default"]);
+
+  finishNextRender();
+  await Promise.resolve();
+  assert.deepEqual(initializedThemes, ["default", "dark"]);
+  assert.equal(maxActiveRenders, 1);
+
+  finishNextRender();
+  await Promise.resolve();
+  assert.equal(activeRenders, 0);
+  assert.equal(initializedThemes.filter((entry) => entry === "dark").length, 1);
+});
+
 test("playbook detail output returns focused Lavish-native guidance", () => {
   const output = createPlaybookOutput(["input"]);
 

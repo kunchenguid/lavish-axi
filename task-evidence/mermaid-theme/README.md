@@ -10,7 +10,7 @@ AFTER so only the Mermaid init snippet differs.
 The page defaults to DaisyUI `data-theme="luxury"` (dark) with a Dark/Light toggle that stamps
 `data-theme` on the root element, mimicking a viewer theme toggle. The host OS preference was
 **dark** during capture, which is why the AFTER light shots are the strong proof: the diagram
-tracks the *page* background, not the OS setting.
+tracks the _page_ background, not the OS setting.
 
 ## BEFORE (fixed `theme: "base"`)
 
