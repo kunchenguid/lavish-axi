@@ -313,6 +313,10 @@ test("design output emits a theme-aware Mermaid init that re-renders on page-the
   assert.match(snippet, /MutationObserver/);
   assert.match(snippet, /data-theme/);
   assert.match(snippet, /document\.addEventListener\(["']change["'],\s*queueRender,\s*true\)/);
+  assert.match(snippet, /document\.addEventListener\(\s*["']transitionend["']/);
+  assert.match(snippet, /background-color/);
+  assert.match(snippet, /function compositeRgba/);
+  assert.match(snippet, /colorScheme/);
   assert.match(snippet, /addEventListener\(["']change["']/);
 });
 
@@ -330,12 +334,24 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   const pendingRenders = [];
   let activeRenders = 0;
   let maxActiveRenders = 0;
+  let bodyColor = "white";
+  let rootColor = "white";
+  let rootColorScheme = "normal";
   const paint = {
+    color: "",
     clearRect() {},
-    set fillStyle(_) {},
+    set fillStyle(color) {
+      this.color = color;
+    },
     fillRect() {},
     getImageData() {
-      return { data: dark ? [0, 0, 0, 255] : [255, 255, 255, 255] };
+      const colors = {
+        black: [0, 0, 0, 255],
+        transparent: [0, 0, 0, 0],
+        white: [255, 255, 255, 255],
+        "white-40": [255, 255, 255, 102],
+      };
+      return { data: colors[this.color] };
     },
   };
   const diagram = {
@@ -343,8 +359,8 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     removeAttribute() {},
   };
   const document = {
-    body: {},
-    documentElement: {},
+    body: { id: "body" },
+    documentElement: { id: "root" },
     readyState: "complete",
     createElement() {
       return { getContext: () => paint };
@@ -353,7 +369,6 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
       return [diagram];
     },
     addEventListener(type, callback, capture) {
-      assert.equal(type, "change");
       documentListeners.set(type, { callback, capture });
     },
   };
@@ -409,7 +424,10 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     window,
     document,
     TestMutationObserver,
-    () => ({ backgroundColor: dark ? "black" : "white" }),
+    (element) => ({
+      backgroundColor: element === document.body ? bodyColor : rootColor,
+      colorScheme: element === document.documentElement ? rootColorScheme : "normal",
+    }),
   );
 
   assert.equal(mediaListeners.length, 1);
@@ -418,9 +436,15 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   const changeListener = documentListeners.get("change");
   assert.equal(typeof changeListener?.callback, "function");
   assert.equal(changeListener?.capture, true);
+  const transitionListener = documentListeners.get("transitionend");
+  assert.equal(typeof transitionListener?.callback, "function");
+  assert.equal(transitionListener?.capture, true);
   assert.deepEqual(initializedThemes, ["default"]);
-  dark = true;
-  changeListener.callback();
+  bodyColor = "white-40";
+  rootColor = "black";
+  transitionListener.callback({ propertyName: "color" });
+  assert.deepEqual(initializedThemes, ["default"]);
+  transitionListener.callback({ propertyName: "background-color" });
   assert.equal(maxActiveRenders, 1);
   assert.deepEqual(initializedThemes, ["default"]);
 
@@ -433,6 +457,20 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   await Promise.resolve();
   assert.equal(activeRenders, 0);
   assert.equal(initializedThemes.filter((entry) => entry === "dark").length, 1);
+
+  bodyColor = "transparent";
+  rootColor = "transparent";
+  rootColorScheme = "light";
+  changeListener.callback();
+  assert.deepEqual(initializedThemes, ["default", "dark", "default"]);
+  finishNextRender();
+  await Promise.resolve();
+
+  rootColorScheme = "dark";
+  transitionListener.callback({ propertyName: "background-color" });
+  assert.deepEqual(initializedThemes, ["default", "dark", "default", "dark"]);
+  finishNextRender();
+  await Promise.resolve();
 });
 
 test("Mermaid after evidence embeds the shipped theme-aware snippet", async () => {

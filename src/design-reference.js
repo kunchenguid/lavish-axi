@@ -36,15 +36,32 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
     return paint.getImageData(0, 0, 1, 1).data;
   }
 
+  function compositeRgba(foreground, background) {
+    const foregroundAlpha = foreground[3] / 255;
+    const backgroundAlpha = background[3] / 255;
+    const alpha = foregroundAlpha + backgroundAlpha * (1 - foregroundAlpha);
+    if (alpha === 0) return [0, 0, 0, 0];
+    return [
+      (foreground[0] * foregroundAlpha + background[0] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+      (foreground[1] * foregroundAlpha + background[1] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+      (foreground[2] * foregroundAlpha + background[2] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+      alpha * 255,
+    ];
+  }
+
   function pageIsDark() {
     // Trust the actually-rendered page background so this works with any theming
     // mechanism: prefers-color-scheme, a data-theme attribute, or plain CSS.
-    for (const el of [document.body, document.documentElement]) {
-      if (!el) continue;
-      const [r, g, b, a] = toRgba(getComputedStyle(el).backgroundColor);
-      if (a === 0) continue; // transparent layer: check the next one down
+    const root = document.documentElement;
+    const rootBackground = toRgba(getComputedStyle(root).backgroundColor);
+    const bodyBackground = document.body ? toRgba(getComputedStyle(document.body).backgroundColor) : [0, 0, 0, 0];
+    const [r, g, b, a] = compositeRgba(bodyBackground, rootBackground);
+    if (a > 0) {
       return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
     }
+    const colorScheme = getComputedStyle(root).colorScheme;
+    if (colorScheme.includes("dark") && !colorScheme.includes("light")) return true;
+    if (colorScheme.includes("light") && !colorScheme.includes("dark")) return false;
     return darkQuery.matches;
   }
 
@@ -91,6 +108,13 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
     });
   }
   document.addEventListener("change", queueRender, true);
+  document.addEventListener(
+    "transitionend",
+    ({ propertyName }) => {
+      if (propertyName === "background-color") queueRender();
+    },
+    true,
+  );
   darkQuery.addEventListener("change", queueRender);
 </script>`;
 
