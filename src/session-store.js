@@ -115,7 +115,7 @@ export class SessionStore {
     if (!session) {
       return { status: "missing" };
     }
-    // Prompts queued before the session ended (e.g. "Send & End") must still reach the
+    // Prompts queued before the session ended (a browser send-and-end) must still reach the
     // agent, so deliver them before reporting the ended state; the next poll then sees ended.
     const prompts = session.prompts || [];
     const layoutWarnings = session.layout_warnings || [];

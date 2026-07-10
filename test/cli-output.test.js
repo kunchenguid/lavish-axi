@@ -46,6 +46,7 @@ import {
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
+import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
 import { serve } from "../src/server.js";
 
 function setupHooksEnv(homeDir, stateDir) {
@@ -94,27 +95,33 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
   assert.ok(output.help.some((item) => item.includes("reference other filesystem assets")));
   assert.ok(output.help.some((item) => item.includes("same directory as the HTML file")));
-  assert.ok(output.help.some((item) => item.includes("does not auto-inject")));
-  assert.ok(output.help.some((item) => item.includes("portable")));
-  assert.ok(output.help.some((item) => item.includes("Tailwind CSS browser runtime v4")));
-  assert.ok(output.help.some((item) => item.includes("lavish-axi design")));
-  assert.ok(output.help.some((item) => /prefer.*CDN snippet.*hand-writing styles/i.test(item)));
-  assert.ok(output.help.some((item) => /unless.*explicitly instructed/i.test(item)));
-  assert.ok(output.help.some((item) => /priority order/i.test(item)));
-  assert.ok(output.help.some((item) => /subject or product/i.test(item)));
-  assert.ok(output.help.some((item) => /current working directory/i.test(item)));
-  assert.ok(output.help.some((item) => /before writing any html/i.test(item)));
-  assert.ok(output.help.some((item) => /inspect the project the artifact is about/i.test(item)));
-  assert.ok(output.help.some((item) => /previews, proposes, or mocks/i.test(item)));
-  assert.ok(output.help.some((item) => /app's own design system/i.test(item)));
-  assert.ok(output.help.some((item) => /css variables|design tokens/i.test(item)));
-  assert.ok(output.help.some((item) => /component library/i.test(item)));
-  assert.ok(output.help.some((item) => /only when both steps come up empty/i.test(item)));
-  assert.ok(output.help.some((item) => /state which of the three design sources/i.test(item)));
-  assert.ok(!output.help.some((item) => /inspect the current project/i.test(item)));
+  assert.ok(output.help.includes(DESIGN_SYSTEM_HINT), "home help carries the single-sourced design rule verbatim");
   assert.ok(!output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
   assert.ok(!output.help.some((item) => item.includes("Known IDs")));
   assert.ok(output.help.some((item) => item.includes("technical plan")));
+});
+
+test("the design-priority rule is single-sourced and keeps its three-step semantics", () => {
+  // Keyword-level checks on the one owner constant; every surface that needs the rule
+  // embeds DESIGN_PRIORITY_RULE, so wording changes happen here and nowhere else.
+  assert.match(DESIGN_PRIORITY_RULE, /strict priority order/);
+  assert.match(DESIGN_PRIORITY_RULE, /\(1\)[\s\S]*\(2\)[\s\S]*\(3\)/);
+  assert.match(DESIGN_PRIORITY_RULE, /user asked for a specific look or named design system/);
+  assert.match(DESIGN_PRIORITY_RULE, /project the artifact is about/);
+  assert.match(DESIGN_PRIORITY_RULE, /current working directory/);
+  assert.match(DESIGN_PRIORITY_RULE, /previews, proposes, or mocks/);
+  assert.match(DESIGN_PRIORITY_RULE, /app's own design system/);
+  assert.match(DESIGN_PRIORITY_RULE, /Tailwind CSS browser runtime v4 \+ DaisyUI v5/);
+  assert.match(DESIGN_PRIORITY_RULE, /only when both steps come up empty/);
+  assert.match(DESIGN_PRIORITY_RULE, /hand-writing styles/);
+  assert.match(DESIGN_PRIORITY_RULE, /unless explicitly instructed/);
+  assert.doesNotMatch(DESIGN_PRIORITY_RULE, /inspect the current project/i);
+
+  assert.ok(DESIGN_SYSTEM_HINT.includes(DESIGN_PRIORITY_RULE), "the home/skill hint embeds the rule");
+  assert.match(DESIGN_SYSTEM_HINT, /does not auto-inject/);
+  assert.match(DESIGN_SYSTEM_HINT, /portable/);
+  assert.match(DESIGN_SYSTEM_HINT, /lavish-axi design/);
+  assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
 });
 
 test("home output warns agents that poll is a long poll they must not kill", () => {
@@ -151,16 +158,7 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /same directory as the HTML file/);
     assert.match(result.stdout, /Tailwind CSS browser runtime v4/);
     assert.match(result.stdout, /lavish-axi design/);
-    assert.match(result.stdout, /does not auto-inject/);
-    assert.match(result.stdout, /prefer.*CDN snippet.*hand-writing styles/i);
-    assert.match(result.stdout, /unless.*explicitly instructed/i);
-    assert.match(result.stdout, /priority order/i);
-    assert.match(result.stdout, /subject or product/i);
-    assert.match(result.stdout, /current working directory/i);
-    assert.match(result.stdout, /inspect the project the artifact is about/i);
-    assert.match(result.stdout, /previews, proposes, or mocks/i);
-    assert.match(result.stdout, /app's own design system/i);
-    assert.doesNotMatch(result.stdout, /inspect the current project/i);
+    assert.match(result.stdout, /strict priority order/);
     assert.match(result.stdout, /never kill it/);
     assert.match(result.stdout, /queued feedback is never lost/);
     assert.doesNotMatch(result.stdout, /above 10 minutes/);
@@ -181,20 +179,10 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
     output.playbook_router.playbooks.find((playbook) => playbook.id === "diagram")?.use_when,
     "Map relationships, flows, state, and architecture",
   );
+  assert.ok(output.design.summary.includes(DESIGN_PRIORITY_RULE), "design summary embeds the single-sourced rule");
   assert.match(output.design.summary, /does not auto-inject/);
-  assert.match(output.design.summary, /Tailwind CSS browser runtime v4/);
-  assert.match(output.design.summary, /DaisyUI v5/);
-  assert.match(output.design.summary, /prefer.*CDN snippet.*hand-writing styles/i);
-  assert.match(output.design.summary, /unless.*explicitly instructed/i);
-  assert.match(output.design.summary, /priority order/i);
-  assert.match(output.design.summary, /subject or product/i);
-  assert.match(output.design.summary, /current working directory/i);
-  assert.match(output.design.summary, /previews, proposes, or mocks/i);
-  assert.match(output.design.summary, /app's own design system/i);
-  assert.doesNotMatch(output.design.summary, /inspect the current project/i);
   assert.match(output.design.summary, /^Use this .*fallback only if/i);
   assert.match(output.design.summary, /no design direction/i);
-  assert.match(output.design.summary, /inspect/i);
   assert.match(output.design.summary, /check first/i);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
@@ -584,20 +572,16 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.equal(output.session.file, "/tmp/artifact.html");
   assert.equal(output.session.url, "http://localhost:4387/session/abc123");
   assert.equal(output.session.status, "opened");
-  assert.equal(typeof output.next_step, "string");
+  // Keyword-level lock on the load-bearing semantics of this agent-facing string:
+  // poll now (not the user-facing URL), never kill the poll, no --timeout-ms, and the
+  // reopen etiquette. Sentence-level phrasing is free to change without touching this test.
   assert.doesNotMatch(output.next_step, /Tell the user/i);
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
-  assert.match(output.next_step, /long-polls until/);
   assert.match(output.next_step, /layout_warnings/);
-  assert.match(output.next_step, /in-iframe layout audit/);
-  assert.match(output.next_step, /stays silent/);
   assert.match(output.next_step, /never kill it/);
-  assert.match(output.next_step, /background task/);
-  assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not pass --timeout-ms/);
-  assert.doesNotMatch(output.next_step, /above 10 minutes/);
   assert.match(output.next_step, /If the user ends the session, stop polling and do not reopen it/);
   assert.match(output.next_step, /--reopen/);
 });
@@ -1566,16 +1550,9 @@ test("open can resume a session without opening another browser window", () => {
   assert.match(getCommandHelp("design"), /DaisyUI/);
   assert.match(getCommandHelp("design"), /lavish-axi design/);
   assert.match(getCommandHelp("design"), /portable/);
-  assert.match(getCommandHelp("design"), /prefer.*CDN snippet.*hand-writing styles/i);
-  assert.match(getCommandHelp("design"), /unless.*explicitly instructed/i);
-  assert.match(getCommandHelp("design"), /priority order/i);
-  assert.match(getCommandHelp("design"), /project the artifact is about/i);
-  assert.match(getCommandHelp("design"), /current working directory/i);
-  assert.match(getCommandHelp("design"), /previews, proposes, or mocks/i);
-  assert.match(getCommandHelp("design"), /app's own design system/i);
+  assert.ok(getCommandHelp("design").includes(DESIGN_PRIORITY_RULE), "design help embeds the single-sourced rule");
   assert.match(getCommandHelp("design"), /fallback, not the default/i);
   assert.match(getCommandHelp("design"), /inspect the subject project/i);
-  assert.doesNotMatch(getCommandHelp("design"), /inspect the current project/i);
   assert.doesNotMatch(getCommandHelp("design"), /auto-injects/);
 });
 

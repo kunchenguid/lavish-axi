@@ -402,7 +402,7 @@ test("the final feedback batch before an end flags session_ended with who ended 
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    // "Send & End": prompts land first, then the session ends before delivery.
+    // Browser send-and-end: prompts land first, then the session ends before delivery.
     await store.queuePrompts(session.key, {
       domSnapshot: 'uid=1 h1 "Hello"',
       prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "Freeform message" }],
@@ -524,7 +524,7 @@ test("prompts queued before ending are still delivered before the ended status",
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    // "Send & End" with no agent listening: prompts land first, then the session ends.
+    // Browser send-and-end with no agent listening: prompts land first, then the session ends.
     await store.queuePrompts(session.key, {
       domSnapshot: 'uid=1 h1 "Hello"',
       prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "Freeform message" }],
