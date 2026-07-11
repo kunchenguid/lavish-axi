@@ -34,6 +34,12 @@ export class SessionStore {
     const existing = state.sessions[key] || {};
     const existingPrompts = existing.prompts || [];
     const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
+    const isReopen = existing.status === "ended";
+    const existingDelivery = existing.feedback_delivery
+      ? isReopen
+        ? (({ session_ended, ended_by, ...rest }) => rest)(existing.feedback_delivery)
+        : existing.feedback_delivery
+      : undefined;
     const session = {
       key,
       file: absolute,
@@ -41,7 +47,8 @@ export class SessionStore {
       status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
       pending_prompts: existing.pending_prompts || 0,
       prompts: existingPrompts,
-      feedback_delivery: existing.feedback_delivery,
+      feedback_delivery: existingDelivery,
+      last_acknowledged_delivery_id: existing.last_acknowledged_delivery_id,
       layout_warnings: [],
       delivered_layout_warning_keys: existing.delivered_layout_warning_keys || [],
       dom_snapshot: existing.dom_snapshot || "",

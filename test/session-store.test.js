@@ -753,3 +753,56 @@ test("re-acknowledging the same delivery id is idempotent but a different id is 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("reopening a session with a pending ended delivery strips the session_ended flag", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "" }],
+      endSession: true,
+    });
+    // Delivery D now exists with session_ended: true inside feedback_delivery.
+    await store.takeFeedback(session.key);
+
+    // User reopens before the agent acks.
+    await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    // Agent's next poll must not see session_ended on a live session.
+    const result = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(result.session_ended, undefined);
+    assert.equal(result.ended_by, undefined);
+    assert.equal(result.prompts.length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("re-acknowledging a delivery id across a session reopen remains idempotent", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, { prompts: [{ prompt: "hello", tag: "message" }] });
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    await store.acknowledgeFeedback(session.key, first.delivery_id);
+
+    // Session ends and is reopened before the agent retries the ack.
+    await store.endSession(session.key, "user");
+    await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    // Re-acking the same delivery_id must still be "already_acknowledged", not "mismatch".
+    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), "already_acknowledged");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
