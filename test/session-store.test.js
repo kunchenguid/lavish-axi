@@ -954,7 +954,11 @@ test("changed layout warnings after session end suppress session_ended in redeli
     const redelivery = feedbackResult(await store.takeFeedback(session.key));
     assert.equal(redelivery.delivery_id, first.delivery_id);
     assert.equal(redelivery.layout_warnings[0].selector, "main");
-    assert.equal(redelivery.session_ended, undefined, "session_ended suppressed so updated warnings can still reach the agent");
+    assert.equal(
+      redelivery.session_ended,
+      undefined,
+      "session_ended suppressed so updated warnings can still reach the agent",
+    );
 
     await store.acknowledgeFeedback(session.key, first.delivery_id);
 
