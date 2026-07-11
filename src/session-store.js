@@ -158,14 +158,16 @@ export class SessionStore {
   async acknowledgeFeedback(key, deliveryId) {
     const state = await this.readState();
     const session = state.sessions[key];
-    if (!session?.feedback_delivery || session.feedback_delivery.delivery_id !== deliveryId) {
-      return false;
+    if (!session) return "mismatch";
+    if (!session.feedback_delivery || session.feedback_delivery.delivery_id !== deliveryId) {
+      return session.last_acknowledged_delivery_id === deliveryId ? "already_acknowledged" : "mismatch";
     }
     const delivery = session.feedback_delivery;
     const layoutWarnings = delivery.layout_warnings || [];
     const layoutWarningsUnchanged = JSON.stringify(session.layout_warnings || []) === JSON.stringify(layoutWarnings);
     const alreadyEnded = session.status === "ended";
     delete session.feedback_delivery;
+    session.last_acknowledged_delivery_id = deliveryId;
     session.prompts = (session.prompts || []).slice(delivery.prompt_count || 0);
     if (layoutWarningsUnchanged) session.layout_warnings = [];
     session.pending_prompts = session.prompts.length;
@@ -180,7 +182,7 @@ export class SessionStore {
     }
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
-    return true;
+    return "ok";
   }
 
   // `endedBy` distinguishes a human ending review from the browser chrome ("user") from an

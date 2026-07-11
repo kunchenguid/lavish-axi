@@ -38,7 +38,7 @@ test("queued prompts are redelivered with the same delivery id until acknowledge
     assert.equal(second.delivery_id, first.delivery_id);
     assert.deepEqual(second.prompts, first.prompts);
 
-    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), true);
+    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), "ok");
     assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -58,7 +58,7 @@ test("acknowledging a delivery preserves prompts queued while it was in flight",
     const first = feedbackResult(await store.takeFeedback(session.key));
 
     await store.queuePrompts(session.key, { prompts: [{ prompt: "second", tag: "message" }] });
-    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), true);
+    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), "ok");
 
     const second = feedbackResult(await store.takeFeedback(session.key));
     assert.notEqual(second.delivery_id, first.delivery_id);
@@ -83,7 +83,7 @@ test("an acknowledgement with a different delivery id leaves feedback pending", 
     await store.queuePrompts(session.key, { prompts: [{ prompt: "keep me", tag: "message" }] });
     const delivery = feedbackResult(await store.takeFeedback(session.key));
 
-    assert.equal(await store.acknowledgeFeedback(session.key, "0000000000000000"), false);
+    assert.equal(await store.acknowledgeFeedback(session.key, "0000000000000000"), "mismatch");
     assert.equal(feedbackResult(await store.takeFeedback(session.key)).delivery_id, delivery.delivery_id);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -315,7 +315,7 @@ test("acknowledging a delivery preserves layout warnings reported while it was i
     await store.recordLayoutWarnings(session.key, {
       layout_warnings: [{ selector: "main", kind: "page-horizontal-overflow", severity: "error" }],
     });
-    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), true);
+    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), "ok");
 
     const second = feedbackResult(await store.takeFeedback(session.key));
     assert.equal(second.layout_warnings?.[0].selector, "main");
@@ -722,6 +722,33 @@ test("freeform user prompts are stored in session chat history", async () => {
       updated.chat.map((item) => [item.role, item.text]),
       [["user", "Please make this clearer"]],
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("re-acknowledging the same delivery id is idempotent but a different id is rejected", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, { prompts: [{ prompt: "first", tag: "message" }] });
+    const first = feedbackResult(await store.takeFeedback(session.key));
+
+    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), "ok");
+    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), "already_acknowledged");
+
+    await store.queuePrompts(session.key, { prompts: [{ prompt: "second", tag: "message" }] });
+    const second = feedbackResult(await store.takeFeedback(session.key));
+    assert.notEqual(second.delivery_id, first.delivery_id);
+    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), "already_acknowledged");
+    assert.equal(feedbackResult(await store.takeFeedback(session.key)).delivery_id, second.delivery_id);
+    assert.equal(await store.acknowledgeFeedback(session.key, "0000000000000000"), "mismatch");
+    assert.equal(feedbackResult(await store.takeFeedback(session.key)).delivery_id, second.delivery_id);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

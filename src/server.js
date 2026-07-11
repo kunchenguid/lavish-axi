@@ -289,11 +289,12 @@ export async function serve({
         res.status(400).json({ code: "INVALID_DELIVERY_ID", error: "delivery_id must be 16 lowercase hex characters" });
         return;
       }
-      if (!(await store.acknowledgeFeedback(req.params.key, deliveryId))) {
+      const ackResult = await store.acknowledgeFeedback(req.params.key, deliveryId);
+      if (ackResult === "mismatch") {
         res.status(409).json({ code: "STALE_DELIVERY_ID", error: "delivery_id does not match pending feedback" });
         return;
       }
-      clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      if (ackResult === "ok") clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       res.json({ status: "acknowledged", delivery_id: deliveryId });
     } catch (error) {
       next(error);

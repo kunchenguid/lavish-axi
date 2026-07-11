@@ -1094,12 +1094,10 @@ test("abandoned and concurrent polls redeliver feedback until the delivery is ac
     assert.equal(concurrent.delivery_id, abandoned.delivery_id);
     assert.equal(concurrent.prompts[0].prompt, "do not lose this");
 
-    const acknowledged = await fetch(`${base}/api/${key}/ack`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ delivery_id: abandoned.delivery_id }),
-    });
-    assert.equal(acknowledged.status, 200);
+    const ackBody = JSON.stringify({ delivery_id: abandoned.delivery_id });
+    const ackOpts = { method: "POST", headers: { "content-type": "application/json" }, body: ackBody };
+    assert.equal((await fetch(`${base}/api/${key}/ack`, ackOpts)).status, 200);
+    assert.equal((await fetch(`${base}/api/${key}/ack`, ackOpts)).status, 200);
     assert.equal((await fetch(pollUrl).then((res) => res.json())).status, "waiting");
   } finally {
     await server.close();
