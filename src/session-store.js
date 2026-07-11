@@ -37,7 +37,7 @@ export class SessionStore {
     const isReopen = existing.status === "ended";
     const existingDelivery = existing.feedback_delivery
       ? isReopen
-        ? (({ session_ended, ended_by, ...rest }) => rest)(existing.feedback_delivery)
+        ? (({ session_ended: _session_ended, ended_by: _ended_by, ...rest }) => rest)(existing.feedback_delivery)
         : existing.feedback_delivery
       : undefined;
     const session = {
