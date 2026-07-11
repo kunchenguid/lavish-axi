@@ -282,6 +282,24 @@ export async function serve({
     }
   });
 
+  app.post("/api/:key/ack", async (req, res, next) => {
+    try {
+      const deliveryId = String(req.body?.delivery_id || "");
+      if (!/^[0-9a-f]{16}$/.test(deliveryId)) {
+        res.status(400).json({ code: "INVALID_DELIVERY_ID", error: "delivery_id must be 16 lowercase hex characters" });
+        return;
+      }
+      if (!(await store.acknowledgeFeedback(req.params.key, deliveryId))) {
+        res.status(409).json({ code: "STALE_DELIVERY_ID", error: "delivery_id does not match pending feedback" });
+        return;
+      }
+      clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      res.json({ status: "acknowledged", delivery_id: deliveryId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/:key/layout-warnings", async (req, res, next) => {
     try {
       const result = await store.recordLayoutWarnings(req.params.key, req.body || {});

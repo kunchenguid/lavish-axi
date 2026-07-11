@@ -1042,8 +1042,11 @@ test("layout warnings wake the same long-poll feedback channel as human prompts"
     });
     assert.equal(warningResponse.status, 200);
 
-    assert.deepEqual(await pollPromise, {
+    const feedback = await pollPromise;
+    assert.match(feedback.delivery_id, /^[0-9a-f]{16}$/);
+    assert.deepEqual(feedback, {
       status: "feedback",
+      delivery_id: feedback.delivery_id,
       dom_snapshot: "",
       prompts: [],
       layout_warnings: [
@@ -1057,6 +1060,47 @@ test("layout warnings wake the same long-poll feedback channel as human prompts"
         },
       ],
     });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("abandoned and concurrent polls redeliver feedback until the delivery is acknowledged", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await opened.json();
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ prompt: "do not lose this", tag: "message" }] }),
+    });
+
+    const pollUrl = `${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`;
+    const [abandoned, concurrent] = await Promise.all([
+      fetch(pollUrl).then((res) => res.json()),
+      fetch(pollUrl).then((res) => res.json()),
+    ]);
+    assert.match(abandoned.delivery_id, /^[0-9a-f]{16}$/);
+    assert.equal(concurrent.delivery_id, abandoned.delivery_id);
+    assert.equal(concurrent.prompts[0].prompt, "do not lose this");
+
+    const acknowledged = await fetch(`${base}/api/${key}/ack`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ delivery_id: abandoned.delivery_id }),
+    });
+    assert.equal(acknowledged.status, 200);
+    assert.equal((await fetch(pollUrl).then((res) => res.json())).status, "waiting");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1859,6 +1903,11 @@ test("send-and-end prompt submissions wake active polls with ended attribution",
       assert.equal(feedback.ended_by, "user");
       assert.equal(feedback.prompts.length, 1);
 
+      await fetch(`${base}/api/${key}/ack`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ delivery_id: feedback.delivery_id }),
+      });
       const ended = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
       const endedBody = await ended.json();
       assert.equal(endedBody.status, "ended");

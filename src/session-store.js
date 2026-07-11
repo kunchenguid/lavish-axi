@@ -8,6 +8,7 @@ import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./
 export class SessionStore {
   constructor(file) {
     this.file = file;
+    this.feedbackTakes = new Map();
   }
 
   async listSessions() {
@@ -40,6 +41,7 @@ export class SessionStore {
       status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
       pending_prompts: existing.pending_prompts || 0,
       prompts: existingPrompts,
+      feedback_delivery: existing.feedback_delivery,
       layout_warnings: [],
       delivered_layout_warning_keys: existing.delivered_layout_warning_keys || [],
       dom_snapshot: existing.dom_snapshot || "",
@@ -111,6 +113,16 @@ export class SessionStore {
   }
 
   async takeFeedback(key) {
+    const activeTake = this.feedbackTakes.get(key);
+    if (activeTake) return activeTake;
+    const take = this.takeFeedbackOnce(key).finally(() => {
+      if (this.feedbackTakes.get(key) === take) this.feedbackTakes.delete(key);
+    });
+    this.feedbackTakes.set(key, take);
+    return take;
+  }
+
+  async takeFeedbackOnce(key) {
     const state = await this.readState();
     const session = state.sessions[key];
     if (!session) {
@@ -121,11 +133,15 @@ export class SessionStore {
     const prompts = session.prompts || [];
     const layoutWarnings = session.layout_warnings || [];
     const alreadyEnded = session.status === "ended";
+    if (session.feedback_delivery) {
+      return feedbackDeliveryResult(session.feedback_delivery);
+    }
     if (prompts.length === 0 && layoutWarnings.length === 0) {
       return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
     }
     const result = {
       status: "feedback",
+      delivery_id: feedbackDeliveryId(key, session),
       dom_snapshot: session.dom_snapshot || "",
       prompts,
       ...(layoutWarnings.length > 0 ? { layout_warnings: layoutWarnings } : {}),
@@ -133,21 +149,38 @@ export class SessionStore {
       // knows not to expect (or force) a reopened browser afterward.
       ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
     };
-    session.prompts = [];
-    session.layout_warnings = [];
-    session.pending_prompts = 0;
-    session.dom_snapshot = "";
+    session.feedback_delivery = { ...result, prompt_count: prompts.length };
+    session.updated_at = new Date().toISOString();
+    await this.writeState(state);
+    return result;
+  }
+
+  async acknowledgeFeedback(key, deliveryId) {
+    const state = await this.readState();
+    const session = state.sessions[key];
+    if (!session?.feedback_delivery || session.feedback_delivery.delivery_id !== deliveryId) {
+      return false;
+    }
+    const delivery = session.feedback_delivery;
+    const layoutWarnings = delivery.layout_warnings || [];
+    const layoutWarningsUnchanged = JSON.stringify(session.layout_warnings || []) === JSON.stringify(layoutWarnings);
+    const alreadyEnded = session.status === "ended";
+    delete session.feedback_delivery;
+    session.prompts = (session.prompts || []).slice(delivery.prompt_count || 0);
+    if (layoutWarningsUnchanged) session.layout_warnings = [];
+    session.pending_prompts = session.prompts.length;
+    if (session.prompts.length === 0) session.dom_snapshot = "";
     if (layoutWarnings.length > 0) {
       const deliveredKeys = new Set(session.delivered_layout_warning_keys || []);
       for (const warning of layoutWarnings) deliveredKeys.add(layoutWarningKey(warning));
       session.delivered_layout_warning_keys = [...deliveredKeys].slice(-200);
     }
     if (!alreadyEnded) {
-      session.status = "open";
+      session.status = session.prompts.length > 0 || session.layout_warnings.length > 0 ? "feedback" : "open";
     }
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
-    return result;
+    return true;
   }
 
   // `endedBy` distinguishes a human ending review from the browser chrome ("user") from an
@@ -224,7 +257,23 @@ function layoutWarningKey(warning) {
   return `${warning.kind}:${warning.selector}`;
 }
 
-// A finding whose key was already delivered to the agent in a prior poll is marked persistent
+function feedbackDeliveryId(key, session) {
+  return crypto
+    .createHash("sha256")
+    .update(
+      `${key}:${session.updated_at}:${JSON.stringify(session.prompts || [])}:${JSON.stringify(session.layout_warnings || [])}`,
+    )
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function feedbackDeliveryResult(delivery) {
+  const result = { ...delivery };
+  delete result.prompt_count;
+  return result;
+}
+
+// A finding whose key was already acknowledged by the agent is marked persistent
 // so the agent can tell a fix attempt didn't clear it, instead of treating a reload's re-report
 // of the identical warning as fresh.
 function normalizeLayoutWarnings(layoutWarnings, deliveredKeys = new Set()) {

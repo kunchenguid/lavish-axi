@@ -27,7 +27,6 @@ import {
   createServerSpawnOptions,
   createShareOutput,
   createUserEndedOpenOutput,
-  detectInvokingAgent,
   fetchJson,
   getCommandHelp,
   normalizeArgv,
@@ -141,34 +140,6 @@ test("home output warns agents that poll is a long poll they must not kill", () 
   assert.match(pollHelp, /re-run/);
   assert.match(pollHelp, /queued feedback is never lost/);
   assert.doesNotMatch(pollHelp, /above 10 minutes/);
-});
-
-test("home output tailors poll guidance when invoked under Codex", () => {
-  const output = createHomeOutput({ bin: "lavish-axi", sessions: [], agent: "codex" });
-  const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
-
-  assert.match(pollHelp, /Codex detected/);
-  assert.match(pollHelp, /do not hide the poll in a background task/);
-  assert.match(pollHelp, /keep the poll attached to the active turn/);
-  assert.doesNotMatch(pollHelp, /agent harness limits/);
-});
-
-test("home output keeps static skill poll guidance agent-neutral", () => {
-  const output = createHomeOutput({ bin: "lavish-axi", sessions: [], agent: "static" });
-  const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
-
-  assert.doesNotMatch(pollHelp, /keep the poll attached to the active turn/i);
-  assert.doesNotMatch(pollHelp, /run the poll as a background task/);
-  assert.doesNotMatch(pollHelp, /Codex detected/);
-  assert.match(pollHelp, /queued feedback is never lost/);
-});
-
-test("invoking agent detection recognizes Codex runtime markers only", () => {
-  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_SANDBOX: "seatbelt" }), "codex");
-  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_THREAD_ID: "thread" }), "codex");
-  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_HOME: "/tmp/codex" }), "generic");
-  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_EXPERIMENTAL_FEATURE: "1" }), "generic");
-  assert.equal(detectInvokingAgent({ PATH: "/bin" }), "generic");
 });
 
 test("top-level help renders static home output without dynamic sessions", async () => {
@@ -612,6 +583,7 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
+  assert.match(output.next_step, /--ack <delivery_id> --agent-reply/);
   assert.match(output.next_step, /layout_warnings/);
   assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /agent harness/);
@@ -621,22 +593,8 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.doesNotMatch(output.next_step, /do not hide the poll in a background task/);
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not pass --timeout-ms/);
-  assert.match(output.next_step, /If the user ends the session, stop polling and do not reopen it/);
+  assert.match(output.next_step, /If the user ends the session, acknowledge the final delivery before stopping/);
   assert.match(output.next_step, /--reopen/);
-});
-
-test("open output steers Codex away from background polling", () => {
-  const output = createOpenOutput({
-    file: "/tmp/artifact.html",
-    url: "http://localhost:4387/session/abc123",
-    status: "opened",
-    agent: "codex",
-  });
-
-  assert.match(output.next_step, /Codex detected/);
-  assert.match(output.next_step, /do not hide the poll in a background task/);
-  assert.match(output.next_step, /keep the poll attached to the active turn/);
-  assert.doesNotMatch(output.next_step, /agent harness limits/);
 });
 
 test("a user-ended open refuses with a status agents can branch on, not a URL to open", () => {
@@ -972,15 +930,6 @@ test("poll help warns agents to leave the long poll running", () => {
   assert.doesNotMatch(help, /above 10 minutes/);
 });
 
-test("poll help is Codex-aware when requested", () => {
-  const help = getCommandHelp("poll", { agent: "codex" });
-
-  assert.match(help, /Codex detected/);
-  assert.match(help, /do not hide the poll in a background task/);
-  assert.match(help, /keep the poll attached to the active turn/);
-  assert.doesNotMatch(help, /agent harness limits/);
-});
-
 test("share help distinguishes public default from password-protected shares", () => {
   const help = getCommandHelp("share");
   const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
@@ -1018,17 +967,14 @@ test("feedback next step tells agents to keep polling without timeout flag", () 
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
 });
 
-test("feedback next step is Codex-aware when requested", () => {
+test("feedback output tells the agent to acknowledge the delivery after processing it", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
-    response: { status: "feedback", dom_snapshot: "", prompts: [] },
-    agent: "codex",
+    response: { status: "feedback", delivery_id: "0123456789abcdef", dom_snapshot: "", prompts: [] },
   });
 
-  assert.match(output.next_step, /Codex detected/);
-  assert.match(output.next_step, /do not hide the poll in a background task/);
-  assert.match(output.next_step, /keep the poll attached to the active turn/);
-  assert.doesNotMatch(output.next_step, /agent harness limits/);
+  assert.equal(output.delivery_id, "0123456789abcdef");
+  assert.match(output.next_step, /poll \/tmp\/report\.html --ack 0123456789abcdef --agent-reply/);
 });
 
 test("layout warning feedback tells agents to fix layout before involving the human", () => {
@@ -1139,6 +1085,7 @@ test("the final feedback batch before a user end flags session_ended and skips t
     file: "/tmp/report.html",
     response: {
       status: "feedback",
+      delivery_id: "fedcba9876543210",
       dom_snapshot: "",
       prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "bye" }],
       session_ended: true,
@@ -1149,7 +1096,8 @@ test("the final feedback batch before a user end flags session_ended and skips t
   assert.equal(output.session.session_ended, true);
   assert.equal(output.session.ended_by, "user");
   assert.match(output.next_step, /last feedback before the user ended the session/);
-  assert.match(output.next_step, /Stop polling \/tmp\/report\.html and do not reopen it/);
+  assert.match(output.next_step, /poll \/tmp\/report\.html --ack fedcba9876543210 --agent-reply/);
+  assert.match(output.next_step, /then stop polling/);
   assert.match(output.next_step, /lavish-axi \/tmp\/report\.html --reopen/);
   assert.doesNotMatch(output.next_step, /reload or re-open/);
 });
@@ -1159,6 +1107,7 @@ test("the final feedback batch before an agent end preserves ended_by and allows
     file: "/tmp/report.html",
     response: {
       status: "feedback",
+      delivery_id: "abcdef0123456789",
       dom_snapshot: "",
       prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "bye" }],
       session_ended: true,
@@ -1168,6 +1117,7 @@ test("the final feedback batch before an agent end preserves ended_by and allows
 
   assert.equal(output.session.session_ended, true);
   assert.equal(output.session.ended_by, "agent");
+  assert.match(output.next_step, /poll \/tmp\/report\.html --ack abcdef0123456789 --agent-reply/);
   assert.match(output.next_step, /last feedback before the Lavish Editor session ended/);
   assert.match(output.next_step, /lavish-axi \/tmp\/report\.html`\s+to open a fresh session/);
   assert.doesNotMatch(output.next_step, /--reopen/);
@@ -1381,6 +1331,62 @@ test("spawned poll announces the wait on stderr and leaves re-run guidance when 
       assert.match(stderr, /Poll interrupted/);
       assert.match(stderr, /queued feedback is never lost/);
     }
+  } finally {
+    await server.close();
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
+test("spawned poll acknowledges a processed delivery before waiting for more feedback", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-poll-ack-test-`);
+  const artifact = `${stateDir}/artifact.html`;
+  await writeFile(artifact, "<html><body>hello</body></html>", "utf8");
+  const server = await serve({ port: 0, stateFile: `${stateDir}/state.json`, version: VERSION });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await opened.json();
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ prompt: "process me", tag: "message" }] }),
+    });
+    const delivery = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+      res.json(),
+    );
+
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)),
+        "poll",
+        artifact,
+        "--ack",
+        delivery.delivery_id,
+        "--timeout-ms",
+        "1",
+      ],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_PORT: String(server.port) },
+      },
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
+    const exitCode = await new Promise((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+    assert.equal(exitCode, 0, stderr);
+
+    const afterAck = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+      res.json(),
+    );
+    assert.equal(afterAck.status, "waiting");
   } finally {
     await server.close();
     await rm(stateDir, { force: true, recursive: true });

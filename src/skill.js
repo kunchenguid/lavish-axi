@@ -69,9 +69,9 @@ ${home.help[home.help.length - 1]}
    The poll stays silent until the user acts or the real browser reports fresh layout warnings - leave it running, never kill it.
    If the poll gets killed or times out anyway, just re-run it - queued feedback is never lost.
 4. If poll returns \`layout_warnings\`, follow the returned \`next_step\`: fix and re-check fresh error-severity findings, but proceed with a note instead of looping when every current warning is persistent or low-severity.
-5. Apply human feedback, then poll again with \`--agent-reply "<message>"\` to reply in the browser and keep the loop going.
+5. Apply human feedback, then poll again with \`--ack <delivery_id> --agent-reply "<message>"\` to acknowledge that processed delivery, reply in the browser, and keep the loop going. Unacknowledged feedback is redelivered until acknowledged.
 6. Run \`npx -y lavish-axi end <html-file>\` when the review is finished.
-7. If the user ends the session from the browser instead, \`npx -y lavish-axi <html-file>\` refuses to reopen it and says so - only pass \`--reopen\` when the user asks for further review or something genuinely important needs their visual attention. Otherwise deliver remaining updates directly in this conversation.
+7. If the user sends final feedback while ending the session, apply it and acknowledge its delivery before stopping. A later \`npx -y lavish-axi <html-file>\` refuses to reopen the user-ended session - only pass \`--reopen\` when the user asks for further review or something genuinely important needs their visual attention.
 
 ## Visual guidance
 

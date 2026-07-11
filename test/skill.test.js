@@ -39,7 +39,7 @@ test("createSkillMarkdown handles explicit /lavish invocation arguments", () => 
 
 test("createSkillMarkdown mirrors the no-args home output", () => {
   const md = createSkillMarkdown();
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false, agent: "static" });
+  const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false });
 
   assert.ok(md.includes(skillCommandText(home.description)), "includes the product description");
 
@@ -97,12 +97,9 @@ test("createSkillMarkdown uses non-interactive npx commands", () => {
   assert.doesNotMatch(md, /Run `lavish-axi/);
 });
 
-test("createSkillMarkdown documents installed-copy fallback for restricted sandboxes", () => {
+test("createSkillMarkdown requires acknowledging feedback only after it is processed", () => {
   const md = createSkillMarkdown();
 
-  assert.match(md, /restricted subprocess sandboxes/);
-  assert.match(md, /status 216/);
-  assert.match(md, /`node "\$\(npm root\)\/lavish-axi\/dist\/cli\.mjs" <html-file>`/);
-  assert.match(md, /`node "\$\(npm root -g\)\/lavish-axi\/dist\/cli\.mjs" <html-file>`/);
-  assert.match(md, /bare `lavish-axi <html-file>` bin/);
+  assert.match(md, /Apply human feedback, then poll again with `--ack <delivery_id> --agent-reply "<message>"`/);
+  assert.match(md, /redelivered until acknowledged/);
 });
