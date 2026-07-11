@@ -123,14 +123,14 @@ export class SessionStore {
   async takeFeedback(key) {
     const activeTake = this.feedbackTakes.get(key);
     if (activeTake) return activeTake;
-    const take = this.takeFeedbackOnce(key).finally(() => {
+    const take = this.#takeFeedbackOnce(key).finally(() => {
       if (this.feedbackTakes.get(key) === take) this.feedbackTakes.delete(key);
     });
     this.feedbackTakes.set(key, take);
     return take;
   }
 
-  async takeFeedbackOnce(key) {
+  async #takeFeedbackOnce(key) {
     const state = await this.readState();
     const session = state.sessions[key];
     if (!session) {
