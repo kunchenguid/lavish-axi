@@ -324,6 +324,28 @@ test("acknowledging a delivery preserves layout warnings reported while it was i
   }
 });
 
+test("acknowledging reordered copies of the same layout warnings clears the delivered batch", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const firstWarning = { selector: "header", kind: "overlapping-text", severity: "warning" };
+    const secondWarning = { selector: "main", kind: "page-horizontal-overflow", severity: "error" };
+    await store.recordLayoutWarnings(session.key, { layout_warnings: [firstWarning, secondWarning] });
+    const delivery = feedbackResult(await store.takeFeedback(session.key));
+
+    await store.recordLayoutWarnings(session.key, { layout_warnings: [secondWarning, firstWarning] });
+    assert.equal(await store.acknowledgeFeedback(session.key, delivery.delivery_id), "ok");
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a warning is fresh again after a clean audit resolves it", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
@@ -749,6 +771,63 @@ test("re-acknowledging the same delivery id is idempotent but a different id is 
     assert.equal(feedbackResult(await store.takeFeedback(session.key)).delivery_id, second.delivery_id);
     assert.equal(await store.acknowledgeFeedback(session.key, "0000000000000000"), "mismatch");
     assert.equal(feedbackResult(await store.takeFeedback(session.key)).delivery_id, second.delivery_id);
+    assert.equal(await store.acknowledgeFeedback(session.key, second.delivery_id), "ok");
+    assert.equal(await store.acknowledgeFeedback(session.key, first.delivery_id), "already_acknowledged");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ending a session after delivery marks the unchanged redelivery as final", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, { prompts: [{ prompt: "reviewed", tag: "message" }] });
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    await store.endSession(session.key, "user");
+
+    const final = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(final.delivery_id, first.delivery_id);
+    assert.equal(final.session_ended, true);
+    assert.equal(final.ended_by, "user");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("send-and-end during an in-flight delivery keeps polling until the newer final prompt is delivered", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, { prompts: [{ prompt: "first", tag: "message" }] });
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    await store.queuePrompts(session.key, {
+      endSession: true,
+      prompts: [{ prompt: "final", tag: "message" }],
+    });
+
+    const redelivery = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(redelivery.delivery_id, first.delivery_id);
+    assert.equal(redelivery.session_ended, undefined);
+    await store.acknowledgeFeedback(session.key, first.delivery_id);
+
+    const final = feedbackResult(await store.takeFeedback(session.key));
+    assert.deepEqual(
+      final.prompts.map((prompt) => prompt.prompt),
+      ["final"],
+    );
+    assert.equal(final.session_ended, true);
+    assert.equal(final.ended_by, "user");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

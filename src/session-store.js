@@ -49,6 +49,7 @@ export class SessionStore {
       prompts: existingPrompts,
       feedback_delivery: existingDelivery,
       last_acknowledged_delivery_id: existing.last_acknowledged_delivery_id,
+      acknowledged_delivery_ids: acknowledgedDeliveryIds(existing),
       layout_warnings: [],
       delivered_layout_warning_keys: existing.delivered_layout_warning_keys || [],
       dom_snapshot: existing.dom_snapshot || "",
@@ -101,8 +102,8 @@ export class SessionStore {
     const deliveredKeysChanged =
       nextDeliveredWarningKeys.length !== deliveredWarningKeys.length ||
       nextDeliveredWarningKeys.some((key, index) => key !== deliveredWarningKeys[index]);
-    const previousSignature = JSON.stringify(session.layout_warnings || []);
-    const nextSignature = JSON.stringify(layoutWarnings);
+    const previousSignature = layoutWarningsSignature(session.layout_warnings || []);
+    const nextSignature = layoutWarningsSignature(layoutWarnings);
     const warningsChanged = previousSignature !== nextSignature;
     if (!warningsChanged && !deliveredKeysChanged) {
       return { session, changed: false, hasWarnings: layoutWarnings.length > 0 };
@@ -141,7 +142,19 @@ export class SessionStore {
     const layoutWarnings = session.layout_warnings || [];
     const alreadyEnded = session.status === "ended";
     if (session.feedback_delivery) {
-      return feedbackDeliveryResult(session.feedback_delivery);
+      const delivery = session.feedback_delivery;
+      const result = feedbackDeliveryResult(delivery);
+      const hasNewerFeedback =
+        prompts.length > (delivery.prompt_count || 0) ||
+        layoutWarningsSignature(layoutWarnings) !== layoutWarningsSignature(delivery.layout_warnings || []);
+      if (hasNewerFeedback) {
+        delete result.session_ended;
+        delete result.ended_by;
+      } else if (alreadyEnded) {
+        result.session_ended = true;
+        result.ended_by = session.ended_by;
+      }
+      return result;
     }
     if (prompts.length === 0 && layoutWarnings.length === 0) {
       return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
@@ -167,14 +180,17 @@ export class SessionStore {
     const session = state.sessions[key];
     if (!session) return "mismatch";
     if (!session.feedback_delivery || session.feedback_delivery.delivery_id !== deliveryId) {
-      return session.last_acknowledged_delivery_id === deliveryId ? "already_acknowledged" : "mismatch";
+      return acknowledgedDeliveryIds(session).includes(deliveryId) ? "already_acknowledged" : "mismatch";
     }
     const delivery = session.feedback_delivery;
     const layoutWarnings = delivery.layout_warnings || [];
-    const layoutWarningsUnchanged = JSON.stringify(session.layout_warnings || []) === JSON.stringify(layoutWarnings);
+    const layoutWarningsUnchanged =
+      layoutWarningsSignature(session.layout_warnings || []) === layoutWarningsSignature(layoutWarnings);
     const alreadyEnded = session.status === "ended";
+    const acknowledgedIds = acknowledgedDeliveryIds(session);
     delete session.feedback_delivery;
     session.last_acknowledged_delivery_id = deliveryId;
+    session.acknowledged_delivery_ids = [...acknowledgedIds.filter((id) => id !== deliveryId), deliveryId].slice(-200);
     session.prompts = (session.prompts || []).slice(delivery.prompt_count || 0);
     if (layoutWarningsUnchanged) session.layout_warnings = [];
     session.pending_prompts = session.prompts.length;
@@ -264,6 +280,15 @@ function normalizePrompt(prompt) {
 
 function layoutWarningKey(warning) {
   return `${warning.kind}:${warning.selector}`;
+}
+
+function layoutWarningsSignature(layoutWarnings) {
+  return JSON.stringify(layoutWarnings.map((warning) => JSON.stringify(warning)).sort());
+}
+
+function acknowledgedDeliveryIds(session) {
+  if (Array.isArray(session.acknowledged_delivery_ids)) return session.acknowledged_delivery_ids;
+  return session.last_acknowledged_delivery_id ? [session.last_acknowledged_delivery_id] : [];
 }
 
 function feedbackDeliveryId(key, session) {
