@@ -28,7 +28,7 @@ function skillCommandText(text) {
  * @returns {string} full SKILL.md contents including YAML frontmatter
  */
 export function createSkillMarkdown() {
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false, agent: "static" });
+  const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false });
 
   return `---
 name: lavish
