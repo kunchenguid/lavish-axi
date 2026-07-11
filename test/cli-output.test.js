@@ -1393,6 +1393,58 @@ test("spawned poll acknowledges a processed delivery before waiting for more fee
   }
 });
 
+test("stale --ack delivery_id exits with VALIDATION_ERROR and actionable guidance", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-stale-ack-test-`);
+  const artifact = `${stateDir}/artifact.html`;
+  await writeFile(artifact, "<html><body>hello</body></html>", "utf8");
+  const server = await serve({ port: 0, stateFile: `${stateDir}/state.json`, version: VERSION });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await opened.json();
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+    });
+    await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)),
+        "poll",
+        artifact,
+        "--ack",
+        "0000000000000000",
+        "--timeout-ms",
+        "1",
+      ],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_PORT: String(server.port) },
+      },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk.toString()));
+    child.stderr.on("data", (chunk) => (output += chunk.toString()));
+    const exitCode = await new Promise((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+    assert.notEqual(exitCode, 0);
+    assert.match(output, /delivery_id/);
+    assert.match(output, /poll.*without.*--ack|without --ack|poll.*--ack/i);
+  } finally {
+    await server.close();
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
 test("waiting next step reassures agents that re-running poll loses nothing", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",

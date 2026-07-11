@@ -971,6 +971,17 @@ async function postJson(url, body) {
     throw serverConnectionError();
   }
   if (!response.ok) {
+    let errBody;
+    try {
+      errBody = await response.json();
+    } catch {
+      // ignore parse failure
+    }
+    if (errBody?.code === "STALE_DELIVERY_ID") {
+      throw new AxiError("--ack delivery_id does not match the pending delivery", "VALIDATION_ERROR", [
+        "Re-run `lavish-axi poll <html-file>` without --ack to receive the current delivery_id",
+      ]);
+    }
     throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
   }
   return response.json();
