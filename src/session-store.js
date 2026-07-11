@@ -285,7 +285,15 @@ function layoutWarningKey(warning) {
 function layoutWarningsSignature(layoutWarnings) {
   return JSON.stringify(
     layoutWarnings
-      .map((w) => JSON.stringify(Object.fromEntries(Object.keys(w).sort().map((k) => [k, w[k]]))))
+      .map((w) =>
+        JSON.stringify(
+          Object.fromEntries(
+            Object.keys(w)
+              .sort()
+              .map((k) => [k, w[k]]),
+          ),
+        ),
+      )
       .sort(),
   );
 }
