@@ -3,7 +3,7 @@
 // Browser entry for the whiteboard frame. It runs in two placements, both
 // sandboxed (`allow-scripts allow-popups`, no `allow-same-origin`): inline,
 // where the artifact SDK embeds one frame in place of each rendered Mermaid
-// diagram and relays messages between this frame and the chrome; and overlay,
+// diagram; and overlay,
 // where the chrome hosts one frame full-viewport (reached from the inline
 // frame's fullscreen action). The `mode` field of the init message selects the
 // placement-specific UI; everything else is identical. Bundled by
@@ -11,10 +11,9 @@
 // converter, its own exactly-pinned mermaid, and React into
 // `dist/whiteboard/whiteboard.js`, so nothing here loads from the network.
 //
-// The frame owns all whiteboard UI. It holds no server access: every byte in
-// and out travels over postMessage (relayed by the SDK when inline), and the
-// chrome does the same-origin fetches. Untrusted Mermaid text therefore
-// renders only inside opaque origins, exactly like the artifact iframe.
+// The frame owns all whiteboard UI. It holds no server access; the chrome does
+// the same-origin fetches. Untrusted Mermaid text therefore renders only
+// inside opaque origins, exactly like the artifact iframe.
 
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import { convertToExcalidrawElements, Excalidraw, exportToBlob, restore } from "@excalidraw/excalidraw";
@@ -26,6 +25,7 @@ import "./whiteboard-frame.css";
 import {
   findDuplicateElementIds,
   sanitizeSceneLink,
+  sanitizeWhiteboardAppState,
   sceneIsImageFallback,
   summarizeSceneEdits,
 } from "./whiteboard-core.js";
@@ -45,6 +45,7 @@ const state = {
   baselineElements: [],
   files: {},
   imageFallback: false,
+  channelId: "",
   api: null,
   saveTimer: 0,
   teardownFlushId: "",
@@ -55,7 +56,19 @@ const state = {
 };
 
 function post(message) {
-  window.parent.postMessage(message, "*");
+  window.top.postMessage(
+    {
+      ...message,
+      diagramIndex: state.diagramIndex,
+      ...(state.channelId
+        ? { channelId: state.channelId }
+        : {
+            channelToken: String(/** @type {any} */ (window).__lavishWhiteboardChannelToken || ""),
+            diagramId: state.diagramId,
+          }),
+    },
+    "*",
+  );
 }
 
 function el(tag, props = {}, ...children) {
@@ -139,12 +152,11 @@ function currentScene() {
   const appState = state.api.getAppState();
   return {
     elements: state.api.getSceneElements().map((element) => JSON.parse(JSON.stringify(element))),
-    appState: {
-      viewBackgroundColor: appState.viewBackgroundColor,
+    appState: sanitizeWhiteboardAppState({
       scrollX: appState.scrollX,
       scrollY: appState.scrollY,
       zoom: appState.zoom,
-    },
+    }),
     files: state.api.getFiles() || {},
   };
 }
@@ -319,13 +331,14 @@ async function startFromConversion(init) {
 
 function startFromSavedScene(init) {
   const saved = init.saved;
+  const savedAppState = sanitizeWhiteboardAppState(saved.scene?.appState);
   // restore() is Excalidraw's defensive loader: it fills missing fields with
   // defaults and repairs bindings, so a stale or hand-edited sidecar cannot
   // crash the editor.
   const restored = restore(
     {
       elements: Array.isArray(saved.scene?.elements) ? saved.scene.elements : [],
-      appState: saved.scene?.appState || {},
+      appState: savedAppState,
       files: saved.scene?.files || {},
     },
     null,
@@ -344,11 +357,6 @@ function startFromSavedScene(init) {
       "This diagram type is not natively editable, so it is shown as an image - draw, annotate, and add shapes on top.",
     );
   }
-  // Strip any persisted theme: the live theme comes from the chrome via the
-  // <Excalidraw theme> prop, and a theme inside appState double-applies the
-  // dark-mode filter into a washed-out canvas.
-  const savedAppState = { ...(saved.scene?.appState || {}) };
-  delete savedAppState.theme;
   mountEditor({
     elements: restored.elements,
     appState: { ...defaultAppState(), ...savedAppState },
@@ -481,14 +489,21 @@ function handleSourceChanged(message) {
 
 function main() {
   /** @type {any} */ (window).EXCALIDRAW_ASSET_PATH = `${location.origin}/whiteboard-assets/`;
+  const frameUrl = new URL(location.href);
+  const diagramIndex = Number(frameUrl.searchParams.get("diagramIndex"));
+  state.diagramIndex = Number.isInteger(diagramIndex) && diagramIndex >= 0 && diagramIndex <= 999 ? diagramIndex : 0;
+  state.diagramId = String(frameUrl.searchParams.get("diagramId") || "");
   let initialized = false;
   window.addEventListener("message", (event) => {
+    if (event.source !== window.top) return;
     const msg = event.data || {};
-    if (msg.type === "lavish-whiteboard:init" && !initialized) {
+    if (msg.type === "lavish-whiteboard:init" && !initialized && typeof msg.channelId === "string" && msg.channelId) {
       initialized = true;
+      state.channelId = msg.channelId;
       buildShell(msg.theme === "dark" ? "dark" : "light", msg.mode === "inline" ? "inline" : "overlay");
       handleInit(msg);
     }
+    if (!initialized || msg.channelId !== state.channelId) return;
     if (msg.type === "lavish-whiteboard:sourceChanged") handleSourceChanged(msg);
     if (msg.type === "lavish-whiteboard:prepareTeardown") prepareTeardown(msg);
     if (msg.type === "lavish-whiteboard:saveResult") handleSaveResult(msg);

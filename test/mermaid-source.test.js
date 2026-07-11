@@ -32,6 +32,11 @@ test("extractMermaidSources decodes HTML entities in diagram text", () => {
   assert.equal(diagram.source, `flowchart LR\n  A --> B{"ok?"}\n  B --> C[&done']`);
 });
 
+test("extractMermaidSources preserves text exactly as parsed by the browser", () => {
+  const [diagram] = extractMermaidSources(`<div class="mermaid">graph TD; A --&amp;gt; B</div>`);
+  assert.equal(diagram.source, "graph TD; A --&gt; B");
+});
+
 test("extractMermaidSources requires the exact mermaid class token", () => {
   const html = `
     <div class="mermaid-like">graph TD; X-->Y</div>
@@ -72,6 +77,14 @@ test("extractMermaidSources follows HTML class attribute casing and quoting", ()
     sources.map(({ source }) => source),
     ["graph TD; A-->B", "graph TD; B-->C"],
   );
+});
+
+test("extractMermaidSources ignores raw-text and template markup", () => {
+  const html = `<script>const example = '<div class="mermaid">graph TD; SCRIPT-->X</div>';</script>
+    <template><div class="mermaid">graph TD; TEMPLATE-->X</div></template>
+    <style>.example::after { content: '<div class="mermaid">'; }</style>
+    <div class="mermaid">graph TD; A-->B</div>`;
+  assert.deepEqual(extractMermaidSources(html), [{ index: 0, source: "graph TD; A-->B" }]);
 });
 
 test("normalizeMermaidSource trims outer blank space but keeps inner structure", () => {

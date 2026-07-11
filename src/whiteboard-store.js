@@ -1,6 +1,8 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { sanitizeWhiteboardScene } from "./whiteboard-core.js";
+
 // Sidecar persistence for whiteboard scenes, kept out of `state.json` on
 // purpose: `SessionStore` rewrites the whole state file on every operation, so
 // multi-hundred-KB Excalidraw scenes autosaving every second would turn each
@@ -77,7 +79,7 @@ export async function saveWhiteboard(stateDir, key, index, { sourceHash, scene, 
   const record = {
     source_hash: String(sourceHash || ""),
     updated_at: new Date().toISOString(),
-    scene: scene ?? null,
+    scene: sanitizeWhiteboardScene(scene),
     baseline: baseline ?? null,
   };
   return queueWhiteboardWrite(stateDir, key, index, async () => {
@@ -111,13 +113,14 @@ export async function loadWhiteboard(stateDir, key, index) {
 export async function writeWhiteboardFeedbackFiles(stateDir, key, index, { scene, pngDataUrl = "" }) {
   assertValidRef(key, index);
   const { scenePath, previewPath } = whiteboardFeedbackPaths(stateDir, key, index);
+  const sanitizedScene = sanitizeWhiteboardScene(scene);
   const sceneJson = {
     type: "excalidraw",
     version: 2,
     source: "lavish-axi",
-    elements: Array.isArray(scene?.elements) ? scene.elements : [],
-    appState: scene?.appState && typeof scene.appState === "object" ? scene.appState : {},
-    files: scene?.files && typeof scene.files === "object" ? scene.files : {},
+    elements: Array.isArray(sanitizedScene?.elements) ? sanitizedScene.elements : [],
+    appState: sanitizedScene?.appState || {},
+    files: sanitizedScene?.files && typeof sanitizedScene.files === "object" ? sanitizedScene.files : {},
   };
   const png = decodePngDataUrl(pngDataUrl);
   return queueWhiteboardWrite(stateDir, key, index, async () => {

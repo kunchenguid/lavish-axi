@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 
+import { parse } from "parse5";
+
 // Server-side extraction of Mermaid diagram sources from raw artifact HTML.
 //
 // The design snippet (`lavish-axi design`) renders diagrams from elements with
@@ -9,10 +11,6 @@ import crypto from "node:crypto";
 // artifact route - is the authoritative place to recover them. Diagrams are
 // identified by their position among `.mermaid` elements in document order,
 // matching `document.querySelectorAll(".mermaid")` in the browser.
-
-const MERMAID_OPEN_TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b((?:[^"'>]|"[^"]*"|'[^']*')*)>/gi;
-const HTML_ATTRIBUTE_RE =
-  /(?:^|[\t\n\f\r ])([^\t\n\f\r "'=<>`]+)(?:[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r "'=<>`]+)))?/g;
 
 // Decode the entity forms that matter for Mermaid syntax (`--&gt;`, `&quot;...`).
 // Numeric references are included so authored `&#39;` quotes survive.
@@ -32,43 +30,42 @@ function safeFromCodePoint(code) {
   return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
 }
 
-function classAttributeValue(attributes) {
-  HTML_ATTRIBUTE_RE.lastIndex = 0;
-  let match;
-  while ((match = HTML_ATTRIBUTE_RE.exec(attributes)) !== null) {
-    if (match[1].toLowerCase() === "class") return match[2] ?? match[3] ?? match[4] ?? "";
-  }
-  return null;
-}
-
 function hasMermaidClass(value) {
   return value.split(/[\t\n\f\r ]+/).includes("mermaid");
 }
 
+function elementHasMermaidClass(node) {
+  const classAttribute = Array.isArray(node.attrs)
+    ? node.attrs.find((attribute) => attribute.name.toLowerCase() === "class")
+    : null;
+  return Boolean(classAttribute && hasMermaidClass(classAttribute.value));
+}
+
+function textContent(node) {
+  if (node.nodeName === "#text") return String(node.value || "");
+  return Array.isArray(node.childNodes) ? node.childNodes.map(textContent).join("") : "";
+}
+
 // Extract Mermaid sources from raw artifact HTML in document order. Returns
 // `[{ index, source }]` where `index` matches the element's position among
-// `.mermaid` elements (the browser-side `diagramIndex`). Comments are stripped
-// first so a commented-out diagram cannot shift the numbering.
+// `.mermaid` elements (the browser-side `diagramIndex`).
 export function extractMermaidSources(html) {
-  const searchable = String(html || "").replace(/<!--[\s\S]*?-->/g, "");
   const sources = [];
-  MERMAID_OPEN_TAG_RE.lastIndex = 0;
-  let match;
-  while ((match = MERMAID_OPEN_TAG_RE.exec(searchable)) !== null) {
-    const [openTag, tagName, attributes] = match;
-    const classValue = classAttributeValue(attributes);
-    if (classValue === null || !hasMermaidClass(classValue)) continue;
-    const contentStart = match.index + openTag.length;
-    const closeRe = new RegExp(`</${tagName}\\s*>`, "gi");
-    closeRe.lastIndex = contentStart;
-    const close = closeRe.exec(searchable);
-    if (!close) continue;
-    const raw = searchable.slice(contentStart, close.index);
-    // Mermaid containers hold plain text; drop any stray inner markup defensively.
-    const text = decodeHtmlEntities(raw.replace(/<[^>]*>/g, ""));
-    sources.push({ index: sources.length, source: normalizeMermaidSource(text) });
-    MERMAID_OPEN_TAG_RE.lastIndex = close.index + close[0].length;
+
+  function visit(node) {
+    if (!Array.isArray(node.childNodes)) return;
+    for (const child of node.childNodes) {
+      if (child.tagName && elementHasMermaidClass(child)) {
+        sources.push({
+          index: sources.length,
+          source: normalizeMermaidSource(textContent(child)),
+        });
+      }
+      visit(child);
+    }
   }
+
+  visit(parse(String(html || "")));
   return sources;
 }
 

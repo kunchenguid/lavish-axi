@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -60,6 +61,7 @@ const designAssetUrls = {
 };
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
+const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
 
 // The whiteboard frame bundle (Excalidraw + Mermaid converter + React) is
 // produced by `scripts/build.js` into dist/whiteboard. Packaged runs find it
@@ -76,6 +78,24 @@ export function defaultWhiteboardAssetsDir() {
 // whiteboard write routes get the larger limit.
 export function isWhiteboardWriteApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
+}
+
+export function createWhiteboardChannelToken(secret, now = Date.now()) {
+  const payload = `${now}.${crypto.randomBytes(24).toString("base64url")}`;
+  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
+  const [issuedAtText, nonce, signature, extra] = String(token || "").split(".");
+  if (extra !== undefined || !/^\d{13}$/.test(issuedAtText) || !/^[A-Za-z0-9_-]{32}$/.test(nonce)) return false;
+  const issuedAt = Number(issuedAtText);
+  if (!Number.isSafeInteger(issuedAt) || issuedAt > now || now - issuedAt > WHITEBOARD_CHANNEL_TOKEN_TTL_MS)
+    return false;
+  const expected = crypto.createHmac("sha256", secret).update(`${issuedAtText}.${nonce}`).digest("base64url");
+  const actualBuffer = Buffer.from(signature || "", "utf8");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
 // A detached server should not live forever. When no browser chrome (SSE) and no agent poll
@@ -111,6 +131,7 @@ export async function serve({
   const activePolls = new Map();
   const deliveredFeedback = new Set();
   const sseClients = new Set();
+  const whiteboardChannelSecret = crypto.randomBytes(32);
   const verbose = debug || process.env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
@@ -532,11 +553,12 @@ export async function serve({
   // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
   // iframe (allow-scripts allow-popups, no allow-same-origin) so untrusted
   // Mermaid text renders - and the Excalidraw editor runs - inside an opaque
-  // origin, matching the artifact iframe's trust posture. The page itself is
-  // static; the chrome passes the diagram source and saved scene over
-  // postMessage after the frame reports ready.
+  // origin, matching the artifact iframe's trust posture. The chrome passes
+  // the diagram source and saved scene over postMessage after the frame
+  // reports ready.
   app.get("/whiteboard-frame", (req, res) => {
-    res.type("html").send(createWhiteboardFrameHtml());
+    res.setHeader("cache-control", "no-store");
+    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret)));
   });
 
   // Whiteboard bundle, stylesheet, and vendored Excalidraw fonts. The frame
@@ -601,6 +623,27 @@ export async function serve({
       }
       const whiteboard = await loadWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index));
       res.json({ whiteboard });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
+        return;
+      }
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret)) {
+        res.status(403).json({ error: "invalid whiteboard channel" });
+        return;
+      }
+      res.json({ status: "authenticated" });
     } catch (error) {
       next(error);
     }
@@ -1105,7 +1148,7 @@ ${faviconTag}
 </html>`;
 }
 
-export function createWhiteboardFrameHtml() {
+export function createWhiteboardFrameHtml(channelToken = "") {
   return `<!doctype html>
 <html>
 <head>
@@ -1115,6 +1158,7 @@ export function createWhiteboardFrameHtml() {
 <link rel="stylesheet" href="/whiteboard-assets/whiteboard.css">
 </head>
 <body>
+<script>window.__lavishWhiteboardChannelToken=${JSON.stringify(channelToken)};</script>
 <script src="/whiteboard-assets/whiteboard.js"></script>
 </body>
 </html>`;

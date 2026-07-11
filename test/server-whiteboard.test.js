@@ -7,7 +7,13 @@ import test from "node:test";
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
-import { createWhiteboardFrameHtml, isWhiteboardWriteApiPath, serve } from "../src/server.js";
+import {
+  createWhiteboardChannelToken,
+  createWhiteboardFrameHtml,
+  isValidWhiteboardChannelToken,
+  isWhiteboardWriteApiPath,
+  serve,
+} from "../src/server.js";
 import { mermaidSourceHash } from "../src/mermaid-source.js";
 
 const ARTIFACT_HTML = `<!doctype html><html><body>
@@ -65,10 +71,20 @@ test("isWhiteboardWriteApiPath matches only whiteboard write routes", () => {
 });
 
 test("createWhiteboardFrameHtml loads only whiteboard-assets resources", () => {
-  const html = createWhiteboardFrameHtml();
+  const html = createWhiteboardFrameHtml("channel-token");
   assert.match(html, /<link rel="stylesheet" href="\/whiteboard-assets\/whiteboard\.css">/);
   assert.match(html, /<script src="\/whiteboard-assets\/whiteboard\.js"><\/script>/);
+  assert.match(html, /__lavishWhiteboardChannelToken="channel-token"/);
   assert.doesNotMatch(html, /https?:\/\//);
+});
+
+test("whiteboard channel tokens are signed and short lived", () => {
+  const secret = Buffer.from("whiteboard-test-secret");
+  const now = 1_700_000_000_000;
+  const token = createWhiteboardChannelToken(secret, now);
+  assert.equal(isValidWhiteboardChannelToken(token, secret, now), true);
+  assert.equal(isValidWhiteboardChannelToken(`${token}x`, secret, now), false);
+  assert.equal(isValidWhiteboardChannelToken(token, secret, now + 5 * 60_000 + 1), false);
 });
 
 test("GET /api/:key/mermaid-sources extracts ordered, entity-decoded sources with hashes", async () => {
@@ -101,7 +117,7 @@ test("whiteboard scene round-trips through PUT and GET", async () => {
 
     const loaded = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard/0`).then((res) => res.json());
     assert.equal(loaded.whiteboard.source_hash, "hash-1");
-    assert.deepEqual(loaded.whiteboard.scene, scene);
+    assert.deepEqual(loaded.whiteboard.scene, { ...scene, appState: {} });
     assert.deepEqual(loaded.whiteboard.baseline, { elements: scene.elements });
   } finally {
     await ctx.close();
@@ -131,6 +147,31 @@ test("whiteboard write routes reject cross-origin and unknown sessions", async (
       body: JSON.stringify({ source_hash: "x", scene: null }),
     });
     assert.equal(missingSession.status, 404);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("whiteboard channel authentication accepts only the frame-issued token", async () => {
+  const ctx = await startWhiteboardServer();
+  try {
+    const frame = await fetch(`${ctx.base}/whiteboard-frame`).then((res) => res.text());
+    const token = /__lavishWhiteboardChannelToken="([^"]+)"/.exec(frame)?.[1] || "";
+    assert.ok(token);
+
+    const accepted = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard-channel`, {
+      method: "POST",
+      headers: ctx.sameOrigin,
+      body: JSON.stringify({ token }),
+    });
+    assert.equal(accepted.status, 200);
+
+    const rejected = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard-channel`, {
+      method: "POST",
+      headers: ctx.sameOrigin,
+      body: JSON.stringify({ token: "forged" }),
+    });
+    assert.equal(rejected.status, 403);
   } finally {
     await ctx.close();
   }
@@ -210,6 +251,7 @@ test("the whiteboard frame page is served with the sandboxed chrome overlay poin
   try {
     const framePage = await fetch(`${ctx.base}/whiteboard-frame`);
     assert.equal(framePage.status, 200);
+    assert.equal(framePage.headers.get("cache-control"), "no-store");
     assert.match(await framePage.text(), /whiteboard-assets\/whiteboard\.js/);
 
     const chrome = await fetch(`${ctx.base}/session/${ctx.key}`).then((res) => res.text());

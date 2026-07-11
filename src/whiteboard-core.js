@@ -12,6 +12,20 @@ export const SUMMARY_MAX_LINE_CHARS = 200;
 const SUMMARY_MOVE_EPSILON_PX = 2;
 const STAT_KEYS = ["added", "removed", "moved", "relabeled", "drawn"];
 
+export function sanitizeWhiteboardAppState(appState) {
+  if (!appState || typeof appState !== "object" || Array.isArray(appState)) return {};
+  const safeAppState = { ...appState };
+  delete safeAppState.theme;
+  delete safeAppState.viewBackgroundColor;
+  return safeAppState;
+}
+
+export function sanitizeWhiteboardScene(scene) {
+  if (!scene || typeof scene !== "object" || Array.isArray(scene)) return scene ?? null;
+  if (!Object.hasOwn(scene, "appState")) return { ...scene };
+  return { ...scene, appState: sanitizeWhiteboardAppState(scene.appState) };
+}
+
 // Only plain web/mail links may leave the whiteboard. Everything else -
 // javascript:, data:, file:, vbscript:, chrome:, about:, or relative noise
 // coming from untrusted Mermaid `click` directives - is dropped.

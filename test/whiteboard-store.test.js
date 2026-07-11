@@ -28,14 +28,21 @@ async function withTempDir(run) {
   }
 }
 
-test("saveWhiteboard/loadWhiteboard round-trips scene, baseline, and source hash", async () => {
+test("saveWhiteboard/loadWhiteboard strips persisted theme and canvas background", async () => {
   await withTempDir(async (dir) => {
-    const scene = { elements: [{ id: "A", type: "rectangle" }], appState: { viewBackgroundColor: "#fff" }, files: {} };
+    const scene = {
+      elements: [{ id: "A", type: "rectangle" }],
+      appState: { theme: "dark", viewBackgroundColor: "#121212", scrollX: 12 },
+      files: {},
+    };
     const baseline = { elements: [{ id: "A", type: "rectangle" }] };
     await saveWhiteboard(dir, KEY, 0, { sourceHash: "hash-1", scene, baseline });
     const loaded = await loadWhiteboard(dir, KEY, 0);
     assert.equal(loaded.source_hash, "hash-1");
-    assert.deepEqual(loaded.scene, scene);
+    assert.deepEqual(loaded.scene, {
+      ...scene,
+      appState: { scrollX: 12 },
+    });
     assert.deepEqual(loaded.baseline, baseline);
     assert.ok(loaded.updated_at);
   });
@@ -103,6 +110,7 @@ test("writeWhiteboardFeedbackFiles writes a standalone .excalidraw and a PNG", a
     assert.equal(scene.version, 2);
     assert.equal(scene.source, "lavish-axi");
     assert.equal(scene.elements[0].id, "A");
+    assert.deepEqual(scene.appState, {});
     const png = await readFile(previewPath);
     assert.deepEqual([...png.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
   });

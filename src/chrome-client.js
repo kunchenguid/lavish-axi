@@ -659,17 +659,18 @@ async function publishShare(event) {
 
 function resetFrame() {
   startLayoutGateCycle();
+  inlineWhiteboardChannels.clear();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   frame.src = artifactSrc || frame.src;
 }
 
 // ---------------------------------------------------------------------------
 // Whiteboards. The artifact SDK embeds one sandboxed whiteboard frame in place
-// of each rendered Mermaid diagram and relays its messages here with the
-// diagram index stamped; the chrome owns every server round trip and serves
-// all frames concurrently. The overlay hosts the same frame page fullscreen
-// when an inline frame asks to maximize - the inline frame is suspended while
-// the overlay owns that diagram so two editors never autosave one sidecar.
+// of each rendered Mermaid diagram. The chrome owns every server round trip
+// and serves all frames concurrently. The overlay hosts the same frame page
+// fullscreen when an inline frame asks to maximize - the inline frame is
+// suspended while the overlay owns that diagram so two editors never autosave
+// one sidecar.
 // ---------------------------------------------------------------------------
 
 /** @type {Map<number, { diagramId: string, source: string, sourceHash: string }>} */
@@ -677,20 +678,25 @@ const whiteboards = new Map();
 /** @type {number | null} */
 let overlayIndex = null;
 let overlayFrameReady = false;
+let overlayChannelId = "";
 let nextWhiteboardFlushId = 0;
 let whiteboardTeardown = null;
 const whiteboardSaveChains = new Map();
+const inlineWhiteboardChannels = new Map();
 
 function whiteboardTheme() {
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function postToWhiteboardOverlay(message) {
-  if (whiteboardFrame.contentWindow) whiteboardFrame.contentWindow.postMessage(message, "*");
+  if (whiteboardFrame.contentWindow && overlayChannelId) {
+    whiteboardFrame.contentWindow.postMessage({ ...message, channelId: overlayChannelId }, "*");
+  }
 }
 
 function postToInlineWhiteboard(index, message) {
-  postToFrame({ type: "lavish:whiteboardDeliver", diagramIndex: index, message });
+  const channel = inlineWhiteboardChannels.get(index);
+  if (channel?.window) channel.window.postMessage({ ...message, channelId: channel.channelId }, "*");
 }
 
 function replyToWhiteboard(index, message) {
@@ -706,6 +712,15 @@ async function fetchMermaidSources() {
   if (!response.ok) throw new Error("could not read the artifact's Mermaid sources");
   const data = await response.json();
   return Array.isArray(data.sources) ? data.sources : [];
+}
+
+async function authenticateWhiteboardChannel(token) {
+  const response = await fetch("/api/" + key + "/whiteboard-channel", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return response.ok;
 }
 
 function showWhiteboardError(text) {
@@ -754,12 +769,13 @@ function showWhiteboardOverlay(index) {
   if (ended) return;
   overlayIndex = index;
   overlayFrameReady = false;
+  overlayChannelId = "";
   whiteboardError.hidden = true;
   whiteboardOverlay.hidden = false;
   postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
   // A fresh document per open: the frame boots, posts ready, and receives its
   // init - no stale editor state can leak between opens.
-  whiteboardFrame.src = "/whiteboard-frame";
+  whiteboardFrame.src = "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index));
 }
 
 function finishWhiteboardClose(index) {
@@ -768,6 +784,7 @@ function finishWhiteboardClose(index) {
   whiteboardFrame.src = "about:blank";
   overlayIndex = null;
   overlayFrameReady = false;
+  overlayChannelId = "";
   if (!ended) postToFrame({ type: "lavish:resumeWhiteboard", diagramIndex: index });
 }
 
@@ -776,11 +793,7 @@ function beginWhiteboardTeardown(index, placement, onReady) {
   const flushId = `whiteboard-${++nextWhiteboardFlushId}`;
   whiteboardTeardown = { index, placement, flushId, onReady };
   const message = { type: "lavish-whiteboard:prepareTeardown", flushId };
-  if (placement === "overlay") {
-    postToWhiteboardOverlay(message);
-  } else {
-    postToInlineWhiteboard(index, message);
-  }
+  replyToWhiteboard(index, message);
 }
 
 function finishWhiteboardTeardown(index, message, placement) {
@@ -946,36 +959,68 @@ async function refreshWhiteboardSource() {
   }
 }
 
-// Messages relayed by the artifact SDK from the inline whiteboard frames. The
-// index and diagramId are stamped by the SDK from which frame sent the message
-// - the frame payload itself is never trusted for identity.
-function handleWhiteboardRelay(relay) {
+function validWhiteboardIndex(value) {
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 && index <= 999 ? index : null;
+}
+
+function handleAuthenticatedWhiteboardMessage(index, message, mode) {
+  if (message.type === "lavish-whiteboard:save") handleWhiteboardSave(index, message);
+  if (message.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(index, message, mode);
+  if (message.type === "lavish-whiteboard:maximize" && mode === "inline") openWhiteboardOverlay(index);
+  if (message.type === "lavish-whiteboard:close" && mode === "overlay") closeWhiteboard();
+  if (message.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(index, message, mode);
+  if (message.type === "lavish-whiteboard:teardownFailed") failWhiteboardTeardown(index, message, mode);
+}
+
+function handleInlineWhiteboardMessage(event, message) {
   if (ended) return;
-  const index = Number(relay.diagramIndex);
-  if (!Number.isInteger(index) || index < 0 || index > 999) return;
-  whiteboardRecord(index).diagramId = String(relay.diagramId || "");
-  const inner = relay.message && typeof relay.message === "object" ? relay.message : {};
-  if (inner.type === "lavish-whiteboard:ready") handleWhiteboardReady(index, "inline");
-  if (inner.type === "lavish-whiteboard:save") handleWhiteboardSave(index, inner);
-  if (inner.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(index, inner, "inline");
-  if (inner.type === "lavish-whiteboard:maximize") openWhiteboardOverlay(index);
-  if (inner.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(index, inner, "inline");
-  if (inner.type === "lavish-whiteboard:teardownFailed") failWhiteboardTeardown(index, inner, "inline");
+  const index = validWhiteboardIndex(message.diagramIndex);
+  if (index === null || !event.source) return;
+  if (message.type === "lavish-whiteboard:ready") {
+    if (inlineWhiteboardChannels.has(index)) return;
+    const channelId = String(message.channelToken || "");
+    if (!channelId) return;
+    authenticateWhiteboardChannel(channelId).then((authenticated) => {
+      if (!authenticated || ended || inlineWhiteboardChannels.has(index)) return;
+      inlineWhiteboardChannels.set(index, { window: event.source, channelId });
+      whiteboardRecord(index).diagramId = String(message.diagramId || "");
+      handleWhiteboardReady(index, "inline");
+    });
+    return;
+  }
+  const channel = inlineWhiteboardChannels.get(index);
+  if (!channel || channel.window !== event.source || channel.channelId !== message.channelId) return;
+  handleAuthenticatedWhiteboardMessage(index, message, "inline");
+}
+
+function handleOverlayWhiteboardMessage(event, message) {
+  if (event.source !== whiteboardFrame.contentWindow || overlayIndex === null) return;
+  const index = validWhiteboardIndex(message.diagramIndex);
+  if (index === null || index !== overlayIndex) return;
+  if (message.type === "lavish-whiteboard:ready") {
+    if (overlayFrameReady) return;
+    const channelId = String(message.channelToken || "");
+    if (!channelId) return;
+    authenticateWhiteboardChannel(channelId).then((authenticated) => {
+      if (!authenticated || overlayIndex !== index || event.source !== whiteboardFrame.contentWindow) return;
+      overlayChannelId = channelId;
+      overlayFrameReady = true;
+      handleWhiteboardReady(index, "overlay");
+    });
+    return;
+  }
+  if (!overlayFrameReady || message.channelId !== overlayChannelId) return;
+  handleAuthenticatedWhiteboardMessage(index, message, "overlay");
 }
 
 window.addEventListener("message", (event) => {
-  if (event.source !== whiteboardFrame.contentWindow) return;
-  const msg = event.data || {};
-  if (overlayIndex === null) return;
-  if (msg.type === "lavish-whiteboard:ready") {
-    overlayFrameReady = true;
-    handleWhiteboardReady(overlayIndex, "overlay");
+  const message = event.data || {};
+  if (event.source === whiteboardFrame.contentWindow) {
+    handleOverlayWhiteboardMessage(event, message);
+  } else {
+    handleInlineWhiteboardMessage(event, message);
   }
-  if (msg.type === "lavish-whiteboard:save") handleWhiteboardSave(overlayIndex, msg);
-  if (msg.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(overlayIndex, msg, "overlay");
-  if (msg.type === "lavish-whiteboard:close") closeWhiteboard();
-  if (msg.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(overlayIndex, msg, "overlay");
-  if (msg.type === "lavish-whiteboard:teardownFailed") failWhiteboardTeardown(overlayIndex, msg, "overlay");
 });
 
 function loadFrame() {
@@ -1034,7 +1079,6 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
-  if (msg.type === "lavish:whiteboardRelay") handleWhiteboardRelay(msg);
 });
 
 loadFrame();

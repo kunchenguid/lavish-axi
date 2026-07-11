@@ -396,9 +396,8 @@ export function createArtifactSdk(
   // Mermaid source and still renders plain diagrams when opened standalone or
   // exported. The index of the container among `.mermaid` elements in document
   // order is the diagram's identity; the server recovers the matching source
-  // from the artifact file. This SDK holds no whiteboard logic: it relays
-  // `lavish-whiteboard:*` messages between each nested frame and the chrome,
-  // stamping the index so the chrome can serve many whiteboards at once.
+  // from the artifact file. This SDK owns their lifecycle during fullscreen
+  // transitions.
   const whiteboardEmbeds = new Map(); // container -> { iframe, index }
 
   function mermaidContainerIndex(container) {
@@ -436,7 +435,7 @@ export function createArtifactSdk(
     iframe.setAttribute("title", "Excalidraw whiteboard");
     // Stricter than (and independent of) this artifact frame's own sandbox.
     iframe.setAttribute("sandbox", "allow-scripts allow-popups");
-    iframe.src = "/whiteboard-frame";
+    iframe.src = whiteboardFrameSrc({ index, diagramId: svg.id || "" });
     iframe.style.cssText =
       `display:block;width:100%;height:${whiteboardEmbedHeightPx(rect)}px;border:1px solid rgba(128,128,128,.35);` +
       "border-radius:12px;background:transparent";
@@ -456,31 +455,17 @@ export function createArtifactSdk(
     return whiteboardEmbedEntries().find((entry) => entry.index === Number(index)) || null;
   }
 
+  function whiteboardFrameSrc(entry) {
+    const params = new URLSearchParams({
+      diagramIndex: String(entry.index),
+      diagramId: String(entry.diagramId || ""),
+    });
+    return `/whiteboard-frame?${params}`;
+  }
+
   window.addEventListener("message", (event) => {
-    // Up: nested whiteboard frame -> chrome, stamped with the diagram index
-    // derived from which frame sent it (never trusted from the payload).
-    const fromEntry = whiteboardEmbedEntries().find((entry) => entry.iframe.contentWindow === event.source);
-    if (fromEntry) {
-      const msg = event.data || {};
-      if (typeof msg.type === "string" && msg.type.indexOf("lavish-whiteboard:") === 0) {
-        parent.postMessage(
-          {
-            type: "lavish:whiteboardRelay",
-            diagramIndex: fromEntry.index,
-            diagramId: fromEntry.diagramId,
-            message: msg,
-          },
-          "*",
-        );
-      }
-      return;
-    }
-    // Down: chrome -> a nested whiteboard frame, addressed by index.
+    if (event.source !== parent) return;
     const msg = event.data || {};
-    if (msg.type === "lavish:whiteboardDeliver") {
-      const target = whiteboardEntryByIndex(msg.diagramIndex);
-      if (target && target.iframe.contentWindow) target.iframe.contentWindow.postMessage(msg.message, "*");
-    }
     // While the chrome overlay edits a diagram fullscreen, its inline frame is
     // parked on about:blank so two editors never autosave the same sidecar;
     // resume reboots the frame, which re-inits from the latest saved scene.
@@ -490,7 +475,7 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:resumeWhiteboard") {
       const target = whiteboardEntryByIndex(msg.diagramIndex);
-      if (target) target.iframe.src = "/whiteboard-frame";
+      if (target) target.iframe.src = whiteboardFrameSrc(target);
     }
   });
 
