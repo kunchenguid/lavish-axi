@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.40](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.39...lavish-axi-v0.1.40) (2026-07-11)
+
+
+### Features
+
+* edit Mermaid diagrams as whiteboards ([#166](https://github.com/kunchenguid/lavish-axi/issues/166)) ([94a181c](https://github.com/kunchenguid/lavish-axi/commit/94a181c2954d5ad49249d85681be61a0385ec47a))
+
 ## [0.1.39](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.38...lavish-axi-v0.1.39) (2026-07-10)
 
 
