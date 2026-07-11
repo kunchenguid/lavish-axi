@@ -57,6 +57,20 @@ test("saveWhiteboard overwrites prior state for the same diagram", async () => {
   });
 });
 
+test("concurrent saves preserve the most recent scene", async () => {
+  await withTempDir(async (dir) => {
+    const slowScene = { elements: [{ id: "old", text: "x".repeat(8 * 1024 * 1024) }] };
+    const latestScene = { elements: [{ id: "latest" }] };
+    await Promise.all([
+      saveWhiteboard(dir, KEY, 5, { sourceHash: "old", scene: slowScene, baseline: null }),
+      saveWhiteboard(dir, KEY, 5, { sourceHash: "latest", scene: latestScene, baseline: null }),
+    ]);
+    const loaded = await loadWhiteboard(dir, KEY, 5);
+    assert.equal(loaded.source_hash, "latest");
+    assert.deepEqual(loaded.scene, latestScene);
+  });
+});
+
 test("store rejects invalid keys and indexes (path traversal guard)", async () => {
   await withTempDir(async (dir) => {
     await assert.rejects(() => saveWhiteboard(dir, "../../etc", 0, { sourceHash: "", scene: null }), /invalid/);

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Sidecar persistence for whiteboard scenes, kept out of `state.json` on
@@ -9,6 +9,8 @@ import path from "node:path";
 // published `.excalidraw`/`.png` feedback files the agent reads.
 
 const KEY_RE = /^[0-9a-f]{16}$/;
+const writeTails = new Map();
+let temporaryFileId = 0;
 
 export function isValidWhiteboardKey(key) {
   return KEY_RE.test(String(key || ""));
@@ -32,6 +34,33 @@ function workingFile(stateDir, key, index) {
   return path.join(whiteboardDir(stateDir, key), `${Number(index)}.json`);
 }
 
+function writeQueueKey(stateDir, key, index) {
+  return `${path.resolve(stateDir)}\u0000${key}\u0000${Number(index)}`;
+}
+
+function queueWhiteboardWrite(stateDir, key, index, operation) {
+  const queueKey = writeQueueKey(stateDir, key, index);
+  const prior = writeTails.get(queueKey) || Promise.resolve();
+  const result = prior.catch(() => {}).then(operation);
+  const tail = result.catch(() => {});
+  writeTails.set(queueKey, tail);
+  tail.finally(() => {
+    if (writeTails.get(queueKey) === tail) writeTails.delete(queueKey);
+  });
+  return result;
+}
+
+async function writeFileAtomically(file, content) {
+  const temporary = `${file}.${process.pid}.${++temporaryFileId}.tmp`;
+  try {
+    await writeFile(temporary, content);
+    await rename(temporary, file);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 export function whiteboardFeedbackPaths(stateDir, key, index) {
   assertValidRef(key, index);
   const dir = whiteboardDir(stateDir, key);
@@ -51,9 +80,11 @@ export async function saveWhiteboard(stateDir, key, index, { sourceHash, scene, 
     scene: scene ?? null,
     baseline: baseline ?? null,
   };
-  await mkdir(whiteboardDir(stateDir, key), { recursive: true });
-  await writeFile(workingFile(stateDir, key, index), `${JSON.stringify(record)}\n`);
-  return record;
+  return queueWhiteboardWrite(stateDir, key, index, async () => {
+    await mkdir(whiteboardDir(stateDir, key), { recursive: true });
+    await writeFileAtomically(workingFile(stateDir, key, index), `${JSON.stringify(record)}\n`);
+    return record;
+  });
 }
 
 export async function loadWhiteboard(stateDir, key, index) {
@@ -80,7 +111,6 @@ export async function loadWhiteboard(stateDir, key, index) {
 export async function writeWhiteboardFeedbackFiles(stateDir, key, index, { scene, pngDataUrl = "" }) {
   assertValidRef(key, index);
   const { scenePath, previewPath } = whiteboardFeedbackPaths(stateDir, key, index);
-  await mkdir(whiteboardDir(stateDir, key), { recursive: true });
   const sceneJson = {
     type: "excalidraw",
     version: 2,
@@ -89,13 +119,16 @@ export async function writeWhiteboardFeedbackFiles(stateDir, key, index, { scene
     appState: scene?.appState && typeof scene.appState === "object" ? scene.appState : {},
     files: scene?.files && typeof scene.files === "object" ? scene.files : {},
   };
-  await writeFile(scenePath, `${JSON.stringify(sceneJson, null, 2)}\n`);
   const png = decodePngDataUrl(pngDataUrl);
-  if (png) {
-    await writeFile(previewPath, png);
-    return { scenePath, previewPath };
-  }
-  return { scenePath, previewPath: "" };
+  return queueWhiteboardWrite(stateDir, key, index, async () => {
+    await mkdir(whiteboardDir(stateDir, key), { recursive: true });
+    await writeFileAtomically(scenePath, `${JSON.stringify(sceneJson, null, 2)}\n`);
+    if (png) {
+      await writeFileAtomically(previewPath, png);
+      return { scenePath, previewPath };
+    }
+    return { scenePath, previewPath: "" };
+  });
 }
 
 export function decodePngDataUrl(dataUrl) {

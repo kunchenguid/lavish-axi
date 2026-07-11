@@ -63,6 +63,17 @@ test("extractMermaidSources handles single-quoted class attributes and empty inp
   assert.deepEqual(extractMermaidSources(null), []);
 });
 
+test("extractMermaidSources follows HTML class attribute casing and quoting", () => {
+  const html = `<div class=mermaid>graph TD; A-->B</div>
+    <div CLASS="diagram mermaid">graph TD; B-->C</div>
+    <div class=mermaid-like>graph TD; C-->D</div>`;
+  const sources = extractMermaidSources(html);
+  assert.deepEqual(
+    sources.map(({ source }) => source),
+    ["graph TD; A-->B", "graph TD; B-->C"],
+  );
+});
+
 test("normalizeMermaidSource trims outer blank space but keeps inner structure", () => {
   assert.equal(normalizeMermaidSource("\n  flowchart TD\n    A --> B\n  "), "  flowchart TD\n    A --> B");
   assert.equal(normalizeMermaidSource(""), "");

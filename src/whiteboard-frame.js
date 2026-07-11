@@ -47,6 +47,7 @@ const state = {
   imageFallback: false,
   api: null,
   saveTimer: 0,
+  teardownFlushId: "",
   queueBusy: false,
   // Inline frames boot locked (view mode) so a page full of embedded
   // whiteboards scrolls normally; the first click on the canvas unlocks it.
@@ -148,19 +149,52 @@ function currentScene() {
   };
 }
 
+function postSave(flushId = "") {
+  const scene = currentScene();
+  if (!scene) return false;
+  post({
+    type: "lavish-whiteboard:save",
+    diagramIndex: state.diagramIndex,
+    sourceHash: state.sceneSourceHash,
+    scene,
+    baseline: { elements: state.baselineElements },
+    ...(flushId ? { flushId } : {}),
+  });
+  return true;
+}
+
 function scheduleSave() {
+  if (state.teardownFlushId) return;
   window.clearTimeout(state.saveTimer);
   state.saveTimer = window.setTimeout(() => {
-    const scene = currentScene();
-    if (!scene) return;
-    post({
-      type: "lavish-whiteboard:save",
-      diagramIndex: state.diagramIndex,
-      sourceHash: state.sceneSourceHash,
-      scene,
-      baseline: { elements: state.baselineElements },
-    });
+    postSave();
   }, SAVE_DEBOUNCE_MS);
+}
+
+function prepareTeardown(message) {
+  const flushId = String(message.flushId || "");
+  if (!flushId) return;
+  state.teardownFlushId = flushId;
+  window.clearTimeout(state.saveTimer);
+  state.setLocked?.(true);
+  if (!postSave(flushId)) {
+    state.teardownFlushId = "";
+    post({ type: "lavish-whiteboard:teardownReady", flushId });
+  }
+}
+
+function handleSaveResult(message) {
+  const flushId = String(message.flushId || "");
+  if (!flushId || flushId !== state.teardownFlushId) return;
+  state.teardownFlushId = "";
+  if (message.ok) {
+    post({ type: "lavish-whiteboard:teardownReady", flushId });
+    return;
+  }
+  state.setLocked?.(false);
+  const error = String(message.error || "failed to save whiteboard scene");
+  showStatus(`Could not save before closing: ${error}`, { transient: false });
+  post({ type: "lavish-whiteboard:teardownFailed", flushId, error });
 }
 
 function onLinkOpen(element, event) {
@@ -456,6 +490,8 @@ function main() {
       handleInit(msg);
     }
     if (msg.type === "lavish-whiteboard:sourceChanged") handleSourceChanged(msg);
+    if (msg.type === "lavish-whiteboard:prepareTeardown") prepareTeardown(msg);
+    if (msg.type === "lavish-whiteboard:saveResult") handleSaveResult(msg);
     if (msg.type === "lavish-whiteboard:queueResult") {
       resetQueueButton();
       if (msg.ok) {

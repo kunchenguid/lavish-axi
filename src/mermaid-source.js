@@ -10,7 +10,9 @@ import crypto from "node:crypto";
 // identified by their position among `.mermaid` elements in document order,
 // matching `document.querySelectorAll(".mermaid")` in the browser.
 
-const MERMAID_OPEN_TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*\bclass\s*=\s*("[^"]*"|'[^']*')[^>]*>/g;
+const MERMAID_OPEN_TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b((?:[^"'>]|"[^"]*"|'[^']*')*)>/gi;
+const HTML_ATTRIBUTE_RE =
+  /(?:^|[\t\n\f\r ])([^\t\n\f\r "'=<>`]+)(?:[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r "'=<>`]+)))?/g;
 
 // Decode the entity forms that matter for Mermaid syntax (`--&gt;`, `&quot;...`).
 // Numeric references are included so authored `&#39;` quotes survive.
@@ -30,9 +32,17 @@ function safeFromCodePoint(code) {
   return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
 }
 
-function hasMermaidClass(quotedClassValue) {
-  const value = quotedClassValue.slice(1, -1);
-  return value.split(/\s+/).includes("mermaid");
+function classAttributeValue(attributes) {
+  HTML_ATTRIBUTE_RE.lastIndex = 0;
+  let match;
+  while ((match = HTML_ATTRIBUTE_RE.exec(attributes)) !== null) {
+    if (match[1].toLowerCase() === "class") return match[2] ?? match[3] ?? match[4] ?? "";
+  }
+  return null;
+}
+
+function hasMermaidClass(value) {
+  return value.split(/[\t\n\f\r ]+/).includes("mermaid");
 }
 
 // Extract Mermaid sources from raw artifact HTML in document order. Returns
@@ -45,8 +55,9 @@ export function extractMermaidSources(html) {
   MERMAID_OPEN_TAG_RE.lastIndex = 0;
   let match;
   while ((match = MERMAID_OPEN_TAG_RE.exec(searchable)) !== null) {
-    const [openTag, tagName, classValue] = match;
-    if (!hasMermaidClass(classValue)) continue;
+    const [openTag, tagName, attributes] = match;
+    const classValue = classAttributeValue(attributes);
+    if (classValue === null || !hasMermaidClass(classValue)) continue;
     const contentStart = match.index + openTag.length;
     const closeRe = new RegExp(`</${tagName}\\s*>`, "gi");
     closeRe.lastIndex = contentStart;
