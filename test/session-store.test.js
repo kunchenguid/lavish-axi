@@ -929,6 +929,48 @@ test("send-and-end during an in-flight delivery keeps polling until the newer fi
   }
 });
 
+test("changed layout warnings after session end suppress session_ended in redelivery so updated warnings reach the agent", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [{ selector: "main", kind: "page-horizontal-overflow", severity: "error" }],
+    });
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(first.layout_warnings.length, 1);
+    assert.equal(first.layout_warnings[0].selector, "main");
+    assert.equal(first.session_ended, undefined);
+
+    await store.endSession(session.key, "user");
+    await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [{ selector: "body", kind: "page-horizontal-overflow", severity: "error" }],
+    });
+
+    const redelivery = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(redelivery.delivery_id, first.delivery_id);
+    assert.equal(redelivery.layout_warnings[0].selector, "main");
+    assert.equal(redelivery.session_ended, undefined, "session_ended suppressed so updated warnings can still reach the agent");
+
+    await store.acknowledgeFeedback(session.key, first.delivery_id);
+
+    const final = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(final.layout_warnings[0].selector, "body");
+    assert.equal(final.session_ended, true);
+    assert.equal(final.ended_by, "user");
+
+    await store.acknowledgeFeedback(session.key, final.delivery_id);
+    const done = await store.takeFeedback(session.key);
+    assert.equal(done.status, "ended");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("reopening a session with a pending ended delivery strips the session_ended flag", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
