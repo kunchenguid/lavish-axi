@@ -232,7 +232,7 @@ async function pollCommand(args) {
       `${baseUrl}/api/${sessionKey(absolute)}/ack`,
       { delivery_id: deliveryId },
       {
-        connectionFailureSuggestion: `Re-run \`lavish-axi poll ${absolute} --ack ${deliveryId}\` after the server is healthy; acknowledging the same delivery again is safe`,
+        connectionFailureSuggestion: `Re-run \`lavish-axi poll ${absolute.replaceAll("\\", "/")} --ack ${deliveryId}\` after the server is healthy; acknowledging the same delivery again is safe`,
       },
     );
   }

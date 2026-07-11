@@ -1502,7 +1502,7 @@ test("lost acknowledgement responses tell the agent to retry the same idempotent
     });
 
     assert.notEqual(exitCode, 0);
-    assert.ok(output.includes(`poll ${await realpath(artifact)} --ack ${deliveryId}`), output);
+    assert.ok(output.includes(`poll ${(await realpath(artifact)).replaceAll("\\", "/")} --ack ${deliveryId}`), output);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(stateDir, { force: true, recursive: true });
