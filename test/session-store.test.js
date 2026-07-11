@@ -800,6 +800,56 @@ test("ending a session after delivery marks the unchanged redelivery as final", 
   }
 });
 
+test("clearing delivered warnings after session end keeps the redelivery final", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [{ selector: "main", kind: "page-horizontal-overflow", severity: "error" }],
+    });
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    await store.endSession(session.key, "user");
+    await store.recordLayoutWarnings(session.key, { layout_warnings: [] });
+
+    const final = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(final.delivery_id, first.delivery_id);
+    assert.equal(final.session_ended, true);
+    assert.equal(final.ended_by, "user");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reopening during a warning delivery does not hide a later session end", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [{ selector: "main", kind: "page-horizontal-overflow", severity: "error" }],
+    });
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.endSession(session.key, "user");
+
+    const final = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(final.delivery_id, first.delivery_id);
+    assert.equal(final.session_ended, true);
+    assert.equal(final.ended_by, "user");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("send-and-end during an in-flight delivery keeps polling until the newer final prompt is delivered", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

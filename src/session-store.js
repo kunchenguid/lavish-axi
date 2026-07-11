@@ -146,7 +146,8 @@ export class SessionStore {
       const result = feedbackDeliveryResult(delivery);
       const hasNewerFeedback =
         prompts.length > (delivery.prompt_count || 0) ||
-        layoutWarningsSignature(layoutWarnings) !== layoutWarningsSignature(delivery.layout_warnings || []);
+        (layoutWarnings.length > 0 &&
+          layoutWarningsSignature(layoutWarnings) !== layoutWarningsSignature(delivery.layout_warnings || []));
       if (hasNewerFeedback) {
         delete result.session_ended;
         delete result.ended_by;
