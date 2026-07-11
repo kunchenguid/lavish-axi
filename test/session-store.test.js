@@ -346,6 +346,52 @@ test("acknowledging reordered copies of the same layout warnings clears the deli
   }
 });
 
+test("concurrent feedback delivery and warning updates preserve both changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    class DelayedReadStore extends SessionStore {
+      pauseNextRead() {
+        this.shouldPauseNextRead = true;
+        this.firstReadStarted = new Promise((resolve) => {
+          this.resolveFirstReadStarted = resolve;
+        });
+      }
+
+      async readState() {
+        const state = await super.readState();
+        if (this.shouldPauseNextRead) {
+          this.shouldPauseNextRead = false;
+          this.resolveFirstReadStarted();
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        return state;
+      }
+    }
+
+    const store = new DelayedReadStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const firstWarning = { selector: "header", kind: "overlapping-text", severity: "warning" };
+    const newerWarning = { selector: "main", kind: "page-horizontal-overflow", severity: "error" };
+    await store.recordLayoutWarnings(session.key, { layout_warnings: [firstWarning] });
+    store.pauseNextRead();
+
+    const deliveryPromise = store.takeFeedback(session.key);
+    await store.firstReadStarted;
+    await Promise.all([deliveryPromise, store.recordLayoutWarnings(session.key, { layout_warnings: [newerWarning] })]);
+
+    const updated = await store.findByKey(session.key);
+    assert.ok(updated.feedback_delivery?.delivery_id);
+    assert.equal(updated.layout_warnings.length, 1);
+    assert.equal(updated.layout_warnings[0].selector, "main");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a warning is fresh again after a clean audit resolves it", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

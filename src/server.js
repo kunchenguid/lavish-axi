@@ -336,13 +336,18 @@ export async function serve({
   app.post("/api/:key/agent-reply", async (req, res, next) => {
     try {
       const text = String(req.body?.text || "");
-      const session = await store.addAgentReply(req.params.key, text);
-      if (!session) {
+      const deliveryId = String(req.body?.delivery_id || "");
+      if (deliveryId && !/^[0-9a-f]{16}$/.test(deliveryId)) {
+        res.status(400).json({ code: "INVALID_DELIVERY_ID", error: "delivery_id must be 16 lowercase hex characters" });
+        return;
+      }
+      const result = await store.addAgentReply(req.params.key, text, deliveryId);
+      if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
-      events.emit("agent-reply", req.params.key, text);
-      res.json({ status: "sent" });
+      if (result.added) events.emit("agent-reply", req.params.key, text);
+      res.json({ status: result.added ? "sent" : "already_sent" });
     } catch (error) {
       next(error);
     }

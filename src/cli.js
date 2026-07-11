@@ -238,7 +238,10 @@ async function pollCommand(args) {
   }
   const agentReply = flagValue(args, "--agent-reply");
   if (agentReply) {
-    await postJson(`${baseUrl}/api/${sessionKey(absolute)}/agent-reply`, { text: agentReply });
+    await postJson(`${baseUrl}/api/${sessionKey(absolute)}/agent-reply`, {
+      text: agentReply,
+      ...(deliveryId ? { delivery_id: deliveryId } : {}),
+    });
   }
   const timeoutMs = flagValue(args, "--timeout-ms");
   const timeoutQuery = timeoutMs ? `&timeoutMs=${encodeURIComponent(timeoutMs)}` : "";

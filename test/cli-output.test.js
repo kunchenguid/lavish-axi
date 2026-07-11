@@ -1393,6 +1393,72 @@ test("spawned poll acknowledges a processed delivery before waiting for more fee
   }
 });
 
+test("retrying an acknowledged delivery does not duplicate its agent reply", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-retried-reply-test-`);
+  const stateFile = `${stateDir}/state.json`;
+  const artifact = `${stateDir}/artifact.html`;
+  await writeFile(artifact, "<html><body>hello</body></html>", "utf8");
+  const server = await serve({ port: 0, stateFile, version: VERSION });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await opened.json();
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ prompt: "process me", tag: "message" }] }),
+    });
+    const delivery = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+      res.json(),
+    );
+
+    const runPoll = async () => {
+      const child = spawn(
+        process.execPath,
+        [
+          fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)),
+          "poll",
+          artifact,
+          "--ack",
+          delivery.delivery_id,
+          "--agent-reply",
+          "Applied the requested changes.",
+          "--timeout-ms",
+          "1",
+        ],
+        {
+          cwd: fileURLToPath(new URL("..", import.meta.url)),
+          env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_PORT: String(server.port) },
+        },
+      );
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
+      const exitCode = await new Promise((resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", resolve);
+      });
+      assert.equal(exitCode, 0, stderr);
+    };
+
+    await runPoll();
+    await runPoll();
+
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    const replies = state.sessions[key].chat.filter((item) => item.role === "agent");
+    assert.deepEqual(
+      replies.map((item) => item.text),
+      ["Applied the requested changes."],
+    );
+  } finally {
+    await server.close();
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
 test("lost acknowledgement responses tell the agent to retry the same idempotent ack", async () => {
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-lost-ack-test-`);
   const artifact = `${stateDir}/artifact.html`;

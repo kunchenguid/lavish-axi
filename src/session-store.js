@@ -9,6 +9,8 @@ export class SessionStore {
   constructor(file) {
     this.file = file;
     this.feedbackTakes = new Map();
+    /** @type {Promise<void>} */
+    this.stateMutation = Promise.resolve();
   }
 
   async listSessions() {
@@ -28,6 +30,10 @@ export class SessionStore {
   }
 
   async upsertSession(file, url) {
+    return this.#mutateState(() => this.#upsertSession(file, url));
+  }
+
+  async #upsertSession(file, url) {
     const absolute = await canonicalFile(file);
     const key = sessionKey(absolute);
     const state = await this.readState();
@@ -50,6 +56,7 @@ export class SessionStore {
       feedback_delivery: existingDelivery,
       last_acknowledged_delivery_id: existing.last_acknowledged_delivery_id,
       acknowledged_delivery_ids: acknowledgedDeliveryIds(existing),
+      agent_reply_delivery_ids: existing.agent_reply_delivery_ids || [],
       layout_warnings: [],
       delivered_layout_warning_keys: existing.delivered_layout_warning_keys || [],
       dom_snapshot: existing.dom_snapshot || "",
@@ -62,6 +69,10 @@ export class SessionStore {
   }
 
   async queuePrompts(key, payload) {
+    return this.#mutateState(() => this.#queuePrompts(key, payload));
+  }
+
+  async #queuePrompts(key, payload) {
     const state = await this.readState();
     const session = state.sessions[key];
     if (!session) {
@@ -86,6 +97,10 @@ export class SessionStore {
   }
 
   async recordLayoutWarnings(key, payload) {
+    return this.#mutateState(() => this.#recordLayoutWarnings(key, payload));
+  }
+
+  async #recordLayoutWarnings(key, payload) {
     const state = await this.readState();
     const session = state.sessions[key];
     if (!session) {
@@ -123,7 +138,7 @@ export class SessionStore {
   async takeFeedback(key) {
     const activeTake = this.feedbackTakes.get(key);
     if (activeTake) return activeTake;
-    const take = this.#takeFeedbackOnce(key).finally(() => {
+    const take = this.#mutateState(() => this.#takeFeedbackOnce(key)).finally(() => {
       if (this.feedbackTakes.get(key) === take) this.feedbackTakes.delete(key);
     });
     this.feedbackTakes.set(key, take);
@@ -177,6 +192,10 @@ export class SessionStore {
   }
 
   async acknowledgeFeedback(key, deliveryId) {
+    return this.#mutateState(() => this.#acknowledgeFeedback(key, deliveryId));
+  }
+
+  async #acknowledgeFeedback(key, deliveryId) {
     const state = await this.readState();
     const session = state.sessions[key];
     if (!session) return "not_found";
@@ -213,6 +232,10 @@ export class SessionStore {
   // agent explicitly closing the loop via `lavish-axi end` ("agent"). Only a user-initiated end
   // blocks a plain reopen - see `SessionStore` callers in server.js.
   async endSession(key, endedBy = "agent") {
+    return this.#mutateState(() => this.#endSession(key, endedBy));
+  }
+
+  async #endSession(key, endedBy) {
     const state = await this.readState();
     const session = state.sessions[key];
     if (!session) {
@@ -227,16 +250,43 @@ export class SessionStore {
     return session;
   }
 
-  async addAgentReply(key, text) {
+  async addAgentReply(key, text, deliveryId = "") {
+    return this.#mutateState(() => this.#addAgentReply(key, text, deliveryId));
+  }
+
+  async #addAgentReply(key, text, deliveryId) {
     const state = await this.readState();
     const session = state.sessions[key];
     if (!session) {
       return null;
     }
+    const replyDeliveryIds = session.agent_reply_delivery_ids || [];
+    if (deliveryId && replyDeliveryIds.includes(deliveryId)) {
+      return { session, added: false };
+    }
     session.chat = [...(session.chat || []), { role: "agent", text: String(text || ""), at: new Date().toISOString() }];
+    if (deliveryId) {
+      session.agent_reply_delivery_ids = [...replyDeliveryIds.filter((id) => id !== deliveryId), deliveryId].slice(
+        -200,
+      );
+    }
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
-    return session;
+    return { session, added: true };
+  }
+
+  /**
+   * @template T
+   * @param {() => Promise<T>} operation
+   * @returns {Promise<T>}
+   */
+  #mutateState(operation) {
+    const mutation = this.stateMutation.then(operation, operation);
+    this.stateMutation = mutation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return mutation;
   }
 
   async readState() {
