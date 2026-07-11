@@ -31,8 +31,9 @@ await copyFile("node_modules/@tailwindcss/browser/dist/index.global.js", "dist/d
 
 // Whiteboard frame: a self-contained browser bundle (Excalidraw + the Mermaid
 // converter + its exactly-pinned mermaid + React) served from
-// /whiteboard-assets/ and lazy-loaded only when the user opens a diagram as a
-// whiteboard. Everything is vendored so the whiteboard works fully offline.
+// /whiteboard-assets/ by an embedded frame for every rendered Mermaid diagram
+// in a `.mermaid` container.
+// Everything is vendored so the eagerly loaded whiteboards work fully offline.
 await mkdir("dist/whiteboard", { recursive: true });
 await esbuild.build({
   entryPoints: { whiteboard: "src/whiteboard-frame.js" },

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lavish whiteboard end-to-end evidence</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        background: #111827;
+        color: #f8fafc;
+      }
+
+      body {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 48px 24px 96px;
+        background: linear-gradient(135deg, #111827, #1e1b4b);
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 2.4rem;
+      }
+
+      p {
+        color: #cbd5e1;
+      }
+
+      .card {
+        margin-top: 30px;
+        padding: 24px;
+        border: 1px solid #475569;
+        border-radius: 18px;
+        background: #0f172a;
+        box-shadow: 0 18px 60px rgb(0 0 0 / 28%);
+      }
+
+      .mermaid {
+        min-height: 460px;
+      }
+    </style>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/+esm";
+      mermaid.initialize({ startOnLoad: true, theme: "dark", securityLevel: "strict" });
+    </script>
+  </head>
+  <body>
+    <h1>Review feedback loop</h1>
+    <p>The Mermaid diagram below becomes an editable, embedded Excalidraw whiteboard in Lavish.</p>
+    <section class="card">
+      <pre class="mermaid">flowchart LR
+  A[Reviewer opens diagram] --> B[Click to unlock]
+  B --> C[Edit whiteboard]
+  C --> D[Queue feedback]
+  D --> E[Agent updates Mermaid source]</pre>
+    </section>
+  </body>
+</html>
