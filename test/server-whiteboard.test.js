@@ -78,6 +78,21 @@ test("createWhiteboardFrameHtml loads only whiteboard-assets resources", () => {
   assert.doesNotMatch(html, /https?:\/\//);
 });
 
+test("whiteboard confirms sanitized links inside the frame", async () => {
+  const frame = await readFile(new URL("../src/whiteboard-frame.js", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/whiteboard-frame.css", import.meta.url), "utf8");
+
+  assert.doesNotMatch(frame, /window\.confirm/);
+  assert.match(frame, /setAttribute\("role", "dialog"\)/);
+  assert.match(frame, /setAttribute\("aria-modal", "true"\)/);
+  assert.match(frame, /setAttribute\("aria-label", "Open external link"\)/);
+  assert.match(frame, /event\.key === "Escape"/);
+  assert.match(frame, /event\.key !== "Tab"/);
+  assert.match(frame, /window\.open\(safe, "_blank", "noopener,noreferrer"\)/);
+  assert.match(css, /\.wb-link-confirm/);
+  assert.match(css, /data-lavish-whiteboard-theme="dark"/);
+});
+
 test("whiteboard channel tokens are signed and short lived", () => {
   const secret = Buffer.from("whiteboard-test-secret");
   const now = 1_700_000_000_000;

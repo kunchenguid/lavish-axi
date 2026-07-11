@@ -49,6 +49,7 @@ const state = {
   api: null,
   saveTimer: 0,
   teardownFlushId: "",
+  flushIds: new Set(),
   queueBusy: false,
   // Inline frames boot locked (view mode) so a page full of embedded
   // whiteboards scrolls normally; the first click on the canvas unlocks it.
@@ -117,7 +118,32 @@ function buildShell(theme, mode) {
   const staleBanner = el("div", { id: "wbStaleBanner", className: "wb-banner wb-banner-warn", hidden: true });
   const status = el("div", { id: "wbStatus", className: "wb-status", hidden: true });
   const editor = el("div", { id: "wbEditor" });
-  shell.append(header, fallbackBanner, staleBanner, status, editor);
+  const linkConfirm = el("div", { id: "wbLinkConfirm", className: "wb-link-confirm", hidden: true });
+  linkConfirm.setAttribute("role", "dialog");
+  linkConfirm.setAttribute("aria-modal", "true");
+  linkConfirm.setAttribute("aria-label", "Open external link");
+  const linkConfirmCard = el("div", { className: "wb-link-confirm-card" });
+  const linkConfirmTitle = el("div", { className: "wb-link-confirm-title", textContent: "Open external link?" });
+  const linkConfirmCopy = el("p", {
+    className: "wb-link-confirm-copy",
+    textContent: "This link came from the diagram.",
+  });
+  const linkConfirmUrl = el("p", { id: "wbLinkConfirmUrl", className: "wb-link-confirm-url" });
+  const linkConfirmActions = el("div", { className: "wb-link-confirm-actions" });
+  const linkConfirmCancel = el("button", {
+    id: "wbLinkConfirmCancel",
+    type: "button",
+    textContent: "Cancel",
+  });
+  const linkConfirmOpen = el("button", {
+    id: "wbLinkConfirmOpen",
+    type: "button",
+    textContent: "Open link",
+  });
+  linkConfirmActions.append(linkConfirmCancel, linkConfirmOpen);
+  linkConfirmCard.append(linkConfirmTitle, linkConfirmCopy, linkConfirmUrl, linkConfirmActions);
+  linkConfirm.append(linkConfirmCard);
+  shell.append(header, fallbackBanner, staleBanner, status, editor, linkConfirm);
   document.body.append(shell);
 
   queueButton.onclick = () => queueFeedback().catch((error) => showStatus(`Queue failed: ${describeError(error)}`));
@@ -126,6 +152,26 @@ function buildShell(theme, mode) {
       event.preventDefault();
       queueButton.click();
     }
+  });
+  linkConfirmCancel.onclick = dismissLinkConfirmation;
+  linkConfirmOpen.onclick = () => {
+    const safe = String(linkConfirm.dataset.url || "");
+    if (safe) window.open(safe, "_blank", "noopener,noreferrer");
+    dismissLinkConfirmation();
+  };
+  linkConfirm.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      dismissLinkConfirmation();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const buttons = [linkConfirmCancel, linkConfirmOpen];
+    const activeIndex = buttons.indexOf(/** @type {HTMLButtonElement} */ (document.activeElement));
+    const nextIndex = event.shiftKey ? activeIndex - 1 : activeIndex + 1;
+    if (nextIndex >= 0 && nextIndex < buttons.length) return;
+    event.preventDefault();
+    buttons[event.shiftKey ? buttons.length - 1 : 0].focus();
   });
 }
 
@@ -195,18 +241,59 @@ function prepareTeardown(message) {
   }
 }
 
+function flushSaveNow(message) {
+  const flushId = String(message.flushId || "");
+  if (!flushId || state.flushIds.has(flushId)) return;
+  state.flushIds.add(flushId);
+  window.clearTimeout(state.saveTimer);
+  if (!postSave(flushId)) {
+    state.flushIds.delete(flushId);
+    post({ type: "lavish-whiteboard:flushComplete", flushId, ok: true });
+  }
+}
+
 function handleSaveResult(message) {
   const flushId = String(message.flushId || "");
-  if (!flushId || flushId !== state.teardownFlushId) return;
-  state.teardownFlushId = "";
-  if (message.ok) {
-    post({ type: "lavish-whiteboard:teardownReady", flushId });
+  if (!flushId) return;
+  if (flushId === state.teardownFlushId) {
+    state.teardownFlushId = "";
+    if (message.ok) {
+      post({ type: "lavish-whiteboard:teardownReady", flushId });
+      return;
+    }
+    state.setLocked?.(false);
+    const error = String(message.error || "failed to save whiteboard scene");
+    showStatus(`Could not save before closing: ${error}`, { transient: false });
+    post({ type: "lavish-whiteboard:teardownFailed", flushId, error });
     return;
   }
-  state.setLocked?.(false);
-  const error = String(message.error || "failed to save whiteboard scene");
-  showStatus(`Could not save before closing: ${error}`, { transient: false });
-  post({ type: "lavish-whiteboard:teardownFailed", flushId, error });
+  if (state.flushIds.delete(flushId)) {
+    post({ type: "lavish-whiteboard:flushComplete", flushId, ok: Boolean(message.ok) });
+  }
+}
+
+/** @type {{ focus?: () => void } | null} */
+let linkConfirmationReturnFocus = null;
+
+function dismissLinkConfirmation() {
+  const dialog = document.getElementById("wbLinkConfirm");
+  if (dialog) dialog.hidden = true;
+  const returnFocus = linkConfirmationReturnFocus;
+  linkConfirmationReturnFocus = null;
+  returnFocus?.focus?.();
+}
+
+function showLinkConfirmation(safe) {
+  const dialog = document.getElementById("wbLinkConfirm");
+  const url = document.getElementById("wbLinkConfirmUrl");
+  const cancel = /** @type {HTMLButtonElement | null} */ (document.getElementById("wbLinkConfirmCancel"));
+  if (!dialog || !url || !cancel) return;
+  const activeElement = /** @type {{ focus?: () => void } | null} */ (document.activeElement);
+  linkConfirmationReturnFocus = activeElement && typeof activeElement.focus === "function" ? activeElement : null;
+  dialog.dataset.url = safe;
+  url.textContent = safe;
+  dialog.hidden = false;
+  cancel.focus();
 }
 
 function onLinkOpen(element, event) {
@@ -216,9 +303,7 @@ function onLinkOpen(element, event) {
     showStatus("Blocked a link with an unsupported or unsafe scheme.");
     return;
   }
-  if (window.confirm(`Open this link in a new tab?\n\n${safe}`)) {
-    window.open(safe, "_blank", "noopener,noreferrer");
-  }
+  showLinkConfirmation(safe);
 }
 
 // Inline frames start locked in view mode behind a click-catcher: a page of
@@ -506,6 +591,7 @@ function main() {
     if (!initialized || msg.channelId !== state.channelId) return;
     if (msg.type === "lavish-whiteboard:sourceChanged") handleSourceChanged(msg);
     if (msg.type === "lavish-whiteboard:prepareTeardown") prepareTeardown(msg);
+    if (msg.type === "lavish-whiteboard:flush") flushSaveNow(msg);
     if (msg.type === "lavish-whiteboard:saveResult") handleSaveResult(msg);
     if (msg.type === "lavish-whiteboard:queueResult") {
       resetQueueButton();

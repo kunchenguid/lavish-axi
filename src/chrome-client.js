@@ -703,7 +703,9 @@ let overlayChannelId = "";
 let overlayOpeningIndex = null;
 let nextWhiteboardFlushId = 0;
 let artifactResetPromise = null;
+let chromeRestartReloadPromise = null;
 const whiteboardTeardowns = new Map();
+const whiteboardFlushes = new Map();
 const whiteboardSaveChains = new Map();
 const inlineWhiteboardChannels = new Map();
 
@@ -854,6 +856,50 @@ function failWhiteboardTeardown(index, message, placement) {
   whiteboardTeardowns.delete(key);
   teardown.onComplete?.(false);
   teardown.resolve(false);
+}
+
+function whiteboardFlushKey(index, placement) {
+  return placement + ":" + index;
+}
+
+function beginWhiteboardFlush(index, placement) {
+  const flushKey = whiteboardFlushKey(index, placement);
+  const pending = whiteboardFlushes.get(flushKey);
+  if (pending) return pending.promise;
+  const flushId = `whiteboard-flush-${++nextWhiteboardFlushId}`;
+  let resolve;
+  const promise = new Promise((complete) => {
+    resolve = complete;
+  });
+  whiteboardFlushes.set(flushKey, { index, placement, flushId, promise, resolve });
+  postToWhiteboard(index, placement, { type: "lavish-whiteboard:flush", flushId });
+  return promise;
+}
+
+function finishWhiteboardFlush(index, message, placement) {
+  const flushId = String(message.flushId || "");
+  const flushKey = whiteboardFlushKey(index, placement);
+  const flush = whiteboardFlushes.get(flushKey);
+  if (!flush || flush.index !== index || flush.placement !== placement || flush.flushId !== flushId) return;
+  whiteboardFlushes.delete(flushKey);
+  flush.resolve(Boolean(message.ok));
+}
+
+async function flushWhiteboardsBeforeChromeReload() {
+  const flushes = [];
+  for (const [index, channel] of inlineWhiteboardChannels) {
+    if (channel.initialized && index !== overlayIndex) flushes.push(beginWhiteboardFlush(index, "inline"));
+  }
+  if (overlayIndex !== null && overlayFrameReady) flushes.push(beginWhiteboardFlush(overlayIndex, "overlay"));
+  if (flushes.length === 0) return;
+  let timeout;
+  await Promise.race([
+    Promise.all(flushes),
+    new Promise((resolve) => {
+      timeout = setTimeout(resolve, 1500);
+    }),
+  ]);
+  clearTimeout(timeout);
 }
 
 async function flushInlineWhiteboards() {
@@ -1031,6 +1077,7 @@ function handleAuthenticatedWhiteboardMessage(index, message, mode) {
   if (message.type === "lavish-whiteboard:close" && mode === "overlay") closeWhiteboard();
   if (message.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(index, message, mode);
   if (message.type === "lavish-whiteboard:teardownFailed") failWhiteboardTeardown(index, message, mode);
+  if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(index, message, mode);
 }
 
 function handleInlineWhiteboardMessage(event, message) {
@@ -1106,6 +1153,12 @@ function reloadArtifact() {
 }
 
 async function reloadAfterServerRestart() {
+  if (chromeRestartReloadPromise) return chromeRestartReloadPromise;
+  chromeRestartReloadPromise = reloadChromeAfterServerRestart();
+  return chromeRestartReloadPromise;
+}
+
+async function reloadChromeAfterServerRestart() {
   let sawOutage = false;
   const deadline = Date.now() + 5000;
 
@@ -1113,6 +1166,7 @@ async function reloadAfterServerRestart() {
     try {
       const res = await fetch("/health", { cache: "no-store" });
       if (sawOutage && res.ok) {
+        await flushWhiteboardsBeforeChromeReload();
         location.reload();
         return;
       }
@@ -1123,6 +1177,7 @@ async function reloadAfterServerRestart() {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
+  await flushWhiteboardsBeforeChromeReload();
   location.reload();
 }
 

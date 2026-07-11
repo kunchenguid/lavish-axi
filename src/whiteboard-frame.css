@@ -28,6 +28,7 @@ body[data-lavish-whiteboard-theme="dark"] {
   display: flex;
   flex-direction: column;
   height: 100%;
+  position: relative;
 }
 
 #wbHeader {
@@ -114,6 +115,88 @@ body[data-lavish-whiteboard-theme="dark"] {
 #wbEditor {
   flex: 1;
   min-height: 0;
+}
+
+.wb-link-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(23, 19, 10, 0.42);
+}
+
+.wb-link-confirm[hidden] {
+  display: none;
+}
+
+.wb-link-confirm-card {
+  width: min(100%, 440px);
+  box-sizing: border-box;
+  padding: 18px;
+  border: 1px solid rgba(128, 128, 128, 0.45);
+  border-radius: 12px;
+  background: #fffbf3;
+  box-shadow: 0 16px 42px rgba(23, 19, 10, 0.26);
+}
+
+.wb-link-confirm-title {
+  font-weight: 700;
+}
+
+.wb-link-confirm-copy,
+.wb-link-confirm-url {
+  margin: 9px 0 0;
+  font-size: 13px;
+}
+
+.wb-link-confirm-url {
+  max-height: 5.2em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.12);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.wb-link-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.wb-link-confirm-actions button {
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wb-link-confirm-actions button:hover {
+  background: rgba(128, 128, 128, 0.15);
+}
+
+#wbLinkConfirmOpen {
+  border-color: transparent;
+  background: #f4c95d;
+  color: #17130a;
+}
+
+#wbLinkConfirmOpen:hover {
+  background: #ffd877;
+}
+
+body[data-lavish-whiteboard-theme="dark"] .wb-link-confirm-card {
+  background: #1a1d23;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.45);
 }
 
 /* Inline placement: no chrome close control floats over the header, so drop

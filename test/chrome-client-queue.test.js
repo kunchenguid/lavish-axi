@@ -26,6 +26,7 @@ async function createChromeHarness({
   const timers = new Map();
   const srcLoads = [];
   let nextTimerId = 1;
+  let reloadCount = 0;
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -154,7 +155,11 @@ async function createChromeHarness({
     clearTimeout: fakeClearTimeout,
     console,
     fetch: fetchImpl,
-    location: { reload() {} },
+    location: {
+      reload() {
+        reloadCount += 1;
+      },
+    },
     navigator: {},
     setTimeout: fakeSetTimeout,
     URL: {
@@ -268,6 +273,9 @@ async function createChromeHarness({
     },
     queued() {
       return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
+    },
+    reloadCount() {
+      return reloadCount;
     },
     runTimers,
     srcLoads,
@@ -1151,6 +1159,117 @@ test("artifact reload waits for inline whiteboards to flush", async () => {
 
   assert.equal(chrome.srcLoads.length, initialLoadCount + 1);
   assert.equal(chrome.element("artifact").src, "/artifact/abc/index.html");
+});
+
+test("server restart flushes an authenticated inline whiteboard before reloading", async () => {
+  let healthChecks = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (url === "/health") {
+        healthChecks += 1;
+        if (healthChecks === 1) throw new Error("server is restarting");
+        return { ok: true };
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  const restart = chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+
+  const flush = inline.posted.at(-1);
+  assert.equal(flush.type, "lavish-whiteboard:flush");
+  assert.equal(chrome.reloadCount(), 0);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:flushComplete",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: flush.flushId,
+    ok: true,
+  });
+  await restart;
+
+  assert.equal(chrome.reloadCount(), 1);
+});
+
+test("server restart flushes an authenticated overlay before reloading", async () => {
+  let healthChecks = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (url === "/health") {
+        healthChecks += 1;
+        if (healthChecks === 1) throw new Error("server is restarting");
+        return { ok: true };
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const teardown = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: teardown.flushId,
+  });
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  await flushPromises();
+
+  const restart = chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+
+  const flush = chrome.postedToWhiteboard.at(-1);
+  assert.equal(flush.type, "lavish-whiteboard:flush");
+  assert.equal(chrome.reloadCount(), 0);
+
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:flushComplete",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: flush.flushId,
+    ok: true,
+  });
+  await restart;
+
+  assert.equal(chrome.reloadCount(), 1);
+});
+
+test("server restart bounds the wait for a whiteboard flush", async () => {
+  let healthChecks = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (url === "/health") {
+        healthChecks += 1;
+        if (healthChecks === 1) throw new Error("server is restarting");
+        return { ok: true };
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  const restart = chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+
+  assert.equal(inline.posted.at(-1).type, "lavish-whiteboard:flush");
+  chrome.runTimers(1500);
+  await restart;
+
+  assert.equal(chrome.reloadCount(), 1);
 });
 
 test("whiteboard close stays responsive while overlay initialization is pending", async () => {
