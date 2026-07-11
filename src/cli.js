@@ -228,7 +228,13 @@ async function pollCommand(args) {
     ]);
   }
   if (deliveryId) {
-    await postJson(`${baseUrl}/api/${sessionKey(absolute)}/ack`, { delivery_id: deliveryId });
+    await postJson(
+      `${baseUrl}/api/${sessionKey(absolute)}/ack`,
+      { delivery_id: deliveryId },
+      {
+        connectionFailureSuggestion: `Re-run \`lavish-axi poll ${absolute} --ack ${deliveryId}\` after the server is healthy; acknowledging the same delivery again is safe`,
+      },
+    );
   }
   const agentReply = flagValue(args, "--agent-reply");
   if (agentReply) {
@@ -959,7 +965,12 @@ export async function fetchJson(url, { retries = 0, retryDelayMs = 250 } = {}) {
   }
 }
 
-async function postJson(url, body) {
+/**
+ * @param {string} url
+ * @param {unknown} body
+ * @param {{ connectionFailureSuggestion?: string }} [options]
+ */
+async function postJson(url, body, { connectionFailureSuggestion } = {}) {
   let response;
   try {
     response = await fetch(url, {
@@ -968,7 +979,7 @@ async function postJson(url, body) {
       body: JSON.stringify(body),
     });
   } catch {
-    throw serverConnectionError();
+    throw serverConnectionError(connectionFailureSuggestion);
   }
   if (!response.ok) {
     let errBody;
@@ -987,10 +998,12 @@ async function postJson(url, body) {
   return response.json();
 }
 
-function serverConnectionError() {
+function serverConnectionError(
+  retrySuggestion = "Re-run the last `lavish-axi poll <html-file>` command after the server is healthy",
+) {
   return new AxiError("Lavish Editor server connection failed", "SERVER_ERROR", [
     "Run `lavish-axi server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server startup or crash diagnostics",
-    "Re-run the last `lavish-axi poll <html-file>` command after the server is healthy",
+    retrySuggestion,
   ]);
 }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -1389,6 +1389,56 @@ test("spawned poll acknowledges a processed delivery before waiting for more fee
     assert.equal(afterAck.status, "waiting");
   } finally {
     await server.close();
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
+test("lost acknowledgement responses tell the agent to retry the same idempotent ack", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-lost-ack-test-`);
+  const artifact = `${stateDir}/artifact.html`;
+  const deliveryId = "0123456789abcdef";
+  await writeFile(artifact, "<html><body>hello</body></html>", "utf8");
+  const server = createServer((req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION }));
+      return;
+    }
+    req.socket.destroy();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)),
+        "poll",
+        artifact,
+        "--ack",
+        deliveryId,
+        "--timeout-ms",
+        "1",
+      ],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_PORT: String(address.port) },
+      },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk.toString()));
+    child.stderr.on("data", (chunk) => (output += chunk.toString()));
+    const exitCode = await new Promise((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.notEqual(exitCode, 0);
+    assert.ok(output.includes(`poll ${await realpath(artifact)} --ack ${deliveryId}`), output);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
     await rm(stateDir, { force: true, recursive: true });
   }
 });
