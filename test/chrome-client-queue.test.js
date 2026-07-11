@@ -1084,3 +1084,116 @@ test("whiteboard close waits for the authenticated overlay frame to flush", asyn
   assert.equal(chrome.element("whiteboardFrame").src, "about:blank");
   assert.equal(chrome.postedToFrame.at(-1).type, "lavish:resumeWhiteboard");
 });
+
+test("whiteboard fullscreen close accepts the resumed inline frame", async () => {
+  const chrome = await createChromeHarness({ fetchImpl: async (url) => whiteboardFetch(url) });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const maximizePrepare = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: maximizePrepare.flushId,
+  });
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  await flushPromises();
+
+  chrome.element("whiteboardClose").click();
+  const closePrepare = chrome.postedToWhiteboard.at(-1);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: closePrepare.flushId,
+  });
+
+  const resumed = chrome.createInlineWhiteboard();
+  chrome.sendInlineWhiteboardMessage(resumed, {
+    type: "lavish-whiteboard:ready",
+    diagramIndex: 0,
+    diagramId: "mermaid-1",
+    channelToken: "resumed-channel",
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(resumed.posted.at(-1).type, "lavish-whiteboard:init");
+  assert.equal(resumed.posted.at(-1).channelId, "resumed-channel");
+});
+
+test("artifact reload waits for inline whiteboards to flush", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: async (url) => whiteboardFetch(url),
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  const initialLoadCount = chrome.srcLoads.length;
+
+  chrome.element("reloadArtifact").click();
+  const prepare = inline.posted.at(-1);
+  assert.equal(prepare.type, "lavish-whiteboard:prepareTeardown");
+  assert.equal(chrome.srcLoads.length, initialLoadCount);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: prepare.flushId,
+  });
+  await flushPromises();
+
+  assert.equal(chrome.srcLoads.length, initialLoadCount + 1);
+  assert.equal(chrome.element("artifact").src, "/artifact/abc/index.html");
+});
+
+test("whiteboard close stays responsive while overlay initialization is pending", async () => {
+  let delayOverlaySources = false;
+  /** @type {(() => void) | undefined} */
+  let releaseOverlaySources;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (delayOverlaySources && url.includes("/mermaid-sources")) {
+        await new Promise((resolve) => {
+          releaseOverlaySources = () => resolve();
+        });
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const maximizePrepare = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: maximizePrepare.flushId,
+  });
+
+  delayOverlaySources = true;
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  chrome.element("whiteboardClose").click();
+
+  assert.equal(chrome.element("whiteboardFrame").src, "about:blank");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:resumeWhiteboard");
+  assert.equal(
+    chrome.postedToWhiteboard.some((message) => message.type === "lavish-whiteboard:prepareTeardown"),
+    false,
+  );
+
+  releaseOverlaySources?.();
+  await flushPromises();
+});

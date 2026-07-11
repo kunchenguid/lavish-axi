@@ -657,11 +657,32 @@ async function publishShare(event) {
   }
 }
 
-function resetFrame() {
+function replaceArtifactFrame() {
   startLayoutGateCycle();
   inlineWhiteboardChannels.clear();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   frame.src = artifactSrc || frame.src;
+}
+
+function resetFrame() {
+  if (artifactResetPromise) return artifactResetPromise;
+  const hasLiveInlineWhiteboard = [...inlineWhiteboardChannels].some(
+    ([index, channel]) => channel.initialized && index !== overlayIndex,
+  );
+  if (!hasLiveInlineWhiteboard) {
+    replaceArtifactFrame();
+    return Promise.resolve(true);
+  }
+  artifactResetPromise = flushInlineWhiteboards()
+    .then((flushed) => {
+      if (!flushed) return false;
+      replaceArtifactFrame();
+      return true;
+    })
+    .finally(() => {
+      artifactResetPromise = null;
+    });
+  return artifactResetPromise;
 }
 
 // ---------------------------------------------------------------------------
@@ -679,8 +700,10 @@ const whiteboards = new Map();
 let overlayIndex = null;
 let overlayFrameReady = false;
 let overlayChannelId = "";
+let overlayOpeningIndex = null;
 let nextWhiteboardFlushId = 0;
-let whiteboardTeardown = null;
+let artifactResetPromise = null;
+const whiteboardTeardowns = new Map();
 const whiteboardSaveChains = new Map();
 const inlineWhiteboardChannels = new Map();
 
@@ -699,12 +722,9 @@ function postToInlineWhiteboard(index, message) {
   if (channel?.window) channel.window.postMessage({ ...message, channelId: channel.channelId }, "*");
 }
 
-function replyToWhiteboard(index, message) {
-  if (overlayIndex === index) {
-    postToWhiteboardOverlay(message);
-  } else {
-    postToInlineWhiteboard(index, message);
-  }
+function postToWhiteboard(index, placement, message) {
+  if (placement === "overlay") postToWhiteboardOverlay(message);
+  else postToInlineWhiteboard(index, message);
 }
 
 async function fetchMermaidSources() {
@@ -738,7 +758,7 @@ function whiteboardRecord(index) {
   return record;
 }
 
-async function handleWhiteboardReady(index, mode) {
+async function handleWhiteboardReady(index, mode, isCurrent) {
   try {
     const sources = await fetchMermaidSources();
     const source = sources.find((item) => item.index === index);
@@ -748,7 +768,8 @@ async function handleWhiteboardReady(index, mode) {
     const record = whiteboardRecord(index);
     record.source = String(source.source || "");
     record.sourceHash = String(source.hash || "");
-    replyToWhiteboard(index, {
+    if (!isCurrent()) return false;
+    postToWhiteboard(index, mode, {
       type: "lavish-whiteboard:init",
       mode,
       diagramIndex: index,
@@ -758,10 +779,12 @@ async function handleWhiteboardReady(index, mode) {
       saved,
       theme: whiteboardTheme(),
     });
+    return true;
   } catch (error) {
     if (mode === "overlay") {
       showWhiteboardError("Could not open the whiteboard: " + (error instanceof Error ? error.message : String(error)));
     }
+    return false;
   }
 }
 
@@ -770,6 +793,7 @@ function showWhiteboardOverlay(index) {
   overlayIndex = index;
   overlayFrameReady = false;
   overlayChannelId = "";
+  inlineWhiteboardChannels.delete(index);
   whiteboardError.hidden = true;
   whiteboardOverlay.hidden = false;
   postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
@@ -785,35 +809,69 @@ function finishWhiteboardClose(index) {
   overlayIndex = null;
   overlayFrameReady = false;
   overlayChannelId = "";
+  inlineWhiteboardChannels.delete(index);
   if (!ended) postToFrame({ type: "lavish:resumeWhiteboard", diagramIndex: index });
 }
 
-function beginWhiteboardTeardown(index, placement, onReady) {
-  if (whiteboardTeardown) return;
+function whiteboardTeardownKey(index, placement) {
+  return placement + ":" + index;
+}
+
+function beginWhiteboardTeardown(index, placement, onComplete) {
+  const key = whiteboardTeardownKey(index, placement);
+  const pending = whiteboardTeardowns.get(key);
+  if (pending) {
+    if (onComplete) pending.promise.then(onComplete);
+    return pending.promise;
+  }
   const flushId = `whiteboard-${++nextWhiteboardFlushId}`;
-  whiteboardTeardown = { index, placement, flushId, onReady };
+  let resolve;
+  const promise = new Promise((complete) => {
+    resolve = complete;
+  });
+  const teardown = { index, placement, flushId, promise, resolve, onComplete };
+  whiteboardTeardowns.set(key, teardown);
   const message = { type: "lavish-whiteboard:prepareTeardown", flushId };
-  replyToWhiteboard(index, message);
+  postToWhiteboard(index, placement, message);
+  return promise;
 }
 
 function finishWhiteboardTeardown(index, message, placement) {
   const flushId = String(message.flushId || "");
-  const teardown = whiteboardTeardown;
+  const key = whiteboardTeardownKey(index, placement);
+  const teardown = whiteboardTeardowns.get(key);
   if (!teardown || teardown.index !== index || teardown.placement !== placement || teardown.flushId !== flushId) return;
-  whiteboardTeardown = null;
-  teardown.onReady();
+  whiteboardTeardowns.delete(key);
+  teardown.onComplete?.(true);
+  teardown.resolve(true);
 }
 
 function failWhiteboardTeardown(index, message, placement) {
   const flushId = String(message.flushId || "");
-  const teardown = whiteboardTeardown;
+  const key = whiteboardTeardownKey(index, placement);
+  const teardown = whiteboardTeardowns.get(key);
   if (!teardown || teardown.index !== index || teardown.placement !== placement || teardown.flushId !== flushId) return;
-  whiteboardTeardown = null;
+  whiteboardTeardowns.delete(key);
+  teardown.onComplete?.(false);
+  teardown.resolve(false);
+}
+
+async function flushInlineWhiteboards() {
+  for (const [index, channel] of [...inlineWhiteboardChannels]) {
+    if (!channel.initialized || index === overlayIndex) continue;
+    if (!(await beginWhiteboardTeardown(index, "inline"))) return false;
+  }
+  return true;
 }
 
 function openWhiteboardOverlay(index) {
-  if (ended) return;
-  beginWhiteboardTeardown(index, "inline", () => showWhiteboardOverlay(index));
+  if (ended || overlayIndex !== null || overlayOpeningIndex !== null) return;
+  overlayOpeningIndex = index;
+  beginWhiteboardTeardown(index, "inline", (flushed) => {
+    if (overlayOpeningIndex !== index) return;
+    overlayOpeningIndex = null;
+    if (flushed && !ended && overlayIndex === null) showWhiteboardOverlay(index);
+  });
 }
 
 function closeWhiteboard() {
@@ -823,7 +881,9 @@ function closeWhiteboard() {
     finishWhiteboardClose(index);
     return;
   }
-  beginWhiteboardTeardown(index, "overlay", () => finishWhiteboardClose(index));
+  beginWhiteboardTeardown(index, "overlay", (flushed) => {
+    if (flushed && overlayIndex === index) finishWhiteboardClose(index);
+  });
 }
 
 async function persistWhiteboardScene(index, message) {
@@ -850,15 +910,15 @@ function saveWhiteboardScene(index, message) {
   return result;
 }
 
-function handleWhiteboardSave(index, message) {
+function handleWhiteboardSave(index, message, mode) {
   const flushId = String(message.flushId || "");
   saveWhiteboardScene(index, message).then(
     () => {
-      if (flushId) replyToWhiteboard(index, { type: "lavish-whiteboard:saveResult", flushId, ok: true });
+      if (flushId) postToWhiteboard(index, mode, { type: "lavish-whiteboard:saveResult", flushId, ok: true });
     },
     (error) => {
       if (flushId) {
-        replyToWhiteboard(index, {
+        postToWhiteboard(index, mode, {
           type: "lavish-whiteboard:saveResult",
           flushId,
           ok: false,
@@ -922,10 +982,10 @@ async function queueWhiteboardFeedback(index, message, mode) {
       // earlier unsent prompt instead of stacking duplicates.
       [internalQueueKeyField]: "whiteboard:" + index,
     });
-    replyToWhiteboard(index, { type: "lavish-whiteboard:queueResult", ok: true });
+    postToWhiteboard(index, mode, { type: "lavish-whiteboard:queueResult", ok: true });
     if (mode === "overlay") closeWhiteboard();
   } catch (error) {
-    replyToWhiteboard(index, {
+    postToWhiteboard(index, mode, {
       type: "lavish-whiteboard:queueResult",
       ok: false,
       error: error instanceof Error ? error.message : String(error),
@@ -965,7 +1025,7 @@ function validWhiteboardIndex(value) {
 }
 
 function handleAuthenticatedWhiteboardMessage(index, message, mode) {
-  if (message.type === "lavish-whiteboard:save") handleWhiteboardSave(index, message);
+  if (message.type === "lavish-whiteboard:save") handleWhiteboardSave(index, message, mode);
   if (message.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(index, message, mode);
   if (message.type === "lavish-whiteboard:maximize" && mode === "inline") openWhiteboardOverlay(index);
   if (message.type === "lavish-whiteboard:close" && mode === "overlay") closeWhiteboard();
@@ -983,9 +1043,14 @@ function handleInlineWhiteboardMessage(event, message) {
     if (!channelId) return;
     authenticateWhiteboardChannel(channelId).then((authenticated) => {
       if (!authenticated || ended || inlineWhiteboardChannels.has(index)) return;
-      inlineWhiteboardChannels.set(index, { window: event.source, channelId });
+      const channel = { window: event.source, channelId, initialized: false };
+      inlineWhiteboardChannels.set(index, channel);
       whiteboardRecord(index).diagramId = String(message.diagramId || "");
-      handleWhiteboardReady(index, "inline");
+      handleWhiteboardReady(index, "inline", () => inlineWhiteboardChannels.get(index) === channel).then(
+        (initialized) => {
+          if (inlineWhiteboardChannels.get(index) === channel) channel.initialized = initialized;
+        },
+      );
     });
     return;
   }
@@ -999,14 +1064,20 @@ function handleOverlayWhiteboardMessage(event, message) {
   const index = validWhiteboardIndex(message.diagramIndex);
   if (index === null || index !== overlayIndex) return;
   if (message.type === "lavish-whiteboard:ready") {
-    if (overlayFrameReady) return;
+    if (overlayFrameReady || overlayChannelId) return;
     const channelId = String(message.channelToken || "");
     if (!channelId) return;
-    authenticateWhiteboardChannel(channelId).then((authenticated) => {
-      if (!authenticated || overlayIndex !== index || event.source !== whiteboardFrame.contentWindow) return;
-      overlayChannelId = channelId;
-      overlayFrameReady = true;
-      handleWhiteboardReady(index, "overlay");
+    overlayChannelId = channelId;
+    authenticateWhiteboardChannel(channelId).then(async (authenticated) => {
+      const isCurrent = () =>
+        overlayIndex === index && overlayChannelId === channelId && event.source === whiteboardFrame.contentWindow;
+      if (!authenticated) {
+        if (isCurrent()) overlayChannelId = "";
+        return;
+      }
+      if (!isCurrent()) return;
+      const initialized = await handleWhiteboardReady(index, "overlay", isCurrent);
+      if (initialized && isCurrent()) overlayFrameReady = true;
     });
     return;
   }
@@ -1029,7 +1100,9 @@ function loadFrame() {
 
 function reloadArtifact() {
   closeMenus();
-  resetFrame();
+  resetFrame().then((reloaded) => {
+    if (reloaded) refreshWhiteboardSource();
+  });
 }
 
 async function reloadAfterServerRestart() {
@@ -1150,14 +1223,19 @@ frame.addEventListener("load", () => {
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
+  if (overlayIndex !== null) {
+    inlineWhiteboardChannels.delete(overlayIndex);
+    postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: overlayIndex });
+  }
 });
 
 initializeLayoutGate();
 
 const events = new EventSource("/events/" + key);
 events.addEventListener("reload", () => {
-  resetFrame();
-  refreshWhiteboardSource();
+  resetFrame().then((reloaded) => {
+    if (reloaded) refreshWhiteboardSource();
+  });
 });
 events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
