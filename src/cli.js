@@ -988,6 +988,11 @@ async function postJson(url, body, { connectionFailureSuggestion } = {}) {
     } catch {
       // ignore parse failure
     }
+    if (errBody?.code === "SESSION_NOT_FOUND") {
+      throw new AxiError("No active Lavish Editor session found for this file", "VALIDATION_ERROR", [
+        "Re-run `lavish-axi poll <html-file>` without --ack to check session state",
+      ]);
+    }
     if (errBody?.code === "STALE_DELIVERY_ID") {
       throw new AxiError("--ack delivery_id does not match the pending delivery", "VALIDATION_ERROR", [
         "Re-run `lavish-axi poll <html-file>` without --ack to receive the current delivery_id",

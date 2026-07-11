@@ -178,7 +178,7 @@ export class SessionStore {
   async acknowledgeFeedback(key, deliveryId) {
     const state = await this.readState();
     const session = state.sessions[key];
-    if (!session) return "mismatch";
+    if (!session) return "not_found";
     if (!session.feedback_delivery || session.feedback_delivery.delivery_id !== deliveryId) {
       return acknowledgedDeliveryIds(session).includes(deliveryId) ? "already_acknowledged" : "mismatch";
     }
@@ -283,7 +283,11 @@ function layoutWarningKey(warning) {
 }
 
 function layoutWarningsSignature(layoutWarnings) {
-  return JSON.stringify(layoutWarnings.map((warning) => JSON.stringify(warning)).sort());
+  return JSON.stringify(
+    layoutWarnings
+      .map((w) => JSON.stringify(Object.fromEntries(Object.keys(w).sort().map((k) => [k, w[k]]))))
+      .sort(),
+  );
 }
 
 function acknowledgedDeliveryIds(session) {

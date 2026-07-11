@@ -290,6 +290,10 @@ export async function serve({
         return;
       }
       const ackResult = await store.acknowledgeFeedback(req.params.key, deliveryId);
+      if (ackResult === "not_found") {
+        res.status(404).json({ code: "SESSION_NOT_FOUND", error: "No session found for this file" });
+        return;
+      }
       if (ackResult === "mismatch") {
         res.status(409).json({ code: "STALE_DELIVERY_ID", error: "delivery_id does not match pending feedback" });
         return;
