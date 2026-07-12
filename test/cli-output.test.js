@@ -10,6 +10,9 @@ import test from "node:test";
 
 import { AxiError } from "axi-sdk-js";
 
+process.env.LAVISH_AXI_HOST = "127.0.0.1";
+process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
+
 import {
   collapseHomeDirectory,
   computeCopilotCliHookUpdate,
@@ -24,6 +27,7 @@ import {
   createServerSpawnOptions,
   createShareOutput,
   createUserEndedOpenOutput,
+  detectInvokingAgent,
   fetchJson,
   getCommandHelp,
   normalizeArgv,
@@ -43,6 +47,7 @@ import {
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
+import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
 import { serve } from "../src/server.js";
 
 function setupHooksEnv(homeDir, stateDir) {
@@ -91,27 +96,33 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
   assert.ok(output.help.some((item) => item.includes("reference other filesystem assets")));
   assert.ok(output.help.some((item) => item.includes("same directory as the HTML file")));
-  assert.ok(output.help.some((item) => item.includes("does not auto-inject")));
-  assert.ok(output.help.some((item) => item.includes("portable")));
-  assert.ok(output.help.some((item) => item.includes("Tailwind CSS browser runtime v4")));
-  assert.ok(output.help.some((item) => item.includes("lavish-axi design")));
-  assert.ok(output.help.some((item) => /prefer.*CDN snippet.*hand-writing styles/i.test(item)));
-  assert.ok(output.help.some((item) => /unless.*explicitly instructed/i.test(item)));
-  assert.ok(output.help.some((item) => /priority order/i.test(item)));
-  assert.ok(output.help.some((item) => /subject or product/i.test(item)));
-  assert.ok(output.help.some((item) => /current working directory/i.test(item)));
-  assert.ok(output.help.some((item) => /before writing any html/i.test(item)));
-  assert.ok(output.help.some((item) => /inspect the project the artifact is about/i.test(item)));
-  assert.ok(output.help.some((item) => /previews, proposes, or mocks/i.test(item)));
-  assert.ok(output.help.some((item) => /app's own design system/i.test(item)));
-  assert.ok(output.help.some((item) => /css variables|design tokens/i.test(item)));
-  assert.ok(output.help.some((item) => /component library/i.test(item)));
-  assert.ok(output.help.some((item) => /only when both steps come up empty/i.test(item)));
-  assert.ok(output.help.some((item) => /state which of the three design sources/i.test(item)));
-  assert.ok(!output.help.some((item) => /inspect the current project/i.test(item)));
+  assert.ok(output.help.includes(DESIGN_SYSTEM_HINT), "home help carries the single-sourced design rule verbatim");
   assert.ok(!output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
   assert.ok(!output.help.some((item) => item.includes("Known IDs")));
   assert.ok(output.help.some((item) => item.includes("technical plan")));
+});
+
+test("the design-priority rule is single-sourced and keeps its three-step semantics", () => {
+  // Keyword-level checks on the one owner constant; every surface that needs the rule
+  // embeds DESIGN_PRIORITY_RULE, so wording changes happen here and nowhere else.
+  assert.match(DESIGN_PRIORITY_RULE, /strict priority order/);
+  assert.match(DESIGN_PRIORITY_RULE, /\(1\)[\s\S]*\(2\)[\s\S]*\(3\)/);
+  assert.match(DESIGN_PRIORITY_RULE, /user asked for a specific look or named design system/);
+  assert.match(DESIGN_PRIORITY_RULE, /project the artifact is about/);
+  assert.match(DESIGN_PRIORITY_RULE, /current working directory/);
+  assert.match(DESIGN_PRIORITY_RULE, /previews, proposes, or mocks/);
+  assert.match(DESIGN_PRIORITY_RULE, /app's own design system/);
+  assert.match(DESIGN_PRIORITY_RULE, /Tailwind CSS browser runtime v4 \+ DaisyUI v5/);
+  assert.match(DESIGN_PRIORITY_RULE, /only when both steps come up empty/);
+  assert.match(DESIGN_PRIORITY_RULE, /hand-writing styles/);
+  assert.match(DESIGN_PRIORITY_RULE, /unless explicitly instructed/);
+  assert.doesNotMatch(DESIGN_PRIORITY_RULE, /inspect the current project/i);
+
+  assert.ok(DESIGN_SYSTEM_HINT.includes(DESIGN_PRIORITY_RULE), "the home/skill hint embeds the rule");
+  assert.match(DESIGN_SYSTEM_HINT, /does not auto-inject/);
+  assert.match(DESIGN_SYSTEM_HINT, /portable/);
+  assert.match(DESIGN_SYSTEM_HINT, /lavish-axi design/);
+  assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
 });
 
 test("home output warns agents that poll is a long poll they must not kill", () => {
@@ -122,10 +133,42 @@ test("home output warns agents that poll is a long poll they must not kill", () 
   assert.match(pollHelp, /long-poll/);
   assert.match(pollHelp, /stays silent/);
   assert.match(pollHelp, /never kill it/);
-  assert.match(pollHelp, /background task/);
+  assert.match(pollHelp, /agent harness/);
+  assert.match(pollHelp, /foreground command may run/);
+  assert.match(pollHelp, /run the poll as a background task/);
+  assert.doesNotMatch(pollHelp, /Codex/);
+  assert.doesNotMatch(pollHelp, /do not hide the poll in a background task/);
   assert.match(pollHelp, /re-run/);
   assert.match(pollHelp, /queued feedback is never lost/);
   assert.doesNotMatch(pollHelp, /above 10 minutes/);
+});
+
+test("home output tailors poll guidance when invoked under Codex", () => {
+  const output = createHomeOutput({ bin: "lavish-axi", sessions: [], agent: "codex" });
+  const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
+
+  assert.match(pollHelp, /Codex detected/);
+  assert.match(pollHelp, /do not hide the poll in a background task/);
+  assert.match(pollHelp, /keep the poll attached to the active turn/);
+  assert.doesNotMatch(pollHelp, /agent harness limits/);
+});
+
+test("home output keeps static skill poll guidance agent-neutral", () => {
+  const output = createHomeOutput({ bin: "lavish-axi", sessions: [], agent: "static" });
+  const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
+
+  assert.doesNotMatch(pollHelp, /keep the poll attached to the active turn/i);
+  assert.doesNotMatch(pollHelp, /run the poll as a background task/);
+  assert.doesNotMatch(pollHelp, /Codex detected/);
+  assert.match(pollHelp, /queued feedback is never lost/);
+});
+
+test("invoking agent detection recognizes Codex runtime markers only", () => {
+  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_SANDBOX: "seatbelt" }), "codex");
+  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_THREAD_ID: "thread" }), "codex");
+  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_HOME: "/tmp/codex" }), "generic");
+  assert.equal(detectInvokingAgent({ PATH: "/bin", CODEX_EXPERIMENTAL_FEATURE: "1" }), "generic");
+  assert.equal(detectInvokingAgent({ PATH: "/bin" }), "generic");
 });
 
 test("top-level help renders static home output without dynamic sessions", async () => {
@@ -148,16 +191,7 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /same directory as the HTML file/);
     assert.match(result.stdout, /Tailwind CSS browser runtime v4/);
     assert.match(result.stdout, /lavish-axi design/);
-    assert.match(result.stdout, /does not auto-inject/);
-    assert.match(result.stdout, /prefer.*CDN snippet.*hand-writing styles/i);
-    assert.match(result.stdout, /unless.*explicitly instructed/i);
-    assert.match(result.stdout, /priority order/i);
-    assert.match(result.stdout, /subject or product/i);
-    assert.match(result.stdout, /current working directory/i);
-    assert.match(result.stdout, /inspect the project the artifact is about/i);
-    assert.match(result.stdout, /previews, proposes, or mocks/i);
-    assert.match(result.stdout, /app's own design system/i);
-    assert.doesNotMatch(result.stdout, /inspect the current project/i);
+    assert.match(result.stdout, /strict priority order/);
     assert.match(result.stdout, /never kill it/);
     assert.match(result.stdout, /queued feedback is never lost/);
     assert.doesNotMatch(result.stdout, /above 10 minutes/);
@@ -178,20 +212,10 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
     output.playbook_router.playbooks.find((playbook) => playbook.id === "diagram")?.use_when,
     "Map relationships, flows, state, and architecture",
   );
+  assert.ok(output.design.summary.includes(DESIGN_PRIORITY_RULE), "design summary embeds the single-sourced rule");
   assert.match(output.design.summary, /does not auto-inject/);
-  assert.match(output.design.summary, /Tailwind CSS browser runtime v4/);
-  assert.match(output.design.summary, /DaisyUI v5/);
-  assert.match(output.design.summary, /prefer.*CDN snippet.*hand-writing styles/i);
-  assert.match(output.design.summary, /unless.*explicitly instructed/i);
-  assert.match(output.design.summary, /priority order/i);
-  assert.match(output.design.summary, /subject or product/i);
-  assert.match(output.design.summary, /current working directory/i);
-  assert.match(output.design.summary, /previews, proposes, or mocks/i);
-  assert.match(output.design.summary, /app's own design system/i);
-  assert.doesNotMatch(output.design.summary, /inspect the current project/i);
   assert.match(output.design.summary, /^Use this .*fallback only if/i);
   assert.match(output.design.summary, /no design direction/i);
-  assert.match(output.design.summary, /inspect/i);
   assert.match(output.design.summary, /check first/i);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
   assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
@@ -218,7 +242,6 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.match(output.diagram_tooling.use_when, /hand-built div\/flexbox boxes/);
   assert.match(output.diagram_tooling.mermaid_cdn_snippet, /cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+/);
   assert.match(output.diagram_tooling.mermaid_cdn_snippet, /mermaid\.initialize/);
-  assert.match(output.diagram_tooling.mermaid_cdn_snippet, /startOnLoad: true/);
   assert.match(
     output.diagram_tooling.cdn_urls.mermaid,
     /^https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+\/dist\/mermaid\.esm\.min\.mjs$/,
@@ -278,6 +301,232 @@ test("diagram playbook names the hand-built flow anti-pattern", () => {
   assert.ok(output.playbook.pitfalls.some((item) => /hand-build boxes-and-arrows/i.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => /div\/flexbox/i.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => /does not auto-route edges/i.test(item)));
+});
+
+test("diagram playbook tells agents to keep Mermaid theming in sync with the page theme", () => {
+  const output = createPlaybookOutput(["diagram"]);
+
+  assert.ok(
+    output.playbook.design_rules.some(
+      (item) => /mermaid/i.test(item) && /theme/i.test(item) && /re-render/i.test(item),
+    ),
+    "diagram playbook must tell agents to theme Mermaid to the page and re-render on theme change",
+  );
+});
+
+test("design output emits a theme-aware Mermaid init that re-renders on page-theme change", () => {
+  const snippet = createDesignOutput().diagram_tooling.mermaid_cdn_snippet;
+
+  // The old bug: a single hardcoded Mermaid theme that ignores the page theme.
+  assert.doesNotMatch(snippet, /theme:\s*["']base["']/);
+
+  // It must choose the Mermaid theme from the page's effective light/dark
+  // appearance, covering both a data-theme toggle and the OS preference.
+  assert.match(snippet, /prefers-color-scheme:\s*dark/);
+  assert.match(snippet, /["']dark["']/);
+  assert.match(snippet, /["']default["']/);
+  assert.match(snippet, /backgroundColor/);
+
+  // Mermaid does not restyle an already-rendered SVG, so the snippet must
+  // re-render: it drives rendering itself and reacts to theme changes.
+  assert.match(snippet, /startOnLoad:\s*false/);
+  assert.match(snippet, /mermaid\.run/);
+  assert.match(snippet, /MutationObserver/);
+  assert.match(snippet, /data-theme/);
+  assert.match(snippet, /document\.addEventListener\(["']change["'],\s*queueRender,\s*true\)/);
+  assert.match(snippet, /document\.addEventListener\(\s*["']transitionend["']/);
+  assert.match(snippet, /background-color/);
+  assert.match(snippet, /function compositeRgba/);
+  assert.match(snippet, /colorScheme/);
+  assert.match(snippet, /addEventListener\(["']change["']/);
+});
+
+test("theme-aware Mermaid snippet serializes rapid theme-change renders", async () => {
+  const snippet = createDesignOutput()
+    .diagram_tooling.mermaid_cdn_snippet.replace(/^<script type="module">\n/, "")
+    .replace(/\n<\/script>$/, "")
+    .replace(/^\s*import mermaid from "[^"]+";\n/m, "");
+  let dark = false;
+  let observedThemeMutations = false;
+  const observedThemeTargets = [];
+  const documentListeners = new Map();
+  const initializedThemes = [];
+  const mediaListeners = [];
+  const pendingRenders = [];
+  const loggedRenderErrors = [];
+  let nextRenderError;
+  let activeRenders = 0;
+  let maxActiveRenders = 0;
+  let bodyColor = "white";
+  let rootColor = "white";
+  let rootColorScheme = "normal";
+  const paint = {
+    color: "",
+    clearRect() {},
+    set fillStyle(color) {
+      this.color = color;
+    },
+    fillRect() {},
+    getImageData() {
+      const colors = {
+        black: [0, 0, 0, 255],
+        transparent: [0, 0, 0, 0],
+        white: [255, 255, 255, 255],
+        "white-40": [255, 255, 255, 102],
+      };
+      return { data: colors[this.color] };
+    },
+  };
+  const diagram = {
+    textContent: "flowchart TD\\n  A --> B",
+    removeAttribute() {},
+  };
+  const document = {
+    body: { id: "body" },
+    documentElement: { id: "root" },
+    readyState: "complete",
+    createElement() {
+      return { getContext: () => paint };
+    },
+    querySelectorAll() {
+      return [diagram];
+    },
+    addEventListener(type, callback, capture) {
+      documentListeners.set(type, { callback, capture });
+    },
+  };
+  const darkQuery = {
+    get matches() {
+      return dark;
+    },
+    addEventListener(type, callback) {
+      assert.equal(type, "change");
+      mediaListeners.push(callback);
+    },
+  };
+  const window = {
+    matchMedia() {
+      return darkQuery;
+    },
+    addEventListener() {
+      assert.fail("the snippet should render immediately after document load");
+    },
+  };
+  class TestMutationObserver {
+    constructor() {
+      observedThemeMutations = true;
+    }
+
+    observe(target) {
+      observedThemeTargets.push(target);
+    }
+  }
+  const mermaid = {
+    initialize({ theme }) {
+      initializedThemes.push(theme);
+    },
+    run() {
+      activeRenders += 1;
+      maxActiveRenders = Math.max(maxActiveRenders, activeRenders);
+      if (nextRenderError) {
+        const error = nextRenderError;
+        nextRenderError = undefined;
+        activeRenders -= 1;
+        return Promise.reject(error);
+      }
+      return new Promise((resolve) => {
+        pendingRenders.push(() => {
+          activeRenders -= 1;
+          resolve();
+        });
+      });
+    },
+  };
+  function finishNextRender() {
+    const finish = pendingRenders.shift();
+    if (!finish) throw new Error("expected a pending Mermaid render");
+    finish();
+  }
+
+  new Function("mermaid", "window", "document", "MutationObserver", "getComputedStyle", "console", snippet)(
+    mermaid,
+    window,
+    document,
+    TestMutationObserver,
+    (element) => ({
+      backgroundColor: element === document.body ? bodyColor : rootColor,
+      colorScheme: element === document.documentElement ? rootColorScheme : "normal",
+    }),
+    { error: (...args) => loggedRenderErrors.push(args) },
+  );
+
+  assert.equal(mediaListeners.length, 1);
+  assert.equal(observedThemeMutations, true);
+  assert.deepEqual(observedThemeTargets, [document.documentElement, document.body]);
+  const changeListener = documentListeners.get("change");
+  assert.equal(typeof changeListener?.callback, "function");
+  assert.equal(changeListener?.capture, true);
+  const transitionListener = documentListeners.get("transitionend");
+  assert.equal(typeof transitionListener?.callback, "function");
+  assert.equal(transitionListener?.capture, true);
+  assert.deepEqual(initializedThemes, ["default"]);
+  bodyColor = "white-40";
+  rootColor = "black";
+  transitionListener.callback({ propertyName: "color" });
+  assert.deepEqual(initializedThemes, ["default"]);
+  transitionListener.callback({ propertyName: "background-color" });
+  assert.equal(maxActiveRenders, 1);
+  assert.deepEqual(initializedThemes, ["default"]);
+
+  finishNextRender();
+  await Promise.resolve();
+  assert.deepEqual(initializedThemes, ["default", "dark"]);
+  assert.equal(maxActiveRenders, 1);
+
+  finishNextRender();
+  await Promise.resolve();
+  assert.equal(activeRenders, 0);
+  assert.equal(initializedThemes.filter((entry) => entry === "dark").length, 1);
+
+  bodyColor = "transparent";
+  rootColor = "transparent";
+  rootColorScheme = "light";
+  changeListener.callback();
+  assert.deepEqual(initializedThemes, ["default", "dark", "default"]);
+  finishNextRender();
+  await Promise.resolve();
+
+  rootColorScheme = "dark";
+  transitionListener.callback({ propertyName: "background-color" });
+  assert.deepEqual(initializedThemes, ["default", "dark", "default", "dark"]);
+  finishNextRender();
+  await Promise.resolve();
+
+  const renderError = new Error("invalid Mermaid syntax");
+  nextRenderError = renderError;
+  rootColorScheme = "light";
+  transitionListener.callback({ propertyName: "background-color" });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(loggedRenderErrors, [["Mermaid diagram render failed:", renderError]]);
+
+  changeListener.callback();
+  assert.equal(activeRenders, 1);
+  finishNextRender();
+  await Promise.resolve();
+});
+
+test("Mermaid after evidence embeds the shipped theme-aware snippet", async () => {
+  const evidence = await readFile(new URL("../task-evidence/mermaid-theme/after.html", import.meta.url), "utf8");
+  const start = evidence.indexOf('    <script type="module">');
+  const closingScript = evidence.indexOf("    </script>", start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(closingScript, -1);
+  assert.equal(
+    evidence.slice(start, closingScript + "    </script>".length).replace(/^ {4}/gm, ""),
+    createDesignOutput().diagram_tooling.mermaid_cdn_snippet,
+  );
 });
 
 test("playbook detail output returns focused Lavish-native guidance", () => {
@@ -356,22 +605,38 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.equal(output.session.file, "/tmp/artifact.html");
   assert.equal(output.session.url, "http://localhost:4387/session/abc123");
   assert.equal(output.session.status, "opened");
-  assert.equal(typeof output.next_step, "string");
+  // Keyword-level lock on the load-bearing semantics of this agent-facing string:
+  // poll now (not the user-facing URL), never kill the poll, no --timeout-ms, and the
+  // reopen etiquette. Sentence-level phrasing is free to change without touching this test.
   assert.doesNotMatch(output.next_step, /Tell the user/i);
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
-  assert.match(output.next_step, /long-polls until/);
   assert.match(output.next_step, /layout_warnings/);
-  assert.match(output.next_step, /in-iframe layout audit/);
-  assert.match(output.next_step, /stays silent/);
   assert.match(output.next_step, /never kill it/);
-  assert.match(output.next_step, /background task/);
+  assert.match(output.next_step, /agent harness/);
+  assert.match(output.next_step, /foreground command may run/);
+  assert.match(output.next_step, /run the poll as a background task/);
+  assert.doesNotMatch(output.next_step, /Codex/);
+  assert.doesNotMatch(output.next_step, /do not hide the poll in a background task/);
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not pass --timeout-ms/);
-  assert.doesNotMatch(output.next_step, /above 10 minutes/);
   assert.match(output.next_step, /If the user ends the session, stop polling and do not reopen it/);
   assert.match(output.next_step, /--reopen/);
+});
+
+test("open output steers Codex away from background polling", () => {
+  const output = createOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://localhost:4387/session/abc123",
+    status: "opened",
+    agent: "codex",
+  });
+
+  assert.match(output.next_step, /Codex detected/);
+  assert.match(output.next_step, /do not hide the poll in a background task/);
+  assert.match(output.next_step, /keep the poll attached to the active turn/);
+  assert.doesNotMatch(output.next_step, /agent harness limits/);
 });
 
 test("a user-ended open refuses with a status agents can branch on, not a URL to open", () => {
@@ -696,11 +961,24 @@ test("poll help warns agents to leave the long poll running", () => {
   assert.match(help, /long-polls indefinitely/);
   assert.match(help, /stays silent/);
   assert.match(help, /never kill it/);
-  assert.match(help, /background task/);
+  assert.match(help, /agent harness/);
+  assert.match(help, /foreground command may run/);
+  assert.match(help, /run the poll as a background task/);
+  assert.doesNotMatch(help, /Codex/);
+  assert.doesNotMatch(help, /do not hide the poll in a background task/);
   assert.match(help, /queued feedback is never lost/);
   assert.match(help, /Do not pass --timeout-ms/);
   assert.match(help, /tests and debugging only/);
   assert.doesNotMatch(help, /above 10 minutes/);
+});
+
+test("poll help is Codex-aware when requested", () => {
+  const help = getCommandHelp("poll", { agent: "codex" });
+
+  assert.match(help, /Codex detected/);
+  assert.match(help, /do not hide the poll in a background task/);
+  assert.match(help, /keep the poll attached to the active turn/);
+  assert.doesNotMatch(help, /agent harness limits/);
 });
 
 test("share help distinguishes public default from password-protected shares", () => {
@@ -729,11 +1007,28 @@ test("feedback next step tells agents to keep polling without timeout flag", () 
   assert.equal("layout_warnings" in output, false);
   assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /without --timeout-ms/);
-  assert.match(output.next_step, /background task/);
+  assert.match(output.next_step, /agent harness/);
+  assert.match(output.next_step, /foreground command may run/);
+  assert.match(output.next_step, /run the poll as a background task/);
+  assert.doesNotMatch(output.next_step, /Codex/);
+  assert.doesNotMatch(output.next_step, /do not hide the poll in a background task/);
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /fresh layout_warnings/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
+});
+
+test("feedback next step is Codex-aware when requested", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: { status: "feedback", dom_snapshot: "", prompts: [] },
+    agent: "codex",
+  });
+
+  assert.match(output.next_step, /Codex detected/);
+  assert.match(output.next_step, /do not hide the poll in a background task/);
+  assert.match(output.next_step, /keep the poll attached to the active turn/);
+  assert.doesNotMatch(output.next_step, /agent harness limits/);
 });
 
 test("layout warning feedback tells agents to fix layout before involving the human", () => {
@@ -761,6 +1056,55 @@ test("layout warning feedback tells agents to fix layout before involving the hu
   assert.match(output.next_step, /fix horizontal overflow/);
   assert.match(output.next_step, /before involving the human/);
   assert.doesNotMatch(output.next_step, /reload or re-open/);
+});
+
+test("whiteboard feedback tells agents to read the summary, inspect files when needed, and update the Mermaid source", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [
+        {
+          uid: "",
+          prompt: "Whiteboard edits to diagram 1:\nMoved rectangle (Auth)",
+          selector: "",
+          tag: "whiteboard",
+          text: "Whiteboard: diagram 1",
+          target: {
+            type: "excalidraw-scene",
+            diagramIndex: 0,
+            diagramId: "mermaid-1",
+            sourceHash: "abc",
+            scenePath: "/state/whiteboards/k/0.excalidraw",
+            previewPath: "/state/whiteboards/k/0.png",
+            imageFallback: false,
+            stats: { added: 0, removed: 0, moved: 1, relabeled: 0, drawn: 0 },
+          },
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /whiteboard edits \(tag "whiteboard"\)/);
+  assert.match(output.next_step, /read the edit summary in the prompt text first/);
+  assert.match(output.next_step, /scenePath/);
+  assert.match(output.next_step, /previewPath/);
+  assert.match(output.next_step, /Mermaid source stays authoritative/);
+  assert.match(output.next_step, /never try to write the \.excalidraw scene back/);
+});
+
+test("non-whiteboard feedback does not mention whiteboard guidance", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [{ uid: "", prompt: "Tighten this", selector: "h1", tag: "h1", text: "Title" }],
+    },
+  });
+
+  assert.doesNotMatch(output.next_step, /whiteboard/i);
 });
 
 test("a poll reporting the session ended by the user tells the agent to stop and not reopen", () => {
@@ -1338,16 +1682,9 @@ test("open can resume a session without opening another browser window", () => {
   assert.match(getCommandHelp("design"), /DaisyUI/);
   assert.match(getCommandHelp("design"), /lavish-axi design/);
   assert.match(getCommandHelp("design"), /portable/);
-  assert.match(getCommandHelp("design"), /prefer.*CDN snippet.*hand-writing styles/i);
-  assert.match(getCommandHelp("design"), /unless.*explicitly instructed/i);
-  assert.match(getCommandHelp("design"), /priority order/i);
-  assert.match(getCommandHelp("design"), /project the artifact is about/i);
-  assert.match(getCommandHelp("design"), /current working directory/i);
-  assert.match(getCommandHelp("design"), /previews, proposes, or mocks/i);
-  assert.match(getCommandHelp("design"), /app's own design system/i);
+  assert.ok(getCommandHelp("design").includes(DESIGN_PRIORITY_RULE), "design help embeds the single-sourced rule");
   assert.match(getCommandHelp("design"), /fallback, not the default/i);
   assert.match(getCommandHelp("design"), /inspect the subject project/i);
-  assert.doesNotMatch(getCommandHelp("design"), /inspect the current project/i);
   assert.doesNotMatch(getCommandHelp("design"), /auto-injects/);
 });
 

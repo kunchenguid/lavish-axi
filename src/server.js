@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -20,6 +21,14 @@ import {
   resolveVisibleSpillCandidates,
 } from "./artifact-sdk.js";
 import * as mermaidNode from "./mermaid-node.js";
+import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
+import {
+  isValidDiagramIndex,
+  isValidWhiteboardKey,
+  loadWhiteboard,
+  saveWhiteboard,
+  writeWhiteboardFeedbackFiles,
+} from "./whiteboard-store.js";
 import {
   buildSelfContainedHtml,
   exportFileName,
@@ -52,6 +61,42 @@ const designAssetUrls = {
 };
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
+const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
+
+// The whiteboard frame bundle (Excalidraw + Mermaid converter + React) is
+// produced by `scripts/build.js` into dist/whiteboard. Packaged runs find it
+// next to the served bundle; source runs (node bin/lavish-axi.js) fall back to
+// the repo's dist output, so `pnpm run build` must have run at least once.
+export function defaultWhiteboardAssetsDir() {
+  const packaged = fileURLToPath(new URL("./whiteboard", import.meta.url));
+  if (existsSync(packaged)) return packaged;
+  return fileURLToPath(new URL("../dist/whiteboard", import.meta.url));
+}
+
+// Whiteboard scene saves carry full Excalidraw scenes (and, at queue time, a
+// PNG preview data URL), which outgrow the default 2 MB JSON cap. Only the
+// whiteboard write routes get the larger limit.
+export function isWhiteboardWriteApiPath(pathname) {
+  return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
+}
+
+export function createWhiteboardChannelToken(secret, now = Date.now()) {
+  const payload = `${now}.${crypto.randomBytes(24).toString("base64url")}`;
+  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
+  const [issuedAtText, nonce, signature, extra] = String(token || "").split(".");
+  if (extra !== undefined || !/^\d{13}$/.test(issuedAtText) || !/^[A-Za-z0-9_-]{32}$/.test(nonce)) return false;
+  const issuedAt = Number(issuedAtText);
+  if (!Number.isSafeInteger(issuedAt) || issuedAt > now || now - issuedAt > WHITEBOARD_CHANNEL_TOKEN_TTL_MS)
+    return false;
+  const expected = crypto.createHmac("sha256", secret).update(`${issuedAtText}.${nonce}`).digest("base64url");
+  const actualBuffer = Buffer.from(signature || "", "utf8");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+}
 
 // A detached server should not live forever. When no browser chrome (SSE) and no agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
@@ -95,6 +140,7 @@ export async function serve({
   layoutGateMaxHoldMs = resolveLayoutGateMaxHoldMs(),
   host = bindHost(),
   linkHost: linkHostName = linkHost(),
+  whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 }) {
   const app = express();
   const store = new SessionStore(stateFile);
@@ -103,12 +149,20 @@ export async function serve({
   const activePolls = new Map();
   const deliveredFeedback = new Set();
   const sseClients = new Set();
+  const whiteboardChannelSecret = crypto.randomBytes(32);
   const verbose = debug || process.env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   let publicPort = port;
 
-  app.use(express.json({ limit: "2mb" }));
+  // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
+  const whiteboardStateRoot = path.dirname(stateFile);
+
+  const defaultJsonParser = express.json({ limit: "2mb" });
+  const whiteboardJsonParser = express.json({ limit: "20mb" });
+  app.use((req, res, next) =>
+    isWhiteboardWriteApiPath(req.path) ? whiteboardJsonParser(req, res, next) : defaultJsonParser(req, res, next),
+  );
 
   app.get("/health", (req, res) => {
     res.json({ ok: true, app: "lavish-axi", version });
@@ -131,7 +185,7 @@ export async function serve({
       const key = sessionKey(file);
       const reopen = Boolean(req.body.reopen);
       const existing = await store.findByKey(key);
-      // A user-initiated end (browser "End session"/"Send & end session") means the human
+      // A user-initiated end (ending or send-and-ending from the browser) means the human
       // deliberately closed the review surface. Silently reopening it on the next
       // `lavish-axi <file>` is the exact behavior this route exists to prevent - require an
       // explicit `reopen` opt-in instead of reviving it automatically. Agent-initiated ends
@@ -515,8 +569,164 @@ export async function serve({
     res.type("application/javascript").send(createSdkJs(String(req.query.key || "")));
   });
 
+  // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
+  // iframe (allow-scripts allow-popups, no allow-same-origin) so untrusted
+  // Mermaid text renders - and the Excalidraw editor runs - inside an opaque
+  // origin, matching the artifact iframe's trust posture. The chrome passes
+  // the diagram source and saved scene over postMessage after the frame
+  // reports ready.
+  app.get("/whiteboard-frame", (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret)));
+  });
+
+  // Whiteboard bundle, stylesheet, and vendored Excalidraw fonts. The frame
+  // runs in an opaque origin, and font fetches from an opaque origin are
+  // CORS-gated, so this static, public-content route must answer with
+  // Access-Control-Allow-Origin: * or every canvas font falls back.
+  app.get(/^\/whiteboard-assets\/(.+)$/, (req, res, next) => {
+    try {
+      const file = resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
+      if (!file) {
+        res.status(403).send("Forbidden");
+        return;
+      }
+      if (!existsSync(file)) {
+        res
+          .status(404)
+          .send(existsSync(whiteboardAssetsDir) ? "Not found" : "Whiteboard bundle missing - run `pnpm run build`");
+        return;
+      }
+      res.setHeader("access-control-allow-origin", "*");
+      // Revalidate on every use (304 via Last-Modified/ETag): the bundle URL
+      // is unversioned, and a memory-cached stale bundle after an upgrade or
+      // local rebuild is far worse than cheap loopback revalidations.
+      res.setHeader("cache-control", "no-cache");
+      // Traversal is already rejected by resolveArtifactAsset; "allow" keeps
+      // dot components in the assets dir's own absolute path (e.g. a checkout
+      // under a dot-directory) from 403ing every asset.
+      res.sendFile(file, { dotfiles: "allow" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Mermaid sources for a session's artifact, extracted from the HTML on disk
+  // in document order so `index` matches the browser's `.mermaid` element
+  // order. The hash feeds whiteboard staleness detection.
+  app.get("/api/:key/mermaid-sources", async (req, res, next) => {
+    try {
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      const html = await readFile(session.file, "utf8").catch(() => "");
+      const sources = extractMermaidSources(html).map(({ index, source }) => ({
+        index,
+        source,
+        hash: mermaidSourceHash(source),
+      }));
+      res.json({ sources });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/:key/whiteboard/:index", async (req, res, next) => {
+    try {
+      const session = await store.findByKey(req.params.key);
+      if (!session || !isValidDiagramIndex(req.params.index)) {
+        res.status(404).json({ error: "whiteboard not found" });
+        return;
+      }
+      const whiteboard = await loadWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index));
+      res.json({ whiteboard });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
+        return;
+      }
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret)) {
+        res.status(403).json({ error: "invalid whiteboard channel" });
+        return;
+      }
+      res.json({ status: "authenticated" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Writing to the local state directory is a state-changing action, so both
+  // whiteboard write routes are same-origin guarded like /share - a hostile
+  // cross-origin page must not be able to fill the state dir through the
+  // loopback server.
+  app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin whiteboard write rejected" });
+        return;
+      }
+      const session = await store.findByKey(req.params.key);
+      if (!session || !isValidWhiteboardKey(req.params.key) || !isValidDiagramIndex(req.params.index)) {
+        res.status(404).json({ error: "whiteboard not found" });
+        return;
+      }
+      const body = req.body || {};
+      await saveWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index), {
+        sourceHash: String(body.source_hash || body.sourceHash || ""),
+        scene: body.scene ?? null,
+        baseline: body.baseline ?? null,
+      });
+      res.json({ status: "saved" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Publish the agent-facing feedback files (.excalidraw scene + PNG preview)
+  // for a diagram, returning their absolute paths for the queued prompt's
+  // target. Files stay on this machine; the prompt carries only the paths.
+  app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin whiteboard write rejected" });
+        return;
+      }
+      const session = await store.findByKey(req.params.key);
+      if (!session || !isValidWhiteboardKey(req.params.key) || !isValidDiagramIndex(req.params.index)) {
+        res.status(404).json({ error: "whiteboard not found" });
+        return;
+      }
+      const body = req.body || {};
+      const { scenePath, previewPath } = await writeWhiteboardFeedbackFiles(
+        whiteboardStateRoot,
+        req.params.key,
+        Number(req.params.index),
+        { scene: body.scene ?? null, pngDataUrl: String(body.pngDataUrl || body.png_data_url || "") },
+      );
+      res.json({ scene_path: scenePath, preview_path: previewPath });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use((error, req, res, _next) => {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    // Body-parser errors carry a meaningful HTTP status (413 payload-too-large,
+    // 400 malformed JSON); surface it instead of flattening everything to 500.
+    const status = Number(error?.statusCode || error?.status) || 500;
+    res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
   });
 
   const httpServer = await new Promise((resolve, reject) => {
@@ -821,8 +1031,6 @@ const chromeIcons = {
     '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
     15,
   ),
-  send: chromeIcon('<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/>', 14),
-  caret: chromeIcon('<path d="m6 9 6 6 6-6"/>', 13, 2),
 };
 
 // Display the path with the home directory shortened to "~", split so the directory part can
@@ -953,12 +1161,29 @@ ${faviconTag}
 </head>
 <body class="${bodyClass}">
 <div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe><div class="layout-issue-banner" id="layoutIssueBanner" hidden>This surface may have layout issues. Your agent has been notified.</div></div><aside class="panel"><h2>Conversation</h2><div class="chat" id="chatLog"></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><div class="annotation-pills" id="annotationPills"></div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="actions" id="sendActions"><span class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</span><div class="split"><button class="button send-main" id="send">Send to Agent</button><button class="button send-caret" id="sendCaret" type="button" title="Send options" aria-haspopup="menu" aria-expanded="false">${chromeIcons.caret}</button></div><div class="menu send-menu" id="sendMenu" hidden><button class="menu-item" id="sendFromMenu" type="button">${chromeIcons.send}<span>Send to Agent</span></button><button class="menu-item danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; end session</span></button></div></div></div></aside></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe><div class="layout-issue-banner" id="layoutIssueBanner" hidden>This surface may have layout issues. Your agent has been notified.</div></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label>Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label>Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note">Keep the update key private. ht-ml.app returns it once and it is the only way to update or delete this page later.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
+<div class="whiteboard-overlay" id="whiteboardOverlay" hidden><div class="whiteboard-shell"><div class="whiteboard-error" id="whiteboardError" hidden></div><button class="whiteboard-close" id="whiteboardClose" type="button" aria-label="Close whiteboard"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><iframe id="whiteboardFrame" title="Excalidraw whiteboard" sandbox="allow-scripts allow-popups"></iframe></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>
 <script src="/chrome-client.js"></script>
+</body>
+</html>`;
+}
+
+export function createWhiteboardFrameHtml(channelToken = "") {
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lavish Whiteboard</title>
+<link rel="stylesheet" href="/whiteboard-assets/whiteboard.css">
+</head>
+<body>
+<script>window.__lavishWhiteboardChannelToken=${JSON.stringify(channelToken)};</script>
+<script src="/whiteboard-assets/whiteboard.js"></script>
 </body>
 </html>`;
 }

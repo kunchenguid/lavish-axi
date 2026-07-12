@@ -1,0 +1,7 @@
+session:
+  file: /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWZENR1HN5XVRHAM5645KC7E/.no-mistakes/evidence/fm/lavish-sendend-btn-j5/send-end-artifact.html
+  status: feedback
+dom_snapshot: "uid=1 body \"Lavish composer evidence This artifact is intentionally simple so the browser ev\"\n  uid=2 main \"Lavish composer evidence This artifact is intentionally simple so the browser ev\"\n    uid=3 h1 \"Lavish composer evidence\"\n    uid=4 p \"This artifact is intentionally simple so the browser evidence focuses on the rev\"\n  uid=5 script"
+prompts[1]{uid,prompt,selector,tag,text}:
+  "",Send only evidence message,"",message,Freeform message
+next_step: "Apply the requested changes to /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWZENR1HN5XVRHAM5645KC7E/.no-mistakes/evidence/fm/lavish-sendend-btn-j5/send-end-artifact.html. Do not respond to the user just yet. Now you must run `lavish-axi poll /Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KWZENR1HN5XVRHAM5645KC7E/.no-mistakes/evidence/fm/lavish-sendend-btn-j5/send-end-artifact.html --agent-reply \"<message for the user>\"` without --timeout-ms unless the user ended the session. The poll waits silently until the user sends more feedback, ends the session, or reports fresh layout_warnings - never kill it. If your harness limits how long a foreground command may run, run the poll as a background task; if it still gets killed or times out, just re-run it - queued feedback is never lost."
