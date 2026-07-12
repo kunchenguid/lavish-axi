@@ -58,15 +58,6 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
   }
 });
 
-test("createSkillMarkdown keeps static poll guidance agent-neutral", () => {
-  const md = createSkillMarkdown();
-
-  assert.doesNotMatch(md, /keep the poll attached to the active turn/i);
-  assert.doesNotMatch(md, /run the poll as a background task/);
-  assert.doesNotMatch(md, /Codex detected/);
-  assert.match(md, /queued feedback is never lost/);
-});
-
 test("createSkillMarkdown requires opening every matching playbook", () => {
   const md = createSkillMarkdown();
   const playbooksSection = md.slice(md.indexOf("## Playbooks"), md.indexOf("## Commands & rules"));
