@@ -159,13 +159,17 @@ export class SessionStore {
     if (session.feedback_delivery) {
       const delivery = session.feedback_delivery;
       const result = feedbackDeliveryResult(delivery);
+      const warningsCleared =
+        !alreadyEnded && layoutWarnings.length === 0 && (delivery.layout_warnings || []).length > 0;
       const hasNewerFeedback =
         prompts.length > (delivery.prompt_count || 0) ||
+        warningsCleared ||
         (layoutWarnings.length > 0 &&
           layoutWarningsSignature(layoutWarnings) !== layoutWarningsSignature(delivery.layout_warnings || []));
       if (hasNewerFeedback) {
         delete result.session_ended;
         delete result.ended_by;
+        if (warningsCleared) delete result.layout_warnings;
       } else if (alreadyEnded) {
         result.session_ended = true;
         result.ended_by = session.ended_by;

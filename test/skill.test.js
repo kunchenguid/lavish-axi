@@ -103,3 +103,11 @@ test("createSkillMarkdown requires acknowledging feedback only after it is proce
   assert.match(md, /Apply human feedback, then poll again with `--ack <delivery_id> --agent-reply "<message>"`/);
   assert.match(md, /redelivered until acknowledged/);
 });
+
+test("createSkillMarkdown includes restricted-sandbox installed-copy fallbacks", () => {
+  const md = createSkillMarkdown();
+
+  assert.match(md, /status 216/);
+  assert.match(md, /\$\(npm root\)\/lavish-axi\/dist\/cli\.mjs/);
+  assert.match(md, /\$\(npm root -g\)\/lavish-axi\/dist\/cli\.mjs/);
+});

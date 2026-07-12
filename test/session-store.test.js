@@ -514,6 +514,31 @@ test("empty layout warning reports clear pending warnings without waking feedbac
   }
 });
 
+test("cleared layout warnings while a delivery is in flight are not redelivered", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [{ selector: "main", kind: "page-horizontal-overflow", severity: "error" }],
+    });
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(first.layout_warnings.length, 1);
+
+    await store.recordLayoutWarnings(session.key, { layout_warnings: [] });
+
+    const second = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(second.delivery_id, first.delivery_id, "stable delivery_id");
+    assert.equal(second.layout_warnings, undefined, "stale warnings not redelivered");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ending a session makes feedback return ended", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
