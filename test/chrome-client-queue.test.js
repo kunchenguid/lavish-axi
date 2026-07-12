@@ -17,6 +17,8 @@ async function createChromeHarness({
   const source = await readFile(sourceUrl, "utf8");
   const storage = new Map();
   const postedToFrame = [];
+  const postedToWhiteboard = [];
+  const inlineWhiteboards = [];
   const eventSources = [];
   const windowListeners = new Map();
   const documentListeners = new Map();
@@ -24,6 +26,7 @@ async function createChromeHarness({
   const timers = new Map();
   const srcLoads = [];
   let nextTimerId = 1;
+  let reloadCount = 0;
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -61,6 +64,7 @@ async function createChromeHarness({
       textContent: "",
       scrollTop: 0,
       scrollHeight: 0,
+      scrolledIntoView: null,
       dataset: {},
       onclick: null,
       classList: {
@@ -101,6 +105,7 @@ async function createChromeHarness({
       },
       appendChild(child) {
         child.parentElement = this;
+        this.lastAppendedChild = child;
         return child;
       },
       click(event = {}) {
@@ -113,6 +118,9 @@ async function createChromeHarness({
         this.focused = true;
       },
       select() {},
+      scrollIntoView(options) {
+        this.scrolledIntoView = options;
+      },
       listeners,
     };
     elements.set(id, el);
@@ -136,12 +144,22 @@ async function createChromeHarness({
       postedToFrame.push(message);
     },
   };
+  const whiteboardFrame = element("whiteboardFrame");
+  whiteboardFrame.contentWindow = {
+    postMessage(message) {
+      postedToWhiteboard.push(message);
+    },
+  };
 
   const context = {
     clearTimeout: fakeClearTimeout,
     console,
     fetch: fetchImpl,
-    location: { reload() {} },
+    location: {
+      reload() {
+        reloadCount += 1;
+      },
+    },
     navigator: {},
     setTimeout: fakeSetTimeout,
     URL: {
@@ -192,7 +210,8 @@ async function createChromeHarness({
     },
     window: {
       addEventListener(type, handler) {
-        windowListeners.set(type, handler);
+        if (!windowListeners.has(type)) windowListeners.set(type, []);
+        windowListeners.get(type).push(handler);
       },
     },
   };
@@ -203,14 +222,36 @@ async function createChromeHarness({
     element,
     frame,
     postedToFrame,
+    postedToWhiteboard,
+    createInlineWhiteboard() {
+      const posted = [];
+      const source = {
+        postMessage(message) {
+          posted.push(message);
+        },
+      };
+      const whiteboard = { source, posted };
+      inlineWhiteboards.push(whiteboard);
+      return whiteboard;
+    },
     eventSource() {
       assert.equal(eventSources.length, 1);
       return eventSources[0];
     },
     sendFrameMessage(data) {
-      const handler = windowListeners.get("message");
-      assert.ok(handler, "chrome-client registered a message handler");
-      handler({ source: frame.contentWindow, data });
+      const handlers = windowListeners.get("message") || [];
+      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
+      for (const handler of handlers) handler({ source: frame.contentWindow, data });
+    },
+    sendWhiteboardMessage(data) {
+      const handlers = windowListeners.get("message") || [];
+      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
+      for (const handler of handlers) handler({ source: whiteboardFrame.contentWindow, data });
+    },
+    sendInlineWhiteboardMessage(whiteboard, data) {
+      const handlers = windowListeners.get("message") || [];
+      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
+      for (const handler of handlers) handler({ source: whiteboard.source, data });
     },
     dispatchDocumentKeydown(eventProps) {
       const handlers = documentListeners.get("keydown") || [];
@@ -232,6 +273,9 @@ async function createChromeHarness({
     },
     queued() {
       return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
+    },
+    reloadCount() {
+      return reloadCount;
     },
     runTimers,
     srcLoads,
@@ -264,6 +308,28 @@ test("chrome client replaces queued prompts with the same internal key", async (
   );
   assert.match(chrome.element("annotationPills").innerHTML, /Use plan B/);
   assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /Use plan A/);
+});
+
+test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {
+  const chrome = await createChromeHarness();
+  const panelScroll = chrome.element("panelScroll");
+  panelScroll.scrollHeight = 1800;
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Review the title", selector: "h1", tag: "annotation", text: "Title" },
+  });
+  assert.equal(panelScroll.scrollTop, 1800);
+
+  panelScroll.scrollTop = 640;
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({ text: "I updated the title." }),
+  });
+
+  const bubble = chrome.element("chatLog").lastAppendedChild;
+  assert.equal(bubble.scrolledIntoView.block, "nearest");
+  assert.equal(bubble.scrolledIntoView.inline, "nearest");
+  assert.equal(panelScroll.scrollTop, 640);
 });
 
 test("chrome client posts layout warnings from the artifact iframe", async () => {
@@ -840,6 +906,26 @@ test("chrome send and end carries the end intent with queued prompts", async () 
   assert.equal(chrome.element("chatInput").disabled, true);
 });
 
+test("chrome send and end with an empty composer nudges instead of ending", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true };
+    },
+  });
+  chrome.element("sendHint").hidden = true;
+
+  chrome.element("sendAndEnd").onclick();
+  await flushPromises();
+
+  assert.equal(posts.length, 0);
+  assert.equal(chrome.postedToFrame.length, 0);
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.equal(chrome.element("chatInput").focused, true);
+  assert.equal(chrome.element("chatInput").disabled, false);
+});
+
 test("chrome send and end during an in-flight submit still ends after the submit drains the queue", async () => {
   const posts = [];
   let resolveFirstPost = () => {};
@@ -971,4 +1057,368 @@ test("chrome client ignores annotation mode toggles after the session ends", asy
 
   assert.equal(chrome.element("annotation")["aria-pressed"], "false");
   assert.equal(chrome.postedToFrame.length, afterEndPostCount);
+});
+
+function whiteboardFetch(url) {
+  if (url.includes("/whiteboard-channel")) return { ok: true };
+  if (url.includes("/mermaid-sources")) {
+    return { ok: true, json: async () => ({ sources: [{ index: 0, source: "flowchart TD; A-->B", hash: "hash" }] }) };
+  }
+  return { ok: true, json: async () => ({ whiteboard: null }) };
+}
+
+async function initializeInlineWhiteboard(chrome, token = "inline-channel") {
+  const whiteboard = chrome.createInlineWhiteboard();
+  chrome.sendInlineWhiteboardMessage(whiteboard, {
+    type: "lavish-whiteboard:ready",
+    diagramIndex: 0,
+    diagramId: "mermaid-1",
+    channelToken: token,
+  });
+  await flushPromises();
+  await flushPromises();
+  return whiteboard;
+}
+
+test("artifact relays cannot invoke whiteboard persistence", async () => {
+  const calls = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url, init });
+      return whiteboardFetch(url);
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:whiteboardRelay",
+    diagramIndex: 0,
+    message: { type: "lavish-whiteboard:save", scene: { elements: [{ id: "forged" }] } },
+  });
+  await flushPromises();
+
+  assert.equal(calls.length, 0);
+  assert.equal(chrome.postedToFrame.length, 0);
+});
+
+test("unverified whiteboard frames cannot invoke whiteboard persistence", async () => {
+  const calls = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url, init });
+      return { ok: false };
+    },
+  });
+  const whiteboard = chrome.createInlineWhiteboard();
+
+  chrome.sendInlineWhiteboardMessage(whiteboard, {
+    type: "lavish-whiteboard:ready",
+    diagramIndex: 0,
+    channelToken: "forged",
+  });
+  await flushPromises();
+  chrome.sendInlineWhiteboardMessage(whiteboard, {
+    type: "lavish-whiteboard:save",
+    diagramIndex: 0,
+    channelId: "forged",
+    scene: { elements: [{ id: "forged" }] },
+  });
+  await flushPromises();
+
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    ["/api/abc/whiteboard-channel"],
+  );
+  assert.equal(whiteboard.posted.length, 0);
+});
+
+test("whiteboard fullscreen waits for the authenticated inline frame to flush", async () => {
+  const chrome = await createChromeHarness({ fetchImpl: async (url) => whiteboardFetch(url) });
+  const inline = await initializeInlineWhiteboard(chrome);
+  const init = inline.posted.at(-1);
+  assert.equal(init.type, "lavish-whiteboard:init");
+  assert.equal(init.channelId, "inline-channel");
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+
+  const prepare = inline.posted.at(-1);
+  assert.equal(prepare.type, "lavish-whiteboard:prepareTeardown");
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:suspendWhiteboard"),
+    false,
+  );
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: prepare.flushId,
+  });
+
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:suspendWhiteboard");
+  assert.match(chrome.element("whiteboardFrame").src, /^\/whiteboard-frame\?diagramIndex=0$/);
+});
+
+test("whiteboard close waits for the authenticated overlay frame to flush", async () => {
+  const chrome = await createChromeHarness({ fetchImpl: async (url) => whiteboardFetch(url) });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const maximizePrepare = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: maximizePrepare.flushId,
+  });
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  await flushPromises();
+
+  chrome.element("whiteboardClose").click();
+  const closePrepare = chrome.postedToWhiteboard.at(-1);
+  assert.equal(closePrepare.type, "lavish-whiteboard:prepareTeardown");
+  assert.equal(closePrepare.channelId, "overlay-channel");
+  assert.notEqual(chrome.element("whiteboardFrame").src, "about:blank");
+
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: closePrepare.flushId,
+  });
+
+  assert.equal(chrome.element("whiteboardFrame").src, "about:blank");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:resumeWhiteboard");
+});
+
+test("whiteboard fullscreen close accepts the resumed inline frame", async () => {
+  const chrome = await createChromeHarness({ fetchImpl: async (url) => whiteboardFetch(url) });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const maximizePrepare = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: maximizePrepare.flushId,
+  });
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  await flushPromises();
+
+  chrome.element("whiteboardClose").click();
+  const closePrepare = chrome.postedToWhiteboard.at(-1);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: closePrepare.flushId,
+  });
+
+  const resumed = chrome.createInlineWhiteboard();
+  chrome.sendInlineWhiteboardMessage(resumed, {
+    type: "lavish-whiteboard:ready",
+    diagramIndex: 0,
+    diagramId: "mermaid-1",
+    channelToken: "resumed-channel",
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(resumed.posted.at(-1).type, "lavish-whiteboard:init");
+  assert.equal(resumed.posted.at(-1).channelId, "resumed-channel");
+});
+
+test("artifact reload waits for inline whiteboards to flush", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: async (url) => whiteboardFetch(url),
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  const initialLoadCount = chrome.srcLoads.length;
+
+  chrome.element("reloadArtifact").click();
+  const prepare = inline.posted.at(-1);
+  assert.equal(prepare.type, "lavish-whiteboard:prepareTeardown");
+  assert.equal(chrome.srcLoads.length, initialLoadCount);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: prepare.flushId,
+  });
+  await flushPromises();
+
+  assert.equal(chrome.srcLoads.length, initialLoadCount + 1);
+  assert.equal(chrome.element("artifact").src, "/artifact/abc/index.html");
+});
+
+test("server restart flushes an authenticated inline whiteboard before reloading", async () => {
+  let healthChecks = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (url === "/health") {
+        healthChecks += 1;
+        if (healthChecks === 1) throw new Error("server is restarting");
+        return { ok: true };
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  const restart = chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+
+  const flush = inline.posted.at(-1);
+  assert.equal(flush.type, "lavish-whiteboard:flush");
+  assert.equal(chrome.reloadCount(), 0);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:flushComplete",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: flush.flushId,
+    ok: true,
+  });
+  await restart;
+
+  assert.equal(chrome.reloadCount(), 1);
+});
+
+test("server restart flushes an authenticated overlay before reloading", async () => {
+  let healthChecks = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (url === "/health") {
+        healthChecks += 1;
+        if (healthChecks === 1) throw new Error("server is restarting");
+        return { ok: true };
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const teardown = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: teardown.flushId,
+  });
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  await flushPromises();
+
+  const restart = chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+
+  const flush = chrome.postedToWhiteboard.at(-1);
+  assert.equal(flush.type, "lavish-whiteboard:flush");
+  assert.equal(chrome.reloadCount(), 0);
+
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:flushComplete",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: flush.flushId,
+    ok: true,
+  });
+  await restart;
+
+  assert.equal(chrome.reloadCount(), 1);
+});
+
+test("server restart bounds the wait for a whiteboard flush", async () => {
+  let healthChecks = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (url === "/health") {
+        healthChecks += 1;
+        if (healthChecks === 1) throw new Error("server is restarting");
+        return { ok: true };
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  const restart = chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+
+  assert.equal(inline.posted.at(-1).type, "lavish-whiteboard:flush");
+  chrome.runTimers(1500);
+  await restart;
+
+  assert.equal(chrome.reloadCount(), 1);
+});
+
+test("whiteboard close stays responsive while overlay initialization is pending", async () => {
+  let delayOverlaySources = false;
+  /** @type {(() => void) | undefined} */
+  let releaseOverlaySources;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (delayOverlaySources && url.includes("/mermaid-sources")) {
+        await new Promise((resolve) => {
+          releaseOverlaySources = () => resolve();
+        });
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const maximizePrepare = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: maximizePrepare.flushId,
+  });
+
+  delayOverlaySources = true;
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  chrome.element("whiteboardClose").click();
+
+  assert.equal(chrome.element("whiteboardFrame").src, "about:blank");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:resumeWhiteboard");
+  assert.equal(
+    chrome.postedToWhiteboard.some((message) => message.type === "lavish-whiteboard:prepareTeardown"),
+    false,
+  );
+
+  releaseOverlaySources?.();
+  await flushPromises();
 });

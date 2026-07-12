@@ -404,25 +404,18 @@ body.lavish {
   opacity: 0.55;
   cursor: not-allowed;
 }
-.split {
+.button-danger {
   display: inline-flex;
-  align-items: stretch;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  color: var(--danger);
 }
-.send-main {
-  border-radius: var(--radius-md) 0 0 var(--radius-md);
+.button-danger:hover:not(:disabled) {
+  background: rgba(240, 100, 100, 0.1);
 }
-.send-caret {
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  padding: 9px;
-  border-left: 1px solid rgba(23, 19, 10, 0.22);
-  display: grid;
-  place-items: center;
-}
-.send-menu {
-  right: 0;
-  bottom: 44px;
-  width: 208px;
-  border-radius: 11px;
+.button-danger > svg {
+  flex-shrink: 0;
 }
 .share-overlay {
   position: fixed;
@@ -639,15 +632,33 @@ body.lavish {
   margin: 16px 16px 8px;
   font-weight: var(--w-semi);
   letter-spacing: 0;
+  flex: 0 0 auto;
+}
+.panel-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
 }
 .chat {
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
   padding: 0 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.chat:empty::before {
+  content: "Agent hasn't sent a message yet. Click an element in the artifact to annotate, or type below to start.";
+  margin-top: 2px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 .bubble {
   max-width: 85%;
@@ -704,9 +715,13 @@ body.lavish {
   gap: 8px;
   padding: 12px 16px;
   border-top: var(--hairline-subtle);
+  background: var(--bg-panel);
   min-width: 0;
   flex-shrink: 0;
   box-sizing: border-box;
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
 }
 .presence-banner {
   border: 1px solid var(--border);
@@ -726,9 +741,17 @@ body.lavish {
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
+  padding: 0 16px 12px;
+  flex: 0 0 auto;
+}
+.annotation-pills:empty {
+  display: none;
 }
 .pill-wrap {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: min(320px, 100%);
   max-width: 100%;
 }
 .pill {
@@ -769,11 +792,10 @@ body.lavish {
 }
 .pill-tooltip {
   display: none;
-  position: absolute;
+  position: static;
   z-index: 5;
-  left: 0;
-  bottom: calc(100% + 8px);
-  width: min(320px, 80vw);
+  width: 100%;
+  margin-top: 8px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   background: var(--bg-bar);
@@ -831,16 +853,22 @@ body.lavish {
   align-items: center;
   gap: 8px;
   justify-content: flex-end;
+  min-width: 0;
   position: relative;
 }
 .send-hint {
-  margin-right: auto;
   color: var(--fg-faint);
   font-size: 11px;
   line-height: 1.35;
 }
 .send-hint[hidden] {
   display: none;
+}
+@media (max-width: 320px) {
+  .composer {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
 }
 .ended-overlay {
   position: fixed;
@@ -937,4 +965,71 @@ body.layout-gate-active iframe#artifact {
   .share-copy-row {
     flex-direction: column;
   }
+}
+
+/* Whiteboard overlay: a full-viewport layer above the chrome hosting the
+   sandboxed Excalidraw frame. The frame owns all whiteboard UI; this layer
+   only provides the backdrop, a fallback close control, and an error card
+   for when the frame cannot boot. */
+.whiteboard-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 17, 21, 0.92);
+  z-index: 80;
+  display: flex;
+}
+.whiteboard-overlay[hidden] {
+  display: none;
+}
+.whiteboard-shell {
+  position: relative;
+  flex: 1;
+  margin: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  background: var(--bg-panel);
+  display: flex;
+}
+.whiteboard-shell iframe {
+  flex: 1;
+  border: 0;
+  width: 100%;
+  height: 100%;
+}
+.whiteboard-close {
+  position: absolute;
+  top: 9px;
+  right: 12px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+.whiteboard-close:hover {
+  color: var(--fg);
+}
+.whiteboard-error {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px;
+  color: var(--fg);
+  background: var(--bg-panel);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.whiteboard-error[hidden] {
+  display: none;
 }

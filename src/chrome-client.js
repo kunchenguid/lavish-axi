@@ -15,14 +15,11 @@ function isModeToggleHotkeyEvent(event) {
 }
 
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
+const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
 const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
 const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"));
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
-const sendCaret = /** @type {HTMLButtonElement} */ (document.getElementById("sendCaret"));
-const sendActions = /** @type {HTMLDivElement} */ (document.getElementById("sendActions"));
-const sendMenu = /** @type {HTMLDivElement} */ (document.getElementById("sendMenu"));
-const sendFromMenuButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendFromMenu"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
@@ -55,7 +52,11 @@ const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
 const layoutIssueBanner = /** @type {HTMLDivElement} */ (document.getElementById("layoutIssueBanner"));
-const sendHint = /** @type {HTMLSpanElement} */ (document.getElementById("sendHint"));
+const sendHint = /** @type {HTMLDivElement} */ (document.getElementById("sendHint"));
+const whiteboardOverlay = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardOverlay"));
+const whiteboardFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("whiteboardFrame"));
+const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("whiteboardClose"));
+const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
@@ -156,12 +157,12 @@ function render() {
     closeButton.addEventListener("click", (event) => removeQueuedPrompt(Number(closeButton.dataset.index), event));
   }
   updateSendState();
+  scrollPanelToBottom();
 }
 
 function updateSendState() {
   sendButton.disabled = ended || agentPresence === "working";
-  sendCaret.disabled = ended || agentPresence === "working";
-  sendFromMenuButton.disabled = sendButton.disabled;
+  sendAndEndButton.disabled = sendButton.disabled;
 }
 
 const defaultSendHintText = "Write a message or annotate an element first.";
@@ -188,7 +189,6 @@ function setMenuOpen(button, menu, open) {
 
 function closeMenus() {
   setMenuOpen(moreButton, moreMenu, false);
-  setMenuOpen(sendCaret, sendMenu, false);
 }
 
 function toggleMenu(button, menu) {
@@ -217,14 +217,15 @@ async function copyText(text) {
   return true;
 }
 
-function addChat(role, text) {
+function addChat(role, text, shouldScroll = true) {
   if (!text) return;
 
   const el = document.createElement("div");
   el.className = "bubble " + role;
   el.innerHTML = "<small>" + (role === "agent" ? "Agent" : "You") + "</small><div>" + escapeHtml(text) + "</div>";
   chatLog.appendChild(el);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  if (shouldScroll) scrollElementIntoView(el);
+  return el;
 }
 
 function syncChat(chat) {
@@ -232,9 +233,14 @@ function syncChat(chat) {
     el.remove();
   }
 
-  for (const item of chat) addChat(item.role, item.text);
-  if (workingBubble) chatLog.appendChild(workingBubble);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  let lastChatBubble = null;
+  for (const item of chat) lastChatBubble = addChat(item.role, item.text, false) || lastChatBubble;
+  if (workingBubble) {
+    chatLog.appendChild(workingBubble);
+    scrollElementIntoView(workingBubble);
+  } else if (lastChatBubble) {
+    scrollElementIntoView(lastChatBubble);
+  }
 }
 
 function setAgentPresence(state) {
@@ -254,7 +260,15 @@ function setAgentPresence(state) {
     workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
     chatLog.appendChild(workingBubble);
   }
-  chatLog.scrollTop = chatLog.scrollHeight;
+  scrollElementIntoView(workingBubble);
+}
+
+function scrollPanelToBottom() {
+  panelScroll.scrollTop = panelScroll.scrollHeight;
+}
+
+function scrollElementIntoView(el) {
+  el.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 function removeQueuedPrompt(index, event) {
@@ -332,11 +346,7 @@ function sendQueued(endAfter) {
     render();
   }
   if (!queued.length) {
-    if (endAfter) {
-      endSession();
-    } else {
-      showSendHint();
-    }
+    showSendHint();
     return;
   }
   hideSendHint();
@@ -532,6 +542,7 @@ function markSessionEnded() {
   if (ended) return;
   ended = true;
   closeMenus();
+  closeWhiteboard();
   annotationSwitch.disabled = true;
   moreButton.disabled = true;
   chatInput.disabled = true;
@@ -681,11 +692,489 @@ async function publishShare(event) {
   }
 }
 
-function resetFrame() {
+function replaceArtifactFrame() {
   startLayoutGateCycle();
+  inlineWhiteboardChannels.clear();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   frame.src = artifactSrc || frame.src;
 }
+
+function resetFrame() {
+  if (artifactResetPromise) return artifactResetPromise;
+  const hasLiveInlineWhiteboard = [...inlineWhiteboardChannels].some(
+    ([index, channel]) => channel.initialized && index !== overlayIndex,
+  );
+  if (!hasLiveInlineWhiteboard) {
+    replaceArtifactFrame();
+    return Promise.resolve(true);
+  }
+  artifactResetPromise = flushInlineWhiteboards()
+    .then((flushed) => {
+      if (!flushed) return false;
+      replaceArtifactFrame();
+      return true;
+    })
+    .finally(() => {
+      artifactResetPromise = null;
+    });
+  return artifactResetPromise;
+}
+
+// ---------------------------------------------------------------------------
+// Whiteboards. The artifact SDK embeds one sandboxed whiteboard frame in place
+// of each rendered Mermaid diagram. The chrome owns every server round trip
+// and serves all frames concurrently. The overlay hosts the same frame page
+// fullscreen when an inline frame asks to maximize - the inline frame is
+// suspended while the overlay owns that diagram so two editors never autosave
+// one sidecar.
+// ---------------------------------------------------------------------------
+
+/** @type {Map<number, { diagramId: string, source: string, sourceHash: string }>} */
+const whiteboards = new Map();
+/** @type {number | null} */
+let overlayIndex = null;
+let overlayFrameReady = false;
+let overlayChannelId = "";
+let overlayOpeningIndex = null;
+let nextWhiteboardFlushId = 0;
+let artifactResetPromise = null;
+let chromeRestartReloadPromise = null;
+const whiteboardTeardowns = new Map();
+const whiteboardFlushes = new Map();
+const whiteboardSaveChains = new Map();
+const inlineWhiteboardChannels = new Map();
+
+function whiteboardTheme() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function postToWhiteboardOverlay(message) {
+  if (whiteboardFrame.contentWindow && overlayChannelId) {
+    whiteboardFrame.contentWindow.postMessage({ ...message, channelId: overlayChannelId }, "*");
+  }
+}
+
+function postToInlineWhiteboard(index, message) {
+  const channel = inlineWhiteboardChannels.get(index);
+  if (channel?.window) channel.window.postMessage({ ...message, channelId: channel.channelId }, "*");
+}
+
+function postToWhiteboard(index, placement, message) {
+  if (placement === "overlay") postToWhiteboardOverlay(message);
+  else postToInlineWhiteboard(index, message);
+}
+
+async function fetchMermaidSources() {
+  const response = await fetch("/api/" + key + "/mermaid-sources");
+  if (!response.ok) throw new Error("could not read the artifact's Mermaid sources");
+  const data = await response.json();
+  return Array.isArray(data.sources) ? data.sources : [];
+}
+
+async function authenticateWhiteboardChannel(token) {
+  const response = await fetch("/api/" + key + "/whiteboard-channel", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return response.ok;
+}
+
+function showWhiteboardError(text) {
+  whiteboardError.textContent = text;
+  whiteboardError.hidden = false;
+  whiteboardOverlay.hidden = false;
+}
+
+function whiteboardRecord(index) {
+  let record = whiteboards.get(index);
+  if (!record) {
+    record = { diagramId: "", source: "", sourceHash: "" };
+    whiteboards.set(index, record);
+  }
+  return record;
+}
+
+async function handleWhiteboardReady(index, mode, isCurrent) {
+  try {
+    const sources = await fetchMermaidSources();
+    const source = sources.find((item) => item.index === index);
+    if (!source) throw new Error("this diagram's Mermaid source was not found in the artifact file");
+    const savedResponse = await fetch("/api/" + key + "/whiteboard/" + index);
+    const saved = savedResponse.ok ? (await savedResponse.json()).whiteboard : null;
+    const record = whiteboardRecord(index);
+    record.source = String(source.source || "");
+    record.sourceHash = String(source.hash || "");
+    if (!isCurrent()) return false;
+    postToWhiteboard(index, mode, {
+      type: "lavish-whiteboard:init",
+      mode,
+      diagramIndex: index,
+      diagramId: record.diagramId,
+      source: record.source,
+      sourceHash: record.sourceHash,
+      saved,
+      theme: whiteboardTheme(),
+    });
+    return true;
+  } catch (error) {
+    if (mode === "overlay") {
+      showWhiteboardError("Could not open the whiteboard: " + (error instanceof Error ? error.message : String(error)));
+    }
+    return false;
+  }
+}
+
+function showWhiteboardOverlay(index) {
+  if (ended) return;
+  overlayIndex = index;
+  overlayFrameReady = false;
+  overlayChannelId = "";
+  inlineWhiteboardChannels.delete(index);
+  whiteboardError.hidden = true;
+  whiteboardOverlay.hidden = false;
+  postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
+  // A fresh document per open: the frame boots, posts ready, and receives its
+  // init - no stale editor state can leak between opens.
+  whiteboardFrame.src = "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index));
+}
+
+function finishWhiteboardClose(index) {
+  whiteboardOverlay.hidden = true;
+  whiteboardError.hidden = true;
+  whiteboardFrame.src = "about:blank";
+  overlayIndex = null;
+  overlayFrameReady = false;
+  overlayChannelId = "";
+  inlineWhiteboardChannels.delete(index);
+  if (!ended) postToFrame({ type: "lavish:resumeWhiteboard", diagramIndex: index });
+}
+
+function whiteboardTeardownKey(index, placement) {
+  return placement + ":" + index;
+}
+
+function beginWhiteboardTeardown(index, placement, onComplete) {
+  const key = whiteboardTeardownKey(index, placement);
+  const pending = whiteboardTeardowns.get(key);
+  if (pending) {
+    if (onComplete) pending.promise.then(onComplete);
+    return pending.promise;
+  }
+  const flushId = `whiteboard-${++nextWhiteboardFlushId}`;
+  let resolve;
+  const promise = new Promise((complete) => {
+    resolve = complete;
+  });
+  const teardown = { index, placement, flushId, promise, resolve, onComplete };
+  whiteboardTeardowns.set(key, teardown);
+  const message = { type: "lavish-whiteboard:prepareTeardown", flushId };
+  postToWhiteboard(index, placement, message);
+  return promise;
+}
+
+function finishWhiteboardTeardown(index, message, placement) {
+  const flushId = String(message.flushId || "");
+  const key = whiteboardTeardownKey(index, placement);
+  const teardown = whiteboardTeardowns.get(key);
+  if (!teardown || teardown.index !== index || teardown.placement !== placement || teardown.flushId !== flushId) return;
+  whiteboardTeardowns.delete(key);
+  teardown.onComplete?.(true);
+  teardown.resolve(true);
+}
+
+function failWhiteboardTeardown(index, message, placement) {
+  const flushId = String(message.flushId || "");
+  const key = whiteboardTeardownKey(index, placement);
+  const teardown = whiteboardTeardowns.get(key);
+  if (!teardown || teardown.index !== index || teardown.placement !== placement || teardown.flushId !== flushId) return;
+  whiteboardTeardowns.delete(key);
+  teardown.onComplete?.(false);
+  teardown.resolve(false);
+}
+
+function whiteboardFlushKey(index, placement) {
+  return placement + ":" + index;
+}
+
+function beginWhiteboardFlush(index, placement) {
+  const flushKey = whiteboardFlushKey(index, placement);
+  const pending = whiteboardFlushes.get(flushKey);
+  if (pending) return pending.promise;
+  const flushId = `whiteboard-flush-${++nextWhiteboardFlushId}`;
+  let resolve;
+  const promise = new Promise((complete) => {
+    resolve = complete;
+  });
+  whiteboardFlushes.set(flushKey, { index, placement, flushId, promise, resolve });
+  postToWhiteboard(index, placement, { type: "lavish-whiteboard:flush", flushId });
+  return promise;
+}
+
+function finishWhiteboardFlush(index, message, placement) {
+  const flushId = String(message.flushId || "");
+  const flushKey = whiteboardFlushKey(index, placement);
+  const flush = whiteboardFlushes.get(flushKey);
+  if (!flush || flush.index !== index || flush.placement !== placement || flush.flushId !== flushId) return;
+  whiteboardFlushes.delete(flushKey);
+  flush.resolve(Boolean(message.ok));
+}
+
+async function flushWhiteboardsBeforeChromeReload() {
+  const flushes = [];
+  for (const [index, channel] of inlineWhiteboardChannels) {
+    if (channel.initialized && index !== overlayIndex) flushes.push(beginWhiteboardFlush(index, "inline"));
+  }
+  if (overlayIndex !== null && overlayFrameReady) flushes.push(beginWhiteboardFlush(overlayIndex, "overlay"));
+  if (flushes.length === 0) return;
+  let timeout;
+  await Promise.race([
+    Promise.all(flushes),
+    new Promise((resolve) => {
+      timeout = setTimeout(resolve, 1500);
+    }),
+  ]);
+  clearTimeout(timeout);
+}
+
+async function flushInlineWhiteboards() {
+  for (const [index, channel] of [...inlineWhiteboardChannels]) {
+    if (!channel.initialized || index === overlayIndex) continue;
+    if (!(await beginWhiteboardTeardown(index, "inline"))) return false;
+  }
+  return true;
+}
+
+function openWhiteboardOverlay(index) {
+  if (ended || overlayIndex !== null || overlayOpeningIndex !== null) return;
+  overlayOpeningIndex = index;
+  beginWhiteboardTeardown(index, "inline", (flushed) => {
+    if (overlayOpeningIndex !== index) return;
+    overlayOpeningIndex = null;
+    if (flushed && !ended && overlayIndex === null) showWhiteboardOverlay(index);
+  });
+}
+
+function closeWhiteboard() {
+  const index = overlayIndex;
+  if (index === null) return;
+  if (!overlayFrameReady) {
+    finishWhiteboardClose(index);
+    return;
+  }
+  beginWhiteboardTeardown(index, "overlay", (flushed) => {
+    if (flushed && overlayIndex === index) finishWhiteboardClose(index);
+  });
+}
+
+async function persistWhiteboardScene(index, message) {
+  const response = await fetch("/api/" + key + "/whiteboard/" + index, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      source_hash: String(message.sourceHash || ""),
+      scene: message.scene || null,
+      baseline: message.baseline || null,
+    }),
+  });
+  if (!response.ok) throw new Error("failed to save whiteboard scene");
+}
+
+function saveWhiteboardScene(index, message) {
+  const previous = whiteboardSaveChains.get(index) || Promise.resolve();
+  const result = previous.catch(() => {}).then(() => persistWhiteboardScene(index, message));
+  const tail = result.catch(() => {});
+  whiteboardSaveChains.set(index, tail);
+  tail.finally(() => {
+    if (whiteboardSaveChains.get(index) === tail) whiteboardSaveChains.delete(index);
+  });
+  return result;
+}
+
+function handleWhiteboardSave(index, message, mode) {
+  const flushId = String(message.flushId || "");
+  saveWhiteboardScene(index, message).then(
+    () => {
+      if (flushId) postToWhiteboard(index, mode, { type: "lavish-whiteboard:saveResult", flushId, ok: true });
+    },
+    (error) => {
+      if (flushId) {
+        postToWhiteboard(index, mode, {
+          type: "lavish-whiteboard:saveResult",
+          flushId,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  );
+}
+
+function whiteboardSummaryText(summaryLines) {
+  return (Array.isArray(summaryLines) ? summaryLines : [])
+    .filter((line) => typeof line === "string")
+    .slice(0, 50)
+    .map((line) => line.slice(0, 300))
+    .join("\n");
+}
+
+async function queueWhiteboardFeedback(index, message, mode) {
+  const diagramId = whiteboardRecord(index).diagramId;
+  try {
+    // Persist the exact reviewed state before queueing, so the paths in the
+    // prompt point at what the user actually saw.
+    await saveWhiteboardScene(index, message);
+    const response = await fetch("/api/" + key + "/whiteboard/" + index + "/feedback-files", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scene: message.scene || null, pngDataUrl: String(message.pngDataUrl || "") }),
+    });
+    if (!response.ok) throw new Error("failed to write whiteboard feedback files");
+    const files = await response.json();
+    const note = String(message.note || "").slice(0, 4000);
+    const summary = whiteboardSummaryText(message.summaryLines);
+    const promptText =
+      (note ? note + "\n\n" : "") +
+      "Whiteboard edits to diagram " +
+      (index + 1) +
+      (diagramId ? " (" + diagramId + ")" : "") +
+      ":\n" +
+      (summary || "(no summary)") +
+      "\n\nEdited scene JSON: " +
+      String(files.scene_path || "") +
+      (files.preview_path ? "\nPNG preview: " + String(files.preview_path) : "");
+    enqueuePrompt({
+      uid: "",
+      prompt: promptText,
+      selector: "",
+      tag: "whiteboard",
+      text: "Whiteboard: diagram " + (index + 1),
+      target: {
+        type: "excalidraw-scene",
+        diagramIndex: index,
+        diagramId,
+        sourceHash: String(message.sourceHash || ""),
+        scenePath: String(files.scene_path || ""),
+        previewPath: String(files.preview_path || ""),
+        imageFallback: Boolean(message.imageFallback),
+        stats: message.stats && typeof message.stats === "object" ? message.stats : {},
+      },
+      // Re-queueing the same diagram's whiteboard before sending replaces the
+      // earlier unsent prompt instead of stacking duplicates.
+      [internalQueueKeyField]: "whiteboard:" + index,
+    });
+    postToWhiteboard(index, mode, { type: "lavish-whiteboard:queueResult", ok: true });
+    if (mode === "overlay") closeWhiteboard();
+  } catch (error) {
+    postToWhiteboard(index, mode, {
+      type: "lavish-whiteboard:queueResult",
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+// Inline frames live inside the artifact iframe, so a live reload replaces
+// them wholesale and they re-init against fresh sources on their own. Only an
+// open overlay outlives the reload; tell it when its diagram's source changed
+// underneath it so the frame can surface staleness (never silently merge).
+async function refreshWhiteboardSource() {
+  if (overlayIndex === null) return;
+  const index = overlayIndex;
+  try {
+    const sources = await fetchMermaidSources();
+    const source = sources.find((item) => item.index === index);
+    const nextHash = source ? String(source.hash || "") : "";
+    const record = whiteboardRecord(index);
+    if (nextHash !== record.sourceHash) {
+      record.source = source ? String(source.source || "") : "";
+      record.sourceHash = nextHash;
+      postToWhiteboardOverlay({
+        type: "lavish-whiteboard:sourceChanged",
+        source: record.source,
+        sourceHash: record.sourceHash,
+      });
+    }
+  } catch {
+    // Best effort - the staleness banner also re-arms on the next open.
+  }
+}
+
+function validWhiteboardIndex(value) {
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 && index <= 999 ? index : null;
+}
+
+function handleAuthenticatedWhiteboardMessage(index, message, mode) {
+  if (message.type === "lavish-whiteboard:save") handleWhiteboardSave(index, message, mode);
+  if (message.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(index, message, mode);
+  if (message.type === "lavish-whiteboard:maximize" && mode === "inline") openWhiteboardOverlay(index);
+  if (message.type === "lavish-whiteboard:close" && mode === "overlay") closeWhiteboard();
+  if (message.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(index, message, mode);
+  if (message.type === "lavish-whiteboard:teardownFailed") failWhiteboardTeardown(index, message, mode);
+  if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(index, message, mode);
+}
+
+function handleInlineWhiteboardMessage(event, message) {
+  if (ended) return;
+  const index = validWhiteboardIndex(message.diagramIndex);
+  if (index === null || !event.source) return;
+  if (message.type === "lavish-whiteboard:ready") {
+    if (inlineWhiteboardChannels.has(index)) return;
+    const channelId = String(message.channelToken || "");
+    if (!channelId) return;
+    authenticateWhiteboardChannel(channelId).then((authenticated) => {
+      if (!authenticated || ended || inlineWhiteboardChannels.has(index)) return;
+      const channel = { window: event.source, channelId, initialized: false };
+      inlineWhiteboardChannels.set(index, channel);
+      whiteboardRecord(index).diagramId = String(message.diagramId || "");
+      handleWhiteboardReady(index, "inline", () => inlineWhiteboardChannels.get(index) === channel).then(
+        (initialized) => {
+          if (inlineWhiteboardChannels.get(index) === channel) channel.initialized = initialized;
+        },
+      );
+    });
+    return;
+  }
+  const channel = inlineWhiteboardChannels.get(index);
+  if (!channel || channel.window !== event.source || channel.channelId !== message.channelId) return;
+  handleAuthenticatedWhiteboardMessage(index, message, "inline");
+}
+
+function handleOverlayWhiteboardMessage(event, message) {
+  if (event.source !== whiteboardFrame.contentWindow || overlayIndex === null) return;
+  const index = validWhiteboardIndex(message.diagramIndex);
+  if (index === null || index !== overlayIndex) return;
+  if (message.type === "lavish-whiteboard:ready") {
+    if (overlayFrameReady || overlayChannelId) return;
+    const channelId = String(message.channelToken || "");
+    if (!channelId) return;
+    overlayChannelId = channelId;
+    authenticateWhiteboardChannel(channelId).then(async (authenticated) => {
+      const isCurrent = () =>
+        overlayIndex === index && overlayChannelId === channelId && event.source === whiteboardFrame.contentWindow;
+      if (!authenticated) {
+        if (isCurrent()) overlayChannelId = "";
+        return;
+      }
+      if (!isCurrent()) return;
+      const initialized = await handleWhiteboardReady(index, "overlay", isCurrent);
+      if (initialized && isCurrent()) overlayFrameReady = true;
+    });
+    return;
+  }
+  if (!overlayFrameReady || message.channelId !== overlayChannelId) return;
+  handleAuthenticatedWhiteboardMessage(index, message, "overlay");
+}
+
+window.addEventListener("message", (event) => {
+  const message = event.data || {};
+  if (event.source === whiteboardFrame.contentWindow) {
+    handleOverlayWhiteboardMessage(event, message);
+  } else {
+    handleInlineWhiteboardMessage(event, message);
+  }
+});
 
 function loadFrame() {
   if (artifactSrc) frame.src = artifactSrc;
@@ -693,10 +1182,18 @@ function loadFrame() {
 
 function reloadArtifact() {
   closeMenus();
-  resetFrame();
+  resetFrame().then((reloaded) => {
+    if (reloaded) refreshWhiteboardSource();
+  });
 }
 
 async function reloadAfterServerRestart() {
+  if (chromeRestartReloadPromise) return chromeRestartReloadPromise;
+  chromeRestartReloadPromise = reloadChromeAfterServerRestart();
+  return chromeRestartReloadPromise;
+}
+
+async function reloadChromeAfterServerRestart() {
   let sawOutage = false;
   const deadline = Date.now() + 5000;
 
@@ -704,6 +1201,7 @@ async function reloadAfterServerRestart() {
     try {
       const res = await fetch("/health", { cache: "no-store" });
       if (sawOutage && res.ok) {
+        await flushWhiteboardsBeforeChromeReload();
         location.reload();
         return;
       }
@@ -714,6 +1212,7 @@ async function reloadAfterServerRestart() {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
+  await flushWhiteboardsBeforeChromeReload();
   location.reload();
 }
 
@@ -763,9 +1262,7 @@ function toggleAnnotationMode() {
 annotationSwitch.onclick = toggleAnnotationMode;
 
 sendButton.onclick = () => sendQueued(false);
-sendFromMenuButton.onclick = () => sendQueued(false);
 sendAndEndButton.onclick = () => sendQueued(true);
-sendCaret.onclick = () => toggleMenu(sendCaret, sendMenu);
 moreButton.onclick = () => toggleMenu(moreButton, moreMenu);
 chatInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -794,11 +1291,13 @@ endButton.onclick = () => {
 document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
-  if (!sendMenu.hidden && !sendActions.contains(target)) setMenuOpen(sendCaret, sendMenu, false);
 });
+whiteboardCloseButton.onclick = closeWhiteboard;
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    if (!shareDialog.hidden) {
+    if (!whiteboardOverlay.hidden) {
+      closeWhiteboard();
+    } else if (!shareDialog.hidden) {
       closeShareDialog();
     } else {
       closeMenus();
@@ -820,12 +1319,20 @@ frame.addEventListener("load", () => {
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
+  if (overlayIndex !== null) {
+    inlineWhiteboardChannels.delete(overlayIndex);
+    postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: overlayIndex });
+  }
 });
 
 initializeLayoutGate();
 
 const events = new EventSource("/events/" + key);
-events.addEventListener("reload", () => resetFrame());
+events.addEventListener("reload", () => {
+  resetFrame().then((reloaded) => {
+    if (reloaded) refreshWhiteboardSource();
+  });
+});
 events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en" data-theme="luxury">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mermaid theme repro (AFTER)</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+
+    <!-- FIXED: theme-aware Lavish diagram guidance snippet (verbatim from lavish-axi design). -->
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+
+      // Render Mermaid in a theme that matches the artifact page, and re-render when
+      // the viewer flips the page theme - Mermaid never restyles an already-rendered
+      // SVG on its own, so a fixed theme clashes in either light or dark mode.
+      const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+      // Normalize any CSS color the browser produces (rgb, oklch, hsl, named, ...)
+      // to [r, g, b, a] bytes via a 1x1 canvas, so parsing never breaks on modern
+      // color syntaxes like DaisyUI's oklch() values.
+      const paint = document.createElement("canvas").getContext("2d");
+      function toRgba(color) {
+        paint.clearRect(0, 0, 1, 1);
+        paint.fillStyle = "#000";
+        paint.fillStyle = color;
+        paint.fillRect(0, 0, 1, 1);
+        return paint.getImageData(0, 0, 1, 1).data;
+      }
+
+      function compositeRgba(foreground, background) {
+        const foregroundAlpha = foreground[3] / 255;
+        const backgroundAlpha = background[3] / 255;
+        const alpha = foregroundAlpha + backgroundAlpha * (1 - foregroundAlpha);
+        if (alpha === 0) return [0, 0, 0, 0];
+        return [
+          (foreground[0] * foregroundAlpha + background[0] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+          (foreground[1] * foregroundAlpha + background[1] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+          (foreground[2] * foregroundAlpha + background[2] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+          alpha * 255,
+        ];
+      }
+
+      function pageIsDark() {
+        // Trust the actually-rendered page background so this works with any theming
+        // mechanism: prefers-color-scheme, a data-theme attribute, or plain CSS.
+        const root = document.documentElement;
+        const rootBackground = toRgba(getComputedStyle(root).backgroundColor);
+        const bodyBackground = document.body ? toRgba(getComputedStyle(document.body).backgroundColor) : [0, 0, 0, 0];
+        const [r, g, b, a] = compositeRgba(bodyBackground, rootBackground);
+        if (a > 0) {
+          return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
+        }
+        const colorScheme = getComputedStyle(root).colorScheme;
+        if (colorScheme.includes("dark") && !colorScheme.includes("light")) return true;
+        if (colorScheme.includes("light") && !colorScheme.includes("dark")) return false;
+        return darkQuery.matches;
+      }
+
+      const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.textContent }));
+      let applied;
+      let rendering = false;
+      let queued = false;
+      function queueRender() {
+        queued = true;
+        if (rendering) return;
+        void render();
+      }
+      async function render() {
+        rendering = true;
+        try {
+          while (queued) {
+            queued = false;
+            const theme = pageIsDark() ? "dark" : "default";
+            if (theme === applied) continue;
+            mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
+            for (const { el, src } of diagrams) {
+              el.removeAttribute("data-processed");
+              el.textContent = src;
+            }
+            try {
+              await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+            } catch (error) {
+              console.error("Mermaid diagram render failed:", error);
+              return;
+            }
+            applied = theme;
+          }
+        } finally {
+          rendering = false;
+          if (queued) queueRender();
+        }
+      }
+
+      // First render once stylesheets are applied (no wrong-theme flash), then keep
+      // the diagrams in sync with page-theme toggles and OS light/dark changes.
+      if (document.readyState === "complete") queueRender();
+      else window.addEventListener("load", queueRender, { once: true });
+      const themeObserver = new MutationObserver(queueRender);
+      for (const el of [document.documentElement, document.body]) {
+        if (!el) continue;
+        themeObserver.observe(el, {
+          attributes: true,
+          attributeFilter: ["data-theme", "class", "style"],
+        });
+      }
+      document.addEventListener("change", queueRender, true);
+      document.addEventListener(
+        "transitionend",
+        ({ propertyName }) => {
+          if (propertyName === "background-color") queueRender();
+        },
+        true,
+      );
+      darkQuery.addEventListener("change", queueRender);
+    </script>
+  </head>
+  <body class="min-h-screen bg-base-100 text-base-content">
+    <main class="mx-auto max-w-4xl p-6 lg:p-10">
+      <header class="mb-8 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 class="text-3xl font-bold">Deployment pipeline</h1>
+          <p class="mt-1 text-base-content/70">Mermaid diagram theming reproduction</p>
+        </div>
+        <label class="flex cursor-pointer items-center gap-3">
+          <span class="text-sm font-medium">Dark</span>
+          <input type="checkbox" class="toggle toggle-primary" id="theme-toggle" />
+          <span class="text-sm font-medium">Light</span>
+        </label>
+      </header>
+
+      <section class="card card-border bg-base-200">
+        <div class="card-body">
+          <h2 class="card-title">Release flow</h2>
+          <pre class="mermaid">
+flowchart TD
+    A[Commit pushed] --> B{CI passes?}
+    B -- Yes --> C[Build artifact]
+    B -- No --> D[Notify author]
+    C --> E[Deploy to staging]
+    E --> F{Smoke tests?}
+    F -- Yes --> G[Promote to prod]
+    F -- No --> D
+    G --> H[Announce release]
+          </pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const toggle = document.getElementById("theme-toggle");
+      toggle.addEventListener("change", () => {
+        document.documentElement.setAttribute("data-theme", toggle.checked ? "light" : "luxury");
+      });
+    </script>
+  </body>
+</html>

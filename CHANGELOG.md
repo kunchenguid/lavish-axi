@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.1.40](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.39...lavish-axi-v0.1.40) (2026-07-11)
+
+
+### Features
+
+* edit Mermaid diagrams as whiteboards ([#166](https://github.com/kunchenguid/lavish-axi/issues/166)) ([94a181c](https://github.com/kunchenguid/lavish-axi/commit/94a181c2954d5ad49249d85681be61a0385ec47a))
+
+## [0.1.39](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.38...lavish-axi-v0.1.39) (2026-07-10)
+
+
+### Bug Fixes
+
+* **chrome:** add conversation empty state ([#155](https://github.com/kunchenguid/lavish-axi/issues/155)) ([6c81509](https://github.com/kunchenguid/lavish-axi/commit/6c81509c098cafc646c0c3d5fd7e4f462cf30cb1))
+* sync Mermaid diagrams with page themes ([#162](https://github.com/kunchenguid/lavish-axi/issues/162)) ([957eab4](https://github.com/kunchenguid/lavish-axi/commit/957eab4c11474a6ae15988a9b10d64ad08670a73))
+
+## [0.1.38](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.37...lavish-axi-v0.1.38) (2026-07-08)
+
+
+### Bug Fixes
+
+* make Send & End a top-level composer action ([#153](https://github.com/kunchenguid/lavish-axi/issues/153)) ([094bb40](https://github.com/kunchenguid/lavish-axi/commit/094bb40170e1718f3f8badbd627dbea6dd0b9536))
+
+## [0.1.37](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.36...lavish-axi-v0.1.37) (2026-07-07)
+
+
+### Features
+
+* **server:** surface artifact favicon and title on the Lavish tab ([#116](https://github.com/kunchenguid/lavish-axi/issues/116)) ([8b9f79f](https://github.com/kunchenguid/lavish-axi/commit/8b9f79f0c36523403cec8e05b89b500a2e8902bd))
+
+
+### Bug Fixes
+
+* **chrome:** keep composer visible with long feedback queues ([#146](https://github.com/kunchenguid/lavish-axi/issues/146)) ([a36aeb6](https://github.com/kunchenguid/lavish-axi/commit/a36aeb676eef161bd58b227a1e171fa2f6b5e071))
+
 ## [0.1.36](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.35...lavish-axi-v0.1.36) (2026-07-03)
 
 

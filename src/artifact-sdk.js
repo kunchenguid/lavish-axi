@@ -390,8 +390,98 @@ export function createArtifactSdk(
     return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
   }
 
+  // Inline whiteboard embedding. Each rendered diagram inside a `.mermaid`
+  // container is replaced, at view time only, by a nested sandboxed iframe
+  // hosting the Excalidraw whiteboard frame - the artifact file keeps its
+  // Mermaid source and still renders plain diagrams when opened standalone or
+  // exported. The index of the container among `.mermaid` elements in document
+  // order is the diagram's identity; the server recovers the matching source
+  // from the artifact file. This SDK owns their lifecycle during fullscreen
+  // transitions.
+  const whiteboardEmbeds = new Map(); // container -> { iframe, index }
+
+  function mermaidContainerIndex(container) {
+    return [...document.querySelectorAll(".mermaid")].indexOf(container);
+  }
+
+  function whiteboardEmbedHeightPx(svgRect) {
+    const headerPx = 96;
+    const min = 360;
+    const max = Math.max(min, Math.round((window.innerHeight || 800) * 0.8));
+    return Math.max(min, Math.min(Math.round(svgRect.height) + headerPx, max));
+  }
+
+  function embedWhiteboard(svg) {
+    const container = svg.closest(".mermaid");
+    if (!container) return;
+    const existing = whiteboardEmbeds.get(container);
+    if (existing && existing.iframe.isConnected) {
+      existing.index = mermaidContainerIndex(container);
+      return;
+    }
+    const index = mermaidContainerIndex(container);
+    if (index < 0) return;
+    const rect = svg.getBoundingClientRect();
+    // Mermaid renders asynchronously; a zero-ish rect means this svg has not
+    // been laid out yet. Skip it and retry shortly - layout completion does
+    // not necessarily mutate the DOM again, so the observer alone is not a
+    // guaranteed wake-up.
+    if (rect.height < 40) {
+      window.setTimeout(scheduleMermaidEnhance, 150);
+      return;
+    }
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("data-lavish-ui", "whiteboard-inline");
+    iframe.setAttribute("title", "Excalidraw whiteboard");
+    // Stricter than (and independent of) this artifact frame's own sandbox.
+    iframe.setAttribute("sandbox", "allow-scripts allow-popups");
+    iframe.src = whiteboardFrameSrc({ index, diagramId: svg.id || "" });
+    iframe.style.cssText =
+      `display:block;width:100%;height:${whiteboardEmbedHeightPx(rect)}px;border:1px solid rgba(128,128,128,.35);` +
+      "border-radius:12px;background:transparent";
+    // The design snippet re-renders Mermaid inside the container on theme
+    // changes, so the frame lives as a sibling: re-renders stay harmless
+    // inside the hidden container instead of destroying the editor.
+    container.style.display = "none";
+    container.insertAdjacentElement("afterend", iframe);
+    whiteboardEmbeds.set(container, { iframe, index, diagramId: svg.id || "" });
+  }
+
+  function whiteboardEmbedEntries() {
+    return [...whiteboardEmbeds.values()].filter((entry) => entry.iframe.isConnected);
+  }
+
+  function whiteboardEntryByIndex(index) {
+    return whiteboardEmbedEntries().find((entry) => entry.index === Number(index)) || null;
+  }
+
+  function whiteboardFrameSrc(entry) {
+    const params = new URLSearchParams({
+      diagramIndex: String(entry.index),
+      diagramId: String(entry.diagramId || ""),
+    });
+    return `/whiteboard-frame?${params}`;
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== parent) return;
+    const msg = event.data || {};
+    // While the chrome overlay edits a diagram fullscreen, its inline frame is
+    // parked on about:blank so two editors never autosave the same sidecar;
+    // resume reboots the frame, which re-inits from the latest saved scene.
+    if (msg.type === "lavish:suspendWhiteboard") {
+      const target = whiteboardEntryByIndex(msg.diagramIndex);
+      if (target) target.iframe.src = "about:blank";
+    }
+    if (msg.type === "lavish:resumeWhiteboard") {
+      const target = whiteboardEntryByIndex(msg.diagramIndex);
+      if (target) target.iframe.src = whiteboardFrameSrc(target);
+    }
+  });
+
   function enhanceMermaid() {
     for (const svg of findMermaidSvgs()) {
+      embedWhiteboard(svg);
       if (mermaidViewports.has(svg)) continue;
       const viewport = createViewport(svg);
       if (viewport) {

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en" data-theme="luxury">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mermaid theme repro (BEFORE)</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+
+    <!-- CURRENT (BUGGY) Lavish diagram guidance snippet: fixed theme, no theme awareness. -->
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: "base",
+        securityLevel: "strict",
+      });
+    </script>
+  </head>
+  <body class="min-h-screen bg-base-100 text-base-content">
+    <main class="mx-auto max-w-4xl p-6 lg:p-10">
+      <header class="mb-8 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 class="text-3xl font-bold">Deployment pipeline</h1>
+          <p class="mt-1 text-base-content/70">Mermaid diagram theming reproduction</p>
+        </div>
+        <label class="flex cursor-pointer items-center gap-3">
+          <span class="text-sm font-medium">Dark</span>
+          <input type="checkbox" class="toggle toggle-primary" id="theme-toggle" />
+          <span class="text-sm font-medium">Light</span>
+        </label>
+      </header>
+
+      <section class="card card-border bg-base-200">
+        <div class="card-body">
+          <h2 class="card-title">Release flow</h2>
+          <pre class="mermaid">
+flowchart TD
+    A[Commit pushed] --> B{CI passes?}
+    B -- Yes --> C[Build artifact]
+    B -- No --> D[Notify author]
+    C --> E[Deploy to staging]
+    E --> F{Smoke tests?}
+    F -- Yes --> G[Promote to prod]
+    F -- No --> D
+    G --> H[Announce release]
+          </pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      // Page theme toggle: luxury (dark) <-> light. This mimics the viewer's
+      // theme toggle stamping data-theme on the root element.
+      const toggle = document.getElementById("theme-toggle");
+      toggle.addEventListener("change", () => {
+        document.documentElement.setAttribute("data-theme", toggle.checked ? "light" : "luxury");
+      });
+    </script>
+  </body>
+</html>

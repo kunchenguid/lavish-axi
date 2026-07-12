@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, readFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, readFile } from "node:fs/promises";
 
 import * as esbuild from "esbuild";
 
@@ -28,3 +28,35 @@ await mkdir("dist/design", { recursive: true });
 await copyFile("node_modules/daisyui/daisyui.css", "dist/design/daisyui.css");
 await copyFile("node_modules/daisyui/themes.css", "dist/design/daisyui-themes.css");
 await copyFile("node_modules/@tailwindcss/browser/dist/index.global.js", "dist/design/tailwindcss-browser.js");
+
+// Whiteboard frame: a self-contained browser bundle (Excalidraw + the Mermaid
+// converter + its exactly-pinned mermaid + React) served from
+// /whiteboard-assets/ by an embedded frame for every rendered Mermaid diagram
+// in a `.mermaid` container.
+// Everything is vendored so the eagerly loaded whiteboards work fully offline.
+await mkdir("dist/whiteboard", { recursive: true });
+await esbuild.build({
+  entryPoints: { whiteboard: "src/whiteboard-frame.js" },
+  outdir: "dist/whiteboard",
+  bundle: true,
+  minify: true,
+  format: "iife",
+  platform: "browser",
+  conditions: ["production"],
+  loader: { ".woff2": "file", ".woff": "file", ".ttf": "file" },
+  define: {
+    "process.env.NODE_ENV": '"production"',
+    "process.env.IS_PREACT": '"false"',
+  },
+});
+
+// Excalidraw lazily fetches canvas fonts from `EXCALIDRAW_ASSET_PATH/fonts/`.
+// Vendor every family except Xiaolai (12 MB of CJK glyphs; those fall back to
+// Excalidraw's CDN fallback or the system font when missing locally).
+const fontFamilies = ["Assistant", "Cascadia", "ComicShanns", "Excalifont", "Liberation", "Lilita", "Nunito", "Virgil"];
+await mkdir("dist/whiteboard/fonts", { recursive: true });
+for (const family of fontFamilies) {
+  await cp(`node_modules/@excalidraw/excalidraw/dist/prod/fonts/${family}`, `dist/whiteboard/fonts/${family}`, {
+    recursive: true,
+  });
+}

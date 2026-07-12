@@ -1,6 +1,6 @@
 {
   "name": "lavish-axi",
-  "version": "0.1.36",
+  "version": "0.1.40",
   "packageManager": "pnpm@11.1.1",
   "description": "HTML is the new markdown. Lavish is the new editor for your HTML artifacts.",
   "type": "module",
@@ -12,6 +12,7 @@
     "skills/lavish",
     "lavish-editor-marketing/renders/lavish-editor-marketing.gif",
     "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
     "README.md"
   ],
   "scripts": {
@@ -33,16 +34,22 @@
     "chokidar": "^4.0.3",
     "daisyui": "^5.5.19",
     "express": "^5.2.1",
-    "open": "^10.2.0"
+    "open": "^10.2.0",
+    "parse5": "^8.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@excalidraw/excalidraw": "0.18.1",
+    "@excalidraw/mermaid-to-excalidraw": "2.2.2",
     "@types/node": "^25.6.2",
     "esbuild": "^0.28.0",
     "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.6.0",
+    "mermaid": "11.12.1",
     "prettier": "^3.8.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "typescript": "^5.9.3"
   },
   "engines": {
