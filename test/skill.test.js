@@ -39,7 +39,7 @@ test("createSkillMarkdown handles explicit /lavish invocation arguments", () => 
 
 test("createSkillMarkdown mirrors the no-args home output", () => {
   const md = createSkillMarkdown();
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false });
+  const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false, agent: "static" });
 
   assert.ok(md.includes(skillCommandText(home.description)), "includes the product description");
 
@@ -56,6 +56,15 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
     const skillItem = skillCommandText(item);
     assert.ok(md.includes(skillItem), `includes help: ${skillItem.slice(0, 32)}...`);
   }
+});
+
+test("createSkillMarkdown keeps static poll guidance agent-neutral", () => {
+  const md = createSkillMarkdown();
+
+  assert.doesNotMatch(md, /keep the poll attached to the active turn/i);
+  assert.doesNotMatch(md, /run the poll as a background task/);
+  assert.doesNotMatch(md, /Codex detected/);
+  assert.match(md, /queued feedback is never lost/);
 });
 
 test("createSkillMarkdown requires opening every matching playbook", () => {
