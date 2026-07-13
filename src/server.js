@@ -45,6 +45,14 @@ import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import {
+  attachmentPath,
+  isValidAttachmentKey,
+  removeAttachment,
+  resolveAttachment,
+  resolveAttachmentConfig,
+  writeAttachment,
+} from "./attachment-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -90,6 +98,12 @@ export function defaultWhiteboardAssetsDir() {
 // whiteboard write routes get the larger limit.
 export function isWhiteboardWriteApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
+}
+
+// The attachment upload carries raw image bytes, not JSON, so it bypasses both
+// JSON body parsers and gets express.raw with the per-image byte cap instead.
+export function isAttachmentUploadApiPath(pathname) {
+  return /^\/api\/[0-9a-f]{16}\/attachments$/.test(String(pathname || ""));
 }
 
 export function createWhiteboardChannelToken(secret, now = Date.now()) {
@@ -171,6 +185,9 @@ export async function serve({
   // LAVISH_AXI_ALLOWED_HOSTS; a lone "*" there disables the guard for operators
   // who front the server with their own authentication. When a reverse proxy sits
   // in front, X-Forwarded-Host is validated too (see isAllowedRequestHost).
+  //
+  // This guard is installed as the first middleware so every route - including the
+  // attachment upload/fetch/remove endpoints below - is behind the Host allowlist.
   const allowedHostnames = buildAllowedHostnames({ host, linkHost: linkHostName, allowedHosts });
   if (!allowsAllHosts(allowedHosts)) {
     app.use((req, res, next) => {
@@ -186,11 +203,20 @@ export async function serve({
     });
   }
 
+  const attachmentConfig = resolveAttachmentConfig();
+  // Attachment bytes are content-addressed on disk alongside the whiteboard sidecars.
+  const attachmentStateRoot = path.dirname(stateFile);
+
   const defaultJsonParser = express.json({ limit: "2mb" });
   const whiteboardJsonParser = express.json({ limit: "20mb" });
-  app.use((req, res, next) =>
-    isWhiteboardWriteApiPath(req.path) ? whiteboardJsonParser(req, res, next) : defaultJsonParser(req, res, next),
-  );
+  // Accept any Content-Type as raw bytes (magic-byte validation is authoritative);
+  // the byte cap here backstops the store's own size check and returns 413.
+  const attachmentUploadParser = express.raw({ type: () => true, limit: attachmentConfig.maxBytes });
+  app.use((req, res, next) => {
+    if (req.method === "POST" && isAttachmentUploadApiPath(req.path)) return attachmentUploadParser(req, res, next);
+    if (isWhiteboardWriteApiPath(req.path)) return whiteboardJsonParser(req, res, next);
+    return defaultJsonParser(req, res, next);
+  });
 
   app.get("/health", (req, res) => {
     res.json({ ok: true, app: "lavish-axi", version });
@@ -939,6 +965,60 @@ export async function serve({
         { scene: body.scene ?? null, pngDataUrl: String(body.pngDataUrl || body.png_data_url || "") },
       );
       res.json({ scene_path: scenePath, preview_path: previewPath });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Annotation image attachments. Upload writes raw bytes to the state dir and
+  // returns server-vetted metadata (content-hash id + absolute path); the prompt
+  // later references the id and the server re-resolves it (see queuePrompts).
+  // Upload and delete write/remove local files, so they are same-origin guarded
+  // like the whiteboard writes - a hostile cross-origin page must not drive them.
+  app.post("/api/:key/attachments", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin attachment upload rejected" });
+        return;
+      }
+      if (!isValidAttachmentKey(req.params.key) || !(await store.findByKey(req.params.key))) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const attachment = await writeAttachment(attachmentStateRoot, req.params.key, body, {
+        maxBytes: attachmentConfig.maxBytes,
+      });
+      res.json({ status: "stored", attachment });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/:key/attachments/:id", async (req, res, next) => {
+    try {
+      const file = attachmentPath(attachmentStateRoot, req.params.key, req.params.id);
+      const attachment = file ? await resolveAttachment(attachmentStateRoot, req.params.key, req.params.id) : null;
+      if (!file || !attachment) {
+        res.status(404).json({ error: "attachment not found" });
+        return;
+      }
+      res.setHeader("cache-control", "private, max-age=300");
+      res.type(attachment.mime);
+      res.sendFile(file, { dotfiles: "allow" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/:key/attachments/:id", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin attachment delete rejected" });
+        return;
+      }
+      const removed = await removeAttachment(attachmentStateRoot, req.params.key, req.params.id);
+      res.json({ status: removed ? "removed" : "absent" });
     } catch (error) {
       next(error);
     }
