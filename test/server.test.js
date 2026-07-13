@@ -781,6 +781,24 @@ test("artifact SDK dedups cascading visible-overflow spills to the innermost ele
   assert.match(js, /candidate\.el\.contains\(other\.el\)/);
 });
 
+test("artifact SDK verifies vertical overflow against rendered text fragments", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /function elementTextFragments/);
+  assert.match(js, /verticalFragmentOverflow/);
+  assert.match(js, /textFragments\.length/);
+  assert.match(js, /textOverflowPx/);
+  assert.match(js, /textLineCount/);
+});
+
+test("artifact SDK classifies parent overhang by its scroll impact", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /classifyParentOverflow/);
+  assert.match(js, /scrollWidth:\s*parent\.scrollWidth/);
+  assert.match(js, /clientWidth:\s*parent\.clientWidth/);
+});
+
 test("artifact SDK uses per-fragment rects, not the bounding box, for overlap detection", () => {
   const js = createSdkJs("abc");
 

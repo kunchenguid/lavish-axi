@@ -147,6 +147,14 @@ export function fragmentsSignificantlyOverlap(fragmentsA, fragmentsB, { minAreaR
   return false;
 }
 
+export function verticalFragmentOverflow(fragments, box) {
+  return fragments.reduce(
+    (largest, fragment) =>
+      Math.max(largest, Number(box.top) - Number(fragment.top), Number(fragment.bottom) - Number(box.bottom)),
+    0,
+  );
+}
+
 // scrollWidth/scrollHeight can only exceed clientWidth/clientHeight when something constrains
 // the box's size (a fixed height/width, or a flex/grid item smaller than its content) - a box
 // that simply grows to fit its content always has scrollHeight === clientHeight, so this never
@@ -158,19 +166,38 @@ export function classifyHorizontalOverflow({ scrollWidth, clientWidth, overflowX
   return { overflowPx, kind: clipsText ? "clipped-text" : "element-scroll-overflow" };
 }
 
+// A child crossing the parent's content edge can be a deliberate negative-margin accent. Ignore
+// it unless it changes scroll geometry, and leave the remaining heuristic advisory; the separate
+// page-horizontal-overflow finding is the strict signal when content escapes the viewport.
+export function classifyParentOverflow({ overhangPx, scrollWidth, clientWidth, epsilon = 1 }) {
+  const scrollOverflowPx = clientWidth > 0 ? scrollWidth - clientWidth : 0;
+  if (overhangPx <= epsilon || scrollOverflowPx <= epsilon) return null;
+  return { overflowPx: overhangPx, kind: "element-parent-overflow", severity: "warning" };
+}
+
 // Fixed-size badges/buttons/pills usually leave overflow at its default "visible" rather than
 // "hidden" - the text doesn't get clipped, it spills out of the box and overlaps neighboring
-// content, which is just as broken. Only "auto"/"scroll" are treated as intentional (the user
-// can reach the content), so those are the only values this ignores. `clips` distinguishes a
-// hard clip (hidden/clip - content invisible) from a visible spill: a spill's overflow bubbles
-// into every unconstrained block ancestor's own scrollHeight too, so callers must dedup those
-// against the innermost element actually responsible before reporting.
-export function classifyVerticalOverflow({ scrollHeight, clientHeight, overflowY, hasText, isTruncated, epsilon = 1 }) {
+// content, which is just as broken. Scroll dimensions also include font-metric and decorative
+// overflow, so browser callers cross-check real text fragments; one visible line is harmless,
+// while wrapped text outside the box remains a finding. `clips` distinguishes a hard clip from
+// a visible spill, which callers dedup against unconstrained ancestors before reporting.
+export function classifyVerticalOverflow({
+  scrollHeight,
+  clientHeight,
+  overflowY,
+  hasText,
+  isTruncated,
+  textOverflowPx,
+  textLineCount,
+  epsilon = 1,
+}) {
   const overflowPx = clientHeight > 0 ? scrollHeight - clientHeight : 0;
   if (overflowPx <= epsilon) return null;
   const scrollable = overflowY === "auto" || overflowY === "scroll";
   if (scrollable || !hasText || isTruncated) return null;
+  if (Number.isFinite(textOverflowPx) && textOverflowPx <= epsilon) return null;
   const clips = overflowY === "hidden" || overflowY === "clip";
+  if (!clips && textLineCount === 1) return null;
   return { overflowPx, kind: "clipped-text", clips };
 }
 
@@ -750,6 +777,40 @@ export function createArtifactSdk(
     };
   }
 
+  function paddingBoxRect(el) {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return {
+      top: rect.top + toPixelNumber(style.borderTopWidth),
+      bottom: rect.bottom - toPixelNumber(style.borderBottomWidth),
+    };
+  }
+
+  function elementTextFragments(el) {
+    const fragments = [];
+    const walker = document.createTreeWalker(el, 4);
+    let textNode = walker.nextNode();
+    while (textNode) {
+      if (String(textNode.textContent || "").trim()) {
+        const range = document.createRange();
+        range.selectNodeContents(textNode);
+        fragments.push(...range.getClientRects());
+        range.detach?.();
+      }
+      textNode = walker.nextNode();
+    }
+    return fragments;
+  }
+
+  function renderedTextLineCount(fragments) {
+    const lineTops = [];
+    for (const fragment of fragments) {
+      const top = Number(fragment.top);
+      if (Number.isFinite(top) && !lineTops.some((lineTop) => Math.abs(lineTop - top) <= 1)) lineTops.push(top);
+    }
+    return lineTops.length;
+  }
+
   function collectLayoutAuditElements() {
     const elements = [];
 
@@ -810,12 +871,17 @@ export function createArtifactSdk(
       });
     }
 
+    const needsVerticalTextCheck =
+      hasText && el.clientHeight > 0 && el.scrollHeight - el.clientHeight > layoutAuditOverflowEpsilon;
+    const textFragments = needsVerticalTextCheck ? elementTextFragments(el) : [];
     const vertical = classifyVerticalOverflow({
       scrollHeight: el.scrollHeight,
       clientHeight: el.clientHeight,
       overflowY: style.overflowY,
       hasText,
       isTruncated,
+      textOverflowPx: textFragments.length ? verticalFragmentOverflow(textFragments, paddingBoxRect(el)) : undefined,
+      textLineCount: renderedTextLineCount(textFragments),
       epsilon: layoutAuditOverflowEpsilon,
     });
     if (vertical) {
@@ -844,15 +910,19 @@ export function createArtifactSdk(
 
     const parentBox = contentBoxRect(parent);
     const parentOverflowPx = rect.right - parentBox.right;
-    if (parentOverflowPx > layoutAuditOverflowEpsilon && rectArea(rect) > 1) {
-      const positionedOffCanvas =
-        style.position === "absolute" || style.position === "fixed" || style.position === "sticky";
+    const parentFinding = classifyParentOverflow({
+      overhangPx: parentOverflowPx,
+      scrollWidth: parent.scrollWidth,
+      clientWidth: parent.clientWidth,
+      epsilon: layoutAuditOverflowEpsilon,
+    });
+    if (parentFinding && rectArea(rect) > 1) {
       pushLayoutFinding(findings, seen, {
         selector: selector(el),
-        kind: "element-parent-overflow",
-        overflowPx: parentOverflowPx,
+        kind: parentFinding.kind,
+        overflowPx: parentFinding.overflowPx,
         viewportWidth,
-        severity: positionedOffCanvas ? "warning" : overflowSeverity(parentOverflowPx),
+        severity: parentFinding.severity,
       });
     }
   }

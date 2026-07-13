@@ -1224,6 +1224,30 @@ test("low-severity text-flow warnings permit proceeding to the human without loo
   assert.doesNotMatch(output.next_step, /fix horizontal overflow/);
 });
 
+test("contained parent overhang does not force another repair loop", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [],
+      layout_warnings: [
+        {
+          selector: ".highlight",
+          kind: "element-parent-overflow",
+          overflowPx: 9,
+          viewportWidth: 1200,
+          severity: "warning",
+          persistent: false,
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /fine to proceed to the human with a note/);
+  assert.doesNotMatch(output.next_step, /before involving the human/);
+});
+
 test("a mix of fresh error-severity and persistent warnings still mandates a fix pass", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",

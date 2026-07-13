@@ -3,12 +3,14 @@ import test from "node:test";
 
 import {
   classifyHorizontalOverflow,
+  classifyParentOverflow,
   classifyVerticalOverflow,
   deriveLavishQueueKey,
   fragmentsSignificantlyOverlap,
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   resolveVisibleSpillCandidates,
+  verticalFragmentOverflow,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -244,6 +246,42 @@ test("classifyVerticalOverflow ignores boxes that simply grow to fit their conte
   assert.equal(finding, null);
 });
 
+test("classifyVerticalOverflow ignores scroll metrics when rendered text stays inside the box", () => {
+  const finding = classifyVerticalOverflow({
+    scrollHeight: 38,
+    clientHeight: 28,
+    overflowY: "hidden",
+    hasText: true,
+    isTruncated: false,
+    textOverflowPx: 0,
+  });
+
+  assert.equal(finding, null);
+});
+
+test("classifyVerticalOverflow ignores one visible line with tight font metrics", () => {
+  const finding = classifyVerticalOverflow({
+    scrollHeight: 42,
+    clientHeight: 32,
+    overflowY: "visible",
+    hasText: true,
+    isTruncated: false,
+    textOverflowPx: 8,
+    textLineCount: 1,
+  });
+
+  assert.equal(finding, null);
+});
+
+test("verticalFragmentOverflow measures rendered text beyond the box boundary", () => {
+  const fragments = [
+    { top: 4, bottom: 18 },
+    { top: 20, bottom: 36 },
+  ];
+
+  assert.equal(verticalFragmentOverflow(fragments, { top: 0, bottom: 28 }), 8);
+});
+
 test("resolveVisibleSpillCandidates keeps the deepest candidate for one bubbled spill", () => {
   const badge = node("span");
   const row = node("div", {}, [badge]);
@@ -292,6 +330,30 @@ test("classifyHorizontalOverflow still distinguishes clipped text from generic s
     isTruncated: false,
   });
   assert.deepEqual(genericScroll, { overflowPx: 100, kind: "element-scroll-overflow" });
+});
+
+test("classifyParentOverflow ignores visual overhang without parent scroll impact", () => {
+  const finding = classifyParentOverflow({
+    overhangPx: 9,
+    scrollWidth: 320,
+    clientWidth: 320,
+  });
+
+  assert.equal(finding, null);
+});
+
+test("classifyParentOverflow keeps contained parent overhang advisory", () => {
+  const finding = classifyParentOverflow({
+    overhangPx: 9,
+    scrollWidth: 329,
+    clientWidth: 320,
+  });
+
+  assert.deepEqual(finding, {
+    overflowPx: 9,
+    kind: "element-parent-overflow",
+    severity: "warning",
+  });
 });
 
 test("isModeToggleHotkeyEvent matches Cmd/Ctrl+I regardless of case", () => {

@@ -11,6 +11,7 @@ import express from "express";
 
 import {
   classifyHorizontalOverflow,
+  classifyParentOverflow,
   classifyVerticalOverflow,
   createArtifactSdk,
   deriveLavishQueueKey,
@@ -19,6 +20,7 @@ import {
   isNativeInteractiveControl,
   MODE_TOGGLE_HOTKEY_KEY,
   resolveVisibleSpillCandidates,
+  verticalFragmentOverflow,
 } from "./artifact-sdk.js";
 import * as mermaidNode from "./mermaid-node.js";
 import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
@@ -1180,8 +1182,10 @@ const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
 const isModeToggleHotkeyEvent=${isModeToggleHotkeyEvent.toString()};
 const fragmentsSignificantlyOverlap=${fragmentsSignificantlyOverlap.toString()};
+const verticalFragmentOverflow=${verticalFragmentOverflow.toString()};
 const resolveVisibleSpillCandidates=${resolveVisibleSpillCandidates.toString()};
 const classifyHorizontalOverflow=${classifyHorizontalOverflow.toString()};
+const classifyParentOverflow=${classifyParentOverflow.toString()};
 const classifyVerticalOverflow=${classifyVerticalOverflow.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
