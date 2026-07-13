@@ -520,6 +520,23 @@ export class SessionStore {
     return result;
   }
 
+  // `key/id` strings for every attachment still referenced by a pending prompt,
+  // across all sessions. The attachment sweeper uses this so it never reaps a file
+  // that belongs to a queued-but-undelivered prompt. Delivered prompts are cleared
+  // from `prompts` by takeFeedback, so their attachments become sweep-eligible.
+  async referencedAttachmentIds() {
+    const state = await this.readState();
+    const referenced = new Set();
+    for (const session of Object.values(state.sessions)) {
+      for (const prompt of session.prompts || []) {
+        for (const attachment of prompt.attachments || []) {
+          if (attachment && attachment.id) referenced.add(`${session.key}/${attachment.id}`);
+        }
+      }
+    }
+    return referenced;
+  }
+
   async readState() {
     try {
       const raw = await readFile(this.file, "utf8");

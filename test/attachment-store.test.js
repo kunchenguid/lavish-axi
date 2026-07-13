@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,9 +11,11 @@ import {
   imageDimensions,
   isValidAttachmentId,
   isValidAttachmentKey,
+  listAttachments,
   removeAttachment,
   resolveAttachment,
   resolveAttachmentConfig,
+  sweepAttachments,
   writeAttachment,
 } from "../src/attachment-store.js";
 
@@ -189,5 +191,103 @@ test("writeAttachment leaves no stray temp files behind", async () => {
       entries.every((name) => !name.endsWith(".tmp")),
       `unexpected temp file in ${entries}`,
     );
+  });
+});
+
+const KEY_B = "fedcba9876543210";
+
+// Distinct byte payloads that still carry the PNG magic signature, so each writes
+// to a unique content-hash id (dimensions are irrelevant to sweeping).
+function uniquePng(seed) {
+  return Buffer.concat([PNG_2x1, Buffer.from(String(seed).padEnd(8, "-"))]);
+}
+
+test("listAttachments enumerates well-formed files across session dirs", async () => {
+  await withTempDir(async (dir) => {
+    const a = await writeAttachment(dir, KEY, uniquePng("a"), {});
+    const b = await writeAttachment(dir, KEY_B, uniquePng("b"), {});
+    const listed = await listAttachments(dir);
+    const byPath = new Map(listed.map((f) => [f.path, f]));
+    assert.equal(listed.length, 2);
+    assert.ok(byPath.has(a.path));
+    assert.ok(byPath.has(b.path));
+    assert.equal(byPath.get(a.path).key, KEY);
+    assert.equal(byPath.get(a.path).bytes, uniquePng("a").length);
+  });
+});
+
+test("sweepAttachments reaps expired unreferenced files but keeps referenced and fresh ones", async () => {
+  await withTempDir(async (dir) => {
+    const expiredOrphan = await writeAttachment(dir, KEY, uniquePng("orphan"), {});
+    const expiredReferenced = await writeAttachment(dir, KEY, uniquePng("kept"), {});
+    const fresh = await writeAttachment(dir, KEY, uniquePng("fresh"), {});
+
+    // Age the two "expired" files well past the TTL; leave `fresh` recent.
+    const old = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    await utimes(expiredOrphan.path, new Date(old), new Date(old));
+    await utimes(expiredReferenced.path, new Date(old), new Date(old));
+
+    const result = await sweepAttachments(dir, {
+      ttlMs: 7 * 24 * 60 * 60 * 1000,
+      referenced: new Set([`${KEY}/${expiredReferenced.id}`]),
+    });
+
+    assert.equal(result.deleted, 1);
+    assert.equal(await resolveAttachment(dir, KEY, expiredOrphan.id), null);
+    assert.ok(await resolveAttachment(dir, KEY, expiredReferenced.id), "referenced file must survive its TTL");
+    assert.ok(await resolveAttachment(dir, KEY, fresh.id), "fresh file must survive");
+  });
+});
+
+test("sweepAttachments never reaps when the TTL is disabled", async () => {
+  await withTempDir(async (dir) => {
+    const stored = await writeAttachment(dir, KEY, uniquePng("x"), {});
+    const old = Date.now() - 365 * 24 * 60 * 60 * 1000;
+    await utimes(stored.path, new Date(old), new Date(old));
+    const result = await sweepAttachments(dir, { ttlMs: null });
+    assert.equal(result.deleted, 0);
+    assert.ok(await resolveAttachment(dir, KEY, stored.id));
+  });
+});
+
+test("disk cap evicts oldest unreferenced files first and never referenced ones", async () => {
+  await withTempDir(async (dir) => {
+    const oldest = await writeAttachment(dir, KEY, uniquePng("oldest"), {});
+    const middle = await writeAttachment(dir, KEY, uniquePng("middle"), {});
+    const newest = await writeAttachment(dir, KEY, uniquePng("newest"), {});
+    const base = Date.now();
+    await utimes(oldest.path, new Date(base - 3000), new Date(base - 3000));
+    await utimes(middle.path, new Date(base - 2000), new Date(base - 2000));
+    await utimes(newest.path, new Date(base - 1000), new Date(base - 1000));
+
+    const each = oldest.bytes; // all three payloads are the same length
+    // Cap fits ~2 files; the oldest unreferenced one is evicted. TTL off so only
+    // the disk-cap backstop acts.
+    const result = await sweepAttachments(dir, {
+      ttlMs: null,
+      maxDiskBytes: each * 2 + 1,
+      referenced: new Set([`${KEY}/${oldest.id}`]),
+    });
+
+    assert.equal(result.deleted, 1);
+    // The oldest is referenced, so eviction must skip it and take the next oldest.
+    assert.ok(await resolveAttachment(dir, KEY, oldest.id), "referenced file is never evicted");
+    assert.equal(await resolveAttachment(dir, KEY, middle.id), null);
+    assert.ok(await resolveAttachment(dir, KEY, newest.id));
+  });
+});
+
+test("sweepAttachments prunes empty session dirs and tolerates a missing root", async () => {
+  await withTempDir(async (dir) => {
+    const stored = await writeAttachment(dir, KEY, uniquePng("solo"), {});
+    const old = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    await utimes(stored.path, new Date(old), new Date(old));
+    await sweepAttachments(dir, { ttlMs: 7 * 24 * 60 * 60 * 1000 });
+    const remaining = await readdir(attachmentsDir(dir, KEY)).catch((e) => e.code);
+    assert.equal(remaining, "ENOENT");
+    // No attachments root at all: a no-op, not a throw.
+    await withTempDir(async (empty) => {
+      assert.deepEqual(await sweepAttachments(empty, {}), { deleted: 0, freedBytes: 0 });
+    });
   });
 });

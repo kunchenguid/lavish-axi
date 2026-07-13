@@ -1154,3 +1154,39 @@ test("attachments are dropped when no resolver is supplied", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("referencedAttachmentIds collects ids from pending prompts and clears after delivery", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hi</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const id = "a".repeat(64) + ".png";
+    const resolveAttachment = async (_key, ref) => ({
+      id: ref,
+      type: "image",
+      path: "/x/" + ref,
+      mime: "image/png",
+      bytes: 5,
+      width: 1,
+      height: 1,
+    });
+
+    await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "1", prompt: "look", selector: "", tag: "h1", text: "", attachments: [{ id }] }] },
+      { resolveAttachment },
+    );
+
+    assert.deepEqual([...(await store.referencedAttachmentIds())], [`${session.key}/${id}`]);
+
+    // takeFeedback clears pending prompts, so the attachment is no longer referenced.
+    await store.takeFeedback(session.key);
+    assert.deepEqual([...(await store.referencedAttachmentIds())], []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -51,6 +51,7 @@ import {
   removeAttachment,
   resolveAttachment,
   resolveAttachmentConfig,
+  sweepAttachments,
   writeAttachment,
 } from "./attachment-store.js";
 
@@ -76,6 +77,10 @@ const designAssetUrls = {
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
+// Sweep orphaned/expired attachments periodically, not just at startup: a
+// detached server can run for days, and an upload whose /prompts follow-up never
+// arrived would otherwise linger until the next restart.
+const ATTACHMENT_SWEEP_INTERVAL_MS = 60 * 60_000;
 
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
 // layout-warning batch is outstanding, the agent is applying several related edits, so widen the
@@ -1051,6 +1056,10 @@ export async function serve({
       clearTimeout(idleTimer);
       idleTimer = null;
     }
+    if (attachmentSweepTimer) {
+      clearInterval(attachmentSweepTimer);
+      attachmentSweepTimer = null;
+    }
     // Tell open browser chromes to reload before we drop their SSE connection. The new
     // server adopts the session via state.json once it binds, so the reloaded chrome
     // immediately gets the upgraded HTML/CSS/JS.
@@ -1128,6 +1137,35 @@ export async function serve({
 
   function reloadDebounceMs(key) {
     return outstandingRepairBatches.has(key) ? BATCH_RELOAD_DEBOUNCE_MS : RELOAD_DEBOUNCE_MS;
+  }
+
+  // Reference-aware attachment cleanup: reap files that are both past their TTL
+  // and unreferenced, plus the optional disk-cap backstop. Runs once at startup
+  // and then on a fixed interval; skipped entirely when neither a TTL nor a disk
+  // cap is configured. Never touches attachments referenced by pending prompts.
+  const attachmentSweepEnabled = attachmentConfig.ttlMs != null || attachmentConfig.maxDiskBytes != null;
+  let attachmentSweepTimer = null;
+  async function sweepAttachmentsNow() {
+    try {
+      const referenced = await store.referencedAttachmentIds();
+      const result = await sweepAttachments(attachmentStateRoot, {
+        ttlMs: attachmentConfig.ttlMs,
+        maxDiskBytes: attachmentConfig.maxDiskBytes,
+        referenced,
+      });
+      if (result.deleted > 0) {
+        logEvent?.(`attachment sweep removed ${result.deleted} file(s), freed ${result.freedBytes} bytes`);
+      }
+    } catch (error) {
+      logEvent?.(`attachment sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (attachmentSweepEnabled) {
+    sweepAttachmentsNow();
+    attachmentSweepTimer = setInterval(() => {
+      sweepAttachmentsNow();
+    }, ATTACHMENT_SWEEP_INTERVAL_MS);
+    attachmentSweepTimer.unref?.();
   }
 
   // Arm the idle timer for a server that is spawned but never opens a session.

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Content-addressed storage for annotation image attachments, kept out of
@@ -277,5 +277,99 @@ export async function removeAttachment(stateDir, key, id) {
   } catch (error) {
     if (error && error.code === "ENOENT") return false;
     throw error;
+  }
+}
+
+// Enumerate every stored attachment as { key, id, path, bytes, mtimeMs }. Only
+// well-formed session dirs and content-hash ids are reported, so stray temp files
+// or foreign entries are ignored.
+export async function listAttachments(stateDir) {
+  const root = path.join(stateDir, "attachments");
+  const sessionDirs = await readdirSafe(root);
+  const files = [];
+  for (const dirent of sessionDirs) {
+    if (!dirent.isDirectory() || !isValidAttachmentKey(dirent.name)) continue;
+    const dir = path.join(root, dirent.name);
+    for (const entry of await readdirSafe(dir)) {
+      if (!entry.isFile() || !isValidAttachmentId(entry.name)) continue;
+      const filePath = path.join(dir, entry.name);
+      try {
+        const info = await stat(filePath);
+        files.push({ key: dirent.name, id: entry.name, path: filePath, bytes: info.size, mtimeMs: info.mtimeMs });
+      } catch {
+        // Raced with a delete; skip it.
+      }
+    }
+  }
+  return files;
+}
+
+// Reference-aware cleanup. A file is removed only when it is BOTH older than the
+// TTL AND not referenced by any pending prompt (`referenced` holds `key/id`
+// strings), so an attachment that belongs to a queued-but-undelivered prompt
+// (including a send-and-end batch) is never reaped, whatever its age. When a disk
+// cap is set, oldest UNREFERENCED files are then evicted until under the cap;
+// referenced files are never evicted even if that leaves the total over budget.
+export async function sweepAttachments(stateDir, options = {}) {
+  const { ttlMs = DEFAULT_ATTACHMENT_TTL_MS, maxDiskBytes = null, referenced = new Set(), now = Date.now() } = options;
+  const files = await listAttachments(stateDir);
+  let deleted = 0;
+  let freedBytes = 0;
+  const survivors = [];
+  for (const file of files) {
+    const isReferenced = referenced.has(`${file.key}/${file.id}`);
+    const expired = ttlMs != null && now - file.mtimeMs > ttlMs;
+    if (!isReferenced && expired) {
+      if (await removeFile(file.path)) {
+        deleted += 1;
+        freedBytes += file.bytes;
+      }
+    } else {
+      survivors.push({ ...file, referenced: isReferenced });
+    }
+  }
+  if (maxDiskBytes != null) {
+    let total = survivors.reduce((sum, file) => sum + file.bytes, 0);
+    const evictable = survivors.filter((file) => !file.referenced).sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const file of evictable) {
+      if (total <= maxDiskBytes) break;
+      if (await removeFile(file.path)) {
+        deleted += 1;
+        freedBytes += file.bytes;
+        total -= file.bytes;
+      }
+    }
+  }
+  await pruneEmptyDirs(path.join(stateDir, "attachments"));
+  return { deleted, freedBytes };
+}
+
+async function readdirSafe(dir) {
+  try {
+    return await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function removeFile(file) {
+  try {
+    await rm(file, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pruneEmptyDirs(root) {
+  for (const dirent of await readdirSafe(root)) {
+    if (!dirent.isDirectory()) continue;
+    const dir = path.join(root, dirent.name);
+    try {
+      if ((await readdir(dir)).length === 0) await rm(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort - a non-empty or vanished dir is fine to leave alone.
+    }
   }
 }
