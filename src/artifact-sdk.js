@@ -871,8 +871,13 @@ export function createArtifactSdk(
       });
     }
 
+    const verticallyScrollable = style.overflowY === "auto" || style.overflowY === "scroll";
     const needsVerticalTextCheck =
-      hasText && el.clientHeight > 0 && el.scrollHeight - el.clientHeight > layoutAuditOverflowEpsilon;
+      hasText &&
+      !isTruncated &&
+      !verticallyScrollable &&
+      el.clientHeight > 0 &&
+      el.scrollHeight - el.clientHeight > layoutAuditOverflowEpsilon;
     const textFragments = needsVerticalTextCheck ? elementTextFragments(el) : [];
     const vertical = classifyVerticalOverflow({
       scrollHeight: el.scrollHeight,
