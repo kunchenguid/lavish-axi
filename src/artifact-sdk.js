@@ -265,6 +265,167 @@ export function createArtifactSdk(
   let counter = 0;
   const ids = new WeakMap();
 
+  // Image attachments for the open annotation card. These are UX guides only - the
+  // server re-validates size and enforces the per-prompt count/byte caps at queue
+  // time (see attachment-store.js), so a mismatch just means a chip is dropped from
+  // the delivered prompt rather than anything unsafe.
+  const ATTACHMENT_MAX_COUNT = 4;
+  const ATTACHMENT_ACCEPTED_MIME = { "image/png": true, "image/jpeg": true, "image/webp": true };
+  let attachmentLocalCounter = 0;
+  // The controller for the currently open card, so upload results routed from the
+  // chrome reach the right chips. Only one card is ever open at a time.
+  let activeAttachments = null;
+
+  const REMOVE_ICON =
+    '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+
+  function attachmentChipHtml(item, index) {
+    const name = escapeAnnotationText(item.name || "image");
+    const thumb = item.url
+      ? '<img class="lavish-attachment-thumb" src="' + escapeAnnotationText(item.url) + '" alt="">'
+      : '<span class="lavish-attachment-thumb lavish-attachment-thumb-empty" aria-hidden="true"></span>';
+    let status = "";
+    if (item.status === "uploading") status = '<span class="lavish-attachment-status">Uploading…</span>';
+    else if (item.status === "error")
+      status =
+        '<span class="lavish-attachment-status lavish-attachment-status-error">' +
+        escapeAnnotationText(item.error || "Upload failed") +
+        "</span>";
+    const retry =
+      item.status === "error"
+        ? '<button type="button" class="lavish-attachment-retry" data-attachment-retry="' + index + '">Retry</button>'
+        : "";
+    return (
+      '<div class="lavish-attachment-chip' +
+      (item.status === "error" ? " is-error" : "") +
+      '">' +
+      thumb +
+      '<span class="lavish-attachment-body"><span class="lavish-attachment-name" title="' +
+      name +
+      '">' +
+      name +
+      "</span>" +
+      status +
+      "</span>" +
+      retry +
+      '<button type="button" class="lavish-attachment-remove" data-attachment-remove="' +
+      index +
+      '" aria-label="Remove image">' +
+      REMOVE_ICON +
+      "</button></div>"
+    );
+  }
+
+  // Per-card image attachment state. Captures files, renders chips, drives uploads
+  // through the chrome (which owns the same-origin server round trip), and reports
+  // which uploads are ready to ride along with the queued prompt.
+  function makeAttachmentsController(listEl) {
+    const items = [];
+
+    function render() {
+      listEl.innerHTML = items.map((item, index) => attachmentChipHtml(item, index)).join("");
+      listEl.hidden = items.length === 0;
+      for (const button of listEl.querySelectorAll("[data-attachment-remove]")) {
+        button.addEventListener("click", () => removeAt(Number(button.getAttribute("data-attachment-remove"))));
+      }
+      for (const button of listEl.querySelectorAll("[data-attachment-retry]")) {
+        button.addEventListener("click", () => retryAt(Number(button.getAttribute("data-attachment-retry"))));
+      }
+    }
+
+    function upload(item) {
+      item.status = "uploading";
+      item.error = "";
+      render();
+      item.file
+        .arrayBuffer()
+        .then((bytes) => {
+          if (!items.includes(item)) return;
+          parent.postMessage(
+            { type: "lavish:uploadAttachment", localId: item.localId, name: item.name, mime: item.mime, bytes },
+            "*",
+          );
+        })
+        .catch(() => {
+          if (!items.includes(item)) return;
+          item.status = "error";
+          item.error = "Could not read image";
+          render();
+        });
+    }
+
+    function add(file) {
+      if (!file || !ATTACHMENT_ACCEPTED_MIME[file.type]) return false;
+      if (items.length >= ATTACHMENT_MAX_COUNT) return false;
+      const item = {
+        localId: "att-" + ++attachmentLocalCounter,
+        file,
+        name: file.name || "image",
+        mime: file.type,
+        status: "uploading",
+        id: "",
+        error: "",
+        url: URL.createObjectURL(file),
+      };
+      items.push(item);
+      upload(item);
+      return true;
+    }
+
+    function addFiles(fileList) {
+      let added = false;
+      for (const file of fileList || []) added = add(file) || added;
+      return added;
+    }
+
+    function removeAt(index) {
+      const item = items[index];
+      if (!item) return;
+      if (item.url) URL.revokeObjectURL(item.url);
+      // Tell the chrome to delete the stored file. Unqueued orphans are also reaped
+      // by the reference-aware server sweeper, so a missed delete is not a leak.
+      if (item.id) parent.postMessage({ type: "lavish:removeAttachment", id: item.id }, "*");
+      items.splice(index, 1);
+      render();
+    }
+
+    function retryAt(index) {
+      if (items[index]) upload(items[index]);
+    }
+
+    function handleResult(localId, ok, id, error) {
+      const item = items.find((entry) => entry.localId === localId);
+      if (!item) return;
+      if (ok && id) {
+        item.status = "ready";
+        item.id = String(id);
+        item.error = "";
+      } else {
+        item.status = "error";
+        item.error = String(error || "Upload failed");
+      }
+      render();
+    }
+
+    function collectReady() {
+      return items
+        .filter((item) => item.status === "ready" && item.id)
+        .map((item) => ({ id: item.id, name: item.name }));
+    }
+
+    function hasReady() {
+      return items.some((item) => item.status === "ready" && item.id);
+    }
+
+    function destroy() {
+      for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
+      items.length = 0;
+    }
+
+    render();
+    return { addFiles, handleResult, collectReady, hasReady, destroy };
+  }
+
   function uid(el) {
     if (!ids.has(el)) ids.set(el, String(++counter));
     return ids.get(el);
@@ -686,7 +847,7 @@ export function createArtifactSdk(
 
   function queuePrompt(prompt, options = {}) {
     const originElement = options.element || document.activeElement || document.body;
-    /** @type {{ uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown, _lavishQueueKey?: string }} */
+    /** @type {{ uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown, attachments?: Array<{ id: string, name?: string }>, _lavishQueueKey?: string }} */
     const item = {
       ...context(originElement),
       prompt: String(prompt || ""),
@@ -700,6 +861,18 @@ export function createArtifactSdk(
     if (options.text) item.text = String(options.text);
     if (options.target) item.target = options.target;
     if (options.data) item.prompt += "\n\nContext data:\n" + JSON.stringify(options.data, null, 2);
+    // Attach only the client-controllable fields (server-vetted id + display name);
+    // the chrome forwards these and the server re-resolves each id (see queuePrompts).
+    if (Array.isArray(options.attachments) && options.attachments.length) {
+      const attachments = options.attachments
+        .filter((attachment) => attachment && attachment.id)
+        .map((attachment) =>
+          attachment.name
+            ? { id: String(attachment.id), name: String(attachment.name) }
+            : { id: String(attachment.id) },
+        );
+      if (attachments.length) item.attachments = attachments;
+    }
 
     postArtifactMessage("lavish:queuePrompt", { prompt: item });
   }
@@ -1646,13 +1819,17 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border-radius:50%;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:var(--steel-600)}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
     shadow.appendChild(style);
     return shadow;
   }
 
   function closeCard() {
     activeCardContext = null;
+    if (activeAttachments) {
+      activeAttachments.destroy();
+      activeAttachments = null;
+    }
     if (shadow) {
       for (const el of [...shadow.querySelectorAll(".lavish-annotation-card")]) el.remove();
     }
@@ -1695,14 +1872,21 @@ export function createArtifactSdk(
         : c.tag === "mermaid-node"
           ? "Tell the agent what to change about this diagram node..."
           : "Tell the agent what to change about this element...";
+    const sendNowHint = /Mac|iP(hone|ad|od)/.test(navigator.platform) ? "⌘" : "Ctrl";
     card.innerHTML =
       '<div class="lavish-heading">' +
       heading +
       '</div><textarea placeholder="' +
       placeholder +
-      '"></textarea><div class="lavish-hint">Enter to queue &middot; ' +
-      (/Mac|iP(hone|ad|od)/.test(navigator.platform) ? "⌘" : "Ctrl") +
-      '+Enter to send now</div><div class="lavish-row"><button class="lavish-cancel" type="button">Cancel</button><button class="lavish-send" type="button">Queue</button></div>';
+      '"></textarea><div class="lavish-attachments" data-attachments hidden></div>' +
+      '<div class="lavish-attach-row"><button class="lavish-attach" type="button">' +
+      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>' +
+      "<span>Attach image</span></button>" +
+      '<input class="lavish-attach-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden></div>' +
+      '<div class="lavish-hint">Enter to queue &middot; ' +
+      sendNowHint +
+      "+Enter to send now &middot; paste or drop an image" +
+      '</div><div class="lavish-row"><button class="lavish-cancel" type="button">Cancel</button><button class="lavish-send" type="button">Queue</button></div>';
     root.appendChild(card);
 
     const left = Math.min(Math.max(12, rect.left), window.innerWidth - card.offsetWidth - 12);
@@ -1713,18 +1897,54 @@ export function createArtifactSdk(
     const textarea = /** @type {HTMLTextAreaElement | null} */ (card.querySelector("textarea"));
     const cancelButton = /** @type {HTMLButtonElement | null} */ (card.querySelector(".lavish-cancel"));
     const sendButton = /** @type {HTMLButtonElement | null} */ (card.querySelector(".lavish-send"));
-    if (!textarea || !cancelButton || !sendButton) return;
+    const attachmentsList = /** @type {HTMLDivElement | null} */ (card.querySelector("[data-attachments]"));
+    const attachButton = /** @type {HTMLButtonElement | null} */ (card.querySelector(".lavish-attach"));
+    const attachInput = /** @type {HTMLInputElement | null} */ (card.querySelector(".lavish-attach-input"));
+    if (!textarea || !cancelButton || !sendButton || !attachmentsList || !attachButton || !attachInput) return;
+
+    const attachments = makeAttachmentsController(attachmentsList);
+    activeAttachments = attachments;
+
+    attachButton.onclick = () => attachInput.click();
+    attachInput.addEventListener("change", () => {
+      attachments.addFiles(attachInput.files);
+      attachInput.value = "";
+    });
+    textarea.addEventListener("paste", (event) => {
+      const files = imageFilesFromDataTransfer(event.clipboardData);
+      if (files.length && attachments.addFiles(files)) event.preventDefault();
+    });
+    card.addEventListener("dragover", (event) => {
+      if (hasImageDrag(event.dataTransfer)) {
+        event.preventDefault();
+        card.classList.add("is-dropping");
+      }
+    });
+    card.addEventListener("dragleave", (event) => {
+      if (event.target === card) card.classList.remove("is-dropping");
+    });
+    card.addEventListener("drop", (event) => {
+      card.classList.remove("is-dropping");
+      const files = imageFilesFromDataTransfer(event.dataTransfer);
+      if (files.length) {
+        event.preventDefault();
+        attachments.addFiles(files);
+      }
+    });
 
     cancelButton.onclick = closeCard;
     sendButton.onclick = () => {
       const prompt = textarea.value.trim();
-      if (prompt) queuePrompt(prompt, { ...c, queueKey: "" });
+      const readyAttachments = attachments.collectReady();
+      // Allow an image-only annotation (the element/target still identifies what it
+      // refers to), but never queue an empty card.
+      if (prompt || readyAttachments.length) queuePrompt(prompt, { ...c, queueKey: "", attachments: readyAttachments });
       closeCard();
     };
     textarea.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
-        const sendNow = (event.ctrlKey || event.metaKey) && !!textarea.value.trim();
+        const sendNow = (event.ctrlKey || event.metaKey) && (!!textarea.value.trim() || attachments.hasReady());
         sendButton.click();
         // postMessage delivery is ordered, so the queued prompt lands before the send.
         if (sendNow) sendQueuedPrompts();
@@ -1742,6 +1962,31 @@ export function createArtifactSdk(
     setTimeout(() => textarea.focus(), 0);
   }
 
+  function imageFilesFromDataTransfer(dataTransfer) {
+    if (!dataTransfer) return [];
+    const files = [];
+    for (const file of dataTransfer.files || []) {
+      if (file && ATTACHMENT_ACCEPTED_MIME[file.type]) files.push(file);
+    }
+    if (files.length) return files;
+    // Pasted screenshots arrive as items, not files, in some browsers.
+    for (const item of dataTransfer.items || []) {
+      if (item.kind === "file" && ATTACHMENT_ACCEPTED_MIME[item.type]) {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    return files;
+  }
+
+  function hasImageDrag(dataTransfer) {
+    if (!dataTransfer) return false;
+    for (const item of dataTransfer.items || []) {
+      if (item.kind === "file" && (ATTACHMENT_ACCEPTED_MIME[item.type] || item.type.startsWith("image/"))) return true;
+    }
+    return (dataTransfer.types || []).includes?.("Files");
+  }
+
   /** @type {Window & { lavish?: unknown }} */ (window).lavish = {
     queuePrompt,
     sendQueuedPrompts,
@@ -1754,6 +1999,9 @@ export function createArtifactSdk(
   window.addEventListener("message", (event) => {
     const msg = event.data || {};
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
+    if (msg.type === "lavish:attachmentResult") {
+      activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);
+    }
     if (msg.type === "lavish:requestSnapshot") {
       postArtifactMessage("lavish:snapshot", { snapshot: snapshot() });
     }
