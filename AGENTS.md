@@ -116,6 +116,13 @@ Staleness is hash-based (`mermaidSourceHash`): a live reload that changes the di
 "Queue feedback" exports the scene and a PNG server-side (`POST .../feedback-files`), then queues a normal prompt with `tag: "whiteboard"` and an `excalidraw-scene` target carrying a bounded edit summary (diffed from the conversion baseline by `summarizeSceneEdits` in `src/whiteboard-core.js` using the stable ids), local `scenePath`/`previewPath`, `sourceHash`, and bounded stats; poll guidance tells the agent to read the summary first and update the Mermaid source, never the scene file.
 The Mermaid source in the artifact stays authoritative; there is no scene→Mermaid reverse conversion.
 
+### Image attachments
+
+Annotation image attachments (`src/attachment-store.js`) are content-addressed: the id is `<sha256-of-bytes>.<ext>` and the file under `<state-dir>/attachments/<sessionKey>/` _is_ the identity, so the client never dictates a path or id.
+The sandboxed artifact iframe can't reach the loopback server (opaque origin), so the SDK annotation card captures the image, reads its bytes, and hands them to the chrome, which performs the same-origin `POST /api/:key/attachments` (raw body, magic-byte validated - a lying Content-Type is ignored) and reports the server-vetted id back to the card. Upload/delete are same-origin guarded like the whiteboard writes.
+The **trust boundary** is `SessionStore.queuePrompts`: a queued prompt carries only the client's `id` + display `name`; `resolvePromptAttachments` re-derives every authoritative field (absolute `path`, mime, bytes, dimensions) from disk via the injected resolver and drops unknown ids, so a crafted `/prompts` POST cannot aim an attachment at an arbitrary file. User-facing limits/env vars and defaults are owned by README's Image attachments bullet.
+Cleanup (`sweepAttachments`, run at server startup + hourly) is **reference-aware**: a file is reaped only when it is both past its TTL AND not in `SessionStore.referencedAttachmentIds()` (pending-prompt ids), and the optional disk cap only ever evicts unreferenced files - so a send-and-end batch's images are never lost before delivery, and orphaned uploads (card cancelled, or `/prompts` never followed) are reaped later. `takeFeedback` clears delivered prompts, which is what makes their attachments sweep-eligible.
+
 ### Export (local-asset inlining)
 
 `src/export-bundle.js` (`buildSelfContainedHtml`) inlines only an artifact's **local** assets: local stylesheets/classic scripts become inline `<style>`/`<script>`, and local images/fonts/icons, confined fetchable `file://` refs, and CSS `url(...)`/`@import` become data URIs (recursively, resolved relative to each stylesheet).

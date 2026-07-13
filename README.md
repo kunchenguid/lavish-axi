@@ -175,6 +175,10 @@ pnpm link
   Agent-initiated ends keep reopening normally, same as before.
   `lavish-axi poll`'s `ended` response and the `feedback` response for the final batch before an end both carry `next_step` guidance telling the agent to stop polling and deliver remaining updates in chat instead of reopening.
 - **Precise targets** - Text annotations include selected text plus range anchors, so agents are not limited to whole-element selectors.
+- **Image attachments** - Attach reference images (PNG, JPEG, WebP) to an annotation by pasting, drag-dropping, or using the annotation card's **Attach image** picker; each shows a thumbnail chip with upload, remove, retry, and error states.
+  Images are stored under the state dir and the queued prompt carries a server-generated absolute `path` and content-hash `id` (plus mime and dimensions) - never the raw bytes - so `lavish-axi poll` hands the agent a local file path to open.
+  Limits are `LAVISH_AXI_MAX_ATTACHMENT_BYTES` (default 10 MiB per image), `LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT` (default 4), and `LAVISH_AXI_MAX_PROMPT_ATTACHMENT_BYTES` (default 25 MiB per annotation).
+  Attachments are cleaned up by `LAVISH_AXI_ATTACHMENT_TTL_MS` (default 7 days; `0`/`off` disables) but only once no pending prompt still references them; an optional `LAVISH_AXI_MAX_ATTACHMENT_DISK_MB` disk cap evicts oldest unreferenced files as a backstop.
 - **Mermaid diagrams** - In the Lavish browser, every rendered Mermaid diagram in a `.mermaid` container becomes an embedded editable Excalidraw whiteboard.
   Click a diagram to unlock editing, and use its Fullscreen action to edit it over the whole viewport.
   Whiteboard scenes autosave locally.

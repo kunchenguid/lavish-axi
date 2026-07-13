@@ -1173,6 +1173,53 @@ test("whiteboard feedback tells agents to read the summary, inspect files when n
   assert.match(output.next_step, /never try to write the \.excalidraw scene back/);
 });
 
+test("image-attachment feedback tells agents to open the local image paths", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [
+        {
+          uid: "1",
+          prompt: "Match this mock",
+          selector: "header",
+          tag: "header",
+          text: "",
+          attachments: [
+            {
+              id: "a".repeat(64) + ".png",
+              type: "image",
+              path: "/state/attachments/k/" + "a".repeat(64) + ".png",
+              mime: "image/png",
+              bytes: 1234,
+              width: 800,
+              height: 600,
+              name: "mock.png",
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /image attachments/);
+  assert.match(output.next_step, /`attachments` array/);
+  assert.match(output.next_step, /absolute local `path`/);
+});
+
+test("feedback without attachments does not mention image attachments", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [{ uid: "1", prompt: "Tweak this", selector: "h1", tag: "h1", text: "" }],
+    },
+  });
+  assert.doesNotMatch(output.next_step, /image attachments/);
+});
+
 test("non-whiteboard feedback does not mention whiteboard guidance", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",

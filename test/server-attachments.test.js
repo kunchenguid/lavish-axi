@@ -186,6 +186,32 @@ test("upload rejects bytes over the configured per-image cap with 413", async ()
   );
 });
 
+// Non-regression for the merged export/share feature (#123): the raw-body upload
+// route and the attachment plumbing must not interfere with export, and queued
+// image attachments (which live in the state dir, not the artifact) must never
+// leak into an exported bundle.
+test("export still works and leaks no attachment data when a prompt references an image", async () => {
+  await withSession(async ({ base, key }) => {
+    const { attachment } = await (await uploadImage(base, key, PNG_2x1)).json();
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompts: [
+          { uid: "1", prompt: "match", selector: "body", tag: "body", text: "", attachments: [{ id: attachment.id }] },
+        ],
+      }),
+    });
+    const res = await fetch(`${base}/api/${key}/export`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") || "", /text\/html/);
+    const html = await res.text();
+    assert.doesNotMatch(html, new RegExp(attachment.id));
+    assert.doesNotMatch(html, /\/api\/[0-9a-f]{16}\/attachments/);
+    assert.doesNotMatch(html, /lavish:uploadAttachment/);
+  });
+});
+
 test("the server sweeps an expired, unreferenced attachment at startup", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-attach-sweep-"));
   const stateFile = path.join(dir, "state.json");
