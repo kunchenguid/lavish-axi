@@ -187,8 +187,8 @@ export function classifyVerticalOverflow({
   overflowY,
   hasText,
   isTruncated,
-  textOverflowPx,
-  textLineCount,
+  textOverflowPx = undefined,
+  textLineCount = undefined,
   epsilon = 1,
 }) {
   const overflowPx = clientHeight > 0 ? scrollHeight - clientHeight : 0;
