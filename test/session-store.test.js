@@ -1020,3 +1020,137 @@ test("freeform user prompts are stored in session chat history", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("queued prompt attachments are resolved server-side and client path claims are ignored", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hi</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    // The resolver stands in for the on-disk attachment store: only a known id
+    // resolves, and it returns the authoritative metadata (never the client's).
+    const known = "a".repeat(64) + ".png";
+    const resolveAttachment = async (_key, id) =>
+      id === known
+        ? { id: known, type: "image", path: "/vetted/path.png", mime: "image/png", bytes: 42, width: 2, height: 1 }
+        : null;
+
+    await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          {
+            uid: "1",
+            prompt: "Match this mock",
+            selector: "h1",
+            tag: "h1",
+            text: "Hi",
+            attachments: [
+              { id: known, name: "mock.png", path: "/etc/passwd", mime: "text/evil", bytes: 999999 },
+              { id: "b".repeat(64) + ".png" },
+            ],
+          },
+        ],
+      },
+      { resolveAttachment, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+
+    const first = feedbackResult(await store.takeFeedback(session.key));
+    assert.deepEqual(first.prompts[0].attachments, [
+      {
+        id: known,
+        type: "image",
+        path: "/vetted/path.png",
+        mime: "image/png",
+        bytes: 42,
+        width: 2,
+        height: 1,
+        name: "mock.png",
+      },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("attachment resolution enforces per-prompt count and total-byte caps", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hi</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const ids = [0, 1, 2, 3, 4].map((n) => String(n).repeat(64).slice(0, 64) + ".png");
+    const resolveAttachment = async (_key, id) => ({
+      id,
+      type: "image",
+      path: "/x/" + id,
+      mime: "image/png",
+      bytes: 10,
+      width: 1,
+      height: 1,
+    });
+
+    await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          { uid: "1", prompt: "many", selector: "", tag: "h1", text: "", attachments: ids.map((id) => ({ id })) },
+        ],
+      },
+      { resolveAttachment, maxPerPrompt: 2, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+
+    const capped = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(capped.prompts[0].attachments.length, 2);
+
+    await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          { uid: "2", prompt: "heavy", selector: "", tag: "h1", text: "", attachments: ids.map((id) => ({ id })) },
+        ],
+      },
+      { resolveAttachment, maxPerPrompt: 10, maxPromptBytes: 25 },
+    );
+    const byteCapped = feedbackResult(await store.takeFeedback(session.key));
+    // 10 bytes each, 25-byte cap -> only two fit before the third would exceed it.
+    assert.equal(byteCapped.prompts[0].attachments.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("attachments are dropped when no resolver is supplied", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hi</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, {
+      prompts: [
+        {
+          uid: "1",
+          prompt: "no resolver",
+          selector: "",
+          tag: "h1",
+          text: "",
+          attachments: [{ id: "a".repeat(64) + ".png" }],
+        },
+      ],
+    });
+    const result = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal("attachments" in result.prompts[0], false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

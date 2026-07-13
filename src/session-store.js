@@ -81,7 +81,13 @@ export class SessionStore {
     });
   }
 
-  async queuePrompts(key, payload) {
+  // `options.resolveAttachment(key, id) => Promise<metadata|null>` is the trust
+  // boundary for image attachments: a prompt only ever carries the client's
+  // claimed `id` (and display `name`); every authoritative field (absolute path,
+  // mime, byte size, dimensions) is re-derived from disk here, so a crafted
+  // `/prompts` POST cannot point an attachment at an arbitrary file. Without a
+  // resolver, unresolved attachments are dropped rather than trusted.
+  async queuePrompts(key, payload, options = {}) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
@@ -92,6 +98,11 @@ export class SessionStore {
       const shouldEndSession = Boolean(payload.endSession || payload.end_session);
       const alreadyEnded = session.status === "ended";
       const normalizedPrompts = prompts.map(normalizePrompt);
+      for (const prompt of normalizedPrompts) {
+        const attachments = await resolvePromptAttachments(prompt.attachments, key, options);
+        if (attachments.length > 0) prompt.attachments = attachments;
+        else delete prompt.attachments;
+      }
       const revision = normalizeRevision(session.artifact_revision);
       const at = new Date().toISOString();
       let warnings = normalizeStoredWarnings(session.layout_warnings);
@@ -546,6 +557,8 @@ function normalizePrompt(prompt) {
   };
   const target = normalizeTarget(prompt.target);
   if (target) normalized.target = target;
+  const attachments = normalizeAttachmentRefs(prompt.attachments);
+  if (attachments.length > 0) normalized.attachments = attachments;
   return normalized;
 }
 
@@ -554,6 +567,43 @@ function layoutWarningPromptIds(prompt) {
   return Array.isArray(prompt.target.warnings)
     ? prompt.target.warnings.map((warning) => String(warning?.id || "")).filter(Boolean)
     : [];
+}
+
+// Client-supplied attachment refs are stripped to just the fields the client is
+// allowed to influence: the content-hash `id` and a display-only `name`. Path,
+// mime, size, and dimensions are never taken from the payload (see queuePrompts).
+function normalizeAttachmentRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const refs = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const id = String(item.id || "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const name = item.name === undefined || item.name === null ? "" : String(item.name).slice(0, 200);
+    refs.push(name ? { id, name } : { id });
+  }
+  return refs;
+}
+
+// Replace each client ref with server-vetted metadata, enforcing the per-prompt
+// count and total-byte caps. Unknown ids are dropped. The display `name` is the
+// only client value carried through (it never touches a filesystem path).
+async function resolvePromptAttachments(refs, key, options = {}) {
+  const { resolveAttachment, maxPerPrompt = Infinity, maxPromptBytes = Infinity } = options;
+  if (!Array.isArray(refs) || refs.length === 0 || typeof resolveAttachment !== "function") return [];
+  const resolved = [];
+  let totalBytes = 0;
+  for (const ref of refs) {
+    if (resolved.length >= maxPerPrompt) break;
+    const metadata = await resolveAttachment(key, ref.id);
+    if (!metadata) continue;
+    totalBytes += Number(metadata.bytes) || 0;
+    if (totalBytes > maxPromptBytes) break;
+    resolved.push(ref.name ? { ...metadata, name: ref.name } : metadata);
+  }
+  return resolved;
 }
 
 function planLayoutWarningPrompt(warnings, prompt, revision) {

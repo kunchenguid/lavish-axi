@@ -16,7 +16,7 @@ const PNG_2x1 = Buffer.from(
 );
 
 /**
- * @param {(ctx: { base: string, key: string }) => Promise<void>} run
+ * @param {(ctx: { base: string, key: string, artifact: string }) => Promise<void>} run
  * @param {{ env?: Record<string, string> }} [options]
  */
 async function withSession(run, { env } = {}) {
@@ -39,7 +39,7 @@ async function withSession(run, { env } = {}) {
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    await run({ base, key });
+    await run({ base, key, artifact });
   } finally {
     await server.close();
     for (const [name, value] of Object.entries(saved)) {
@@ -138,6 +138,41 @@ test("upload to an unknown session returns 404", async () => {
   await withSession(async ({ base }) => {
     const res = await uploadImage(base, "0123456789abcdef", PNG_2x1);
     assert.equal(res.status, 404);
+  });
+});
+
+test("a queued prompt carries the server-vetted attachment path, not the client's claim", async () => {
+  await withSession(async ({ base, key, artifact }) => {
+    const { attachment } = await (await uploadImage(base, key, PNG_2x1)).json();
+    const queued = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompts: [
+          {
+            uid: "1",
+            prompt: "match this",
+            selector: "body",
+            tag: "body",
+            text: "",
+            attachments: [
+              { id: attachment.id, name: "mock.png", path: "/etc/passwd" },
+              { id: "f".repeat(64) + ".png" },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(queued.status, 200);
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const feedback = await poll.json();
+    const attachments = feedback.prompts[0].attachments;
+    assert.equal(attachments.length, 1);
+    assert.equal(attachments[0].id, attachment.id);
+    assert.equal(attachments[0].name, "mock.png");
+    assert.equal(attachments[0].path, attachment.path);
+    assert.notEqual(attachments[0].path, "/etc/passwd");
+    assert.ok(attachments[0].path.includes(path.join("attachments", key)));
   });
 });
 
