@@ -193,8 +193,10 @@ function render() {
     .map(
       (prompt, index) =>
         '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
-        escapeHtml(prompt.prompt) +
-        '</span><button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
+        escapeHtml(prompt.prompt || (attachmentCount(prompt) ? "Image annotation" : "")) +
+        "</span>" +
+        pillAttachmentsHtml(prompt) +
+        '<button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
         index +
         '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
         (prompt.selector
@@ -220,6 +222,37 @@ function updateSendState() {
   sendButton.disabled = ended || agentPresence === "working";
   sendAndEndButton.disabled = sendButton.disabled;
   if (warningsQueueButton) updateWarningSelectionState();
+}
+
+function attachmentCount(prompt) {
+  return Array.isArray(prompt.attachments) ? prompt.attachments.length : 0;
+}
+
+// Thumbnails for a queued prompt's images, served straight from the same-origin
+// attachment endpoint (the ids are already server-vetted at upload time).
+function pillAttachmentsHtml(prompt) {
+  if (!attachmentCount(prompt)) return "";
+  return (
+    '<span class="pill-attachments">' +
+    prompt.attachments
+      .slice(0, 4)
+      .map((attachment) => {
+        const alt = escapeHtml(attachment.name || "image");
+        return (
+          '<img class="pill-attachment" src="/api/' +
+          encodeURIComponent(key) +
+          "/attachments/" +
+          encodeURIComponent(attachment.id) +
+          '" alt="' +
+          alt +
+          '" title="' +
+          alt +
+          '">'
+        );
+      })
+      .join("") +
+    "</span>"
+  );
 }
 
 function showSendHint() {
@@ -1763,10 +1796,53 @@ window.addEventListener("message", (event) => {
       messageToken,
     ).catch(() => {});
   }
+  if (msg.type === "lavish:uploadAttachment") uploadAttachment(msg);
+  if (msg.type === "lavish:removeAttachment") removeAttachment(msg.id);
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
 });
+
+// The sandboxed artifact iframe can't reach the loopback server (opaque origin),
+// so it hands captured image bytes here and the chrome performs the same-origin
+// upload, then reports the server-vetted id back to the card.
+async function uploadAttachment(message) {
+  const localId = String(message.localId || "");
+  if (!localId) return;
+  try {
+    const response = await fetch("/api/" + key + "/attachments", {
+      method: "POST",
+      headers: { "content-type": String(message.mime || "application/octet-stream") },
+      body: message.bytes,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Upload failed");
+    postToFrame({
+      type: "lavish:attachmentResult",
+      localId,
+      ok: true,
+      id: (data.attachment && data.attachment.id) || "",
+    });
+  } catch (error) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      localId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function removeAttachment(id) {
+  const attachmentId = String(id || "");
+  if (!attachmentId) return;
+  try {
+    // Best effort: an orphaned upload is reaped by the reference-aware server sweeper.
+    await fetch("/api/" + key + "/attachments/" + encodeURIComponent(attachmentId), { method: "DELETE" });
+  } catch {
+    // Ignore - a failed delete just leaves the file for the sweeper.
+  }
+}
 
 loadFrame();
 

@@ -2220,3 +2220,81 @@ test("a local asset failure inside the artifact is reported as a fatal artifact 
   assert.equal(failure.body.failures[0].kind, "artifact-asset-unavailable");
   assert.match(failure.body.failures[0].detail, /logo\.png/);
 });
+
+test("chrome uploads captured attachment bytes and reports the server id to the card", async () => {
+  const requests = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => ({ status: "stored", attachment: { id: "a".repeat(64) + ".png" } }) };
+    },
+  });
+
+  const bytes = new Uint8Array([1, 2, 3]).buffer;
+  chrome.sendFrameMessage({
+    type: "lavish:uploadAttachment",
+    localId: "att-1",
+    name: "mock.png",
+    mime: "image/png",
+    bytes,
+  });
+  await flushPromises();
+
+  assert.equal(requests[0].url, "/api/abc/attachments");
+  assert.equal(requests[0].options.method, "POST");
+  assert.equal(requests[0].options.headers["content-type"], "image/png");
+  assert.equal(requests[0].options.body, bytes);
+  const result = chrome.postedToFrame.at(-1);
+  assert.equal(result.type, "lavish:attachmentResult");
+  assert.equal(result.localId, "att-1");
+  assert.equal(result.ok, true);
+  assert.equal(result.id, "a".repeat(64) + ".png");
+});
+
+test("chrome reports an upload failure back to the card", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({ ok: false, json: async () => ({ error: "unsupported image type" }) }),
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:uploadAttachment",
+    localId: "att-9",
+    name: "bad.svg",
+    mime: "image/svg+xml",
+    bytes: new Uint8Array([0]).buffer,
+  });
+  await flushPromises();
+  const result = chrome.postedToFrame.at(-1);
+  assert.equal(result.type, "lavish:attachmentResult");
+  assert.equal(result.localId, "att-9");
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "unsupported image type");
+});
+
+test("chrome deletes a removed attachment through the server", async () => {
+  const requests = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => ({ status: "removed" }) };
+    },
+  });
+  const id = "a".repeat(64) + ".png";
+  chrome.sendFrameMessage({ type: "lavish:removeAttachment", id });
+  await flushPromises();
+  assert.equal(requests[0].url, "/api/abc/attachments/" + id);
+  assert.equal(requests[0].options.method, "DELETE");
+});
+
+test("chrome renders queued-prompt attachment thumbnails from the server endpoint", async () => {
+  const chrome = await createChromeHarness();
+  const id = "a".repeat(64) + ".png";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "", selector: "h1", tag: "annotation", text: "", attachments: [{ id, name: "mock.png" }] },
+  });
+  const html = chrome.element("annotationPills").innerHTML;
+  assert.match(html, /pill-attachment/);
+  assert.match(html, new RegExp("/api/abc/attachments/" + id));
+  // An image-only annotation still shows a readable label.
+  assert.match(html, /Image annotation/);
+});
