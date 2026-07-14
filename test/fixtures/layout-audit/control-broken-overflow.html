@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Broken deployment dashboard</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        font-family: system-ui, sans-serif;
+        color: #f5f7ff;
+        background: #111626;
+      }
+      body {
+        margin: 0;
+        padding: 28px;
+      }
+      main {
+        width: min(100%, 960px);
+        margin: auto;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .card {
+        padding: 18px;
+        border: 1px solid #36405e;
+        border-radius: 14px;
+        background: #1b2237;
+      }
+      .badge-row {
+        display: flex;
+        gap: 8px;
+      }
+      .badge {
+        flex: 0 0 auto;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: #ffd267;
+        color: #211b0b;
+        font:
+          800 13px ui-monospace,
+          monospace;
+        white-space: nowrap;
+      }
+      h1 {
+        font-size: 32px;
+      }
+      @media (max-width: 520px) {
+        body {
+          padding: 18px;
+        }
+        .grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Deployment readiness</h1>
+      <p>This deliberately broken grid has no min-width protection and forces the whole document wider.</p>
+      <section class="grid">
+        <article class="card">
+          <h2>Status</h2>
+          <div class="badge-row">
+            <span class="badge">DEPLOYMENT-PIPELINE-READY-1234567890</span><span class="badge">QA</span>
+          </div>
+        </article>
+        <article class="card">
+          <h2>Owner</h2>
+          <div class="badge-row"><span class="badge">PLATFORM-FOUNDATIONS</span></div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

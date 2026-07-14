@@ -214,7 +214,41 @@ test("layout warnings are returned as feedback and then cleared", async () => {
   }
 });
 
-test("a warning re-reported after the agent already received it is marked persistent", async () => {
+test("warning-only layout observations never become agent feedback", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const result = await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [
+        {
+          selector: ".accent",
+          kind: "element-parent-overflow",
+          overflowPx: 20,
+          viewportWidth: 720,
+          severity: "warning",
+        },
+        {
+          selector: ".unproven",
+          kind: "clipped-text",
+          overflowPx: 200,
+          viewportWidth: 720,
+        },
+      ],
+    });
+
+    assert.equal(result.hasWarnings, false);
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a severe finding re-reported after the agent already received it is marked persistent", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -228,7 +262,7 @@ test("a warning re-reported after the agent already received it is marked persis
       kind: "overlapping-text",
       overflowPx: 0,
       viewportWidth: 720,
-      severity: "warning",
+      severity: "error",
     };
 
     await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
@@ -245,7 +279,39 @@ test("a warning re-reported after the agent already received it is marked persis
   }
 });
 
-test("a warning is fresh again after a clean audit resolves it", async () => {
+test("a severe finding that materially worsens at mobile is fresh", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<p>Important content</p>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const base = {
+      selector: "p",
+      kind: "clipped-text",
+      axis: "vertical",
+      severity: "error",
+    };
+
+    await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [{ ...base, overflowPx: 30, viewportWidth: 1080 }],
+    });
+    await store.takeFeedback(session.key);
+    await store.recordLayoutWarnings(session.key, {
+      layout_warnings: [{ ...base, overflowPx: 123, viewportWidth: 390 }],
+    });
+
+    const mobile = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(mobile.layout_warnings[0].persistent, false);
+    assert.equal(mobile.layout_warnings[0].axis, "vertical");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a severe finding is fresh again after a clean audit resolves it", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -259,7 +325,7 @@ test("a warning is fresh again after a clean audit resolves it", async () => {
       kind: "overlapping-text",
       overflowPx: 0,
       viewportWidth: 720,
-      severity: "warning",
+      severity: "error",
     };
 
     await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
@@ -289,7 +355,7 @@ test("persistence memory survives reopening the same artifact", async () => {
       kind: "overlapping-text",
       overflowPx: 0,
       viewportWidth: 720,
-      severity: "warning",
+      severity: "error",
     };
 
     await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });

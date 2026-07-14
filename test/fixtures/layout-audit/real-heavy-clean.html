@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Heavy but clean report</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        font-family: system-ui, sans-serif;
+        color: #1d2823;
+        background: #edf1ec;
+      }
+      body {
+        margin: 0;
+      }
+      main {
+        width: min(900px, calc(100% - 32px));
+        margin: auto;
+        padding: 50px 0;
+      }
+      h1 {
+        font:
+          600 clamp(38px, 7vw, 70px)/1.12 Georgia,
+          serif;
+        letter-spacing: -0.04em;
+        margin: 0 0 18px;
+      }
+      .lede {
+        max-width: 660px;
+        color: #5a6860;
+        line-height: 1.6;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 30px;
+      }
+      .card {
+        min-width: 0;
+        padding: 20px;
+        border: 1px solid #c8d1ca;
+        background: #fff;
+      }
+      .card strong {
+        font:
+          600 27px Georgia,
+          serif;
+      }
+      .card p {
+        font-size: 13px;
+        line-height: 1.5;
+        color: #5a6860;
+      }
+      @media (max-width: 580px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Quarterly systems review</h1>
+      <p class="lede">
+        This representative report is geometrically clean. Its simulated heavy startup stands in for Tailwind browser
+        compilation, image decode, or several cold artifacts opening together.
+      </p>
+      <section class="grid">
+        <article class="card">
+          <strong>99.98%</strong>
+          <p>Availability remained inside the operating target.</p>
+        </article>
+        <article class="card">
+          <strong>184 ms</strong>
+          <p>Global request latency improved for the third quarter.</p>
+        </article>
+        <article class="card">
+          <strong>0 rollbacks</strong>
+          <p>All scheduled releases completed without intervention.</p>
+        </article>
+      </section>
+    </main>
+    <script>
+      // Deterministic stand-in for a renderer thread occupied by runtime CSS compilation or decode work.
+      const blockedUntil = performance.now() + 13000;
+      while (performance.now() < blockedUntil) {}
+    </script>
+  </body>
+</html>
