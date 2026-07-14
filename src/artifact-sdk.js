@@ -267,8 +267,8 @@ export function createArtifactSdk(
 
   // Image attachments for the open annotation card. These are UX guides only - the
   // server re-validates size and enforces the per-prompt count/byte caps at queue
-  // time (see attachment-store.js), so a mismatch just means a chip is dropped from
-  // the delivered prompt rather than anything unsafe.
+  // time (see attachment-store.js), rejecting the entire send batch on a mismatch
+  // so the chrome can preserve the queue and surface the correction to the user.
   const ATTACHMENT_MAX_COUNT = 4;
   const ATTACHMENT_ACCEPTED_MIME = { "image/png": true, "image/jpeg": true, "image/webp": true };
   let attachmentLocalCounter = 0;

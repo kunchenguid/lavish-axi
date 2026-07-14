@@ -1862,7 +1862,7 @@ async function uploadAttachment(message) {
   const localId = String(message.localId || "");
   if (!localId) return;
   const bytes = message.bytes;
-  let size = NaN;
+  let size;
   if (ArrayBuffer.isView(bytes)) {
     size = bytes.byteLength;
   } else {
