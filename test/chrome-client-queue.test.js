@@ -542,6 +542,53 @@ test("chrome client scrolls new chat bubbles into view above queued prompts", as
   assert.equal(panelScroll.scrollTop, 640);
 });
 
+test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confused-deputy guard)", async () => {
+  let fetches = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => {
+      fetches += 1;
+      return { ok: true, json: async () => ({ attachment: { id: "a".repeat(64) + ".png" } }) };
+    },
+  });
+
+  // A single oversized (>256 MiB session quota) upload is refused BEFORE the network.
+  chrome.sendFrameMessage({
+    type: "lavish:uploadAttachment",
+    localId: "big",
+    mime: "image/png",
+    bytes: { byteLength: 300 * 1024 * 1024 },
+  });
+  await flushPromises();
+  assert.equal(fetches, 0, "quota-exceeding upload never hits the network");
+  const quotaResult = chrome.postedToFrame.find((m) => m.type === "lavish:attachmentResult" && m.localId === "big");
+  assert.equal(quotaResult.ok, false);
+  assert.match(quotaResult.error, /Upload limit reached/);
+
+  // Small uploads flow until the per-window rate cap (30), then are throttled.
+  for (let i = 0; i < 30; i += 1) {
+    chrome.sendFrameMessage({
+      type: "lavish:uploadAttachment",
+      localId: "ok-" + i,
+      mime: "image/png",
+      bytes: { byteLength: 16 },
+    });
+  }
+  await flushPromises();
+  assert.equal(fetches, 30, "the first 30 uploads within the window are allowed");
+
+  chrome.sendFrameMessage({
+    type: "lavish:uploadAttachment",
+    localId: "throttled",
+    mime: "image/png",
+    bytes: { byteLength: 16 },
+  });
+  await flushPromises();
+  assert.equal(fetches, 30, "the 31st upload in the window is throttled, not sent");
+  const throttled = chrome.postedToFrame.find((m) => m.type === "lavish:attachmentResult" && m.localId === "throttled");
+  assert.equal(throttled.ok, false);
+  assert.match(throttled.error, /Too many uploads/);
+});
+
 function warningPayload(overrides = {}) {
   return {
     id: "w1",

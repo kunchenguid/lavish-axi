@@ -88,75 +88,97 @@ export class SessionStore {
   // `/prompts` POST cannot point an attachment at an arbitrary file. Without a
   // resolver, unresolved attachments are dropped rather than trusted.
   async queuePrompts(key, payload, options = {}) {
-    return this.runExclusive(async () => {
-      const state = await this.readState();
-      const session = state.sessions[key];
-      if (!session) {
-        return null;
+    // The whole read -> resolve -> write path runs under the shared attachment
+    // lifecycle lock (when one is supplied) so it is atomic against the sweeper's
+    // reference snapshot + delete and against upload finalize (D5). Session state
+    // remains serialized through the store's own mutex inside that lifecycle lock.
+    const critical = () => this.runExclusive(() => this.#queuePromptsLocked(key, payload, options));
+    return options.lock ? options.lock.runExclusive(critical) : critical();
+  }
+
+  async #queuePromptsLocked(key, payload, options) {
+    const state = await this.readState();
+    const session = state.sessions[key];
+    if (!session) {
+      return null;
+    }
+    const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+    const shouldEndSession = Boolean(payload.endSession || payload.end_session);
+    const alreadyEnded = session.status === "ended";
+    const normalizedPrompts = prompts.map(normalizePrompt);
+    // Resolve every attachment BEFORE mutating anything. If any prompt's images
+    // can't be fully honored - an unknown id, or over the per-prompt count/byte
+    // cap - reject the WHOLE batch and persist nothing (C4).
+    const rejected = [];
+    for (const prompt of normalizedPrompts) {
+      const { resolved, rejected: promptRejected } = await resolvePromptAttachments(prompt.attachments, key, options);
+      if (promptRejected.length) rejected.push(...promptRejected);
+      if (resolved.length > 0) prompt.attachments = resolved;
+      else delete prompt.attachments;
+    }
+    if (rejected.length) {
+      return {
+        rejected,
+        caps: {
+          maxPerPrompt: Number.isFinite(options.maxPerPrompt) ? options.maxPerPrompt : null,
+          maxPromptBytes: Number.isFinite(options.maxPromptBytes) ? options.maxPromptBytes : null,
+        },
+      };
+    }
+
+    const revision = normalizeRevision(session.artifact_revision);
+    const at = new Date().toISOString();
+    let warnings = normalizeStoredWarnings(session.layout_warnings);
+    const layoutPlans = [];
+    const conflicts = new Set();
+    for (const prompt of normalizedPrompts) {
+      const warningIds = layoutWarningPromptIds(prompt);
+      if (warningIds === null) {
+        layoutPlans.push({
+          prompt,
+          warningIds: null,
+          expectedRevision: null,
+          conflicts: [],
+          queueIds: [],
+          hadKnownWarning: false,
+        });
+        continue;
       }
-      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
-      const shouldEndSession = Boolean(payload.endSession || payload.end_session);
-      const alreadyEnded = session.status === "ended";
-      const normalizedPrompts = prompts.map(normalizePrompt);
-      for (const prompt of normalizedPrompts) {
-        const attachments = await resolvePromptAttachments(prompt.attachments, key, options);
-        if (attachments.length > 0) prompt.attachments = attachments;
-        else delete prompt.attachments;
+      const plan = planLayoutWarningPrompt(warnings, prompt, revision);
+      for (const id of plan.conflicts) conflicts.add(id);
+      layoutPlans.push({ prompt, ...plan });
+    }
+    if (conflicts.size > 0) {
+      return {
+        conflict: true,
+        session,
+        warning_ids: [...conflicts],
+        warnings: serializeLayoutWarnings(warnings),
+      };
+    }
+    const acceptedPrompts = [];
+    for (const plan of layoutPlans) {
+      if (plan.warningIds === null) {
+        acceptedPrompts.push(plan.prompt);
+        continue;
       }
-      const revision = normalizeRevision(session.artifact_revision);
-      const at = new Date().toISOString();
-      let warnings = normalizeStoredWarnings(session.layout_warnings);
-      const layoutPlans = [];
-      const conflicts = new Set();
-      for (const prompt of normalizedPrompts) {
-        const warningIds = layoutWarningPromptIds(prompt);
-        if (warningIds === null) {
-          layoutPlans.push({
-            prompt,
-            warningIds: null,
-            expectedRevision: null,
-            conflicts: [],
-            queueIds: [],
-            hadKnownWarning: false,
-          });
-          continue;
-        }
-        const plan = planLayoutWarningPrompt(warnings, prompt, revision);
-        for (const id of plan.conflicts) conflicts.add(id);
-        layoutPlans.push({ prompt, ...plan });
-      }
-      if (conflicts.size > 0) {
-        return {
-          conflict: true,
-          session,
-          warning_ids: [...conflicts],
-          warnings: serializeLayoutWarnings(warnings),
-        };
-      }
-      const acceptedPrompts = [];
-      for (const plan of layoutPlans) {
-        if (plan.warningIds === null) {
-          acceptedPrompts.push(plan.prompt);
-          continue;
-        }
-        const result = queueWarningRecords(warnings, plan.queueIds, { revision, at });
-        warnings = result.warnings;
-        if (result.queued.length > 0 || !plan.hadKnownWarning) acceptedPrompts.push(plan.prompt);
-      }
-      session.layout_warnings = warnings;
-      const userMessages = acceptedPrompts
-        .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-        .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
-      session.prompts = [...(session.prompts || []), ...acceptedPrompts];
-      session.chat = [...(session.chat || []), ...userMessages];
-      session.pending_prompts = session.prompts.length;
-      session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-      session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
-      if (shouldEndSession) session.ended_by = "user";
-      session.updated_at = new Date().toISOString();
-      await this.writeState(state);
-      return session;
-    });
+      const result = queueWarningRecords(warnings, plan.queueIds, { revision, at });
+      warnings = result.warnings;
+      if (result.queued.length > 0 || !plan.hadKnownWarning) acceptedPrompts.push(plan.prompt);
+    }
+    session.layout_warnings = warnings;
+    const userMessages = acceptedPrompts
+      .filter((prompt) => prompt.tag === "message" && prompt.prompt)
+      .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+    session.prompts = [...(session.prompts || []), ...acceptedPrompts];
+    session.chat = [...(session.chat || []), ...userMessages];
+    session.pending_prompts = session.prompts.length;
+    session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
+    session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
+    if (shouldEndSession) session.ended_by = "user";
+    session.updated_at = new Date().toISOString();
+    await this.writeState(state);
+    return session;
   }
 
   async issueReviewerHandoff(key) {
@@ -605,22 +627,38 @@ function normalizeAttachmentRefs(value) {
 }
 
 // Replace each client ref with server-vetted metadata, enforcing the per-prompt
-// count and total-byte caps. Unknown ids are dropped. The display `name` is the
-// only client value carried through (it never touches a filesystem path).
+// count and total-byte caps. Returns `{ resolved, rejected }`: every ref that
+// can't be honored (unknown id, over the count cap, or over the total-byte cap)
+// is reported in `rejected` with a machine-readable `reason` rather than silently
+// dropped, so the caller can fail the batch atomically (C4). The display `name` is
+// the only client value carried through (it never touches a filesystem path).
 async function resolvePromptAttachments(refs, key, options = {}) {
   const { resolveAttachment, maxPerPrompt = Infinity, maxPromptBytes = Infinity } = options;
-  if (!Array.isArray(refs) || refs.length === 0 || typeof resolveAttachment !== "function") return [];
+  if (!Array.isArray(refs) || refs.length === 0 || typeof resolveAttachment !== "function") {
+    return { resolved: [], rejected: [] };
+  }
   const resolved = [];
+  const rejected = [];
   let totalBytes = 0;
   for (const ref of refs) {
-    if (resolved.length >= maxPerPrompt) break;
+    if (resolved.length >= maxPerPrompt) {
+      rejected.push({ id: ref.id, name: ref.name || "", reason: "too-many" });
+      continue;
+    }
     const metadata = await resolveAttachment(key, ref.id);
-    if (!metadata) continue;
-    totalBytes += Number(metadata.bytes) || 0;
-    if (totalBytes > maxPromptBytes) break;
+    if (!metadata) {
+      rejected.push({ id: ref.id, name: ref.name || "", reason: "not-found" });
+      continue;
+    }
+    const bytes = Number(metadata.bytes) || 0;
+    if (totalBytes + bytes > maxPromptBytes) {
+      rejected.push({ id: ref.id, name: ref.name || "", reason: "prompt-bytes-exceeded" });
+      continue;
+    }
+    totalBytes += bytes;
     resolved.push(ref.name ? { ...metadata, name: ref.name } : metadata);
   }
-  return resolved;
+  return { resolved, rejected };
 }
 
 function planLayoutWarningPrompt(warnings, prompt, revision) {

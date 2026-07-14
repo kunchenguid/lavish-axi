@@ -115,6 +115,39 @@ test("DELETE removes a stored attachment and is idempotent", async () => {
   });
 });
 
+test("DELETE keeps a content-addressed file still referenced by a queued prompt (refcount)", async () => {
+  await withSession(async ({ base, key, artifact }) => {
+    const { attachment } = await (await uploadImage(base, key, PNG_2x1)).json();
+    // Queue a prompt that references the image, then try to delete that same id
+    // (as a second card removing the deduped chip would). The queued prompt still
+    // needs the file, so the delete must be refused and the bytes must survive.
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompts: [
+          { uid: "1", prompt: "look", selector: "body", tag: "body", text: "", attachments: [{ id: attachment.id }] },
+        ],
+      }),
+    });
+    const del = await fetch(`${base}/api/${key}/attachments/${attachment.id}`, {
+      method: "DELETE",
+      headers: { origin: base },
+    });
+    assert.deepEqual(await del.json(), { status: "referenced" });
+    // The file is still fetchable, so the queued prompt's thumbnail/path is intact.
+    assert.equal((await fetch(`${base}/api/${key}/attachments/${attachment.id}`)).status, 200);
+
+    // After the agent takes the feedback, the reference clears and the file becomes deletable.
+    await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const del2 = await fetch(`${base}/api/${key}/attachments/${attachment.id}`, {
+      method: "DELETE",
+      headers: { origin: base },
+    });
+    assert.deepEqual(await del2.json(), { status: "removed" });
+  });
+});
+
 test("upload and delete reject cross-origin requests", async () => {
   await withSession(async ({ base, key }) => {
     const upload = await uploadImage(base, key, PNG_2x1, { origin: "https://attacker.example" });
@@ -155,10 +188,7 @@ test("a queued prompt carries the server-vetted attachment path, not the client'
             selector: "body",
             tag: "body",
             text: "",
-            attachments: [
-              { id: attachment.id, name: "mock.png", path: "/etc/passwd" },
-              { id: "f".repeat(64) + ".png" },
-            ],
+            attachments: [{ id: attachment.id, name: "mock.png", path: "/etc/passwd" }],
           },
         ],
       }),
@@ -173,6 +203,39 @@ test("a queued prompt carries the server-vetted attachment path, not the client'
     assert.equal(attachments[0].path, attachment.path);
     assert.notEqual(attachments[0].path, "/etc/passwd");
     assert.ok(attachments[0].path.includes(path.join("attachments", key)));
+  });
+});
+
+test("prompts POST rejects the batch atomically (400) when an attachment can't be resolved (C4)", async () => {
+  await withSession(async ({ base, key, artifact }) => {
+    const { attachment } = await (await uploadImage(base, key, PNG_2x1)).json();
+    const unknown = "f".repeat(64) + ".png";
+    const queued = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompts: [
+          {
+            uid: "1",
+            prompt: "match this",
+            selector: "body",
+            tag: "body",
+            text: "",
+            attachments: [{ id: attachment.id }, { id: unknown }],
+          },
+        ],
+      }),
+    });
+    assert.equal(queued.status, 400);
+    const body = await queued.json();
+    assert.deepEqual(
+      body.rejected.map((r) => ({ id: r.id, reason: r.reason })),
+      [{ id: unknown, reason: "not-found" }],
+    );
+    // Persist nothing: the poll sees no feedback, so the valid image is not half-delivered.
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const feedback = await poll.json();
+    assert.notEqual(feedback.status, "feedback");
   });
 });
 

@@ -388,10 +388,14 @@ export function createArtifactSdk(
       const item = items[index];
       if (!item) return;
       if (item.url) URL.revokeObjectURL(item.url);
-      // Tell the chrome to delete the stored file. Unqueued orphans are also reaped
-      // by the reference-aware server sweeper, so a missed delete is not a leak.
-      if (item.id) parent.postMessage({ type: "lavish:removeAttachment", id: item.id }, "*");
       items.splice(index, 1);
+      // Tell the chrome to delete the stored file, but only when no OTHER chip in
+      // this card still shares that content-addressed id (the same image attached
+      // twice dedups to one file): deleting it would break the sibling chip. The
+      // server also refcounts against queued prompts; the sweeper is the backstop.
+      if (item.id && !items.some((other) => other.id === item.id)) {
+        parent.postMessage({ type: "lavish:removeAttachment", id: item.id }, "*");
+      }
       render();
     }
 
@@ -439,13 +443,20 @@ export function createArtifactSdk(
       return items.some((item) => item.status === "ready" && item.id);
     }
 
+    // Any chip still mid-flight. Queuing while one is uploading would silently drop
+    // it (collectReady excludes it, and closeCard destroys the controller), so the
+    // send path gates on this (R2.4).
+    function hasPending() {
+      return items.some((item) => item.status === "uploading");
+    }
+
     function destroy() {
       for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
       items.length = 0;
     }
 
     render();
-    return { addFiles, rejectUnsupported, handleResult, collectReady, hasReady, destroy };
+    return { addFiles, rejectUnsupported, handleResult, collectReady, hasReady, hasPending, destroy };
   }
 
   function uid(el) {
@@ -1960,22 +1971,38 @@ export function createArtifactSdk(
       }
     });
 
-    cancelButton.onclick = closeCard;
-    sendButton.onclick = () => {
+    const attachNotice = /** @type {HTMLDivElement | null} */ (card.querySelector(".lavish-hint"));
+    // Try to queue the card. Returns true only if a prompt was actually queued, so
+    // the caller knows whether a follow-up "send now" should fire. Gates on any
+    // still-uploading attachment (R2.4): queuing then would silently drop it, so we
+    // keep the card open and tell the user to wait instead.
+    function tryQueue() {
+      if (attachments.hasPending()) {
+        if (attachNotice) attachNotice.textContent = "Waiting for an image to finish uploading…";
+        return false;
+      }
       const prompt = textarea.value.trim();
       const readyAttachments = attachments.collectReady();
       // Allow an image-only annotation (the element/target still identifies what it
       // refers to), but never queue an empty card.
-      if (prompt || readyAttachments.length) queuePrompt(prompt, { ...c, queueKey: "", attachments: readyAttachments });
+      if (prompt || readyAttachments.length) {
+        queuePrompt(prompt, { ...c, queueKey: "", attachments: readyAttachments });
+      }
       closeCard();
+      return true;
+    }
+
+    cancelButton.onclick = closeCard;
+    sendButton.onclick = () => {
+      tryQueue();
     };
     textarea.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         const sendNow = (event.ctrlKey || event.metaKey) && (!!textarea.value.trim() || attachments.hasReady());
-        sendButton.click();
+        const queued = tryQueue();
         // postMessage delivery is ordered, so the queued prompt lands before the send.
-        if (sendNow) sendQueuedPrompts();
+        if (queued && sendNow) sendQueuedPrompts();
       }
     });
     // Unsent annotation text is review context Lavish owns, so it is reported to the chrome and

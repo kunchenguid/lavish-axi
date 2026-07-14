@@ -1049,10 +1049,7 @@ test("queued prompt attachments are resolved server-side and client path claims 
             selector: "h1",
             tag: "h1",
             text: "Hi",
-            attachments: [
-              { id: known, name: "mock.png", path: "/etc/passwd", mime: "text/evil", bytes: 999999 },
-              { id: "b".repeat(64) + ".png" },
-            ],
+            attachments: [{ id: known, name: "mock.png", path: "/etc/passwd", mime: "text/evil", bytes: 999999 }],
           },
         ],
       },
@@ -1077,7 +1074,7 @@ test("queued prompt attachments are resolved server-side and client path claims 
   }
 });
 
-test("attachment resolution enforces per-prompt count and total-byte caps", async () => {
+test("queuePrompts rejects the batch atomically when the count or byte cap is exceeded (C4)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -1097,7 +1094,8 @@ test("attachment resolution enforces per-prompt count and total-byte caps", asyn
       height: 1,
     });
 
-    await store.queuePrompts(
+    // Over the per-prompt count cap: the whole batch is rejected and nothing persists.
+    const overCount = await store.queuePrompts(
       session.key,
       {
         prompts: [
@@ -1106,11 +1104,16 @@ test("attachment resolution enforces per-prompt count and total-byte caps", asyn
       },
       { resolveAttachment, maxPerPrompt: 2, maxPromptBytes: 25 * 1024 * 1024 },
     );
+    assert.ok(overCount.rejected, "over-count batch reports rejections");
+    assert.equal(
+      overCount.rejected.every((r) => r.reason === "too-many"),
+      true,
+    );
+    assert.equal(overCount.caps.maxPerPrompt, 2);
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting", "nothing was persisted");
 
-    const capped = feedbackResult(await store.takeFeedback(session.key));
-    assert.equal(capped.prompts[0].attachments.length, 2);
-
-    await store.queuePrompts(
+    // Over the total-byte cap: same atomic rejection.
+    const overBytes = await store.queuePrompts(
       session.key,
       {
         prompts: [
@@ -1119,9 +1122,54 @@ test("attachment resolution enforces per-prompt count and total-byte caps", asyn
       },
       { resolveAttachment, maxPerPrompt: 10, maxPromptBytes: 25 },
     );
-    const byteCapped = feedbackResult(await store.takeFeedback(session.key));
-    // 10 bytes each, 25-byte cap -> only two fit before the third would exceed it.
-    assert.equal(byteCapped.prompts[0].attachments.length, 2);
+    assert.ok(overBytes.rejected, "over-byte batch reports rejections");
+    assert.equal(
+      overBytes.rejected.some((r) => r.reason === "prompt-bytes-exceeded"),
+      true,
+    );
+    assert.equal(overBytes.caps.maxPromptBytes, 25);
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting", "nothing was persisted");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queuePrompts rejects the batch atomically when an attachment id is unknown (C4)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hi</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const known = "a".repeat(64) + ".png";
+    const unknown = "b".repeat(64) + ".png";
+    const resolveAttachment = async (_key, id) =>
+      id === known
+        ? { id: known, type: "image", path: "/vetted.png", mime: "image/png", bytes: 5, width: 1, height: 1 }
+        : null;
+
+    // A valid image alongside an unresolvable id: the user's real work is not
+    // silently half-delivered - the whole batch is rejected and preserved client-side.
+    const result = await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          {
+            uid: "1",
+            prompt: "mixed",
+            selector: "",
+            tag: "h1",
+            text: "",
+            attachments: [{ id: known }, { id: unknown, name: "gone.png" }],
+          },
+        ],
+      },
+      { resolveAttachment, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+    assert.deepEqual(result.rejected, [{ id: unknown, name: "gone.png", reason: "not-found" }]);
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting", "nothing was persisted");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

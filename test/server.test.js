@@ -686,7 +686,7 @@ test("sending with an empty composer nudges instead of blocking", async () => {
   const css = await chromeCssSource();
 
   assert.match(html, /class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div>/);
-  assert.match(js, /function showSendHint\(\)/);
+  assert.match(js, /function showSendHint\(message = DEFAULT_SEND_HINT/);
   assert.match(js, /sendHint\.hidden = false/);
   assert.match(js, /chatInput\.focus\(\)/);
   assert.match(css, /\.send-hint\{/);
@@ -3629,7 +3629,8 @@ test("annotation card queues prompt on Enter and inserts newline on Shift+Enter"
   assert.match(js, /textarea\.addEventListener\(["']keydown["']/);
   assert.match(js, /event\.key === ["']Enter["'] && !event\.shiftKey/);
   assert.match(js, /event\.preventDefault\(\)/);
-  assert.match(js, /sendButton\.click\(\)/);
+  // Enter routes through tryQueue(), which gates on in-flight uploads (R2.4).
+  assert.match(js, /const queued = tryQueue\(\)/);
 });
 
 test("annotation card queues and sends immediately on Ctrl+Enter or Cmd+Enter", () => {

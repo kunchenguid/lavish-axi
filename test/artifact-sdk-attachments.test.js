@@ -54,3 +54,17 @@ test("the SDK bundle renders a visible, titled remove control on each chip", () 
   assert.match(sdk, /aria-label="Remove image" title="Remove"/);
   assert.match(sdk, /lavish-attachment-remove/);
 });
+
+test("the SDK bundle gates queuing until in-flight uploads settle (R2.4)", () => {
+  // hasPending flags any still-uploading chip, and the queue path bails on it so an
+  // in-flight image is never silently dropped by collectReady/closeCard.
+  assert.match(sdk, /function hasPending\(\)\s*\{\s*return items\.some\(\(item\) => item\.status === "uploading"\)/);
+  assert.match(sdk, /if \(attachments\.hasPending\(\)\)/);
+  assert.match(sdk, /Waiting for an image to finish uploading/);
+  // "Send now" only fires when the queue actually happened.
+  assert.match(sdk, /const queued = tryQueue\(\);\s*\n?\s*[\s\S]*?if \(queued && sendNow\) sendQueuedPrompts\(\)/);
+});
+
+test("the SDK bundle only deletes a removed chip's file when no sibling shares its id", () => {
+  assert.match(sdk, /!items\.some\(\(other\) => other\.id === item\.id\)/);
+});

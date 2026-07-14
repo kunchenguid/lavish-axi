@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Content-addressed storage for annotation image attachments, kept out of
@@ -26,6 +26,11 @@ export const DEFAULT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10 MiB per imag
 export const DEFAULT_MAX_ATTACHMENTS_PER_PROMPT = 4;
 export const DEFAULT_MAX_PROMPT_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MiB per annotation
 export const DEFAULT_ATTACHMENT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// A bounded default disk quota: without a cap the reference-aware sweeper only
+// enforces the TTL, so a same-origin confused-deputy artifact (see chrome-client's
+// upload mediation) could grow attachment storage without bound. Capping the total
+// by default lets the sweeper evict oldest UNREFERENCED bytes; `off`/`0` disables.
+export const DEFAULT_MAX_ATTACHMENT_DISK_BYTES = 512 * 1024 * 1024; // 512 MiB
 
 let temporaryFileId = 0;
 
@@ -73,11 +78,12 @@ function durationEnv(raw, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function diskCapEnv(raw) {
+function diskCapEnv(raw, fallback = DEFAULT_MAX_ATTACHMENT_DISK_BYTES) {
   const trimmed = String(raw ?? "").trim();
-  if (trimmed === "") return null;
+  if (trimmed === "") return fallback;
+  if (trimmed === "0" || trimmed.toLowerCase() === "off") return null;
   const value = Number(trimmed);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value * 1024 * 1024) : null;
+  return Number.isFinite(value) && value > 0 ? Math.floor(value * 1024 * 1024) : fallback;
 }
 
 // Detect the image format from magic bytes alone. Returns { mime, ext } or null.
@@ -199,6 +205,38 @@ async function pathExists(file) {
   }
 }
 
+// D6 dims sidecar: a tiny JSON file written beside the image at upload time so the
+// trust boundary (resolveAttachment, called on every /prompts) and the thumbnail
+// GET never re-read the whole image just to recover its pixel geometry. The `.meta`
+// suffix keeps it outside ID_RE, so listAttachments/the sweeper ignore it as an
+// attachment; it is removed alongside its image on delete/sweep.
+function sidecarPath(file) {
+  return `${file}.meta`;
+}
+
+async function writeSidecar(file, meta) {
+  try {
+    await writeFileAtomically(sidecarPath(file), JSON.stringify(meta));
+  } catch {
+    // Dimensions are a display hint only; a sidecar write miss just means
+    // resolveAttachment falls back to a one-off header parse.
+  }
+}
+
+async function readSidecarDims(file) {
+  try {
+    const parsed = JSON.parse(await readFile(sidecarPath(file), "utf8"));
+    const width = Number(parsed?.width);
+    const height = Number(parsed?.height);
+    if (Number.isFinite(width) && Number.isFinite(height) && (width > 0 || height > 0)) {
+      return { width, height };
+    }
+  } catch {
+    // No sidecar (pre-D6 upload) or unreadable - signal a full-parse fallback.
+  }
+  return null;
+}
+
 async function writeFileAtomically(file, content) {
   const temporary = `${file}.${process.pid}.${++temporaryFileId}.tmp`;
   try {
@@ -229,8 +267,24 @@ export async function writeAttachment(stateDir, key, buffer, { maxBytes = DEFAUL
   const dir = attachmentsDir(stateDir, key);
   await mkdir(dir, { recursive: true });
   const file = attachmentFile(stateDir, key, id);
-  if (!(await pathExists(file))) await writeFileAtomically(file, buffer);
-  return buildMetadata(id, file, type.mime, buffer.length, imageDimensions(buffer, type.mime));
+  const dims = imageDimensions(buffer, type.mime);
+  if (!(await pathExists(file))) {
+    await writeFileAtomically(file, buffer);
+  } else {
+    // B3: dedup re-upload of identical content must refresh the mtime so a new
+    // reference restarts the TTL clock. Otherwise an aged-but-re-referenced file
+    // is reaped by the very next sweep, breaking the fresh prompt's thumbnail.
+    const now = new Date();
+    await utimes(file, now, now).catch(() => {});
+  }
+  await writeSidecar(file, {
+    v: 1,
+    mime: type.mime,
+    bytes: buffer.length,
+    width: dims?.width || 0,
+    height: dims?.height || 0,
+  });
+  return buildMetadata(id, file, type.mime, buffer.length, dims);
 }
 
 // The trust boundary: resolve a client-supplied id to server-vetted metadata by
@@ -249,8 +303,27 @@ export async function resolveAttachment(stateDir, key, id) {
   }
   if (!info.isFile()) return null;
   const mime = MIME_BY_EXT[id.slice(id.lastIndexOf(".") + 1)];
-  const dims = await readDimensions(file, mime);
+  // D6: prefer the dims sidecar (a few bytes) over re-reading the whole image.
+  const dims = (await readSidecarDims(file)) ?? (await readDimensions(file, mime));
   return buildMetadata(id, file, mime, info.size, dims);
+}
+
+// Lightweight serve resolution for the thumbnail GET: confirm the file exists and
+// derive the mime from the (already-validated) id extension, WITHOUT reading the
+// image bytes to recompute dimensions the route never uses. Returns { file, mime }
+// or null. Pairs with sendFile so a render is one stat + one streamed read, not two
+// full reads (see D6 in AGENTS.md).
+export async function statAttachmentForServe(stateDir, key, id) {
+  if (!isValidAttachmentKey(key) || !isValidAttachmentId(id)) return null;
+  const file = attachmentFile(stateDir, key, id);
+  try {
+    const info = await stat(file);
+    if (!info.isFile()) return null;
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    throw error;
+  }
+  return { file, mime: MIME_BY_EXT[id.slice(id.lastIndexOf(".") + 1)] };
 }
 
 async function readDimensions(file, mime) {
@@ -273,9 +346,13 @@ export async function removeAttachment(stateDir, key, id) {
   const file = attachmentFile(stateDir, key, id);
   try {
     await rm(file);
+    await rm(sidecarPath(file), { force: true }).catch(() => {});
     return true;
   } catch (error) {
-    if (error && error.code === "ENOENT") return false;
+    if (error && error.code === "ENOENT") {
+      await rm(sidecarPath(file), { force: true }).catch(() => {});
+      return false;
+    }
     throw error;
   }
 }
@@ -356,6 +433,7 @@ async function readdirSafe(dir) {
 async function removeFile(file) {
   try {
     await rm(file, { force: true });
+    await rm(sidecarPath(file), { force: true }).catch(() => {});
     return true;
   } catch {
     return false;

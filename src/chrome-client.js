@@ -14,10 +14,42 @@ const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initial
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
 
+// The chrome is the only path from the sandboxed (opaque-origin) artifact iframe to
+// the loopback server, so it is the sole place a same-origin confused-deputy can be
+// mediated: the frame's postMessage source check proves a message came from the
+// artifact frame but NOT that a user gesture (paste/drop/pick) drove it, so hostile
+// artifact script could otherwise drive unbounded uploads. Bound both the rate and
+// the cumulative bytes per chrome session here; the server keeps a bounded disk
+// quota as the durable backstop.
+const UPLOAD_RATE_WINDOW_MS = 60_000;
+const UPLOAD_RATE_MAX = 30;
+const UPLOAD_SESSION_BYTE_QUOTA = 256 * 1024 * 1024; // 256 MiB per chrome session
+const uploadTimestamps = [];
+let uploadedBytesTotal = 0;
+
 function formatByteLimit(bytes) {
   if (bytes >= 1024 * 1024) return Math.round(bytes / (1024 * 1024)) + " MB";
   if (bytes >= 1024) return Math.round(bytes / 1024) + " KB";
   return bytes + " bytes";
+}
+
+// Turn the server's atomic-reject detail (C4) into one human line naming the cap
+// that was hit, so the user knows what to fix. Nothing was delivered - the queue is
+// preserved - so the wording is about correcting, not about a partial send.
+function describeAttachmentRejection(rejected, caps) {
+  const reasons = new Set(rejected.map((ref) => ref && ref.reason));
+  const parts = [];
+  if (reasons.has("prompt-bytes-exceeded") && caps && caps.maxPromptBytes) {
+    parts.push("images exceed the " + formatByteLimit(caps.maxPromptBytes) + " per-annotation limit");
+  }
+  if (reasons.has("too-many") && caps && caps.maxPerPrompt) {
+    parts.push("more than " + caps.maxPerPrompt + " images on one annotation");
+  }
+  if (reasons.has("not-found")) {
+    parts.push("an image is no longer available");
+  }
+  const detail = parts.length ? parts.join("; ") : "some attachments could not be delivered";
+  return "Not sent — " + detail + ". Remove or fix the image, then send again.";
 }
 
 function isModeToggleHotkeyEvent(event) {
@@ -262,12 +294,16 @@ function pillAttachmentsHtml(prompt) {
   );
 }
 
-function showSendHint() {
+const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
+
+function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600) {
+  sendHint.textContent = message;
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);
   sendHintTimer = setTimeout(() => {
     sendHint.hidden = true;
-  }, 2600);
+    sendHint.textContent = DEFAULT_SEND_HINT;
+  }, holdMs);
   chatInput.focus();
 }
 
@@ -499,6 +535,15 @@ async function submitQueuedOnce() {
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
       endAfterSubmit = false;
       return false;
+    }
+    // C4: the server persisted nothing (atomic reject) - the queue below is left
+    // intact because the splice only runs on success. Surface exactly what failed
+    // so the user can fix the offending attachment(s) rather than losing them.
+    if (response.status === 400) {
+      const detail = await response.json().catch(() => ({}));
+      if (Array.isArray(detail.rejected) && detail.rejected.length) {
+        showSendHint(describeAttachmentRejection(detail.rejected, detail.caps), 6000);
+      }
     }
     throw new Error("failed to submit queued prompts");
   }
@@ -1830,6 +1875,29 @@ async function uploadAttachment(message) {
     });
     return;
   }
+  // Confused-deputy guard: rate + cumulative-byte ceiling before touching the network.
+  const now = Date.now();
+  while (uploadTimestamps.length && now - uploadTimestamps[0] > UPLOAD_RATE_WINDOW_MS) uploadTimestamps.shift();
+  if (uploadTimestamps.length >= UPLOAD_RATE_MAX) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      localId,
+      ok: false,
+      error: "Too many uploads. Wait a moment and retry.",
+    });
+    return;
+  }
+  if (uploadedBytesTotal + size > UPLOAD_SESSION_BYTE_QUOTA) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      localId,
+      ok: false,
+      error: "Upload limit reached for this session (" + formatByteLimit(UPLOAD_SESSION_BYTE_QUOTA) + ").",
+    });
+    return;
+  }
+  uploadTimestamps.push(now);
+  uploadedBytesTotal += size;
   try {
     const response = await fetch("/api/" + key + "/attachments", {
       method: "POST",

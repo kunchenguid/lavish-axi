@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm, utimes } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,6 +15,7 @@ import {
   removeAttachment,
   resolveAttachment,
   resolveAttachmentConfig,
+  statAttachmentForServe,
   sweepAttachments,
   writeAttachment,
 } from "../src/attachment-store.js";
@@ -117,6 +118,58 @@ test("writeAttachment dedupes identical content to one file and id", async () =>
   });
 });
 
+test("writeAttachment refreshes the mtime when deduping identical content (B3)", async () => {
+  await withTempDir(async (dir) => {
+    const first = await writeAttachment(dir, KEY, PNG_2x1, {});
+    // Age the stored file far past any TTL, as a long-lived server would see it.
+    const old = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    await utimes(first.path, new Date(old), new Date(old));
+
+    await writeAttachment(dir, KEY, PNG_2x1, {});
+    // A sweep with a 1-day TTL must now keep the file: the dedup refreshed its mtime,
+    // so the fresh reference restarts the clock (otherwise it would be reaped).
+    const swept = await sweepAttachments(dir, { ttlMs: 24 * 60 * 60 * 1000 });
+    assert.equal(swept.deleted, 0);
+    assert.ok(await resolveAttachment(dir, KEY, first.id), "re-referenced file survives its old age");
+  });
+});
+
+test("writeAttachment persists a dims sidecar that resolveAttachment reads without the image (D6)", async () => {
+  await withTempDir(async (dir) => {
+    const { id, path: file } = await writeAttachment(dir, KEY, PNG_2x1, {});
+    // The sidecar sits beside the image and is ignored by the id-shaped listing.
+    const sidecar = await readFile(`${file}.meta`, "utf8");
+    assert.deepEqual(JSON.parse(sidecar), { v: 1, mime: "image/png", bytes: PNG_2x1.length, width: 2, height: 1 });
+    const listed = await listAttachments(dir);
+    assert.equal(listed.length, 1, "the .meta sidecar is not enumerated as an attachment");
+
+    // Overwrite the image bytes with non-image garbage: a re-parse would now yield
+    // no dims, but the sidecar still carries them, proving resolveAttachment reads
+    // the sidecar rather than the whole image.
+    await writeFile(file, Buffer.from("not a real image"));
+    const resolved = await resolveAttachment(dir, KEY, id);
+    assert.deepEqual({ width: resolved.width, height: resolved.height }, { width: 2, height: 1 });
+  });
+});
+
+test("statAttachmentForServe returns file + mime without reading the image, and 404-safe otherwise", async () => {
+  await withTempDir(async (dir) => {
+    const { id, path: file } = await writeAttachment(dir, KEY, PNG_2x1, {});
+    assert.deepEqual(await statAttachmentForServe(dir, KEY, id), { file, mime: "image/png" });
+    assert.equal(await statAttachmentForServe(dir, KEY, "f".repeat(64) + ".png"), null);
+    assert.equal(await statAttachmentForServe(dir, KEY, "not-a-valid-id"), null);
+    assert.equal(await statAttachmentForServe(dir, "../etc", id), null);
+  });
+});
+
+test("removeAttachment also cleans up the dims sidecar", async () => {
+  await withTempDir(async (dir) => {
+    const { id, path: file } = await writeAttachment(dir, KEY, PNG_2x1, {});
+    assert.equal(await removeAttachment(dir, KEY, id), true);
+    await assert.rejects(() => readFile(`${file}.meta`, "utf8"), /ENOENT/);
+  });
+});
+
 test("writeAttachment rejects oversized, empty, and non-image uploads", async () => {
   await withTempDir(async (dir) => {
     await assert.rejects(() => writeAttachment(dir, KEY, PNG_2x1, { maxBytes: 4 }), /exceeds/);
@@ -165,7 +218,8 @@ test("resolveAttachmentConfig reads LAVISH_AXI_* limits with sane fallbacks", ()
   assert.equal(defaults.maxPerPrompt, 4);
   assert.equal(defaults.maxPromptBytes, 25 * 1024 * 1024);
   assert.equal(defaults.ttlMs, 7 * 24 * 60 * 60 * 1000);
-  assert.equal(defaults.maxDiskBytes, null);
+  // Bounded default disk quota so the sweeper caps unreferenced growth out of the box.
+  assert.equal(defaults.maxDiskBytes, 512 * 1024 * 1024);
 
   const custom = resolveAttachmentConfig({
     LAVISH_AXI_MAX_ATTACHMENT_BYTES: "2048",
@@ -178,9 +232,14 @@ test("resolveAttachmentConfig reads LAVISH_AXI_* limits with sane fallbacks", ()
   assert.equal(custom.ttlMs, null);
   assert.equal(custom.maxDiskBytes, 50 * 1024 * 1024);
 
+  // The disk quota is explicitly disable-able with off/0.
+  assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_DISK_MB: "off" }).maxDiskBytes, null);
+  assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_DISK_MB: "0" }).maxDiskBytes, null);
+
   // Non-positive / unparseable values fall back rather than throwing.
   assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_BYTES: "-1" }).maxBytes, 10 * 1024 * 1024);
   assert.equal(resolveAttachmentConfig({ LAVISH_AXI_ATTACHMENT_TTL_MS: "0" }).ttlMs, null);
+  assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_DISK_MB: "-5" }).maxDiskBytes, 512 * 1024 * 1024);
 });
 
 test("writeAttachment leaves no stray temp files behind", async () => {

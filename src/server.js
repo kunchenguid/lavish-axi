@@ -43,14 +43,15 @@ import {
 } from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
+import { AsyncMutex } from "./async-mutex.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import {
-  attachmentPath,
   isValidAttachmentKey,
   removeAttachment,
   resolveAttachment,
   resolveAttachmentConfig,
+  statAttachmentForServe,
   sweepAttachments,
   writeAttachment,
 } from "./attachment-store.js";
@@ -265,6 +266,11 @@ export async function serve({
   const attachmentConfig = resolveAttachmentConfig();
   // Attachment bytes are content-addressed on disk alongside the whiteboard sidecars.
   const attachmentStateRoot = path.dirname(stateFile);
+  // ONE shared lock for the whole attachment lifecycle: upload finalize, the
+  // /prompts resolve+persist, delete, and the reference-aware sweep all run under
+  // it, so a reference can never be acquired in the window between the sweeper's
+  // reference snapshot and its delete (D5).
+  const attachmentLifecycleLock = new AsyncMutex();
 
   const defaultJsonParser = express.json({ limit: "2mb" });
   const whiteboardJsonParser = express.json({ limit: "20mb" });
@@ -404,15 +410,29 @@ export async function serve({
       const hasLayoutWarningPrompt = Array.isArray(req.body?.prompts)
         ? req.body.prompts.some((prompt) => prompt?.tag === "layout-warnings")
         : false;
-      const session = await store.queuePrompts(req.params.key, req.body || {}, {
+      const result = await store.queuePrompts(req.params.key, req.body || {}, {
         resolveAttachment: (sessionKeyValue, id) => resolveAttachment(attachmentStateRoot, sessionKeyValue, id),
         maxPerPrompt: attachmentConfig.maxPerPrompt,
         maxPromptBytes: attachmentConfig.maxPromptBytes,
+        lock: attachmentLifecycleLock,
       });
-      if (!session) {
+      if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
+      // Atomic attachment rejection (C4): the batch resolved-and-persisted nothing
+      // because one or more images could not be honored. Return 400 with the
+      // rejected refs and the caps so the chrome keeps its queue and can surface
+      // exactly what to fix, instead of silently dropping the images.
+      if (result.rejected) {
+        res.status(400).json({
+          error: "some attachments could not be delivered",
+          rejected: result.rejected,
+          caps: result.caps,
+        });
+        return;
+      }
+      const session = result;
       if (session.conflict) {
         res.status(409).json({
           status: "conflict",
@@ -1059,9 +1079,13 @@ export async function serve({
         res.status(413).json({ error: `attachment exceeds the ${attachmentConfig.maxBytes} byte limit` });
         return;
       }
-      const attachment = await writeAttachment(attachmentStateRoot, req.params.key, buffer, {
-        maxBytes: attachmentConfig.maxBytes,
-      });
+      // Finalize under the lifecycle lock so the dedup mtime refresh (B3) and the
+      // dims sidecar write can't interleave with a concurrent sweep/delete.
+      const attachment = await attachmentLifecycleLock.runExclusive(() =>
+        writeAttachment(attachmentStateRoot, req.params.key, buffer, {
+          maxBytes: attachmentConfig.maxBytes,
+        }),
+      );
       res.json({ status: "stored", attachment });
     } catch (error) {
       next(error);
@@ -1070,15 +1094,17 @@ export async function serve({
 
   app.get("/api/:key/attachments/:id", async (req, res, next) => {
     try {
-      const file = attachmentPath(attachmentStateRoot, req.params.key, req.params.id);
-      const attachment = file ? await resolveAttachment(attachmentStateRoot, req.params.key, req.params.id) : null;
-      if (!file || !attachment) {
+      // D6: a render is one stat + one streamed read. `statAttachmentForServe`
+      // confirms existence and derives the mime from the validated id extension
+      // WITHOUT re-parsing the image to recover dimensions the route never uses.
+      const serve = await statAttachmentForServe(attachmentStateRoot, req.params.key, req.params.id);
+      if (!serve) {
         res.status(404).json({ error: "attachment not found" });
         return;
       }
       res.setHeader("cache-control", "private, max-age=300");
-      res.type(attachment.mime);
-      res.sendFile(file, { dotfiles: "allow" });
+      res.type(serve.mime);
+      res.sendFile(serve.file, { dotfiles: "allow" });
     } catch (error) {
       next(error);
     }
@@ -1090,8 +1116,16 @@ export async function serve({
         res.status(403).json({ error: "cross-origin attachment delete rejected" });
         return;
       }
-      const removed = await removeAttachment(attachmentStateRoot, req.params.key, req.params.id);
-      res.json({ status: removed ? "removed" : "absent" });
+      // Reference-counted delete under the lifecycle lock: a content-addressed file
+      // shared by an already-queued prompt (the same image attached twice, deduped
+      // to one id) must survive a chip removal, or the queued prompt's thumbnail and
+      // path break. Only reap the file when no pending prompt still references it.
+      const status = await attachmentLifecycleLock.runExclusive(async () => {
+        const referenced = await store.referencedAttachmentIds();
+        if (referenced.has(`${req.params.key}/${req.params.id}`)) return "referenced";
+        return (await removeAttachment(attachmentStateRoot, req.params.key, req.params.id)) ? "removed" : "absent";
+      });
+      res.json({ status });
     } catch (error) {
       next(error);
     }
@@ -1211,11 +1245,16 @@ export async function serve({
   let attachmentSweepTimer = null;
   async function sweepAttachmentsNow() {
     try {
-      const referenced = await store.referencedAttachmentIds();
-      const result = await sweepAttachments(attachmentStateRoot, {
-        ttlMs: attachmentConfig.ttlMs,
-        maxDiskBytes: attachmentConfig.maxDiskBytes,
-        referenced,
+      // The reference snapshot AND the enumerate/delete run as one critical section
+      // so a reference acquired mid-sweep (a concurrent upload finalize or /prompts
+      // resolve) can never point at a file this sweep is about to remove (D5).
+      const result = await attachmentLifecycleLock.runExclusive(async () => {
+        const referenced = await store.referencedAttachmentIds();
+        return sweepAttachments(attachmentStateRoot, {
+          ttlMs: attachmentConfig.ttlMs,
+          maxDiskBytes: attachmentConfig.maxDiskBytes,
+          referenced,
+        });
       });
       if (result.deleted > 0) {
         logEvent?.(`attachment sweep removed ${result.deleted} file(s), freed ${result.freedBytes} bytes`);
