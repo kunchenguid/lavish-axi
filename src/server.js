@@ -905,8 +905,9 @@ function encodeRfc5987Value(value) {
 
 // Wildcard bind addresses ("all interfaces") are not connectable hostnames, so
 // they never belong in the Host allowlist - and "0.0.0.0" as a Host is a known
-// loopback-reach trick, so it must stay rejected.
-const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::"]);
+// loopback-reach trick, so it must stay rejected. Both the bare ("::") and
+// bracketed ("[::]") IPv6 wildcard forms are excluded.
+const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
 
 // The set of Host header hostnames this server answers to: loopback names plus
 // the resolved bind and link host and any explicit LAVISH_AXI_ALLOWED_HOSTS

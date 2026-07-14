@@ -1840,6 +1840,16 @@ test("allows a custom bare IPv6 LAVISH_AXI_HOST to match its bracketed Host head
   assert.equal(isAllowedHostHeader("evil.com", allowed), false);
 });
 
+test("never widens the allowlist for a wildcard bind (IPv4 or IPv6 sentinel)", () => {
+  const loopbackOnly = new Set(["127.0.0.1", "::1", "localhost"]);
+  for (const wildcard of ["0.0.0.0", "::", "[::]", " :: "]) {
+    const allowed = buildAllowedHostnames({ host: wildcard, linkHost: wildcard });
+    assert.deepEqual([...allowed].sort(), [...loopbackOnly].sort());
+    assert.equal(isAllowedHostHeader("[::]:8080", allowed), false);
+    assert.equal(isAllowedHostHeader("0.0.0.0:8080", allowed), false);
+  }
+});
+
 test("rejects requests whose Host header is not a loopback name (DNS-rebinding guard)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
