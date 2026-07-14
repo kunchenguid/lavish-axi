@@ -38,3 +38,19 @@ test("the SDK bundle renders chips with a thumbnail, name, and status", () => {
   assert.match(sdk, /Uploading…/);
   assert.match(sdk, /revokeObjectURL/);
 });
+
+test("the SDK bundle intercepts every drop so a non-image can't navigate the frame", () => {
+  // The drop handler calls preventDefault() unconditionally, then classifies.
+  assert.match(
+    sdk,
+    /"drop",\s*\(event\)\s*=>\s*\{\s*[\s\S]*?event\.preventDefault\(\);\s*card\.classList\.remove\("is-dropping"\)/,
+  );
+  assert.match(sdk, /dataTransferHasFiles/);
+  assert.match(sdk, /attachments\.rejectUnsupported\(unsupportedDropName\(event\.dataTransfer\)\)/);
+  assert.match(sdk, /error: "UNSUPPORTED_TYPE"/);
+});
+
+test("the SDK bundle renders a visible, titled remove control on each chip", () => {
+  assert.match(sdk, /aria-label="Remove image" title="Remove"/);
+  assert.match(sdk, /lavish-attachment-remove/);
+});

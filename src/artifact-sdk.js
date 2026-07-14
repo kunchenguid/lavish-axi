@@ -277,7 +277,7 @@ export function createArtifactSdk(
   let activeAttachments = null;
 
   const REMOVE_ICON =
-    '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    '<svg width="12" height="12" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>';
 
   function attachmentChipHtml(item, index) {
     const name = escapeAnnotationText(item.name || "image");
@@ -291,8 +291,9 @@ export function createArtifactSdk(
         '<span class="lavish-attachment-status lavish-attachment-status-error">' +
         escapeAnnotationText(item.error || "Upload failed") +
         "</span>";
+    // Only a real (retryable) upload gets a Retry button; a rejected non-image has no file.
     const retry =
-      item.status === "error"
+      item.status === "error" && item.file
         ? '<button type="button" class="lavish-attachment-retry" data-attachment-retry="' + index + '">Retry</button>'
         : "";
     return (
@@ -310,7 +311,7 @@ export function createArtifactSdk(
       retry +
       '<button type="button" class="lavish-attachment-remove" data-attachment-remove="' +
       index +
-      '" aria-label="Remove image">' +
+      '" aria-label="Remove image" title="Remove">' +
       REMOVE_ICON +
       "</button></div>"
     );
@@ -390,7 +391,23 @@ export function createArtifactSdk(
     }
 
     function retryAt(index) {
-      if (items[index]) upload(items[index]);
+      if (items[index] && items[index].file) upload(items[index]);
+    }
+
+    // Surface a dropped non-image as a dismissible UNSUPPORTED_TYPE error chip (no
+    // file, so no thumbnail and no retry) instead of letting the browser open it.
+    function rejectUnsupported(name) {
+      items.push({
+        localId: "att-" + ++attachmentLocalCounter,
+        file: null,
+        name: name || "file",
+        mime: "",
+        status: "error",
+        id: "",
+        error: "UNSUPPORTED_TYPE",
+        url: "",
+      });
+      render();
     }
 
     function handleResult(localId, ok, id, error) {
@@ -423,7 +440,7 @@ export function createArtifactSdk(
     }
 
     render();
-    return { addFiles, handleResult, collectReady, hasReady, destroy };
+    return { addFiles, rejectUnsupported, handleResult, collectReady, hasReady, destroy };
   }
 
   function uid(el) {
@@ -1819,7 +1836,7 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border-radius:50%;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:var(--steel-600)}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border-radius:50%;background:var(--steel-600);color:var(--cream-50);cursor:pointer;border:1px solid var(--steel-500)}.lavish-attachment-remove:hover{background:var(--accent);color:var(--brass-ink);border-color:var(--accent)}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
     shadow.appendChild(style);
     return shadow;
   }
@@ -1885,7 +1902,7 @@ export function createArtifactSdk(
       '<input class="lavish-attach-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden></div>' +
       '<div class="lavish-hint">Enter to queue &middot; ' +
       sendNowHint +
-      "+Enter to send now &middot; paste or drop an image" +
+      "+Enter to send &middot; paste or drop an image" +
       '</div><div class="lavish-row"><button class="lavish-cancel" type="button">Cancel</button><button class="lavish-send" type="button">Queue</button></div>';
     root.appendChild(card);
 
@@ -1915,7 +1932,9 @@ export function createArtifactSdk(
       if (files.length && attachments.addFiles(files)) event.preventDefault();
     });
     card.addEventListener("dragover", (event) => {
-      if (hasImageDrag(event.dataTransfer)) {
+      // Accept ANY file drag so the drop lands on the card (and is preventable)
+      // instead of the browser navigating to a dropped non-image.
+      if (dataTransferHasFiles(event.dataTransfer)) {
         event.preventDefault();
         card.classList.add("is-dropping");
       }
@@ -1924,11 +1943,15 @@ export function createArtifactSdk(
       if (event.target === card) card.classList.remove("is-dropping");
     });
     card.addEventListener("drop", (event) => {
+      // Intercept every drop over the card so a dropped PDF/other file can never
+      // navigate the frame away; accept images or surface UNSUPPORTED_TYPE.
+      event.preventDefault();
       card.classList.remove("is-dropping");
       const files = imageFilesFromDataTransfer(event.dataTransfer);
       if (files.length) {
-        event.preventDefault();
         attachments.addFiles(files);
+      } else if (dataTransferHasFiles(event.dataTransfer)) {
+        attachments.rejectUnsupported(unsupportedDropName(event.dataTransfer));
       }
     });
 
@@ -1979,12 +2002,21 @@ export function createArtifactSdk(
     return files;
   }
 
-  function hasImageDrag(dataTransfer) {
+  function dataTransferHasFiles(dataTransfer) {
     if (!dataTransfer) return false;
+    if ((dataTransfer.files || []).length) return true;
     for (const item of dataTransfer.items || []) {
-      if (item.kind === "file" && (ATTACHMENT_ACCEPTED_MIME[item.type] || item.type.startsWith("image/"))) return true;
+      if (item.kind === "file") return true;
     }
     return (dataTransfer.types || []).includes?.("Files");
+  }
+
+  function unsupportedDropName(dataTransfer) {
+    if (!dataTransfer) return "file";
+    for (const file of dataTransfer.files || []) {
+      if (file && !ATTACHMENT_ACCEPTED_MIME[file.type]) return file.name || "file";
+    }
+    return "file";
   }
 
   /** @type {Window & { lavish?: unknown }} */ (window).lavish = {
