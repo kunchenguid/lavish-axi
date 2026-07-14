@@ -67,7 +67,7 @@ test("real Excalidraw rendering keeps loaded-font labels inside their text bound
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-excalidraw-render-"));
   try {
     await esbuild.build({
-      entryPoints: [path.join(projectRoot, "test/fixtures/excalidraw-label-clipping.browser.js")],
+      entryPoints: [path.join(projectRoot, "test/fixtures/excalidraw-label-clipping.browser.jsx")],
       outdir: root,
       entryNames: "fixture",
       assetNames: "assets/[name]-[hash]",
