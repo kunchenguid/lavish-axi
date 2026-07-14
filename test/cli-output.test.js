@@ -56,6 +56,22 @@ function setupHooksEnv(homeDir, stateDir) {
   return { ...env, HOME: homeDir, LAVISH_AXI_STATE_DIR: stateDir };
 }
 
+function assertObservablePollWakePath(text) {
+  assert.match(text, /Keep the poll in the foreground by default/i);
+  assert.match(text, /return the feedback directly to the agent/i);
+  assert.match(text, /harness-native tracked background-job facility/i);
+  assert.match(text, /guaranteed to resume or notify the same agent/i);
+  assert.match(text, /Never use `nohup`/);
+  assert.match(text, /shell `&`/);
+  assert.match(text, /`disown`/);
+  assert.match(text, /redirected fire-and-forget processes/);
+  assert.match(text, /detached terminal without an explicit verified callback/);
+  assert.match(text, /no completion-aware background facility/i);
+  assert.match(text, /verified wake callback into the surrounding supervisor/i);
+  assert.match(text, /Do not tell the user the artifact is being monitored until that wake path is live/i);
+  assert.doesNotMatch(text, /foreground command may run.*run the poll as a background task/i);
+}
+
 test("CLI version tracks package.json so release-please bumps reach the published binary", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(VERSION, packageJson.version);
@@ -125,7 +141,7 @@ test("the design-priority rule is single-sourced and keeps its three-step semant
   assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
 });
 
-test("home output warns agents that poll is a long poll they must not kill", () => {
+test("home output warns agents that poll needs an observable wake path", () => {
   const output = createHomeOutput({ bin: "lavish-axi", sessions: [] });
   const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
 
@@ -133,13 +149,12 @@ test("home output warns agents that poll is a long poll they must not kill", () 
   assert.match(pollHelp, /long-poll/);
   assert.match(pollHelp, /stays silent/);
   assert.match(pollHelp, /never kill it/);
-  assert.match(pollHelp, /agent harness/);
-  assert.match(pollHelp, /foreground command may run/);
-  assert.match(pollHelp, /run the poll as a background task/);
+  assertObservablePollWakePath(pollHelp);
   assert.doesNotMatch(pollHelp, /Codex/);
-  assert.doesNotMatch(pollHelp, /do not hide the poll in a background task/);
   assert.match(pollHelp, /re-run/);
   assert.match(pollHelp, /queued feedback is never lost/);
+  assert.match(pollHelp, /`Send & End` ends the session/);
+  assert.match(pollHelp, /final feedback is still delivered once/);
   assert.doesNotMatch(pollHelp, /above 10 minutes/);
 });
 
@@ -147,18 +162,17 @@ test("home output tailors poll guidance when invoked under Codex", () => {
   const output = createHomeOutput({ bin: "lavish-axi", sessions: [], agent: "codex" });
   const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
 
+  assertObservablePollWakePath(pollHelp);
   assert.match(pollHelp, /Codex detected/);
-  assert.match(pollHelp, /do not hide the poll in a background task/);
   assert.match(pollHelp, /keep the poll attached to the active turn/);
-  assert.doesNotMatch(pollHelp, /agent harness limits/);
 });
 
-test("home output keeps static skill poll guidance agent-neutral", () => {
+test("home output keeps static skill poll guidance safe and agent-neutral", () => {
   const output = createHomeOutput({ bin: "lavish-axi", sessions: [], agent: "static" });
   const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
 
+  assertObservablePollWakePath(pollHelp);
   assert.doesNotMatch(pollHelp, /keep the poll attached to the active turn/i);
-  assert.doesNotMatch(pollHelp, /run the poll as a background task/);
   assert.doesNotMatch(pollHelp, /Codex detected/);
   assert.match(pollHelp, /queued feedback is never lost/);
 });
@@ -608,24 +622,21 @@ test("open output keeps the user URL in session data and next_step focused on po
   // Keyword-level lock on the load-bearing semantics of this agent-facing string:
   // poll now (not the user-facing URL), never kill the poll, no --timeout-ms, and the
   // reopen etiquette. Sentence-level phrasing is free to change without touching this test.
-  assert.doesNotMatch(output.next_step, /Tell the user/i);
+  assert.doesNotMatch(output.next_step, /Tell the user (?:to open|to visit)/i);
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
   assert.match(output.next_step, /layout_warnings/);
   assert.match(output.next_step, /never kill it/);
-  assert.match(output.next_step, /agent harness/);
-  assert.match(output.next_step, /foreground command may run/);
-  assert.match(output.next_step, /run the poll as a background task/);
+  assertObservablePollWakePath(output.next_step);
   assert.doesNotMatch(output.next_step, /Codex/);
-  assert.doesNotMatch(output.next_step, /do not hide the poll in a background task/);
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not pass --timeout-ms/);
   assert.match(output.next_step, /If the user ends the session, stop polling and do not reopen it/);
   assert.match(output.next_step, /--reopen/);
 });
 
-test("open output steers Codex away from background polling", () => {
+test("open output gives Codex the shared wake-path contract plus an attached-turn warning", () => {
   const output = createOpenOutput({
     file: "/tmp/artifact.html",
     url: "http://localhost:4387/session/abc123",
@@ -633,10 +644,9 @@ test("open output steers Codex away from background polling", () => {
     agent: "codex",
   });
 
+  assertObservablePollWakePath(output.next_step);
   assert.match(output.next_step, /Codex detected/);
-  assert.match(output.next_step, /do not hide the poll in a background task/);
   assert.match(output.next_step, /keep the poll attached to the active turn/);
-  assert.doesNotMatch(output.next_step, /agent harness limits/);
 });
 
 test("a user-ended open refuses with a status agents can branch on, not a URL to open", () => {
@@ -955,30 +965,28 @@ test("share command treats a whitespace-only password as public", async () => {
   }
 });
 
-test("poll help warns agents to leave the long poll running", () => {
+test("poll help requires an observable wake path", () => {
   const help = getCommandHelp("poll");
 
   assert.match(help, /long-polls indefinitely/);
   assert.match(help, /stays silent/);
   assert.match(help, /never kill it/);
-  assert.match(help, /agent harness/);
-  assert.match(help, /foreground command may run/);
-  assert.match(help, /run the poll as a background task/);
+  assertObservablePollWakePath(help);
   assert.doesNotMatch(help, /Codex/);
-  assert.doesNotMatch(help, /do not hide the poll in a background task/);
   assert.match(help, /queued feedback is never lost/);
   assert.match(help, /Do not pass --timeout-ms/);
   assert.match(help, /tests and debugging only/);
+  assert.match(help, /`Send & End` ends the session/);
+  assert.match(help, /final feedback is still delivered once/);
   assert.doesNotMatch(help, /above 10 minutes/);
 });
 
 test("poll help is Codex-aware when requested", () => {
   const help = getCommandHelp("poll", { agent: "codex" });
 
+  assertObservablePollWakePath(help);
   assert.match(help, /Codex detected/);
-  assert.match(help, /do not hide the poll in a background task/);
   assert.match(help, /keep the poll attached to the active turn/);
-  assert.doesNotMatch(help, /agent harness limits/);
 });
 
 test("share help distinguishes public default from password-protected shares", () => {
@@ -998,7 +1006,7 @@ test("share help distinguishes public default from password-protected shares", (
   assert.doesNotMatch(homeShareHelp, /Everything published is public/);
 });
 
-test("feedback next step tells agents to keep polling without timeout flag", () => {
+test("feedback next step keeps the next poll completion observable", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
     response: { status: "feedback", dom_snapshot: "", prompts: [] },
@@ -1007,11 +1015,8 @@ test("feedback next step tells agents to keep polling without timeout flag", () 
   assert.equal("layout_warnings" in output, false);
   assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /without --timeout-ms/);
-  assert.match(output.next_step, /agent harness/);
-  assert.match(output.next_step, /foreground command may run/);
-  assert.match(output.next_step, /run the poll as a background task/);
+  assertObservablePollWakePath(output.next_step);
   assert.doesNotMatch(output.next_step, /Codex/);
-  assert.doesNotMatch(output.next_step, /do not hide the poll in a background task/);
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /fresh layout_warnings/);
@@ -1025,10 +1030,9 @@ test("feedback next step is Codex-aware when requested", () => {
     agent: "codex",
   });
 
+  assertObservablePollWakePath(output.next_step);
   assert.match(output.next_step, /Codex detected/);
-  assert.match(output.next_step, /do not hide the poll in a background task/);
   assert.match(output.next_step, /keep the poll attached to the active turn/);
-  assert.doesNotMatch(output.next_step, /agent harness limits/);
 });
 
 test("layout warning feedback tells agents to fix layout before involving the human", () => {
