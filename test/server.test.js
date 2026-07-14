@@ -1826,6 +1826,87 @@ test("POST /api/:key/share rejects requests without provenance headers", async (
   }
 });
 
+test("rejects requests whose Host header is not a loopback name (DNS-rebinding guard)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const key = sessionKey(await canonicalFile(artifact));
+    // A rebound page drives the loopback server but its Host header still names
+    // the attacker's original hostname - the primary rebinding defense rejects it.
+    const rebound = await rawRequest(server.port, `/api/${key}/prompts`, {
+      method: "POST",
+      host: "evil.com",
+      body: JSON.stringify({ prompts: [{ text: "malicious" }] }),
+    });
+    assert.equal(rebound.status, 403);
+    assert.deepEqual(JSON.parse(rebound.body), { error: "forbidden host" });
+
+    // The guard is port-agnostic and covers every route, including reads.
+    const health = await rawRequest(server.port, "/health", { host: "attacker.example:1234" });
+    assert.equal(health.status, 403);
+
+    // Legitimate loopback hostnames still pass the guard.
+    for (const host of ["127.0.0.1", "localhost", "[::1]"]) {
+      const ok = await rawRequest(server.port, "/health", { host: `${host}:${server.port}` });
+      assert.equal(ok.status, 200, `expected ${host} to pass the host guard`);
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/prompts rejects a cross-origin browser request", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    // A malicious page loaded from another origin can reach the loopback server
+    // (Host passes because the socket resolves to 127.0.0.1) but the browser
+    // attaches the real foreign Origin, so the mutating guard rejects it.
+    const crossOrigin = await fetch(`${base}/api/${session.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://attacker.example" },
+      body: JSON.stringify({ prompts: [{ text: "injected" }] }),
+    });
+    assert.equal(crossOrigin.status, 403);
+    assert.deepEqual(await crossOrigin.json(), { error: "cross-origin request rejected" });
+
+    // The legitimate same-origin browser request still queues the prompt.
+    const sameOrigin = await fetch(`${base}/api/${session.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ text: "legit" }] }),
+    });
+    assert.equal(sameOrigin.status, 200);
+    assert.equal((await sameOrigin.json()).status, "queued");
+
+    // The CLI control channel dials the loopback server with no Origin/Referer
+    // and must keep working - the mutating guard only rejects a present, foreign
+    // origin, leaning on the Host allowlist for header-less requests.
+    const cliOpen = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.equal(cliOpen.status, 200);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /shutdown stops the listener so the client can spawn a fresh server", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });

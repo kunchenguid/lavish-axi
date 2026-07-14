@@ -172,6 +172,27 @@ export async function serve({
     });
   }
 
+  // CSRF / same-origin defense for state-changing routes (defense-in-depth on
+  // top of the Host guard). A cross-origin page hitting the loopback server
+  // directly passes the Host check but the browser attaches its real foreign
+  // Origin, so we reject any mutating request that arrives with a present,
+  // non-matching Origin/Referer. Header-less requests (the CLI control channel
+  // dials the server with no Origin) are allowed and rely on the Host allowlist.
+  // Routes that publish or write outside the session (/share, whiteboard writes)
+  // keep their own stricter isSameOriginRequest check, which also rejects the
+  // header-less case, so they are exempt here to preserve that behavior.
+  app.use((req, res, next) => {
+    if (!isMutatingMethod(req.method) || isStrictlyGuardedPath(req.method, req.path)) {
+      next();
+      return;
+    }
+    if (hasForeignOrigin(req)) {
+      res.status(403).json({ error: "cross-origin request rejected" });
+      return;
+    }
+    next();
+  });
+
   const defaultJsonParser = express.json({ limit: "2mb" });
   const whiteboardJsonParser = express.json({ limit: "20mb" });
   app.use((req, res, next) =>
@@ -960,6 +981,34 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
   const forwarded = forwardedHost === undefined || forwardedHost === null ? "" : String(forwardedHost).trim();
   if (forwarded === "") return true;
   return isAllowedHostHeader(forwarded.split(",").pop(), allowedHostnames);
+}
+
+function isMutatingMethod(method) {
+  return method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+}
+
+// Routes that enforce their own stricter isSameOriginRequest (reject even
+// header-less requests) so the lenient global mutating guard must not shadow or
+// weaken them. GET routes are never mutating, so only the write verbs matter.
+function isStrictlyGuardedPath(method, pathname) {
+  const p = String(pathname || "");
+  if (method === "POST" && /^\/api\/[0-9a-f]{16}\/share$/.test(p)) return true;
+  if (method === "POST" && /^\/api\/[0-9a-f]{16}\/whiteboard-channel$/.test(p)) return true;
+  if ((method === "PUT" || method === "POST") && isWhiteboardWriteApiPath(p)) return true;
+  return false;
+}
+
+// True only when a browser attached an Origin (or Referer) that resolves to a
+// different origin than this server. A missing header returns false so the CLI
+// control channel (no Origin) is not blocked; the Host allowlist is the gate for
+// header-less requests.
+function hasForeignOrigin(req) {
+  const expectedOrigin = `${req.protocol}://${req.get("host")}`;
+  const origin = req.get("origin");
+  if (origin) return normalizeOrigin(origin) !== expectedOrigin;
+  const referer = req.get("referer");
+  if (referer) return normalizeOrigin(referer) !== expectedOrigin;
+  return false;
 }
 
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
