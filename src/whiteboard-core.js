@@ -64,6 +64,24 @@ export function findDuplicateElementIds(elements) {
   return [...duplicates];
 }
 
+// Excalidraw measures text synchronously while materializing skeletons. Its
+// bundled fonts load asynchronously, so the first pass also gives the caller
+// the concrete text elements needed to request exactly those fonts. Always
+// materialize again after that request so the second pass records the real
+// glyph metrics before anything reaches the visible editor.
+/**
+ * @template T
+ * @template E
+ * @param {T[]} skeletons
+ * @param {{ convert: (skeletons: T[]) => E[], loadFonts: (elements: E[]) => Promise<unknown> }} adapters
+ * @returns {Promise<E[]>}
+ */
+export async function convertExcalidrawSkeletonsAfterFontsLoad(skeletons, { convert, loadFonts }) {
+  const fallbackElements = convert(skeletons);
+  await loadFonts(fallbackElements);
+  return convert(skeletons);
+}
+
 function liveElements(elements) {
   return (Array.isArray(elements) ? elements : []).filter(
     (el) => el && typeof el === "object" && el.id && !el.isDeleted,

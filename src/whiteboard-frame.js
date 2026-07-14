@@ -16,13 +16,14 @@
 // inside opaque origins, exactly like the artifact iframe.
 
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
-import { convertToExcalidrawElements, Excalidraw, exportToBlob, restore } from "@excalidraw/excalidraw";
+import { convertToExcalidrawElements, Excalidraw, exportToBlob, exportToCanvas, restore } from "@excalidraw/excalidraw";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "@excalidraw/excalidraw/index.css";
 import "./whiteboard-frame.css";
 
 import {
+  convertExcalidrawSkeletonsAfterFontsLoad,
   findDuplicateElementIds,
   sanitizeSceneLink,
   sanitizeWhiteboardAppState,
@@ -378,13 +379,33 @@ async function convertSource(source) {
   const { elements: skeletons, files } = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: "16px" },
   });
-  // Preserve Mermaid node/edge identity for edit summaries; regenerate only
-  // when upstream emitted colliding ids (parallel edges), where uniqueness
-  // matters more than identity.
-  let elements = convertToExcalidrawElements(skeletons, { regenerateIds: false });
-  if (findDuplicateElementIds(elements).length > 0) {
-    elements = convertToExcalidrawElements(skeletons, { regenerateIds: true });
-  }
+  const materialize = (input) => {
+    // Preserve Mermaid node/edge identity for edit summaries; regenerate only
+    // when upstream emitted colliding ids (parallel edges), where uniqueness
+    // matters more than identity.
+    let elements = convertToExcalidrawElements(input, { regenerateIds: false });
+    if (findDuplicateElementIds(elements).length > 0) {
+      elements = convertToExcalidrawElements(input, { regenerateIds: true });
+    }
+    return elements;
+  };
+  const elements = await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+    convert: materialize,
+    loadFonts: async (fallbackElements) => {
+      if (!fallbackElements.some((element) => element.type === "text")) return;
+      // exportToCanvas uses Excalidraw's own font loader before rendering. A
+      // one-pixel throwaway export is the smallest public boundary that loads
+      // the exact bundled font subsets required by these labels. The second
+      // materialization above then stores their real widths instead of the
+      // narrower browser-serif fallback widths that clip canvas glyphs.
+      await exportToCanvas({
+        elements: fallbackElements,
+        appState: { exportBackground: false },
+        files: files || null,
+        maxWidthOrHeight: 1,
+      });
+    },
+  });
   return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
 }
 
