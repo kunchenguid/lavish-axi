@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
 
@@ -2297,4 +2297,30 @@ test("chrome renders queued-prompt attachment thumbnails from the server endpoin
   assert.match(html, new RegExp("/api/abc/attachments/" + id));
   // An image-only annotation still shows a readable label.
   assert.match(html, /Image annotation/);
+});
+
+test("chrome rejects an over-cap image before it hits the network", async () => {
+  const requests = [];
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i", attachmentMaxBytes: 4 },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => ({ attachment: { id: "x" } }) };
+    },
+  });
+  const bytes = new Uint8Array([1, 2, 3, 4, 5, 6]).buffer; // 6 bytes > 4-byte cap
+  chrome.sendFrameMessage({
+    type: "lavish:uploadAttachment",
+    localId: "att-x",
+    name: "big.png",
+    mime: "image/png",
+    bytes,
+  });
+  await flushPromises();
+  assert.equal(requests.length, 0, "an over-cap image must not be uploaded");
+  const result = chrome.postedToFrame.at(-1);
+  assert.equal(result.type, "lavish:attachmentResult");
+  assert.equal(result.localId, "att-x");
+  assert.equal(result.ok, false);
+  assert.match(result.error, /larger than/);
 });

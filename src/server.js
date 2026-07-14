@@ -106,9 +106,63 @@ export function isWhiteboardWriteApiPath(pathname) {
 }
 
 // The attachment upload carries raw image bytes, not JSON, so it bypasses both
-// JSON body parsers and gets express.raw with the per-image byte cap instead.
+// JSON body parsers and is read straight from the request stream by the route.
 export function isAttachmentUploadApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/attachments$/.test(String(pathname || ""));
+}
+
+// Read the raw upload body, buffering at most `maxBytes` but always draining the
+// stream to its end. If the body exceeds the cap it resolves `{ tooLarge: true }`
+// (bytes discarded) rather than aborting mid-stream, so the caller can send a clean
+// 413 the browser reliably receives even while it is still uploading a large file.
+export function readAttachmentUploadBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let overCap = false;
+    let settled = false;
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("aborted", onAborted);
+      req.off("close", onClose);
+    };
+    const onData = (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        // Stop buffering but keep consuming so the response is not sent while the
+        // request body is still in flight.
+        overCap = true;
+        chunks.length = 0;
+      } else {
+        chunks.push(chunk);
+      }
+    };
+    const onEnd = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(overCap ? { tooLarge: true, buffer: null } : { tooLarge: false, buffer: Buffer.concat(chunks) });
+    };
+    const onError = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAborted = () => onError(new Error("attachment upload aborted"));
+    // Safety net: if the socket closes before "end" (client aborted mid-upload),
+    // reject rather than leaving the route awaiting a promise that never settles.
+    const onClose = () => {
+      if (!settled) onError(new Error("attachment upload connection closed"));
+    };
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+    req.on("aborted", onAborted);
+    req.on("close", onClose);
+  });
 }
 
 export function createWhiteboardChannelToken(secret, now = Date.now()) {
@@ -214,11 +268,12 @@ export async function serve({
 
   const defaultJsonParser = express.json({ limit: "2mb" });
   const whiteboardJsonParser = express.json({ limit: "20mb" });
-  // Accept any Content-Type as raw bytes (magic-byte validation is authoritative);
-  // the byte cap here backstops the store's own size check and returns 413.
-  const attachmentUploadParser = express.raw({ type: () => true, limit: attachmentConfig.maxBytes });
   app.use((req, res, next) => {
-    if (req.method === "POST" && isAttachmentUploadApiPath(req.path)) return attachmentUploadParser(req, res, next);
+    // The attachment upload reads the raw request stream itself (see the route),
+    // so no body parser runs for it - express.raw's limit aborts on Content-Length
+    // WITHOUT draining the body, which leaves the browser's in-flight upload to be
+    // reset mid-stream instead of receiving the 413.
+    if (req.method === "POST" && isAttachmentUploadApiPath(req.path)) return next();
     if (isWhiteboardWriteApiPath(req.path)) return whiteboardJsonParser(req, res, next);
     return defaultJsonParser(req, res, next);
   });
@@ -609,6 +664,7 @@ export async function serve({
           artifactLoadToken: chromeLoad.artifact_load_token,
           artifactLoadSequence: chromeLoad.artifact_load_sequence,
           chromeLoadToken: chromeLoad.chrome_load_token,
+          attachmentMaxBytes: attachmentConfig.maxBytes,
         }),
       );
     } catch (error) {
@@ -994,8 +1050,16 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-      const attachment = await writeAttachment(attachmentStateRoot, req.params.key, body, {
+      // Read the raw stream ourselves, draining past the cap to end-of-body before
+      // responding. That guarantees the browser receives the 413 for an over-cap
+      // upload instead of a mid-stream connection reset (only the same-origin chrome
+      // can reach this route, so draining a rejected body is bounded and trusted).
+      const { tooLarge, buffer } = await readAttachmentUploadBody(req, attachmentConfig.maxBytes);
+      if (tooLarge) {
+        res.status(413).json({ error: `attachment exceeds the ${attachmentConfig.maxBytes} byte limit` });
+        return;
+      }
+      const attachment = await writeAttachment(attachmentStateRoot, req.params.key, buffer, {
         maxBytes: attachmentConfig.maxBytes,
       });
       res.json({ status: "stored", attachment });
@@ -1590,6 +1654,7 @@ export function createChromeHtml(
     artifactLoadToken = "",
     artifactLoadSequence = 0,
     chromeLoadToken = "",
+    attachmentMaxBytes = 0,
   } = {},
 ) {
   const sessionJson = jsonScript({
@@ -1605,6 +1670,7 @@ export function createChromeHtml(
     chromeLoadToken,
     layoutGateEnabled,
     modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
+    attachmentMaxBytes,
   });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
   const bodyClass = layoutGateEnabled ? "lavish layout-gate-active" : "lavish";

@@ -12,6 +12,13 @@ const warningAckStorageKey = "lavish-axi:warning-ack:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
+const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
+
+function formatByteLimit(bytes) {
+  if (bytes >= 1024 * 1024) return Math.round(bytes / (1024 * 1024)) + " MB";
+  if (bytes >= 1024) return Math.round(bytes / 1024) + " KB";
+  return bytes + " bytes";
+}
 
 function isModeToggleHotkeyEvent(event) {
   if (event.shiftKey || event.altKey) return false;
@@ -1809,6 +1816,20 @@ window.addEventListener("message", (event) => {
 async function uploadAttachment(message) {
   const localId = String(message.localId || "");
   if (!localId) return;
+  // Reject over-cap images before they hit the network: an over-cap upload aborts
+  // mid-stream, and the browser can hang or reset instead of surfacing the 413, so
+  // the chip would never leave "uploading". Catching it here guarantees the card
+  // reaches its error+retry state. The server still enforces the cap authoritatively.
+  const size = message.bytes && typeof message.bytes.byteLength === "number" ? message.bytes.byteLength : 0;
+  if (attachmentMaxBytes > 0 && size > attachmentMaxBytes) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      localId,
+      ok: false,
+      error: "Image is larger than the " + formatByteLimit(attachmentMaxBytes) + " limit",
+    });
+    return;
+  }
   try {
     const response = await fetch("/api/" + key + "/attachments", {
       method: "POST",
