@@ -1861,11 +1861,31 @@ window.addEventListener("message", (event) => {
 async function uploadAttachment(message) {
   const localId = String(message.localId || "");
   if (!localId) return;
+  const bytes = message.bytes;
+  let size = NaN;
+  if (ArrayBuffer.isView(bytes)) {
+    size = bytes.byteLength;
+  } else {
+    try {
+      const byteLengthGetter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+      size = byteLengthGetter ? byteLengthGetter.call(bytes) : NaN;
+    } catch {
+      size = NaN;
+    }
+  }
+  if (!Number.isFinite(size) || size < 0) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      localId,
+      ok: false,
+      error: "invalid upload payload",
+    });
+    return;
+  }
   // Reject over-cap images before they hit the network: an over-cap upload aborts
   // mid-stream, and the browser can hang or reset instead of surfacing the 413, so
   // the chip would never leave "uploading". Catching it here guarantees the card
   // reaches its error+retry state. The server still enforces the cap authoritatively.
-  const size = message.bytes && typeof message.bytes.byteLength === "number" ? message.bytes.byteLength : 0;
   if (attachmentMaxBytes > 0 && size > attachmentMaxBytes) {
     postToFrame({
       type: "lavish:attachmentResult",
@@ -1902,7 +1922,7 @@ async function uploadAttachment(message) {
     const response = await fetch("/api/" + key + "/attachments", {
       method: "POST",
       headers: { "content-type": String(message.mime || "application/octet-stream") },
-      body: message.bytes,
+      body: bytes,
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || "Upload failed");

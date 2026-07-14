@@ -144,7 +144,7 @@ function jpegDimensions(b) {
       marker = b[offset + 1];
     }
     offset += 2;
-    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (marker === 0x01 || marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) continue;
     if (offset + 1 >= len) break;
     const segmentLength = b.readUInt16BE(offset);
     // SOF0-SOF15 carry the frame geometry; SOF4/SOF8/SOF12 are not frame headers.

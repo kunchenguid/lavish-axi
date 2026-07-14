@@ -551,12 +551,26 @@ test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confus
     },
   });
 
+  chrome.sendFrameMessage({
+    type: "lavish:uploadAttachment",
+    localId: "invalid",
+    mime: "image/png",
+    bytes: { byteLength: 16 },
+  });
+  await flushPromises();
+  assert.equal(fetches, 0, "an invalid payload never hits the network");
+  const invalidResult = chrome.postedToFrame.find(
+    (m) => m.type === "lavish:attachmentResult" && m.localId === "invalid",
+  );
+  assert.equal(invalidResult.ok, false);
+  assert.equal(invalidResult.error, "invalid upload payload");
+
   // A single oversized (>256 MiB session quota) upload is refused BEFORE the network.
   chrome.sendFrameMessage({
     type: "lavish:uploadAttachment",
     localId: "big",
     mime: "image/png",
-    bytes: { byteLength: 300 * 1024 * 1024 },
+    bytes: new ArrayBuffer(300 * 1024 * 1024),
   });
   await flushPromises();
   assert.equal(fetches, 0, "quota-exceeding upload never hits the network");
@@ -570,7 +584,7 @@ test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confus
       type: "lavish:uploadAttachment",
       localId: "ok-" + i,
       mime: "image/png",
-      bytes: { byteLength: 16 },
+      bytes: new ArrayBuffer(16),
     });
   }
   await flushPromises();
@@ -580,7 +594,7 @@ test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confus
     type: "lavish:uploadAttachment",
     localId: "throttled",
     mime: "image/png",
-    bytes: { byteLength: 16 },
+    bytes: new ArrayBuffer(16),
   });
   await flushPromises();
   assert.equal(fetches, 30, "the 31st upload in the window is throttled, not sent");

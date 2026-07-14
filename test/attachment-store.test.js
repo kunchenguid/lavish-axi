@@ -91,6 +91,9 @@ test("detectImageType recognizes PNG, JPEG, and WebP by magic bytes", () => {
 test("imageDimensions parses each supported format's header", () => {
   assert.deepEqual(imageDimensions(PNG_2x1, "image/png"), { width: 2, height: 1 });
   assert.deepEqual(imageDimensions(makeJpeg(640, 480), "image/jpeg"), { width: 640, height: 480 });
+  const jpeg = makeJpeg(320, 240);
+  const jpegWithTem = Buffer.concat([jpeg.subarray(0, 2), Buffer.from([0xff, 0x01]), jpeg.subarray(2)]);
+  assert.deepEqual(imageDimensions(jpegWithTem, "image/jpeg"), { width: 320, height: 240 });
   assert.deepEqual(imageDimensions(WEBP_1x1, "image/webp"), { width: 1, height: 1 });
   assert.deepEqual(imageDimensions(makeWebpVP8L(320, 200), "image/webp"), { width: 320, height: 200 });
 });
