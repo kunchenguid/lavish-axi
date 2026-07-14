@@ -246,12 +246,21 @@ export function isNearTotalOcclusion({ occludedSamples, totalSamples, minSamples
   return Number.isFinite(occluded) && Number.isFinite(total) && total >= minSamples && occluded / total >= minRatio;
 }
 
+/**
+ * @param {*} deriveQueueKey
+ * @param {*} [isNativeInteractive]
+ * @param {*} [mermaid]
+ * @param {number} [artifactRevision]
+ * @param {string} [artifactLoadToken]
+ * @param {{ maxAttachmentCount?: number }} [options]
+ */
 export function createArtifactSdk(
   deriveQueueKey,
   isNativeInteractive = isNativeInteractiveControl,
   mermaid = mermaidHelpers,
   artifactRevision = 0,
   artifactLoadToken = "",
+  options = {},
 ) {
   const { isMermaidSvg, mermaidNodeFrom, mermaidNodeElement } = mermaid;
   function postArtifactMessage(type, payload = {}) {
@@ -269,7 +278,11 @@ export function createArtifactSdk(
   // server re-validates size and enforces the per-prompt count/byte caps at queue
   // time (see attachment-store.js), rejecting the entire send batch on a mismatch
   // so the chrome can preserve the queue and surface the correction to the user.
-  const ATTACHMENT_MAX_COUNT = 4;
+  // The count cap mirrors the server's LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT, passed
+  // in via createSdkJs (W1); the literal 4 is only the fallback when the SDK runs
+  // without that wiring (e.g. a unit-test call to createArtifactSdk).
+  const ATTACHMENT_MAX_COUNT =
+    Number.isFinite(options.maxAttachmentCount) && options.maxAttachmentCount > 0 ? options.maxAttachmentCount : 4;
   const ATTACHMENT_ACCEPTED_MIME = { "image/png": true, "image/jpeg": true, "image/webp": true };
   let attachmentLocalCounter = 0;
   // The controller for the currently open card, so upload results routed from the
@@ -325,7 +338,11 @@ export function createArtifactSdk(
   // Per-card image attachment state. Captures files, renders chips, drives uploads
   // through the chrome (which owns the same-origin server round trip), and reports
   // which uploads are ready to ride along with the queued prompt.
-  function makeAttachmentsController(listEl) {
+  /**
+   * @param {HTMLElement} listEl
+   * @param {{ notify?: (message: string) => void, onLayout?: () => void }} [config]
+   */
+  function makeAttachmentsController(listEl, { notify = () => {}, onLayout = () => {} } = {}) {
     const items = [];
 
     function render() {
@@ -337,6 +354,10 @@ export function createArtifactSdk(
       for (const button of listEl.querySelectorAll("[data-attachment-retry]")) {
         button.addEventListener("click", () => retryAt(Number(button.getAttribute("data-attachment-retry"))));
       }
+      // Chip rows change the card's height, so let the card re-clamp itself back
+      // inside the viewport (W3) - otherwise a grown card can push Queue/Cancel off
+      // the bottom of the frame.
+      onLayout();
     }
 
     function upload(item) {
@@ -362,7 +383,15 @@ export function createArtifactSdk(
 
     function add(file) {
       if (!file || !ATTACHMENT_ACCEPTED_MIME[file.type]) return false;
-      if (items.length >= ATTACHMENT_MAX_COUNT) return false;
+      // Over the per-prompt count cap: reject THIS selection and tell the user right
+      // away (W1) instead of silently swallowing it, so a 5th drop/paste/pick doesn't
+      // just vanish. The cap mirrors the server's LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT.
+      if (items.length >= ATTACHMENT_MAX_COUNT) {
+        notify(
+          "You can attach up to " + ATTACHMENT_MAX_COUNT + " image" + (ATTACHMENT_MAX_COUNT === 1 ? "" : "s") + ".",
+        );
+        return false;
+      }
       const item = {
         localId: "att-" + ++attachmentLocalCounter,
         file,
@@ -450,13 +479,21 @@ export function createArtifactSdk(
       return items.some((item) => item.status === "uploading");
     }
 
+    // Any chip in the error state - a failed upload (retryable) or a rejected
+    // non-image. collectReady drops these and closeCard destroys the card, so queuing
+    // while one is present would silently discard the failed attachment along with its
+    // retry/remove UI; the send path gates on this and keeps the card open (W2).
+    function hasErrors() {
+      return items.some((item) => item.status === "error");
+    }
+
     function destroy() {
       for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
       items.length = 0;
     }
 
     render();
-    return { addFiles, rejectUnsupported, handleResult, collectReady, hasReady, hasPending, destroy };
+    return { addFiles, rejectUnsupported, handleResult, collectReady, hasReady, hasPending, hasErrors, destroy };
   }
 
   function uid(el) {
@@ -1852,7 +1889,7 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:176px;overflow-y:auto}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
     shadow.appendChild(style);
     return shadow;
   }
@@ -1922,10 +1959,17 @@ export function createArtifactSdk(
       '</div><div class="lavish-row"><button class="lavish-cancel" type="button">Cancel</button><button class="lavish-send" type="button">Queue</button></div>';
     root.appendChild(card);
 
-    const left = Math.min(Math.max(12, rect.left), window.innerWidth - card.offsetWidth - 12);
-    const top = Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - card.offsetHeight - 12);
-    card.style.left = left + "px";
-    card.style.top = top + "px";
+    // Clamp the card fully inside the viewport. Called again whenever its height
+    // changes (attachment chip rows are added/removed) so a grown card never pushes
+    // its Queue/Cancel buttons off the bottom of the frame (W3). The anchor `rect` is
+    // captured once; only the card's own measured size varies between calls.
+    function positionCard() {
+      const left = Math.min(Math.max(12, rect.left), window.innerWidth - card.offsetWidth - 12);
+      const top = Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - card.offsetHeight - 12);
+      card.style.left = left + "px";
+      card.style.top = top + "px";
+    }
+    positionCard();
 
     const textarea = /** @type {HTMLTextAreaElement | null} */ (card.querySelector("textarea"));
     const cancelButton = /** @type {HTMLButtonElement | null} */ (card.querySelector(".lavish-cancel"));
@@ -1933,9 +1977,13 @@ export function createArtifactSdk(
     const attachmentsList = /** @type {HTMLDivElement | null} */ (card.querySelector("[data-attachments]"));
     const attachButton = /** @type {HTMLButtonElement | null} */ (card.querySelector(".lavish-attach"));
     const attachInput = /** @type {HTMLInputElement | null} */ (card.querySelector(".lavish-attach-input"));
+    const attachNotice = /** @type {HTMLDivElement | null} */ (card.querySelector(".lavish-hint"));
     if (!textarea || !cancelButton || !sendButton || !attachmentsList || !attachButton || !attachInput) return;
 
-    const attachments = makeAttachmentsController(attachmentsList);
+    const notify = (message) => {
+      if (attachNotice) attachNotice.textContent = message;
+    };
+    const attachments = makeAttachmentsController(attachmentsList, { notify, onLayout: positionCard });
     activeAttachments = attachments;
 
     attachButton.onclick = () => attachInput.click();
@@ -1971,14 +2019,20 @@ export function createArtifactSdk(
       }
     });
 
-    const attachNotice = /** @type {HTMLDivElement | null} */ (card.querySelector(".lavish-hint"));
     // Try to queue the card. Returns true only if a prompt was actually queued, so
     // the caller knows whether a follow-up "send now" should fire. Gates on any
     // still-uploading attachment (R2.4): queuing then would silently drop it, so we
-    // keep the card open and tell the user to wait instead.
+    // keep the card open and tell the user to wait instead. Also gates on any errored
+    // attachment (W2): collectReady drops errors and closeCard tears down the card, so
+    // queuing would discard the failed image and its retry/remove UI - keep the card
+    // open so the user can retry or explicitly remove it first.
     function tryQueue() {
       if (attachments.hasPending()) {
-        if (attachNotice) attachNotice.textContent = "Waiting for an image to finish uploading…";
+        notify("Waiting for an image to finish uploading…");
+        return false;
+      }
+      if (attachments.hasErrors()) {
+        notify("An image couldn't be attached. Retry or remove it before queuing.");
         return false;
       }
       const prompt = textarea.value.trim();

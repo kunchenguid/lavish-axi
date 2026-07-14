@@ -14,6 +14,7 @@ import {
   queueLayoutWarnings as queueWarningRecords,
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
+import { AsyncMutex } from "./async-mutex.js";
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
 import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./whiteboard-core.js";
 
@@ -23,8 +24,9 @@ const MAX_ARTIFACT_FAILURES = 20;
 export class SessionStore {
   constructor(file) {
     this.file = file;
-    /** @type {Promise<unknown>} */
-    this.stateOperationQueue = Promise.resolve();
+    // One mutex serializes every state.json read-modify-write and the server's
+    // attachment disk lifecycle sections through runExclusive.
+    this.lock = new AsyncMutex();
     this.artifactLoads = new Map();
     this.chromeLoadContexts = new Map();
   }
@@ -52,7 +54,14 @@ export class SessionStore {
   }
 
   async upsertSession(file, url) {
+    // `canonicalFile` (a realpath) does not touch state, so resolve it before
+    // taking the lock and keep only the read-modify-write inside the critical
+    // section.
     const absolute = await canonicalFile(file);
+    return this.lock.runExclusive(() => this.#upsertSessionLocked(absolute, url));
+  }
+
+  async #upsertSessionLocked(absolute, url) {
     const key = sessionKey(absolute);
     return this.runExclusive(async () => {
       const state = await this.readState();
@@ -88,12 +97,11 @@ export class SessionStore {
   // `/prompts` POST cannot point an attachment at an arbitrary file. Without a
   // resolver, unresolved attachments are dropped rather than trusted.
   async queuePrompts(key, payload, options = {}) {
-    // The whole read -> resolve -> write path runs under the shared attachment
-    // lifecycle lock (when one is supplied) so it is atomic against the sweeper's
-    // reference snapshot + delete and against upload finalize (D5). Session state
-    // remains serialized through the store's own mutex inside that lifecycle lock.
-    const critical = () => this.runExclusive(() => this.#queuePromptsLocked(key, payload, options));
-    return options.lock ? options.lock.runExclusive(critical) : critical();
+    // The whole read -> resolve -> write path runs under the store's single lock so
+    // it is atomic against a concurrent poll's `takeFeedback` / `recordLayoutWarnings`
+    // (E1) AND against the sweeper's reference snapshot + delete and upload finalize,
+    // which the server runs under the same lock via `runExclusive` (D5).
+    return this.lock.runExclusive(() => this.#queuePromptsLocked(key, payload, options));
   }
 
   async #queuePromptsLocked(key, payload, options) {
@@ -537,15 +545,16 @@ export class SessionStore {
    * @returns {Promise<T>}
    */
   runExclusive(operation) {
-    const result = this.stateOperationQueue.then(operation);
-    this.stateOperationQueue = result.catch(() => {});
-    return result;
+    return this.lock.runExclusive(operation);
   }
 
   // `key/id` strings for every attachment still referenced by a pending prompt,
-  // across all sessions. The attachment sweeper uses this so it never reaps a file
-  // that belongs to a queued-but-undelivered prompt. Delivered prompts are cleared
-  // from `prompts` by takeFeedback, so their attachments become sweep-eligible.
+  // across all sessions. The attachment sweeper and delete use this so they never
+  // reap a file that belongs to a queued-but-undelivered prompt. Delivered prompts
+  // are cleared from `prompts` by takeFeedback, so their attachments become
+  // sweep-eligible. This is a pure read and must NOT take `this.lock`: the server
+  // calls it from inside `runExclusive`, so self-locking would deadlock; running it
+  // there keeps its snapshot atomic with the subsequent disk delete.
   async referencedAttachmentIds() {
     const state = await this.readState();
     const referenced = new Set();

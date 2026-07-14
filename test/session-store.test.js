@@ -1238,3 +1238,55 @@ test("referencedAttachmentIds collects ids from pending prompts and clears after
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("queuePrompts and takeFeedback serialize so a mid-resolution poll never clobbers state (E1)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hi</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    // Prompt A is already queued and undelivered.
+    await store.queuePrompts(session.key, { prompts: [{ uid: "A", prompt: "A", selector: "", tag: "h1", text: "" }] });
+
+    // A resolver we can hold open, so queuePrompts(B) parks INSIDE its critical
+    // section (after reading the [A] snapshot) while a concurrent takeFeedback tries
+    // to run. Before E1, takeFeedback (unlocked) would deliver+clear A, then B's
+    // stale-snapshot write would resurrect A and lose the clear.
+    /** @type {(value?: unknown) => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const knownId = "b".repeat(64) + ".png";
+    const resolveAttachment = async (_key, id) => {
+      await gate;
+      return { id, type: "image", path: "/vetted/" + id, mime: "image/png", bytes: 5, width: 1, height: 1 };
+    };
+
+    const queueB = store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "B", prompt: "B", selector: "", tag: "h1", text: "", attachments: [{ id: knownId }] }] },
+      { resolveAttachment, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+    // Let queueB acquire the lock and park on the gate.
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    // takeFeedback must block on the same lock until queueB commits.
+    const take = store.takeFeedback(session.key);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    release();
+
+    const [, feedback] = await Promise.all([queueB, take]);
+    // Because the two serialized, the single delivery carries BOTH A and B exactly once.
+    assert.equal(feedback.status, "feedback");
+    assert.deepEqual(feedback.prompts.map((p) => p.uid).sort(), ["A", "B"]);
+    // Nothing was resurrected or left behind.
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
