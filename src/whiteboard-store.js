@@ -74,10 +74,16 @@ export function whiteboardFeedbackPaths(stateDir, key, index) {
 
 // Working state: the editable scene, the conversion baseline used for edit
 // summaries, and the hash of the Mermaid source the scene was converted from.
-export async function saveWhiteboard(stateDir, key, index, { sourceHash, scene, baseline = null }) {
+export async function saveWhiteboard(
+  stateDir,
+  key,
+  index,
+  { sourceHash, textMetricsVersion = 0, scene, baseline = null },
+) {
   assertValidRef(key, index);
   const record = {
     source_hash: String(sourceHash || ""),
+    text_metrics_version: Math.max(0, Math.floor(Number(textMetricsVersion) || 0)),
     updated_at: new Date().toISOString(),
     scene: sanitizeWhiteboardScene(scene),
     baseline: baseline ?? null,
@@ -97,6 +103,7 @@ export async function loadWhiteboard(stateDir, key, index) {
     if (!parsed || typeof parsed !== "object") return null;
     return {
       source_hash: String(parsed.source_hash || ""),
+      text_metrics_version: Math.max(0, Math.floor(Number(parsed.text_metrics_version) || 0)),
       updated_at: String(parsed.updated_at || ""),
       scene: parsed.scene ?? null,
       baseline: parsed.baseline ?? null,

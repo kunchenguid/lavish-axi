@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  convertExcalidrawSkeletonsAfterFontsLoad,
   findDuplicateElementIds,
   normalizeExcalidrawSceneTarget,
+  repairSavedSceneTextMetrics,
   sanitizeSceneLink,
   sceneIsImageFallback,
   summarizeSceneEdits,
@@ -73,68 +72,30 @@ test("findDuplicateElementIds finds repeated ids (parallel-edge upstream bug)", 
 });
 
 // ---------------------------------------------------------------------------
-// convertExcalidrawSkeletonsAfterFontsLoad
+// repairSavedSceneTextMetrics
 // ---------------------------------------------------------------------------
 
-test("reconverts bound labels after the handwritten font loads", async () => {
-  const fixture = JSON.parse(
-    await readFile(new URL("fixtures/excalidraw-label-clipping.json", import.meta.url), "utf8"),
-  );
-  const skeletons = fixture.labels.map((label, index) => ({ id: `box-${index}`, label }));
-  let fontsLoaded = false;
-  let conversionCount = 0;
-  const convert = (input) => {
-    conversionCount += 1;
-    return input.flatMap(({ id, label }) => [
-      { id, type: "rectangle" },
-      {
-        id: `${id}-label`,
-        type: "text",
-        containerId: id,
-        text: label.text,
-        width: fontsLoaded ? label.loadedWidth : label.fallbackWidth,
-        height: label.text.includes("\n") ? 40 : 20,
-      },
-    ]);
+test("saved text repair only expands metrics", () => {
+  const text = {
+    id: "label",
+    type: "text",
+    x: 42,
+    y: 17,
+    width: 80,
+    height: 20,
+    text: "Edited label",
+    originalText: "Edited label",
+    containerId: "box",
+    strokeColor: "#e03131",
+    boundElements: [{ id: "arrow", type: "arrow" }],
+    customData: { userEdit: true },
   };
-
-  const elements = await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-    convert,
-    loadFonts: async (fallbackElements) => {
-      const labels = fallbackElements.filter((element) => element.type === "text");
-      assert.deepEqual(
-        labels.map((label) => label.width),
-        fixture.labels.map((label) => label.fallbackWidth),
-      );
-      fontsLoaded = true;
-    },
+  const { elements, repaired } = repairSavedSceneTextMetrics([text, rect("box")], {
+    measure: () => ({ width: 118.5, height: 24 }),
   });
-
-  const labels = elements.filter((element) => element.type === "text");
-  assert.equal(conversionCount, 2);
-  assert.deepEqual(
-    labels.map((label) => label.width),
-    fixture.labels.map((label) => label.loadedWidth),
-  );
-  assert.equal(labels.at(-1).height, 40);
-  assert.ok(fixture.labels.every((label) => label.loadedWidth > label.fallbackWidth));
-});
-
-test("does not expose fallback-sized labels when scene font loading fails", async () => {
-  let conversionCount = 0;
-  await assert.rejects(
-    convertExcalidrawSkeletonsAfterFontsLoad([{ label: "Adapter Protocol v1" }], {
-      convert: () => {
-        conversionCount += 1;
-        return [{ type: "text", width: 129.75 }];
-      },
-      loadFonts: async () => {
-        throw new Error("font unavailable");
-      },
-    }),
-    /font unavailable/,
-  );
-  assert.equal(conversionCount, 1);
+  assert.equal(repaired, 1);
+  assert.deepEqual(elements[0], { ...text, width: 118.5, height: 24 });
+  assert.strictEqual(elements[1].id, "box");
 });
 
 // ---------------------------------------------------------------------------

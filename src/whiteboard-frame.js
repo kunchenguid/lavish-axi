@@ -16,7 +16,14 @@
 // inside opaque origins, exactly like the artifact iframe.
 
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
-import { convertToExcalidrawElements, Excalidraw, exportToBlob, exportToCanvas, restore } from "@excalidraw/excalidraw";
+import {
+  convertToExcalidrawElements,
+  Excalidraw,
+  exportToBlob,
+  exportToCanvas,
+  FONT_FAMILY,
+  restore,
+} from "@excalidraw/excalidraw";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "@excalidraw/excalidraw/index.css";
@@ -25,10 +32,12 @@ import "./whiteboard-frame.css";
 import {
   convertExcalidrawSkeletonsAfterFontsLoad,
   findDuplicateElementIds,
+  repairSavedSceneTextMetrics,
   sanitizeSceneLink,
   sanitizeWhiteboardAppState,
   sceneIsImageFallback,
   summarizeSceneEdits,
+  WHITEBOARD_TEXT_METRICS_VERSION,
 } from "./whiteboard-core.js";
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -46,6 +55,7 @@ const state = {
   baselineElements: [],
   files: {},
   imageFallback: false,
+  textMetricsVersion: WHITEBOARD_TEXT_METRICS_VERSION,
   channelId: "",
   api: null,
   saveTimer: 0,
@@ -217,6 +227,7 @@ function postSave(flushId = "") {
     sourceHash: state.sceneSourceHash,
     scene,
     baseline: { elements: state.baselineElements },
+    textMetricsVersion: state.textMetricsVersion,
     ...(flushId ? { flushId } : {}),
   });
   return true;
@@ -375,6 +386,46 @@ function mountEditor({ elements, appState, files, theme }) {
   );
 }
 
+const textMetricsCanvas = document.createElement("canvas");
+const textMetricsContext = textMetricsCanvas.getContext("2d");
+
+function fontFamilyName(fontFamily) {
+  return Object.entries(FONT_FAMILY).find(([, value]) => value === fontFamily)?.[0] || "Segoe UI Emoji";
+}
+
+function fontString(element) {
+  const family = fontFamilyName(element.fontFamily);
+  const families = family === "Excalifont" ? [family, "Xiaolai", "Segoe UI Emoji"] : [family, "Segoe UI Emoji"];
+  return `${Number(element.fontSize) || 20}px ${families.map((value) => JSON.stringify(value)).join(", ")}`;
+}
+
+function measureSceneText(element) {
+  if (!textMetricsContext) return { width: Number(element.width) || 0, height: Number(element.height) || 0 };
+  textMetricsContext.font = fontString(element);
+  const lines = String(element.text || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, "        ")
+    .split("\n");
+  const width = Math.max(...lines.map((line) => textMetricsContext.measureText(line || " ").width));
+  const height = lines.length * (Number(element.fontSize) || 20) * (Number(element.lineHeight) || 1.25);
+  return { width, height };
+}
+
+async function loadSceneFonts(elements, files) {
+  const textElements = elements.filter((element) => element.type === "text" && !element.isDeleted);
+  if (textElements.length === 0) return;
+  await exportToCanvas({
+    elements,
+    appState: { exportBackground: false },
+    files: files || null,
+    maxWidthOrHeight: 1,
+  });
+  await Promise.all(
+    textElements.map((element) => document.fonts.load(fontString(element), String(element.text || ""))),
+  );
+  await document.fonts.ready;
+}
+
 async function convertSource(source) {
   const { elements: skeletons, files } = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: "16px" },
@@ -392,18 +443,7 @@ async function convertSource(source) {
   const elements = await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
     convert: materialize,
     loadFonts: async (fallbackElements) => {
-      if (!fallbackElements.some((element) => element.type === "text")) return;
-      // exportToCanvas uses Excalidraw's own font loader before rendering. A
-      // one-pixel throwaway export is the smallest public boundary that loads
-      // the exact bundled font subsets required by these labels. The second
-      // materialization above then stores their real widths instead of the
-      // narrower browser-serif fallback widths that clip canvas glyphs.
-      await exportToCanvas({
-        elements: fallbackElements,
-        appState: { exportBackground: false },
-        files: files || null,
-        maxWidthOrHeight: 1,
-      });
+      await loadSceneFonts(fallbackElements, files);
     },
   });
   return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
@@ -425,6 +465,7 @@ async function startFromConversion(init) {
   state.files = files;
   state.imageFallback = imageFallback;
   state.sceneSourceHash = init.sourceHash;
+  state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
   if (imageFallback) {
     setBanner(
       "wbFallbackBanner",
@@ -435,7 +476,7 @@ async function startFromConversion(init) {
   scheduleSave();
 }
 
-function startFromSavedScene(init) {
+async function startFromSavedScene(init) {
   const saved = init.saved;
   const savedAppState = sanitizeWhiteboardAppState(saved.scene?.appState);
   // restore() is Excalidraw's defensive loader: it fills missing fields with
@@ -451,11 +492,20 @@ function startFromSavedScene(init) {
     null,
     { repairBindings: true },
   );
-  state.baselineElements = Array.isArray(saved.baseline?.elements)
+  let elements = restored.elements;
+  let baselineElements = Array.isArray(saved.baseline?.elements)
     ? JSON.parse(JSON.stringify(saved.baseline.elements))
     : JSON.parse(JSON.stringify(restored.elements));
   state.files = restored.files || saved.scene?.files || {};
-  state.imageFallback = sceneIsImageFallback(restored.elements);
+  const savedMetricsVersion = Number(saved.text_metrics_version) || 0;
+  if (savedMetricsVersion < WHITEBOARD_TEXT_METRICS_VERSION) {
+    await loadSceneFonts(elements, state.files);
+    elements = repairSavedSceneTextMetrics(elements, { measure: measureSceneText }).elements;
+    baselineElements = repairSavedSceneTextMetrics(baselineElements, { measure: measureSceneText }).elements;
+  }
+  state.baselineElements = baselineElements;
+  state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
+  state.imageFallback = sceneIsImageFallback(elements);
   state.sceneSourceHash = saved.source_hash || init.sourceHash;
   if (state.imageFallback) {
     setBanner(
@@ -464,11 +514,12 @@ function startFromSavedScene(init) {
     );
   }
   mountEditor({
-    elements: restored.elements,
+    elements,
     appState: { ...defaultAppState(), ...savedAppState },
     files: state.files,
     theme: init.theme,
   });
+  if (savedMetricsVersion < WHITEBOARD_TEXT_METRICS_VERSION) scheduleSave();
 }
 
 // The saved scene was converted from a different version of the diagram. Never
@@ -566,12 +617,12 @@ async function handleInit(init) {
       return;
     }
     if (saved.source_hash === init.sourceHash) {
-      startFromSavedScene({ ...init, saved, theme });
+      await startFromSavedScene({ ...init, saved, theme });
       return;
     }
     const choice = await offerStaleChoice();
     if (choice === "keep") {
-      startFromSavedScene({ ...init, saved, theme });
+      await startFromSavedScene({ ...init, saved, theme });
     } else {
       await startFromConversion({ ...init, theme });
     }

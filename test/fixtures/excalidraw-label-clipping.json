@@ -1,30 +1,5 @@
 {
   "source": "flowchart TB\n  subgraph SIDECAR[\"Disposable adapter sidecar\"]\n    PROTOCOL[\"Adapter Protocol v1\"]\n    CODEX[\"Codex app-server\"]\n    FUTURE[\"Future adapter\"]\n    TOOLS[\"canonical read, grep, glob, search<br/> final tools\"]\n    PROTOCOL --> CODEX\n    CODEX --> TOOLS\n    FUTURE --> TOOLS\n  end",
-  "labels": [
-    {
-      "text": "Disposable adapter sidecar",
-      "fallbackWidth": 171.484375,
-      "loadedWidth": 210.5117950439453
-    },
-    {
-      "text": "Adapter Protocol v1",
-      "fallbackWidth": 129.75,
-      "loadedWidth": 157.4398651123047
-    },
-    {
-      "text": "Codex app-server",
-      "fallbackWidth": 113.2890625,
-      "loadedWidth": 134.22389221191406
-    },
-    {
-      "text": "Future adapter",
-      "fallbackWidth": 92.8515625,
-      "loadedWidth": 118.95988464355469
-    },
-    {
-      "text": "canonical read, grep, glob, search\nfinal tools",
-      "fallbackWidth": 214.5625,
-      "loadedWidth": 253.71176147460938
-    }
-  ]
+  "edgeLabels": ["Disposable adapter sidecar", "Adapter Protocol v1", "Codex app-server", "Future adapter"],
+  "multilineLabel": "canonical read, grep, glob, search\nfinal tools"
 }

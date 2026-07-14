@@ -667,6 +667,7 @@ export async function serve({
       const body = req.body || {};
       await saveWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index), {
         sourceHash: String(body.source_hash || body.sourceHash || ""),
+        textMetricsVersion: Number(body.text_metrics_version || body.textMetricsVersion) || 0,
         scene: body.scene ?? null,
         baseline: body.baseline ?? null,
       });

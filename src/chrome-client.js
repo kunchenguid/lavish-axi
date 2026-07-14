@@ -938,6 +938,7 @@ async function persistWhiteboardScene(index, message) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       source_hash: String(message.sourceHash || ""),
+      text_metrics_version: Number(message.textMetricsVersion) || 0,
       scene: message.scene || null,
       baseline: message.baseline || null,
     }),

@@ -25,6 +25,16 @@ Measured in the same Chrome rendering path:
 The fix asks Excalidraw's own scene-export boundary to load the exact required font subsets, then materializes the Mermaid skeletons again before mounting the editor.
 This also reruns multiline wrapping with the loaded metrics.
 
+Saved scenes created before this correction carry no text-metrics version.
+On their first reopen, Lavish loads the scene fonts and expands only stale auto-sized text width or height values.
+It preserves every element's position, style, binding, identity, content, and other user-edited data, then persists the current version so the migration runs once.
+
+## Automated regression
+
+`test/whiteboard-render.browser.test.js` starts a cold real Chrome or Chromium profile, runs the fixture through Mermaid-to-Excalidraw conversion and Excalidraw canvas export, waits for the actual Excalifont faces, and checks the loaded glyph metrics against every converted text box.
+It covers four labels that previously lost edge glyphs and the multiline canonical-tools label.
+The same browser test creates a fallback-sized saved scene, applies the one-time repair, verifies all non-metric element data remains byte-for-byte equivalent, and renders the repaired scene through Excalidraw again.
+
 ## Visual verification
 
 `after-fullscreen-1440x900-dpr1.png` was captured from a fresh browser profile at a 1440 by 900 viewport and device-pixel ratio 1.
