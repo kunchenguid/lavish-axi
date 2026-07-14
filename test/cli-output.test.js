@@ -1178,6 +1178,40 @@ test("the final feedback batch before an agent end preserves ended_by and allows
   assert.doesNotMatch(output.next_step, /user ended this Lavish Editor session/);
 });
 
+test("final user-ended feedback still requires severe layout repair without reopening", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      prompts: [],
+      layout_warnings: [{ selector: "button", kind: "clipped-control", severity: "error" }],
+      session_ended: true,
+      ended_by: "user",
+    },
+  });
+
+  assert.match(output.next_step, /Repair the inaccessible or unusable content/);
+  assert.match(output.next_step, /open it directly at the affected viewport/);
+  assert.match(output.next_step, /without reopening this ended Lavish session/);
+  assert.doesNotMatch(output.next_step, /--reopen/);
+});
+
+test("final agent-ended feedback requires repair in a fresh audit session", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      prompts: [],
+      layout_warnings: [{ selector: "button", kind: "clipped-control", severity: "error" }],
+      session_ended: true,
+      ended_by: "agent",
+    },
+  });
+
+  assert.match(output.next_step, /Repair the inaccessible or unusable content/);
+  assert.match(output.next_step, /open a fresh session and re-check the real-browser audit/);
+});
+
 test("persistent severe layout failures still require repair before review", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",

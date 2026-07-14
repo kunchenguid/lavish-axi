@@ -11,6 +11,7 @@ import express from "express";
 
 import {
   classifySevereTextOverflow,
+  classifyMaterialRectEscape,
   createArtifactSdk,
   deriveLavishQueueKey,
   findStableLayoutFindings,
@@ -1181,6 +1182,7 @@ const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
 const isModeToggleHotkeyEvent=${isModeToggleHotkeyEvent.toString()};
 const classifySevereTextOverflow=${classifySevereTextOverflow.toString()};
+const classifyMaterialRectEscape=${classifyMaterialRectEscape.toString()};
 const isMaterialPageOverflow=${isMaterialPageOverflow.toString()};
 const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};

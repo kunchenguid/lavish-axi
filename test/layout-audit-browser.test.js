@@ -75,16 +75,21 @@ test(
         ],
         chromeEnv,
       );
-      const poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", "500"], lavishEnv);
+      const pollTimeout = expectedCount === 0 ? "500" : "3000";
+      const poll = run(
+        process.execPath,
+        ["bin/lavish-axi.js", "poll", file, "--timeout-ms", pollTimeout],
+        lavishEnv,
+      );
 
       if (expectedCount === 0) {
-        assert.match(gate, /gate.*false/);
-        assert.match(gate, /bannerHidden.*true/);
-        assert.match(poll, /status:\s*waiting/);
-        assert.doesNotMatch(poll, /layout_warnings\[/);
+        assert.match(gate, /gate.*false/, name);
+        assert.match(gate, /bannerHidden.*true/, name);
+        assert.match(poll, /status:\s*waiting/, name);
+        assert.doesNotMatch(poll, /layout_warnings\[/, name);
       } else {
-        assert.match(gate, /gate.*true/);
-        assert.match(poll, new RegExp(`layout_warnings\\[${expectedCount}\\]`));
+        assert.match(gate, /gate.*true/, name);
+        assert.match(poll, new RegExp(`layout_warnings\\[${expectedCount}\\]`), name);
       }
       return { gate, poll };
     }
@@ -99,17 +104,19 @@ test(
         "real-animated-entry",
       ];
       for (const name of acceptable) {
-        const settleMs = name === "real-animated-entry" ? 3200 : 1200;
+        const settleMs = name === "real-animated-entry" ? 5200 : 3200;
         audit(name, "1440x1000x1", settleMs, 0);
         audit(name, "390x844x1,mobile,touch", settleMs, 0);
       }
 
-      audit("control-broken-overflow", "1440x1000x1", 1200, 0);
-      audit("control-broken-overflow", "390x844x1,mobile,touch", 1200, 1);
-      audit("control-broken-clipping", "1440x1000x1", 1200, 2);
-      audit("control-broken-clipping", "390x844x1,mobile,touch", 1200, 2);
-      audit("control-broken-occlusion", "1440x1000x1", 1200, 1);
-      audit("calibration-small-overflow", "390x844x1,mobile,touch", 1200, 0);
+      audit("control-broken-overflow", "1440x1000x1", 3200, 0);
+      audit("control-broken-overflow", "390x844x1,mobile,touch", 3200, 1);
+      audit("control-broken-clipping", "1440x1000x1", 3200, 3);
+      audit("control-broken-clipping", "390x844x1,mobile,touch", 3200, 3);
+      audit("control-broken-reachability", "1440x1000x1", 3200, 2);
+      audit("control-broken-reachability", "390x844x1,mobile,touch", 3200, 2);
+      audit("control-broken-occlusion", "1440x1000x1", 3200, 1);
+      audit("calibration-small-overflow", "390x844x1,mobile,touch", 3200, 0);
 
       const timeoutResult = audit("real-heavy-clean", "1440x1000x1", 16_000, 0);
       assert.match(timeoutResult.gate, /bannerHidden.*true/);

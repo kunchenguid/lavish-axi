@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  classifyMaterialRectEscape,
   classifySevereTextOverflow,
   deriveLavishQueueKey,
   findStableLayoutFindings,
@@ -247,6 +248,35 @@ test("classifySevereTextOverflow suppresses explicit truncation and visually hid
 
   assert.equal(classifySevereTextOverflow({ ...base, isTruncated: true }), null);
   assert.equal(classifySevereTextOverflow({ ...base, isVisuallyHidden: true }), null);
+});
+
+test("classifyMaterialRectEscape detects both clipped starts and ends", () => {
+  assert.deepEqual(
+    classifyMaterialRectEscape({
+      rect: { left: -30, right: 70, top: 0, bottom: 40, width: 100, height: 40 },
+      boundary: { left: 0, right: 390, top: 0, bottom: 844 },
+      axes: ["horizontal"],
+    }),
+    { axis: "horizontal", side: "start", overflowPx: 30 },
+  );
+  assert.deepEqual(
+    classifyMaterialRectEscape({
+      rect: { left: 350, right: 430, top: 0, bottom: 40, width: 80, height: 40 },
+      boundary: { left: 0, right: 390, top: 0, bottom: 844 },
+      axes: ["horizontal"],
+    }),
+    { axis: "horizontal", side: "end", overflowPx: 40 },
+  );
+});
+
+test("classifyMaterialRectEscape suppresses tiny boundary excursions", () => {
+  assert.equal(
+    classifyMaterialRectEscape({
+      rect: { left: -2, right: 98, top: 0, bottom: 40, width: 100, height: 40 },
+      boundary: { left: 0, right: 390, top: 0, bottom: 844 },
+    }),
+    null,
+  );
 });
 
 test("isMaterialPageOverflow requires a material escape containing meaningful content", () => {

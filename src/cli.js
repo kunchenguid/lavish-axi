@@ -377,10 +377,16 @@ function createFeedbackNextStep(file, layoutWarnings, sessionEnded, endedBy, pro
   if (sessionEnded) {
     const layoutNote =
       count > 0
-        ? `${count} severe layout failure${count === 1 ? "" : "s"} arrived alongside this final feedback. `
+        ? endedBy === "user"
+          ? `${count} proven severe layout failure${count === 1 ? "" : "s"} arrived alongside this final feedback. Repair the inaccessible or unusable content in ${file}, then open it directly at the affected viewport and confirm the content or control is visible and usable without reopening this ended Lavish session. `
+          : `${count} proven severe layout failure${count === 1 ? "" : "s"} arrived alongside this final feedback. Repair the inaccessible or unusable content in ${file}, then run \`lavish-axi ${file}\` to open a fresh session and re-check the real-browser audit. `
         : "";
     if (endedBy === "user") {
-      return `${layoutNote}${whiteboardNote}This was the last feedback before the user ended the session. Stop polling ${file} and do not reopen it - deliver any remaining updates directly in this conversation instead. Only run \`lavish-axi ${file} --reopen\` if the user explicitly asks for further review or something genuinely important needs their visual attention.`;
+      const reopenNote =
+        count > 0
+          ? ""
+          : ` Only run \`lavish-axi ${file} --reopen\` if the user explicitly asks for further review or something genuinely important needs their visual attention.`;
+      return `${layoutNote}${whiteboardNote}This was the last feedback before the user ended the session. Stop polling ${file} and do not reopen it - deliver any remaining updates directly in this conversation instead.${reopenNote}`;
     }
     return `${layoutNote}${whiteboardNote}This was the last feedback before the Lavish Editor session ended. Stop polling ${file}. Deliver any remaining updates directly in this conversation, or run \`lavish-axi ${file}\` to open a fresh session if the user needs further visual review.`;
   }

@@ -68,6 +68,21 @@
         background: #7ea4b6;
         animation: pulse 900ms ease-in-out infinite alternate;
       }
+      .icon-clip {
+        width: 48px;
+        height: 48px;
+        margin-top: 18px;
+        overflow: hidden;
+      }
+      .icon-clip button {
+        width: 40px;
+        height: 40px;
+        margin-left: 28px;
+        border: 0;
+        border-radius: 50%;
+        background: #086f62;
+        color: white;
+      }
       @keyframes pulse {
         to {
           opacity: 0.45;
@@ -96,6 +111,15 @@
           </span>
         </p>
       </section>
+      <div class="icon-clip">
+        <button aria-label="Open release actions">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+            <circle cx="5" cy="12" r="2" fill="currentColor"></circle>
+            <circle cx="12" cy="12" r="2" fill="currentColor"></circle>
+            <circle cx="19" cy="12" r="2" fill="currentColor"></circle>
+          </svg>
+        </button>
+      </div>
       <div class="decorative-pulse" aria-hidden="true"></div>
     </main>
   </body>

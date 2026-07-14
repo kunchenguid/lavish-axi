@@ -785,6 +785,11 @@ test("artifact SDK verifies severe clipping from direct rendered text fragments"
   assert.match(js, /isSemanticTextBoundary/);
   assert.match(js, /isStandardVisuallyHidden/);
   assert.match(js, /isIntentionalTextTruncation/);
+  assert.match(js, /clippingBoundariesFor/);
+  assert.match(js, /auditRequiredControlBounds/);
+  assert.match(js, /viewport-unreachable-control/);
+  assert.match(js, /auditUnreachableLeftText/);
+  assert.match(js, /viewport-unreachable-content/);
 });
 
 test("artifact SDK reports only near-total occlusion by an opaque sibling", () => {
