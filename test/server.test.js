@@ -800,6 +800,10 @@ test("artifact SDK reports only near-total occlusion by an opaque sibling", () =
 
   assert.match(js, /function opaqueSiblingBlocker/);
   assert.match(js, /backgroundIsOpaque/);
+  assert.match(js, /filter\(\(el\) => !isExcludedLayoutAuditElement\(el\)\)/);
+  assert.match(js, /hasStandardVisuallyHiddenAncestor/);
+  assert.match(js, /hasVisualMaskAncestor/);
+  assert.match(js, /isDiagramLayoutElement/);
   assert.match(js, /isNearTotalOcclusion/);
   assert.match(js, /minRatio = 0\.9/);
 });

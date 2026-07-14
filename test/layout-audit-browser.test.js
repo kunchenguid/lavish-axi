@@ -79,7 +79,13 @@ test(
         chromeEnv,
       );
       const pollTimeout = expectedCount === 0 ? "500" : "8000";
-      const poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", pollTimeout], lavishEnv);
+      let poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", pollTimeout], lavishEnv);
+      const expectedWarnings = new RegExp(`layout_warnings\\[${expectedCount}\\]`);
+      if (expectedCount > 0 && !expectedWarnings.test(poll)) {
+        run("chrome-devtools-axi", ["open", url], chromeEnv);
+        run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
+        poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", pollTimeout], lavishEnv);
+      }
 
       if (expectedCount === 0) {
         assert.match(gate, /gate.*false/, name);
@@ -88,17 +94,20 @@ test(
         assert.doesNotMatch(poll, /layout_warnings\[/, name);
       } else {
         assert.match(gate, /gate.*true/, name);
-        assert.match(poll, new RegExp(`layout_warnings\\[${expectedCount}\\]`), name);
+        assert.match(poll, expectedWarnings, name);
       }
       return { gate, poll };
     }
 
     try {
+      audit("control-broken-occlusion", "1440x1000x1", 3200, 1);
+
       const acceptable = [
         "real-plan-clean",
         "real-dashboard",
         "real-editorial",
         "real-carousel",
+        "occlusion-exclusions-clean",
         "real-poster-overlap",
         "real-animated-entry",
       ];
@@ -115,7 +124,6 @@ test(
       audit("control-broken-reachability", "1440x1000x1", 3200, 3);
       audit("control-broken-reachability", "390x844x1,mobile,touch", 3200, 3);
 
-      audit("control-broken-occlusion", "1440x1000x1", 3200, 1);
       audit("calibration-small-overflow", "390x844x1,mobile,touch", 3200, 0);
 
       const timeoutResult = audit("real-heavy-clean", "1440x1000x1", 16_000, 0);

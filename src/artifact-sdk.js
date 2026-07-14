@@ -960,6 +960,10 @@ export function createArtifactSdk(
     return false;
   }
 
+  function isExcludedLayoutAuditElement(el) {
+    return isDiagramLayoutElement(el) || hasVisualMaskAncestor(el) || hasStandardVisuallyHiddenAncestor(el);
+  }
+
   function collectLayoutAuditElements() {
     return [...(document.body?.querySelectorAll("*") || [])]
       .filter((el) => el instanceof Element && !isLavishUi(el))
@@ -985,8 +989,7 @@ export function createArtifactSdk(
 
   function auditSevereTextOverflow(el, viewportWidth, findings, seen, animationTargets, failedRoots) {
     if (el === document.body || el === document.documentElement) return;
-    if (isDiagramLayoutElement(el) || hasVisualMaskAncestor(el)) return;
-    if (hasStandardVisuallyHiddenAncestor(el)) return;
+    if (isExcludedLayoutAuditElement(el)) return;
     if (!auditedText(el)) return;
     if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return;
     if (failedRoots.some((root) => root.contains(el))) return;
@@ -1044,8 +1047,7 @@ export function createArtifactSdk(
   function elementHasMaterialViewportEscape(el, viewportWidth, animationTargets) {
     if (hasIntentionalHorizontalScrollerAncestor(el)) return false;
     if (isAnimationAssociatedWithElement(el, animationTargets)) return false;
-    if (isDiagramLayoutElement(el) || hasVisualMaskAncestor(el)) return false;
-    if (hasStandardVisuallyHiddenAncestor(el)) return false;
+    if (isExcludedLayoutAuditElement(el)) return false;
     if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return false;
 
     const rect = el.getBoundingClientRect();
@@ -1066,8 +1068,7 @@ export function createArtifactSdk(
   function auditUnreachableLeftText(el, viewportWidth, findings, seen, animationTargets) {
     if (hasIntentionalHorizontalScrollerAncestor(el)) return;
     if (isAnimationAssociatedWithElement(el, animationTargets)) return;
-    if (isDiagramLayoutElement(el) || hasVisualMaskAncestor(el)) return;
-    if (hasStandardVisuallyHiddenAncestor(el)) return;
+    if (isExcludedLayoutAuditElement(el)) return;
     if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return;
     if (!auditedText(el)) return;
     const rect = el.getBoundingClientRect();
@@ -1092,8 +1093,7 @@ export function createArtifactSdk(
   }
 
   function auditRequiredControlBounds(el, viewportWidth, findings, seen, animationTargets, failedRoots) {
-    if (!isRequiredControl(el) || isDiagramLayoutElement(el) || hasVisualMaskAncestor(el)) return;
-    if (hasStandardVisuallyHiddenAncestor(el)) return;
+    if (!isRequiredControl(el) || isExcludedLayoutAuditElement(el)) return;
     if (isAnimationAssociatedWithElement(el, animationTargets)) return;
     const rect = el.getBoundingClientRect();
     if (!isVisibleForLayoutAudit(el, rect)) return;
@@ -1224,6 +1224,7 @@ export function createArtifactSdk(
 
   function auditSevereTextOcclusion(elements, viewportWidth, findings, seen, animationTargets) {
     const candidates = elements
+      .filter((el) => !isExcludedLayoutAuditElement(el))
       .filter((el) => {
         const text = auditedText(el);
         return text.length >= 8 || (text.length > 0 && isRequiredControl(el));
