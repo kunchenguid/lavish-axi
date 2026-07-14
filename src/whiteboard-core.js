@@ -92,11 +92,13 @@ export async function convertExcalidrawSkeletonsAfterFontsLoad(skeletons, { conv
 export function repairSavedSceneTextMetrics(elements, { measure }) {
   let repaired = 0;
   const repairedElements = (Array.isArray(elements) ? elements : []).map((element) => {
-    if (!element || element.type !== "text" || element.isDeleted || element.autoResize === false) return element;
+    const candidate = /** @type {Record<string, any>} */ (element);
+    if (!candidate || candidate.type !== "text" || candidate.isDeleted || candidate.autoResize === false)
+      return element;
     const metrics = measure(element);
-    const width = Math.max(Number(element.width) || 0, Number(metrics?.width) || 0);
-    const height = Math.max(Number(element.height) || 0, Number(metrics?.height) || 0);
-    if (width <= Number(element.width) && height <= Number(element.height)) return element;
+    const width = Math.max(Number(candidate.width) || 0, Number(metrics?.width) || 0);
+    const height = Math.max(Number(candidate.height) || 0, Number(metrics?.height) || 0);
+    if (width <= Number(candidate.width) && height <= Number(candidate.height)) return element;
     repaired += 1;
     return { ...element, width, height };
   });

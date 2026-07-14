@@ -1,3 +1,5 @@
+/* global document, location, window */
+
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import { convertToExcalidrawElements, exportToCanvas, FONT_FAMILY } from "@excalidraw/excalidraw";
 
@@ -8,7 +10,7 @@ import {
 } from "../../src/whiteboard-core.js";
 import fixture from "./excalidraw-label-clipping.json" with { type: "json" };
 
-window.EXCALIDRAW_ASSET_PATH = `${location.origin}/whiteboard-assets/`;
+/** @type {any} */ (window).EXCALIDRAW_ASSET_PATH = `${location.origin}/whiteboard-assets/`;
 
 const metricsCanvas = document.createElement("canvas");
 const metricsContext = metricsCanvas.getContext("2d");
@@ -66,8 +68,10 @@ function labelByText(elements, expected) {
 }
 
 function withoutMetrics(element) {
-  const { width, height, ...rest } = element;
-  return rest;
+  const copy = { ...element };
+  delete copy.width;
+  delete copy.height;
+  return copy;
 }
 
 async function run() {

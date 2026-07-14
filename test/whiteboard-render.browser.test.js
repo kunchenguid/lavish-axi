@@ -27,7 +27,9 @@ async function chromePath() {
     try {
       await access(candidate);
       return candidate;
-    } catch {}
+    } catch {
+      continue;
+    }
   }
   return "";
 }
@@ -42,14 +44,16 @@ function contentType(file) {
 
 function resultFromDump(html) {
   const document = parse(html);
-  const stack = [document];
+  const stack = /** @type {import("parse5").DefaultTreeAdapterMap["node"][]} */ ([document]);
   while (stack.length > 0) {
     const node = stack.pop();
+    if (!node) continue;
     if (node.nodeName === "body") {
-      const attribute = node.attrs?.find((item) => item.name === "data-result");
+      const element = /** @type {import("parse5").DefaultTreeAdapterMap["element"]} */ (node);
+      const attribute = element.attrs.find((item) => item.name === "data-result");
       if (attribute) return JSON.parse(attribute.value);
     }
-    stack.push(...(node.childNodes || []));
+    if ("childNodes" in node) stack.push(...node.childNodes);
   }
   return null;
 }
@@ -99,9 +103,11 @@ test("real Excalidraw rendering keeps loaded-font labels inside their text bound
         response.writeHead(404).end();
       }
     });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     try {
-      const port = server.address().port;
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+      const port = address.port;
       const profile = path.join(root, "chrome-profile");
       const { stdout } = await execFileAsync(
         chrome,
