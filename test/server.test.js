@@ -790,6 +790,9 @@ test("artifact SDK verifies severe clipping from direct rendered text fragments"
   assert.match(js, /viewport-unreachable-control/);
   assert.match(js, /auditUnreachableLeftText/);
   assert.match(js, /viewport-unreachable-content/);
+  assert.match(js, /hasStandardVisuallyHiddenAncestor/);
+  assert.match(js, /rootVerticalScrollLocked/);
+  assert.match(js, /hasReachableVerticalScrollerAncestor/);
 });
 
 test("artifact SDK reports only near-total occlusion by an opaque sibling", () => {

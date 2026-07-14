@@ -814,6 +814,12 @@ export function createArtifactSdk(
     return overflowX === "auto" || overflowX === "scroll";
   }
 
+  function isIntentionalVerticalScroller(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const overflowY = getComputedStyle(el).overflowY;
+    return overflowY === "auto" || overflowY === "scroll";
+  }
+
   function hasIntentionalHorizontalScrollerAncestor(el) {
     let node = el;
     while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
@@ -821,6 +827,25 @@ export function createArtifactSdk(
       node = node.parentElement;
     }
     return false;
+  }
+
+  function hasReachableVerticalScrollerAncestor(el) {
+    let node = el?.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (isIntentionalVerticalScroller(node)) {
+        const rect = node.getBoundingClientRect();
+        if (rect.bottom > 0 && rect.top < (window.innerHeight || 0)) return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function rootVerticalScrollLocked() {
+    const values = [document.documentElement, document.body]
+      .filter(Boolean)
+      .map((node) => getComputedStyle(node).overflowY);
+    return values.some((value) => value === "hidden" || value === "clip");
   }
 
   function paddingBoxRect(el) {
@@ -925,6 +950,16 @@ export function createArtifactSdk(
     return positioned && clipped && rect.width <= 2 && rect.height <= 2 && (style.whiteSpace === "nowrap" || hasClip);
   }
 
+  function hasStandardVisuallyHiddenAncestor(el) {
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const rect = node.getBoundingClientRect();
+      if (isStandardVisuallyHidden(node, getComputedStyle(node), rect)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
   function collectLayoutAuditElements() {
     return [...(document.body?.querySelectorAll("*") || [])]
       .filter((el) => el instanceof Element && !isLavishUi(el))
@@ -951,6 +986,7 @@ export function createArtifactSdk(
   function auditSevereTextOverflow(el, viewportWidth, findings, seen, animationTargets, failedRoots) {
     if (el === document.body || el === document.documentElement) return;
     if (isDiagramLayoutElement(el) || hasVisualMaskAncestor(el)) return;
+    if (hasStandardVisuallyHiddenAncestor(el)) return;
     if (!auditedText(el)) return;
     if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return;
     if (failedRoots.some((root) => root.contains(el))) return;
@@ -966,7 +1002,7 @@ export function createArtifactSdk(
       overflowX: style.overflowX,
       overflowY: style.overflowY,
       isTruncated: isIntentionalTextTruncation(style),
-      isVisuallyHidden: isStandardVisuallyHidden(el, style, rect),
+      isVisuallyHidden: false,
     });
     let failureRoot = el;
     for (const boundary of clippingBoundariesFor(el)) {
@@ -976,7 +1012,7 @@ export function createArtifactSdk(
         overflowX: boundary.axes.includes("horizontal") ? "hidden" : "auto",
         overflowY: boundary.axes.includes("vertical") ? "hidden" : "auto",
         isTruncated: isIntentionalTextTruncation(style),
-        isVisuallyHidden: isStandardVisuallyHidden(el, style, rect),
+        isVisuallyHidden: false,
       });
       if (ancestorFailure && (!severe || ancestorFailure.overflowPx > severe.overflowPx)) {
         severe = ancestorFailure;
@@ -1009,12 +1045,12 @@ export function createArtifactSdk(
     if (hasIntentionalHorizontalScrollerAncestor(el)) return false;
     if (isAnimationAssociatedWithElement(el, animationTargets)) return false;
     if (isDiagramLayoutElement(el) || hasVisualMaskAncestor(el)) return false;
+    if (hasStandardVisuallyHiddenAncestor(el)) return false;
     if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return false;
 
     const rect = el.getBoundingClientRect();
     if (!isVisibleForLayoutAudit(el, rect)) return false;
     const style = getComputedStyle(el);
-    if (isStandardVisuallyHidden(el, style, rect)) return false;
     const positioned = style.position === "absolute" || style.position === "fixed" || style.position === "sticky";
     if (positioned && !isRequiredControl(el)) return false;
     if (isRequiredControl(el)) {
@@ -1031,12 +1067,12 @@ export function createArtifactSdk(
     if (hasIntentionalHorizontalScrollerAncestor(el)) return;
     if (isAnimationAssociatedWithElement(el, animationTargets)) return;
     if (isDiagramLayoutElement(el) || hasVisualMaskAncestor(el)) return;
+    if (hasStandardVisuallyHiddenAncestor(el)) return;
     if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return;
     if (!auditedText(el)) return;
     const rect = el.getBoundingClientRect();
     if (!isVisibleForLayoutAudit(el, rect)) return;
     const style = getComputedStyle(el);
-    if (isStandardVisuallyHidden(el, style, rect)) return;
     if (["absolute", "fixed", "sticky"].includes(style.position) && !isRequiredControl(el)) return;
     const materialPx = Math.max(24, viewportWidth * 0.05);
     let escape = null;
@@ -1057,6 +1093,7 @@ export function createArtifactSdk(
 
   function auditRequiredControlBounds(el, viewportWidth, findings, seen, animationTargets, failedRoots) {
     if (!isRequiredControl(el) || isDiagramLayoutElement(el) || hasVisualMaskAncestor(el)) return;
+    if (hasStandardVisuallyHiddenAncestor(el)) return;
     if (isAnimationAssociatedWithElement(el, animationTargets)) return;
     const rect = el.getBoundingClientRect();
     if (!isVisibleForLayoutAudit(el, rect)) return;
@@ -1094,17 +1131,20 @@ export function createArtifactSdk(
 
     const style = getComputedStyle(el);
     const fixedToViewport = style.position === "fixed" || style.position === "sticky";
+    const lockedToViewport = rootVerticalScrollLocked() && !hasReachableVerticalScrollerAncestor(el);
     const scrollY = Number(window.scrollY || window.pageYOffset || 0);
-    const verticalRect = fixedToViewport
-      ? rect
-      : {
-          top: rect.top + scrollY,
-          bottom: rect.bottom + scrollY,
-          height: rect.height,
-        };
-    const verticalBoundary = fixedToViewport
-      ? { top: 0, bottom: window.innerHeight || 0 }
-      : { top: 0, bottom: document.documentElement.scrollHeight };
+    const verticalRect =
+      fixedToViewport || lockedToViewport
+        ? rect
+        : {
+            top: rect.top + scrollY,
+            bottom: rect.bottom + scrollY,
+            height: rect.height,
+          };
+    const verticalBoundary =
+      fixedToViewport || lockedToViewport
+        ? { top: 0, bottom: window.innerHeight || 0 }
+        : { top: 0, bottom: document.documentElement.scrollHeight };
     const vertical = classifyMaterialRectEscape({
       rect: verticalRect,
       boundary: verticalBoundary,

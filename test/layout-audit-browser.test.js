@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -37,7 +37,7 @@ async function freePort() {
 
 test(
   "real browser layout audit stays silent on acceptable pages and reports one severe root per broken case",
-  { skip: !runBrowserE2e, timeout: 180_000 },
+  { skip: !runBrowserE2e, timeout: 300_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-layout-browser-"));
     const port = await freePort();
@@ -54,12 +54,15 @@ test(
       CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
     };
 
-    function openFixture(name) {
-      const file = path.join(fixtures, `${name}.html`);
+    function openArtifact(file) {
       const output = run(process.execPath, ["bin/lavish-axi.js", file, "--no-open"], lavishEnv);
       const url = output.match(/url:\s*"([^"]+)"/)?.[1];
       assert.ok(url, output);
       return { file, url };
+    }
+
+    function openFixture(name) {
+      return openArtifact(path.join(fixtures, `${name}.html`));
     }
 
     function audit(name, viewport, settleMs, expectedCount) {
@@ -75,12 +78,8 @@ test(
         ],
         chromeEnv,
       );
-      const pollTimeout = expectedCount === 0 ? "500" : "3000";
-      const poll = run(
-        process.execPath,
-        ["bin/lavish-axi.js", "poll", file, "--timeout-ms", pollTimeout],
-        lavishEnv,
-      );
+      const pollTimeout = expectedCount === 0 ? "500" : "8000";
+      const poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", pollTimeout], lavishEnv);
 
       if (expectedCount === 0) {
         assert.match(gate, /gate.*false/, name);
@@ -113,13 +112,46 @@ test(
       audit("control-broken-overflow", "390x844x1,mobile,touch", 3200, 1);
       audit("control-broken-clipping", "1440x1000x1", 3200, 3);
       audit("control-broken-clipping", "390x844x1,mobile,touch", 3200, 3);
-      audit("control-broken-reachability", "1440x1000x1", 3200, 2);
-      audit("control-broken-reachability", "390x844x1,mobile,touch", 3200, 2);
+      audit("control-broken-reachability", "1440x1000x1", 3200, 3);
+      audit("control-broken-reachability", "390x844x1,mobile,touch", 3200, 3);
+
       audit("control-broken-occlusion", "1440x1000x1", 3200, 1);
       audit("calibration-small-overflow", "390x844x1,mobile,touch", 3200, 0);
 
       const timeoutResult = audit("real-heavy-clean", "1440x1000x1", 16_000, 0);
       assert.match(timeoutResult.gate, /bannerHidden.*true/);
+
+      const revalidationFile = path.join(temp, "root-lock-revalidation.html");
+      await copyFile(path.join(fixtures, "control-broken-reachability.html"), revalidationFile);
+      const revalidation = openArtifact(revalidationFile);
+      run("chrome-devtools-axi", ["emulate", "--viewport", "390x844x1,mobile,touch"], chromeEnv);
+      run("chrome-devtools-axi", ["open", revalidation.url], chromeEnv);
+      run("chrome-devtools-axi", ["wait", "3200"], chromeEnv);
+      const held = run(
+        "chrome-devtools-axi",
+        ["eval", '() => document.body.classList.contains("layout-gate-active")'],
+        chromeEnv,
+      );
+      assert.match(held, /true/);
+      assert.match(
+        run(process.execPath, ["bin/lavish-axi.js", "poll", revalidationFile, "--timeout-ms", "8000"], lavishEnv),
+        /layout_warnings\[3\]/,
+      );
+      await writeFile(
+        revalidationFile,
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Repaired controls</title></head><body><button>Continue</button></body></html>',
+      );
+      run("chrome-devtools-axi", ["wait", "3200"], chromeEnv);
+      const repaired = run(
+        "chrome-devtools-axi",
+        [
+          "eval",
+          '() => ({ gate: document.body.classList.contains("layout-gate-active"), bannerHidden: document.getElementById("layoutIssueBanner").hidden })',
+        ],
+        chromeEnv,
+      );
+      assert.match(repaired, /gate.*false/);
+      assert.match(repaired, /bannerHidden.*true/);
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       run("chrome-devtools-axi", ["stop"], chromeEnv);
