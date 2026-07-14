@@ -1826,6 +1826,20 @@ test("POST /api/:key/share rejects requests without provenance headers", async (
   }
 });
 
+test("allows a custom bare IPv6 LAVISH_AXI_HOST to match its bracketed Host header", () => {
+  const literal = "2001:db8::1";
+  const allowed = buildAllowedHostnames({ host: literal, linkHost: "127.0.0.1" });
+  // Stored bare (unbracketed) so a bracketed browser Host still resolves to it.
+  assert.ok(allowed.has(literal));
+  // The bracketed authority a browser sends (`[2001:db8::1]:PORT`) passes.
+  assert.equal(isAllowedHostHeader(`[${literal}]:8080`, allowed), true);
+  // Loopback names and the co-configured link host still pass.
+  assert.equal(isAllowedHostHeader("127.0.0.1:8080", allowed), true);
+  assert.equal(isAllowedHostHeader("[::1]:8080", allowed), true);
+  // An attacker hostname is still rejected.
+  assert.equal(isAllowedHostHeader("evil.com", allowed), false);
+});
+
 test("rejects requests whose Host header is not a loopback name (DNS-rebinding guard)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

@@ -146,8 +146,8 @@ No need to explicitly document the telemetry behaviors.
 ## Things to know when editing
 
 - Two global middlewares in `serve()` guard the loopback server and run before every route; keep them ordered Host-guard-then-origin-guard and do not let a new route slip in ahead of them.
-  The Host allowlist (`allowedHostSet`/`isAllowedHost`) is the primary DNS-rebinding defense: it 403s any request whose `Host` host-part is not a loopback name or the operator-configured `LAVISH_AXI_HOST`/`LAVISH_AXI_LINK_HOST`, because a rebound request still carries the attacker's hostname in `Host`.
-  The mutating-route guard (`hasForeignOrigin`) 403s any non-GET request that arrives with a *present* foreign `Origin`/`Referer`; it deliberately allows header-less requests because the CLI control channel dials the server with no `Origin`, relying on the Host allowlist instead - so never tighten it to reject absent headers.
+  The Host allowlist (`buildAllowedHostnames`/`isAllowedRequestHost`) is the primary DNS-rebinding defense: it 403s any request whose `Host` host-part is not a loopback name or the operator-configured `LAVISH_AXI_HOST`/`LAVISH_AXI_LINK_HOST`/`LAVISH_AXI_ALLOWED_HOSTS` extras, because a rebound request still carries the attacker's hostname in `Host`.
+  The mutating-route guard (`hasForeignOrigin`) 403s any non-GET request that arrives with a _present_ foreign `Origin`/`Referer`; it deliberately allows header-less requests because the CLI control channel dials the server with no `Origin`, relying on the Host allowlist instead - so never tighten it to reject absent headers.
   `/share`, `/whiteboard-channel`, and the whiteboard write routes keep their own stricter `isSameOriginRequest` (rejects even header-less requests) and are exempted from the lenient guard via `isStrictlyGuardedPath`; add any new stricter-guarded path there too so the lenient guard cannot shadow it.
 - `canonicalFile` runs `realpath`, so symlinks resolve to their target before becoming session keys. Two paths that refer to the same file always collapse to one session.
 - The SDK injected into artifacts lives in `src/artifact-sdk.js` and is wrapped by `createSdkJs`.
