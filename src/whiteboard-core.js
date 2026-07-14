@@ -103,6 +103,15 @@ export function repairSavedSceneTextMetrics(elements, { measure }) {
   return { elements: repairedElements, repaired };
 }
 
+export function createWhiteboardPersistencePayload(state, scene) {
+  return {
+    sourceHash: String(state?.sceneSourceHash || ""),
+    textMetricsVersion: Math.max(0, Math.floor(Number(state?.textMetricsVersion) || 0)),
+    scene: scene ?? null,
+    baseline: { elements: Array.isArray(state?.baselineElements) ? state.baselineElements : [] },
+  };
+}
+
 function liveElements(elements) {
   return (Array.isArray(elements) ? elements : []).filter(
     (el) => el && typeof el === "object" && el.id && !el.isDeleted,

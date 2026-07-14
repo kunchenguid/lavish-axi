@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createWhiteboardPersistencePayload,
   findDuplicateElementIds,
   normalizeExcalidrawSceneTarget,
   repairSavedSceneTextMetrics,
@@ -96,6 +97,20 @@ test("saved text repair only expands metrics", () => {
   assert.equal(repaired, 1);
   assert.deepEqual(elements[0], { ...text, width: 118.5, height: 24 });
   assert.strictEqual(elements[1].id, "box");
+});
+
+test("whiteboard persistence payload keeps migration and baseline fields together", () => {
+  const scene = { elements: [rect("edited")] };
+  const baselineElements = [rect("original")];
+  assert.deepEqual(
+    createWhiteboardPersistencePayload({ sceneSourceHash: "hash-1", textMetricsVersion: 1, baselineElements }, scene),
+    {
+      sourceHash: "hash-1",
+      textMetricsVersion: 1,
+      scene,
+      baseline: { elements: baselineElements },
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

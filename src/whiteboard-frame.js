@@ -31,6 +31,7 @@ import "./whiteboard-frame.css";
 
 import {
   convertExcalidrawSkeletonsAfterFontsLoad,
+  createWhiteboardPersistencePayload,
   findDuplicateElementIds,
   repairSavedSceneTextMetrics,
   sanitizeSceneLink,
@@ -224,10 +225,7 @@ function postSave(flushId = "") {
   post({
     type: "lavish-whiteboard:save",
     diagramIndex: state.diagramIndex,
-    sourceHash: state.sceneSourceHash,
-    scene,
-    baseline: { elements: state.baselineElements },
-    textMetricsVersion: state.textMetricsVersion,
+    ...createWhiteboardPersistencePayload(state, scene),
     ...(flushId ? { flushId } : {}),
   });
   return true;
@@ -569,12 +567,11 @@ async function queueFeedback() {
       type: "lavish-whiteboard:queueFeedback",
       diagramIndex: state.diagramIndex,
       diagramId: state.diagramId,
-      sourceHash: state.sceneSourceHash,
+      ...createWhiteboardPersistencePayload(state, scene),
       imageFallback: state.imageFallback,
       note: String(/** @type {HTMLInputElement} */ (document.getElementById("wbNote")).value || "").trim(),
       summaryLines: summary.lines,
       stats: summary.stats,
-      scene,
       pngDataUrl,
     });
   } catch (error) {
