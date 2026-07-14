@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.42](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.41...lavish-axi-v0.1.42) (2026-07-14)
+
+
+### Bug Fixes
+
+* **skill:** require observable poll wake paths ([#174](https://github.com/kunchenguid/lavish-axi/issues/174)) ([15979b6](https://github.com/kunchenguid/lavish-axi/commit/15979b62e6bf57f99fdbc95015e5359363168303))
+
 ## [0.1.41](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.40...lavish-axi-v0.1.41) (2026-07-14)
 
 
