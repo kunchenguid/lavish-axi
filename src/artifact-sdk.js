@@ -276,8 +276,7 @@ export function deriveAttachmentNoticeState(state = {}) {
   const itemCount = Number(state.itemCount) || 0;
   const maxCount = Number(state.maxCount) || 0;
   if (state.queueBlocked && state.hasPending) return "Waiting for an image to finish uploading…";
-  if (state.queueBlocked && state.hasErrors)
-    return "An image couldn't be attached. Retry or remove it before queuing.";
+  if (state.queueBlocked && state.hasErrors) return "An image couldn't be attached. Retry or remove it before queuing.";
   if (state.capRejected && maxCount > 0 && itemCount >= maxCount)
     return "You can attach up to " + maxCount + " image" + (maxCount === 1 ? "" : "s") + ".";
   return "";
