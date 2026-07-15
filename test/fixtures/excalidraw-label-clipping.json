@@ -1,0 +1,5 @@
+{
+  "source": "flowchart TB\n  subgraph SIDECAR[\"Disposable adapter sidecar\"]\n    PROTOCOL[\"Adapter Protocol v1\"]\n    CODEX[\"Codex app-server\"]\n    FUTURE[\"Future adapter\"]\n    TOOLS[\"canonical read, grep, glob, search<br/> final tools\"]\n    PROTOCOL --> CODEX\n    CODEX --> TOOLS\n    FUTURE --> TOOLS\n  end",
+  "edgeLabels": ["Disposable adapter sidecar", "Adapter Protocol v1", "Codex app-server", "Future adapter"],
+  "multilineLabel": "canonical read, grep, glob, search\nfinal tools"
+}

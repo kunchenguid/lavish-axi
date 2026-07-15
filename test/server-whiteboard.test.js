@@ -126,12 +126,18 @@ test("whiteboard scene round-trips through PUT and GET", async () => {
     const put = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard/0`, {
       method: "PUT",
       headers: ctx.sameOrigin,
-      body: JSON.stringify({ source_hash: "hash-1", scene, baseline: { elements: scene.elements } }),
+      body: JSON.stringify({
+        source_hash: "hash-1",
+        text_metrics_version: 1,
+        scene,
+        baseline: { elements: scene.elements },
+      }),
     });
     assert.equal(put.status, 200);
 
     const loaded = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard/0`).then((res) => res.json());
     assert.equal(loaded.whiteboard.source_hash, "hash-1");
+    assert.equal(loaded.whiteboard.text_metrics_version, 1);
     assert.deepEqual(loaded.whiteboard.scene, { ...scene, appState: {} });
     assert.deepEqual(loaded.whiteboard.baseline, { elements: scene.elements });
   } finally {

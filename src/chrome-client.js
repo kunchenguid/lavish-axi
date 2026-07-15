@@ -381,14 +381,19 @@ async function submitQueuedOnce() {
 }
 
 function normalizeLayoutWarningsPayload(value) {
-  return Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
+  return Array.isArray(value)
+    ? value.filter((item) => item && typeof item === "object" && String(item.severity || "").toLowerCase() === "error")
+    : [];
 }
 
 function isErrorLayoutWarning(warning) {
   return String(warning?.severity || "").toLowerCase() === "error";
 }
 
-function setLayoutIssueBanner(visible, text = "This surface may have layout issues. Your agent has been notified.") {
+function setLayoutIssueBanner(
+  visible,
+  text = "This surface has a severe layout failure. Your agent has been notified.",
+) {
   if (!layoutIssueBanner) return;
   layoutIssueBanner.textContent = text;
   layoutIssueBanner.hidden = !visible;
@@ -405,7 +410,7 @@ function setLayoutGateCard(state) {
   if (state === "held") {
     layoutGateTitle.innerHTML = "Fixing a layout issue...";
     layoutGateCopy.textContent =
-      "The real browser found overflow or overlapping content. Your agent has been notified and this will reveal after the next clean reload.";
+      "The browser found inaccessible or unusable content. Your agent has been notified and this will reveal after the next clean reload.";
     return;
   }
 
@@ -428,12 +433,16 @@ function revealLayoutGate({ showBanner = false, bannerText = undefined } = {}) {
 
 function forceRevealLayoutGate(reason) {
   if (!layoutGateEnabled || ended) return;
+  if (reason === "timeout") {
+    // A delayed or unavailable audit is uncertainty, not evidence of a defect.
+    revealLayoutGate();
+    return;
+  }
   if (reason === "manual") layoutGateManuallyBypassed = true;
-  const bannerText =
-    reason === "timeout"
-      ? "This surface may have layout issues. Lavish revealed it after the safety timeout so review is never blocked."
-      : "This surface may have layout issues. You chose to show it before the layout check passed.";
-  revealLayoutGate({ showBanner: true, bannerText });
+  revealLayoutGate({
+    showBanner: true,
+    bannerText: "This surface has a severe layout failure. You chose to show it before the layout check passed.",
+  });
 }
 
 function startLayoutGateCycle() {
@@ -472,6 +481,7 @@ function handleLayoutWarningsForGate(layoutWarnings) {
     return;
   }
 
+  clearLayoutGateTimer();
   setLayoutGateCard("held");
   setLayoutGateActive(true);
 }
@@ -938,6 +948,7 @@ async function persistWhiteboardScene(index, message) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       source_hash: String(message.sourceHash || ""),
+      text_metrics_version: Number(message.textMetricsVersion) || 0,
       scene: message.scene || null,
       baseline: message.baseline || null,
     }),

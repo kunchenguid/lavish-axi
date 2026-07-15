@@ -122,7 +122,7 @@ pnpm link
 │ Human annotates text   │
 │ or elements, sends     │
 │ chat, or browser audit │
-│ reports layout issues  │
+│ proves severe failures │
 └───────┬────────────────┘
         ▼
 ┌────────────────────────┐
@@ -136,15 +136,16 @@ pnpm link
 - **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, feedback controls, and render-time layout checks.
   Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser.
   Run `lavish-axi design` for the single source of agent-facing design guidance and optional CDN or Mermaid snippets.
-- **Open-time layout gate** - The browser chrome masks each artifact until the real in-iframe layout audit reports no error-severity findings.
-  Warning-only artifacts reveal normally; error findings notify the agent through the same `layout_warnings` poll path and keep the curtain up until a clean reload.
-  The user can click **Show anyway**, and a bounded safety timeout reveals with a persistent layout-issues banner so review is never blocked indefinitely.
-- **Layout warnings** - After fonts load and layout settles, the injected SDK audits the real browser render for page horizontal overflow, element overflow, clipped or visibly spilling text, and overlapping text.
-  Intentional horizontal scrollers using `overflow-x: auto` or `scroll` are excluded from horizontal checks, and `overflow-y: auto` or `scroll` is treated as intentional for vertical overflow.
-  Current findings are returned from `lavish-axi poll` as `layout_warnings` with `selector`, `kind`, `overflowPx`, `viewportWidth`, `severity`, and `persistent`.
-  Fresh error-severity findings should be fixed and rechecked before asking the human to review; repeated or warning-only findings can be surfaced to the human with a note when the cause is not obvious.
+- **Open-time layout gate** - The browser chrome masks an artifact only while the real in-iframe audit checks for a stable, proven severe layout failure.
+  A severe failure notifies the agent through the `layout_warnings` poll path and keeps the curtain up until a clean reload, while cosmetic, intentional, transient, tiny, and uncertain observations stay silent.
+  The user can click **Show anyway**, and a bounded safety timeout fails open without an issue banner when no severe failure has been proven.
+- **Layout failures** - After fonts and finite animations settle, the injected SDK confirms severe failures from direct rendered evidence such as materially escaped meaningful content or required controls, clipped text fragments, viewport reachability, or near-total semantic occlusion.
+  Explicit ellipsis and line clamp, standard visually hidden accessibility text, intentional scrollers or masks, parent overhang, generic element scroll geometry, decorative overlap, and uncertain motion do not produce findings by themselves.
+  Proven failures are returned from `lavish-axi poll` in `layout_warnings` with `selector`, `kind`, `axis`, `overflowPx`, `viewportWidth`, `severity`, and `persistent`.
+  Every returned failure should be fixed and rechecked before asking the human to review.
 - **Reliable feedback delivery** - Every feedback response includes a stable `delivery_id` and is redelivered until the agent acknowledges it after processing with `lavish-axi poll <html-file> --ack <delivery_id>`.
-  Acknowledging one delivery clears only that batch; prompts or layout warnings that arrived while it was in flight remain queued for the next poll.
+  Acknowledging one delivery clears only that batch; prompts or layout failures that arrived while it was in flight remain queued for the next poll.
+
 - **Local assets** - Copy local images, CSS, fonts, and scripts next to the HTML artifact and reference them with relative paths from that directory; root-prefixed paths such as `/assets/logo.png` will not resolve through Lavish's artifact route.
 - **Export and sharing** - `lavish-axi export` writes `<name>.export.html` by inlining local assets only, stripping the annotation SDK, and leaving remote CDN/font references as links that still need network access.
   `lavish-axi share` publishes the same local-inlined HTML to [ht-ml.app](https://ht-ml.app), a third-party hosting service not part of Lavish.
@@ -162,8 +163,11 @@ pnpm link
 - **Keyboard shortcuts** - In the chrome composer, Enter sends queued prompts and Shift+Enter inserts a newline.
   In the annotation card, Enter queues the annotation, Shift+Enter inserts a newline, and Ctrl+Enter (Cmd+Enter on macOS) queues it and sends all queued prompts immediately.
   Cmd+I or Ctrl+I toggles between annotate and explore mode from either the browser chrome or the artifact iframe, including while focus is in a textarea or control.
-- **Agent presence** - The browser shows when no agent is listening, keeps queued feedback and fresh layout warnings until an agent acknowledges the delivery after processing, and only blocks human sends while the agent is working on delivered feedback. The no-timeout poll writes an immediate stderr banner and periodic stderr heartbeats while stdout stays reserved for the final response; if the poll is interrupted or its result is abandoned, re-run it to receive the same delivery again.
+- **Agent presence** - The browser shows when no agent is listening, keeps queued feedback and proven severe layout failures until an agent acknowledges the delivery after processing, and only blocks human sends while the agent is working on delivered feedback.
+  The no-timeout poll writes an immediate stderr banner and periodic stderr heartbeats while stdout stays reserved for the final response; if the poll is interrupted or its result is abandoned, re-run it to receive the same delivery again.
+  Codex-specific guidance keeps that poll attached to the active turn instead of hiding it in a background task, because completed background tasks may not resume the agent.
 - **Session end etiquette** - Lavish tracks who ended a session: a human clicking **End session** (or **Send & End**) in the browser is a user-initiated end, while `lavish-axi end <html-file>` is agent-initiated.
+
   A plain `lavish-axi <html-file>` after a user-initiated end refuses to reopen the browser and returns guidance instead; pass `--reopen` only when the user asks for further review or something important needs their visual attention.
   Agent-initiated ends keep reopening normally, same as before.
   A final `feedback` response must be acknowledged after processing; the acknowledgement poll then reports `ended` and tells the agent to stop instead of reopening.
@@ -185,20 +189,20 @@ pnpm link
 
 ## CLI Reference
 
-| Command                         | Description                                                                                                                                                                                                                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lavish-axi`                    | Show current sessions and usage guidance.                                                                                                                                                                                                                                 |
-| `lavish-axi update`             | Check for or apply the latest npm release through the AXI SDK self-updater.                                                                                                                                                                                               |
-| `lavish-axi <html-file>`        | Open or resume a Lavish Editor session, with the open-time layout gate enabled by default. Refuses to reopen a session the user explicitly ended from the browser unless `--reopen` is passed.                                                                            |
-| `lavish-axi poll <html-file>`   | Long-poll until feedback arrives. Each batch is redelivered with the same `delivery_id` until processed and acknowledged with `--ack`; on `status: ended`, stop polling and do not reopen uninvited.                                                                      |
-| `lavish-axi end <html-file>`    | End a session as the agent; unlike a user-initiated end from the browser, this still allows a plain reopen later.                                                                                                                                                         |
-| `lavish-axi export <html-file>` | Write a portable copy of the artifact: one HTML file with its local assets inlined, so it opens with no server and no sibling files. Remote CDN/font references are left as links.                                                                                        |
-| `lavish-axi share <html-file>`  | Publish the artifact (local assets inlined) to [ht-ml.app](https://ht-ml.app), a third-party host not part of Lavish, and print a visitable URL plus a secret update key; shares are public by default, and `--password` makes viewers enter the password before viewing. |
-| `lavish-axi stop`               | Shut down the background server.                                                                                                                                                                                                                                          |
-| `lavish-axi playbook [id]`      | List focused artifact guidance or show one playbook; agents must open each matching playbook before writing HTML.                                                                                                                                                         |
-| `lavish-axi design`             | Show agent-facing design guidance, including optional CDN and Mermaid snippets.                                                                                                                                                                                           |
-| `lavish-axi setup hooks`        | Install or repair optional SessionStart hooks for Claude Code, Codex, OpenCode, and GitHub Copilot CLI; restart the agent session afterward.                                                                                                                              |
-| `lavish-axi server`             | Run the local Lavish Editor server.                                                                                                                                                                                                                                       |
+| Command                         | Description                                                                                                                                                                                                                                                                                    |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lavish-axi`                    | Show current sessions and usage guidance.                                                                                                                                                                                                                                                      |
+| `lavish-axi update`             | Check for or apply the latest npm release through the AXI SDK self-updater.                                                                                                                                                                                                                    |
+| `lavish-axi <html-file>`        | Open or resume a Lavish Editor session, with the open-time layout gate enabled by default. Refuses to reopen a session the user explicitly ended from the browser unless `--reopen` is passed.                                                                                                 |
+| `lavish-axi poll <html-file>`   | Long-poll until the user sends feedback, ends the session, or the browser proves a severe layout failure. Each batch is redelivered with the same `delivery_id` until processed and acknowledged with `--ack`; leave no-timeout polls running, or re-run them if interrupted. Codex guidance keeps polls attached to the active turn. On `status: ended`, stop polling and do not reopen uninvited. |
+| `lavish-axi end <html-file>`    | End a session as the agent; unlike a user-initiated end from the browser, this still allows a plain reopen later.                                                                                                                                                                              |
+| `lavish-axi export <html-file>` | Write a portable copy of the artifact: one HTML file with its local assets inlined, so it opens with no server and no sibling files. Remote CDN/font references are left as links.                                                                                                             |
+| `lavish-axi share <html-file>`  | Publish the artifact (local assets inlined) to [ht-ml.app](https://ht-ml.app), a third-party host not part of Lavish, and print a visitable URL plus a secret update key; shares are public by default, and `--password` makes viewers enter the password before viewing.                      |
+| `lavish-axi stop`               | Shut down the background server.                                                                                                                                                                                                                                                               |
+| `lavish-axi playbook [id]`      | List focused artifact guidance or show one playbook; agents must open each matching playbook before writing HTML.                                                                                                                                                                              |
+| `lavish-axi design`             | Show agent-facing design guidance, including optional CDN and Mermaid snippets.                                                                                                                                                                                                                |
+| `lavish-axi setup hooks`        | Install or repair optional SessionStart hooks for Claude Code, Codex, OpenCode, and GitHub Copilot CLI; restart the agent session afterward.                                                                                                                                                   |
+| `lavish-axi server`             | Run the local Lavish Editor server.                                                                                                                                                                                                                                                            |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.
 One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so agents must match against each `use_when` trigger and open every matching playbook before writing HTML.

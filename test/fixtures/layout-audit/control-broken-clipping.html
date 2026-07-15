@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Broken clipping controls</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        font-family: system-ui, sans-serif;
+        color: #17202a;
+        background: #edf3f7;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      main {
+        width: min(620px, 100%);
+        padding: 28px;
+        border: 1px solid #b9cbd5;
+        background: white;
+        box-shadow: 0 18px 60px #3452;
+      }
+      .row {
+        display: flex;
+        align-items: flex-start;
+        gap: 22px;
+        padding: 18px;
+        border: 1px solid #cad8df;
+      }
+      .spill {
+        display: inline-block;
+        flex: none;
+        width: 62px;
+        height: 24px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #086f62;
+        color: white;
+        font-size: 13px;
+        font-weight: 800;
+        line-height: 18px;
+        text-align: center;
+        white-space: normal;
+        overflow: visible;
+      }
+      .clip {
+        height: 42px;
+        overflow: hidden;
+        margin: 0;
+        line-height: 24px;
+        color: #354956;
+      }
+      h1 {
+        margin-top: 0;
+      }
+      .decorative-pulse {
+        width: 10px;
+        height: 10px;
+        margin-top: 16px;
+        border-radius: 50%;
+        background: #7ea4b6;
+        animation: pulse 900ms ease-in-out infinite alternate;
+      }
+      .icon-clip {
+        width: 48px;
+        height: 48px;
+        margin-top: 18px;
+        overflow: hidden;
+      }
+      .icon-clip button {
+        width: 40px;
+        height: 40px;
+        margin-left: 28px;
+        border: 0;
+        border-radius: 50%;
+        background: #086f62;
+        color: white;
+      }
+      @keyframes pulse {
+        to {
+          opacity: 0.45;
+        }
+      }
+      @media (max-width: 480px) {
+        .row {
+          gap: 12px;
+        }
+        .clip {
+          height: 38px;
+          line-height: 23px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Release status</h1>
+      <section class="row">
+        <span class="spill" id="broken-badge" role="status"><strong>Needs review</strong></span>
+        <p class="clip" id="broken-copy">
+          <span>
+            This important release note is deliberately forced into a box that is too short, so its final line is
+            invisible to the user and cannot be reached.
+          </span>
+        </p>
+      </section>
+      <div class="icon-clip">
+        <button aria-label="Open release actions">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+            <circle cx="5" cy="12" r="2" fill="currentColor"></circle>
+            <circle cx="12" cy="12" r="2" fill="currentColor"></circle>
+            <circle cx="19" cy="12" r="2" fill="currentColor"></circle>
+          </svg>
+        </button>
+      </div>
+      <div class="decorative-pulse" aria-hidden="true"></div>
+    </main>
+  </body>
+</html>

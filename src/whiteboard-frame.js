@@ -16,18 +16,29 @@
 // inside opaque origins, exactly like the artifact iframe.
 
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
-import { convertToExcalidrawElements, Excalidraw, exportToBlob, restore } from "@excalidraw/excalidraw";
+import {
+  convertToExcalidrawElements,
+  Excalidraw,
+  exportToBlob,
+  exportToCanvas,
+  FONT_FAMILY,
+  restore,
+} from "@excalidraw/excalidraw";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "@excalidraw/excalidraw/index.css";
 import "./whiteboard-frame.css";
 
 import {
+  convertExcalidrawSkeletonsAfterFontsLoad,
+  createWhiteboardPersistencePayload,
   findDuplicateElementIds,
+  repairSavedSceneTextMetrics,
   sanitizeSceneLink,
   sanitizeWhiteboardAppState,
   sceneIsImageFallback,
   summarizeSceneEdits,
+  WHITEBOARD_TEXT_METRICS_VERSION,
 } from "./whiteboard-core.js";
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -45,6 +56,7 @@ const state = {
   baselineElements: [],
   files: {},
   imageFallback: false,
+  textMetricsVersion: WHITEBOARD_TEXT_METRICS_VERSION,
   channelId: "",
   api: null,
   saveTimer: 0,
@@ -213,9 +225,7 @@ function postSave(flushId = "") {
   post({
     type: "lavish-whiteboard:save",
     diagramIndex: state.diagramIndex,
-    sourceHash: state.sceneSourceHash,
-    scene,
-    baseline: { elements: state.baselineElements },
+    ...createWhiteboardPersistencePayload(state, scene),
     ...(flushId ? { flushId } : {}),
   });
   return true;
@@ -374,17 +384,66 @@ function mountEditor({ elements, appState, files, theme }) {
   );
 }
 
+const textMetricsCanvas = document.createElement("canvas");
+const textMetricsContext = textMetricsCanvas.getContext("2d");
+
+function fontFamilyName(fontFamily) {
+  return Object.entries(FONT_FAMILY).find(([, value]) => value === fontFamily)?.[0] || "Segoe UI Emoji";
+}
+
+function fontString(element) {
+  const family = fontFamilyName(element.fontFamily);
+  const families = family === "Excalifont" ? [family, "Xiaolai", "Segoe UI Emoji"] : [family, "Segoe UI Emoji"];
+  return `${Number(element.fontSize) || 20}px ${families.map((value) => JSON.stringify(value)).join(", ")}`;
+}
+
+function measureSceneText(element) {
+  if (!textMetricsContext) return { width: Number(element.width) || 0, height: Number(element.height) || 0 };
+  textMetricsContext.font = fontString(element);
+  const lines = String(element.text || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, "        ")
+    .split("\n");
+  const width = Math.max(...lines.map((line) => textMetricsContext.measureText(line || " ").width));
+  const height = lines.length * (Number(element.fontSize) || 20) * (Number(element.lineHeight) || 1.25);
+  return { width, height };
+}
+
+async function loadSceneFonts(elements, files) {
+  const textElements = elements.filter((element) => element.type === "text" && !element.isDeleted);
+  if (textElements.length === 0) return;
+  await exportToCanvas({
+    elements,
+    appState: { exportBackground: false },
+    files: files || null,
+    maxWidthOrHeight: 1,
+  });
+  await Promise.all(
+    textElements.map((element) => document.fonts.load(fontString(element), String(element.text || ""))),
+  );
+  await document.fonts.ready;
+}
+
 async function convertSource(source) {
   const { elements: skeletons, files } = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: "16px" },
   });
-  // Preserve Mermaid node/edge identity for edit summaries; regenerate only
-  // when upstream emitted colliding ids (parallel edges), where uniqueness
-  // matters more than identity.
-  let elements = convertToExcalidrawElements(skeletons, { regenerateIds: false });
-  if (findDuplicateElementIds(elements).length > 0) {
-    elements = convertToExcalidrawElements(skeletons, { regenerateIds: true });
-  }
+  const materialize = (input) => {
+    // Preserve Mermaid node/edge identity for edit summaries; regenerate only
+    // when upstream emitted colliding ids (parallel edges), where uniqueness
+    // matters more than identity.
+    let elements = convertToExcalidrawElements(input, { regenerateIds: false });
+    if (findDuplicateElementIds(elements).length > 0) {
+      elements = convertToExcalidrawElements(input, { regenerateIds: true });
+    }
+    return elements;
+  };
+  const elements = await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+    convert: materialize,
+    loadFonts: async (fallbackElements) => {
+      await loadSceneFonts(fallbackElements, files);
+    },
+  });
   return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
 }
 
@@ -404,6 +463,7 @@ async function startFromConversion(init) {
   state.files = files;
   state.imageFallback = imageFallback;
   state.sceneSourceHash = init.sourceHash;
+  state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
   if (imageFallback) {
     setBanner(
       "wbFallbackBanner",
@@ -414,7 +474,7 @@ async function startFromConversion(init) {
   scheduleSave();
 }
 
-function startFromSavedScene(init) {
+async function startFromSavedScene(init) {
   const saved = init.saved;
   const savedAppState = sanitizeWhiteboardAppState(saved.scene?.appState);
   // restore() is Excalidraw's defensive loader: it fills missing fields with
@@ -430,11 +490,20 @@ function startFromSavedScene(init) {
     null,
     { repairBindings: true },
   );
-  state.baselineElements = Array.isArray(saved.baseline?.elements)
+  let elements = restored.elements;
+  let baselineElements = Array.isArray(saved.baseline?.elements)
     ? JSON.parse(JSON.stringify(saved.baseline.elements))
     : JSON.parse(JSON.stringify(restored.elements));
   state.files = restored.files || saved.scene?.files || {};
-  state.imageFallback = sceneIsImageFallback(restored.elements);
+  const savedMetricsVersion = Number(saved.text_metrics_version) || 0;
+  if (savedMetricsVersion < WHITEBOARD_TEXT_METRICS_VERSION) {
+    await loadSceneFonts(elements, state.files);
+    elements = repairSavedSceneTextMetrics(elements, { measure: measureSceneText }).elements;
+    baselineElements = repairSavedSceneTextMetrics(baselineElements, { measure: measureSceneText }).elements;
+  }
+  state.baselineElements = baselineElements;
+  state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
+  state.imageFallback = sceneIsImageFallback(elements);
   state.sceneSourceHash = saved.source_hash || init.sourceHash;
   if (state.imageFallback) {
     setBanner(
@@ -443,11 +512,12 @@ function startFromSavedScene(init) {
     );
   }
   mountEditor({
-    elements: restored.elements,
+    elements,
     appState: { ...defaultAppState(), ...savedAppState },
     files: state.files,
     theme: init.theme,
   });
+  if (savedMetricsVersion < WHITEBOARD_TEXT_METRICS_VERSION) scheduleSave();
 }
 
 // The saved scene was converted from a different version of the diagram. Never
@@ -497,12 +567,11 @@ async function queueFeedback() {
       type: "lavish-whiteboard:queueFeedback",
       diagramIndex: state.diagramIndex,
       diagramId: state.diagramId,
-      sourceHash: state.sceneSourceHash,
+      ...createWhiteboardPersistencePayload(state, scene),
       imageFallback: state.imageFallback,
       note: String(/** @type {HTMLInputElement} */ (document.getElementById("wbNote")).value || "").trim(),
       summaryLines: summary.lines,
       stats: summary.stats,
-      scene,
       pngDataUrl,
     });
   } catch (error) {
@@ -545,12 +614,12 @@ async function handleInit(init) {
       return;
     }
     if (saved.source_hash === init.sourceHash) {
-      startFromSavedScene({ ...init, saved, theme });
+      await startFromSavedScene({ ...init, saved, theme });
       return;
     }
     const choice = await offerStaleChoice();
     if (choice === "keep") {
-      startFromSavedScene({ ...init, saved, theme });
+      await startFromSavedScene({ ...init, saved, theme });
     } else {
       await startFromConversion({ ...init, theme });
     }

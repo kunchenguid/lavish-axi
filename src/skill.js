@@ -1,4 +1,4 @@
-import { createHomeOutput } from "./cli.js";
+import { POLL_SEND_AND_END_RULE, POLL_WAKE_PATH_RULES, createHomeOutput } from "./cli.js";
 import { PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 
 // Trigger string Claude Code (and other agents) match against to auto-load the skill.
@@ -64,14 +64,16 @@ ${home.help[home.help.length - 1]}
 
 1. Create the HTML artifact (default location \`.lavish/<name>.html\` in the working directory).
 2. Run \`npx -y lavish-axi <html-file>\` to open or resume a review session in the browser.
-3. Run \`npx -y lavish-axi poll <html-file>\` to long-poll for the user's annotations, queued prompts, and browser-reported \`layout_warnings\`.
+3. Run \`npx -y lavish-axi poll <html-file>\` to long-poll for the user's annotations, queued prompts, and browser-proven severe layout failures returned as \`layout_warnings\`.
    On the first poll, prefer \`--agent-reply "<one-line summary of what you built and what to review first>"\` so the conversation panel opens with context.
-   The poll stays silent until the user acts or the real browser reports fresh layout warnings - leave it running, never kill it.
-   If the poll gets killed or times out anyway, just re-run it - queued feedback is never lost.
-4. If poll returns \`layout_warnings\`, follow the returned \`next_step\`: fix and re-check fresh error-severity findings, but proceed with a note instead of looping when every current warning is persistent or low-severity.
-5. Apply human feedback, then poll again with \`--ack <delivery_id> --agent-reply "<message>"\` to acknowledge that processed delivery, reply in the browser, and keep the loop going. Unacknowledged feedback is redelivered until acknowledged.
+   The poll stays silent until the user acts or the real browser proves meaningful content is inaccessible or unusable - leave it running, never kill it.
+   Cosmetic, intentional, transient, tiny, and uncertain observations remain silent.
+${POLL_WAKE_PATH_RULES.map((rule) => `   ${skillCommandText(rule)}`).join("\n")}
+4. If poll returns \`layout_warnings\`, follow the returned \`next_step\`: repair the severe failure and re-check it before involving the human.
+5. Apply human feedback, then poll again with \`--ack <delivery_id> --agent-reply "<message>"\` to acknowledge that processed delivery, reply in the browser, and keep the loop going under the same foreground-or-verified-wake-path rule. Unacknowledged feedback is redelivered until acknowledged.
 6. Run \`npx -y lavish-axi end <html-file>\` when the review is finished.
-7. If the user sends final feedback while ending the session, apply it and acknowledge its delivery before stopping. A later \`npx -y lavish-axi <html-file>\` refuses to reopen the user-ended session - only pass \`--reopen\` when the user asks for further review or something genuinely important needs their visual attention.
+7. ${POLL_SEND_AND_END_RULE} After final feedback, acknowledge its delivery before stopping. Deliver any remaining updates directly in this conversation.
+
 
 ## Visual guidance
 

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aurora Release Brief</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        color-scheme: dark;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        background: #0b1020;
+        color: #f4f6ff;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at 20% 10%, #263b7c, transparent 40%), #0b1020;
+      }
+      header {
+        height: 62px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 clamp(18px, 5vw, 64px);
+        border-bottom: 1px solid #ffffff22;
+      }
+      .brand {
+        font-weight: 900;
+        letter-spacing: 0.08em;
+      }
+      header span:last-child {
+        color: #a8b3d9;
+        font-size: 12px;
+      }
+      main {
+        width: min(1050px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: clamp(38px, 8vw, 90px) 0;
+      }
+      .eyebrow {
+        color: #a7baff;
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 10px 0 28px;
+        font-size: clamp(38px, 7vw, 76px);
+        line-height: 0.96;
+        letter-spacing: -0.055em;
+      }
+      .stage {
+        max-width: 100%;
+        overflow: hidden;
+        border: 1px solid #ffffff2a;
+        border-radius: 22px;
+        background: #11182c;
+      }
+      .release-card {
+        display: grid;
+        grid-template-columns: 180px minmax(0, 1fr);
+        gap: clamp(22px, 5vw, 60px);
+        align-items: center;
+        min-height: 330px;
+        padding: clamp(28px, 5vw, 62px);
+        animation: arrive 2.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+      }
+      .orb {
+        width: 160px;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: conic-gradient(from 45deg, #8b9eff, #53f3ca, #ffcf68, #8b9eff);
+        box-shadow: 0 0 70px #6379ff66;
+      }
+      h2 {
+        margin: 0;
+        font-size: clamp(25px, 4vw, 42px);
+        letter-spacing: -0.035em;
+      }
+      .release-card p {
+        max-width: 600px;
+        color: #bac2dd;
+        line-height: 1.65;
+      }
+      .tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 20px;
+      }
+      .tags span {
+        padding: 7px 10px;
+        border: 1px solid #7180b0;
+        border-radius: 999px;
+        color: #dce2ff;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      @keyframes arrive {
+        from {
+          transform: translateX(78%);
+          opacity: 0.45;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .release-card {
+          animation: none;
+        }
+      }
+      @media (max-width: 620px) {
+        .release-card {
+          grid-template-columns: 1fr;
+          min-height: 500px;
+        }
+        .orb {
+          width: 122px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header><span class="brand">AURORA</span><span>Release channel · Stable</span></header>
+    <main>
+      <span class="eyebrow">Version 6.4 / Release brief</span>
+      <h1>A calmer way to coordinate complex launches.</h1>
+      <section class="stage">
+        <article class="release-card">
+          <div class="orb" aria-hidden="true"></div>
+          <div>
+            <h2>One launch view, from first check to final handoff</h2>
+            <p>
+              The new release room brings owners, dependencies, and live health into a single focused surface without
+              turning every update into another meeting.
+            </p>
+            <div class="tags">
+              <span>Live dependencies</span><span>Role-aware views</span><span>Automatic handoff notes</span>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

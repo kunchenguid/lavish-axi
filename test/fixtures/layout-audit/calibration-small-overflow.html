@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Small overflow calibration</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        font-family: system-ui, sans-serif;
+        color: #20272c;
+        background: #eff2ee;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      main {
+        width: min(620px, 100%);
+        padding: 28px;
+        background: #fff;
+        border: 1px solid #c9d0c9;
+      }
+      h1 {
+        margin-top: 0;
+      }
+      .sample {
+        width: 260px;
+        max-width: 100%;
+        margin: 18px 0;
+        border: 1px solid #9da89f;
+        padding: 14px;
+        overflow: visible;
+      }
+      .child {
+        padding: 9px;
+        background: #e0eee4;
+        white-space: nowrap;
+      }
+      .three {
+        width: calc(100% + 3px);
+      }
+      .five {
+        width: calc(100% + 5px);
+      }
+      small {
+        color: #657168;
+      }
+    </style>
+  </head>
+  <body>
+    <span class="sr-only"><strong>Accessible calibration context</strong></span>
+    <main>
+      <h1>Subtle edge calibration</h1>
+      <p>
+        The green rows extend beyond their parent content edge by the labelled amount. The five-pixel case is barely
+        perceptible but crosses the current blocking threshold.
+      </p>
+      <section class="sample">
+        <small>3 px extension</small>
+        <div class="child three">Advisory boundary</div>
+      </section>
+      <section class="sample">
+        <small>5 px extension</small>
+        <div class="child five">Blocking boundary</div>
+      </section>
+    </main>
+  </body>
+</html>

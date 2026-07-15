@@ -6,6 +6,7 @@
 
 export const WHITEBOARD_PROMPT_TAG = "whiteboard";
 export const EXCALIDRAW_SCENE_TARGET_TYPE = "excalidraw-scene";
+export const WHITEBOARD_TEXT_METRICS_VERSION = 1;
 
 export const SUMMARY_MAX_LINES = 40;
 export const SUMMARY_MAX_LINE_CHARS = 200;
@@ -62,6 +63,55 @@ export function findDuplicateElementIds(elements) {
     seen.add(id);
   }
   return [...duplicates];
+}
+
+// Excalidraw measures text synchronously while materializing skeletons. Its
+// bundled fonts load asynchronously, so the first pass also gives the caller
+// the concrete text elements needed to request exactly those fonts. Always
+// materialize again after that request so the second pass records the real
+// glyph metrics before anything reaches the visible editor.
+/**
+ * @template T
+ * @template E
+ * @param {T[]} skeletons
+ * @param {{ convert: (skeletons: T[]) => E[], loadFonts: (elements: E[]) => Promise<unknown> }} adapters
+ * @returns {Promise<E[]>}
+ */
+export async function convertExcalidrawSkeletonsAfterFontsLoad(skeletons, { convert, loadFonts }) {
+  const fallbackElements = convert(skeletons);
+  await loadFonts(fallbackElements);
+  return convert(skeletons);
+}
+
+/**
+ * @template E
+ * @param {E[]} elements
+ * @param {{ measure: (element: E) => { width: number, height: number } }} adapters
+ * @returns {{ elements: E[], repaired: number }}
+ */
+export function repairSavedSceneTextMetrics(elements, { measure }) {
+  let repaired = 0;
+  const repairedElements = (Array.isArray(elements) ? elements : []).map((element) => {
+    const candidate = /** @type {Record<string, any>} */ (element);
+    if (!candidate || candidate.type !== "text" || candidate.isDeleted || candidate.autoResize === false)
+      return element;
+    const metrics = measure(element);
+    const width = Math.max(Number(candidate.width) || 0, Number(metrics?.width) || 0);
+    const height = Math.max(Number(candidate.height) || 0, Number(metrics?.height) || 0);
+    if (width <= Number(candidate.width) && height <= Number(candidate.height)) return element;
+    repaired += 1;
+    return { ...element, width, height };
+  });
+  return { elements: repairedElements, repaired };
+}
+
+export function createWhiteboardPersistencePayload(state, scene) {
+  return {
+    sourceHash: String(state?.sceneSourceHash || ""),
+    textMetricsVersion: Math.max(0, Math.floor(Number(state?.textMetricsVersion) || 0)),
+    scene: scene ?? null,
+    baseline: { elements: Array.isArray(state?.baselineElements) ? state.baselineElements : [] },
+  };
 }
 
 function liveElements(elements) {

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Signal / Noise Exhibition</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        font-family: Arial, Helvetica, sans-serif;
+        color: #101010;
+        background: #d8ff3e;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+      main {
+        min-height: 100vh;
+        padding: clamp(20px, 4vw, 54px);
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 24px;
+        overflow: hidden;
+      }
+      .topline,
+      footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .poster {
+        display: grid;
+        place-items: center;
+        min-height: 480px;
+        border-block: 2px solid #101010;
+        overflow: hidden;
+      }
+      .type-stack {
+        display: grid;
+        place-items: center;
+        width: 100%;
+      }
+      .type-stack span {
+        grid-area: 1 / 1;
+        font-size: clamp(66px, 17vw, 230px);
+        line-height: 0.72;
+        font-weight: 1000;
+        letter-spacing: -0.09em;
+        text-transform: uppercase;
+      }
+      .type-stack .signal {
+        color: #101010;
+        transform: translate(-2.4vw, -2.2vw);
+      }
+      .type-stack .noise {
+        color: #ff4f80;
+        transform: translate(2.4vw, 2.2vw);
+        mix-blend-mode: multiply;
+      }
+      .caption {
+        width: min(480px, 92%);
+        align-self: end;
+        justify-self: end;
+        margin-top: 50px;
+        padding: 16px;
+        border: 2px solid #101010;
+        background: #d8ff3e;
+        font-size: 14px;
+        font-weight: 750;
+        line-height: 1.35;
+      }
+      footer span:last-child {
+        text-align: right;
+      }
+      @media (max-width: 520px) {
+        .poster {
+          min-height: 400px;
+        }
+        .type-stack span {
+          font-size: 25vw;
+        }
+        .topline span:nth-child(2) {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="topline">
+        <span>Unit 08 Gallery</span><span>Typography after certainty</span><span>07.18 - 09.02</span>
+      </div>
+      <section class="poster">
+        <div class="type-stack" aria-label="Signal Noise">
+          <span class="signal">Signal</span><span class="noise">Noise</span>
+        </div>
+        <p class="caption">
+          An exhibition about legibility, interference, and the useful tension between what a message says and how it
+          arrives.
+        </p>
+      </section>
+      <footer>
+        <span>Opening night · 6 PM</span><span>28 Mercer Street<br />Free admission</span>
+      </footer>
+    </main>
+  </body>
+</html>
