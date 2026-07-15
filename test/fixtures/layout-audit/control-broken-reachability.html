@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Broken control reachability</title>
+    <style>
+      body {
+        height: 100vh;
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        overflow-y: hidden;
+      }
+      button {
+        position: fixed;
+        width: 40px;
+        height: 40px;
+      }
+      .left {
+        top: 24px;
+        left: -24px;
+      }
+      .below {
+        top: calc(100vh + 12px);
+        right: 24px;
+      }
+      main {
+        height: 100vh;
+      }
+      .locked {
+        position: static;
+        margin-left: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <main><h1>Deployment controls</h1></main>
+    <button class="left" aria-label="Open navigation"></button>
+    <button class="below" aria-label="Confirm deployment"></button>
+    <button class="locked" aria-label="Continue below the fold"></button>
+  </body>
+</html>

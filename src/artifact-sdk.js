@@ -122,107 +122,128 @@ export function isNativeInteractiveControl(el) {
   );
 }
 
-// Wrapped inline text (a bold phrase or code token that breaks across a line) reports one
-// getBoundingClientRect() spanning both lines, so a bounding-box intersection test "overlaps"
-// every element sitting in the reflow gap between the fragments even though nothing is actually
-// drawn there. Comparing real per-line fragments (getClientRects()) instead only flags overlap
-// where rendered pixels of unrelated elements actually collide.
-export function fragmentsSignificantlyOverlap(fragmentsA, fragmentsB, { minAreaRatio = 0.25, minAreaPx = 24 } = {}) {
-  function rectAreaOf(rect) {
-    return Math.max(0, rect.width) * Math.max(0, rect.height);
-  }
-
-  function intersectionAreaOf(a, b) {
-    const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
-    const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
-    return width * height;
-  }
-
-  for (const a of fragmentsA) {
-    const threshold = Math.min(rectAreaOf(a) * minAreaRatio, minAreaPx);
-    for (const b of fragmentsB) {
-      if (intersectionAreaOf(a, b) >= threshold) return true;
-    }
-  }
-  return false;
-}
-
-export function verticalFragmentOverflow(fragments, box) {
-  return fragments.reduce(
-    (largest, fragment) =>
-      Math.max(largest, Number(box.top) - Number(fragment.top), Number(fragment.bottom) - Number(box.bottom)),
-    0,
-  );
-}
-
-// scrollWidth/scrollHeight can only exceed clientWidth/clientHeight when something constrains
-// the box's size (a fixed height/width, or a flex/grid item smaller than its content) - a box
-// that simply grows to fit its content always has scrollHeight === clientHeight, so this never
-// false-positives on ordinary auto-sized elements.
-export function classifyHorizontalOverflow({ scrollWidth, clientWidth, overflowX, hasText, isTruncated, epsilon = 1 }) {
-  const overflowPx = clientWidth > 0 ? scrollWidth - clientWidth : 0;
-  if (overflowPx <= epsilon) return null;
-  const clipsText = hasText && (overflowX === "hidden" || overflowX === "clip") && !isTruncated;
-  return { overflowPx, kind: clipsText ? "clipped-text" : "element-scroll-overflow" };
-}
-
-// A child crossing the parent's content edge can be a deliberate negative-margin accent. Ignore
-// it unless it changes scroll geometry, and leave the remaining heuristic advisory; the separate
-// page-horizontal-overflow finding is the strict signal when content escapes the viewport.
-export function classifyParentOverflow({ overhangPx, scrollWidth, clientWidth, epsilon = 1 }) {
-  const scrollOverflowPx = clientWidth > 0 ? scrollWidth - clientWidth : 0;
-  if (overhangPx <= epsilon || scrollOverflowPx <= epsilon) return null;
-  return { overflowPx: overhangPx, kind: "element-parent-overflow", severity: "warning" };
-}
-
-// Fixed-size badges/buttons/pills usually leave overflow at its default "visible" rather than
-// "hidden" - the text doesn't get clipped, it spills out of the box and overlaps neighboring
-// content, which is just as broken. Scroll dimensions also include font-metric and decorative
-// overflow, so browser callers cross-check real text fragments; one visible line is harmless,
-// while wrapped text outside the box remains a finding. `clips` distinguishes a hard clip from
-// a visible spill, which callers dedup against unconstrained ancestors before reporting.
-export function classifyVerticalOverflow({
-  scrollHeight,
-  clientHeight,
+// A severe text failure needs rendered-fragment proof. Scroll dimensions include harmless font
+// ink, masks, transforms, and offscreen carousel content, so they are never sufficient. A line is
+// severe only when a material portion of a real text fragment crosses its own clipping boundary,
+// or a wrapped line spills substantially outside its own visible box. Explicit truncation and
+// standard accessibility hiding are author intent and stay silent.
+export function classifySevereTextOverflow({
+  fragments,
+  box,
+  overflowX,
   overflowY,
-  hasText,
-  isTruncated,
-  textOverflowPx = undefined,
-  textLineCount = undefined,
+  isTruncated = false,
+  isVisuallyHidden = false,
+  minOutsideRatio = 0.2,
   epsilon = 1,
 }) {
-  const overflowPx = clientHeight > 0 ? scrollHeight - clientHeight : 0;
-  if (overflowPx <= epsilon) return null;
-  const scrollable = overflowY === "auto" || overflowY === "scroll";
-  if (scrollable || !hasText || isTruncated) return null;
-  if (Number.isFinite(textOverflowPx) && textOverflowPx <= epsilon) return null;
-  const clips = overflowY === "hidden" || overflowY === "clip";
-  if (!clips && textLineCount === 1) return null;
-  return { overflowPx, kind: "clipped-text", clips };
+  function overflowOf(fragment, boundary, axis) {
+    const start = Number(axis === "horizontal" ? fragment.left : fragment.top);
+    const end = Number(axis === "horizontal" ? fragment.right : fragment.bottom);
+    const boxStart = Number(axis === "horizontal" ? boundary.left : boundary.top);
+    const boxEnd = Number(axis === "horizontal" ? boundary.right : boundary.bottom);
+    const explicitSize = Number(axis === "horizontal" ? fragment.width : fragment.height);
+    const size = Number.isFinite(explicitSize) ? Math.max(0, explicitSize) : Math.max(0, end - start);
+    if (![start, end, boxStart, boxEnd, size].every(Number.isFinite) || size <= 0) {
+      return { overflowPx: 0, outsideRatio: 0, centerOutside: false };
+    }
+    const before = Math.max(0, boxStart - start);
+    const after = Math.max(0, end - boxEnd);
+    const center = start + size / 2;
+    return {
+      overflowPx: Math.max(before, after),
+      outsideRatio: Math.min(1, (before + after) / size),
+      centerOutside: center < boxStart || center > boxEnd,
+    };
+  }
+
+  if (isTruncated || isVisuallyHidden || !box || !Array.isArray(fragments) || fragments.length === 0) return null;
+
+  const clipsX = overflowX === "hidden" || overflowX === "clip";
+  const clipsY = overflowY === "hidden" || overflowY === "clip";
+  const spillsY = overflowY === "visible";
+  const scrollsX = overflowX === "auto" || overflowX === "scroll";
+  const scrollsY = overflowY === "auto" || overflowY === "scroll";
+  let strongest = null;
+
+  for (const fragment of fragments) {
+    const horizontal = overflowOf(fragment, box, "horizontal");
+    const vertical = overflowOf(fragment, box, "vertical");
+    const severeX =
+      clipsX &&
+      !scrollsX &&
+      horizontal.overflowPx > epsilon &&
+      (horizontal.centerOutside || horizontal.outsideRatio >= minOutsideRatio);
+    const severeY = (clipsY || spillsY) && !scrollsY && vertical.overflowPx > epsilon && vertical.centerOutside;
+    const candidates = [
+      severeX ? { axis: "horizontal", kind: "clipped-text", overflowPx: horizontal.overflowPx } : null,
+      severeY ? { axis: "vertical", kind: "clipped-text", overflowPx: vertical.overflowPx } : null,
+    ];
+    for (const candidate of candidates) {
+      if (candidate && (!strongest || candidate.overflowPx > strongest.overflowPx)) strongest = candidate;
+    }
+  }
+
+  return strongest;
 }
 
-export function resolveVisibleSpillCandidates(spillCandidates, { epsilon = 1 } = {}) {
-  function spillBottomEdge(candidate) {
-    const explicit = Number(candidate.spillBottom);
-    if (Number.isFinite(explicit)) return explicit;
-    const rectBottom = Number(candidate.rect?.bottom);
-    const overflowPx = Number(candidate.overflowPx);
-    if (!Number.isFinite(rectBottom) || !Number.isFinite(overflowPx)) return null;
-    return rectBottom + overflowPx;
+export function classifyMaterialRectEscape({
+  rect,
+  boundary,
+  axes = ["horizontal", "vertical"],
+  minOutsidePx = 4,
+  minOutsideRatio = 0.2,
+}) {
+  let strongest = null;
+  for (const axis of axes) {
+    const start = Number(axis === "horizontal" ? rect?.left : rect?.top);
+    const end = Number(axis === "horizontal" ? rect?.right : rect?.bottom);
+    const boundaryStart = Number(axis === "horizontal" ? boundary?.left : boundary?.top);
+    const boundaryEnd = Number(axis === "horizontal" ? boundary?.right : boundary?.bottom);
+    const explicitSize = Number(axis === "horizontal" ? rect?.width : rect?.height);
+    const size = Number.isFinite(explicitSize) ? Math.max(0, explicitSize) : Math.max(0, end - start);
+    if (![start, end, boundaryStart, boundaryEnd, size].every(Number.isFinite) || size <= 0) continue;
+    const before = Math.max(0, boundaryStart - start);
+    const after = Math.max(0, end - boundaryEnd);
+    const outsidePx = Math.max(before, after);
+    const outsideRatio = Math.min(1, (before + after) / size);
+    const center = start + size / 2;
+    const centerOutside = center < boundaryStart || center > boundaryEnd;
+    if (outsidePx < minOutsidePx || (!centerOutside && outsideRatio < minOutsideRatio)) continue;
+    const candidate = {
+      axis,
+      side: before >= after ? "start" : "end",
+      overflowPx: outsidePx,
+    };
+    if (!strongest || candidate.overflowPx > strongest.overflowPx) strongest = candidate;
   }
+  return strongest;
+}
 
-  function sameSpillEdge(candidate, other) {
-    const candidateBottom = spillBottomEdge(candidate);
-    const otherBottom = spillBottomEdge(other);
-    return candidateBottom !== null && otherBottom !== null && Math.abs(candidateBottom - otherBottom) <= epsilon;
-  }
+// Tiny document deltas are cosmetic. A page failure becomes reportable only when meaningful
+// content materially escapes the usable viewport; callers establish that content evidence from
+// actual visible element bounds.
+export function isMaterialPageOverflow({ overflowPx, viewportWidth, hasEscapedContent }) {
+  const overflow = Number(overflowPx);
+  const width = Number(viewportWidth);
+  const materialThreshold = Math.max(24, Number.isFinite(width) ? width * 0.05 : 24);
+  return Boolean(hasEscapedContent) && Number.isFinite(overflow) && overflow >= materialThreshold;
+}
 
-  return spillCandidates.filter(
-    (candidate) =>
-      !spillCandidates.some(
-        (other) => other.el !== candidate.el && candidate.el.contains(other.el) && sameSpillEdge(candidate, other),
-      ),
+export function findStableLayoutFindings(first, second) {
+  const key = (finding) => `${finding.kind}:${finding.selector}:${finding.axis || ""}`;
+  const firstKeys = new Set(
+    (Array.isArray(first) ? first : []).filter((finding) => finding?.severity === "error").map(key),
   );
+  return (Array.isArray(second) ? second : []).filter(
+    (finding) => finding?.severity === "error" && firstKeys.has(key(finding)),
+  );
+}
+
+export function isNearTotalOcclusion({ occludedSamples, totalSamples, minSamples = 5, minRatio = 0.9 }) {
+  const occluded = Number(occludedSamples);
+  const total = Number(totalSamples);
+  return Number.isFinite(occluded) && Number.isFinite(total) && total >= minSamples && occluded / total >= minRatio;
 }
 
 export function createArtifactSdk(
@@ -702,10 +723,10 @@ export function createArtifactSdk(
     return lines.join("\n");
   }
 
-  const layoutAuditOverflowEpsilon = 1;
-  const layoutAuditErrorOverflowPx = 4;
   const layoutAuditSettleMs = 180;
   const layoutAuditMaxWaitMs = 2000;
+  const layoutAuditAnimationMaxWaitMs = 4000;
+  const layoutAuditStableSampleMs = 120;
   let layoutAuditTimer = 0;
   let layoutAuditRun = 0;
   let lastLayoutAuditSignature = null;
@@ -719,18 +740,49 @@ export function createArtifactSdk(
     return Math.round(Math.max(0, value) * 10) / 10;
   }
 
-  function overflowSeverity(overflowPx) {
-    return overflowPx > layoutAuditErrorOverflowPx ? "error" : "warning";
-  }
-
   function elementText(el) {
     return String(el?.innerText || el?.textContent || "")
       .trim()
       .replace(/\s+/g, " ");
   }
 
-  function hasReadableText(el) {
-    return elementText(el).length > 0;
+  function directText(el) {
+    return [...(el?.childNodes || [])]
+      .filter((node) => node.nodeType === 3)
+      .map((node) => String(node.textContent || ""))
+      .join(" ")
+      .trim()
+      .replace(/\s+/g, " ");
+  }
+
+  function isRequiredControl(el) {
+    if (!el?.matches?.("button,input,select,textarea,a[href],summary,[data-lavish-action],[role]")) return false;
+    if (el.matches("input[type='hidden'],[disabled],[aria-disabled='true']")) return false;
+    if (!el.hasAttribute("role")) return true;
+    return new Set(["button", "link", "checkbox", "radio", "switch", "textbox", "combobox"]).has(
+      String(el.getAttribute("role") || "").toLowerCase(),
+    );
+  }
+
+  function isSemanticTextBoundary(el) {
+    return Boolean(
+      el?.matches?.(
+        "p,h1,h2,h3,h4,h5,h6,button,label,a[href],li,dt,dd,th,td,legend,figcaption,summary,[role='button'],[role='link'],[role='alert'],[role='status']",
+      ),
+    );
+  }
+
+  function hasSemanticTextBoundaryAncestor(el) {
+    let node = el?.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (isSemanticTextBoundary(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function auditedText(el) {
+    return isSemanticTextBoundary(el) ? elementText(el) : directText(el);
   }
 
   function rectArea(rect) {
@@ -739,14 +791,33 @@ export function createArtifactSdk(
 
   function isVisibleForLayoutAudit(el, rect = el.getBoundingClientRect()) {
     if (!el || isLavishUi(el) || rect.width <= 0 || rect.height <= 0) return false;
-    const style = getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const style = getComputedStyle(node);
+      const opacity = Number.parseFloat(style.opacity || "1");
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.contentVisibility === "hidden" ||
+        (Number.isFinite(opacity) && opacity <= 0.01)
+      ) {
+        return false;
+      }
+      node = node.parentElement;
+    }
+    return true;
   }
 
   function isIntentionalHorizontalScroller(el) {
     if (!el || el === document.body || el === document.documentElement) return false;
     const overflowX = getComputedStyle(el).overflowX;
     return overflowX === "auto" || overflowX === "scroll";
+  }
+
+  function isIntentionalVerticalScroller(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const overflowY = getComputedStyle(el).overflowY;
+    return overflowY === "auto" || overflowY === "scroll";
   }
 
   function hasIntentionalHorizontalScrollerAncestor(el) {
@@ -758,241 +829,437 @@ export function createArtifactSdk(
     return false;
   }
 
-  function contentBoxRect(el) {
-    const rect = el.getBoundingClientRect();
-    const style = getComputedStyle(el);
-    const borderLeft = toPixelNumber(style.borderLeftWidth);
-    const borderRight = toPixelNumber(style.borderRightWidth);
-    const borderTop = toPixelNumber(style.borderTopWidth);
-    const borderBottom = toPixelNumber(style.borderBottomWidth);
-    const paddingLeft = toPixelNumber(style.paddingLeft);
-    const paddingRight = toPixelNumber(style.paddingRight);
-    const paddingTop = toPixelNumber(style.paddingTop);
-    const paddingBottom = toPixelNumber(style.paddingBottom);
-    return {
-      left: rect.left + borderLeft + paddingLeft,
-      right: rect.right - borderRight - paddingRight,
-      top: rect.top + borderTop + paddingTop,
-      bottom: rect.bottom - borderBottom - paddingBottom,
-    };
+  function hasReachableVerticalScrollerAncestor(el) {
+    let node = el?.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (isIntentionalVerticalScroller(node)) {
+        const rect = node.getBoundingClientRect();
+        if (rect.bottom > 0 && rect.top < (window.innerHeight || 0)) return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function rootVerticalScrollLocked() {
+    const values = [document.documentElement, document.body]
+      .filter(Boolean)
+      .map((node) => getComputedStyle(node).overflowY);
+    return values.some((value) => value === "hidden" || value === "clip");
   }
 
   function paddingBoxRect(el) {
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
     return {
+      left: rect.left + toPixelNumber(style.borderLeftWidth),
+      right: rect.right - toPixelNumber(style.borderRightWidth),
       top: rect.top + toPixelNumber(style.borderTopWidth),
       bottom: rect.bottom - toPixelNumber(style.borderBottomWidth),
     };
   }
 
-  function elementTextFragments(el) {
-    const fragments = [];
-    const walker = document.createTreeWalker(el, 4);
-    let textNode = walker.nextNode();
-    while (textNode) {
-      if (String(textNode.textContent || "").trim()) {
-        const range = document.createRange();
-        range.selectNodeContents(textNode);
-        fragments.push(...range.getClientRects());
-        range.detach?.();
+  function textNodesForAudit(el) {
+    const descendants = isSemanticTextBoundary(el);
+    const nodes = [];
+    const pending = [...(el?.childNodes || [])];
+    while (pending.length > 0) {
+      const node = pending.shift();
+      if (!node) continue;
+      if (node.nodeType === 3) {
+        if (String(node.textContent || "").trim()) nodes.push(node);
+      } else if (descendants && node.nodeType === 1) {
+        pending.unshift(...(node.childNodes || []));
       }
-      textNode = walker.nextNode();
+    }
+    return nodes;
+  }
+
+  function textFragmentsForAudit(el) {
+    const fragments = [];
+    for (const textNode of textNodesForAudit(el)) {
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      fragments.push(...[...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0));
+      range.detach?.();
     }
     return fragments;
-  }
-
-  function renderedTextLineCount(fragments) {
-    const lineTops = [];
-    for (const fragment of fragments) {
-      const top = Number(fragment.top);
-      if (Number.isFinite(top) && !lineTops.some((lineTop) => Math.abs(lineTop - top) <= 1)) lineTops.push(top);
-    }
-    return lineTops.length;
-  }
-
-  function collectLayoutAuditElements() {
-    const elements = [];
-
-    function walk(el) {
-      if (!(el instanceof Element) || isLavishUi(el)) return;
-      if (isIntentionalHorizontalScroller(el)) return;
-      elements.push(el);
-      for (const child of el.children) walk(child);
-    }
-
-    if (document.body) walk(document.body);
-    return elements;
-  }
-
-  function pushLayoutFinding(findings, seen, finding) {
-    const selectorValue = finding.selector || "";
-    const key = `${finding.kind}:${selectorValue}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    findings.push({
-      selector: selectorValue,
-      kind: String(finding.kind || "layout-warning"),
-      overflowPx: roundedOverflowPx(finding.overflowPx),
-      viewportWidth: Math.round(Number(finding.viewportWidth) || window.innerWidth || 0),
-      severity: finding.severity === "warning" ? "warning" : "error",
-    });
   }
 
   function isIntentionalTextTruncation(style) {
     return style.textOverflow === "ellipsis" || Number.parseInt(style.webkitLineClamp || "0", 10) > 0;
   }
 
-  function auditElementOverflow(el, viewportWidth, findings, seen, spillCandidates) {
-    if (el === document.body || el === document.documentElement || hasIntentionalHorizontalScrollerAncestor(el)) return;
+  function hasVisualMask(style) {
+    const maskImage = String(style.maskImage || style.webkitMaskImage || "none").toLowerCase();
+    const clipPath = String(style.clipPath || "none").toLowerCase();
+    return (maskImage !== "none" && maskImage !== "") || (clipPath !== "none" && clipPath !== "");
+  }
+
+  function isRoundedOverflowMask(style) {
+    const clips =
+      style.overflowX === "hidden" ||
+      style.overflowX === "clip" ||
+      style.overflowY === "hidden" ||
+      style.overflowY === "clip";
+    if (!clips) return false;
+    return [
+      style.borderTopLeftRadius,
+      style.borderTopRightRadius,
+      style.borderBottomRightRadius,
+      style.borderBottomLeftRadius,
+    ].some((value) => toPixelNumber(value) > 0);
+  }
+
+  function isDiagramLayoutElement(el) {
+    return Boolean(el?.closest?.(".mermaid,svg,[data-lavish-ui]"));
+  }
+
+  function hasVisualMaskAncestor(el) {
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const style = getComputedStyle(node);
+      if (hasVisualMask(style) || isRoundedOverflowMask(style)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function clippingBoundariesFor(el) {
+    const boundaries = [];
+    let node = el?.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      const style = getComputedStyle(node);
+      const axes = [];
+      if (style.overflowX === "hidden" || style.overflowX === "clip") axes.push("horizontal");
+      if (style.overflowY === "hidden" || style.overflowY === "clip") axes.push("vertical");
+      if (axes.length > 0 && !hasVisualMask(style) && !isRoundedOverflowMask(style)) {
+        boundaries.push({ el: node, box: paddingBoxRect(node), axes });
+      }
+      node = node.parentElement;
+    }
+    return boundaries;
+  }
+
+  function isStandardVisuallyHidden(el, style, rect) {
+    const positioned = style.position === "absolute" || style.position === "fixed";
+    const clipped = style.overflowX === "hidden" || style.overflowX === "clip";
+    const legacyClip = String(style.clip || "").toLowerCase();
+    const clipPath = String(style.clipPath || "").toLowerCase();
+    const hasClip = legacyClip !== "auto" || (clipPath !== "none" && clipPath !== "");
+    return positioned && clipped && rect.width <= 2 && rect.height <= 2 && (style.whiteSpace === "nowrap" || hasClip);
+  }
+
+  function hasStandardVisuallyHiddenAncestor(el) {
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const rect = node.getBoundingClientRect();
+      if (isStandardVisuallyHidden(node, getComputedStyle(node), rect)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function isExcludedLayoutAuditElement(el) {
+    return isDiagramLayoutElement(el) || hasVisualMaskAncestor(el) || hasStandardVisuallyHiddenAncestor(el);
+  }
+
+  function collectLayoutAuditElements() {
+    return [...(document.body?.querySelectorAll("*") || [])]
+      .filter((el) => el instanceof Element && !isLavishUi(el))
+      .slice(0, 800);
+  }
+
+  function pushLayoutFinding(findings, seen, finding) {
+    if (finding.severity !== "error") return;
+    const selectorValue = finding.selector || "";
+    const axis = finding.axis === "vertical" ? "vertical" : "horizontal";
+    const key = `${finding.kind}:${selectorValue}:${axis}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    findings.push({
+      selector: selectorValue,
+      kind: String(finding.kind || "layout-failure"),
+      axis,
+      overflowPx: roundedOverflowPx(finding.overflowPx),
+      viewportWidth: Math.round(Number(finding.viewportWidth) || window.innerWidth || 0),
+      severity: "error",
+    });
+  }
+
+  function auditSevereTextOverflow(el, viewportWidth, findings, seen, animationTargets, failedRoots) {
+    if (el === document.body || el === document.documentElement) return;
+    if (isExcludedLayoutAuditElement(el)) return;
+    if (!auditedText(el)) return;
+    if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return;
+    if (failedRoots.some((root) => root.contains(el))) return;
+    if (isAnimationAssociatedWithElement(el, animationTargets)) return;
 
     const rect = el.getBoundingClientRect();
     if (!isVisibleForLayoutAudit(el, rect)) return;
-
     const style = getComputedStyle(el);
-    const hasText = hasReadableText(el);
-    const isTruncated = isIntentionalTextTruncation(style);
-
-    const horizontal = classifyHorizontalOverflow({
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
+    const fragments = textFragmentsForAudit(el);
+    let severe = classifySevereTextOverflow({
+      fragments,
+      box: paddingBoxRect(el),
       overflowX: style.overflowX,
-      hasText,
-      isTruncated,
-      epsilon: layoutAuditOverflowEpsilon,
-    });
-    if (horizontal) {
-      pushLayoutFinding(findings, seen, {
-        selector: selector(el),
-        kind: horizontal.kind,
-        overflowPx: horizontal.overflowPx,
-        viewportWidth,
-        severity: horizontal.kind === "clipped-text" ? "error" : overflowSeverity(horizontal.overflowPx),
-      });
-    }
-
-    const verticallyScrollable = style.overflowY === "auto" || style.overflowY === "scroll";
-    const needsVerticalTextCheck =
-      hasText &&
-      !isTruncated &&
-      !verticallyScrollable &&
-      el.clientHeight > 0 &&
-      el.scrollHeight - el.clientHeight > layoutAuditOverflowEpsilon;
-    const textFragments = needsVerticalTextCheck ? elementTextFragments(el) : [];
-    const vertical = classifyVerticalOverflow({
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
       overflowY: style.overflowY,
-      hasText,
-      isTruncated,
-      textOverflowPx: textFragments.length ? verticalFragmentOverflow(textFragments, paddingBoxRect(el)) : undefined,
-      textLineCount: renderedTextLineCount(textFragments),
-      epsilon: layoutAuditOverflowEpsilon,
+      isTruncated: isIntentionalTextTruncation(style),
+      isVisuallyHidden: false,
     });
-    if (vertical) {
-      if (vertical.clips) {
-        pushLayoutFinding(findings, seen, {
-          selector: selector(el),
-          kind: vertical.kind,
-          overflowPx: vertical.overflowPx,
-          viewportWidth,
-          severity: "error",
-        });
-      } else {
-        spillCandidates.push({
-          el,
-          selector: selector(el),
-          overflowPx: vertical.overflowPx,
-          viewportWidth,
-          spillBottom: rect.bottom + vertical.overflowPx,
-        });
+    let failureRoot = el;
+    for (const boundary of clippingBoundariesFor(el)) {
+      const ancestorFailure = classifySevereTextOverflow({
+        fragments,
+        box: boundary.box,
+        overflowX: boundary.axes.includes("horizontal") ? "hidden" : "auto",
+        overflowY: boundary.axes.includes("vertical") ? "hidden" : "auto",
+        isTruncated: isIntentionalTextTruncation(style),
+        isVisuallyHidden: false,
+      });
+      if (ancestorFailure && (!severe || ancestorFailure.overflowPx > severe.overflowPx)) {
+        severe = ancestorFailure;
+        failureRoot = boundary.el;
       }
     }
+    if (!severe) return;
 
-    const parent = el.parentElement;
-    if (!parent || parent === document.body || parent === document.documentElement) return;
-    if (hasIntentionalHorizontalScrollerAncestor(parent)) return;
-
-    const parentBox = contentBoxRect(parent);
-    const parentOverflowPx = rect.right - parentBox.right;
-    const parentFinding = classifyParentOverflow({
-      overhangPx: parentOverflowPx,
-      scrollWidth: parent.scrollWidth,
-      clientWidth: parent.clientWidth,
-      epsilon: layoutAuditOverflowEpsilon,
+    failedRoots.push(failureRoot);
+    pushLayoutFinding(findings, seen, {
+      selector: selector(failureRoot),
+      kind: severe.kind,
+      axis: severe.axis,
+      overflowPx: severe.overflowPx,
+      viewportWidth,
+      severity: "error",
     });
-    if (parentFinding && rectArea(rect) > 1) {
-      pushLayoutFinding(findings, seen, {
-        selector: selector(el),
-        kind: parentFinding.kind,
-        overflowPx: parentFinding.overflowPx,
-        viewportWidth,
-        severity: parentFinding.severity,
-      });
-    }
   }
 
-  function resolveSpillCandidates(spillCandidates, findings, seen) {
-    for (const candidate of resolveVisibleSpillCandidates(spillCandidates, { epsilon: layoutAuditOverflowEpsilon })) {
+  function materiallyEscapesViewport(rect, viewportWidth, minOutsidePx) {
+    return classifyMaterialRectEscape({
+      rect,
+      boundary: { left: 0, right: viewportWidth, top: 0, bottom: window.innerHeight || 0 },
+      axes: ["horizontal"],
+      minOutsidePx,
+    });
+  }
+
+  function elementHasMaterialViewportEscape(el, viewportWidth, animationTargets) {
+    if (hasIntentionalHorizontalScrollerAncestor(el)) return false;
+    if (isAnimationAssociatedWithElement(el, animationTargets)) return false;
+    if (isExcludedLayoutAuditElement(el)) return false;
+    if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return false;
+
+    const rect = el.getBoundingClientRect();
+    if (!isVisibleForLayoutAudit(el, rect)) return false;
+    const style = getComputedStyle(el);
+    const positioned = style.position === "absolute" || style.position === "fixed" || style.position === "sticky";
+    if (positioned && !isRequiredControl(el)) return false;
+    if (isRequiredControl(el)) {
+      return materiallyEscapesViewport(rect, viewportWidth, 4)?.side === "end";
+    }
+    if (!auditedText(el)) return false;
+    const materialPx = Math.max(24, viewportWidth * 0.05);
+    return textFragmentsForAudit(el).some(
+      (fragment) => materiallyEscapesViewport(fragment, viewportWidth, materialPx)?.side === "end",
+    );
+  }
+
+  function auditUnreachableLeftText(el, viewportWidth, findings, seen, animationTargets) {
+    if (hasIntentionalHorizontalScrollerAncestor(el)) return;
+    if (isAnimationAssociatedWithElement(el, animationTargets)) return;
+    if (isExcludedLayoutAuditElement(el)) return;
+    if (!isSemanticTextBoundary(el) && hasSemanticTextBoundaryAncestor(el)) return;
+    if (!auditedText(el)) return;
+    const rect = el.getBoundingClientRect();
+    if (!isVisibleForLayoutAudit(el, rect)) return;
+    const style = getComputedStyle(el);
+    if (["absolute", "fixed", "sticky"].includes(style.position) && !isRequiredControl(el)) return;
+    const materialPx = Math.max(24, viewportWidth * 0.05);
+    let escape = null;
+    for (const fragment of textFragmentsForAudit(el)) {
+      const candidate = materiallyEscapesViewport(fragment, viewportWidth, materialPx);
+      if (candidate?.side === "start" && (!escape || candidate.overflowPx > escape.overflowPx)) escape = candidate;
+    }
+    if (!escape) return;
+    pushLayoutFinding(findings, seen, {
+      selector: selector(el),
+      kind: "viewport-unreachable-content",
+      axis: "horizontal",
+      overflowPx: escape.overflowPx,
+      viewportWidth,
+      severity: "error",
+    });
+  }
+
+  function auditRequiredControlBounds(el, viewportWidth, findings, seen, animationTargets, failedRoots) {
+    if (!isRequiredControl(el) || isExcludedLayoutAuditElement(el)) return;
+    if (isAnimationAssociatedWithElement(el, animationTargets)) return;
+    const rect = el.getBoundingClientRect();
+    if (!isVisibleForLayoutAudit(el, rect)) return;
+
+    let clipped = null;
+    for (const boundary of clippingBoundariesFor(el)) {
+      const escape = classifyMaterialRectEscape({ rect, boundary: boundary.box, axes: boundary.axes });
+      if (escape && (!clipped || escape.overflowPx > clipped.escape.overflowPx)) clipped = { boundary, escape };
+    }
+    if (clipped && !failedRoots.some((root) => root === clipped.boundary.el || root.contains(clipped.boundary.el))) {
+      failedRoots.push(clipped.boundary.el);
       pushLayoutFinding(findings, seen, {
-        selector: candidate.selector,
-        kind: "clipped-text",
-        overflowPx: candidate.overflowPx,
-        viewportWidth: candidate.viewportWidth,
+        selector: selector(clipped.boundary.el),
+        kind: "clipped-control",
+        axis: clipped.escape.axis,
+        overflowPx: clipped.escape.overflowPx,
+        viewportWidth,
+        severity: "error",
+      });
+    }
+
+    const horizontal = hasIntentionalHorizontalScrollerAncestor(el)
+      ? null
+      : materiallyEscapesViewport(rect, viewportWidth, 4);
+    if (horizontal?.side === "start") {
+      pushLayoutFinding(findings, seen, {
+        selector: selector(el),
+        kind: "viewport-unreachable-control",
+        axis: "horizontal",
+        overflowPx: horizontal.overflowPx,
+        viewportWidth,
+        severity: "error",
+      });
+    }
+
+    const style = getComputedStyle(el);
+    const fixedToViewport = style.position === "fixed" || style.position === "sticky";
+    const lockedToViewport = rootVerticalScrollLocked() && !hasReachableVerticalScrollerAncestor(el);
+    const scrollY = Number(window.scrollY || window.pageYOffset || 0);
+    const verticalRect =
+      fixedToViewport || lockedToViewport
+        ? rect
+        : {
+            top: rect.top + scrollY,
+            bottom: rect.bottom + scrollY,
+            height: rect.height,
+          };
+    const verticalBoundary =
+      fixedToViewport || lockedToViewport
+        ? { top: 0, bottom: window.innerHeight || 0 }
+        : { top: 0, bottom: document.documentElement.scrollHeight };
+    const vertical = classifyMaterialRectEscape({
+      rect: verticalRect,
+      boundary: verticalBoundary,
+      axes: ["vertical"],
+    });
+    if (vertical) {
+      pushLayoutFinding(findings, seen, {
+        selector: selector(el),
+        kind: "viewport-unreachable-control",
+        axis: "vertical",
+        overflowPx: vertical.overflowPx,
+        viewportWidth,
         severity: "error",
       });
     }
   }
 
-  // getClientRects() returns one rect per rendered line fragment; falls back to the bounding
-  // rect for elements the browser doesn't fragment (e.g. replaced elements).
-  function elementLineFragments(el) {
-    const rects = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0);
-    if (rects.length) return rects;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 ? [rect] : [];
+  function backgroundIsOpaque(el) {
+    const style = getComputedStyle(el);
+    if (Number.parseFloat(style.opacity || "1") < 0.95) return false;
+    const color = String(style.backgroundColor || "")
+      .trim()
+      .toLowerCase();
+    if (!color || color === "transparent") return false;
+    const rgba = color.match(/^rgba?\(([^)]+)\)$/);
+    if (!rgba) return false;
+    const parts = rgba[1].split(/[\s,/]+/).filter(Boolean);
+    if (parts.length < 4) return true;
+    const alpha = Number(parts[3]);
+    return Number.isFinite(alpha) && alpha >= 0.95;
   }
 
-  function auditOverlappingText(elements, viewportWidth, findings, seen) {
+  function effectiveOpacityTo(node, stopParent) {
+    let opacity = 1;
+    let current = node;
+    while (current && current !== stopParent) {
+      const value = Number.parseFloat(getComputedStyle(current).opacity || "1");
+      if (Number.isFinite(value)) opacity *= value;
+      current = current.parentElement;
+    }
+    return opacity;
+  }
+
+  function opaqueSiblingBlocker(el, point, animationTargets) {
+    const top = document.elementFromPoint(point.x, point.y);
+    if (!(top instanceof Element) || top === el || el.contains(top) || top.contains(el) || isLavishUi(top)) return null;
+
+    const targetAncestors = [];
+    let targetNode = el;
+    while (targetNode && targetNode !== document.body && targetNode !== document.documentElement) {
+      targetAncestors.push(targetNode);
+      targetNode = targetNode.parentElement;
+    }
+
+    let node = top;
+    let foundOpaqueSurface = false;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (isAnimationAssociatedWithElement(node, animationTargets)) return null;
+      if (backgroundIsOpaque(node)) foundOpaqueSurface = true;
+      const siblingOf = targetAncestors.find((target) => target.parentElement === node.parentElement);
+      if (siblingOf && foundOpaqueSurface && effectiveOpacityTo(top, node.parentElement) >= 0.95) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function fragmentSamplePoints(fragment) {
+    const xs = [0.2, 0.5, 0.8];
+    const ys = [0.2, 0.5, 0.8];
+    return xs.flatMap((xRatio) =>
+      ys.map((yRatio) => ({
+        x: fragment.left + fragment.width * xRatio,
+        y: fragment.top + fragment.height * yRatio,
+      })),
+    );
+  }
+
+  function auditSevereTextOcclusion(elements, viewportWidth, findings, seen, animationTargets) {
     const candidates = elements
-      .filter((el) => el.children.length === 0 && hasReadableText(el))
+      .filter((el) => !isExcludedLayoutAuditElement(el))
+      .filter((el) => {
+        const text = auditedText(el);
+        return text.length >= 8 || (text.length > 0 && isRequiredControl(el));
+      })
+      .filter((el) => isSemanticTextBoundary(el) || !hasSemanticTextBoundaryAncestor(el))
       .filter((el) => isVisibleForLayoutAudit(el))
       .filter((el) => getComputedStyle(el).position === "static")
+      .filter((el) => !isAnimationAssociatedWithElement(el, animationTargets))
       .slice(0, 200);
+    const failedRoots = [];
 
     for (const el of candidates) {
-      const fragments = elementLineFragments(el);
-      let flagged = false;
-
-      for (const rect of fragments) {
-        if (flagged) break;
-        if (rectArea(rect) < 16) continue;
-        const points = [
-          { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
-          { x: rect.left + Math.min(4, rect.width / 2), y: rect.top + Math.min(4, rect.height / 2) },
-          { x: rect.right - Math.min(4, rect.width / 2), y: rect.bottom - Math.min(4, rect.height / 2) },
-        ];
-        for (const point of points) {
+      if (failedRoots.some((root) => root.contains(el))) continue;
+      const blockers = new Map();
+      let totalSamples = 0;
+      for (const fragment of textFragmentsForAudit(el)) {
+        if (rectArea(fragment) < 16) continue;
+        for (const point of fragmentSamplePoints(fragment)) {
           if (point.x < 0 || point.y < 0 || point.x > viewportWidth || point.y > window.innerHeight) continue;
-          const top = document.elementFromPoint(point.x, point.y);
-          if (!(top instanceof Element) || top === el || el.contains(top) || top.contains(el) || isLavishUi(top))
-            continue;
-          if (hasIntentionalHorizontalScrollerAncestor(top)) continue;
-          if (getComputedStyle(top).position !== "static") continue;
-          if (!fragmentsSignificantlyOverlap([rect], elementLineFragments(top))) continue;
-          pushLayoutFinding(findings, seen, {
-            selector: selector(el),
-            kind: "overlapping-text",
-            overflowPx: 0,
-            viewportWidth,
-            // Heuristic and sampling-based even after fragment-aware matching, so it stays a
-            // warning rather than holding the open-time gate the way a real clip/overflow does.
-            severity: "warning",
-          });
-          flagged = true;
-          break;
+          totalSamples += 1;
+          const blocker = opaqueSiblingBlocker(el, point, animationTargets);
+          if (blocker) blockers.set(blocker, (blockers.get(blocker) || 0) + 1);
         }
       }
+      const occludedSamples = Math.max(0, ...blockers.values());
+      if (!isNearTotalOcclusion({ occludedSamples, totalSamples })) continue;
+      failedRoots.push(el);
+      pushLayoutFinding(findings, seen, {
+        selector: selector(el),
+        kind: "overlapping-text",
+        axis: "horizontal",
+        overflowPx: 0,
+        viewportWidth,
+        severity: "error",
+      });
     }
   }
 
@@ -1000,22 +1267,32 @@ export function createArtifactSdk(
     const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
     const findings = [];
     const seen = new Set();
+    const elements = collectLayoutAuditElements();
+    const animationTargets = activeAnimationTargets();
     const pageOverflowPx = document.documentElement.scrollWidth - viewportWidth;
-    if (pageOverflowPx > layoutAuditOverflowEpsilon) {
+    const escapedContent = elements.some((el) => elementHasMaterialViewportEscape(el, viewportWidth, animationTargets));
+    if (isMaterialPageOverflow({ overflowPx: pageOverflowPx, viewportWidth, hasEscapedContent: escapedContent })) {
       pushLayoutFinding(findings, seen, {
         selector: "html",
         kind: "page-horizontal-overflow",
+        axis: "horizontal",
         overflowPx: pageOverflowPx,
         viewportWidth,
-        severity: overflowSeverity(pageOverflowPx),
+        severity: "error",
       });
     }
 
-    const elements = collectLayoutAuditElements();
-    const spillCandidates = [];
-    for (const el of elements) auditElementOverflow(el, viewportWidth, findings, seen, spillCandidates);
-    resolveSpillCandidates(spillCandidates, findings, seen);
-    auditOverlappingText(elements, viewportWidth, findings, seen);
+    const failedClippingRoots = [];
+    for (const el of elements) {
+      auditRequiredControlBounds(el, viewportWidth, findings, seen, animationTargets, failedClippingRoots);
+    }
+    for (const el of elements) {
+      auditUnreachableLeftText(el, viewportWidth, findings, seen, animationTargets);
+    }
+    for (const el of elements) {
+      auditSevereTextOverflow(el, viewportWidth, findings, seen, animationTargets, failedClippingRoots);
+    }
+    auditSevereTextOcclusion(elements, viewportWidth, findings, seen, animationTargets);
     return findings;
   }
 
@@ -1078,23 +1355,76 @@ export function createArtifactSdk(
     });
   }
 
+  function animationTarget(animation) {
+    const target = /** @type {any} */ (animation.effect)?.target;
+    if (target instanceof Element) return target;
+    return target?.element instanceof Element ? target.element : null;
+  }
+
+  function activeDocumentAnimations() {
+    if (typeof document.getAnimations !== "function") return [];
+    return document
+      .getAnimations()
+      .filter((animation) => ["running", "pending"].includes(String(animation.playState)))
+      .filter((animation) => !isLavishUi(animationTarget(animation)));
+  }
+
+  function activeAnimationTargets() {
+    return activeDocumentAnimations().map(animationTarget).filter(Boolean);
+  }
+
+  function isAnimationAssociatedWithElement(el, targets) {
+    return targets.some((target) => target === el || target.contains(el) || el.contains(target));
+  }
+
+  async function waitForFiniteAnimationsSettle() {
+    const finite = activeDocumentAnimations().filter((animation) => {
+      const endTime = Number(animation.effect?.getComputedTiming?.().endTime);
+      return Number.isFinite(endTime);
+    });
+    if (finite.length === 0) return;
+
+    let settled = false;
+    await Promise.race([
+      Promise.all(finite.map((animation) => animation.finished.catch(() => {}))).then(() => {
+        settled = true;
+      }),
+      new Promise((resolve) => window.setTimeout(resolve, layoutAuditAnimationMaxWaitMs)),
+    ]);
+    if (!settled) {
+      for (const animation of finite) animation.finished.then(scheduleLayoutAudit, scheduleLayoutAudit);
+    }
+  }
+
+  function publishLayoutAudit(layout_warnings) {
+    const severe = layout_warnings.filter((finding) => finding?.severity === "error");
+    const signature = JSON.stringify(severe);
+    if (signature === lastLayoutAuditSignature) return;
+    lastLayoutAuditSignature = signature;
+    parent.postMessage({ type: "lavish:layoutWarnings", layout_warnings: severe }, "*");
+  }
+
   async function runLayoutAudit(runId) {
     await waitForDocumentFontsReady();
     await waitForResizeObserverSettle();
+    await waitForFiniteAnimationsSettle();
     await waitForAnimationFrames(2);
     if (runId !== layoutAuditRun) return;
-    const layout_warnings = auditLayout();
-    const signature = JSON.stringify(layout_warnings);
-    if (signature === lastLayoutAuditSignature) return;
-    lastLayoutAuditSignature = signature;
-    parent.postMessage({ type: "lavish:layoutWarnings", layout_warnings }, "*");
+
+    const first = auditLayout();
+    await new Promise((resolve) => window.setTimeout(resolve, layoutAuditStableSampleMs));
+    await waitForAnimationFrames(2);
+    if (runId !== layoutAuditRun) return;
+    publishLayoutAudit(findStableLayoutFindings(first, auditLayout()));
   }
 
   function scheduleLayoutAudit() {
     if (layoutAuditTimer) window.clearTimeout(layoutAuditTimer);
     const runId = ++layoutAuditRun;
     layoutAuditTimer = window.setTimeout(() => {
-      runLayoutAudit(runId).catch(() => {});
+      runLayoutAudit(runId).catch(() => {
+        if (runId === layoutAuditRun) publishLayoutAudit([]);
+      });
     }, 50);
   }
 
@@ -1102,6 +1432,8 @@ export function createArtifactSdk(
     scheduleLayoutAudit();
     window.addEventListener("load", scheduleLayoutAudit, { once: true });
     window.addEventListener("resize", scheduleLayoutAudit, { passive: true });
+    window.addEventListener("animationend", scheduleLayoutAudit, { passive: true });
+    window.addEventListener("transitionend", scheduleLayoutAudit, { passive: true });
   }
 
   function ensureShadow() {

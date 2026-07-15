@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.42](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.41...lavish-axi-v0.1.42) (2026-07-14)
+
+
+### Bug Fixes
+
+* **skill:** require observable poll wake paths ([#174](https://github.com/kunchenguid/lavish-axi/issues/174)) ([15979b6](https://github.com/kunchenguid/lavish-axi/commit/15979b62e6bf57f99fdbc95015e5359363168303))
+
+## [0.1.41](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.40...lavish-axi-v0.1.41) (2026-07-14)
+
+
+### Bug Fixes
+
+* **cli:** keep Codex polls attached to active turns ([#165](https://github.com/kunchenguid/lavish-axi/issues/165)) ([ab31405](https://github.com/kunchenguid/lavish-axi/commit/ab31405882f950696a2ddc79deb90d4caada7543))
+* **whiteboard:** prevent Excalidraw label clipping ([#173](https://github.com/kunchenguid/lavish-axi/issues/173)) ([ffe54f0](https://github.com/kunchenguid/lavish-axi/commit/ffe54f01c305b9732b8795695dc3706c5a8dccc3))
+
 ## [0.1.40](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.39...lavish-axi-v0.1.40) (2026-07-11)
 
 

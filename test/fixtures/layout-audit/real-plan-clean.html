@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Launch Plan</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        color: #1e2931;
+        background: #f3f6f5;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+      main {
+        width: min(1080px, calc(100% - 32px));
+        margin: auto;
+        padding: clamp(30px, 6vw, 72px) 0;
+      }
+      .eyebrow {
+        color: #a14e2a;
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      h1 {
+        max-width: 760px;
+        margin: 10px 0 14px;
+        font:
+          600 clamp(38px, 6vw, 68px)/1 Georgia,
+          serif;
+        letter-spacing: -0.045em;
+      }
+      .lede {
+        max-width: 680px;
+        color: #59666d;
+        line-height: 1.6;
+      }
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin: 30px 0;
+      }
+      .summary div,
+      .phase {
+        min-width: 0;
+        border: 1px solid #cad4d1;
+        background: #fff;
+        padding: 18px;
+      }
+      .summary span {
+        display: block;
+        color: #6d797e;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .summary strong {
+        display: block;
+        margin-top: 8px;
+        font:
+          600 25px Georgia,
+          serif;
+      }
+      .timeline {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .phase {
+        border-top: 4px solid #2e6d61;
+      }
+      .phase small {
+        color: #a14e2a;
+        font-weight: 900;
+      }
+      .phase h2 {
+        margin: 12px 0 8px;
+        font-size: 18px;
+      }
+      .phase p {
+        margin: 0;
+        color: #617078;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .task {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid #e2e8e6;
+        font-size: 12px;
+      }
+      .dot {
+        flex: none;
+        width: 8px;
+        height: 8px;
+        margin-top: 4px;
+        border-radius: 50%;
+        background: #2e6d61;
+      }
+      .table-wrap {
+        margin-top: 28px;
+        max-width: 100%;
+        overflow-x: auto;
+        border: 1px solid #cad4d1;
+        background: #fff;
+      }
+      table {
+        width: 100%;
+        min-width: 640px;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 12px 14px;
+        border-bottom: 1px solid #e1e7e5;
+        text-align: left;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+      th {
+        color: #6a767b;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+      }
+      @media (max-width: 680px) {
+        .summary {
+          grid-template-columns: 1fr;
+        }
+        .timeline {
+          grid-template-columns: 1fr;
+        }
+        h1 {
+          font-size: 43px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span class="eyebrow">Atlas rollout / working plan</span>
+      <h1>Ship the new workspace without surprising the teams who depend on it.</h1>
+      <p class="lede">
+        Three deliberate phases keep migration, enablement, and launch-day support visible while each owner retains a
+        manageable scope.
+      </p>
+      <section class="summary">
+        <div><span>Target date</span><strong>August 18</strong></div>
+        <div><span>Workstreams</span><strong>6 active</strong></div>
+        <div><span>Readiness</span><strong>82%</strong></div>
+      </section>
+      <section class="timeline">
+        <article class="phase">
+          <small>01 · This week</small>
+          <h2>Prove the migration</h2>
+          <p>Run representative accounts through the dry run and close every data-integrity exception.</p>
+          <div class="task"><span class="dot"></span><span>Owner: Data platform · due Friday</span></div>
+        </article>
+        <article class="phase">
+          <small>02 · Next week</small>
+          <h2>Prepare the teams</h2>
+          <p>Publish role-specific guidance and rehearse the handoff with support and success.</p>
+          <div class="task"><span class="dot"></span><span>Owner: Enablement · due August 9</span></div>
+        </article>
+        <article class="phase">
+          <small>03 · Launch</small>
+          <h2>Operate the room</h2>
+          <p>Keep one decision log, explicit escalation paths, and a staffed rollback window.</p>
+          <div class="task"><span class="dot"></span><span>Owner: Release lead · due August 18</span></div>
+        </article>
+      </section>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Dependency</th>
+              <th>Owner</th>
+              <th>Status</th>
+              <th>Next evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Historical import</td>
+              <td>Data platform</td>
+              <td>Ready</td>
+              <td>Dry-run report</td>
+            </tr>
+            <tr>
+              <td>Support routing</td>
+              <td>Operations</td>
+              <td>In progress</td>
+              <td>Escalation drill</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </body>
+</html>

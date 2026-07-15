@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Field Notes: Designing for Quiet</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        color: #2a231b;
+        background: #eee7db;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+      nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px clamp(18px, 5vw, 70px);
+        border-bottom: 1px solid #cfc2ad;
+        font-size: 13px;
+        font-weight: 750;
+        letter-spacing: 0.04em;
+      }
+      .logo {
+        font-family: Georgia, serif;
+        font-size: 21px;
+        letter-spacing: -0.02em;
+      }
+      main {
+        width: min(760px, calc(100% - 36px));
+        margin: clamp(34px, 7vw, 92px) auto 80px;
+      }
+      .kicker {
+        color: #9b3f28;
+        font-size: 12px;
+        font-weight: 850;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 12px 0 20px;
+        font:
+          500 clamp(42px, 8vw, 82px)/0.95 Georgia,
+          serif;
+        letter-spacing: -0.055em;
+      }
+      .deck {
+        max-width: 650px;
+        margin: 0;
+        color: #5d5347;
+        font:
+          20px/1.55 Georgia,
+          serif;
+      }
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 18px;
+        margin: 28px 0 40px;
+        padding-bottom: 22px;
+        border-bottom: 1px solid #cfc2ad;
+        color: #6d6255;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .article-card {
+        padding: clamp(22px, 5vw, 44px);
+        border: 1px solid #d1c5b4;
+        background: #faf7f0;
+        box-shadow: 0 18px 60px rgb(66 50 32 / 8%);
+      }
+      .article-card p {
+        margin: 0 0 1.3em;
+        font:
+          18px/1.75 Georgia,
+          serif;
+      }
+      .article-card h2 {
+        margin: 1.8em 0 0.55em;
+        font:
+          600 29px/1.1 Georgia,
+          serif;
+      }
+      .article-card code {
+        padding: 1px 5px;
+        background: #eee4d3;
+        border-radius: 4px;
+        font:
+          0.85em ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      .full-bleed {
+        width: calc(100% + clamp(44px, 10vw, 88px));
+        margin: 34px calc(clamp(22px, 5vw, 44px) * -1);
+        padding: 30px clamp(22px, 5vw, 44px);
+        background: #173f34;
+        color: #f6eedf;
+      }
+      .full-bleed blockquote {
+        margin: 0;
+        font:
+          31px/1.2 Georgia,
+          serif;
+        letter-spacing: -0.025em;
+      }
+      .full-bleed cite {
+        display: block;
+        margin-top: 15px;
+        color: #bcd5c9;
+        font-size: 12px;
+        font-style: normal;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .code-scroll {
+        max-width: 100%;
+        overflow-x: auto;
+        margin: 28px 0;
+        border: 1px solid #d1c5b4;
+        background: #27231e;
+        color: #f6eedf;
+      }
+      pre {
+        min-width: 680px;
+        margin: 0;
+        padding: 20px;
+        font:
+          13px/1.6 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      .related {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 36px;
+      }
+      .related article {
+        min-width: 0;
+        padding: 18px;
+        border-top: 3px solid #9b3f28;
+        background: #f4eee3;
+      }
+      .related h3 {
+        margin: 0 0 8px;
+        font:
+          600 18px/1.2 Georgia,
+          serif;
+      }
+      .related p {
+        margin: 0;
+        color: #655a4e;
+        font-size: 13px;
+        line-height: 1.45;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+      }
+      @media (max-width: 520px) {
+        nav span:not(.logo) {
+          display: none;
+        }
+        main {
+          width: calc(100% - 28px);
+          margin-top: 34px;
+        }
+        .article-card p {
+          font-size: 17px;
+        }
+        .full-bleed blockquote {
+          font-size: 25px;
+        }
+        .related {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <span class="logo">Common Ground</span><span>Essays &nbsp; Interviews &nbsp; Field Notes</span
+      ><span>Issue 24</span>
+    </nav>
+    <main>
+      <p class="kicker">Field notes / Interface craft</p>
+      <h1>Designing for quiet</h1>
+      <p class="deck">What calm tools teach us about hierarchy, restraint, and leaving enough room for thought.</p>
+      <div class="meta"><span>Words by Mara Bell</span><span>8 minute read</span><span>July 2026</span></div>
+      <article class="article-card">
+        <p>
+          The most useful interface in a busy room is rarely the loudest one. It establishes rhythm, makes the next
+          action legible, and then gets out of the way. This is less about minimalism than about deciding what deserves
+          contrast.
+        </p>
+        <p>
+          A good hierarchy can survive a narrow screen, a longer translation, and a distracted reader.
+          <strong>Quiet does not mean vague</strong>. It means every signal has earned its place, even when a
+          <code>design-token-name</code> wraps naturally in a sentence.
+        </p>
+        <section class="full-bleed">
+          <blockquote>“Restraint is not the absence of expression. It is expression with an editor.”</blockquote>
+          <cite>Studio notebook, spring review</cite>
+        </section>
+        <h2>Make the structure do the work</h2>
+        <p>
+          Use spacing before decoration, labels before tooltips, and a stable reading width before ornamental grids.
+          When details must stay aligned, contain them in an explicit horizontal scroller rather than letting the
+          document itself widen.
+        </p>
+        <div class="code-scroll" aria-label="Token example">
+          <pre>
+:root {
+  --reading-width: 68ch;
+  --measure-compact: 48ch;
+  --space-section: clamp(3rem, 8vw, 7rem);
+  --tone-quiet: color-mix(in oklab, currentColor 58%, transparent);
+}</pre
+          >
+        </div>
+        <p>
+          The final test is not whether everything fits in a screenshot. It is whether the page remains composed when
+          the content and viewport stop cooperating.
+        </p>
+        <section class="related" aria-label="Related notes">
+          <article>
+            <h3>The case for one strong accent</h3>
+            <p>A practical guide to preserving emphasis when every component wants its own color.</p>
+          </article>
+          <article>
+            <h3>Responsive typography without theater</h3>
+            <p>How to scale type smoothly while keeping useful line lengths and predictable hierarchy.</p>
+          </article>
+        </section>
+      </article>
+    </main>
+  </body>
+</html>

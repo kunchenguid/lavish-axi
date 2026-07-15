@@ -1,0 +1,15 @@
+{
+  "source_hash": "d7128ca075d7758a",
+  "text_metrics_version": 1,
+  "scene_texts": [
+    { "text": "Disposable adapter sidecar", "width": 210.5117950439453, "height": 20 },
+    { "text": "Adapter Protocol v1", "width": 157.4398651123047, "height": 20 },
+    { "text": "Codex app-server", "width": 134.22389221191406, "height": 20 },
+    { "text": "Future adapter", "width": 118.95988464355469, "height": 20 },
+    {
+      "text": "canonical read, grep, glob,\nsearch\nfinal tools",
+      "width": 197.0878143310547,
+      "height": 60
+    }
+  ]
+}

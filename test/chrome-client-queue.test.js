@@ -616,8 +616,14 @@ test("layout gate holds on error severity audit findings and still posts them", 
   assert.deepEqual(posts[0].body.layout_warnings[0].severity, "error");
 });
 
-test("layout gate does not hold on warning severity audit findings", async () => {
-  const chrome = await createChromeHarness();
+test("warning-only layout observations are discarded before gate and feedback submission", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      posts.push({ url, body: JSON.parse(init.body) });
+      return { ok: true };
+    },
+  });
 
   chrome.sendFrameMessage({
     type: "lavish:layoutWarnings",
@@ -629,6 +635,12 @@ test("layout gate does not hold on warning severity audit findings", async () =>
         viewportWidth: 720,
         severity: "warning",
       },
+      {
+        selector: ".unproven",
+        kind: "text-clipped",
+        overflowPx: 200,
+        viewportWidth: 720,
+      },
     ],
   });
   await flushPromises();
@@ -636,9 +648,22 @@ test("layout gate does not hold on warning severity audit findings", async () =>
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
   assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
   assert.equal(chrome.element("layoutIssueBanner").hidden, true);
+  assert.deepEqual(posts[0].body, { layout_warnings: [] });
 });
 
-test("layout gate timeout reveals with a persistent layout issue banner", async () => {
+test("layout gate timeout fails open without an issue banner when no severe result arrives", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
+  });
+
+  chrome.runTimers(25);
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+  assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
+});
+
+test("a proven severe result is not mistaken for an uncertain audit timeout", async () => {
   const chrome = await createChromeHarness({
     sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
   });
@@ -647,14 +672,24 @@ test("layout gate timeout reveals with a persistent layout issue banner", async 
     type: "lavish:layoutWarnings",
     layout_warnings: [{ selector: "html", kind: "content-overlap", severity: "error" }],
   });
-  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
-
   chrome.runTimers(25);
 
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+  assert.equal(chrome.element("body").classList.contains("layout-gate-active"), true);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
+});
+
+test("a late clean audit stays clean after the layout gate times out", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
+  });
+
+  chrome.runTimers(25);
+  chrome.sendFrameMessage({ type: "lavish:layoutWarnings", layout_warnings: [] });
+  await flushPromises();
+
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
-  assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
-  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
-  assert.match(chrome.element("layoutIssueBanner").textContent, /may have layout issues/);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
 });
 
 test("layout gate timeout re-arms on reload", async () => {
@@ -662,13 +697,9 @@ test("layout gate timeout re-arms on reload", async () => {
     sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
   });
 
-  chrome.sendFrameMessage({
-    type: "lavish:layoutWarnings",
-    layout_warnings: [{ selector: "html", kind: "content-overlap", severity: "error" }],
-  });
   chrome.runTimers(25);
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
-  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
+  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
 
   chrome.eventSource().listeners.get("reload")();
 

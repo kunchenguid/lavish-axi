@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createWhiteboardPersistencePayload,
   findDuplicateElementIds,
   normalizeExcalidrawSceneTarget,
+  repairSavedSceneTextMetrics,
   sanitizeSceneLink,
   sceneIsImageFallback,
   summarizeSceneEdits,
@@ -68,6 +70,47 @@ test("findDuplicateElementIds finds repeated ids (parallel-edge upstream bug)", 
   assert.deepEqual(findDuplicateElementIds([rect("A"), rect("B"), rect("A")]), ["A"]);
   assert.deepEqual(findDuplicateElementIds([rect("A"), rect("B")]), []);
   assert.deepEqual(findDuplicateElementIds([]), []);
+});
+
+// ---------------------------------------------------------------------------
+// repairSavedSceneTextMetrics
+// ---------------------------------------------------------------------------
+
+test("saved text repair only expands metrics", () => {
+  const text = {
+    id: "label",
+    type: "text",
+    x: 42,
+    y: 17,
+    width: 80,
+    height: 20,
+    text: "Edited label",
+    originalText: "Edited label",
+    containerId: "box",
+    strokeColor: "#e03131",
+    boundElements: [{ id: "arrow", type: "arrow" }],
+    customData: { userEdit: true },
+  };
+  const { elements, repaired } = repairSavedSceneTextMetrics([text, rect("box")], {
+    measure: () => ({ width: 118.5, height: 24 }),
+  });
+  assert.equal(repaired, 1);
+  assert.deepEqual(elements[0], { ...text, width: 118.5, height: 24 });
+  assert.strictEqual(elements[1].id, "box");
+});
+
+test("whiteboard persistence payload keeps migration and baseline fields together", () => {
+  const scene = { elements: [rect("edited")] };
+  const baselineElements = [rect("original")];
+  assert.deepEqual(
+    createWhiteboardPersistencePayload({ sceneSourceHash: "hash-1", textMetricsVersion: 1, baselineElements }, scene),
+    {
+      sourceHash: "hash-1",
+      textMetricsVersion: 1,
+      scene,
+      baseline: { elements: baselineElements },
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

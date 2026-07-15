@@ -58,13 +58,27 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
   }
 });
 
-test("createSkillMarkdown keeps static poll guidance agent-neutral", () => {
+test("createSkillMarkdown requires an observable wake path for every poll", () => {
   const md = createSkillMarkdown();
+  const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Visual guidance"));
 
-  assert.doesNotMatch(md, /keep the poll attached to the active turn/i);
-  assert.doesNotMatch(md, /run the poll as a background task/);
+  assert.match(workflow, /Keep .*poll in the foreground by default.*return the feedback directly to the agent/i);
+  assert.match(workflow, /harness-native tracked background-job facility/i);
+  assert.match(workflow, /completion result is guaranteed to resume or notify the same agent/i);
+  assert.match(workflow, /Never use `nohup`/);
+  assert.match(workflow, /shell `&`/);
+  assert.match(workflow, /`disown`/);
+  assert.match(workflow, /redirected fire-and-forget processes/);
+  assert.match(workflow, /detached terminal without an explicit verified callback/);
+  assert.match(
+    workflow,
+    /If the harness has no completion-aware background facility, use the foreground poll or first wire a verified wake callback into the surrounding supervisor/i,
+  );
+  assert.match(workflow, /Do not tell the user the artifact is being monitored until that wake path is live/i);
+  assert.match(workflow, /`Send & End` ends the session.*final feedback is still delivered once.*polling stops/i);
+  assert.match(workflow, /(?:do|must) not reopen (?:it|the session) uninvited/i);
+  assert.match(workflow, /queued feedback is never lost/);
   assert.doesNotMatch(md, /Codex detected/);
-  assert.match(md, /queued feedback is never lost/);
 });
 
 test("createSkillMarkdown requires opening every matching playbook", () => {

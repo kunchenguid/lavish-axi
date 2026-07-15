@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atelier Weekender</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        color: #241f1a;
+        background: #fbf7ef;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 20px;
+        padding: 16px clamp(18px, 5vw, 70px);
+        border-bottom: 1px solid #d7cdbd;
+      }
+      .logo {
+        font:
+          650 23px Georgia,
+          serif;
+        letter-spacing: 0.08em;
+      }
+      nav {
+        display: flex;
+        gap: 22px;
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+      }
+      main {
+        width: min(1120px, calc(100% - 36px));
+        margin: 0 auto;
+        padding: clamp(34px, 6vw, 72px) 0;
+      }
+      .hero-head {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 24px;
+      }
+      .eyebrow {
+        color: #a4492d;
+        font-size: 11px;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+      }
+      h1 {
+        margin: 8px 0 0;
+        font:
+          500 clamp(38px, 6vw, 70px)/0.98 Georgia,
+          serif;
+        letter-spacing: -0.04em;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+      }
+      button {
+        width: 42px;
+        height: 42px;
+        border: 1px solid #bfb3a2;
+        border-radius: 50%;
+        background: transparent;
+        font-size: 19px;
+      }
+      .carousel-viewport {
+        max-width: 100%;
+        overflow: hidden;
+        border-radius: 24px;
+      }
+      .carousel-track {
+        width: 200%;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .slide {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        min-height: 430px;
+      }
+      .photo {
+        position: relative;
+        min-height: 360px;
+        overflow: hidden;
+        background: linear-gradient(145deg, #b98458, #e0b17c 48%, #274d3e 49%, #183b30);
+      }
+      .photo::before {
+        content: "";
+        position: absolute;
+        width: 210px;
+        height: 210px;
+        border: 42px solid rgb(255 255 255 / 25%);
+        border-radius: 50%;
+        left: 18%;
+        top: 16%;
+      }
+      .photo::after {
+        content: "";
+        position: absolute;
+        width: 44%;
+        height: 70%;
+        border-radius: 110px 110px 18px 18px;
+        background: rgb(255 244 219 / 72%);
+        right: 11%;
+        bottom: -18%;
+        transform: rotate(-8deg);
+      }
+      .copy {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: clamp(28px, 5vw, 58px);
+        background: #1d4335;
+        color: #f9f2e6;
+      }
+      .copy .count {
+        color: #cbbf9d;
+        font:
+          700 11px ui-monospace,
+          monospace;
+        letter-spacing: 0.12em;
+      }
+      .copy h2 {
+        margin: 22px 0 14px;
+        font:
+          500 clamp(30px, 4vw, 52px)/1 Georgia,
+          serif;
+      }
+      .copy p {
+        margin: 0;
+        color: #d7e1d8;
+        line-height: 1.6;
+      }
+      .cta {
+        width: fit-content;
+        height: auto;
+        margin-top: 26px;
+        padding: 12px 18px;
+        border: 0;
+        border-radius: 0;
+        background: #f0c76d;
+        color: #252017;
+        font: 850 12px inherit;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .second .photo {
+        background: linear-gradient(135deg, #9aafc1, #e3d5c5);
+      }
+      .second .copy {
+        background: #49382c;
+      }
+      .products-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin: 48px 0 18px;
+      }
+      .products-head h2 {
+        margin: 0;
+        font:
+          550 28px Georgia,
+          serif;
+      }
+      .products {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+      .product {
+        position: relative;
+        min-width: 0;
+        padding: 12px;
+        border: 1px solid #d7cdbd;
+        background: #fffdf8;
+      }
+      .product-art {
+        height: 150px;
+        background: linear-gradient(135deg, #d9b889, #8c5c3d);
+      }
+      .product:nth-child(2) .product-art {
+        background: linear-gradient(135deg, #adc0a8, #466550);
+      }
+      .product:nth-child(3) .product-art {
+        background: linear-gradient(135deg, #c8b8cf, #62516b);
+      }
+      .ribbon {
+        position: absolute;
+        right: -9px;
+        top: 22px;
+        padding: 6px 12px;
+        background: #a4492d;
+        color: white;
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.1em;
+        transform: rotate(3deg);
+      }
+      .product h3 {
+        margin: 13px 0 4px;
+        font:
+          600 17px Georgia,
+          serif;
+      }
+      .product p {
+        margin: 0;
+        color: #766b5e;
+        font-size: 12px;
+      }
+      @media (max-width: 700px) {
+        nav {
+          display: none;
+        }
+        .hero-head {
+          align-items: start;
+        }
+        .slide {
+          grid-template-columns: 1fr;
+          min-height: 0;
+        }
+        .photo {
+          min-height: 230px;
+        }
+        .copy {
+          min-height: 290px;
+        }
+        .products {
+          grid-template-columns: 1fr;
+        }
+        .product {
+          display: grid;
+          grid-template-columns: 105px minmax(0, 1fr);
+          column-gap: 14px;
+        }
+        .product-art {
+          height: 90px;
+          grid-row: span 2;
+        }
+        .product h3 {
+          margin-top: 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="logo">ATELIER</span>
+      <nav><span>New</span><span>Objects</span><span>Journal</span></nav>
+      <span>Bag (2)</span>
+    </header>
+    <main>
+      <div class="hero-head">
+        <div>
+          <span class="eyebrow">Summer studies</span>
+          <h1>Objects for slower days</h1>
+        </div>
+        <div class="controls">
+          <button type="button" aria-label="Previous feature">←</button
+          ><button type="button" aria-label="Next feature">→</button>
+        </div>
+      </div>
+      <section class="carousel-viewport" aria-label="Featured collections">
+        <div class="carousel-track">
+          <article class="slide">
+            <div class="photo" aria-label="Sculptural linen chair"></div>
+            <div class="copy">
+              <span class="count">01 / 02</span>
+              <h2>The Weekender chair</h2>
+              <p>A low, generous seat shaped for reading, afternoon light, and doing less on purpose.</p>
+              <button class="cta" type="button">Explore the study</button>
+            </div>
+          </article>
+          <article class="slide second">
+            <div class="photo" aria-label="Hand-thrown ceramic vessels"></div>
+            <div class="copy">
+              <span class="count">02 / 02</span>
+              <h2>Coastal vessels</h2>
+              <p>Hand-thrown forms in chalk, tide blue, and weathered umber.</p>
+            </div>
+          </article>
+        </div>
+      </section>
+      <div class="products-head">
+        <h2>Selected objects</h2>
+        <span>View all 18</span>
+      </div>
+      <section class="products">
+        <article class="product">
+          <div class="product-art"></div>
+          <span class="ribbon">NEW</span>
+          <h3>Ochre reading lamp</h3>
+          <p>$240 · In stock</p>
+        </article>
+        <article class="product">
+          <div class="product-art"></div>
+          <h3>Field table, ash</h3>
+          <p>$680 · Made to order</p>
+        </article>
+        <article class="product">
+          <div class="product-art"></div>
+          <h3>Tide wool throw</h3>
+          <p>$165 · In stock</p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

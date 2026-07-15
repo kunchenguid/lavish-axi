@@ -2,15 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  classifyHorizontalOverflow,
-  classifyParentOverflow,
-  classifyVerticalOverflow,
+  classifyMaterialRectEscape,
+  classifySevereTextOverflow,
   deriveLavishQueueKey,
-  fragmentsSignificantlyOverlap,
+  findStableLayoutFindings,
+  isMaterialPageOverflow,
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
-  resolveVisibleSpillCandidates,
-  verticalFragmentOverflow,
+  isNearTotalOcclusion,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -167,193 +166,142 @@ test("deriveLavishQueueKey keys named selects as fields", () => {
   assert.equal(deriveLavishQueueKey(select), "field:form:deploy:region");
 });
 
-test("fragmentsSignificantlyOverlap ignores the reflow gap in a wrapped inline phrase's bounding box", () => {
-  // A <strong> that wraps across two lines reports one getClientRects() rect per line: the end
-  // of line 1 near the right edge, then the continuation at the left edge of line 2. The union
-  // bounding box of those two rects spans the full width between them - a naive bounding-box
-  // check would treat anything sitting in that phantom middle area as overlapping, even though
-  // nothing is actually rendered there.
-  const wrappedFragments = [
-    { left: 620, right: 900, top: 100, bottom: 120, width: 280, height: 20 },
-    { left: 0, right: 260, top: 120, bottom: 140, width: 260, height: 20 },
-  ];
-  const siblingInThePhantomGap = [{ left: 300, right: 600, top: 100, bottom: 120, width: 300, height: 20 }];
-
-  assert.equal(fragmentsSignificantlyOverlap(wrappedFragments, siblingInThePhantomGap), false);
-});
-
-test("fragmentsSignificantlyOverlap flags real pixel intersection between rendered fragments", () => {
-  const elFragments = [{ left: 0, right: 100, top: 0, bottom: 20, width: 100, height: 20 }];
-  const otherFragments = [{ left: 40, right: 140, top: 5, bottom: 25, width: 100, height: 20 }];
-
-  assert.equal(fragmentsSignificantlyOverlap(elFragments, otherFragments), true);
-});
-
-test("fragmentsSignificantlyOverlap ignores sub-threshold seam overlap between adjacent lines", () => {
-  const elFragments = [{ left: 0, right: 200, top: 0, bottom: 20, width: 200, height: 20 }];
-  const barelyTouchingFragments = [{ left: 199, right: 210, top: 0, bottom: 20, width: 11, height: 20 }];
-
-  assert.equal(fragmentsSignificantlyOverlap(elFragments, barelyTouchingFragments), false);
-});
-
-test("classifyVerticalOverflow flags a fixed-height badge whose wrapped label spills out with default overflow", () => {
-  // DaisyUI-style badges/pills rarely set overflow-y at all, so it stays at its default
-  // "visible" - the wrapped second word isn't clipped, it just spills outside the pill shape.
-  const finding = classifyVerticalOverflow({
-    scrollHeight: 40,
-    clientHeight: 24,
-    overflowY: "visible",
-    hasText: true,
-    isTruncated: false,
-  });
-
-  assert.deepEqual(finding, { overflowPx: 16, kind: "clipped-text", clips: false });
-});
-
-test("classifyVerticalOverflow marks hidden/clip overflow-y as a hard clip", () => {
-  const finding = classifyVerticalOverflow({
-    scrollHeight: 40,
-    clientHeight: 24,
-    overflowY: "hidden",
-    hasText: true,
-    isTruncated: false,
-  });
-
-  assert.deepEqual(finding, { overflowPx: 16, kind: "clipped-text", clips: true });
-});
-
-test("classifyVerticalOverflow ignores intentionally scrollable containers", () => {
-  const finding = classifyVerticalOverflow({
-    scrollHeight: 400,
-    clientHeight: 200,
-    overflowY: "auto",
-    hasText: true,
-    isTruncated: false,
-  });
-
-  assert.equal(finding, null);
-});
-
-test("classifyVerticalOverflow ignores boxes that simply grow to fit their content", () => {
-  const finding = classifyVerticalOverflow({
-    scrollHeight: 100,
-    clientHeight: 100,
-    overflowY: "visible",
-    hasText: true,
-    isTruncated: false,
-  });
-
-  assert.equal(finding, null);
-});
-
-test("classifyVerticalOverflow ignores scroll metrics when rendered text stays inside the box", () => {
-  const finding = classifyVerticalOverflow({
-    scrollHeight: 38,
-    clientHeight: 28,
-    overflowY: "hidden",
-    hasText: true,
-    isTruncated: false,
-    textOverflowPx: 0,
-  });
-
-  assert.equal(finding, null);
-});
-
-test("classifyVerticalOverflow ignores one visible line with tight font metrics", () => {
-  const finding = classifyVerticalOverflow({
-    scrollHeight: 42,
-    clientHeight: 32,
-    overflowY: "visible",
-    hasText: true,
-    isTruncated: false,
-    textOverflowPx: 8,
-    textLineCount: 1,
-  });
-
-  assert.equal(finding, null);
-});
-
-test("verticalFragmentOverflow measures rendered text beyond the box boundary", () => {
-  const fragments = [
-    { top: 4, bottom: 18 },
-    { top: 20, bottom: 36 },
-  ];
-
-  assert.equal(verticalFragmentOverflow(fragments, { top: 0, bottom: 28 }), 8);
-});
-
-test("resolveVisibleSpillCandidates keeps the deepest candidate for one bubbled spill", () => {
-  const badge = node("span");
-  const row = node("div", {}, [badge]);
-  const section = node("section", {}, [row]);
-  const candidates = [
-    { el: section, selector: "section", overflowPx: 16, spillBottom: 140 },
-    { el: row, selector: ".row", overflowPx: 16, spillBottom: 140 },
-    { el: badge, selector: ".badge", overflowPx: 16, spillBottom: 140 },
-  ];
-
-  assert.deepEqual(
-    resolveVisibleSpillCandidates(candidates).map((candidate) => candidate.selector),
-    [".badge"],
-  );
-});
-
-test("resolveVisibleSpillCandidates preserves ancestors with independent overflow", () => {
-  const badge = node("span");
-  const section = node("section", {}, [badge]);
-  const candidates = [
-    { el: section, selector: "section", overflowPx: 48, spillBottom: 220 },
-    { el: badge, selector: ".badge", overflowPx: 16, spillBottom: 140 },
-  ];
-
-  assert.deepEqual(
-    resolveVisibleSpillCandidates(candidates).map((candidate) => candidate.selector),
-    ["section", ".badge"],
-  );
-});
-
-test("classifyHorizontalOverflow still distinguishes clipped text from generic scroll overflow", () => {
-  const clipped = classifyHorizontalOverflow({
-    scrollWidth: 300,
-    clientWidth: 200,
-    overflowX: "hidden",
-    hasText: true,
-    isTruncated: false,
-  });
-  assert.deepEqual(clipped, { overflowPx: 100, kind: "clipped-text" });
-
-  const genericScroll = classifyHorizontalOverflow({
-    scrollWidth: 300,
-    clientWidth: 200,
+test("classifySevereTextOverflow ignores font ink that stays within the rendered line box", () => {
+  const finding = classifySevereTextOverflow({
+    fragments: [{ left: 0, right: 400, top: 0, bottom: 68, width: 400, height: 68 }],
+    box: { left: 0, right: 400, top: 0, bottom: 68 },
     overflowX: "visible",
-    hasText: true,
-    isTruncated: false,
-  });
-  assert.deepEqual(genericScroll, { overflowPx: 100, kind: "element-scroll-overflow" });
-});
-
-test("classifyParentOverflow ignores visual overhang without parent scroll impact", () => {
-  const finding = classifyParentOverflow({
-    overhangPx: 9,
-    scrollWidth: 320,
-    clientWidth: 320,
+    overflowY: "visible",
   });
 
   assert.equal(finding, null);
 });
 
-test("classifyParentOverflow keeps contained parent overhang advisory", () => {
-  const finding = classifyParentOverflow({
-    overhangPx: 9,
-    scrollWidth: 329,
-    clientWidth: 320,
+test("classifySevereTextOverflow ignores tiny text-box excursions", () => {
+  const finding = classifySevereTextOverflow({
+    fragments: [{ left: 0, right: 300, top: 0, bottom: 70, width: 300, height: 70 }],
+    box: { left: 0, right: 300, top: 0, bottom: 68 },
+    overflowX: "visible",
+    overflowY: "visible",
   });
 
-  assert.deepEqual(finding, {
-    overflowPx: 9,
-    kind: "element-parent-overflow",
-    severity: "warning",
+  assert.equal(finding, null);
+});
+
+test("classifySevereTextOverflow ignores centered display glyph ink outside a visible line box", () => {
+  const finding = classifySevereTextOverflow({
+    fragments: [{ left: 0, right: 600, top: -37, bottom: 203, width: 600, height: 240 }],
+    box: { left: 0, right: 600, top: 0, bottom: 166 },
+    overflowX: "visible",
+    overflowY: "visible",
   });
+
+  assert.equal(finding, null);
+});
+
+test("classifySevereTextOverflow ignores a partial vertical line excursion whose center remains visible", () => {
+  const finding = classifySevereTextOverflow({
+    fragments: [{ left: 0, right: 280, top: 0, bottom: 20, width: 280, height: 20 }],
+    box: { left: 0, right: 300, top: 0, bottom: 14 },
+    overflowX: "hidden",
+    overflowY: "hidden",
+  });
+
+  assert.equal(finding, null);
+});
+
+test("classifySevereTextOverflow reports a complete line clipped below a fixed box", () => {
+  const finding = classifySevereTextOverflow({
+    fragments: [
+      { left: 0, right: 280, top: 0, bottom: 20, width: 280, height: 20 },
+      { left: 0, right: 250, top: 24, bottom: 44, width: 250, height: 20 },
+    ],
+    box: { left: 0, right: 300, top: 0, bottom: 22 },
+    overflowX: "hidden",
+    overflowY: "hidden",
+  });
+
+  assert.deepEqual(finding, { axis: "vertical", kind: "clipped-text", overflowPx: 22 });
+});
+
+test("classifySevereTextOverflow reports a wrapped label spilling beyond its visible box", () => {
+  const finding = classifySevereTextOverflow({
+    fragments: [
+      { left: 4, right: 56, top: 2, bottom: 18, width: 52, height: 16 },
+      { left: 4, right: 54, top: 20, bottom: 36, width: 50, height: 16 },
+    ],
+    box: { left: 0, right: 62, top: 0, bottom: 24 },
+    overflowX: "visible",
+    overflowY: "visible",
+  });
+
+  assert.deepEqual(finding, { axis: "vertical", kind: "clipped-text", overflowPx: 12 });
+});
+
+test("classifySevereTextOverflow suppresses explicit truncation and visually hidden accessibility text", () => {
+  const base = {
+    fragments: [{ left: 0, right: 300, top: 0, bottom: 20, width: 300, height: 20 }],
+    box: { left: 0, right: 120, top: 0, bottom: 20 },
+    overflowX: "hidden",
+    overflowY: "hidden",
+  };
+
+  assert.equal(classifySevereTextOverflow({ ...base, isTruncated: true }), null);
+  assert.equal(classifySevereTextOverflow({ ...base, isVisuallyHidden: true }), null);
+});
+
+test("classifyMaterialRectEscape detects both clipped starts and ends", () => {
+  assert.deepEqual(
+    classifyMaterialRectEscape({
+      rect: { left: -30, right: 70, top: 0, bottom: 40, width: 100, height: 40 },
+      boundary: { left: 0, right: 390, top: 0, bottom: 844 },
+      axes: ["horizontal"],
+    }),
+    { axis: "horizontal", side: "start", overflowPx: 30 },
+  );
+  assert.deepEqual(
+    classifyMaterialRectEscape({
+      rect: { left: 350, right: 430, top: 0, bottom: 40, width: 80, height: 40 },
+      boundary: { left: 0, right: 390, top: 0, bottom: 844 },
+      axes: ["horizontal"],
+    }),
+    { axis: "horizontal", side: "end", overflowPx: 40 },
+  );
+});
+
+test("classifyMaterialRectEscape suppresses tiny boundary excursions", () => {
+  assert.equal(
+    classifyMaterialRectEscape({
+      rect: { left: -2, right: 98, top: 0, bottom: 40, width: 100, height: 40 },
+      boundary: { left: 0, right: 390, top: 0, bottom: 844 },
+    }),
+    null,
+  );
+});
+
+test("isMaterialPageOverflow requires a material escape containing meaningful content", () => {
+  assert.equal(isMaterialPageOverflow({ overflowPx: 5, viewportWidth: 390, hasEscapedContent: true }), false);
+  assert.equal(isMaterialPageOverflow({ overflowPx: 252, viewportWidth: 390, hasEscapedContent: false }), false);
+  assert.equal(isMaterialPageOverflow({ overflowPx: 252, viewportWidth: 390, hasEscapedContent: true }), true);
+});
+
+test("findStableLayoutFindings keeps only severe roots present in both samples", () => {
+  const first = [
+    { selector: "html", kind: "page-horizontal-overflow", axis: "horizontal", severity: "error" },
+    { selector: ".moving", kind: "clipped-text", axis: "horizontal", severity: "error" },
+  ];
+  const second = [
+    { selector: "html", kind: "page-horizontal-overflow", axis: "horizontal", severity: "error" },
+    { selector: ".late", kind: "clipped-text", axis: "vertical", severity: "error" },
+  ];
+
+  assert.deepEqual(findStableLayoutFindings(first, second), [second[0]]);
+});
+
+test("isNearTotalOcclusion requires enough samples and at least ninety percent coverage", () => {
+  assert.equal(isNearTotalOcclusion({ occludedSamples: 9, totalSamples: 10 }), true);
+  assert.equal(isNearTotalOcclusion({ occludedSamples: 8, totalSamples: 10 }), false);
+  assert.equal(isNearTotalOcclusion({ occludedSamples: 4, totalSamples: 4 }), false);
 });
 
 test("isModeToggleHotkeyEvent matches Cmd/Ctrl+I regardless of case", () => {
