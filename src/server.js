@@ -14,6 +14,7 @@ import {
   classifySevereTextOverflow,
   classifyMaterialRectEscape,
   createArtifactSdk,
+  deriveAttachmentNoticeState,
   deriveLavishQueueKey,
   findStableLayoutFindings,
   isMaterialPageOverflow,
@@ -1796,6 +1797,7 @@ const isMaterialPageOverflow=${isMaterialPageOverflow.toString()};
 const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
 const classifyAttachmentDelete=${classifyAttachmentDelete.toString()};
+const deriveAttachmentNoticeState=${deriveAttachmentNoticeState.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
 (${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, ${JSON.stringify(sdkOptions)});

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyAttachmentDelete } from "../src/artifact-sdk.js";
+import { classifyAttachmentDelete, deriveAttachmentNoticeState } from "../src/artifact-sdk.js";
 import { createSdkJs } from "../src/server.js";
 
 // The annotation card lives inside the sandboxed artifact iframe, so its image
@@ -77,9 +77,21 @@ test("the count-cap notice reads as an error, not as the passive keyboard hint",
 });
 
 test("the count-cap notice persists until attachment capacity is created", () => {
-  assert.match(sdk, /notify\([\s\S]*?"cap"\s*,?\s*\)/);
-  assert.match(sdk, /notify\("", "transient"\)/);
-  assert.match(sdk, /if \(kind && noticeKind !== kind\) return/);
+  const cap = "You can attach up to 4 images.";
+  const transient = "Waiting for an image to finish uploading…";
+  let state = deriveAttachmentNoticeState(undefined, cap, "cap");
+  assert.deepEqual(state, { cap, transient: "", visible: cap });
+
+  state = deriveAttachmentNoticeState(state, transient, "transient");
+  assert.deepEqual(state, { cap, transient, visible: transient });
+
+  state = deriveAttachmentNoticeState(state, "", "transient");
+  assert.deepEqual(state, { cap, transient: "", visible: cap });
+  assert.match(sdk, /if \(noticeState\.visible\)/);
+  assert.match(sdk, /attachNotice\.classList\.add\("lavish-hint-alert"\)/);
+
+  state = deriveAttachmentNoticeState(state, "", "cap");
+  assert.deepEqual(state, { cap: "", transient: "", visible: "" });
   assert.match(sdk, /if \(items\.length < ATTACHMENT_MAX_COUNT\) notify\("", "cap"\)/);
 });
 

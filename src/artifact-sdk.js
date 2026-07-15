@@ -269,6 +269,22 @@ export function classifyAttachmentDelete(items, id) {
 }
 
 /**
+ * @param {{ cap?: string, transient?: string } | undefined} state
+ * @param {string} message
+ * @param {string} [kind]
+ * @returns {{ cap: string, transient: string, visible: string }}
+ */
+export function deriveAttachmentNoticeState(state, message, kind = "transient") {
+  const next = {
+    cap: String(state?.cap || ""),
+    transient: String(state?.transient || ""),
+  };
+  if (kind === "cap") next.cap = String(message || "");
+  else next.transient = String(message || "");
+  return { ...next, visible: next.transient || next.cap };
+}
+
+/**
  * @param {*} deriveQueueKey
  * @param {*} [isNativeInteractive]
  * @param {*} [mermaid]
@@ -2035,16 +2051,14 @@ export function createArtifactSdk(
     // the error color until cleared, and clearing restores the hint rather than
     // leaving stale red text behind.
     const defaultHintHtml = attachNotice ? attachNotice.innerHTML : "";
-    let noticeKind = "";
+    let noticeState = deriveAttachmentNoticeState(undefined, "");
     const notify = (message, kind = "transient") => {
       if (!attachNotice) return;
-      if (message) {
-        noticeKind = kind;
-        attachNotice.textContent = message;
+      noticeState = deriveAttachmentNoticeState(noticeState, message, kind);
+      if (noticeState.visible) {
+        attachNotice.textContent = noticeState.visible;
         attachNotice.classList.add("lavish-hint-alert");
       } else {
-        if (kind && noticeKind !== kind) return;
-        noticeKind = "";
         attachNotice.innerHTML = defaultHintHtml;
         attachNotice.classList.remove("lavish-hint-alert");
       }
