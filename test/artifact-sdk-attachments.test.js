@@ -78,21 +78,21 @@ test("the count-cap notice reads as an error, not as the passive keyboard hint",
 
 test("the count-cap notice persists until attachment capacity is created", () => {
   const cap = "You can attach up to 4 images.";
-  const transient = "Waiting for an image to finish uploading…";
-  let state = deriveAttachmentNoticeState(undefined, cap, "cap");
-  assert.deepEqual(state, { cap, transient: "", visible: cap });
+  const waiting = "Waiting for an image to finish uploading…";
+  const failed = "An image couldn't be attached. Retry or remove it before queuing.";
+  const state = { itemCount: 4, maxCount: 4, capRejected: true, queueBlocked: false };
 
-  state = deriveAttachmentNoticeState(state, transient, "transient");
-  assert.deepEqual(state, { cap, transient, visible: transient });
+  assert.equal(deriveAttachmentNoticeState(state), cap);
+  assert.equal(deriveAttachmentNoticeState({ ...state, queueBlocked: true, hasPending: true }), waiting);
+  assert.equal(deriveAttachmentNoticeState({ ...state, queueBlocked: true, hasErrors: true }), failed);
+  assert.equal(deriveAttachmentNoticeState({ ...state, queueBlocked: true, hasPending: true }), waiting);
+  assert.equal(deriveAttachmentNoticeState({ ...state, queueBlocked: true }), cap);
+  assert.equal(deriveAttachmentNoticeState({ ...state, itemCount: 3 }), "");
 
-  state = deriveAttachmentNoticeState(state, "", "transient");
-  assert.deepEqual(state, { cap, transient: "", visible: cap });
-  assert.match(sdk, /if \(noticeState\.visible\)/);
+  assert.match(sdk, /notify\(\s*deriveAttachmentNoticeState\(/);
   assert.match(sdk, /attachNotice\.classList\.add\("lavish-hint-alert"\)/);
-
-  state = deriveAttachmentNoticeState(state, "", "cap");
-  assert.deepEqual(state, { cap: "", transient: "", visible: "" });
-  assert.match(sdk, /if \(items\.length < ATTACHMENT_MAX_COUNT\) notify\("", "cap"\)/);
+  assert.match(sdk, /if \(items\.length < ATTACHMENT_MAX_COUNT\) capRejected = false/);
+  assert.match(sdk, /if \(!hasPending\(\) && !hasErrors\(\)\) queueBlocked = false/);
 });
 
 test("a removed chip's file is deleted only when nothing else can reference it", () => {

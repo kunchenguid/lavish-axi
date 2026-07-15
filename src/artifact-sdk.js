@@ -269,19 +269,18 @@ export function classifyAttachmentDelete(items, id) {
 }
 
 /**
- * @param {{ cap?: string, transient?: string } | undefined} state
- * @param {string} message
- * @param {string} [kind]
- * @returns {{ cap: string, transient: string, visible: string }}
+ * @param {{ itemCount?: number, maxCount?: number, capRejected?: boolean, queueBlocked?: boolean, hasPending?: boolean, hasErrors?: boolean }} [state]
+ * @returns {string}
  */
-export function deriveAttachmentNoticeState(state, message, kind = "transient") {
-  const next = {
-    cap: String(state?.cap || ""),
-    transient: String(state?.transient || ""),
-  };
-  if (kind === "cap") next.cap = String(message || "");
-  else next.transient = String(message || "");
-  return { ...next, visible: next.transient || next.cap };
+export function deriveAttachmentNoticeState(state = {}) {
+  const itemCount = Number(state.itemCount) || 0;
+  const maxCount = Number(state.maxCount) || 0;
+  if (state.queueBlocked && state.hasPending) return "Waiting for an image to finish uploading…";
+  if (state.queueBlocked && state.hasErrors)
+    return "An image couldn't be attached. Retry or remove it before queuing.";
+  if (state.capRejected && maxCount > 0 && itemCount >= maxCount)
+    return "You can attach up to " + maxCount + " image" + (maxCount === 1 ? "" : "s") + ".";
+  return "";
 }
 
 /**
@@ -378,15 +377,29 @@ export function createArtifactSdk(
   // which uploads are ready to ride along with the queued prompt.
   /**
    * @param {HTMLElement} listEl
-   * @param {{ notify?: (message: string, kind?: string) => void, onLayout?: () => void }} [config]
+   * @param {{ notify?: (message: string) => void, onLayout?: () => void }} [config]
    */
   function makeAttachmentsController(listEl, { notify = () => {}, onLayout = () => {} } = {}) {
     const items = [];
+    let capRejected = false;
+    let queueBlocked = false;
     // Ids whose delete is parked because an in-flight upload could still dedup onto
     // them (see classifyAttachmentDelete). Re-decided every time an upload settles.
     const pendingDeletes = new Set();
 
     function render() {
+      if (items.length < ATTACHMENT_MAX_COUNT) capRejected = false;
+      if (!hasPending() && !hasErrors()) queueBlocked = false;
+      notify(
+        deriveAttachmentNoticeState({
+          itemCount: items.length,
+          maxCount: ATTACHMENT_MAX_COUNT,
+          capRejected,
+          queueBlocked,
+          hasPending: hasPending(),
+          hasErrors: hasErrors(),
+        }),
+      );
       listEl.innerHTML = items.map((item, index) => attachmentChipHtml(item, index)).join("");
       listEl.hidden = items.length === 0;
       for (const button of listEl.querySelectorAll("[data-attachment-remove]")) {
@@ -428,10 +441,8 @@ export function createArtifactSdk(
       // away (W1) instead of silently swallowing it, so a 5th drop/paste/pick doesn't
       // just vanish. The cap mirrors the server's LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT.
       if (items.length >= ATTACHMENT_MAX_COUNT) {
-        notify(
-          "You can attach up to " + ATTACHMENT_MAX_COUNT + " image" + (ATTACHMENT_MAX_COUNT === 1 ? "" : "s") + ".",
-          "cap",
-        );
+        capRejected = true;
+        render();
         return false;
       }
       const item = {
@@ -461,8 +472,6 @@ export function createArtifactSdk(
       if (item.url) URL.revokeObjectURL(item.url);
       items.splice(index, 1);
       releaseAttachmentId(item.id);
-      if (!hasPending() && !hasErrors()) notify("", "transient");
-      if (items.length < ATTACHMENT_MAX_COUNT) notify("", "cap");
       render();
     }
 
@@ -520,8 +529,6 @@ export function createArtifactSdk(
         }
         render();
       }
-      // Nothing is blocking a send any more, so a "waiting for upload" notice is stale.
-      if (!hasPending() && !hasErrors()) notify("", "transient");
       // A settled upload can decide a parked delete - including when its own chip was
       // removed mid-flight and this result no longer matches any chip.
       flushPendingDeletes();
@@ -552,13 +559,28 @@ export function createArtifactSdk(
       return items.some((item) => item.status === "error");
     }
 
+    function setQueueBlocked(value) {
+      queueBlocked = Boolean(value);
+      render();
+    }
+
     function destroy() {
       for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
       items.length = 0;
     }
 
     render();
-    return { addFiles, rejectUnsupported, handleResult, collectReady, hasReady, hasPending, hasErrors, destroy };
+    return {
+      addFiles,
+      rejectUnsupported,
+      handleResult,
+      collectReady,
+      hasReady,
+      hasPending,
+      hasErrors,
+      setQueueBlocked,
+      destroy,
+    };
   }
 
   function uid(el) {
@@ -2051,12 +2073,10 @@ export function createArtifactSdk(
     // the error color until cleared, and clearing restores the hint rather than
     // leaving stale red text behind.
     const defaultHintHtml = attachNotice ? attachNotice.innerHTML : "";
-    let noticeState = deriveAttachmentNoticeState(undefined, "");
-    const notify = (message, kind = "transient") => {
+    const notify = (message) => {
       if (!attachNotice) return;
-      noticeState = deriveAttachmentNoticeState(noticeState, message, kind);
-      if (noticeState.visible) {
-        attachNotice.textContent = noticeState.visible;
+      if (message) {
+        attachNotice.textContent = message;
         attachNotice.classList.add("lavish-hint-alert");
       } else {
         attachNotice.innerHTML = defaultHintHtml;
@@ -2108,13 +2128,14 @@ export function createArtifactSdk(
     // open so the user can retry or explicitly remove it first.
     function tryQueue() {
       if (attachments.hasPending()) {
-        notify("Waiting for an image to finish uploading…", "transient");
+        attachments.setQueueBlocked(true);
         return false;
       }
       if (attachments.hasErrors()) {
-        notify("An image couldn't be attached. Retry or remove it before queuing.", "transient");
+        attachments.setQueueBlocked(true);
         return false;
       }
+      attachments.setQueueBlocked(false);
       const prompt = textarea.value.trim();
       const readyAttachments = attachments.collectReady();
       // Allow an image-only annotation (the element/target still identifies what it
