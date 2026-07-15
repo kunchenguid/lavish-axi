@@ -362,7 +362,7 @@ export function createArtifactSdk(
   // which uploads are ready to ride along with the queued prompt.
   /**
    * @param {HTMLElement} listEl
-   * @param {{ notify?: (message: string) => void, onLayout?: () => void }} [config]
+   * @param {{ notify?: (message: string, kind?: string) => void, onLayout?: () => void }} [config]
    */
   function makeAttachmentsController(listEl, { notify = () => {}, onLayout = () => {} } = {}) {
     const items = [];
@@ -414,6 +414,7 @@ export function createArtifactSdk(
       if (items.length >= ATTACHMENT_MAX_COUNT) {
         notify(
           "You can attach up to " + ATTACHMENT_MAX_COUNT + " image" + (ATTACHMENT_MAX_COUNT === 1 ? "" : "s") + ".",
+          "cap",
         );
         return false;
       }
@@ -428,9 +429,6 @@ export function createArtifactSdk(
         url: URL.createObjectURL(file),
       };
       items.push(item);
-      // This one was accepted, so any earlier rejection notice no longer describes
-      // the card.
-      notify("");
       upload(item);
       return true;
     }
@@ -447,8 +445,8 @@ export function createArtifactSdk(
       if (item.url) URL.revokeObjectURL(item.url);
       items.splice(index, 1);
       releaseAttachmentId(item.id);
-      // The card is back under the count cap, so any cap notice is now stale.
-      notify("");
+      if (!hasPending() && !hasErrors()) notify("", "transient");
+      if (items.length < ATTACHMENT_MAX_COUNT) notify("", "cap");
       render();
     }
 
@@ -507,7 +505,7 @@ export function createArtifactSdk(
         render();
       }
       // Nothing is blocking a send any more, so a "waiting for upload" notice is stale.
-      if (!hasPending() && !hasErrors()) notify("");
+      if (!hasPending() && !hasErrors()) notify("", "transient");
       // A settled upload can decide a parked delete - including when its own chip was
       // removed mid-flight and this result no longer matches any chip.
       flushPendingDeletes();
@@ -2037,12 +2035,16 @@ export function createArtifactSdk(
     // the error color until cleared, and clearing restores the hint rather than
     // leaving stale red text behind.
     const defaultHintHtml = attachNotice ? attachNotice.innerHTML : "";
-    const notify = (message) => {
+    let noticeKind = "";
+    const notify = (message, kind = "transient") => {
       if (!attachNotice) return;
       if (message) {
+        noticeKind = kind;
         attachNotice.textContent = message;
         attachNotice.classList.add("lavish-hint-alert");
       } else {
+        if (kind && noticeKind !== kind) return;
+        noticeKind = "";
         attachNotice.innerHTML = defaultHintHtml;
         attachNotice.classList.remove("lavish-hint-alert");
       }
@@ -2092,11 +2094,11 @@ export function createArtifactSdk(
     // open so the user can retry or explicitly remove it first.
     function tryQueue() {
       if (attachments.hasPending()) {
-        notify("Waiting for an image to finish uploading…");
+        notify("Waiting for an image to finish uploading…", "transient");
         return false;
       }
       if (attachments.hasErrors()) {
-        notify("An image couldn't be attached. Retry or remove it before queuing.");
+        notify("An image couldn't be attached. Retry or remove it before queuing.", "transient");
         return false;
       }
       const prompt = textarea.value.trim();

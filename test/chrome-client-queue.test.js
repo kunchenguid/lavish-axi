@@ -2346,6 +2346,26 @@ test("chrome deletes a removed attachment through the server", async () => {
   assert.equal(requests[0].options.method, "DELETE");
 });
 
+test("chrome keeps a removed attachment while a queued prompt references it", async () => {
+  const requests = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => ({ status: "removed" }) };
+    },
+  });
+  const id = "a".repeat(64) + ".png";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "keep", selector: "h1", tag: "annotation", text: "", attachments: [{ id }] },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:removeAttachment", id });
+  await flushPromises();
+
+  assert.equal(requests.length, 0);
+});
+
 test("chrome renders queued-prompt attachment thumbnails from the server endpoint", async () => {
   const chrome = await createChromeHarness();
   const id = "a".repeat(64) + ".png";

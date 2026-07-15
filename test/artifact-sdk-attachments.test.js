@@ -76,6 +76,13 @@ test("the count-cap notice reads as an error, not as the passive keyboard hint",
   assert.match(sdk, /attachNotice\.classList\.remove\("lavish-hint-alert"\)/);
 });
 
+test("the count-cap notice persists until attachment capacity is created", () => {
+  assert.match(sdk, /notify\([\s\S]*?"cap"\s*,?\s*\)/);
+  assert.match(sdk, /notify\("", "transient"\)/);
+  assert.match(sdk, /if \(kind && noticeKind !== kind\) return/);
+  assert.match(sdk, /if \(items\.length < ATTACHMENT_MAX_COUNT\) notify\("", "cap"\)/);
+});
+
 test("a removed chip's file is deleted only when nothing else can reference it", () => {
   // Nothing else holds the id and no upload is in flight: the file is provably
   // unreferenced, so the eager delete is safe.

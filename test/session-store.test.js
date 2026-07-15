@@ -1074,6 +1074,97 @@ test("queued prompt attachments are resolved server-side and client path claims 
   }
 });
 
+test("duplicate attachment ids preserve logical refs and count toward prompt caps", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hi</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const id = "a".repeat(64) + ".png";
+    const resolveAttachment = async (_key, attachmentId) => ({
+      id: attachmentId,
+      type: "image",
+      path: "/vetted/path.png",
+      mime: "image/png",
+      bytes: 10,
+      width: 2,
+      height: 1,
+    });
+
+    await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          {
+            uid: "1",
+            prompt: "compare both",
+            selector: "h1",
+            tag: "h1",
+            text: "Hi",
+            attachments: [
+              { id, name: "first.png" },
+              { id, name: "second.png" },
+            ],
+          },
+        ],
+      },
+      { resolveAttachment, maxPerPrompt: 2, maxPromptBytes: 20 },
+    );
+
+    const delivered = feedbackResult(await store.takeFeedback(session.key));
+    assert.deepEqual(
+      delivered.prompts[0].attachments.map((attachment) => [attachment.id, attachment.name]),
+      [
+        [id, "first.png"],
+        [id, "second.png"],
+      ],
+    );
+
+    const rejected = await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          {
+            uid: "2",
+            prompt: "over cap",
+            selector: "h1",
+            tag: "h1",
+            text: "Hi",
+            attachments: [{ id }, { id }],
+          },
+        ],
+      },
+      { resolveAttachment, maxPerPrompt: 1, maxPromptBytes: 20 },
+    );
+    assert.deepEqual(rejected.rejected, [{ id, name: "", reason: "too-many" }]);
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+
+    const byteRejected = await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          {
+            uid: "3",
+            prompt: "over bytes",
+            selector: "h1",
+            tag: "h1",
+            text: "Hi",
+            attachments: [{ id }, { id }],
+          },
+        ],
+      },
+      { resolveAttachment, maxPerPrompt: 2, maxPromptBytes: 19 },
+    );
+    assert.deepEqual(byteRejected.rejected, [{ id, name: "", reason: "prompt-bytes-exceeded" }]);
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("queuePrompts rejects the batch atomically when the count or byte cap is exceeded (C4)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
