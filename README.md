@@ -182,6 +182,7 @@ pnpm link
 - **Server port** - Set `LAVISH_AXI_PORT` to choose the server port; it defaults to `4387`.
 - **Network binding** - The server binds to loopback (`127.0.0.1`) by default. Set `LAVISH_AXI_HOST` to bind elsewhere; a wildcard (`0.0.0.0` or `::`) binds every interface. Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. Set `LAVISH_AXI_LINK_HOST` to control the hostname written into generated session links (defaults to the bind address, or loopback when bound to a wildcard).
 - **Browser opening** - Set `LAVISH_AXI_NO_OPEN=1`, equivalent to `--no-open`, to create or resume a session without launching a browser window.
+- **Default theme** - Set `LAVISH_AXI_DEFAULT_THEME` to the DaisyUI theme `lavish-axi design` recommends as the artifact default; it defaults to `luxury`. Values are matched against the built-in theme list (case-insensitive) and an unknown value is ignored, keeping the built-in default.
 
 ## CLI Reference
 

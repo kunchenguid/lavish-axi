@@ -47,7 +47,13 @@ import {
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
-import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
+import {
+  DAISYUI_THEMES,
+  DEFAULT_THEME,
+  DESIGN_PRIORITY_RULE,
+  DESIGN_SYSTEM_HINT,
+  resolveDefaultTheme,
+} from "../src/design-reference.js";
 import { serve } from "../src/server.js";
 
 function setupHooksEnv(homeDir, stateDir) {
@@ -284,6 +290,51 @@ test("design output recommends luxury as the default theme and warns against @ap
   assert.ok(output.theme_usage.some((item) => /default.*luxury|luxury.*default/i.test(item)));
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
   assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
+});
+
+test("resolveDefaultTheme falls back to the built-in luxury default without an override", () => {
+  assert.equal(DEFAULT_THEME, "luxury");
+  assert.equal(resolveDefaultTheme({}), "luxury");
+  assert.equal(resolveDefaultTheme({ LAVISH_AXI_DEFAULT_THEME: "" }), "luxury");
+});
+
+test("resolveDefaultTheme honors a valid LAVISH_AXI_DEFAULT_THEME override, normalized", () => {
+  assert.equal(resolveDefaultTheme({ LAVISH_AXI_DEFAULT_THEME: "light" }), "light");
+  assert.equal(resolveDefaultTheme({ LAVISH_AXI_DEFAULT_THEME: "  Dark  " }), "dark");
+  for (const theme of DAISYUI_THEMES) {
+    assert.equal(resolveDefaultTheme({ LAVISH_AXI_DEFAULT_THEME: theme }), theme);
+  }
+});
+
+test("resolveDefaultTheme ignores an unknown theme and keeps the built-in default", () => {
+  assert.equal(resolveDefaultTheme({ LAVISH_AXI_DEFAULT_THEME: "not-a-real-theme" }), "luxury");
+  assert.equal(resolveDefaultTheme({ LAVISH_AXI_DEFAULT_THEME: "luxury; rm -rf" }), "luxury");
+});
+
+test("design output reflects a LAVISH_AXI_DEFAULT_THEME override in its theme guidance", () => {
+  const previous = process.env.LAVISH_AXI_DEFAULT_THEME;
+  process.env.LAVISH_AXI_DEFAULT_THEME = "light";
+  try {
+    const output = createDesignOutput();
+    assert.ok(
+      output.theme_usage.some((item) => item.includes('data-theme="light"')),
+      "theme guidance advertises the configured default theme",
+    );
+    assert.ok(
+      output.theme_usage.some((item) => item.includes("LAVISH_AXI_DEFAULT_THEME")),
+      "theme guidance names the env var driving the override",
+    );
+    assert.ok(
+      !output.theme_usage.some((item) => item.includes('data-theme="luxury"')),
+      "the built-in luxury default is not advertised when overridden",
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.LAVISH_AXI_DEFAULT_THEME;
+    } else {
+      process.env.LAVISH_AXI_DEFAULT_THEME = previous;
+    }
+  }
 });
 
 test("playbook index output lists known playbooks with concise descriptions", () => {

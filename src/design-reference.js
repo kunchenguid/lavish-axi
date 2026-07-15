@@ -188,7 +188,30 @@ export const DAISYUI_THEMES = [
   "silk",
 ];
 
+// Built-in recommended theme when nothing overrides it. Changing this changes the
+// shipped default; per-machine preferences belong in LAVISH_AXI_DEFAULT_THEME instead.
+export const DEFAULT_THEME = "luxury";
+
+// Resolve the recommended default theme, letting LAVISH_AXI_DEFAULT_THEME override the
+// built-in when it names a real DaisyUI theme. Unknown or empty values fall back so a
+// typo never emits guidance pointing agents at a nonexistent theme.
+export function resolveDefaultTheme(env = process.env) {
+  const requested = env?.LAVISH_AXI_DEFAULT_THEME;
+  if (typeof requested === "string") {
+    const normalized = requested.trim().toLowerCase();
+    if (DAISYUI_THEMES.includes(normalized)) {
+      return normalized;
+    }
+  }
+  return DEFAULT_THEME;
+}
+
 export function createDesignOutput() {
+  const defaultTheme = resolveDefaultTheme();
+  const defaultThemeLine =
+    defaultTheme === DEFAULT_THEME
+      ? `Default to \`<html data-theme="${DEFAULT_THEME}">\` - it matches the Lavish look. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it.`
+      : `Default to \`<html data-theme="${defaultTheme}">\` - your configured \`LAVISH_AXI_DEFAULT_THEME\`. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it.`;
   return {
     playbook_router: {
       instruction: PLAYBOOK_ROUTER_INSTRUCTION,
@@ -219,7 +242,7 @@ export function createDesignOutput() {
       versions: { mermaid: MERMAID_VERSION },
     },
     theme_usage: [
-      'Default to `<html data-theme="luxury">` - it matches the Lavish look. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it.',
+      defaultThemeLine,
       'Set a nested section theme with `<section data-theme="night">`.',
       "Prefer semantic colors such as `bg-base-100`, `bg-base-200`, `text-base-content`, `bg-primary`, `text-primary-content`, `alert-warning`, and `btn-primary` so themes remain readable.",
       "Avoid hardcoded Tailwind color names for text and surfaces unless the user asked for exact colors.",
