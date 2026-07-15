@@ -5,6 +5,7 @@ const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
 const key = String(sessionData.key || "");
 const filePath = String(sessionData.file || "");
 const queueStorageKey = "lavish-axi:queued:" + key;
+const conversationStorageKey = "lavish-axi:conversation-hidden";
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
@@ -22,6 +23,8 @@ const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("c
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
+const conversationToggle = /** @type {HTMLButtonElement} */ (document.getElementById("conversationToggle"));
+const sessionLayout = /** @type {HTMLDivElement} */ (document.getElementById("sessionLayout"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
 const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("moreButton"));
 const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMenu"));
@@ -61,6 +64,7 @@ const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-arti
 
 const queued = loadQueuedPrompts();
 let annotation = true;
+let conversationHidden = loadConversationPreference();
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
@@ -86,6 +90,8 @@ let lastScroll = { x: 0, y: 0 };
 let copyHintTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendHintTimer;
+
+applyConversationVisibility();
 
 function escapeHtml(value) {
   return String(value).replace(
@@ -120,6 +126,37 @@ function persistQueuedPrompts() {
   } catch {
     // The in-memory queue still works if browser storage is unavailable.
   }
+}
+
+function loadConversationPreference() {
+  try {
+    return localStorage.getItem(conversationStorageKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistConversationPreference() {
+  try {
+    localStorage.setItem(conversationStorageKey, String(conversationHidden));
+  } catch {
+    // The in-memory presentation toggle still works if browser storage is unavailable.
+  }
+}
+
+function applyConversationVisibility() {
+  const expanded = !conversationHidden;
+  const label = expanded ? "Hide conversation" : "Show conversation";
+  sessionLayout.classList.toggle("conversation-hidden", conversationHidden);
+  conversationToggle.setAttribute("aria-expanded", String(expanded));
+  conversationToggle.setAttribute("aria-label", label);
+  conversationToggle.title = label;
+}
+
+function toggleConversation() {
+  conversationHidden = !conversationHidden;
+  applyConversationVisibility();
+  persistConversationPreference();
 }
 
 function render() {
@@ -1230,6 +1267,7 @@ function toggleAnnotationMode() {
 }
 
 annotationSwitch.onclick = toggleAnnotationMode;
+conversationToggle.onclick = toggleConversation;
 
 sendButton.onclick = () => sendQueued(false);
 sendAndEndButton.onclick = () => sendQueued(true);

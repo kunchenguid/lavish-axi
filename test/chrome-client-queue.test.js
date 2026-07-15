@@ -13,9 +13,10 @@ async function createChromeHarness({
   fetchImpl = async () => ({ ok: true }),
   sessionData = defaultSessionData,
   artifactSrc = "",
+  localStorageState = new Map(),
+  sessionStorageState = new Map(),
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
-  const storage = new Map();
   const postedToFrame = [];
   const postedToWhiteboard = [];
   const inlineWhiteboards = [];
@@ -199,13 +200,24 @@ async function createChromeHarness({
     },
     sessionStorage: {
       getItem(key) {
-        return storage.has(key) ? storage.get(key) : null;
+        return sessionStorageState.has(key) ? sessionStorageState.get(key) : null;
       },
       setItem(key, value) {
-        storage.set(key, String(value));
+        sessionStorageState.set(key, String(value));
       },
       removeItem(key) {
-        storage.delete(key);
+        sessionStorageState.delete(key);
+      },
+    },
+    localStorage: {
+      getItem(key) {
+        return localStorageState.has(key) ? localStorageState.get(key) : null;
+      },
+      setItem(key, value) {
+        localStorageState.set(key, String(value));
+      },
+      removeItem(key) {
+        localStorageState.delete(key);
       },
     },
     window: {
@@ -272,7 +284,7 @@ async function createChromeHarness({
       return event;
     },
     queued() {
-      return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
+      return JSON.parse(sessionStorageState.get(`lavish-axi:queued:${sessionData.key}`) || "[]");
     },
     reloadCount() {
       return reloadCount;
@@ -982,6 +994,73 @@ test("chrome client ignores annotation mode toggles after the session ends", asy
 
   assert.equal(chrome.element("annotation")["aria-pressed"], "false");
   assert.equal(chrome.postedToFrame.length, afterEndPostCount);
+});
+
+test("conversation toggle hides and restores the mounted panel with accurate accessible state", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ localStorageState: storage });
+  const toggle = chrome.element("conversationToggle");
+  const layout = chrome.element("sessionLayout");
+  const panel = chrome.element("conversationPanel");
+
+  assert.equal(toggle["aria-expanded"], "true");
+  assert.equal(toggle["aria-label"], "Hide conversation");
+  assert.equal(toggle.title, "Hide conversation");
+  assert.equal(layout.classList.contains("conversation-hidden"), false);
+
+  toggle.click();
+
+  assert.equal(toggle["aria-expanded"], "false");
+  assert.equal(toggle["aria-label"], "Show conversation");
+  assert.equal(toggle.title, "Show conversation");
+  assert.equal(layout.classList.contains("conversation-hidden"), true);
+  assert.equal(panel.hidden, false, "the conversation panel stays mounted so its state is preserved");
+  assert.equal(storage.get("lavish-axi:conversation-hidden"), "true");
+
+  toggle.click();
+
+  assert.equal(toggle["aria-expanded"], "true");
+  assert.equal(toggle["aria-label"], "Hide conversation");
+  assert.equal(layout.classList.contains("conversation-hidden"), false);
+  assert.equal(storage.get("lavish-axi:conversation-hidden"), "false");
+});
+
+test("conversation preference persists across reloads and Lavish sessions without interrupting feedback", async () => {
+  const storage = new Map();
+  const first = await createChromeHarness({ localStorageState: storage });
+  first.element("conversationToggle").click();
+
+  const reloaded = await createChromeHarness({
+    localStorageState: storage,
+    sessionData: { ...defaultSessionData, key: "another-session" },
+  });
+
+  assert.equal(reloaded.element("sessionLayout").classList.contains("conversation-hidden"), true);
+  assert.equal(reloaded.element("conversationToggle")["aria-expanded"], "false");
+  reloaded.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Keep this queued", selector: "main", tag: "main", text: "Artifact" },
+  });
+  reloaded.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Still connected" }) });
+
+  assert.equal(reloaded.queued().length, 1);
+  assert.match(reloaded.element("chatLog").lastAppendedChild.innerHTML, /Still connected/);
+  assert.equal(reloaded.element("sessionLayout").classList.contains("conversation-hidden"), true);
+});
+
+test("conversation toggle fails safely when local storage is unavailable", async () => {
+  const unavailableStorage = new Map();
+  unavailableStorage.has = () => {
+    throw new Error("blocked");
+  };
+  unavailableStorage.set = () => {
+    throw new Error("blocked");
+  };
+  const chrome = await createChromeHarness({ localStorageState: unavailableStorage });
+
+  assert.equal(chrome.element("sessionLayout").classList.contains("conversation-hidden"), false);
+  chrome.element("conversationToggle").click();
+  assert.equal(chrome.element("sessionLayout").classList.contains("conversation-hidden"), true);
 });
 
 function whiteboardFetch(url) {

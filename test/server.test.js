@@ -343,6 +343,29 @@ test("annotate switch shows a brass track and ink knob when enabled", async () =
   assert.match(js, /annotationSwitch\.setAttribute\("aria-pressed", String\(annotation\)\)/);
 });
 
+test("chrome renders an accessible persistent conversation panel toggle", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/demo.html" });
+  const css = await chromeCssSource();
+  const js = await chromeClientSource();
+
+  assert.match(
+    html,
+    /id="conversationToggle"[^>]*aria-controls="conversationPanel"[^>]*aria-expanded="true"[^>]*aria-label="Hide conversation"[^>]*title="Hide conversation"/,
+  );
+  assert.match(html, /class="layout" id="sessionLayout"/);
+  assert.match(html, /<aside class="panel" id="conversationPanel">/);
+  assert.match(css, /\.layout\.conversation-hidden\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(css, /\.layout\.conversation-hidden \.panel\{display:none/);
+  assert.match(
+    css,
+    /@media \(max-width:860px\)[\s\S]*\.layout\.conversation-hidden\{[^}]*grid-template-rows:minmax\(0,1fr\)/,
+  );
+  assert.match(css, /\.conversation-toggle:focus-visible\{[^}]*outline:var\(--annotate-outline\)/);
+  assert.match(js, /const conversationStorageKey = "lavish-axi:conversation-hidden"/);
+  assert.match(js, /localStorage\.getItem\(conversationStorageKey\)/);
+  assert.match(js, /localStorage\.setItem\(conversationStorageKey, String\(conversationHidden\)\)/);
+});
+
 test("chrome declares the Lavish design-system tokens", async () => {
   const css = await chromeCssSource();
 
