@@ -285,11 +285,21 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
 });
 
 test("design output recommends luxury as the default theme and warns against @apply on DaisyUI classes", () => {
-  const output = createDesignOutput();
+  const previous = process.env.LAVISH_AXI_DEFAULT_THEME;
+  delete process.env.LAVISH_AXI_DEFAULT_THEME;
+  try {
+    const output = createDesignOutput();
 
-  assert.ok(output.theme_usage.some((item) => /default.*luxury|luxury.*default/i.test(item)));
-  assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
-  assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
+    assert.ok(output.theme_usage.some((item) => /default.*luxury|luxury.*default/i.test(item)));
+    assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
+    assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
+  } finally {
+    if (previous === undefined) {
+      delete process.env.LAVISH_AXI_DEFAULT_THEME;
+    } else {
+      process.env.LAVISH_AXI_DEFAULT_THEME = previous;
+    }
+  }
 });
 
 test("resolveDefaultTheme falls back to the built-in luxury default without an override", () => {
