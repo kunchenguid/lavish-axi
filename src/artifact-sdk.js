@@ -247,6 +247,28 @@ export function isNearTotalOcclusion({ occludedSamples, totalSamples, minSamples
 }
 
 /**
+ * Decide the fate of a removed chip's stored file. Attachment storage is
+ * content-addressed, so one file can back several chips: the same image attached
+ * twice dedups to a single id. An id check alone only sees chips whose upload has
+ * already returned - a twin that is STILL uploading will dedup onto this very id but
+ * carries none yet. Deleting on that blind spot pulls the file out from under the
+ * twin, whose upload then finalizes onto a deleted id and whose send fails as
+ * not-found (W-B). So an id is only "delete" when nothing can still claim it;
+ * while any upload is in flight the answer is "defer" and the caller re-asks once
+ * uploads settle.
+ *
+ * @param {Array<{ status?: string, id?: string }>} items chips currently on the card
+ * @param {string} id the removed chip's server id ("" when it never uploaded)
+ * @returns {"delete" | "defer" | "skip"}
+ */
+export function classifyAttachmentDelete(items, id) {
+  if (!id) return "skip";
+  if (items.some((other) => other.id === id)) return "skip";
+  if (items.some((other) => other.status === "uploading")) return "defer";
+  return "delete";
+}
+
+/**
  * @param {*} deriveQueueKey
  * @param {*} [isNativeInteractive]
  * @param {*} [mermaid]
@@ -344,6 +366,9 @@ export function createArtifactSdk(
    */
   function makeAttachmentsController(listEl, { notify = () => {}, onLayout = () => {} } = {}) {
     const items = [];
+    // Ids whose delete is parked because an in-flight upload could still dedup onto
+    // them (see classifyAttachmentDelete). Re-decided every time an upload settles.
+    const pendingDeletes = new Set();
 
     function render() {
       listEl.innerHTML = items.map((item, index) => attachmentChipHtml(item, index)).join("");
@@ -403,6 +428,9 @@ export function createArtifactSdk(
         url: URL.createObjectURL(file),
       };
       items.push(item);
+      // This one was accepted, so any earlier rejection notice no longer describes
+      // the card.
+      notify("");
       upload(item);
       return true;
     }
@@ -418,14 +446,31 @@ export function createArtifactSdk(
       if (!item) return;
       if (item.url) URL.revokeObjectURL(item.url);
       items.splice(index, 1);
-      // Tell the chrome to delete the stored file, but only when no OTHER chip in
-      // this card still shares that content-addressed id (the same image attached
-      // twice dedups to one file): deleting it would break the sibling chip. The
-      // server also refcounts against queued prompts; the sweeper is the backstop.
-      if (item.id && !items.some((other) => other.id === item.id)) {
-        parent.postMessage({ type: "lavish:removeAttachment", id: item.id }, "*");
-      }
+      releaseAttachmentId(item.id);
+      // The card is back under the count cap, so any cap notice is now stale.
+      notify("");
       render();
+    }
+
+    // Tell the chrome to delete the stored file, but only once nothing on this card
+    // can still reference that content-addressed id. An id whose fate an in-flight
+    // upload could still change is parked instead of deleted; the server refcounts
+    // ids against queued prompts and the TTL sweeper reclaims anything left behind,
+    // so parking can leak a file at worst, never break a live chip.
+    function releaseAttachmentId(id) {
+      const decision = classifyAttachmentDelete(items, id);
+      if (decision === "delete") parent.postMessage({ type: "lavish:removeAttachment", id }, "*");
+      else if (decision === "defer") pendingDeletes.add(id);
+    }
+
+    function flushPendingDeletes() {
+      for (const id of [...pendingDeletes]) {
+        const decision = classifyAttachmentDelete(items, id);
+        // Still undecidable: another upload is in flight and may yet claim this id.
+        if (decision === "defer") continue;
+        pendingDeletes.delete(id);
+        if (decision === "delete") parent.postMessage({ type: "lavish:removeAttachment", id }, "*");
+      }
     }
 
     function retryAt(index) {
@@ -450,16 +495,22 @@ export function createArtifactSdk(
 
     function handleResult(localId, ok, id, error) {
       const item = items.find((entry) => entry.localId === localId);
-      if (!item) return;
-      if (ok && id) {
-        item.status = "ready";
-        item.id = String(id);
-        item.error = "";
-      } else {
-        item.status = "error";
-        item.error = String(error || "Upload failed");
+      if (item) {
+        if (ok && id) {
+          item.status = "ready";
+          item.id = String(id);
+          item.error = "";
+        } else {
+          item.status = "error";
+          item.error = String(error || "Upload failed");
+        }
+        render();
       }
-      render();
+      // Nothing is blocking a send any more, so a "waiting for upload" notice is stale.
+      if (!hasPending() && !hasErrors()) notify("");
+      // A settled upload can decide a parked delete - including when its own chip was
+      // removed mid-flight and this result no longer matches any chip.
+      flushPendingDeletes();
     }
 
     function collectReady() {
@@ -1889,7 +1940,7 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:176px;overflow-y:auto}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-hint-alert{color:#ff9d7a;font-weight:700}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:176px;overflow-y:auto}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
     shadow.appendChild(style);
     return shadow;
   }
@@ -1980,8 +2031,21 @@ export function createArtifactSdk(
     const attachNotice = /** @type {HTMLDivElement | null} */ (card.querySelector(".lavish-hint"));
     if (!textarea || !cancelButton || !sendButton || !attachmentsList || !attachButton || !attachInput) return;
 
+    // The card has one notice line, shared by the neutral keyboard hint and by
+    // attachment problems (the count cap, a stalled upload, a failed one). A rejected
+    // drop is an error, so it must not inherit the hint's passive gray - it renders in
+    // the error color until cleared, and clearing restores the hint rather than
+    // leaving stale red text behind.
+    const defaultHintHtml = attachNotice ? attachNotice.innerHTML : "";
     const notify = (message) => {
-      if (attachNotice) attachNotice.textContent = message;
+      if (!attachNotice) return;
+      if (message) {
+        attachNotice.textContent = message;
+        attachNotice.classList.add("lavish-hint-alert");
+      } else {
+        attachNotice.innerHTML = defaultHintHtml;
+        attachNotice.classList.remove("lavish-hint-alert");
+      }
     };
     const attachments = makeAttachmentsController(attachmentsList, { notify, onLayout: positionCard });
     activeAttachments = attachments;

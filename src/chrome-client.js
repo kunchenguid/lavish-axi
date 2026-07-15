@@ -267,14 +267,23 @@ function attachmentCount(prompt) {
   return Array.isArray(prompt.attachments) ? prompt.attachments.length : 0;
 }
 
+// How many thumbnails the compact pill shows before the rest collapse into a badge.
+const PILL_THUMBNAIL_LIMIT = 4;
+
 // Thumbnails for a queued prompt's images, served straight from the same-origin
-// attachment endpoint (the ids are already server-vetted at upload time).
+// attachment endpoint (the ids are already server-vetted at upload time). The pill
+// has room for only a few, but the per-prompt cap is configurable
+// (LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT), so a prompt can legitimately carry more
+// than fit: the remainder collapses into a +N badge rather than being dropped from
+// the preview, which would make the queue look like it lost the extra images (W-A).
 function pillAttachmentsHtml(prompt) {
-  if (!attachmentCount(prompt)) return "";
+  const count = attachmentCount(prompt);
+  if (!count) return "";
+  const hidden = count - PILL_THUMBNAIL_LIMIT;
   return (
     '<span class="pill-attachments">' +
     prompt.attachments
-      .slice(0, 4)
+      .slice(0, PILL_THUMBNAIL_LIMIT)
       .map((attachment) => {
         const alt = escapeHtml(attachment.name || "image");
         return (
@@ -290,6 +299,15 @@ function pillAttachmentsHtml(prompt) {
         );
       })
       .join("") +
+    (hidden > 0
+      ? '<span class="pill-attachment-more" title="' +
+        hidden +
+        " more image" +
+        (hidden === 1 ? "" : "s") +
+        '">+' +
+        hidden +
+        "</span>"
+      : "") +
     "</span>"
   );
 }

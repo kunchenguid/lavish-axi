@@ -2360,6 +2360,44 @@ test("chrome renders queued-prompt attachment thumbnails from the server endpoin
   assert.match(html, /Image annotation/);
 });
 
+test("a queued prompt over the thumbnail limit shows the hidden images as a +N badge (W-A)", async () => {
+  // LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT is configurable, so a prompt can legitimately
+  // carry more images than the compact pill can show. The overflow must be counted, not
+  // silently dropped - otherwise the queue looks like it lost the extra attachments.
+  const chrome = await createChromeHarness();
+  const attachments = Array.from({ length: 7 }, (_, i) => ({ id: String(i).repeat(64) + ".png", name: `i${i}.png` }));
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "seven", selector: "h1", tag: "annotation", text: "", attachments },
+  });
+  const html = chrome.element("annotationPills").innerHTML;
+  assert.equal(html.match(/class="pill-attachment"/g)?.length, 4, "the pill renders its four thumbnails");
+  assert.match(html, /class="pill-attachment-more"[^>]*>\+3</, "the other three are counted, not hidden");
+  assert.match(html, /title="3 more images"/);
+});
+
+test("a queued prompt at or under the thumbnail limit shows no +N badge (W-A)", async () => {
+  const chrome = await createChromeHarness();
+  const attachments = Array.from({ length: 4 }, (_, i) => ({ id: String(i).repeat(64) + ".png", name: `i${i}.png` }));
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "four", selector: "h1", tag: "annotation", text: "", attachments },
+  });
+  const html = chrome.element("annotationPills").innerHTML;
+  assert.equal(html.match(/class="pill-attachment"/g)?.length, 4);
+  assert.doesNotMatch(html, /pill-attachment-more/);
+});
+
+test("the +N badge stays singular for a single hidden image (W-A)", async () => {
+  const chrome = await createChromeHarness();
+  const attachments = Array.from({ length: 5 }, (_, i) => ({ id: String(i).repeat(64) + ".png", name: `i${i}.png` }));
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "five", selector: "h1", tag: "annotation", text: "", attachments },
+  });
+  assert.match(chrome.element("annotationPills").innerHTML, /title="1 more image"/);
+});
+
 test("chrome rejects an over-cap image before it hits the network", async () => {
   const requests = [];
   const chrome = await createChromeHarness({

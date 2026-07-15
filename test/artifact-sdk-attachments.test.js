@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { classifyAttachmentDelete } from "../src/artifact-sdk.js";
 import { createSdkJs } from "../src/server.js";
 
 // The annotation card lives inside the sandboxed artifact iframe, so its image
@@ -17,7 +18,7 @@ test("the SDK bundle uploads captured images through the chrome", () => {
 test("the SDK bundle applies upload results and removes/retries attachments", () => {
   assert.match(sdk, /lavish:attachmentResult/);
   assert.match(sdk, /activeAttachments\?\.handleResult\(msg\.localId, msg\.ok, msg\.id, msg\.error\)/);
-  assert.match(sdk, /type: "lavish:removeAttachment", id: item\.id/);
+  assert.match(sdk, /type: "lavish:removeAttachment", id \}/);
   assert.match(sdk, /data-attachment-retry/);
 });
 
@@ -65,6 +66,48 @@ test("the SDK bundle gates queuing until in-flight uploads settle (R2.4)", () =>
   assert.match(sdk, /const queued = tryQueue\(\);\s*\n?\s*[\s\S]*?if \(queued && sendNow\) sendQueuedPrompts\(\)/);
 });
 
-test("the SDK bundle only deletes a removed chip's file when no sibling shares its id", () => {
-  assert.match(sdk, /!items\.some\(\(other\) => other\.id === item\.id\)/);
+test("the count-cap notice reads as an error, not as the passive keyboard hint", () => {
+  // The cap notice replaces the card's gray hint line, so without its own error
+  // styling it reads as passive help text and a rejected drop goes unnoticed.
+  assert.match(sdk, /lavish-hint-alert/);
+  assert.match(sdk, /\.lavish-hint-alert\{[^}]*color:#ff9d7a/);
+  assert.match(sdk, /attachNotice\.classList\.add\("lavish-hint-alert"\)/);
+  // Clearing the notice restores the neutral hint instead of leaving stale red text.
+  assert.match(sdk, /attachNotice\.classList\.remove\("lavish-hint-alert"\)/);
+});
+
+test("a removed chip's file is deleted only when nothing else can reference it", () => {
+  // Nothing else holds the id and no upload is in flight: the file is provably
+  // unreferenced, so the eager delete is safe.
+  assert.equal(classifyAttachmentDelete([], "img-1"), "delete");
+  assert.equal(classifyAttachmentDelete([{ status: "ready", id: "img-2" }], "img-1"), "delete");
+  // A settled sibling already shows the same content-addressed file.
+  assert.equal(classifyAttachmentDelete([{ status: "ready", id: "img-1" }], "img-1"), "skip");
+  // A chip with no id (an unsupported-type error chip) never deletes anything.
+  assert.equal(classifyAttachmentDelete([], ""), "skip");
+});
+
+test("a removed chip's file survives while an identical twin is still uploading (W-B)", () => {
+  // The twin dedups to the SAME content-addressed id but has no id yet, so an id
+  // check alone misses it. Deleting now would strand the twin's upload on a file
+  // that no longer exists and the send would fail as not-found.
+  const items = [{ status: "uploading", id: "" }];
+  assert.equal(classifyAttachmentDelete(items, "img-1"), "defer");
+  // Once that upload settles onto the same id, the surviving twin owns the file.
+  assert.equal(classifyAttachmentDelete([{ status: "ready", id: "img-1" }], "img-1"), "skip");
+  // Settling onto a different id (or failing) leaves the parked id unreferenced.
+  assert.equal(classifyAttachmentDelete([{ status: "ready", id: "img-9" }], "img-1"), "delete");
+  assert.equal(classifyAttachmentDelete([{ status: "error", id: "" }], "img-1"), "delete");
+});
+
+test("the SDK bundle parks an undecidable delete until every upload settles (W-B)", () => {
+  assert.match(sdk, /const classifyAttachmentDelete=/);
+  // removeAt routes through the classifier instead of posting the delete eagerly.
+  assert.match(sdk, /function releaseAttachmentId\(id\)/);
+  assert.match(sdk, /const decision = classifyAttachmentDelete\(items, id\)/);
+  assert.match(sdk, /pendingDeletes\.add\(id\)/);
+  // Every settling upload re-decides the parked ids.
+  assert.match(sdk, /function flushPendingDeletes\(\)/);
+  assert.match(sdk, /flushPendingDeletes\(\);/);
+  assert.match(sdk, /type: "lavish:removeAttachment", id/);
 });

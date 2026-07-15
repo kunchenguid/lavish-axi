@@ -10,6 +10,7 @@ import chokidar from "chokidar";
 import express from "express";
 
 import {
+  classifyAttachmentDelete,
   classifySevereTextOverflow,
   classifyMaterialRectEscape,
   createArtifactSdk,
@@ -1794,6 +1795,7 @@ const classifyMaterialRectEscape=${classifyMaterialRectEscape.toString()};
 const isMaterialPageOverflow=${isMaterialPageOverflow.toString()};
 const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
+const classifyAttachmentDelete=${classifyAttachmentDelete.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
 (${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, ${JSON.stringify(sdkOptions)});
