@@ -576,3 +576,33 @@ test("the object-count bound never evicts a referenced file (round7-b)", async (
     void result;
   });
 });
+
+test("the disk cap evicts the exact minimum with running totals, oldest-first (round7-b perf)", async () => {
+  await withTempDir(async (dir) => {
+    // Eight equal-size files; the sweep decrements a running charged total rather
+    // than recomputing over all survivors per candidate (O(n log n), not O(n^2)
+    // under the global mutex). Correctness must be identical: evict oldest-first
+    // only until the running total fits the cap, and never one file more.
+    const uploads = [];
+    for (let i = 0; i < 8; i += 1) uploads.push(await writeAttachment(dir, KEY, uniquePng("p" + i), {}));
+    const base = Date.now();
+    for (let i = 0; i < uploads.length; i += 1) {
+      await utimes(
+        uploads[i].path,
+        new Date(base - (uploads.length - i) * 1000),
+        new Date(base - (uploads.length - i) * 1000),
+      );
+    }
+    const each = (await listAttachments(dir)).find((f) => f.id === uploads[0].id).chargedBytes;
+    // Cap fits exactly 3 files.
+    const result = await sweepAttachments(dir, { ttlMs: null, maxDiskBytes: each * 3 });
+
+    assert.equal(result.deleted, 5, "evicts exactly down to the cap, no more");
+    const survivors = await listAttachments(dir);
+    assert.equal(survivors.length, 3);
+    assert.ok(survivors.reduce((s, f) => s + f.chargedBytes, 0) <= each * 3, "survivors fit the cap");
+    // The three NEWEST survive; the five oldest are gone.
+    for (let i = 0; i < 5; i += 1) assert.equal(await resolveAttachment(dir, KEY, uploads[i].id), null);
+    for (let i = 5; i < 8; i += 1) assert.ok(await resolveAttachment(dir, KEY, uploads[i].id), `newest ${i} survives`);
+  });
+});

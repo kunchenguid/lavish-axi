@@ -504,8 +504,15 @@ export async function sweepAttachments(stateDir, options = {}) {
       survivors.push({ ...file, referenced: isReferenced });
     }
   }
+  // Running totals over the survivors, decremented as files are evicted, so neither
+  // backstop recomputes over the whole set per candidate. This loop runs under the
+  // store's single global mutex, so per-candidate O(n) work would be an E3-class
+  // lock hazard - the opposite of what the cap is for. Kept O(n log n) (the sort).
+  let chargedTotal = survivors.reduce((sum, file) => sum + file.chargedBytes, 0);
+  let objectCount = survivors.length;
   // Oldest-first eviction of UNREFERENCED survivors, shared by both backstops. A
-  // referenced file is never a candidate, whatever the pressure.
+  // referenced file is never a candidate, whatever the pressure. `overBudget` reads
+  // the running totals; each removal decrements them exactly once.
   const evictOldestUnreferenced = async (overBudget) => {
     const evictable = survivors
       .filter((file) => !file.evicted && !file.referenced)
@@ -516,20 +523,20 @@ export async function sweepAttachments(stateDir, options = {}) {
         file.evicted = true;
         deleted += 1;
         freedBytes += file.bytes;
+        chargedTotal -= file.chargedBytes;
+        objectCount -= 1;
       }
     }
   };
   // Disk cap measured by CHARGED (allocated) cost, not logical image bytes - a flood
   // of tiny files exceeds real disk long before its logical total trips a cap.
   if (maxDiskBytes != null) {
-    const chargedTotal = () => survivors.filter((f) => !f.evicted).reduce((sum, f) => sum + f.chargedBytes, 0);
-    await evictOldestUnreferenced(() => chargedTotal() > maxDiskBytes);
+    await evictOldestUnreferenced(() => chargedTotal > maxDiskBytes);
   }
   // Object-count backstop: bounds inodes/entries directly, which a magic-prefix
   // flood abuses even when every file is tiny enough to stay under the byte cap.
   if (maxObjects != null) {
-    const objectCount = () => survivors.filter((f) => !f.evicted).length;
-    await evictOldestUnreferenced(() => objectCount() > maxObjects);
+    await evictOldestUnreferenced(() => objectCount > maxObjects);
   }
   await pruneEmptyDirs(path.join(stateDir, "attachments"));
   return { deleted, freedBytes };
