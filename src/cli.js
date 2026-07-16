@@ -357,6 +357,12 @@ export function createPollOutput({ file, response, agent = "generic" }) {
       next_step: createFeedbackNextStep(file, layoutWarnings, sessionEnded, endedBy, response.prompts || [], agent),
     };
   }
+  if (response.status === "superseded") {
+    return {
+      session: { file, status: "superseded" },
+      next_step: `This poll was replaced by a newer \`lavish-axi poll\` for the same file - the newer poll now owns delivery, and queued feedback is never lost. Stop reading this one; take the result from the newest poll only.`,
+    };
+  }
   if (response.status === "ended") {
     return {
       session: { file, status: "ended", ...(response.ended_by ? { ended_by: response.ended_by } : {}) },

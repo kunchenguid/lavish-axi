@@ -1,0 +1,26 @@
+{
+  "type": "backend",
+  "title": "Lavish: selaimessa kirjoitettu palaute ei enää katoa matkalla",
+  "summary": "Kaksi vikaa sai palautteen joskus katoamaan niin, ettei avustaja koskaan saanut sitä. Ensimmäinen: kaksi samanaikaista tallennusta saattoi kirjoittaa toistensa päälle, jolloin juuri lähetetty viesti pyyhkiytyi pois jälkiä jättämättä. Toinen: vanha, hylätty kuuntelija saattoi napata viestin itselleen, jolloin oikea kuuntelija sai tyhjän vastauksen. Nyt tallennukset tehdään aina yksi kerrallaan, ja vain uusin kuuntelija saa viestit.",
+  "concepts": {
+    "flow": [
+      {"node": "Selain", "note": "käyttäjä kirjoittaa palautteen sivulle"},
+      {"node": "Palvelin", "note": "tallentaa viestit jonoon yksi kerrallaan", "changed": true},
+      {"node": "Uusin kuuntelija", "note": "vain se saa jonon viestit; vanhat kuuntelijat suljetaan siististi", "changed": true},
+      {"node": "Avustaja", "note": "lukee viestit ja toteuttaa muutokset"}
+    ],
+    "before": [
+      {"label": "Kaksi yhtäaikaista tallennusta saattoi pyyhkiä toisensa yli, viesti katosi ilman virhettä", "changed": true},
+      {"label": "Vanhin kuuntelija sai viestit, vaikka kukaan ei enää lukenut sitä", "changed": true},
+      {"label": "Oikea kuuntelija sai tyhjän vastauksen ja näytti siltä, ettei palautetta tullut"}
+    ],
+    "after": [
+      {"label": "Tallennukset jonotetaan: jokainen viesti säilyy varmasti", "changed": true,
+       "teach": "Kun kaksi asiaa kirjoittaa samaan tiedostoon yhtä aikaa, jälkimmäinen voi tallentaa vanhentuneen kopion ja pyyhkiä toisen muutokset. Nyt palvelin päästää kirjoitukset läpi yksi kerrallaan, jolloin jokainen näkee edellisen tuloksen."},
+      {"label": "Vain uusin kuuntelija saa viestit; vanhat suljetaan ja ne kertovat sen itse", "changed": true,
+       "teach": "Avustaja lukee aina vain uusimman kuuntelunsa tulosta. Siksi viestit ohjataan aina uusimmalle: vanha kuuntelu saa siistin \"korvattu\"-vastauksen eikä voi enää varastaa viestejä."},
+      {"label": "Tiedosto vaihdetaan valmiina kokonaisuutena, ei puolikkaana", "new": true,
+       "teach": "Tallennus kirjoitetaan ensin sivuun ja vaihdetaan paikalleen kerralla, joten kesken jäänyt kirjoitus ei koskaan riko tallennetta."}
+    ]
+  }
+}

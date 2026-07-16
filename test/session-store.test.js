@@ -706,3 +706,40 @@ test("freeform user prompts are stored in session chat history", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// The store is hit concurrently in real sessions: the browser POSTs prompts and
+// layout scans while a waiting poll drains. Unserialized read-modify-write let
+// the last writer erase the other's mutation, which is how user prompts vanished
+// with no error ("sometimes it just doesnt receive the prompts", 2026-07-16).
+test("a prompt queued while feedback is being drained is never lost", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-race-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    let delivered = 0;
+    const ROUNDS = 50;
+    for (let i = 0; i < ROUNDS; i += 1) {
+      // one prompt already queued, then a drain and a second queue race
+      await store.queuePrompts(session.key, { prompts: [{ uid: `a${i}`, prompt: `first ${i}`, tag: "message" }] });
+      const [taken] = await Promise.all([
+        store.takeFeedback(session.key),
+        store.queuePrompts(session.key, { prompts: [{ uid: `b${i}`, prompt: `second ${i}`, tag: "message" }] }),
+      ]);
+      if (taken.status === "feedback") delivered += taken.prompts.length;
+      // drain whatever survived
+      const rest = await store.takeFeedback(session.key);
+      if (rest.status === "feedback") delivered += rest.prompts.length;
+    }
+    assert.equal(
+      delivered,
+      ROUNDS * 2,
+      `every queued prompt must be delivered exactly once (lost ${ROUNDS * 2 - delivered})`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

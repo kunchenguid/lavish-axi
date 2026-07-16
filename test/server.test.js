@@ -2697,3 +2697,49 @@ test("extractArtifactHead reads the real href, not one hidden in another attribu
   );
   assert.equal(inValue.faviconTag, '<link rel="icon" href="https://cdn.example.com/logo.png">');
 });
+
+// An abandoned poll (a background process from an earlier agent turn whose
+// output nobody reads) used to WIN the race for feedback: emitter listeners
+// fire oldest-first, takeFeedback is destructive, so the user's prompt drained
+// into a dead log while the live poll answered "waiting". A newer poll for the
+// same file must therefore supersede every older one - only the newest listener
+// may deliver, and the superseded poll must say so instead of "waiting".
+test("a newer poll supersedes an older one and receives the feedback", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-supersede-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const created = await (
+      await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      })
+    ).json();
+    const key = created.key || created.session?.key;
+
+    const oldPoll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=8000`).then((r) => r.json());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const newPoll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=8000`).then((r) => r.json());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const oldResult = await oldPoll; // must already have been released as superseded
+    assert.equal(oldResult.status, "superseded");
+
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ uid: "1", prompt: "tighten hero", tag: "message" }] }),
+    });
+
+    const newResult = await newPoll;
+    assert.equal(newResult.status, "feedback");
+    assert.equal(newResult.prompts.length, 1);
+    assert.equal(newResult.prompts[0].prompt, "tighten hero");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

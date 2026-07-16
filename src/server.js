@@ -128,8 +128,18 @@ export async function serve({
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
+  // supersede keeps it to one listener per key, but many simultaneous sessions
+  // are legitimate; the default 10 fired spurious leak warnings at 11.
+  events.setMaxListeners(100);
   const watchers = new Map();
   const activePolls = new Map();
+  // One waiting poll per key: a newer poll supersedes every older one. Emitter
+  // listeners fire oldest-first and takeFeedback drains destructively, so an
+  // abandoned poll (a background process from an earlier agent turn whose log
+  // nobody reads) used to win the race and swallow the user's prompt while the
+  // live poll answered "waiting". The agent only ever reads its newest poll, so
+  // the newest poll is the only one allowed to deliver.
+  const waitingPolls = new Map();
   const deliveredFeedback = new Set();
   const sseClients = new Set();
   const whiteboardChannelSecret = crypto.randomBytes(32);
@@ -226,8 +236,16 @@ export async function serve({
         if (heartbeat) clearInterval(heartbeat);
         events.off("feedback", onFeedback);
         events.off("ended", onFeedback);
+        if (waitingPolls.get(key) === entry) waitingPolls.delete(key);
         setPollActive(key, activePolls, deliveredFeedback, events, false);
         refreshIdleTimer();
+      };
+      const finish = (result) => {
+        if (streamHeartbeat) {
+          res.end(JSON.stringify(result));
+        } else {
+          res.json(result);
+        }
       };
       const respond = async () => {
         if (responding || res.writableEnded) return;
@@ -235,15 +253,24 @@ export async function serve({
         try {
           const result = await store.takeFeedback(key);
           if (result.status === "feedback") markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
-          if (streamHeartbeat) {
-            res.end(JSON.stringify(result));
-          } else {
-            res.json(result);
-          }
+          finish(result);
         } finally {
           cleanup();
         }
       };
+      const supersede = () => {
+        if (responding || res.writableEnded) return;
+        responding = true;
+        try {
+          finish({ status: "superseded" });
+        } finally {
+          cleanup();
+        }
+      };
+      const entry = { supersede };
+      const previous = waitingPolls.get(key);
+      waitingPolls.set(key, entry);
+      if (previous) previous.supersede();
       function handleRespondError(error) {
         if (streamHeartbeat) {
           cleanup();
