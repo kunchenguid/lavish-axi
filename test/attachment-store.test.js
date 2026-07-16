@@ -649,3 +649,40 @@ test("sweepAttachments leaves a FRESH .tmp alone - it may be a live write (D6)",
     assert.equal(await fileExists(fresh), true, "a fresh temp file survives the sweep");
   });
 });
+
+test("sweepAttachments reaps an orphan sidecar whose image is gone (ATTACH-002)", async () => {
+  await withTempDir(async (dir) => {
+    const stored = await writeAttachment(dir, KEY, uniquePng("orphan-meta"), {});
+    // Simulate a failed/partial delete: the image is removed but its `.meta` sidecar
+    // is left behind. ID_RE excludes `.meta`, so no TTL/disk/object cap ever sees it -
+    // a permanent leak unless the sweep reaps orphan sidecars.
+    const sidecar = stored.path + ".meta";
+    await rm(stored.path);
+    assert.equal(await fileExists(sidecar), true, "the orphan sidecar is present before the sweep");
+
+    await sweepAttachments(dir, { ttlMs: null });
+    assert.equal(await fileExists(sidecar), false, "the orphan sidecar is reaped");
+  });
+});
+
+test("sweepAttachments keeps a sidecar whose image still exists (ATTACH-002)", async () => {
+  await withTempDir(async (dir) => {
+    const stored = await writeAttachment(dir, KEY, uniquePng("live-meta"), {});
+    await sweepAttachments(dir, { ttlMs: null });
+    // A live attachment's sidecar must survive - it is not an orphan.
+    assert.equal(await fileExists(stored.path + ".meta"), true, "a referenced image's sidecar is untouched");
+    assert.ok(await resolveAttachment(dir, KEY, stored.id));
+  });
+});
+
+test("removeAttachment removes the sidecar before the image (ATTACH-002)", async () => {
+  await withTempDir(async (dir) => {
+    // The sidecar (uncounted display cache) is removed first, so a crash after the
+    // first removal leaves the counted image - reclaimable by TTL/disk caps - rather
+    // than an orphan .meta they can never see. Order is observed via a stat sequence.
+    const stored = await writeAttachment(dir, KEY, uniquePng("order"), {});
+    assert.equal(await removeAttachment(dir, KEY, stored.id), true);
+    assert.equal(await fileExists(stored.path), false);
+    assert.equal(await fileExists(stored.path + ".meta"), false);
+  });
+});

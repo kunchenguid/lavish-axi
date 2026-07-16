@@ -62,6 +62,11 @@ const TEMP_FILE_RE = /\.\d+\.\d+\.tmp$/;
 // Only reap a temp older than this: a live atomic write renames within milliseconds,
 // so anything this stale can only be crash debris - never an in-progress write.
 const ATTACHMENT_TEMP_GRACE_MS = 5 * 60 * 1000; // 5 minutes
+// A dims sidecar is `<id>.meta`; capture the image id so an orphan sidecar (image
+// gone) can be reaped. A live upload always writes the image BEFORE its sidecar, so a
+// sidecar-without-image is unambiguous crash/failed-delete debris - no grace needed
+// (ATTACH-002).
+const SIDECAR_ORPHAN_RE = /^([0-9a-f]{64}\.(?:png|jpg|webp))\.meta$/;
 
 let temporaryFileId = 0;
 
@@ -422,15 +427,16 @@ export function attachmentPath(stateDir, key, id) {
 export async function removeAttachment(stateDir, key, id) {
   if (!isValidAttachmentKey(key) || !isValidAttachmentId(id)) return false;
   const file = attachmentFile(stateDir, key, id);
+  // Sidecar FIRST: it is an uncounted display cache, so a crash after this removal
+  // leaves only the counted image, which the TTL/disk/object caps can still reclaim -
+  // never an orphan `.meta` that no sweep would have discovered (ATTACH-002). The
+  // sweep's orphan-sidecar reap is the backstop for the sidecar half.
+  await rm(sidecarPath(file), { force: true }).catch(() => {});
   try {
     await rm(file);
-    await rm(sidecarPath(file), { force: true }).catch(() => {});
     return true;
   } catch (error) {
-    if (error && error.code === "ENOENT") {
-      await rm(sidecarPath(file), { force: true }).catch(() => {});
-      return false;
-    }
+    if (error && error.code === "ENOENT") return false;
     throw error;
   }
 }
@@ -547,33 +553,49 @@ export async function sweepAttachments(stateDir, options = {}) {
   if (maxObjects != null) {
     await evictOldestUnreferenced(() => objectCount > maxObjects);
   }
-  // Reap crash-orphaned temp files (D6). Always runs - a leaked temp is invisible to
-  // the caps above, so it is not gated on a TTL or disk cap being configured.
-  const temp = await reapOrphanTempFiles(stateDir, now);
-  deleted += temp.deleted;
-  freedBytes += temp.freedBytes;
+  // Reap files that leak past the caps because ID_RE hides them - crash-orphaned temp
+  // files (D6) and orphan .meta sidecars (ATTACH-002). Always runs, since a leaked file
+  // is invisible to the caps above regardless of whether a TTL or disk cap is set.
+  const orphans = await reapOrphanFiles(stateDir, now);
+  deleted += orphans.deleted;
+  freedBytes += orphans.freedBytes;
   await pruneEmptyDirs(path.join(stateDir, "attachments"));
   return { deleted, freedBytes };
 }
 
-// Scan each session dir for stale temp files (D6) and remove the ones older than the
-// grace. Best-effort: a temp we can't stat or delete is left for the next sweep.
-async function reapOrphanTempFiles(stateDir, now) {
+// Scan each session dir for files that leak past the caps because ID_RE hides them:
+// crash-orphaned temp files (D6, reaped once past the write grace) and orphan dims
+// sidecars whose image is gone (ATTACH-002, reaped immediately - a live upload writes
+// the image first, so a sidecar without one is debris). Best-effort: anything we can't
+// stat or delete is left for the next sweep.
+async function reapOrphanFiles(stateDir, now) {
   const root = path.join(stateDir, "attachments");
   let deleted = 0;
   let freedBytes = 0;
   for (const dirent of await readdirSafe(root)) {
     if (!dirent.isDirectory() || !isValidAttachmentKey(dirent.name)) continue;
     const dir = path.join(root, dirent.name);
-    for (const entry of await readdirSafe(dir)) {
-      if (!entry.isFile() || !TEMP_FILE_RE.test(entry.name)) continue;
+    const entries = await readdirSafe(dir);
+    const present = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
       const filePath = path.join(dir, entry.name);
+      const sidecarMatch = SIDECAR_ORPHAN_RE.exec(entry.name);
       try {
-        const info = await stat(filePath);
-        if (now - info.mtimeMs <= ATTACHMENT_TEMP_GRACE_MS) continue; // possibly a live write
-        if (await removeFile(filePath)) {
-          deleted += 1;
-          freedBytes += info.size;
+        if (TEMP_FILE_RE.test(entry.name)) {
+          const info = await stat(filePath);
+          if (now - info.mtimeMs <= ATTACHMENT_TEMP_GRACE_MS) continue; // possibly a live write
+          if (await removeFile(filePath)) {
+            deleted += 1;
+            freedBytes += info.size;
+          }
+        } else if (sidecarMatch && !present.has(sidecarMatch[1])) {
+          // An `.meta` whose image id is not in this dir: its image is gone.
+          const info = await stat(filePath);
+          if (await removeFile(filePath)) {
+            deleted += 1;
+            freedBytes += info.size;
+          }
         }
       } catch {
         // Raced with a rename/delete; skip it.
@@ -593,9 +615,12 @@ async function readdirSafe(dir) {
 }
 
 async function removeFile(file) {
+  // Sidecar first (ATTACH-002): a failure after removing the image would otherwise
+  // strand the uncounted `.meta`; removing the cache first leaves only the counted
+  // image if we crash between the two.
+  await rm(sidecarPath(file), { force: true }).catch(() => {});
   try {
     await rm(file, { force: true });
-    await rm(sidecarPath(file), { force: true }).catch(() => {});
     return true;
   } catch {
     return false;
