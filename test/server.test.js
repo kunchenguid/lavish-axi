@@ -21,7 +21,7 @@ import {
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
-import { canonicalFile, sessionKey } from "../src/session-store.js";
+import { SessionStore, canonicalFile, sessionKey } from "../src/session-store.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -2738,6 +2738,69 @@ test("a newer poll supersedes an older one and receives the feedback", async () 
     assert.equal(newResult.status, "feedback");
     assert.equal(newResult.prompts.length, 1);
     assert.equal(newResult.prompts[0].prompt, "tighten hero");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// The supersede must also happen on the immediate-return path. A poll only
+// registers its listener after its first await, so a prompt queued in that
+// window leaves the store holding feedback while the poll waits on an event
+// that already fired. The next poll then drains that feedback immediately - and
+// if it returns without releasing the stale poll, the stale poll is the only
+// listener left when the user types again, so emitter oldest-first ordering
+// hands the prompt to a dead log and the agent's next poll waits forever.
+test("a poll that returns queued feedback immediately still supersedes an older poll", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-supersede-immediate-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+  const stateFile = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const created = await (
+      await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      })
+    ).json();
+    const key = created.key || created.session?.key;
+
+    const stalePoll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=8000`).then((r) =>
+      r.json(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // Queue out-of-band (no emit) to reproduce the window in which a prompt
+    // lands after a poll's drain but before it starts listening: the store holds
+    // feedback while that poll is still parked.
+    const outOfBand = new SessionStore(stateFile);
+    await outOfBand.queuePrompts(key, { prompts: [{ uid: "1", prompt: "tighten hero", tag: "message" }] });
+
+    const immediate = await (
+      await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=8000`)
+    ).json();
+    assert.equal(immediate.status, "feedback");
+    assert.equal(immediate.prompts.length, 1);
+
+    const staleResult = await stalePoll;
+    assert.equal(staleResult.status, "superseded");
+
+    // The live agent's next poll must be the one that receives the next prompt.
+    const livePoll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=8000`).then((r) =>
+      r.json(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ uid: "2", prompt: "raise contrast", tag: "message" }] }),
+    });
+    const liveResult = await livePoll;
+    assert.equal(liveResult.status, "feedback");
+    assert.equal(liveResult.prompts[0].prompt, "raise contrast");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

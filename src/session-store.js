@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
@@ -14,9 +14,15 @@ export class SessionStore {
     // during a drain vanished with no error (root cause of "the agent didn't
     // receive my prompt", 2026-07-16). Reads that only report state stay
     // unlocked - they cannot erase anything.
+    /** @type {Promise<void>} */
     this.mutex = Promise.resolve();
   }
 
+  /**
+   * @template T
+   * @param {() => Promise<T>} fn
+   * @returns {Promise<T>}
+   */
   withLock(fn) {
     const run = this.mutex.then(fn, fn);
     // keep the chain alive whether fn resolves or rejects
@@ -133,6 +139,17 @@ export class SessionStore {
     });
   }
 
+  /**
+   * @param {string} key
+   * @returns {Promise<{
+   *   status: string,
+   *   prompts?: any[],
+   *   dom_snapshot?: string,
+   *   layout_warnings?: any[],
+   *   session_ended?: boolean,
+   *   ended_by?: string,
+   * }>}
+   */
   async takeFeedback(key) {
     return this.withLock(async () => {
       const state = await this.readState();
@@ -227,10 +244,18 @@ export class SessionStore {
 
   async writeState(state) {
     // Atomic replace: a torn write is a corrupt state.json for every concurrent
-    // reader (the CLI reads this file directly for status listings).
-    const tmp = `${this.file}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`);
-    await rename(tmp, this.file);
+    // reader (the CLI reads this file directly for status listings). The tmp
+    // name is unique per write because the mutex only serializes this process:
+    // an upgrade briefly runs two servers over one state dir, and a shared tmp
+    // path lets them interleave one file and rename the torn result into place.
+    const tmp = `${this.file}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+    try {
+      await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`);
+      await rename(tmp, this.file);
+    } catch (error) {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw error;
+    }
   }
 }
 

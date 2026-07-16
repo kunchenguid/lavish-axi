@@ -140,6 +140,12 @@ export async function serve({
   // live poll answered "waiting". The agent only ever reads its newest poll, so
   // the newest poll is the only one allowed to deliver.
   const waitingPolls = new Map();
+  const supersedeWaitingPoll = (key, replacement = null) => {
+    const previous = waitingPolls.get(key);
+    if (replacement) waitingPolls.set(key, replacement);
+    else waitingPolls.delete(key);
+    if (previous && previous !== replacement) previous.supersede();
+  };
   const deliveredFeedback = new Set();
   const sseClients = new Set();
   const whiteboardChannelSecret = crypto.randomBytes(32);
@@ -206,6 +212,11 @@ export async function serve({
     try {
       const file = await canonicalFile(String(req.query.file || ""));
       const key = sessionKey(file);
+      // Release older polls before draining, not just on the waiting branch: a
+      // poll that returns queued feedback immediately would otherwise leave the
+      // zombie listening, and it swallows the next prompt into a log nobody
+      // reads while this agent's next poll waits forever.
+      supersedeWaitingPoll(key);
       const timeoutMs =
         req.query.timeoutMs === undefined ? null : Math.max(0, Math.min(Number(req.query.timeoutMs || 0), 2147483647));
       const immediate = await store.takeFeedback(key);
@@ -268,9 +279,7 @@ export async function serve({
         }
       };
       const entry = { supersede };
-      const previous = waitingPolls.get(key);
-      waitingPolls.set(key, entry);
-      if (previous) previous.supersede();
+      supersedeWaitingPoll(key, entry);
       function handleRespondError(error) {
         if (streamHeartbeat) {
           cleanup();
