@@ -220,11 +220,23 @@ function saveJsonState(storageKey, value) {
 // reload - wedging the tab permanently instead of failing once. The card's own
 // flow only ever produces `{id, name}`, so a malformed entry is fabricated and
 // there is no user image to preserve. The server re-validates independently.
+// Each surviving ref is PROJECTED onto a fresh primitives-only object rather than
+// kept by reference: postMessage delivers a structured clone, which faithfully
+// preserves BigInt values and cycles that `JSON.stringify` then refuses. Passing
+// the artifact's own object through would carry that junk into sessionStorage and
+// the POST body, where the throw makes the queue unsendable - the same wedge as a
+// poisoned entry, just one step later.
 function sanitizeAttachmentRefs(value) {
   if (!Array.isArray(value)) return [];
-  return value.filter(
-    (ref) => ref && typeof ref === "object" && !Array.isArray(ref) && typeof ref.id === "string" && ref.id,
-  );
+  const refs = [];
+  for (const ref of value) {
+    if (!ref || typeof ref !== "object" || Array.isArray(ref)) continue;
+    if (typeof ref.id !== "string" || !ref.id) continue;
+    const projected = { id: ref.id };
+    if (typeof ref.name === "string" && ref.name) projected.name = ref.name;
+    refs.push(projected);
+  }
+  return refs;
 }
 
 function sanitizeQueuedPrompt(prompt) {

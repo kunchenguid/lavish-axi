@@ -1671,3 +1671,80 @@ test("the delivered-attachment retention list stays bounded (post-poll-retention
     assert.ok((await store.referencedAttachmentIds()).has(`${session.key}/${unknownAttachmentId(159)}`));
   });
 });
+
+test("reopening a session preserves the delivery read grace (post-poll-retention)", async () => {
+  await withStore(async ({ store, session }) => {
+    const id = unknownAttachmentId(21);
+    const resolveAttachment = async (_key, attachmentId) => ({
+      id: attachmentId,
+      type: "image",
+      path: "/tmp/" + attachmentId,
+      mime: "image/png",
+      bytes: 10,
+      width: 1,
+      height: 1,
+    });
+    await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "1", prompt: "look", selector: "h1", tag: "h1", text: "", attachments: [{ id }] }] },
+      { resolveAttachment, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+    await store.takeFeedback(session.key);
+
+    // `upsertSession` rebuilds the session from an explicit field list, so any field
+    // it forgets is erased. Re-opening the artifact during the grace hour must not
+    // drop the protection and hand the next sweep a path the agent is still reading.
+    await store.upsertSession(session.file, "http://localhost:4387/session/test");
+
+    assert.ok(
+      (await store.referencedAttachmentIds()).has(`${session.key}/${id}`),
+      "a reopen inside the grace window keeps the delivered attachment referenced",
+    );
+  });
+});
+
+test("delivery-grace retention dedupes by content id before its bound (post-poll-retention)", async () => {
+  await withStore(async ({ store, session }) => {
+    const resolveAttachment = async (_key, attachmentId) => ({
+      id: attachmentId,
+      type: "image",
+      path: "/tmp/" + attachmentId,
+      mime: "image/png",
+      bytes: 10,
+      width: 1,
+      height: 1,
+    });
+    const distinct = unknownAttachmentId(30);
+    // The distinct image is delivered first, then one reused image is delivered far
+    // more times than the bound. Content-addressed ids mean those are all the SAME
+    // file, so letting each delivery take a slot evicts the distinct attachment that
+    // is still inside its own grace - the very thing the retention exists to prevent.
+    await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "d", prompt: "d", selector: "h1", tag: "h1", text: "", attachments: [{ id: distinct }] }] },
+      { resolveAttachment, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+    await store.takeFeedback(session.key);
+
+    const reused = unknownAttachmentId(31);
+    for (let i = 0; i < MAX_DELIVERED_ATTACHMENTS + 10; i += 1) {
+      await store.queuePrompts(
+        session.key,
+        {
+          prompts: [
+            { uid: String(i), prompt: "r", selector: "h1", tag: "h1", text: "", attachments: [{ id: reused }] },
+          ],
+        },
+        { resolveAttachment, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+      );
+      await store.takeFeedback(session.key);
+    }
+
+    const referenced = await store.referencedAttachmentIds();
+    assert.ok(referenced.has(`${session.key}/${reused}`), "the reused image is retained");
+    assert.ok(
+      referenced.has(`${session.key}/${distinct}`),
+      "a reused image cannot evict a distinct one still in grace",
+    );
+  });
+});

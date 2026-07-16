@@ -2498,3 +2498,45 @@ test("the chrome never honors an attachment delete driven by the artifact iframe
     [],
   );
 });
+
+test("a queued attachment ref is projected to primitives, not kept by reference (E5)", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      posts.push({ url, body: JSON.parse(init.body) });
+      return { ok: true };
+    },
+  });
+  const id = "a".repeat(64) + ".png";
+
+  // structuredClone (what postMessage really uses) faithfully carries BigInt and
+  // cycles, and neither survives JSON. Filtering entries but keeping the artifact's
+  // own objects lets that junk ride along into sessionStorage and the POST body,
+  // where JSON.stringify throws and the queue can no longer be sent - a subtler
+  // repeat of the poisoned-queue wedge.
+  const hostile = { id, name: "ok.png", big: 10n };
+  hostile.self = hostile;
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "hostile", selector: "h1", tag: "annotation", text: "", attachments: [hostile] },
+  });
+
+  assert.deepEqual(chrome.queued()[0].attachments, [{ id, name: "ok.png" }]);
+
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+
+  assert.equal(posts.length, 1, "the queue is still sendable");
+  assert.deepEqual(posts[0].body.prompts[0].attachments, [{ id, name: "ok.png" }]);
+});
+
+test("a non-string attachment name is dropped rather than carried (E5)", async () => {
+  const chrome = await createChromeHarness();
+  const id = "b".repeat(64) + ".png";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "x", selector: "h1", tag: "annotation", text: "", attachments: [{ id, name: { evil: true } }] },
+  });
+  assert.deepEqual(chrome.queued()[0].attachments, [{ id }]);
+});
