@@ -247,6 +247,25 @@ export function isNearTotalOcclusion({ occludedSamples, totalSamples, minSamples
 }
 
 /**
+ * Whether a picked/dropped/pasted file is within the client-side byte limit, and
+ * the message to show if not. Returns "" when the file is acceptable.
+ *
+ * @param {number} size the file's byte length (`File.size`)
+ * @param {number} maxBytes the limit; <= 0 or non-finite means "no client limit"
+ * @returns {string} "" if acceptable, else a human-readable error
+ */
+export function attachmentSizeError(size, maxBytes) {
+  const cap = Number(maxBytes);
+  if (!Number.isFinite(cap) || cap <= 0) return "";
+  const n = Number(size);
+  if (!Number.isFinite(n) || n <= cap) return "";
+  // Inlined formatter: a serialized SDK helper may reference only its own args and
+  // browser globals, never a non-exported sibling.
+  const limit = cap >= 1024 * 1024 ? Math.round(cap / (1024 * 1024)) + " MB" : Math.round(cap / 1024) + " KB";
+  return "Image is larger than the " + limit + " limit";
+}
+
+/**
  * Split a drop/paste into the images the card can attach and the names of the
  * files it cannot.
  *
@@ -333,7 +352,7 @@ export function deriveAttachmentNoticeState(state = {}) {
  * @param {*} [mermaid]
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
- * @param {{ maxAttachmentCount?: number }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number }} [options]
  */
 export function createArtifactSdk(
   deriveQueueKey,
@@ -364,6 +383,13 @@ export function createArtifactSdk(
   // without that wiring (e.g. a unit-test call to createArtifactSdk).
   const ATTACHMENT_MAX_COUNT =
     Number.isFinite(options.maxAttachmentCount) && options.maxAttachmentCount > 0 ? options.maxAttachmentCount : 4;
+  // The per-image byte limit, threaded from the server via createSdkJs. 0 means "no
+  // client-side gate" (the server still enforces its own cap); it is the fallback
+  // when the SDK runs unwired, e.g. a direct createArtifactSdk unit call. Checking
+  // it in add() BEFORE reading the file is what stops a multi-GB drop from being
+  // allocated and structured-cloned into the chrome ahead of any rejection.
+  const ATTACHMENT_MAX_BYTES =
+    Number.isFinite(options.maxAttachmentBytes) && options.maxAttachmentBytes > 0 ? options.maxAttachmentBytes : 0;
   const ATTACHMENT_ACCEPTED_MIME = { "image/png": true, "image/jpeg": true, "image/webp": true };
   // Minted once per document load and stamped on every upload, so a result the
   // chrome posts back can be tied to the exact document that asked for it. Chip
@@ -496,6 +522,25 @@ export function createArtifactSdk(
 
     function add(file) {
       if (!file || !ATTACHMENT_ACCEPTED_MIME[file.type]) return false;
+      // Size gate BEFORE createObjectURL/arrayBuffer: an oversized drop must never be
+      // read into a buffer (and structured-cloned into the chrome) only to be rejected
+      // afterwards - that is what freezes the tab. Surface it as a dismissible error
+      // chip, like an unsupported type, so the user sees why. The server re-checks.
+      const sizeError = attachmentSizeError(file.size, ATTACHMENT_MAX_BYTES);
+      if (sizeError) {
+        items.push({
+          localId: "att-" + ++attachmentLocalCounter,
+          file: null,
+          name: file.name || "image",
+          mime: "",
+          status: "error",
+          id: "",
+          error: sizeError,
+          url: "",
+        });
+        render();
+        return false;
+      }
       // Over the per-prompt count cap: reject THIS selection and tell the user right
       // away (W1) instead of silently swallowing it, so a 5th drop/paste/pick doesn't
       // just vanish. The cap mirrors the server's LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT.

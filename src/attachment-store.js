@@ -39,6 +39,21 @@ export const DEFAULT_MAX_ATTACHMENT_DISK_BYTES = 512 * 1024 * 1024; // 512 MiB
 const ATTACHMENT_FILE_MODE = 0o600;
 const ATTACHMENT_DIR_MODE = 0o700;
 
+// The unit the disk cap charges per stored object. A 12-byte image plus its ~40-byte
+// sidecar occupies two filesystem blocks, not 52 logical bytes: charging logical
+// `size` alone let a flood of tiny magic-prefix uploads sit ~683x under the reported
+// total while consuming real disk (blocks + inodes). Accounting rounds each file up
+// to this block and adds the sidecar's own block, so the cap sees allocated cost.
+// 4096 is the near-universal block size; it does not need to match the exact device.
+export const ATTACHMENT_ALLOC_BLOCK_BYTES = 4096;
+
+// Round a file's logical size up to whole allocation blocks (min one block for any
+// existing file, matching how a filesystem reserves at least a block per inode).
+function allocatedBytes(logicalBytes) {
+  const n = Math.max(0, Number(logicalBytes) || 0);
+  return Math.max(1, Math.ceil(n / ATTACHMENT_ALLOC_BLOCK_BYTES)) * ATTACHMENT_ALLOC_BLOCK_BYTES;
+}
+
 let temporaryFileId = 0;
 
 export function isValidAttachmentKey(key) {
@@ -61,12 +76,19 @@ function attachmentFile(stateDir, key, id) {
 // resolver: unset falls back to the default, `0`/`off` disables a duration, and a
 // non-positive or unparseable value falls back rather than throwing.
 export function resolveAttachmentConfig(env = process.env) {
+  const maxDiskBytes = diskCapEnv(env.LAVISH_AXI_MAX_ATTACHMENT_DISK_MB);
   return {
     maxBytes: positiveIntEnv(env.LAVISH_AXI_MAX_ATTACHMENT_BYTES, DEFAULT_MAX_ATTACHMENT_BYTES),
     maxPerPrompt: positiveIntEnv(env.LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT, DEFAULT_MAX_ATTACHMENTS_PER_PROMPT),
     maxPromptBytes: positiveIntEnv(env.LAVISH_AXI_MAX_PROMPT_ATTACHMENT_BYTES, DEFAULT_MAX_PROMPT_ATTACHMENT_BYTES),
     ttlMs: durationEnv(env.LAVISH_AXI_ATTACHMENT_TTL_MS, DEFAULT_ATTACHMENT_TTL_MS),
-    maxDiskBytes: diskCapEnv(env.LAVISH_AXI_MAX_ATTACHMENT_DISK_MB),
+    maxDiskBytes,
+    // DERIVED from the disk budget, never a separate knob: the most stored objects
+    // the byte cap could ever admit is the budget divided by the minimum per-object
+    // charge (an image block + a sidecar block). Deriving it means the object bound
+    // can only agree with the byte cap, never contradict it - avoiding a second
+    // hand-picked constant that could drift out of sync.
+    maxObjects: maxDiskBytes == null ? null : Math.floor(maxDiskBytes / (2 * ATTACHMENT_ALLOC_BLOCK_BYTES)),
   };
 }
 
@@ -419,7 +441,25 @@ export async function listAttachments(stateDir) {
       const filePath = path.join(dir, entry.name);
       try {
         const info = await stat(filePath);
-        files.push({ key: dirent.name, id: entry.name, path: filePath, bytes: info.size, mtimeMs: info.mtimeMs });
+        // Charge the real allocation: the image rounded up to whole blocks, plus the
+        // sidecar's own allocation (a sidecar always accompanies a v1 upload; a
+        // missing one just contributes nothing). `bytes` stays the logical image
+        // size for callers that report freed/original size; `chargedBytes` is what
+        // the disk cap measures.
+        let sidecarBytes = 0;
+        try {
+          sidecarBytes = (await stat(sidecarPath(filePath))).size;
+        } catch {
+          // No sidecar (pre-D6 upload or mid-write); it just adds no charge.
+        }
+        files.push({
+          key: dirent.name,
+          id: entry.name,
+          path: filePath,
+          bytes: info.size,
+          chargedBytes: allocatedBytes(info.size) + (sidecarBytes > 0 ? allocatedBytes(sidecarBytes) : 0),
+          mtimeMs: info.mtimeMs,
+        });
       } catch {
         // Raced with a delete; skip it.
       }
@@ -435,7 +475,13 @@ export async function listAttachments(stateDir) {
 // cap is set, oldest UNREFERENCED files are then evicted until under the cap;
 // referenced files are never evicted even if that leaves the total over budget.
 export async function sweepAttachments(stateDir, options = {}) {
-  const { ttlMs = DEFAULT_ATTACHMENT_TTL_MS, maxDiskBytes = null, referenced = new Set(), now = Date.now() } = options;
+  const {
+    ttlMs = DEFAULT_ATTACHMENT_TTL_MS,
+    maxDiskBytes = null,
+    maxObjects = null,
+    referenced = new Set(),
+    now = Date.now(),
+  } = options;
   const files = await listAttachments(stateDir);
   let deleted = 0;
   let freedBytes = 0;
@@ -458,17 +504,32 @@ export async function sweepAttachments(stateDir, options = {}) {
       survivors.push({ ...file, referenced: isReferenced });
     }
   }
-  if (maxDiskBytes != null) {
-    let total = survivors.reduce((sum, file) => sum + file.bytes, 0);
-    const evictable = survivors.filter((file) => !file.referenced).sort((a, b) => a.mtimeMs - b.mtimeMs);
+  // Oldest-first eviction of UNREFERENCED survivors, shared by both backstops. A
+  // referenced file is never a candidate, whatever the pressure.
+  const evictOldestUnreferenced = async (overBudget) => {
+    const evictable = survivors
+      .filter((file) => !file.evicted && !file.referenced)
+      .sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const file of evictable) {
-      if (total <= maxDiskBytes) break;
+      if (!overBudget()) break;
       if (await removeFile(file.path)) {
+        file.evicted = true;
         deleted += 1;
         freedBytes += file.bytes;
-        total -= file.bytes;
       }
     }
+  };
+  // Disk cap measured by CHARGED (allocated) cost, not logical image bytes - a flood
+  // of tiny files exceeds real disk long before its logical total trips a cap.
+  if (maxDiskBytes != null) {
+    const chargedTotal = () => survivors.filter((f) => !f.evicted).reduce((sum, f) => sum + f.chargedBytes, 0);
+    await evictOldestUnreferenced(() => chargedTotal() > maxDiskBytes);
+  }
+  // Object-count backstop: bounds inodes/entries directly, which a magic-prefix
+  // flood abuses even when every file is tiny enough to stay under the byte cap.
+  if (maxObjects != null) {
+    const objectCount = () => survivors.filter((f) => !f.evicted).length;
+    await evictOldestUnreferenced(() => objectCount() > maxObjects);
   }
   await pruneEmptyDirs(path.join(stateDir, "attachments"));
   return { deleted, freedBytes };

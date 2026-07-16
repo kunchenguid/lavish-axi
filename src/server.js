@@ -21,6 +21,7 @@ import {
   isNativeInteractiveControl,
   isNearTotalOcclusion,
   isTrustedAttachmentResult,
+  attachmentSizeError,
   partitionDroppedFiles,
   MODE_TOGGLE_HOTKEY_KEY,
 } from "./artifact-sdk.js";
@@ -901,6 +902,7 @@ export async function serve({
         .send(
           createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token, {
             maxAttachmentCount: attachmentConfig.maxPerPrompt,
+            maxAttachmentBytes: attachmentConfig.maxBytes,
           }),
         );
     } catch (error) {
@@ -1263,6 +1265,7 @@ export async function serve({
         return sweepAttachments(attachmentStateRoot, {
           ttlMs: attachmentConfig.ttlMs,
           maxDiskBytes: attachmentConfig.maxDiskBytes,
+          maxObjects: attachmentConfig.maxObjects,
           referenced,
         });
       });
@@ -1768,9 +1771,14 @@ export function createWhiteboardFrameHtml(channelToken = "") {
  * @param {string} key
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
- * @param {{ maxAttachmentCount?: number }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number }} [options]
  */
-export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "", { maxAttachmentCount } = {}) {
+export function createSdkJs(
+  key,
+  artifactRevision = 0,
+  artifactLoadToken = "",
+  { maxAttachmentCount, maxAttachmentBytes } = {},
+) {
   // Serialize every helper exported by mermaid-node.js as a same-scope const so
   // cross-helper calls (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the
   // browser. Deriving this from the module's exports — rather than a hand-kept
@@ -1785,7 +1793,10 @@ export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "", {
   // pass it to the SDK so the annotation card's local count guard matches the server
   // limit instead of a hardcoded literal (W1). The card is still only a UX guide - the
   // server re-enforces the cap on /prompts and rejects the whole batch on a mismatch.
-  const sdkOptions = { maxAttachmentCount: Number.isFinite(maxAttachmentCount) ? maxAttachmentCount : undefined };
+  const sdkOptions = {
+    maxAttachmentCount: Number.isFinite(maxAttachmentCount) ? maxAttachmentCount : undefined,
+    maxAttachmentBytes: Number.isFinite(maxAttachmentBytes) ? maxAttachmentBytes : undefined,
+  };
   return `(() => {
 const key=${JSON.stringify(key)};
 void key;
@@ -1800,6 +1811,7 @@ const classifyMaterialRectEscape=${classifyMaterialRectEscape.toString()};
 const isMaterialPageOverflow=${isMaterialPageOverflow.toString()};
 const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
+const attachmentSizeError=${attachmentSizeError.toString()};
 const partitionDroppedFiles=${partitionDroppedFiles.toString()};
 const isTrustedAttachmentResult=${isTrustedAttachmentResult.toString()};
 const deriveAttachmentNoticeState=${deriveAttachmentNoticeState.toString()};

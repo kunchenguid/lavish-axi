@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  ATTACHMENT_ALLOC_BLOCK_BYTES,
   attachmentPath,
   attachmentsDir,
   detectImageType,
@@ -223,6 +224,11 @@ test("resolveAttachmentConfig reads LAVISH_AXI_* limits with sane fallbacks", ()
   assert.equal(defaults.ttlMs, 7 * 24 * 60 * 60 * 1000);
   // Bounded default disk quota so the sweeper caps unreferenced growth out of the box.
   assert.equal(defaults.maxDiskBytes, 512 * 1024 * 1024);
+  // The object bound is DERIVED from the disk budget (budget / min per-object charge),
+  // never a separate env var, so it can only agree with the byte cap.
+  assert.equal(defaults.maxObjects, Math.floor((512 * 1024 * 1024) / (2 * ATTACHMENT_ALLOC_BLOCK_BYTES)));
+  // Disabling the disk cap disables the derived object bound too.
+  assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_DISK_MB: "off" }).maxObjects, null);
 
   const custom = resolveAttachmentConfig({
     LAVISH_AXI_MAX_ATTACHMENT_BYTES: "2048",
@@ -343,7 +349,9 @@ test("disk cap evicts oldest unreferenced files first and never referenced ones"
     await utimes(middle.path, new Date(base - 2000), new Date(base - 2000));
     await utimes(newest.path, new Date(base - 1000), new Date(base - 1000));
 
-    const each = oldest.bytes; // all three payloads are the same length
+    // Cap measured in CHARGED (allocated) cost, since that is what the sweep now
+    // enforces; all three payloads are the same length so each charges the same.
+    const each = (await listAttachments(dir)).find((f) => f.id === oldest.id).chargedBytes;
     // Cap fits ~2 files; the oldest unreferenced one is evicted. TTL off so only
     // the disk-cap backstop acts.
     const result = await sweepAttachments(dir, {
@@ -438,12 +446,13 @@ test("a failed expired-orphan delete still counts toward the disk cap (W3)", pos
     await utimes(stuck.path, new Date(old), new Date(old));
 
     await withUnwritableDir(attachmentsDir(dir, KEY), async () => {
-      // The cap fits either file alone but not both. Dropping the undeletable file
-      // from survivors would hide its bytes, leave the total apparently under cap,
-      // and evict nothing - so the cap stays exceeded on disk.
+      // The cap fits either file alone but not both, expressed in CHARGED cost.
+      // Dropping the undeletable file from survivors would hide its allocation, leave
+      // the total apparently under cap, and evict nothing - so the cap stays exceeded.
+      const charged = new Map((await listAttachments(dir)).map((f) => [f.id, f.chargedBytes]));
       const result = await sweepAttachments(dir, {
         ttlMs: 7 * 24 * 60 * 60 * 1000,
-        maxDiskBytes: stuck.bytes + fresh.bytes - 1,
+        maxDiskBytes: charged.get(stuck.id) + charged.get(fresh.id) - 1,
       });
 
       assert.ok(await resolveAttachment(dir, KEY, stuck.id), "the undeletable file is still on disk");
@@ -465,5 +474,105 @@ test("sweepAttachments prunes empty session dirs and tolerates a missing root", 
     await withTempDir(async (empty) => {
       assert.deepEqual(await sweepAttachments(empty, {}), { deleted: 0, freedBytes: 0 });
     });
+  });
+});
+
+test("disk accounting charges real allocation, not just logical image bytes (round7-b)", async () => {
+  await withTempDir(async (dir) => {
+    // A 12-byte image (the smallest detectImageType accepts) plus its ~40-byte
+    // sidecar occupies two filesystem blocks on disk, not 52 logical bytes. The cap
+    // must see the allocated cost, or thousands of tiny uploads sit far under the
+    // reported total while consuming real disk (the measured 683x undercount).
+    const stored = await writeAttachment(dir, KEY, uniquePng("tiny"), {});
+    const listed = await listAttachments(dir);
+    assert.equal(listed.length, 1);
+    const entry = listed[0];
+    assert.equal(entry.bytes, uniquePng("tiny").length, "logical size stays reported as bytes");
+    assert.ok(
+      entry.chargedBytes >= ATTACHMENT_ALLOC_BLOCK_BYTES,
+      `charged cost floors at one block, got ${entry.chargedBytes}`,
+    );
+    // Charge must include the sidecar's own allocation, not just the image's.
+    assert.ok(
+      entry.chargedBytes >= 2 * ATTACHMENT_ALLOC_BLOCK_BYTES,
+      `charge includes the sidecar block, got ${entry.chargedBytes}`,
+    );
+    void stored;
+  });
+});
+
+test("the disk cap evicts tiny files whose real allocation exceeds it (round7-b, the 683x)", async () => {
+  await withTempDir(async (dir) => {
+    const uploads = [];
+    for (let i = 0; i < 12; i += 1) uploads.push(await writeAttachment(dir, KEY, uniquePng("t" + i), {}));
+    const base = Date.now();
+    for (let i = 0; i < uploads.length; i += 1) {
+      await utimes(
+        uploads[i].path,
+        new Date(base - (uploads.length - i) * 1000),
+        new Date(base - (uploads.length - i) * 1000),
+      );
+    }
+
+    // Logical bytes total ~ a couple hundred; a 12 KiB cap would NEVER fire on that.
+    // Against real allocation (~2 blocks each = ~8 KiB/upload) the cap is far
+    // exceeded, so the sweep must evict oldest-first down to it. TTL off so only the
+    // disk-cap backstop acts.
+    const logicalTotal = uploads.reduce((s, u) => s + u.bytes, 0);
+    const cap = 12 * 1024;
+    assert.ok(logicalTotal < cap, "logical bytes alone would never trip the cap");
+
+    const result = await sweepAttachments(dir, { ttlMs: null, maxDiskBytes: cap });
+    assert.ok(result.deleted > 0, "the cap fires on real allocation, not logical bytes");
+
+    // What survives must actually be under the cap by charged cost.
+    const survivors = await listAttachments(dir);
+    const chargedTotal = survivors.reduce((s, f) => s + f.chargedBytes, 0);
+    assert.ok(chargedTotal <= cap, `survivors fit the cap by charged cost, got ${chargedTotal} > ${cap}`);
+    // Oldest-first: the newest upload must be among the survivors.
+    assert.ok(await resolveAttachment(dir, KEY, uploads[uploads.length - 1].id), "newest survives");
+  });
+});
+
+test("sweepAttachments enforces an object-count bound on unreferenced files (round7-b)", async () => {
+  await withTempDir(async (dir) => {
+    const uploads = [];
+    for (let i = 0; i < 10; i += 1) uploads.push(await writeAttachment(dir, KEY, uniquePng("o" + i), {}));
+    const base = Date.now();
+    for (let i = 0; i < uploads.length; i += 1) {
+      await utimes(
+        uploads[i].path,
+        new Date(base - (uploads.length - i) * 1000),
+        new Date(base - (uploads.length - i) * 1000),
+      );
+    }
+    // Bytes are trivially under any cap; the inode/object dimension is what a
+    // magic-prefix flood abuses. Bound the object count directly, oldest-first.
+    const result = await sweepAttachments(dir, { ttlMs: null, maxObjects: 4 });
+    assert.equal(result.deleted, 6, "evicts down to the object-count bound");
+    const survivors = await listAttachments(dir);
+    assert.equal(survivors.length, 4);
+    assert.ok(await resolveAttachment(dir, KEY, uploads[9].id), "newest object survives the count bound");
+  });
+});
+
+test("the object-count bound never evicts a referenced file (round7-b)", async () => {
+  await withTempDir(async (dir) => {
+    const uploads = [];
+    for (let i = 0; i < 6; i += 1) uploads.push(await writeAttachment(dir, KEY, uniquePng("r" + i), {}));
+    const base = Date.now();
+    for (let i = 0; i < uploads.length; i += 1) {
+      await utimes(
+        uploads[i].path,
+        new Date(base - (uploads.length - i) * 1000),
+        new Date(base - (uploads.length - i) * 1000),
+      );
+    }
+    // The OLDEST is referenced, so a count bound of 2 must still keep it and evict
+    // the next-oldest unreferenced ones instead.
+    const referenced = new Set([`${KEY}/${uploads[0].id}`]);
+    const result = await sweepAttachments(dir, { ttlMs: null, maxObjects: 2, referenced });
+    assert.ok(await resolveAttachment(dir, KEY, uploads[0].id), "referenced oldest is never evicted");
+    void result;
   });
 });

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveAttachmentNoticeState, isTrustedAttachmentResult, partitionDroppedFiles } from "../src/artifact-sdk.js";
+import {
+  attachmentSizeError,
+  deriveAttachmentNoticeState,
+  isTrustedAttachmentResult,
+  partitionDroppedFiles,
+} from "../src/artifact-sdk.js";
 import { createSdkJs } from "../src/server.js";
 
 // The annotation card lives inside the sandboxed artifact iframe, so its image
@@ -215,4 +220,40 @@ test("the SDK bundle wires the drop handler to partial-accept (W4-a)", () => {
   assert.match(sdk, /const partitionDroppedFiles=/);
   assert.match(sdk, /partitionDroppedFiles\(event\.dataTransfer, ATTACHMENT_ACCEPTED_MIME\)/);
   assert.match(sdk, /for \(const name of unsupported\) attachments\.rejectUnsupported\(name\)/);
+});
+
+test("attachmentSizeError rejects an over-limit file before it is read (round7-a)", () => {
+  const cap = 10 * 1024 * 1024; // 10 MiB
+  // Within the limit (and the boundary) is accepted.
+  assert.equal(attachmentSizeError(1024, cap), "");
+  assert.equal(attachmentSizeError(cap, cap), "");
+  // Over the limit is rejected with a message that names the cap.
+  const over = attachmentSizeError(cap + 1, cap);
+  assert.notEqual(over, "");
+  assert.match(over, /larger than/i);
+  assert.match(over, /MB/);
+  // A huge drop - the case that would otherwise be allocated + structured-cloned
+  // into the chrome before any check - is refused.
+  assert.notEqual(attachmentSizeError(2 * 1024 * 1024 * 1024, cap), "");
+  // An unwired/disabled limit imposes no client-side gate (the server still caps).
+  assert.equal(attachmentSizeError(cap + 1, 0), "");
+  assert.equal(attachmentSizeError(cap + 1, undefined), "");
+  assert.equal(attachmentSizeError(cap + 1, -1), "");
+  // A non-finite size never throws and never falsely rejects.
+  assert.equal(attachmentSizeError(NaN, cap), "");
+});
+
+test("the SDK bundle checks the size limit before reading or cloning the file (round7-a)", () => {
+  // The limit is threaded in and the check runs in add() BEFORE createObjectURL /
+  // arrayBuffer, so an oversized file never materializes a buffer or a second clone.
+  assert.match(sdk, /const ATTACHMENT_MAX_BYTES\s*=/);
+  assert.match(sdk, /const attachmentSizeError=/);
+  // `URL.createObjectURL` occurs only inside add(), and add() materializes the
+  // buffer (via upload -> arrayBuffer) only for an item it has already created a URL
+  // for. So the size gate preceding createObjectURL proves it precedes every read.
+  const gateAt = sdk.indexOf("attachmentSizeError(file.size, ATTACHMENT_MAX_BYTES)");
+  const createObjectUrlAt = sdk.indexOf("URL.createObjectURL");
+  assert.ok(gateAt !== -1, "the size gate is wired into add()");
+  assert.equal(sdk.match(/URL\.createObjectURL/g).length, 1, "createObjectURL only appears in add()");
+  assert.ok(gateAt < createObjectUrlAt, "the size gate precedes createObjectURL, so nothing is read first");
 });
