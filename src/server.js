@@ -1126,7 +1126,10 @@ export async function serve({
       // Reference-counted delete under the lifecycle lock: a content-addressed file
       // shared by an already-queued prompt (the same image attached twice, deduped
       // to one id) must survive a chip removal, or the queued prompt's thumbnail and
-      // path break. Only reap the file when no pending prompt still references it.
+      // path break. `referencedAttachmentIds` also covers attachments delivered
+      // within the read grace, so a poll's images are not deletable out from under
+      // the agent. The chrome never drives this route (see chrome-client's note on
+      // the removed eager delete); it remains a same-origin-guarded server API.
       const status = await store.runExclusive(async () => {
         const referenced = await store.referencedAttachmentIds();
         if (referenced.has(`${req.params.key}/${req.params.id}`)) return "referenced";
