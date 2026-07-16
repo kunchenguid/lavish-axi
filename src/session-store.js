@@ -30,18 +30,22 @@ export const ATTACHMENT_DELIVERY_GRACE_MS = 60 * 60 * 1000; // 1 hour
 
 // A whole POST /prompts batch is one user's queued annotations, so its total image
 // count is small in every real use. Bounding it is what keeps the resolver work
-// below O(payload size) while the store's global lock is held.
+// below O(payload size) while the store's global lock is held. It bounds ONE
+// request; prompts accumulate across requests until a poll drains them, so it says
+// nothing about how much a single delivery carries.
 export const MAX_REQUEST_ATTACHMENT_REFS = 256;
 
-// Retention lives in state.json, which is rewritten wholesale on every store
-// operation, so the list is capped as well as time-bounded.
+// Bounds only the retained HISTORY of earlier deliveries - state.json is rewritten
+// wholesale on every store operation, so the list cannot grow forever.
 //
-// It is DERIVED from the request bound, never chosen independently: whatever a
-// single batch is allowed to queue, a single delivery must be able to protect. A
-// retention bound lower than the request bound silently leaves the overflow of a
-// legal max-size batch sweepable at the exact moment the agent is handed those
-// paths - reopening the very hole this retention exists to close.
-export const MAX_DELIVERED_ATTACHMENTS = MAX_REQUEST_ATTACHMENT_REFS;
+// It deliberately does NOT bound the current delivery. The invariant is structural,
+// not numeric: whatever `takeFeedback` just handed the agent is retained in full,
+// however large, and this cap only decides how much older history rides along. Any
+// number chosen here would be wrong, because pending prompts accumulate across an
+// unbounded number of accepted requests - so a single poll can legitimately deliver
+// far more than any one request may queue. Trimming the current delivery to fit a
+// constant is what reopens the hole this retention exists to close.
+export const MAX_DELIVERED_ATTACHMENTS = 256;
 
 export class SessionStore {
   constructor(file) {
@@ -519,21 +523,25 @@ export class SessionStore {
       // Delivery clears pending prompts, so retain the attachment ids for a bounded
       // grace window while the polling agent opens the absolute paths it received.
       const deliveredNow = Date.now();
-      const retained = new Map();
-      for (const entry of session.delivered_attachments || []) {
-        if (!entry || !entry.id) continue;
-        if (deliveredNow - Number(entry.at) > ATTACHMENT_DELIVERY_GRACE_MS) continue;
-        retained.set(entry.id, { id: entry.id, at: Number(entry.at) });
-      }
+      const deliveredIds = new Set();
       for (const prompt of prompts) {
         for (const attachment of prompt.attachments || []) {
-          if (!attachment || !attachment.id) continue;
-          // Re-insert so the freshest delivery is also the newest for the bound below.
-          retained.delete(attachment.id);
-          retained.set(attachment.id, { id: attachment.id, at: deliveredNow });
+          if (attachment?.id) deliveredIds.add(attachment.id);
         }
       }
-      session.delivered_attachments = [...retained.values()].slice(-MAX_DELIVERED_ATTACHMENTS);
+      const carried = (session.delivered_attachments || [])
+        .filter(
+          (entry) =>
+            entry &&
+            entry.id &&
+            !deliveredIds.has(entry.id) &&
+            deliveredNow - Number(entry.at) <= ATTACHMENT_DELIVERY_GRACE_MS,
+        )
+        .map((entry) => ({ id: entry.id, at: Number(entry.at) }))
+        .sort((a, b) => a.at - b.at);
+      const current = [...deliveredIds].map((id) => ({ id, at: deliveredNow }));
+      const historyRoom = Math.max(0, MAX_DELIVERED_ATTACHMENTS - current.length);
+      session.delivered_attachments = [...carried.slice(-historyRoom), ...current];
       session.prompts = [];
       session.artifact_failures = [];
       session.pending_prompts = 0;

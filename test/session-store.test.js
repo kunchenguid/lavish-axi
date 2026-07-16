@@ -1798,3 +1798,46 @@ test("every image in a max-size batch survives its own delivery (post-poll-reten
     assert.deepEqual(missing, [], `every delivered image stays referenced (${missing.length} of ${total} were not)`);
   });
 });
+
+test("every image delivered in one poll survives, across accumulated batches (post-poll-retention)", async () => {
+  await withStore(async ({ store, session }) => {
+    const resolveAttachment = async (_key, attachmentId) => ({
+      id: attachmentId,
+      type: "image",
+      path: "/tmp/" + attachmentId,
+      mime: "image/png",
+      bytes: 10,
+      width: 1,
+      height: 1,
+    });
+    const batch = (offset) => {
+      const prompts = [];
+      for (let i = 0; i < MAX_REQUEST_ATTACHMENT_REFS / 4; i += 1) {
+        prompts.push({
+          uid: `${offset}-${i}`,
+          prompt: "p",
+          selector: "h1",
+          tag: "h1",
+          text: "",
+          attachments: Array.from({ length: 4 }, (_, j) => ({ id: unknownAttachmentId(offset + i * 4 + j) })),
+        });
+      }
+      return prompts;
+    };
+    // Prompts ACCUMULATE across POSTs until a poll drains them. The per-request bound
+    // says nothing about how many are pending when takeFeedback finally runs, so a
+    // retention bound sized to ONE request silently drops everything the earlier
+    // batches delivered - the exact paths the agent is being handed right now.
+    const opts = { resolveAttachment, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 };
+    assert.equal((await store.queuePrompts(session.key, { prompts: batch(1000) }, opts)).rejected, undefined);
+    assert.equal((await store.queuePrompts(session.key, { prompts: batch(2000) }, opts)).rejected, undefined);
+
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    const delivered = feedback.prompts.flatMap((p) => (p.attachments || []).map((a) => a.id));
+    assert.equal(delivered.length, MAX_REQUEST_ATTACHMENT_REFS * 2, "one poll delivered both batches");
+
+    const referenced = await store.referencedAttachmentIds();
+    const missing = delivered.filter((id) => !referenced.has(`${session.key}/${id}`));
+    assert.deepEqual(missing, [], `every id in the actual delivery stays referenced (${missing.length} were not)`);
+  });
+});
