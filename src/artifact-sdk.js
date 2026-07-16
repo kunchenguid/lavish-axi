@@ -247,25 +247,70 @@ export function isNearTotalOcclusion({ occludedSamples, totalSamples, minSamples
 }
 
 /**
- * Decide the fate of a removed chip's stored file. Attachment storage is
- * content-addressed, so one file can back several chips: the same image attached
- * twice dedups to a single id. An id check alone only sees chips whose upload has
- * already returned - a twin that is STILL uploading will dedup onto this very id but
- * carries none yet. Deleting on that blind spot pulls the file out from under the
- * twin, whose upload then finalizes onto a deleted id and whose send fails as
- * not-found (W-B). So an id is only "delete" when nothing can still claim it;
- * while any upload is in flight the answer is "defer" and the caller re-asks once
- * uploads settle.
+ * Split a drop/paste into the images the card can attach and the names of the
+ * files it cannot.
  *
- * @param {Array<{ status?: string, id?: string }>} items chips currently on the card
- * @param {string} id the removed chip's server id ("" when it never uploaded)
- * @returns {"delete" | "defer" | "skip"}
+ * Both halves are always reported. A mixed drop (a screenshot alongside a PDF)
+ * used to accept the images and say nothing about the rest, because the
+ * unsupported branch only ran when NO image was found - so the companion files
+ * vanished with no feedback. The card attaches what it can and raises a visible
+ * error chip for each file it cannot, rather than silently dropping either half.
+ *
+ * @param {{ files?: ArrayLike<any>, items?: ArrayLike<any> }|null|undefined} dataTransfer
+ * @param {Record<string, boolean>} acceptedMime
+ * @returns {{ images: any[], unsupported: string[] }}
  */
-export function classifyAttachmentDelete(items, id) {
-  if (!id) return "skip";
-  if (items.some((other) => other.id === id)) return "skip";
-  if (items.some((other) => other.status === "uploading")) return "defer";
-  return "delete";
+export function partitionDroppedFiles(dataTransfer, acceptedMime) {
+  const accepted = acceptedMime || {};
+  const images = [];
+  const unsupported = [];
+  if (!dataTransfer) return { images, unsupported };
+  const files = Array.from(dataTransfer.files || []).filter(Boolean);
+  for (const file of files) {
+    if (accepted[file.type]) images.push(file);
+    else unsupported.push(file.name || "file");
+  }
+  if (!files.length) {
+    // Pasted screenshots arrive as items, not files, in some browsers.
+    for (const item of Array.from(dataTransfer.items || [])) {
+      if (!item || item.kind !== "file") continue;
+      if (accepted[item.type]) {
+        const file = item.getAsFile();
+        if (file) images.push(file);
+      } else {
+        unsupported.push("file");
+      }
+    }
+  }
+  return { images, unsupported };
+}
+
+/**
+ * Decide whether an incoming `lavish:attachmentResult` may be applied to this
+ * document's chips. Two independent conditions, both required:
+ *
+ * 1. It came from the chrome (`event.source === parent`). The SDK's listener is on
+ *    `window`, so without this the artifact can post to ITSELF and hand its own
+ *    chips any server id - the upload mediation the chrome performs is bypassed.
+ * 2. It carries THIS document's upload nonce. Chip ids (`att-1`, `att-2`, ...)
+ *    restart on every document load, so a result still in flight across an iframe
+ *    reload would otherwise match a brand-new chip by id alone and mark it ready
+ *    with the previous document's image. The nonce is minted per document, so a
+ *    pre-reload result can never match.
+ *
+ * The nonce is compared by exact string identity - no coercion, no truthiness -
+ * so a hostile `{nonce: true}` or `{nonce: [realNonce]}` cannot pass.
+ *
+ * @param {{ source?: unknown, data?: { nonce?: unknown } }} event the message event
+ * @param {{ parentWindow?: unknown, nonce?: string }} context this document's upload identity
+ * @returns {boolean}
+ */
+export function isTrustedAttachmentResult(event, context = {}) {
+  if (!event || !context.parentWindow || event.source !== context.parentWindow) return false;
+  const expected = context.nonce;
+  if (typeof expected !== "string" || !expected) return false;
+  const actual = (event.data || {}).nonce;
+  return typeof actual === "string" && actual === expected;
 }
 
 /**
@@ -320,6 +365,17 @@ export function createArtifactSdk(
   const ATTACHMENT_MAX_COUNT =
     Number.isFinite(options.maxAttachmentCount) && options.maxAttachmentCount > 0 ? options.maxAttachmentCount : 4;
   const ATTACHMENT_ACCEPTED_MIME = { "image/png": true, "image/jpeg": true, "image/webp": true };
+  // Minted once per document load and stamped on every upload, so a result the
+  // chrome posts back can be tied to the exact document that asked for it. Chip
+  // ids restart at att-1 on each load, so they cannot do this on their own: an
+  // upload still in flight across a live-reload would otherwise land on a new
+  // document's first chip. `randomUUID` needs a secure context, which the
+  // sandboxed artifact frame is not guaranteed to be, hence the fallback - this
+  // value only has to be unique per document, never unguessable.
+  const ATTACHMENT_NONCE =
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : "n" + Math.random().toString(36).slice(2) + Date.now().toString(36);
   let attachmentLocalCounter = 0;
   // The controller for the currently open card, so upload results routed from the
   // chrome reach the right chips. Only one card is ever open at a time.
@@ -382,9 +438,6 @@ export function createArtifactSdk(
     const items = [];
     let capRejected = false;
     let queueBlocked = false;
-    // Ids whose delete is parked because an in-flight upload could still dedup onto
-    // them (see classifyAttachmentDelete). Re-decided every time an upload settles.
-    const pendingDeletes = new Set();
 
     function render() {
       if (items.length < ATTACHMENT_MAX_COUNT) capRejected = false;
@@ -422,7 +475,14 @@ export function createArtifactSdk(
         .then((bytes) => {
           if (!items.includes(item)) return;
           parent.postMessage(
-            { type: "lavish:uploadAttachment", localId: item.localId, name: item.name, mime: item.mime, bytes },
+            {
+              type: "lavish:uploadAttachment",
+              nonce: ATTACHMENT_NONCE,
+              localId: item.localId,
+              name: item.name,
+              mime: item.mime,
+              bytes,
+            },
             "*",
           );
         })
@@ -470,29 +530,7 @@ export function createArtifactSdk(
       if (!item) return;
       if (item.url) URL.revokeObjectURL(item.url);
       items.splice(index, 1);
-      releaseAttachmentId(item.id);
       render();
-    }
-
-    // Tell the chrome to delete the stored file, but only once nothing on this card
-    // can still reference that content-addressed id. An id whose fate an in-flight
-    // upload could still change is parked instead of deleted; the server refcounts
-    // ids against queued prompts and the TTL sweeper reclaims anything left behind,
-    // so parking can leak a file at worst, never break a live chip.
-    function releaseAttachmentId(id) {
-      const decision = classifyAttachmentDelete(items, id);
-      if (decision === "delete") parent.postMessage({ type: "lavish:removeAttachment", id }, "*");
-      else if (decision === "defer") pendingDeletes.add(id);
-    }
-
-    function flushPendingDeletes() {
-      for (const id of [...pendingDeletes]) {
-        const decision = classifyAttachmentDelete(items, id);
-        // Still undecidable: another upload is in flight and may yet claim this id.
-        if (decision === "defer") continue;
-        pendingDeletes.delete(id);
-        if (decision === "delete") parent.postMessage({ type: "lavish:removeAttachment", id }, "*");
-      }
     }
 
     function retryAt(index) {
@@ -528,9 +566,6 @@ export function createArtifactSdk(
         }
         render();
       }
-      // A settled upload can decide a parked delete - including when its own chip was
-      // removed mid-flight and this result no longer matches any chip.
-      flushPendingDeletes();
     }
 
     function collectReady() {
@@ -2091,8 +2126,10 @@ export function createArtifactSdk(
       attachInput.value = "";
     });
     textarea.addEventListener("paste", (event) => {
-      const files = imageFilesFromDataTransfer(event.clipboardData);
-      if (files.length && attachments.addFiles(files)) event.preventDefault();
+      // Images only: a paste carrying no image must still fall through to the
+      // textarea's normal text paste, so unsupported entries raise no chip here.
+      const { images } = partitionDroppedFiles(event.clipboardData, ATTACHMENT_ACCEPTED_MIME);
+      if (images.length && attachments.addFiles(images)) event.preventDefault();
     });
     card.addEventListener("dragover", (event) => {
       // Accept ANY file drag so the drop lands on the card (and is preventable)
@@ -2107,14 +2144,17 @@ export function createArtifactSdk(
     });
     card.addEventListener("drop", (event) => {
       // Intercept every drop over the card so a dropped PDF/other file can never
-      // navigate the frame away; accept images or surface UNSUPPORTED_TYPE.
+      // navigate the frame away, then partial-accept: attach the images and raise
+      // one UNSUPPORTED_TYPE chip per file that cannot be attached.
       event.preventDefault();
       card.classList.remove("is-dropping");
-      const files = imageFilesFromDataTransfer(event.dataTransfer);
-      if (files.length) {
-        attachments.addFiles(files);
-      } else if (dataTransferHasFiles(event.dataTransfer)) {
-        attachments.rejectUnsupported(unsupportedDropName(event.dataTransfer));
+      const { images, unsupported } = partitionDroppedFiles(event.dataTransfer, ATTACHMENT_ACCEPTED_MIME);
+      if (images.length) attachments.addFiles(images);
+      for (const name of unsupported) attachments.rejectUnsupported(name);
+      // Some drags expose no enumerable files or items (only a "Files" type hint),
+      // so nothing can be partitioned; still tell the user the drop was refused.
+      if (!images.length && !unsupported.length && dataTransferHasFiles(event.dataTransfer)) {
+        attachments.rejectUnsupported("file");
       }
     });
 
@@ -2171,23 +2211,6 @@ export function createArtifactSdk(
     setTimeout(() => textarea.focus(), 0);
   }
 
-  function imageFilesFromDataTransfer(dataTransfer) {
-    if (!dataTransfer) return [];
-    const files = [];
-    for (const file of dataTransfer.files || []) {
-      if (file && ATTACHMENT_ACCEPTED_MIME[file.type]) files.push(file);
-    }
-    if (files.length) return files;
-    // Pasted screenshots arrive as items, not files, in some browsers.
-    for (const item of dataTransfer.items || []) {
-      if (item.kind === "file" && ATTACHMENT_ACCEPTED_MIME[item.type]) {
-        const file = item.getAsFile();
-        if (file) files.push(file);
-      }
-    }
-    return files;
-  }
-
   function dataTransferHasFiles(dataTransfer) {
     if (!dataTransfer) return false;
     if ((dataTransfer.files || []).length) return true;
@@ -2195,14 +2218,6 @@ export function createArtifactSdk(
       if (item.kind === "file") return true;
     }
     return (dataTransfer.types || []).includes?.("Files");
-  }
-
-  function unsupportedDropName(dataTransfer) {
-    if (!dataTransfer) return "file";
-    for (const file of dataTransfer.files || []) {
-      if (file && !ATTACHMENT_ACCEPTED_MIME[file.type]) return file.name || "file";
-    }
-    return "file";
   }
 
   /** @type {Window & { lavish?: unknown }} */ (window).lavish = {
@@ -2215,9 +2230,13 @@ export function createArtifactSdk(
   };
 
   window.addEventListener("message", (event) => {
+    // The chrome is the only legitimate sender. This listener is on `window`, so
+    // without the source check the artifact could post to itself and drive the SDK.
+    if (event.source !== parent) return;
     const msg = event.data || {};
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
     if (msg.type === "lavish:attachmentResult") {
+      if (!isTrustedAttachmentResult(event, { parentWindow: parent, nonce: ATTACHMENT_NONCE })) return;
       activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);
     }
     if (msg.type === "lavish:requestSnapshot") {

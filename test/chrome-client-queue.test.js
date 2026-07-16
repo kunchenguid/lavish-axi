@@ -18,8 +18,12 @@ async function createChromeHarness({
   storage = new Map(),
   beginLoadResponses = [],
   handoffResponses = [],
+  storedQueue = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
+  // Seed sessionStorage before the client boots, to model a tab whose queue was
+  // already persisted by an earlier page load.
+  if (storedQueue) storage.set(`lavish-axi:queued:${sessionData.key}`, JSON.stringify(storedQueue));
   const postedToFrame = [];
   const postedToWhiteboard = [];
   const inlineWhiteboards = [];
@@ -2331,40 +2335,10 @@ test("chrome reports an upload failure back to the card", async () => {
   assert.equal(result.error, "unsupported image type");
 });
 
-test("chrome deletes a removed attachment through the server", async () => {
-  const requests = [];
-  const chrome = await createChromeHarness({
-    fetchImpl: async (url, options) => {
-      requests.push({ url, options });
-      return { ok: true, json: async () => ({ status: "removed" }) };
-    },
-  });
-  const id = "a".repeat(64) + ".png";
-  chrome.sendFrameMessage({ type: "lavish:removeAttachment", id });
-  await flushPromises();
-  assert.equal(requests[0].url, "/api/abc/attachments/" + id);
-  assert.equal(requests[0].options.method, "DELETE");
-});
-
-test("chrome keeps a removed attachment while a queued prompt references it", async () => {
-  const requests = [];
-  const chrome = await createChromeHarness({
-    fetchImpl: async (url, options) => {
-      requests.push({ url, options });
-      return { ok: true, json: async () => ({ status: "removed" }) };
-    },
-  });
-  const id = "a".repeat(64) + ".png";
-  chrome.sendFrameMessage({
-    type: "lavish:queuePrompt",
-    prompt: { prompt: "keep", selector: "h1", tag: "annotation", text: "", attachments: [{ id }] },
-  });
-
-  chrome.sendFrameMessage({ type: "lavish:removeAttachment", id });
-  await flushPromises();
-
-  assert.equal(requests.length, 0);
-});
+// The two tests that used to pin "chrome deletes a removed attachment through the
+// server" (and its queued-reference exception) are intentionally gone: E2 removed
+// that eager delete outright, and the replacement contract - the chrome never
+// honors an iframe-driven delete - is pinned above.
 
 test("chrome renders queued-prompt attachment thumbnails from the server endpoint", async () => {
   const chrome = await createChromeHarness();
@@ -2442,4 +2416,85 @@ test("chrome rejects an over-cap image before it hits the network", async () => 
   assert.equal(result.localId, "att-x");
   assert.equal(result.ok, false);
   assert.match(result.error, /larger than/);
+});
+
+test("a poisoned attachments array cannot wedge the queue or the tab (E5)", async () => {
+  const chrome = await createChromeHarness();
+
+  // An untrusted artifact controls the queued prompt wholesale. Dereferencing each
+  // entry unvalidated throws inside render() - but the prompt is persisted BEFORE
+  // the render, so the poison survives in sessionStorage and re-throws on every
+  // reload, wedging the tab for good.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "poison", selector: "h1", tag: "annotation", text: "", attachments: [null] },
+  });
+
+  assert.deepEqual(chrome.queued(), [{ prompt: "poison", selector: "h1", tag: "annotation", text: "" }]);
+  assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /pill-attachment/);
+});
+
+test("only well-formed attachment refs survive the enqueue path (E5)", async () => {
+  const chrome = await createChromeHarness();
+  const good = "a".repeat(64) + ".png";
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "mixed",
+      selector: "h1",
+      tag: "annotation",
+      text: "",
+      attachments: [null, { id: good, name: "ok.png" }, "nope", { name: "no-id.png" }, ["nested"], { id: "" }],
+    },
+  });
+
+  // The one real ref is kept; every malformed entry is dropped before persisting,
+  // so what reaches the server (and the +N count) reflects only deliverable images.
+  assert.deepEqual(chrome.queued()[0].attachments, [{ id: good, name: "ok.png" }]);
+  assert.equal(chrome.element("annotationPills").innerHTML.match(/class="pill-attachment"/g)?.length, 1);
+});
+
+test("a non-array attachments field cannot wedge the queue (E5)", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "bad", selector: "h1", tag: "annotation", text: "", attachments: "not-an-array" },
+  });
+
+  assert.deepEqual(chrome.queued(), [{ prompt: "bad", selector: "h1", tag: "annotation", text: "" }]);
+});
+
+test("a poisoned prompt already in sessionStorage cannot wedge a reload (E5)", async () => {
+  const chrome = await createChromeHarness({
+    storedQueue: [{ prompt: "old poison", selector: "h1", tag: "annotation", text: "", attachments: [null] }],
+  });
+
+  // A tab poisoned before this fix still has the bad prompt on disk; loading it
+  // must not throw, or the tab stays wedged even after upgrading.
+  assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /pill-attachment/);
+  assert.match(chrome.element("annotationPills").innerHTML, /old poison/);
+});
+
+test("the chrome never honors an attachment delete driven by the artifact iframe (E2)", async () => {
+  const requests = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => ({ status: "removed" }) };
+    },
+  });
+
+  // The iframe is untrusted, and the chrome cannot see chips that are ready but
+  // not yet queued in ANOTHER tab. Honoring this delete lets one tab (or a
+  // malicious artifact) destroy bytes another live card still needs, which then
+  // fails as not-found on send. Reclamation belongs to the reference-aware sweeper.
+  chrome.sendFrameMessage({ type: "lavish:removeAttachment", id: "a".repeat(64) + ".png" });
+  await flushPromises();
+
+  assert.deepEqual(
+    requests.filter((request) => request.options?.method === "DELETE"),
+    [],
+  );
 });

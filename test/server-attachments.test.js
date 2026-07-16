@@ -138,13 +138,16 @@ test("DELETE keeps a content-addressed file still referenced by a queued prompt 
     // The file is still fetchable, so the queued prompt's thumbnail/path is intact.
     assert.equal((await fetch(`${base}/api/${key}/attachments/${attachment.id}`)).status, 200);
 
-    // After the agent takes the feedback, the reference clears and the file becomes deletable.
+    // Delivering the feedback does NOT release the reference: the agent has just
+    // been handed this path and is only now reading it, so the file stays protected
+    // for the delivery read grace rather than becoming collectable mid-read.
     await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const del2 = await fetch(`${base}/api/${key}/attachments/${attachment.id}`, {
       method: "DELETE",
       headers: { origin: base },
     });
-    assert.deepEqual(await del2.json(), { status: "removed" });
+    assert.deepEqual(await del2.json(), { status: "referenced" });
+    assert.equal((await fetch(`${base}/api/${key}/attachments/${attachment.id}`)).status, 200);
   });
 });
 

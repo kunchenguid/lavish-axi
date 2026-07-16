@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { SessionStore } from "../src/session-store.js";
+import { ATTACHMENT_DELIVERY_GRACE_MS, MAX_DELIVERED_ATTACHMENTS, SessionStore } from "../src/session-store.js";
 
 let beginRequestSequence = 0;
 
@@ -1294,7 +1294,7 @@ test("attachments are dropped when no resolver is supplied", async () => {
   }
 });
 
-test("referencedAttachmentIds collects ids from pending prompts and clears after delivery", async () => {
+test("referencedAttachmentIds covers pending prompts, then the delivery read grace", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -1322,9 +1322,15 @@ test("referencedAttachmentIds collects ids from pending prompts and clears after
 
     assert.deepEqual([...(await store.referencedAttachmentIds())], [`${session.key}/${id}`]);
 
-    // takeFeedback clears pending prompts, so the attachment is no longer referenced.
+    // takeFeedback clears the pending prompts, but the agent only starts reading the
+    // delivered path now, so the id stays referenced for the read grace and is
+    // released once that window lapses.
     await store.takeFeedback(session.key);
-    assert.deepEqual([...(await store.referencedAttachmentIds())], []);
+    assert.deepEqual([...(await store.referencedAttachmentIds())], [`${session.key}/${id}`]);
+    assert.deepEqual(
+      [...(await store.referencedAttachmentIds({ now: Date.now() + ATTACHMENT_DELIVERY_GRACE_MS + 1 }))],
+      [],
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1380,4 +1386,288 @@ test("queuePrompts and takeFeedback serialize so a mid-resolution poll never clo
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// A well-formed but nonexistent content-hash id, distinct per index.
+function unknownAttachmentId(index) {
+  return String(index).padStart(64, "0") + ".png";
+}
+
+async function withStore(run) {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await run({ store, session });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a raw over-cap attachment array is rejected before any resolver call (E3)", async () => {
+  await withStore(async ({ store, session }) => {
+    let resolverCalls = 0;
+    // Every id is well-formed and unknown. The cap counts RESOLVED refs, so an
+    // unknown id never advances it: without a raw-count check each one costs a
+    // sequential filesystem stat, and the whole loop runs while holding the
+    // store's single global mutex - blocking every poll and state mutation.
+    const attachments = Array.from({ length: 5000 }, (_, i) => ({ id: unknownAttachmentId(i) }));
+    const result = await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "1", prompt: "dos", selector: "h1", tag: "h1", text: "", attachments }] },
+      {
+        resolveAttachment: async () => {
+          resolverCalls += 1;
+          return null;
+        },
+        maxPerPrompt: 4,
+        maxPromptBytes: 25 * 1024 * 1024,
+      },
+    );
+
+    assert.equal(resolverCalls, 0, "the resolver is never reached for a raw over-cap array");
+    assert.equal(result.rejected[0].reason, "too-many");
+    assert.ok(result.rejected.length <= 4, "the rejection list stays bounded, not one entry per crafted id");
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting", "nothing was persisted");
+  });
+});
+
+test("a request-wide attachment ref flood is rejected before any resolver call (E3)", async () => {
+  await withStore(async ({ store, session }) => {
+    let resolverCalls = 0;
+    // Each prompt sits at the per-prompt cap, so only a request-wide bound stops
+    // the batch from multiplying the resolver work across thousands of prompts.
+    const prompts = Array.from({ length: 400 }, (_, i) => ({
+      uid: String(i),
+      prompt: "p" + i,
+      selector: "h1",
+      tag: "h1",
+      text: "",
+      attachments: Array.from({ length: 4 }, (_, j) => ({ id: unknownAttachmentId(i * 4 + j) })),
+    }));
+    const result = await store.queuePrompts(
+      session.key,
+      { prompts },
+      {
+        resolveAttachment: async () => {
+          resolverCalls += 1;
+          return null;
+        },
+        maxPerPrompt: 4,
+        maxPromptBytes: 25 * 1024 * 1024,
+      },
+    );
+
+    assert.equal(resolverCalls, 0, "the resolver is never reached for a request-wide flood");
+    assert.equal(result.rejected[0].reason, "too-many-in-request");
+    assert.ok(result.rejected.length <= 4, "the rejection list stays bounded");
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting", "nothing was persisted");
+  });
+});
+
+test("a legitimate batch still resolves every attachment (E3 does not over-reject)", async () => {
+  await withStore(async ({ store, session }) => {
+    let resolverCalls = 0;
+    const prompts = Array.from({ length: 3 }, (_, i) => ({
+      uid: String(i),
+      prompt: "p" + i,
+      selector: "h1",
+      tag: "h1",
+      text: "",
+      attachments: [{ id: unknownAttachmentId(i), name: "shot.png" }],
+    }));
+    const result = await store.queuePrompts(
+      session.key,
+      { prompts },
+      {
+        resolveAttachment: async (_key, id) => {
+          resolverCalls += 1;
+          return { id, type: "image", path: "/tmp/" + id, mime: "image/png", bytes: 10, width: 1, height: 1 };
+        },
+        maxPerPrompt: 4,
+        maxPromptBytes: 25 * 1024 * 1024,
+      },
+    );
+
+    assert.equal(resolverCalls, 3, "each in-cap ref still resolves exactly once");
+    assert.equal(result.pending_prompts, 3);
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(feedback.prompts[0].attachments[0].path, "/tmp/" + unknownAttachmentId(0));
+  });
+});
+
+test("a malformed attachments field rejects the whole batch instead of dropping it (W1)", async () => {
+  await withStore(async ({ store, session }) => {
+    // `attachments` is not an array at all. Silently normalizing this to "no
+    // attachments" lets the POST succeed, and the chrome then clears its queue
+    // believing the images were delivered - the C4 all-or-nothing violation.
+    const result = await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "1", prompt: "hi", selector: "h1", tag: "h1", text: "", attachments: "nope" }] },
+      { resolveAttachment: async () => null, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+
+    assert.equal(result.rejected[0].reason, "malformed");
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting", "the batch persisted nothing");
+  });
+});
+
+test("malformed attachment entries reject the whole batch (W1)", async () => {
+  await withStore(async ({ store, session }) => {
+    for (const attachments of [[null], [{ name: "no-id.png" }], [["nested"]], ["just-a-string"]]) {
+      const result = await store.queuePrompts(
+        session.key,
+        { prompts: [{ uid: "1", prompt: "hi", selector: "h1", tag: "h1", text: "", attachments }] },
+        { resolveAttachment: async () => null, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+      );
+      assert.equal(result.rejected[0].reason, "malformed", `entry ${JSON.stringify(attachments)} is malformed`);
+    }
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting", "no malformed batch persisted");
+  });
+});
+
+test("a malformed entry fails the batch even alongside a resolvable one (W1)", async () => {
+  await withStore(async ({ store, session }) => {
+    const good = unknownAttachmentId(1);
+    const result = await store.queuePrompts(
+      session.key,
+      {
+        prompts: [{ uid: "1", prompt: "hi", selector: "h1", tag: "h1", text: "", attachments: [{ id: good }, null] }],
+      },
+      {
+        resolveAttachment: async (_key, id) => ({
+          id,
+          type: "image",
+          path: "/tmp/" + id,
+          mime: "image/png",
+          bytes: 10,
+          width: 1,
+          height: 1,
+        }),
+        maxPerPrompt: 4,
+        maxPromptBytes: 25 * 1024 * 1024,
+      },
+    );
+
+    assert.equal(result.rejected[0].reason, "malformed");
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting", "the good ref is not delivered either");
+  });
+});
+
+test("an absent attachments field is not malformed (W1)", async () => {
+  await withStore(async ({ store, session }) => {
+    const result = await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "1", prompt: "plain", selector: "h1", tag: "h1", text: "" }] },
+      { resolveAttachment: async () => null, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+    assert.equal(result.rejected, undefined, "a prompt with no images is untouched by attachment validation");
+    assert.equal(result.pending_prompts, 1);
+  });
+});
+
+test("a delivered attachment stays referenced while the agent reads it (post-poll-retention)", async () => {
+  await withStore(async ({ store, session }) => {
+    const id = unknownAttachmentId(7);
+    await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "1", prompt: "look", selector: "h1", tag: "h1", text: "", attachments: [{ id }] }] },
+      {
+        resolveAttachment: async (_key, attachmentId) => ({
+          id: attachmentId,
+          type: "image",
+          path: "/tmp/" + attachmentId,
+          mime: "image/png",
+          bytes: 10,
+          width: 1,
+          height: 1,
+        }),
+        maxPerPrompt: 4,
+        maxPromptBytes: 25 * 1024 * 1024,
+      },
+    );
+    assert.ok((await store.referencedAttachmentIds()).has(`${session.key}/${id}`), "referenced while pending");
+
+    // Delivery clears the pending prompts - but the agent is only now reading the
+    // path it was just handed. Dropping the reference here lets the very next sweep
+    // reap the file (TTL-expired or disk-cap-eligible) mid-read.
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(feedback.prompts[0].attachments[0].path, "/tmp/" + id);
+
+    assert.ok(
+      (await store.referencedAttachmentIds()).has(`${session.key}/${id}`),
+      "a just-delivered attachment is still referenced",
+    );
+  });
+});
+
+test("a delivered attachment is released once its read grace elapses (post-poll-retention)", async () => {
+  await withStore(async ({ store, session }) => {
+    const id = unknownAttachmentId(8);
+    await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "1", prompt: "look", selector: "h1", tag: "h1", text: "", attachments: [{ id }] }] },
+      {
+        resolveAttachment: async (_key, attachmentId) => ({
+          id: attachmentId,
+          type: "image",
+          path: "/tmp/" + attachmentId,
+          mime: "image/png",
+          bytes: 10,
+          width: 1,
+          height: 1,
+        }),
+        maxPerPrompt: 4,
+        maxPromptBytes: 25 * 1024 * 1024,
+      },
+    );
+    await store.takeFeedback(session.key);
+
+    // The grace is a bounded read window, not a second lifetime: once it lapses the
+    // file is ordinary unreferenced bytes again, or the TTL and disk cap could never
+    // reclaim anything that had ever been delivered.
+    const later = Date.now() + ATTACHMENT_DELIVERY_GRACE_MS + 1;
+    assert.equal(
+      (await store.referencedAttachmentIds({ now: later })).has(`${session.key}/${id}`),
+      false,
+      "the read grace does not extend forever",
+    );
+  });
+});
+
+test("the delivered-attachment retention list stays bounded (post-poll-retention)", async () => {
+  await withStore(async ({ store, session }) => {
+    // Retention lives in state.json, which is rewritten wholesale on every store
+    // operation, so it must never grow without bound across a long session.
+    for (let i = 0; i < 60; i += 1) {
+      const id = unknownAttachmentId(100 + i);
+      await store.queuePrompts(
+        session.key,
+        { prompts: [{ uid: String(i), prompt: "p", selector: "h1", tag: "h1", text: "", attachments: [{ id }] }] },
+        {
+          resolveAttachment: async (_key, attachmentId) => ({
+            id: attachmentId,
+            type: "image",
+            path: "/tmp/" + attachmentId,
+            mime: "image/png",
+            bytes: 10,
+            width: 1,
+            height: 1,
+          }),
+          maxPerPrompt: 4,
+          maxPromptBytes: 25 * 1024 * 1024,
+        },
+      );
+      await store.takeFeedback(session.key);
+    }
+
+    const stored = JSON.parse(await readFile(store.file, "utf8"));
+    const retained = stored.sessions[session.key].delivered_attachments || [];
+    assert.ok(retained.length <= MAX_DELIVERED_ATTACHMENTS, `retention list bounded, got ${retained.length}`);
+    // The most recent delivery is the one that still matters.
+    assert.ok((await store.referencedAttachmentIds()).has(`${session.key}/${unknownAttachmentId(159)}`));
+  });
 });

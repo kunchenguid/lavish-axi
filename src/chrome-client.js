@@ -45,6 +45,12 @@ function describeAttachmentRejection(rejected, caps) {
   if (reasons.has("too-many") && caps && caps.maxPerPrompt) {
     parts.push("more than " + caps.maxPerPrompt + " images on one annotation");
   }
+  if (reasons.has("too-many-in-request")) {
+    parts.push("too many images queued at once");
+  }
+  if (reasons.has("malformed")) {
+    parts.push("an image attachment was malformed");
+  }
   if (reasons.has("not-found")) {
     parts.push("an image is no longer available");
   }
@@ -206,10 +212,37 @@ function saveJsonState(storageKey, value) {
   }
 }
 
+// A queued prompt is authored by the untrusted artifact iframe, so its attachment
+// refs are validated at the single boundary every prompt crosses before it is
+// persisted or rendered. Anything that is not a well-formed `{id}` object is
+// dropped: the queue is written to sessionStorage BEFORE it renders, so one bad
+// entry would throw out of render(), stay on disk, and throw again on every
+// reload - wedging the tab permanently instead of failing once. The card's own
+// flow only ever produces `{id, name}`, so a malformed entry is fabricated and
+// there is no user image to preserve. The server re-validates independently.
+function sanitizeAttachmentRefs(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (ref) => ref && typeof ref === "object" && !Array.isArray(ref) && typeof ref.id === "string" && ref.id,
+  );
+}
+
+function sanitizeQueuedPrompt(prompt) {
+  if (!prompt || typeof prompt !== "object") return null;
+  if (!("attachments" in prompt)) return prompt;
+  const clean = { ...prompt };
+  const refs = sanitizeAttachmentRefs(clean.attachments);
+  if (refs.length) clean.attachments = refs;
+  else delete clean.attachments;
+  return clean;
+}
+
 function loadQueuedPrompts() {
   try {
     const parsed = JSON.parse(sessionStorage.getItem(queueStorageKey) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((prompt) => prompt && typeof prompt === "object") : [];
+    // Also sanitize on restore: a tab poisoned before this guard existed still has
+    // the bad prompt on disk and would otherwise stay wedged after an upgrade.
+    return Array.isArray(parsed) ? parsed.map(sanitizeQueuedPrompt).filter(Boolean) : [];
   } catch {
     return [];
   }
@@ -451,8 +484,9 @@ function promptQueueKey(prompt) {
   return prompt && typeof prompt[internalQueueKeyField] === "string" ? prompt[internalQueueKeyField].trim() : "";
 }
 
-function enqueuePrompt(prompt) {
-  if (!prompt || typeof prompt !== "object") return;
+function enqueuePrompt(rawPrompt) {
+  const prompt = sanitizeQueuedPrompt(rawPrompt);
+  if (!prompt) return;
 
   const queueKey = promptQueueKey(prompt);
   if (queueKey) {
@@ -1867,7 +1901,9 @@ window.addEventListener("message", (event) => {
     ).catch(() => {});
   }
   if (msg.type === "lavish:uploadAttachment") uploadAttachment(msg);
-  if (msg.type === "lavish:removeAttachment") removeAttachment(msg.id);
+  // There is deliberately no attachment-delete message. See removeAttachment's
+  // removal note below: the iframe cannot be trusted to decide a delete, and the
+  // chrome cannot see every live reference, so reclamation is the sweeper's job.
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
@@ -1879,6 +1915,10 @@ window.addEventListener("message", (event) => {
 async function uploadAttachment(message) {
   const localId = String(message.localId || "");
   if (!localId) return;
+  // Echoed verbatim on every result so the artifact can tell a reply to ITS upload
+  // from one still in flight for a previous document (E1). The chrome never
+  // interprets it; it only round-trips it.
+  const nonce = message.nonce;
   const bytes = message.bytes;
   let size;
   if (ArrayBuffer.isView(bytes)) {
@@ -1894,6 +1934,7 @@ async function uploadAttachment(message) {
   if (!Number.isFinite(size) || size < 0) {
     postToFrame({
       type: "lavish:attachmentResult",
+      nonce,
       localId,
       ok: false,
       error: "invalid upload payload",
@@ -1907,6 +1948,7 @@ async function uploadAttachment(message) {
   if (attachmentMaxBytes > 0 && size > attachmentMaxBytes) {
     postToFrame({
       type: "lavish:attachmentResult",
+      nonce,
       localId,
       ok: false,
       error: "Image is larger than the " + formatByteLimit(attachmentMaxBytes) + " limit",
@@ -1919,6 +1961,7 @@ async function uploadAttachment(message) {
   if (uploadTimestamps.length >= UPLOAD_RATE_MAX) {
     postToFrame({
       type: "lavish:attachmentResult",
+      nonce,
       localId,
       ok: false,
       error: "Too many uploads. Wait a moment and retry.",
@@ -1928,6 +1971,7 @@ async function uploadAttachment(message) {
   if (uploadedBytesTotal + size > UPLOAD_SESSION_BYTE_QUOTA) {
     postToFrame({
       type: "lavish:attachmentResult",
+      nonce,
       localId,
       ok: false,
       error: "Upload limit reached for this session (" + formatByteLimit(UPLOAD_SESSION_BYTE_QUOTA) + ").",
@@ -1946,6 +1990,7 @@ async function uploadAttachment(message) {
     if (!response.ok) throw new Error(data.error || "Upload failed");
     postToFrame({
       type: "lavish:attachmentResult",
+      nonce,
       localId,
       ok: true,
       id: (data.attachment && data.attachment.id) || "",
@@ -1953,6 +1998,7 @@ async function uploadAttachment(message) {
   } catch (error) {
     postToFrame({
       type: "lavish:attachmentResult",
+      nonce,
       localId,
       ok: false,
       error: error instanceof Error ? error.message : String(error),
@@ -1960,25 +2006,16 @@ async function uploadAttachment(message) {
   }
 }
 
-async function removeAttachment(id) {
-  const attachmentId = String(id || "");
-  if (!attachmentId) return;
-  if (
-    queued.some(
-      (prompt) =>
-        Array.isArray(prompt.attachments) &&
-        prompt.attachments.some((attachment) => String(attachment?.id || "") === attachmentId),
-    )
-  ) {
-    return;
-  }
-  try {
-    // Best effort: an orphaned upload is reaped by the reference-aware server sweeper.
-    await fetch("/api/" + key + "/attachments/" + encodeURIComponent(attachmentId), { method: "DELETE" });
-  } catch {
-    // Ignore - a failed delete just leaves the file for the sweeper.
-  }
-}
+// There is intentionally no eager attachment delete here. Removing a chip used to
+// ask the chrome to DELETE the stored file once no queued prompt referenced it,
+// but that check is not authoritative: attachments are content-addressed, so two
+// tabs (or two cards) can hold the SAME id, and a chip that is ready but not yet
+// queued in another tab is invisible from here. The delete was also driven by the
+// untrusted iframe, making the chrome a confused deputy - a malicious artifact
+// could destroy bytes a live card still needed, which then failed as `not-found`
+// on send. Unreferenced files are reclaimed by the server's reference-aware TTL
+// sweeper and the disk-cap backstop, which see every session's pending prompts
+// at once. Deleting late is cheap; deleting bytes someone still needs is not.
 
 loadFrame();
 

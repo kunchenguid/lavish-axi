@@ -20,6 +20,16 @@ import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./
 
 export const LAYOUT_WARNINGS_TARGET_TYPE = "layout-warnings";
 const MAX_ARTIFACT_FAILURES = 20;
+// How long a just-delivered attachment stays referenced after `takeFeedback`
+// hands its path to the agent. The sweeper's reference set is built from PENDING
+// prompts, which delivery clears - so without this window an attachment that is
+// TTL-expired or disk-cap-eligible becomes sweepable at the exact moment the agent
+// starts reading it. It is a bounded read window, not a second lifetime: the TTL
+// and the disk cap must still be able to reclaim delivered bytes eventually.
+export const ATTACHMENT_DELIVERY_GRACE_MS = 60 * 60 * 1000; // 1 hour
+// Retention lives in state.json, which is rewritten wholesale on every store
+// operation, so the list is capped as well as time-bounded.
+export const MAX_DELIVERED_ATTACHMENTS = 200;
 
 export class SessionStore {
   constructor(file) {
@@ -63,31 +73,30 @@ export class SessionStore {
 
   async #upsertSessionLocked(absolute, url) {
     const key = sessionKey(absolute);
-    return this.runExclusive(async () => {
-      const state = await this.readState();
-      const existing = state.sessions[key] || {};
-      const existingPrompts = existing.prompts || [];
-      const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
-      const session = {
-        key,
-        file: absolute,
-        url,
-        status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
-        pending_prompts: existing.pending_prompts || 0,
-        prompts: existingPrompts,
-        // The warning inbox is durable review state, not deliverable feedback: reopening a session
-        // must never silently drop unresolved warnings the user has not triaged yet.
-        layout_warnings: normalizeStoredWarnings(existing.layout_warnings),
-        artifact_revision: normalizeRevision(existing.artifact_revision),
-        artifact_failures: Array.isArray(existing.artifact_failures) ? existing.artifact_failures : [],
-        dom_snapshot: existing.dom_snapshot || "",
-        chat: existing.chat || [],
-        updated_at: new Date().toISOString(),
-      };
-      state.sessions[key] = session;
-      await this.writeState(state);
-      return session;
-    });
+    const state = await this.readState();
+    const existing = state.sessions[key] || {};
+    const existingPrompts = existing.prompts || [];
+    const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
+    const session = {
+      key,
+      file: absolute,
+      url,
+      status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
+      pending_prompts: existing.pending_prompts || 0,
+      prompts: existingPrompts,
+      // The warning inbox is durable review state, not deliverable feedback: reopening a session
+      // must never silently drop unresolved warnings the user has not triaged yet.
+      layout_warnings: normalizeStoredWarnings(existing.layout_warnings),
+      artifact_revision: normalizeRevision(existing.artifact_revision),
+      artifact_failures: Array.isArray(existing.artifact_failures) ? existing.artifact_failures : [],
+      delivered_attachments: Array.isArray(existing.delivered_attachments) ? existing.delivered_attachments : [],
+      dom_snapshot: existing.dom_snapshot || "",
+      chat: existing.chat || [],
+      updated_at: new Date().toISOString(),
+    };
+    state.sessions[key] = session;
+    await this.writeState(state);
+    return session;
   }
 
   // `options.resolveAttachment(key, id) => Promise<metadata|null>` is the trust
@@ -113,20 +122,25 @@ export class SessionStore {
     const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
     const shouldEndSession = Boolean(payload.endSession || payload.end_session);
     const alreadyEnded = session.status === "ended";
-    const normalizedPrompts = prompts.map(normalizePrompt);
+    const normalized = prompts.map(normalizePrompt);
+    const normalizedPrompts = normalized.map((entry) => entry.prompt);
     // Resolve every attachment BEFORE mutating anything. If any prompt's images
-    // can't be fully honored - an unknown id, or over the per-prompt count/byte
-    // cap - reject the WHOLE batch and persist nothing (C4).
-    const rejected = [];
-    for (const prompt of normalizedPrompts) {
-      const { resolved, rejected: promptRejected } = await resolvePromptAttachments(prompt.attachments, key, options);
-      if (promptRejected.length) rejected.push(...promptRejected);
-      if (resolved.length > 0) prompt.attachments = resolved;
-      else delete prompt.attachments;
+    // can't be fully honored - malformed, an unknown id, or over the per-prompt
+    // count/byte cap - reject the WHOLE batch and persist nothing (C4). Silently
+    // truncating here while returning success would drop images the user attached,
+    // and the chrome would clear its queue believing they were delivered.
+    const rejected = boundAttachmentRefs(normalized, options);
+    if (!rejected.length) {
+      for (const prompt of normalizedPrompts) {
+        const { resolved, rejected: promptRejected } = await resolvePromptAttachments(prompt.attachments, key, options);
+        if (promptRejected.length) rejected.push(...promptRejected);
+        if (resolved.length > 0) prompt.attachments = resolved;
+        else delete prompt.attachments;
+      }
     }
     if (rejected.length) {
       return {
-        rejected,
+        rejected: rejected.slice(0, MAX_REPORTED_ATTACHMENT_REJECTIONS),
         caps: {
           maxPerPrompt: Number.isFinite(options.maxPerPrompt) ? options.maxPerPrompt : null,
           maxPromptBytes: Number.isFinite(options.maxPromptBytes) ? options.maxPromptBytes : null,
@@ -471,10 +485,8 @@ export class SessionStore {
       // Prompts queued before the session ended (a browser send-and-end) must still reach the
       // agent, so deliver them before reporting the ended state; the next poll then sees ended.
       const prompts = session.prompts || [];
-      // Layout warnings are NOT delivered here. Detection is passive: the user decides which
-      // warnings become work by queueing them, and that arrives as an ordinary prompt above.
-      // Only artifact failures - a review that cannot be used at all - still reach the agent
-      // without user action.
+      // Layout warnings stay passive until the user queues them. Only fatal artifact
+      // failures can reach the agent without explicit user action.
       const artifactFailures = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
       const alreadyEnded = session.status === "ended";
       if (prompts.length === 0 && artifactFailures.length === 0) {
@@ -485,10 +497,20 @@ export class SessionStore {
         dom_snapshot: session.dom_snapshot || "",
         prompts,
         ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
-        // This is the final delivery before the session shows as ended - flag it so the agent
-        // knows not to expect (or force) a reopened browser afterward.
         ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
       };
+      // Delivery clears pending prompts, so retain the attachment ids for a bounded
+      // grace window while the polling agent opens the absolute paths it received.
+      const deliveredNow = Date.now();
+      const deliveredAttachments = (session.delivered_attachments || []).filter(
+        (entry) => entry && entry.id && deliveredNow - Number(entry.at) <= ATTACHMENT_DELIVERY_GRACE_MS,
+      );
+      for (const prompt of prompts) {
+        for (const attachment of prompt.attachments || []) {
+          if (attachment && attachment.id) deliveredAttachments.push({ id: attachment.id, at: deliveredNow });
+        }
+      }
+      session.delivered_attachments = deliveredAttachments.slice(-MAX_DELIVERED_ATTACHMENTS);
       session.prompts = [];
       session.artifact_failures = [];
       session.pending_prompts = 0;
@@ -555,13 +577,21 @@ export class SessionStore {
   // sweep-eligible. This is a pure read and must NOT take `this.lock`: the server
   // calls it from inside `runExclusive`, so self-locking would deadlock; running it
   // there keeps its snapshot atomic with the subsequent disk delete.
-  async referencedAttachmentIds() {
+  // Every attachment the sweeper must not touch: those still queued on a pending
+  // prompt, plus those handed to the agent within the delivery grace window.
+  async referencedAttachmentIds({ now = Date.now() } = {}) {
     const state = await this.readState();
     const referenced = new Set();
     for (const session of Object.values(state.sessions)) {
       for (const prompt of session.prompts || []) {
         for (const attachment of prompt.attachments || []) {
           if (attachment && attachment.id) referenced.add(`${session.key}/${attachment.id}`);
+        }
+      }
+      for (const delivered of session.delivered_attachments || []) {
+        if (!delivered || !delivered.id) continue;
+        if (now - Number(delivered.at) <= ATTACHMENT_DELIVERY_GRACE_MS) {
+          referenced.add(`${session.key}/${delivered.id}`);
         }
       }
     }
@@ -595,6 +625,9 @@ export function sessionKey(file) {
   return crypto.createHash("sha256").update(file).digest("hex").slice(0, 16);
 }
 
+// Returns `{ prompt, malformed }`: `malformed` is non-empty when the payload's
+// `attachments` field exists but cannot be honored as written, which fails the
+// whole batch rather than being normalized away (C4, see queuePrompts).
 function normalizePrompt(prompt) {
   const normalized = {
     uid: String(prompt.uid || ""),
@@ -605,9 +638,9 @@ function normalizePrompt(prompt) {
   };
   const target = normalizeTarget(prompt.target);
   if (target) normalized.target = target;
-  const attachments = normalizeAttachmentRefs(prompt.attachments);
-  if (attachments.length > 0) normalized.attachments = attachments;
-  return normalized;
+  const { refs, malformed } = normalizeAttachmentRefs(prompt.attachments);
+  if (refs.length > 0) normalized.attachments = refs;
+  return { prompt: normalized, malformed };
 }
 
 function layoutWarningPromptIds(prompt) {
@@ -620,17 +653,72 @@ function layoutWarningPromptIds(prompt) {
 // Client-supplied attachment refs are stripped to just the fields the client is
 // allowed to influence: the content-hash `id` and a display-only `name`. Path,
 // mime, size, and dimensions are never taken from the payload (see queuePrompts).
+//
+// Anything that cannot be read as a ref is reported as `malformed` rather than
+// skipped: dropping it here would let the POST succeed while the images the user
+// attached never arrive, and the chrome would clear its queue believing they were
+// delivered. An ABSENT field is not malformed - it just means no images.
 function normalizeAttachmentRefs(value) {
-  if (!Array.isArray(value)) return [];
+  if (value === undefined) return { refs: [], malformed: [] };
+  if (!Array.isArray(value)) return { refs: [], malformed: [{ id: "", name: "", reason: "malformed" }] };
   const refs = [];
+  const malformed = [];
   for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const id = String(item.id || "");
-    if (!id) continue;
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      malformed.push({ id: "", name: "", reason: "malformed" });
+      continue;
+    }
     const name = item.name === undefined || item.name === null ? "" : String(item.name).slice(0, 200);
+    const id = String(item.id || "");
+    if (!id) {
+      malformed.push({ id: "", name, reason: "malformed" });
+      continue;
+    }
     refs.push(name ? { id, name } : { id });
   }
-  return refs;
+  return { refs, malformed };
+}
+
+// A whole POST /prompts batch is one user's queued annotations, so its total
+// image count is small in every real use. Bounding it is what keeps the resolver
+// work below O(payload size) while the store's global lock is held.
+const MAX_REQUEST_ATTACHMENT_REFS = 256;
+// Rejections are reported back to the chrome, so the list must not itself become
+// a payload amplifier for a crafted batch.
+const MAX_REPORTED_ATTACHMENT_REJECTIONS = 4;
+
+// The cheap gate that must run BEFORE `resolvePromptAttachments` touches the
+// filesystem: every check here is pure arithmetic over the parsed payload.
+//
+// The per-prompt cap inside the resolver counts RESOLVED refs, which a crafted
+// batch never advances - thousands of well-formed ids for files that don't exist
+// each cost a sequential `stat` and the count stays at zero. Because the whole
+// path runs under the store's single mutex (E1/D5), that stalls polling and every
+// state mutation. Counting the RAW refs first bounds the work a caller can buy.
+function boundAttachmentRefs(normalized, options) {
+  const maxPerPrompt = Number.isFinite(options.maxPerPrompt) ? options.maxPerPrompt : Infinity;
+  const malformed = normalized.flatMap((entry) => entry.malformed);
+  if (malformed.length) return malformed;
+
+  // Per-prompt first: it is the more specific diagnosis, and the chrome turns it
+  // into actionable wording ("more than N images on one annotation"). A single
+  // crafted prompt trips both caps, and that message is the useful one.
+  const rejected = [];
+  for (const { prompt } of normalized) {
+    const refs = prompt.attachments || [];
+    // One rejection per over-cap prompt, not one per crafted ref.
+    if (refs.length > maxPerPrompt) {
+      rejected.push({ id: refs[0]?.id || "", name: refs[0]?.name || "", reason: "too-many" });
+    }
+  }
+  if (rejected.length) return rejected;
+
+  let requestRefs = 0;
+  for (const { prompt } of normalized) requestRefs += prompt.attachments?.length || 0;
+  if (requestRefs > MAX_REQUEST_ATTACHMENT_REFS) {
+    return [{ id: "", name: "", reason: "too-many-in-request" }];
+  }
+  return rejected;
 }
 
 // Replace each client ref with server-vetted metadata, enforcing the per-prompt

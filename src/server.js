@@ -10,7 +10,6 @@ import chokidar from "chokidar";
 import express from "express";
 
 import {
-  classifyAttachmentDelete,
   classifySevereTextOverflow,
   classifyMaterialRectEscape,
   createArtifactSdk,
@@ -21,6 +20,8 @@ import {
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
+  isTrustedAttachmentResult,
+  partitionDroppedFiles,
   MODE_TOGGLE_HOTKEY_KEY,
 } from "./artifact-sdk.js";
 import {
@@ -1796,7 +1797,8 @@ const classifyMaterialRectEscape=${classifyMaterialRectEscape.toString()};
 const isMaterialPageOverflow=${isMaterialPageOverflow.toString()};
 const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
-const classifyAttachmentDelete=${classifyAttachmentDelete.toString()};
+const partitionDroppedFiles=${partitionDroppedFiles.toString()};
+const isTrustedAttachmentResult=${isTrustedAttachmentResult.toString()};
 const deriveAttachmentNoticeState=${deriveAttachmentNoticeState.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };

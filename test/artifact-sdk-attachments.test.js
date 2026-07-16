@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyAttachmentDelete, deriveAttachmentNoticeState } from "../src/artifact-sdk.js";
+import { deriveAttachmentNoticeState, isTrustedAttachmentResult, partitionDroppedFiles } from "../src/artifact-sdk.js";
 import { createSdkJs } from "../src/server.js";
 
 // The annotation card lives inside the sandboxed artifact iframe, so its image
@@ -11,14 +11,24 @@ import { createSdkJs } from "../src/server.js";
 const sdk = createSdkJs("0123456789abcdef");
 
 test("the SDK bundle uploads captured images through the chrome", () => {
-  assert.match(sdk, /type: "lavish:uploadAttachment", localId: item\.localId/);
+  assert.match(sdk, /type: "lavish:uploadAttachment"/);
+  assert.match(sdk, /localId: item\.localId/);
   assert.match(sdk, /item\.file\s*\n?\s*\.arrayBuffer\(\)/);
 });
 
-test("the SDK bundle applies upload results and removes/retries attachments", () => {
+test("the SDK bundle scopes every upload and result to this document (E1)", () => {
+  // The nonce is minted per document, sent with each upload, and required on the
+  // way back; the listener also drops anything that did not come from the chrome.
+  assert.match(sdk, /const ATTACHMENT_NONCE\s*=/);
+  assert.match(sdk, /nonce: ATTACHMENT_NONCE/);
+  assert.match(sdk, /const isTrustedAttachmentResult=/);
+  assert.match(sdk, /if \(event\.source !== parent\) return;/);
+  assert.match(sdk, /isTrustedAttachmentResult\(event, \{ parentWindow: parent, nonce: ATTACHMENT_NONCE \}\)/);
+});
+
+test("the SDK bundle applies upload results and offers a retry", () => {
   assert.match(sdk, /lavish:attachmentResult/);
   assert.match(sdk, /activeAttachments\?\.handleResult\(msg\.localId, msg\.ok, msg\.id, msg\.error\)/);
-  assert.match(sdk, /type: "lavish:removeAttachment", id \}/);
   assert.match(sdk, /data-attachment-retry/);
 });
 
@@ -47,7 +57,7 @@ test("the SDK bundle intercepts every drop so a non-image can't navigate the fra
     /"drop",\s*\(event\)\s*=>\s*\{\s*[\s\S]*?event\.preventDefault\(\);\s*card\.classList\.remove\("is-dropping"\)/,
   );
   assert.match(sdk, /dataTransferHasFiles/);
-  assert.match(sdk, /attachments\.rejectUnsupported\(unsupportedDropName\(event\.dataTransfer\)\)/);
+  assert.match(sdk, /for \(const name of unsupported\) attachments\.rejectUnsupported\(name\)/);
   assert.match(sdk, /error: "UNSUPPORTED_TYPE"/);
 });
 
@@ -95,38 +105,114 @@ test("the count-cap notice persists until attachment capacity is created", () =>
   assert.match(sdk, /if \(!hasPending\(\) && !hasErrors\(\)\) queueBlocked = false/);
 });
 
-test("a removed chip's file is deleted only when nothing else can reference it", () => {
-  // Nothing else holds the id and no upload is in flight: the file is provably
-  // unreferenced, so the eager delete is safe.
-  assert.equal(classifyAttachmentDelete([], "img-1"), "delete");
-  assert.equal(classifyAttachmentDelete([{ status: "ready", id: "img-2" }], "img-1"), "delete");
-  // A settled sibling already shows the same content-addressed file.
-  assert.equal(classifyAttachmentDelete([{ status: "ready", id: "img-1" }], "img-1"), "skip");
-  // A chip with no id (an unsupported-type error chip) never deletes anything.
-  assert.equal(classifyAttachmentDelete([], ""), "skip");
+// The three tests that pinned the eager-delete classifier (`classifyAttachmentDelete`,
+// its W-B "defer" parking, and the bundle's removeAttachment posting) are gone with
+// it: E2 removed iframe-driven deletes outright, so the chrome never honors one and
+// the reference-aware sweeper owns reclamation. See chrome-client-queue.test.js.
+
+test("an upload result is only applied to the document that asked for it (E1)", () => {
+  const parentWindow = { name: "chrome" };
+  const nonce = "doc-nonce-1";
+  const trusted = (data, source = parentWindow) => isTrustedAttachmentResult({ source, data }, { parentWindow, nonce });
+
+  // The chrome's own result for this document's upload.
+  assert.equal(trusted({ nonce, localId: "att-1", ok: true }), true);
+
+  // A stale result from BEFORE an iframe reload. Local ids restart at "att-1" on
+  // every load, so without a per-document nonce this marks a brand-new chip ready
+  // with the previous document's image.
+  assert.equal(trusted({ nonce: "doc-nonce-0", localId: "att-1", ok: true }), false);
+  assert.equal(trusted({ localId: "att-1", ok: true }), false, "a result with no nonce is not ours");
+
+  // A forged same-window message: the artifact posting to itself must never be
+  // able to hand its own chips a server id it did not upload.
+  assert.equal(trusted({ nonce, localId: "att-1", ok: true }, { name: "self" }), false);
+  assert.equal(
+    trusted({ nonce, localId: "att-1", ok: true }, null),
+    false,
+    "a sourceless message is not from the chrome",
+  );
 });
 
-test("a removed chip's file survives while an identical twin is still uploading (W-B)", () => {
-  // The twin dedups to the SAME content-addressed id but has no id yet, so an id
-  // check alone misses it. Deleting now would strand the twin's upload on a file
-  // that no longer exists and the send would fail as not-found.
-  const items = [{ status: "uploading", id: "" }];
-  assert.equal(classifyAttachmentDelete(items, "img-1"), "defer");
-  // Once that upload settles onto the same id, the surviving twin owns the file.
-  assert.equal(classifyAttachmentDelete([{ status: "ready", id: "img-1" }], "img-1"), "skip");
-  // Settling onto a different id (or failing) leaves the parked id unreferenced.
-  assert.equal(classifyAttachmentDelete([{ status: "ready", id: "img-9" }], "img-1"), "delete");
-  assert.equal(classifyAttachmentDelete([{ status: "error", id: "" }], "img-1"), "delete");
+test("attachment result trust survives a hostile nonce shape (E1)", () => {
+  const parentWindow = { name: "chrome" };
+  const nonce = "doc-nonce-1";
+  const trusted = (data) => isTrustedAttachmentResult({ source: parentWindow, data }, { parentWindow, nonce });
+
+  // Exact string equality only: no coercion, no prefix/truthiness games.
+  for (const hostile of [{}, { nonce: null }, { nonce: 0 }, { nonce: true }, { nonce: ["doc-nonce-1"] }]) {
+    assert.equal(trusted(hostile), false, `nonce ${JSON.stringify(hostile)} must not pass`);
+  }
+  // A document with no nonce of its own never accepts results either.
+  assert.equal(isTrustedAttachmentResult({ source: parentWindow, data: {} }, { parentWindow, nonce: "" }), false);
 });
 
-test("the SDK bundle parks an undecidable delete until every upload settles (W-B)", () => {
-  assert.match(sdk, /const classifyAttachmentDelete=/);
-  // removeAt routes through the classifier instead of posting the delete eagerly.
-  assert.match(sdk, /function releaseAttachmentId\(id\)/);
-  assert.match(sdk, /const decision = classifyAttachmentDelete\(items, id\)/);
-  assert.match(sdk, /pendingDeletes\.add\(id\)/);
-  // Every settling upload re-decides the parked ids.
-  assert.match(sdk, /function flushPendingDeletes\(\)/);
-  assert.match(sdk, /flushPendingDeletes\(\);/);
-  assert.match(sdk, /type: "lavish:removeAttachment", id/);
+const ACCEPTED = { "image/png": true, "image/jpeg": true, "image/webp": true };
+const file = (name, type) => ({ name, type });
+
+test("a mixed drop attaches the images AND reports every unsupported file (W4-a)", () => {
+  // The ruled behavior: partial-accept. Keep the images the user dropped, and
+  // surface one visible error chip per unsupported companion. Reporting the
+  // unsupported files only when there were NO images is what made a mixed drop
+  // swallow them silently.
+  const { images, unsupported } = partitionDroppedFiles(
+    { files: [file("shot.png", "image/png"), file("report.pdf", "application/pdf"), file("notes.txt", "text/plain")] },
+    ACCEPTED,
+  );
+
+  assert.deepEqual(
+    images.map((image) => image.name),
+    ["shot.png"],
+  );
+  assert.deepEqual(unsupported, ["report.pdf", "notes.txt"]);
+});
+
+test("an all-image drop reports nothing unsupported (W4-a)", () => {
+  const { images, unsupported } = partitionDroppedFiles(
+    { files: [file("a.png", "image/png"), file("b.webp", "image/webp")] },
+    ACCEPTED,
+  );
+  assert.equal(images.length, 2);
+  assert.deepEqual(unsupported, []);
+});
+
+test("an all-unsupported drop reports each file and attaches none (W4-a)", () => {
+  const { images, unsupported } = partitionDroppedFiles(
+    { files: [file("report.pdf", "application/pdf"), file("archive.zip", "application/zip")] },
+    ACCEPTED,
+  );
+  assert.deepEqual(images, []);
+  assert.deepEqual(unsupported, ["report.pdf", "archive.zip"]);
+});
+
+test("a nameless unsupported file still gets a chip label (W4-a)", () => {
+  const { unsupported } = partitionDroppedFiles({ files: [file("", "application/pdf")] }, ACCEPTED);
+  assert.deepEqual(unsupported, ["file"]);
+});
+
+test("a pasted item list partitions the same way (W4-a)", () => {
+  const png = file("pasted.png", "image/png");
+  const { images, unsupported } = partitionDroppedFiles(
+    {
+      items: [
+        { kind: "file", type: "image/png", getAsFile: () => png },
+        { kind: "file", type: "application/pdf", getAsFile: () => file("x.pdf", "application/pdf") },
+        { kind: "string", type: "text/plain", getAsFile: () => null },
+      ],
+    },
+    ACCEPTED,
+  );
+  assert.deepEqual(images, [png]);
+  assert.deepEqual(unsupported, ["file"]);
+});
+
+test("an empty drop partitions to nothing (W4-a)", () => {
+  assert.deepEqual(partitionDroppedFiles(null, ACCEPTED), { images: [], unsupported: [] });
+  assert.deepEqual(partitionDroppedFiles({}, ACCEPTED), { images: [], unsupported: [] });
+});
+
+test("the SDK bundle wires the drop handler to partial-accept (W4-a)", () => {
+  assert.match(sdk, /const partitionDroppedFiles=/);
+  assert.match(sdk, /partitionDroppedFiles\(event\.dataTransfer, ATTACHMENT_ACCEPTED_MIME\)/);
+  assert.match(sdk, /for \(const name of unsupported\) attachments\.rejectUnsupported\(name\)/);
 });
