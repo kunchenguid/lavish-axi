@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Content-addressed storage for annotation image attachments, kept out of
@@ -32,6 +32,13 @@ export const DEFAULT_ATTACHMENT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // by default lets the sweeper evict oldest UNREFERENCED bytes; `off`/`0` disables.
 export const DEFAULT_MAX_ATTACHMENT_DISK_BYTES = 512 * 1024 * 1024; // 512 MiB
 
+// Attachments are user screenshots: they can capture anything on screen, and the
+// state dir sits in a home directory that is commonly traversable by other local
+// users. The process umask (typically 0022) would otherwise leave them 0644 in
+// 0755 dirs, so every mode is set explicitly rather than inherited.
+const ATTACHMENT_FILE_MODE = 0o600;
+const ATTACHMENT_DIR_MODE = 0o700;
+
 let temporaryFileId = 0;
 
 export function isValidAttachmentKey(key) {
@@ -63,11 +70,15 @@ export function resolveAttachmentConfig(env = process.env) {
   };
 }
 
+// Floor BEFORE the bounds check, never after: a fractional value like `0.5` is
+// > 0 and so passes a positivity test, then floors to 0 - a limit of zero, which
+// disables uploads server-side while the SDK still advertises its own default cap.
+// A configured limit that cannot mean "at least one" is a typo, so fall back.
 function positiveIntEnv(raw, fallback) {
   const trimmed = String(raw ?? "").trim();
   if (trimmed === "") return fallback;
-  const value = Number(trimmed);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  const value = Math.floor(Number(trimmed));
+  return Number.isFinite(value) && value >= 1 ? value : fallback;
 }
 
 function durationEnv(raw, fallback) {
@@ -83,7 +94,12 @@ function diskCapEnv(raw, fallback = DEFAULT_MAX_ATTACHMENT_DISK_BYTES) {
   if (trimmed === "") return fallback;
   if (trimmed === "0" || trimmed.toLowerCase() === "off") return null;
   const value = Number(trimmed);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value * 1024 * 1024) : fallback;
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  // Same floor-first discipline as positiveIntEnv: only `0`/`off` may mean "no
+  // cap", so an MB value too small to round up to a single byte is a typo, not a
+  // zero-byte quota that would evict every unreferenced file on the next sweep.
+  const bytes = Math.floor(value * 1024 * 1024);
+  return bytes >= 1 ? bytes : fallback;
 }
 
 // Detect the image format from magic bytes alone. Returns { mime, ext } or null.
@@ -240,12 +256,30 @@ async function readSidecarDims(file) {
 async function writeFileAtomically(file, content) {
   const temporary = `${file}.${process.pid}.${++temporaryFileId}.tmp`;
   try {
-    await writeFile(temporary, content);
+    // The mode is applied at creation, and rename preserves it, so the final file
+    // is never briefly world-readable the way a create-then-chmod would leave it.
+    await writeFile(temporary, content, { mode: ATTACHMENT_FILE_MODE });
     await rename(temporary, file);
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => {});
     throw error;
   }
+}
+
+// Create the session's attachment dir (and the root above it) owner-only. `mkdir`
+// only applies its mode to dirs it actually creates, so the modes are also
+// re-asserted: an install that uploaded before this hardening already has 0755
+// dirs on disk, and leaving those exposes the screenshots already stored in them.
+async function ensureAttachmentDir(stateDir, key) {
+  const root = path.join(stateDir, "attachments");
+  const dir = attachmentsDir(stateDir, key);
+  await mkdir(dir, { recursive: true, mode: ATTACHMENT_DIR_MODE });
+  for (const target of [root, dir]) {
+    // Best effort: a dir owned by another user can't be chmod'ed, but then it is
+    // not ours to police either - the create mode above still covers our own dirs.
+    await chmod(target, ATTACHMENT_DIR_MODE).catch(() => {});
+  }
+  return dir;
 }
 
 function statusError(message, statusCode) {
@@ -257,15 +291,19 @@ function statusError(message, statusCode) {
 // Validate (size + magic bytes, magic bytes authoritative), content-hash, and
 // write the bytes atomically. Identical content dedupes to the same file. Errors
 // carry an HTTP statusCode so the server's error handler surfaces 413/415/400.
-export async function writeAttachment(stateDir, key, buffer, { maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES } = {}) {
+export async function writeAttachment(
+  stateDir,
+  key,
+  buffer,
+  { maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES, touchFile = utimes } = {},
+) {
   if (!isValidAttachmentKey(key)) throw statusError(`invalid attachment session key: ${key}`, 400);
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw statusError("empty attachment upload", 400);
   if (buffer.length > maxBytes) throw statusError(`attachment exceeds the ${maxBytes} byte limit`, 413);
   const type = detectImageType(buffer);
   if (!type) throw statusError("unsupported image type (expected PNG, JPEG, or WebP)", 415);
   const id = `${crypto.createHash("sha256").update(buffer).digest("hex")}.${type.ext}`;
-  const dir = attachmentsDir(stateDir, key);
-  await mkdir(dir, { recursive: true });
+  await ensureAttachmentDir(stateDir, key);
   const file = attachmentFile(stateDir, key, id);
   const dims = imageDimensions(buffer, type.mime);
   if (!(await pathExists(file))) {
@@ -275,7 +313,16 @@ export async function writeAttachment(stateDir, key, buffer, { maxBytes = DEFAUL
     // reference restarts the TTL clock. Otherwise an aged-but-re-referenced file
     // is reaped by the very next sweep, breaking the fresh prompt's thumbnail.
     const now = new Date();
-    await utimes(file, now, now).catch(() => {});
+    try {
+      await touchFile(file, now, now);
+    } catch {
+      // The refresh is load-bearing, so a failure must never be swallowed into a
+      // success: the caller would queue a prompt against an id the very next sweep
+      // can still reap. Rewriting the identical bytes refreshes the mtime through a
+      // different syscall path, and it is atomic (temp + rename), so a concurrent
+      // reader never observes a partial file. If that fails too, report the failure.
+      await writeFileAtomically(file, buffer);
+    }
   }
   await writeSidecar(file, {
     v: 1,
@@ -400,6 +447,12 @@ export async function sweepAttachments(stateDir, options = {}) {
       if (await removeFile(file.path)) {
         deleted += 1;
         freedBytes += file.bytes;
+      } else {
+        // The delete failed, so these bytes are still on disk. Omitting the file
+        // here would hide them from the disk-cap accounting below, letting the
+        // quota stay exceeded while nothing gets evicted. It stays unreferenced,
+        // so the cap pass may retry it.
+        survivors.push({ ...file, referenced: false });
       }
     } else {
       survivors.push({ ...file, referenced: isReferenced });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -245,6 +245,27 @@ test("resolveAttachmentConfig reads LAVISH_AXI_* limits with sane fallbacks", ()
   assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_DISK_MB: "-5" }).maxDiskBytes, 512 * 1024 * 1024);
 });
 
+test("a fractional limit that floors below 1 falls back instead of disabling the cap (W5)", () => {
+  // `0.5` is > 0, so a bounds-check-then-floor order accepts it and then floors it
+  // to 0: uploads are disabled server-side while the SDK still advertises its own
+  // default, so the client and server disagree about the cap.
+  assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT: "0.5" }).maxPerPrompt, 4);
+  assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_BYTES: "0.9" }).maxBytes, 10 * 1024 * 1024);
+  assert.equal(
+    resolveAttachmentConfig({ LAVISH_AXI_MAX_PROMPT_ATTACHMENT_BYTES: "0.25" }).maxPromptBytes,
+    25 * 1024 * 1024,
+  );
+  // A fractional value that still floors to >= 1 is honored, floored.
+  assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT: "2.7" }).maxPerPrompt, 2);
+  // Same discipline for the MB-scaled disk cap: a value that rounds down to zero
+  // bytes must not masquerade as a 0-byte quota that evicts everything.
+  assert.equal(
+    resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_DISK_MB: "0.0000001" }).maxDiskBytes,
+    512 * 1024 * 1024,
+  );
+  assert.equal(resolveAttachmentConfig({ LAVISH_AXI_MAX_ATTACHMENT_DISK_MB: "0.5" }).maxDiskBytes, 512 * 1024);
+});
+
 test("writeAttachment leaves no stray temp files behind", async () => {
   await withTempDir(async (dir) => {
     await writeAttachment(dir, KEY, PNG_2x1, {});
@@ -336,6 +357,99 @@ test("disk cap evicts oldest unreferenced files first and never referenced ones"
     assert.ok(await resolveAttachment(dir, KEY, oldest.id), "referenced file is never evicted");
     assert.equal(await resolveAttachment(dir, KEY, middle.id), null);
     assert.ok(await resolveAttachment(dir, KEY, newest.id));
+  });
+});
+
+// POSIX file modes and permission-based failures have no Windows equivalent
+// (chmod there only toggles a read-only flag and does not gate unlink).
+const posixOnly = { skip: process.platform === "win32" ? "POSIX file modes" : false };
+
+// Run `body` with `dir` made unwritable, restoring the mode afterwards so the
+// temp-dir cleanup can still remove it. An unwritable parent is the portable way
+// to make an unlink inside it fail (EACCES) without root.
+async function withUnwritableDir(dir, body) {
+  const original = (await stat(dir)).mode & 0o777;
+  await chmod(dir, 0o500);
+  try {
+    await body();
+  } finally {
+    await chmod(dir, original);
+  }
+}
+
+test("attachment files and dirs are created private to the owner (E4)", posixOnly, async () => {
+  await withTempDir(async (dir) => {
+    const meta = await writeAttachment(dir, KEY, PNG_2x1, {});
+    // Images can be screenshots of anything on the user's screen. In a traversable
+    // state dir under the usual 0022 umask these would otherwise land 0644/0755 and
+    // be readable by every other local user.
+    assert.equal((await stat(meta.path)).mode & 0o777, 0o600, "image bytes are owner-only");
+    assert.equal((await stat(`${meta.path}.meta`)).mode & 0o777, 0o600, "dims sidecar is owner-only");
+    assert.equal((await stat(attachmentsDir(dir, KEY))).mode & 0o777, 0o700, "session dir is owner-only");
+    assert.equal((await stat(path.join(dir, "attachments"))).mode & 0o777, 0o700, "attachments root is owner-only");
+  });
+});
+
+test("writeAttachment tightens the modes of a pre-hardening world-readable dir (E4)", posixOnly, async () => {
+  await withTempDir(async (dir) => {
+    // An install that uploaded before this hardening already has 0755 dirs on disk;
+    // creating with a mode alone would leave those old screenshots exposed.
+    const first = await writeAttachment(dir, KEY, PNG_2x1, {});
+    await chmod(path.join(dir, "attachments"), 0o755);
+    await chmod(attachmentsDir(dir, KEY), 0o755);
+
+    await writeAttachment(dir, KEY, uniquePng("second"), {});
+    assert.equal((await stat(attachmentsDir(dir, KEY))).mode & 0o777, 0o700);
+    assert.equal((await stat(path.join(dir, "attachments"))).mode & 0o777, 0o700);
+    assert.ok(await resolveAttachment(dir, KEY, first.id), "repairing modes leaves stored bytes intact");
+  });
+});
+
+test("writeAttachment rewrites identical bytes when the dedup mtime refresh fails (W2)", async () => {
+  await withTempDir(async (dir) => {
+    const first = await writeAttachment(dir, KEY, PNG_2x1, {});
+    const old = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    await utimes(first.path, new Date(old), new Date(old));
+
+    // A swallowed utimes failure would report success while leaving the file
+    // TTL-expired, so the sweeper reaps it out from under the fresh prompt.
+    const second = await writeAttachment(dir, KEY, PNG_2x1, {
+      touchFile: async () => {
+        throw Object.assign(new Error("utimes not permitted"), { code: "EPERM" });
+      },
+    });
+    assert.equal(second.id, first.id, "dedup still resolves to the same content-addressed id");
+    assert.deepEqual(await readFile(first.path), PNG_2x1, "the rewrite preserves the identical bytes");
+
+    const swept = await sweepAttachments(dir, { ttlMs: 24 * 60 * 60 * 1000 });
+    assert.equal(swept.deleted, 0, "the rewrite restarted the TTL clock");
+    assert.ok(await resolveAttachment(dir, KEY, first.id));
+  });
+});
+
+test("a failed expired-orphan delete still counts toward the disk cap (W3)", posixOnly, async () => {
+  await withTempDir(async (dir) => {
+    // `stuck` is expired and unreferenced but sits in a dir we make unwritable, so
+    // its delete fails and its bytes stay on disk. `fresh` lives in another session
+    // dir that stays writable.
+    const stuck = await writeAttachment(dir, KEY, uniquePng("stuck"), {});
+    const fresh = await writeAttachment(dir, KEY_B, uniquePng("fresh"), {});
+    const old = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    await utimes(stuck.path, new Date(old), new Date(old));
+
+    await withUnwritableDir(attachmentsDir(dir, KEY), async () => {
+      // The cap fits either file alone but not both. Dropping the undeletable file
+      // from survivors would hide its bytes, leave the total apparently under cap,
+      // and evict nothing - so the cap stays exceeded on disk.
+      const result = await sweepAttachments(dir, {
+        ttlMs: 7 * 24 * 60 * 60 * 1000,
+        maxDiskBytes: stuck.bytes + fresh.bytes - 1,
+      });
+
+      assert.ok(await resolveAttachment(dir, KEY, stuck.id), "the undeletable file is still on disk");
+      assert.equal(result.deleted, 1, "the cap evicted a file it could actually delete");
+      assert.equal(await resolveAttachment(dir, KEY_B, fresh.id), null, "disk-cap accounting saw the stuck bytes");
+    });
   });
 });
 
