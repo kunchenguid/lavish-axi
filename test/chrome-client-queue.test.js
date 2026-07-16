@@ -582,7 +582,9 @@ test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confus
   assert.equal(quotaResult.ok, false);
   assert.match(quotaResult.error, /Upload limit reached/);
 
-  // Small uploads flow until the per-window rate cap (30), then are throttled.
+  // Small uploads flow until the per-window rate cap (30), then are throttled. Each
+  // is let settle before the next so the in-flight bound (its own test) never blocks;
+  // here we are exercising the RATE cap, which counts uploads that reached the network.
   for (let i = 0; i < 30; i += 1) {
     chrome.sendFrameMessage({
       type: "lavish:uploadAttachment",
@@ -590,8 +592,8 @@ test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confus
       mime: "image/png",
       bytes: new ArrayBuffer(16),
     });
+    await flushPromises();
   }
-  await flushPromises();
   assert.equal(fetches, 30, "the first 30 uploads within the window are allowed");
 
   chrome.sendFrameMessage({
@@ -2539,4 +2541,90 @@ test("a non-string attachment name is dropped rather than carried (E5)", async (
     prompt: { prompt: "x", selector: "h1", tag: "annotation", text: "", attachments: [{ id, name: { evil: true } }] },
   });
   assert.deepEqual(chrome.queued()[0].attachments, [{ id }]);
+});
+
+test("the chrome bounds concurrent in-flight uploads (D8)", async () => {
+  let started = 0;
+  /** @type {(value?: any) => void} */
+  let releaseAll = () => {};
+  const gate = new Promise((resolve) => {
+    releaseAll = resolve;
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => {
+      started += 1;
+      // Hang every upload so they all stay in flight until released.
+      await gate;
+      return { ok: true, json: async () => ({ attachment: { id: "a".repeat(64) + ".png" } }) };
+    },
+  });
+
+  // Eight small uploads at once: under the rate cap (30) and the byte quota, so only
+  // an in-flight bound can stop them. Without it, all eight hit the network at once,
+  // holding eight large bodies (structured clones + server buffers) concurrently.
+  for (let i = 0; i < 8; i += 1) {
+    chrome.sendFrameMessage({
+      type: "lavish:uploadAttachment",
+      localId: "u-" + i,
+      mime: "image/png",
+      bytes: new ArrayBuffer(16),
+    });
+  }
+  await flushPromises();
+
+  assert.ok(started <= 4, `at most the in-flight bound reach the network at once, got ${started}`);
+  // The ones over the bound are refused (not left hanging "uploading" forever), so
+  // the card can retry once capacity frees.
+  const refused = chrome.postedToFrame.filter(
+    (m) =>
+      m.type === "lavish:attachmentResult" &&
+      m.ok === false &&
+      /in flight|in-flight|concurrent|Wait a moment/i.test(m.error || ""),
+  );
+  assert.ok(refused.length >= 4, `the over-bound uploads are refused with a retry hint, got ${refused.length}`);
+
+  releaseAll();
+  await flushPromises();
+});
+
+test("a settled upload frees an in-flight slot for the next (D8)", async () => {
+  /** @type {Array<() => void>} */
+  const resolvers = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: () =>
+      new Promise((resolve) => {
+        resolvers.push(() =>
+          resolve(
+            /** @type {any} */ ({ ok: true, json: async () => ({ attachment: { id: "b".repeat(64) + ".png" } }) }),
+          ),
+        );
+      }),
+  });
+
+  // Fill the in-flight bound.
+  for (let i = 0; i < 4; i += 1) {
+    chrome.sendFrameMessage({
+      type: "lavish:uploadAttachment",
+      localId: "a-" + i,
+      mime: "image/png",
+      bytes: new ArrayBuffer(16),
+    });
+  }
+  await flushPromises();
+  const startedBefore = resolvers.length;
+
+  // Settle one; its slot must free so a fresh upload can proceed.
+  resolvers[0]();
+  await flushPromises();
+  await flushPromises();
+
+  chrome.sendFrameMessage({
+    type: "lavish:uploadAttachment",
+    localId: "next",
+    mime: "image/png",
+    bytes: new ArrayBuffer(16),
+  });
+  await flushPromises();
+
+  assert.equal(resolvers.length, startedBefore + 1, "a freed slot admits the next upload");
 });

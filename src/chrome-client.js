@@ -24,8 +24,16 @@ const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
 const UPLOAD_RATE_WINDOW_MS = 60_000;
 const UPLOAD_RATE_MAX = 30;
 const UPLOAD_SESSION_BYTE_QUOTA = 256 * 1024 * 1024; // 256 MiB per chrome session
+// The rate and cumulative-byte guards bound uploads over time, but not how many run
+// AT ONCE: each accepted message starts fetch() immediately, so a hostile artifact
+// could post ~30 large bodies in one tick and hold hundreds of MiB of structured
+// clones + server body buffers concurrently before the cumulative quota trips (D8).
+// Cap the number in flight; the over-cap ones are refused with a retry hint (like the
+// rate guard) and a freed slot admits the next.
+const UPLOAD_MAX_IN_FLIGHT = 4;
 const uploadTimestamps = [];
 let uploadedBytesTotal = 0;
+let uploadsInFlight = 0;
 
 function formatByteLimit(bytes) {
   if (bytes >= 1024 * 1024) return Math.round(bytes / (1024 * 1024)) + " MB";
@@ -1990,8 +1998,22 @@ async function uploadAttachment(message) {
     });
     return;
   }
+  // In-flight ceiling: refuse rather than pile another large body onto the network
+  // while the bound is full. The card keeps its retry affordance, and a settled
+  // upload (below) frees a slot for the next.
+  if (uploadsInFlight >= UPLOAD_MAX_IN_FLIGHT) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Too many uploads in flight. Wait a moment and retry.",
+    });
+    return;
+  }
   uploadTimestamps.push(now);
   uploadedBytesTotal += size;
+  uploadsInFlight += 1;
   try {
     const response = await fetch("/api/" + key + "/attachments", {
       method: "POST",
@@ -2015,6 +2037,8 @@ async function uploadAttachment(message) {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     });
+  } finally {
+    uploadsInFlight -= 1;
   }
 }
 

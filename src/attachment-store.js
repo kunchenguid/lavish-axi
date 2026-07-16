@@ -54,6 +54,15 @@ function allocatedBytes(logicalBytes) {
   return Math.max(1, Math.ceil(n / ATTACHMENT_ALLOC_BLOCK_BYTES)) * ATTACHMENT_ALLOC_BLOCK_BYTES;
 }
 
+// `writeFileAtomically` writes `<name>.<pid>.<n>.tmp` then renames. A crash between
+// the two leaves that temp behind, and because it does not match ID_RE it is invisible
+// to listAttachments and to every cap - the bytes leak forever (D6). This matches the
+// store's own temp names only (two numeric segments + .tmp), never a real id or sidecar.
+const TEMP_FILE_RE = /\.\d+\.\d+\.tmp$/;
+// Only reap a temp older than this: a live atomic write renames within milliseconds,
+// so anything this stale can only be crash debris - never an in-progress write.
+const ATTACHMENT_TEMP_GRACE_MS = 5 * 60 * 1000; // 5 minutes
+
 let temporaryFileId = 0;
 
 export function isValidAttachmentKey(key) {
@@ -538,7 +547,39 @@ export async function sweepAttachments(stateDir, options = {}) {
   if (maxObjects != null) {
     await evictOldestUnreferenced(() => objectCount > maxObjects);
   }
+  // Reap crash-orphaned temp files (D6). Always runs - a leaked temp is invisible to
+  // the caps above, so it is not gated on a TTL or disk cap being configured.
+  const temp = await reapOrphanTempFiles(stateDir, now);
+  deleted += temp.deleted;
+  freedBytes += temp.freedBytes;
   await pruneEmptyDirs(path.join(stateDir, "attachments"));
+  return { deleted, freedBytes };
+}
+
+// Scan each session dir for stale temp files (D6) and remove the ones older than the
+// grace. Best-effort: a temp we can't stat or delete is left for the next sweep.
+async function reapOrphanTempFiles(stateDir, now) {
+  const root = path.join(stateDir, "attachments");
+  let deleted = 0;
+  let freedBytes = 0;
+  for (const dirent of await readdirSafe(root)) {
+    if (!dirent.isDirectory() || !isValidAttachmentKey(dirent.name)) continue;
+    const dir = path.join(root, dirent.name);
+    for (const entry of await readdirSafe(dir)) {
+      if (!entry.isFile() || !TEMP_FILE_RE.test(entry.name)) continue;
+      const filePath = path.join(dir, entry.name);
+      try {
+        const info = await stat(filePath);
+        if (now - info.mtimeMs <= ATTACHMENT_TEMP_GRACE_MS) continue; // possibly a live write
+        if (await removeFile(filePath)) {
+          deleted += 1;
+          freedBytes += info.size;
+        }
+      } catch {
+        // Raced with a rename/delete; skip it.
+      }
+    }
+  }
   return { deleted, freedBytes };
 }
 

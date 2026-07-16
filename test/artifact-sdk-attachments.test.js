@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   attachmentSizeError,
+  classifyAttachmentBatch,
   deriveAttachmentNoticeState,
   isTrustedAttachmentResult,
   partitionDroppedFiles,
@@ -62,7 +63,7 @@ test("the SDK bundle intercepts every drop so a non-image can't navigate the fra
     /"drop",\s*\(event\)\s*=>\s*\{\s*[\s\S]*?event\.preventDefault\(\);\s*card\.classList\.remove\("is-dropping"\)/,
   );
   assert.match(sdk, /dataTransferHasFiles/);
-  assert.match(sdk, /for \(const name of unsupported\) attachments\.rejectUnsupported\(name\)/);
+  assert.match(sdk, /attachments\.rejectUnsupportedBatch\(unsupported\)/);
   assert.match(sdk, /error: "UNSUPPORTED_TYPE"/);
 });
 
@@ -219,7 +220,8 @@ test("an empty drop partitions to nothing (W4-a)", () => {
 test("the SDK bundle wires the drop handler to partial-accept (W4-a)", () => {
   assert.match(sdk, /const partitionDroppedFiles=/);
   assert.match(sdk, /partitionDroppedFiles\(event\.dataTransfer, ATTACHMENT_ACCEPTED_MIME\)/);
-  assert.match(sdk, /for \(const name of unsupported\) attachments\.rejectUnsupported\(name\)/);
+  // Unsupported files are rejected as a single batch (D7), not one render per file.
+  assert.match(sdk, /attachments\.rejectUnsupportedBatch\(unsupported\)/);
 });
 
 test("attachmentSizeError rejects an over-limit file before it is read (round7-a)", () => {
@@ -244,16 +246,79 @@ test("attachmentSizeError rejects an over-limit file before it is read (round7-a
 });
 
 test("the SDK bundle checks the size limit before reading or cloning the file (round7-a)", () => {
-  // The limit is threaded in and the check runs in add() BEFORE createObjectURL /
-  // arrayBuffer, so an oversized file never materializes a buffer or a second clone.
+  // The limit is threaded in, and the size decision runs in classifyAttachmentBatch
+  // (called by addFiles with ATTACHMENT_MAX_BYTES) BEFORE any createObjectURL /
+  // arrayBuffer, so an oversized file is decided "error" and never materializes a
+  // buffer or a second clone. Post-D7 the gate lives in the classifier, not inline.
   assert.match(sdk, /const ATTACHMENT_MAX_BYTES\s*=/);
   assert.match(sdk, /const attachmentSizeError=/);
-  // `URL.createObjectURL` occurs only inside add(), and add() materializes the
-  // buffer (via upload -> arrayBuffer) only for an item it has already created a URL
-  // for. So the size gate preceding createObjectURL proves it precedes every read.
-  const gateAt = sdk.indexOf("attachmentSizeError(file.size, ATTACHMENT_MAX_BYTES)");
+  assert.match(sdk, /const classifyAttachmentBatch=/);
+  // The classifier is the size gate, and it does its check on file.size.
+  assert.match(sdk, /attachmentSizeError\(file\.size, maxBytes\)/);
+  // addFiles runs the classifier with the real limit, and createObjectURL only ever
+  // runs afterwards (for an "accept" decision), so nothing is read before the gate.
+  const gateAt = sdk.indexOf("classifyAttachmentBatch(files, {");
+  const threadsLimit = /classifyAttachmentBatch\(files, \{[\s\S]*?maxBytes: ATTACHMENT_MAX_BYTES/.test(sdk);
   const createObjectUrlAt = sdk.indexOf("URL.createObjectURL");
-  assert.ok(gateAt !== -1, "the size gate is wired into add()");
-  assert.equal(sdk.match(/URL\.createObjectURL/g).length, 1, "createObjectURL only appears in add()");
-  assert.ok(gateAt < createObjectUrlAt, "the size gate precedes createObjectURL, so nothing is read first");
+  assert.ok(gateAt !== -1, "addFiles routes the batch through the classifier");
+  assert.ok(threadsLimit, "the classifier is called with ATTACHMENT_MAX_BYTES");
+  assert.equal(sdk.match(/URL\.createObjectURL/g).length, 1, "createObjectURL only appears once, in the accept path");
+  assert.ok(
+    gateAt < createObjectUrlAt,
+    "the size gate (classifier) precedes createObjectURL, so nothing is read first",
+  );
+});
+
+test("classifyAttachmentBatch decides a whole drop in one pass (D7)", () => {
+  const accepted = { "image/png": true };
+  const cap = 10 * 1024 * 1024;
+  const files = [
+    { type: "image/png", size: 1 }, // accept (count 2 -> 3)
+    { type: "application/pdf", size: 1 }, // skip: wrong mime
+    { type: "image/png", size: 20 * 1024 * 1024 }, // error: over size
+    { type: "image/png", size: 1 }, // accept (count 3 -> 4)
+    { type: "image/png", size: 1 }, // cap: count already at max 4
+  ];
+  const decisions = classifyAttachmentBatch(files, {
+    currentCount: 2,
+    maxCount: 4,
+    maxBytes: cap,
+    accepted,
+  });
+  assert.deepEqual(
+    decisions.map((d) => d.kind),
+    ["accept", "skip", "error", "accept", "cap"],
+  );
+  // Only accepts carry the file forward for upload; the size error carries its message.
+  assert.equal(decisions.filter((d) => d.kind === "accept").length, 2);
+  assert.match(decisions.find((d) => d.kind === "error").error, /larger than/i);
+  // Count cap is honored ACROSS the batch, not reset per file.
+  const allImages = classifyAttachmentBatch(
+    [
+      { type: "image/png", size: 1 },
+      { type: "image/png", size: 1 },
+      { type: "image/png", size: 1 },
+    ],
+    {
+      currentCount: 0,
+      maxCount: 2,
+      maxBytes: 0,
+      accepted,
+    },
+  );
+  assert.deepEqual(
+    allImages.map((d) => d.kind),
+    ["accept", "accept", "cap"],
+  );
+});
+
+test("the SDK bundle renders once per multi-file batch (D7)", () => {
+  assert.match(sdk, /const classifyAttachmentBatch=/);
+  // addFiles routes the whole list through the classifier instead of per-file add().
+  assert.match(sdk, /classifyAttachmentBatch\(/);
+  // A batched unsupported-rejection path exists and the drop handler uses it...
+  assert.match(sdk, /function rejectUnsupportedBatch\(/);
+  assert.match(sdk, /attachments\.rejectUnsupportedBatch\(unsupported\)/);
+  // ...instead of the old per-file loop that rendered N times.
+  assert.doesNotMatch(sdk, /for \(const name of unsupported\) attachments\.rejectUnsupported\(name\)/);
 });

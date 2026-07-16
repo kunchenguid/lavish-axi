@@ -266,6 +266,42 @@ export function attachmentSizeError(size, maxBytes) {
 }
 
 /**
+ * Decide the fate of a whole batch of picked/dropped files in ONE pass, so the card
+ * can apply them and render once instead of re-rendering the entire chip DOM per file
+ * (O(N²) on a large multi-drop, D7). Each decision is `skip` (wrong mime), `error`
+ * (over the size limit, with the message), `cap` (would exceed the per-prompt count),
+ * or `accept` (carry the file forward to upload). The count cap is honored ACROSS the
+ * batch, not reset per file.
+ *
+ * @param {ArrayLike<any>} files
+ * @param {{ currentCount?: number, maxCount?: number, maxBytes?: number, accepted?: Record<string, boolean> }} options
+ * @returns {Array<{ kind: string, file?: any, error?: string }>}
+ */
+export function classifyAttachmentBatch(files, options = {}) {
+  const { currentCount = 0, maxCount = Infinity, maxBytes = 0, accepted = {} } = options;
+  const decisions = [];
+  let count = currentCount;
+  for (const file of Array.from(files || [])) {
+    if (!file || !accepted[file.type]) {
+      decisions.push({ kind: "skip" });
+      continue;
+    }
+    const error = attachmentSizeError(file.size, maxBytes);
+    if (error) {
+      decisions.push({ kind: "error", error });
+      continue;
+    }
+    if (count >= maxCount) {
+      decisions.push({ kind: "cap" });
+      continue;
+    }
+    count += 1;
+    decisions.push({ kind: "accept", file });
+  }
+  return decisions;
+}
+
+/**
  * Split a drop/paste into the images the card can attach and the names of the
  * files it cannot.
  *
@@ -520,53 +556,54 @@ export function createArtifactSdk(
         });
     }
 
-    function add(file) {
-      if (!file || !ATTACHMENT_ACCEPTED_MIME[file.type]) return false;
-      // Size gate BEFORE createObjectURL/arrayBuffer: an oversized drop must never be
-      // read into a buffer (and structured-cloned into the chrome) only to be rejected
-      // afterwards - that is what freezes the tab. Surface it as a dismissible error
-      // chip, like an unsupported type, so the user sees why. The server re-checks.
-      const sizeError = attachmentSizeError(file.size, ATTACHMENT_MAX_BYTES);
-      if (sizeError) {
-        items.push({
-          localId: "att-" + ++attachmentLocalCounter,
-          file: null,
-          name: file.name || "image",
-          mime: "",
-          status: "error",
-          id: "",
-          error: sizeError,
-          url: "",
-        });
-        render();
-        return false;
-      }
-      // Over the per-prompt count cap: reject THIS selection and tell the user right
-      // away (W1) instead of silently swallowing it, so a 5th drop/paste/pick doesn't
-      // just vanish. The cap mirrors the server's LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT.
-      if (items.length >= ATTACHMENT_MAX_COUNT) {
-        capRejected = true;
-        render();
-        return false;
-      }
-      const item = {
-        localId: "att-" + ++attachmentLocalCounter,
-        file,
-        name: file.name || "image",
-        mime: file.type,
-        status: "uploading",
-        id: "",
-        error: "",
-        url: URL.createObjectURL(file),
-      };
-      items.push(item);
-      upload(item);
-      return true;
-    }
-
+    // Append the chips for a whole batch, then render ONCE and start the uploads. The
+    // per-file decision (mime / size / count cap) is made by classifyAttachmentBatch;
+    // this only materializes chips + object URLs. A size error becomes a dismissible
+    // chip (the oversized file is never read - see round-7 (a)); a cap rejection sets
+    // the notice; accepted files upload. Uploads are count-capped (<= ATTACHMENT_MAX_COUNT),
+    // so the render-per-upload they trigger is bounded, not O(N).
     function addFiles(fileList) {
+      const files = [...(fileList || [])];
+      const decisions = classifyAttachmentBatch(files, {
+        currentCount: items.length,
+        maxCount: ATTACHMENT_MAX_COUNT,
+        maxBytes: ATTACHMENT_MAX_BYTES,
+        accepted: ATTACHMENT_ACCEPTED_MIME,
+      });
+      const toUpload = [];
       let added = false;
-      for (const file of fileList || []) added = add(file) || added;
+      for (const decision of decisions) {
+        if (decision.kind === "cap") {
+          capRejected = true;
+        } else if (decision.kind === "error") {
+          items.push({
+            localId: "att-" + ++attachmentLocalCounter,
+            file: null,
+            name: decision.file?.name || "image",
+            mime: "",
+            status: "error",
+            id: "",
+            error: decision.error,
+            url: "",
+          });
+        } else if (decision.kind === "accept") {
+          const item = {
+            localId: "att-" + ++attachmentLocalCounter,
+            file: decision.file,
+            name: decision.file.name || "image",
+            mime: decision.file.type,
+            status: "uploading",
+            id: "",
+            error: "",
+            url: URL.createObjectURL(decision.file),
+          };
+          items.push(item);
+          toUpload.push(item);
+          added = true;
+        }
+      }
+      render();
+      for (const item of toUpload) upload(item);
       return added;
     }
 
@@ -582,20 +619,28 @@ export function createArtifactSdk(
       if (items[index] && items[index].file) upload(items[index]);
     }
 
-    // Surface a dropped non-image as a dismissible UNSUPPORTED_TYPE error chip (no
-    // file, so no thumbnail and no retry) instead of letting the browser open it.
-    function rejectUnsupported(name) {
-      items.push({
-        localId: "att-" + ++attachmentLocalCounter,
-        file: null,
-        name: name || "file",
-        mime: "",
-        status: "error",
-        id: "",
-        error: "UNSUPPORTED_TYPE",
-        url: "",
-      });
+    // Surface dropped non-images as dismissible UNSUPPORTED_TYPE error chips (no file,
+    // so no thumbnail and no retry) instead of letting the browser open them. Batched:
+    // a mixed drop of many unsupported files pushes all chips, then renders ONCE, so N
+    // rejections cost one DOM rebuild rather than N (D7).
+    function rejectUnsupportedBatch(names) {
+      for (const name of names || []) {
+        items.push({
+          localId: "att-" + ++attachmentLocalCounter,
+          file: null,
+          name: name || "file",
+          mime: "",
+          status: "error",
+          id: "",
+          error: "UNSUPPORTED_TYPE",
+          url: "",
+        });
+      }
       render();
+    }
+
+    function rejectUnsupported(name) {
+      rejectUnsupportedBatch([name]);
     }
 
     function handleResult(localId, ok, id, error) {
@@ -652,6 +697,7 @@ export function createArtifactSdk(
     return {
       addFiles,
       rejectUnsupported,
+      rejectUnsupportedBatch,
       handleResult,
       collectReady,
       hasReady,
@@ -2195,7 +2241,7 @@ export function createArtifactSdk(
       card.classList.remove("is-dropping");
       const { images, unsupported } = partitionDroppedFiles(event.dataTransfer, ATTACHMENT_ACCEPTED_MIME);
       if (images.length) attachments.addFiles(images);
-      for (const name of unsupported) attachments.rejectUnsupported(name);
+      if (unsupported.length) attachments.rejectUnsupportedBatch(unsupported);
       // Some drags expose no enumerable files or items (only a "Files" type hint),
       // so nothing can be partitioned; still tell the user the drop was refused.
       if (!images.length && !unsupported.length && dataTransferHasFiles(event.dataTransfer)) {

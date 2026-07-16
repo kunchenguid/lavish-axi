@@ -606,3 +606,46 @@ test("the disk cap evicts the exact minimum with running totals, oldest-first (r
     for (let i = 5; i < 8; i += 1) assert.ok(await resolveAttachment(dir, KEY, uploads[i].id), `newest ${i} survives`);
   });
 });
+
+async function fileExists(p) {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("sweepAttachments reaps an orphaned .tmp left by a crash (D6)", async () => {
+  await withTempDir(async (dir) => {
+    const stored = await writeAttachment(dir, KEY, uniquePng("keep"), {});
+    // A crash between writeFile(temp) and rename leaves a temp file matching the
+    // store's own `<name>.<pid>.<n>.tmp` pattern. ID_RE excludes it, so no TTL/disk/
+    // object cap ever counts or removes it - the bytes leak forever.
+    const orphanImg = path.join(attachmentsDir(dir, KEY), stored.id + ".12345.7.tmp");
+    const orphanMeta = path.join(attachmentsDir(dir, KEY), stored.id + ".meta.12345.8.tmp");
+    await writeFile(orphanImg, Buffer.alloc(4096));
+    await writeFile(orphanMeta, Buffer.alloc(64));
+    const old = Date.now() - 60 * 60 * 1000; // an hour old: long past any live write
+    await utimes(orphanImg, new Date(old), new Date(old));
+    await utimes(orphanMeta, new Date(old), new Date(old));
+
+    const result = await sweepAttachments(dir, { ttlMs: null });
+    assert.equal(await fileExists(orphanImg), false, "the stale temp image is reaped");
+    assert.equal(await fileExists(orphanMeta), false, "the stale temp sidecar is reaped");
+    assert.ok(await resolveAttachment(dir, KEY, stored.id), "the real attachment is untouched");
+    void result;
+  });
+});
+
+test("sweepAttachments leaves a FRESH .tmp alone - it may be a live write (D6)", async () => {
+  await withTempDir(async (dir) => {
+    await writeAttachment(dir, KEY, uniquePng("live"), {});
+    // A just-created temp file (recent mtime) could be an in-progress atomic write in
+    // another process; reaping it would corrupt that write. Only stale ones are debris.
+    const fresh = path.join(attachmentsDir(dir, KEY), "a".repeat(64) + ".png.999.1.tmp");
+    await writeFile(fresh, Buffer.alloc(16));
+    await sweepAttachments(dir, { ttlMs: null });
+    assert.equal(await fileExists(fresh), true, "a fresh temp file survives the sweep");
+  });
+});
