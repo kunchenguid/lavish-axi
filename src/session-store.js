@@ -27,9 +27,21 @@ const MAX_ARTIFACT_FAILURES = 20;
 // starts reading it. It is a bounded read window, not a second lifetime: the TTL
 // and the disk cap must still be able to reclaim delivered bytes eventually.
 export const ATTACHMENT_DELIVERY_GRACE_MS = 60 * 60 * 1000; // 1 hour
+
+// A whole POST /prompts batch is one user's queued annotations, so its total image
+// count is small in every real use. Bounding it is what keeps the resolver work
+// below O(payload size) while the store's global lock is held.
+export const MAX_REQUEST_ATTACHMENT_REFS = 256;
+
 // Retention lives in state.json, which is rewritten wholesale on every store
 // operation, so the list is capped as well as time-bounded.
-export const MAX_DELIVERED_ATTACHMENTS = 200;
+//
+// It is DERIVED from the request bound, never chosen independently: whatever a
+// single batch is allowed to queue, a single delivery must be able to protect. A
+// retention bound lower than the request bound silently leaves the overflow of a
+// legal max-size batch sweepable at the exact moment the agent is handed those
+// paths - reopening the very hole this retention exists to close.
+export const MAX_DELIVERED_ATTACHMENTS = MAX_REQUEST_ATTACHMENT_REFS;
 
 export class SessionStore {
   constructor(file) {
@@ -690,10 +702,6 @@ function normalizeAttachmentRefs(value) {
   return { refs, malformed };
 }
 
-// A whole POST /prompts batch is one user's queued annotations, so its total
-// image count is small in every real use. Bounding it is what keeps the resolver
-// work below O(payload size) while the store's global lock is held.
-const MAX_REQUEST_ATTACHMENT_REFS = 256;
 // Rejections are reported back to the chrome, so the list must not itself become
 // a payload amplifier for a crafted batch.
 const MAX_REPORTED_ATTACHMENT_REJECTIONS = 4;

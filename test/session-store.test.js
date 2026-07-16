@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ATTACHMENT_DELIVERY_GRACE_MS, MAX_DELIVERED_ATTACHMENTS, SessionStore } from "../src/session-store.js";
+import {
+  ATTACHMENT_DELIVERY_GRACE_MS,
+  MAX_DELIVERED_ATTACHMENTS,
+  MAX_REQUEST_ATTACHMENT_REFS,
+  SessionStore,
+} from "../src/session-store.js";
 
 let beginRequestSequence = 0;
 
@@ -1746,5 +1751,50 @@ test("delivery-grace retention dedupes by content id before its bound (post-poll
       referenced.has(`${session.key}/${distinct}`),
       "a reused image cannot evict a distinct one still in grace",
     );
+  });
+});
+
+test("every image in a max-size batch survives its own delivery (post-poll-retention)", async () => {
+  await withStore(async ({ store, session }) => {
+    const resolveAttachment = async (_key, attachmentId) => ({
+      id: attachmentId,
+      type: "image",
+      path: "/tmp/" + attachmentId,
+      mime: "image/png",
+      bytes: 10,
+      width: 1,
+      height: 1,
+    });
+    // A batch sized to exactly the request-wide bound: the queue path accepts it, so
+    // delivery must protect all of it. A retention bound lower than the request bound
+    // silently leaves the overflow sweepable the instant the agent is handed those
+    // very paths - the retention hole reopening for the largest legal batch.
+    const total = MAX_REQUEST_ATTACHMENT_REFS;
+    const prompts = [];
+    for (let i = 0; i < total / 4; i += 1) {
+      prompts.push({
+        uid: String(i),
+        prompt: "p" + i,
+        selector: "h1",
+        tag: "h1",
+        text: "",
+        attachments: Array.from({ length: 4 }, (_, j) => ({ id: unknownAttachmentId(500 + i * 4 + j) })),
+      });
+    }
+    const queued = await store.queuePrompts(
+      session.key,
+      { prompts },
+      { resolveAttachment, maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+    assert.equal(queued.rejected, undefined, "a batch at the request bound is accepted");
+
+    await store.takeFeedback(session.key);
+    const referenced = await store.referencedAttachmentIds();
+    const missing = [];
+    for (let i = 0; i < total; i += 1) {
+      const id = unknownAttachmentId(500 + i);
+      if (!referenced.has(`${session.key}/${id}`)) missing.push(id);
+    }
+    assert.deepEqual(missing, [], `every delivered image stays referenced (${missing.length} of ${total} were not)`);
   });
 });
