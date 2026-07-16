@@ -26,7 +26,7 @@ Lavish is one product wearing two hats:
 | Surface                | Audience                                                                  | What it looks like                                                                                                                                                                                                      |
 | ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **CLI** (`lavish-axi`) | Coding agents (Claude Code, Cursor, etc.) and the developers driving them | A long-polling, AXI-shaped command surface. Output is TOON-serialized. Not visually designed — it's _agent-ergonomic._                                                                                                  |
-| **Editor chrome**      | Humans reviewing an agent's HTML artifact                                 | A two-pane browser app: the artifact in an iframe on the left, a conversation panel on the right, a session bar across the top. Click any element or select text in the artifact, queue a prompt, send it to the agent. |
+| **Editor chrome**      | Humans reviewing an agent's HTML artifact                                 | A browser app with an artifact iframe, a collapsible conversation panel on the right, and a session bar across the top. Click any element or select text in the artifact, queue a prompt, send it to the agent.       |
 
 The brand surface this design system serves is **the Editor chrome.** Marketing, docs, decks and screenshots should all feel like they came from the same hand that drew the chrome.
 
@@ -128,7 +128,7 @@ The brand mark **Lavish Editor** is set in Geist Sans at `font-weight: 750` with
 
 - **8-pt grid** with a `4` and `2` half-step. The chrome uses `6 / 8 / 10 / 12 / 16 / 24 / 32` repeatedly.
 - **Top bar height: 56px.** Sticky. The one truly fixed element.
-- **Panel gutter: 360px** for the side conversation panel; the artifact takes the rest.
+- **Panel gutter: 360px** while the side conversation panel is visible; hiding it gives the artifact the full available width.
 - Composer padding: `12px 16px`. Buttons: `9–10px 12px`.
 
 ### Radii
@@ -184,7 +184,8 @@ A "card" in Lavish is a slab of `#11141a` or `#1c212b` with a 1px border (`#3037
 ### Layout rules
 
 - The top bar is fixed at 56px, full-width, sticky.
-- The side conversation panel is a fixed 360px wide on the right.
+- The side conversation panel is a fixed 360px wide on the right when visible; its compact top-bar control hides the panel without unmounting it and expands the artifact to the available width.
+- At narrow widths the panel stacks below the artifact, while the hidden state collapses back to one artifact row; the smallest top bar drops the supporting _Editor_ label so every control remains reachable.
 - The artifact takes the remainder.
 - The annotation card is positioned relative to the clicked element or selected text range via `getBoundingClientRect()` and clamped 12px from any viewport edge.
 - The chat input lives at the bottom of the side panel; pills (queued prompts) sit _above_ the textarea, never inside it.
@@ -196,7 +197,7 @@ A "card" in Lavish is a slab of `#11141a` or `#1c212b` with a 1px border (`#3037
 **Lavish uses icons only where they reduce chrome, never as ornament.** Read that twice.
 
 The v2 product chrome keeps primary affordances word-first: the brand is text, the mode control reads _Annotate_, the main button reads _Send to Agent_, and the annotation card opens with `<h2>Annotate &lt;div&gt;</h2>` for elements or `Annotate text` for selected text.
-Compact chrome may use small current-color SVGs for the overflow menu, copy affordance, reload, snapshot, end, send, and split-button caret, but those icons support visible labels or tooltips rather than replacing product language.
+Compact chrome may use small current-color SVGs for the Conversation visibility control, overflow menu, copy affordance, reload, snapshot, end, send, and split-button caret, but those icons support visible labels or tooltips rather than replacing product language.
 
 When iconography is genuinely needed (marketing, an empty state, a settings menu in a future surface), follow these rules:
 
