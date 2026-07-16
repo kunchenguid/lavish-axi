@@ -753,6 +753,12 @@ body.lavish {
   align-items: flex-start;
   width: min(320px, 100%);
   max-width: 100%;
+  outline: none;
+}
+.pill-wrap[data-locate-index]:hover .pill,
+.pill-wrap[data-locate-index]:focus-visible .pill {
+  border-color: var(--accent);
+  cursor: pointer;
 }
 .pill {
   display: flex;
@@ -767,8 +773,35 @@ body.lavish {
   font-size: 12px;
   font-weight: var(--w-bold);
 }
+.pill-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: var(--w-bold);
+}
+.pill-target[data-unlocatable="true"] {
+  color: var(--fg-label);
+}
+.pill-target-icon {
+  flex: 0 0 auto;
+}
+.pill-target-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .pill-preview {
   display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 220px;
   overflow: hidden;
   white-space: nowrap;
@@ -812,6 +845,11 @@ body.lavish {
   letter-spacing: var(--track-label);
   text-transform: uppercase;
   margin: 0 0 4px;
+}
+.pill-tooltip-label {
+  color: var(--fg);
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
 }
 .pill-tooltip-target {
   font-family: var(--font-mono);

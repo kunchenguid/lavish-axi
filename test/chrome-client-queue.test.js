@@ -274,6 +274,30 @@ async function createChromeHarness({
     queued() {
       return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
     },
+    draft() {
+      return JSON.parse(storage.get("lavish-axi:draft:abc") || "null");
+    },
+    fireFrameLoad() {
+      const handler = frame.listeners.get("load");
+      assert.equal(typeof handler, "function", "chrome-client registered a frame load handler");
+      handler();
+    },
+    dispatchPillsEvent(type, options = {}) {
+      const { locateIndex, relatedInside = false } = /** @type {{ locateIndex?: number, relatedInside?: boolean }} */ (
+        options
+      );
+      const handler = element("annotationPills").listeners.get(type);
+      assert.equal(typeof handler, "function", `chrome-client registered a pills ${type} handler`);
+      const wrap =
+        locateIndex === undefined
+          ? null
+          : { dataset: { locateIndex: String(locateIndex) }, contains: (node) => node?.insideWrap === true };
+      const target = { closest: (sel) => (sel === "[data-locate-index]" ? wrap : null) };
+      handler({ target, relatedTarget: relatedInside ? { insideWrap: true } : null });
+    },
+    postedTypes(type) {
+      return postedToFrame.filter((message) => message.type === type);
+    },
     reloadCount() {
       return reloadCount;
     },
@@ -1346,4 +1370,123 @@ test("whiteboard close stays responsive while overlay initialization is pending"
 
   releaseOverlaySources?.();
   await flushPromises();
+});
+
+test("chrome client persists an annotation draft from the artifact and replays it after a reload", async () => {
+  const chrome = await createChromeHarness();
+
+  const context = { uid: "7", selector: "section#free-runner", tag: "section", text: "Free runner idea" };
+  chrome.sendFrameMessage({
+    type: "lavish:annotationDraft",
+    draft: { text: "this needs a caveat", context },
+  });
+
+  assert.deepEqual(chrome.draft(), { text: "this needs a caveat", context });
+
+  // A live reload discards the iframe; on the reloaded frame's load the chrome
+  // must replay the draft so the card reopens with the half-typed text.
+  chrome.fireFrameLoad();
+
+  const replays = chrome.postedTypes("lavish:restoreAnnotationDraft");
+  assert.equal(replays.length, 1);
+  assert.equal(replays[0].draft.text, "this needs a caveat");
+  assert.deepEqual(replays[0].draft.context, context);
+});
+
+test("chrome client clears the persisted draft when the artifact reports it was queued or cancelled", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:annotationDraft",
+    draft: { text: "half a thought", context: { selector: "h1", tag: "h1", text: "Title" } },
+  });
+  assert.ok(chrome.draft());
+
+  chrome.sendFrameMessage({ type: "lavish:annotationDraft", draft: null });
+  assert.equal(chrome.draft(), null);
+
+  chrome.fireFrameLoad();
+  assert.equal(chrome.postedTypes("lavish:restoreAnnotationDraft").length, 0);
+});
+
+test("chrome client ignores a blank annotation draft", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:annotationDraft",
+    draft: { text: "   ", context: { selector: "h1", tag: "h1", text: "Title" } },
+  });
+
+  assert.equal(chrome.draft(), null);
+  chrome.fireFrameLoad();
+  assert.equal(chrome.postedTypes("lavish:restoreAnnotationDraft").length, 0);
+});
+
+test("chrome client shows each queued comment's readable target on its pill", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "aaaaa",
+      selector: "section#free-runner",
+      tag: "section",
+      text: "FREE-RUNNER IDEA → RULED OUT",
+    },
+  });
+
+  const html = chrome.element("annotationPills").innerHTML;
+  assert.match(html, /pill-target/);
+  assert.match(html, /FREE-RUNNER IDEA/);
+  assert.match(html, /data-locate-index="0"/);
+});
+
+test("chrome client marks a freeform message pill as unlocatable with no target chip", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { uid: "", prompt: "just a note", selector: "", tag: "message", text: "Freeform message" },
+  });
+
+  const html = chrome.element("annotationPills").innerHTML;
+  assert.doesNotMatch(html, /pill-target/);
+  assert.doesNotMatch(html, /data-locate-index/);
+});
+
+test("hovering a locatable pill asks the artifact to highlight its target and leaving clears it", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "aaaaa",
+      selector: "section#free-runner",
+      tag: "section",
+      text: "Free runner idea",
+      target: { type: "text-range" },
+    },
+  });
+
+  chrome.dispatchPillsEvent("mouseover", { locateIndex: 0 });
+  const highlights = chrome.postedTypes("lavish:highlightTarget");
+  assert.equal(highlights.length, 1);
+  assert.equal(highlights[0].selector, "section#free-runner");
+  assert.deepEqual(highlights[0].target, { type: "text-range" });
+
+  chrome.dispatchPillsEvent("mouseout", { locateIndex: 0 });
+  assert.equal(chrome.postedTypes("lavish:clearHighlight").length, 1);
+});
+
+test("crossing between a pill's own children does not clear the highlight", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "aaaaa", selector: "h1", tag: "h1", text: "Title" },
+  });
+
+  chrome.dispatchPillsEvent("mouseover", { locateIndex: 0 });
+  chrome.dispatchPillsEvent("mouseout", { locateIndex: 0, relatedInside: true });
+  assert.equal(chrome.postedTypes("lavish:clearHighlight").length, 0);
 });

@@ -1446,7 +1446,7 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-locate-highlight{position:fixed;pointer-events:none;border-radius:6px;background:rgba(244,201,93,.16);box-shadow:0 0 0 2px var(--accent),0 0 0 6px rgba(244,201,93,.28);transition:opacity .12s ease}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}`;
     shadow.appendChild(style);
     return shadow;
   }
@@ -1460,6 +1460,145 @@ export function createArtifactSdk(
     hovered = null;
     clearTextHighlight();
     selected = null;
+    // The card is gone, so any half-typed text the chrome was mirroring across
+    // reloads is now stale - clearing it here means a cancelled or queued draft
+    // never resurrects on the next live reload.
+    clearAnnotationDraft();
+  }
+
+  // The annotation card lives in this sandboxed iframe, which is torn down and
+  // recreated on every live reload - so a draft the user is mid-typing must be
+  // mirrored to the chrome (which survives reloads) and replayed afterwards.
+  // We send the readable target context alongside the text so the card can be
+  // reopened anchored to the same element or text range. Only structured-clone-
+  // safe fields travel: the live `element`/`range` on a text-selection context
+  // would throw a DataCloneError, and are recovered from `target` on restore.
+  function serializableContext(annotationContext) {
+    if (!annotationContext || typeof annotationContext !== "object") return null;
+    const clean = {
+      uid: String(annotationContext.uid || ""),
+      selector: String(annotationContext.selector || ""),
+      tag: String(annotationContext.tag || ""),
+      text: String(annotationContext.text || ""),
+    };
+    if (annotationContext.target && typeof annotationContext.target === "object") {
+      try {
+        clean.target = JSON.parse(JSON.stringify(annotationContext.target));
+      } catch {
+        // A non-serializable target just means the card reopens without it.
+      }
+    }
+    return clean;
+  }
+
+  function emitAnnotationDraft(annotationContext, text) {
+    parent.postMessage(
+      {
+        type: "lavish:annotationDraft",
+        draft: { text: String(text || ""), context: serializableContext(annotationContext) },
+      },
+      "*",
+    );
+  }
+
+  function clearAnnotationDraft() {
+    parent.postMessage({ type: "lavish:annotationDraft", draft: null }, "*");
+  }
+
+  function safeQuerySelector(selectorText) {
+    if (!selectorText) return null;
+    try {
+      return document.querySelector(selectorText);
+    } catch {
+      return null;
+    }
+  }
+
+  // Invert nodePath()/rangeBoundary(): walk from the boundary's closest element
+  // down the recorded childNode indices to recover the original text node.
+  function resolveRangeBoundary(boundary) {
+    if (!boundary || typeof boundary !== "object") return null;
+    let node = safeQuerySelector(boundary.selector);
+    if (!node) return null;
+    for (const index of Array.isArray(boundary.path) ? boundary.path : []) {
+      const children = node.childNodes;
+      if (!children || index < 0 || index >= children.length) return null;
+      node = children[index];
+    }
+    return { node, offset: Number(boundary.offset) || 0 };
+  }
+
+  function rebuildTextRange(target) {
+    if (!target || target.type !== "text-range") return null;
+    const start = resolveRangeBoundary(target.start);
+    const end = resolveRangeBoundary(target.end);
+    if (!start || !end) return null;
+    try {
+      const range = document.createRange();
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      return range.collapsed ? null : range;
+    } catch {
+      return null;
+    }
+  }
+
+  // Reopen the annotation card the reload destroyed, anchored to the same target
+  // and prefilled with the mirrored text. Re-emit so the draft keeps surviving
+  // further reloads until the user queues or cancels it.
+  function restoreAnnotationDraft(draft) {
+    if (!annotationMode || !draft || typeof draft !== "object") return;
+    const text = String(draft.text || "");
+    const annotationContext = draft.context && typeof draft.context === "object" ? draft.context : null;
+    if (!text.trim() || !annotationContext) return;
+
+    const range = rebuildTextRange(annotationContext.target);
+    if (annotationContext.tag === "text" && range) {
+      showAnnotationCard(closestElement(range.commonAncestorContainer), { context: annotationContext, range });
+    } else {
+      const el = safeQuerySelector(annotationContext.selector);
+      if (!el) return;
+      showAnnotationCard(el, { context: annotationContext });
+    }
+
+    const textarea = shadow ? shadow.querySelector(".lavish-annotation-card textarea") : null;
+    if (!textarea) return;
+    textarea.value = text;
+    emitAnnotationDraft(annotationContext, text);
+  }
+
+  // Reveal which element a queued comment targets when its pill is hovered in the
+  // chrome. Drawn as an overlay box over the target's rect (never mutating the
+  // artifact's own styles), scrolling it into view first so off-screen targets
+  // are found. Works for element, text-range, and diagram-node targets alike.
+  function highlightAnnotationTarget(selectorText, target) {
+    clearAnnotationTargetHighlight();
+    const range = rebuildTextRange(target);
+    const el = range ? null : safeQuerySelector(selectorText);
+    const scrollTarget = el || (range ? closestElement(range.commonAncestorContainer) : null);
+    if (!scrollTarget && !range) return;
+    if (scrollTarget && typeof scrollTarget.scrollIntoView === "function") {
+      scrollTarget.scrollIntoView({ block: "center", inline: "nearest" });
+    }
+    const paint = () => {
+      const rect = range ? range.getBoundingClientRect() : el ? el.getBoundingClientRect() : null;
+      if (!rect || (rect.width <= 0 && rect.height <= 0)) return;
+      const root = ensureShadow();
+      const mark = document.createElement("div");
+      mark.className = "lavish-locate-highlight";
+      mark.style.left = rect.left - 3 + "px";
+      mark.style.top = rect.top - 3 + "px";
+      mark.style.width = rect.width + 6 + "px";
+      mark.style.height = rect.height + 6 + "px";
+      root.appendChild(mark);
+    };
+    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(paint);
+    else paint();
+  }
+
+  function clearAnnotationTargetHighlight() {
+    if (!shadow) return;
+    for (const el of [...shadow.querySelectorAll(".lavish-locate-highlight")]) el.remove();
   }
 
   function showAnnotationCard(target, options = {}) {
@@ -1518,6 +1657,9 @@ export function createArtifactSdk(
       if (prompt) queuePrompt(prompt, { ...c, queueKey: "" });
       closeCard();
     };
+    // Mirror the draft to the chrome as the user types, so a live reload that
+    // discards this iframe can replay the in-progress text into a reopened card.
+    textarea.addEventListener("input", () => emitAnnotationDraft(c, textarea.value));
     textarea.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
@@ -1548,6 +1690,14 @@ export function createArtifactSdk(
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
     }
+    // A live reload discards this sandboxed iframe (and any open annotation card
+    // with half-typed text). The chrome mirrors the draft across the reload and
+    // replays it here so the card reopens with the text the user was writing.
+    if (msg.type === "lavish:restoreAnnotationDraft") restoreAnnotationDraft(msg.draft);
+    // Hovering a queued pill in the chrome asks us to reveal which element that
+    // comment targets, so the user can see what "aaaaa" was actually about.
+    if (msg.type === "lavish:highlightTarget") highlightAnnotationTarget(msg.selector, msg.target);
+    if (msg.type === "lavish:clearHighlight") clearAnnotationTargetHighlight();
   });
 
   // Capture phase so the mode hotkey fires no matter where focus is inside the artifact -

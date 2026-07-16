@@ -5,6 +5,7 @@ const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
 const key = String(sessionData.key || "");
 const filePath = String(sessionData.file || "");
 const queueStorageKey = "lavish-axi:queued:" + key;
+const draftStorageKey = "lavish-axi:draft:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
@@ -60,6 +61,7 @@ const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
+let annotationDraft = loadAnnotationDraft();
 let annotation = true;
 let ended = false;
 let agentPresence = "waiting";
@@ -122,24 +124,101 @@ function persistQueuedPrompts() {
   }
 }
 
+// The artifact iframe is torn down on every live reload, taking any open
+// annotation card (and its half-typed text) with it. The SDK mirrors that draft
+// up to us via `lavish:annotationDraft`; we persist it here and replay it into a
+// reopened card once the reloaded iframe is ready - so an agent save mid-comment
+// no longer discards what the user was writing.
+function loadAnnotationDraft() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(draftStorageKey) || "null");
+    if (!parsed || typeof parsed !== "object") return null;
+    return typeof parsed.text === "string" && parsed.text.trim() ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistAnnotationDraft() {
+  try {
+    if (annotationDraft && typeof annotationDraft.text === "string" && annotationDraft.text.trim()) {
+      sessionStorage.setItem(draftStorageKey, JSON.stringify(annotationDraft));
+    } else {
+      sessionStorage.removeItem(draftStorageKey);
+    }
+  } catch {
+    // The in-memory draft still replays this session if storage is unavailable.
+  }
+}
+
+function setAnnotationDraft(draft) {
+  annotationDraft =
+    draft && typeof draft === "object" && typeof draft.text === "string" && draft.text.trim() ? draft : null;
+  persistAnnotationDraft();
+}
+
+function restoreAnnotationDraftToFrame() {
+  if (!annotationDraft || ended || !annotation) return;
+  postToFrame({ type: "lavish:restoreAnnotationDraft", draft: annotationDraft });
+}
+
+// A human-readable label for what a queued comment targets, so a pill answers
+// "which part of the page was this about?" without hovering. Falls back through
+// the element's own text, then a tag descriptor; freeform messages have neither.
+function promptTargetLabel(prompt) {
+  const text = String(prompt.text || "").trim();
+  if (text && text !== "Freeform message") return text;
+  const tag = String(prompt.tag || "").trim();
+  if (tag === "text") return "selected text";
+  if (tag === "mermaid-node" || tag === "whiteboard") return "diagram";
+  if (tag && tag !== "message" && tag !== "annotation") return "<" + tag + ">";
+  return "";
+}
+
+// A queued comment can be located in the artifact when it carries a CSS selector
+// or a structured target (text range / diagram node); freeform messages cannot.
+function promptIsLocatable(prompt) {
+  return Boolean(prompt && (prompt.selector || (prompt.target && typeof prompt.target === "object")));
+}
+
 function render() {
   annotationPills.innerHTML = queued
-    .map(
-      (prompt, index) =>
-        '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
+    .map((prompt, index) => {
+      const targetLabel = promptTargetLabel(prompt);
+      const locatable = promptIsLocatable(prompt);
+      return (
+        '<div class="pill-wrap"' +
+        (locatable ? ' data-locate-index="' + index + '"' : "") +
+        ' tabindex="0"><div class="pill">' +
+        (targetLabel
+          ? '<span class="pill-target"' +
+            (locatable ? "" : ' data-unlocatable="true"') +
+            '><svg class="pill-target-icon" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true" focusable="false"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="6" r="1.3" fill="currentColor"/></svg><span class="pill-target-text">' +
+            escapeHtml(targetLabel) +
+            "</span></span>"
+          : "") +
+        '<span class="pill-preview">' +
         escapeHtml(prompt.prompt) +
         '</span><button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
         index +
         '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
+        (targetLabel
+          ? '<div class="tooltip-label">Targets' +
+            (locatable ? " · hover to locate" : "") +
+            '</div><div class="pill-tooltip-label">' +
+            escapeHtml(targetLabel) +
+            "</div>"
+          : "") +
         (prompt.selector
-          ? '<div class="tooltip-label">Target</div><div class="pill-tooltip-target">' +
+          ? '<div class="tooltip-label">Element</div><div class="pill-tooltip-target">' +
             escapeHtml(prompt.selector) +
             "</div>"
           : "") +
         '<div class="tooltip-label">Prompt</div><div class="pill-tooltip-prompt">' +
         escapeHtml(prompt.prompt) +
-        "</div></div></div>",
-    )
+        "</div></div></div>"
+      );
+    })
     .join("");
 
   for (const button of annotationPills.querySelectorAll(".pill-close")) {
@@ -148,6 +227,53 @@ function render() {
   }
   updateSendState();
   scrollPanelToBottom();
+}
+
+function closestLocatablePill(node) {
+  return node && node.closest ? node.closest("[data-locate-index]") : null;
+}
+
+// Ask the artifact iframe to scroll to and outline the element a queued comment
+// targets. The iframe is sandboxed without same-origin, so the chrome can't
+// touch its DOM directly - it drives the highlight through the SDK's postMessage
+// protocol, the same channel used for annotation mode and scroll restore.
+function locateQueuedPrompt(index) {
+  const prompt = queued[index];
+  if (!prompt || ended) return;
+  postToFrame({ type: "lavish:highlightTarget", selector: prompt.selector || "", target: prompt.target || null });
+}
+
+function clearLocateHighlight() {
+  postToFrame({ type: "lavish:clearHighlight" });
+}
+
+// Delegated on the pills container so a single listener set survives every
+// re-render: hovering or keyboard-focusing a locatable pill reveals its target
+// in the artifact, and leaving it clears the highlight. mouseout is ignored when
+// the pointer merely crosses between a pill's own children (no target change).
+function bindPillLocateHandlers() {
+  annotationPills.addEventListener("mouseover", (event) => {
+    const wrap = closestLocatablePill(event.target);
+    if (wrap) locateQueuedPrompt(Number(wrap.dataset.locateIndex));
+  });
+  annotationPills.addEventListener("mouseout", (event) => {
+    const wrap = closestLocatablePill(event.target);
+    if (!wrap) return;
+    const to = event.relatedTarget;
+    if (to && wrap.contains && wrap.contains(to)) return;
+    clearLocateHighlight();
+  });
+  annotationPills.addEventListener("focusin", (event) => {
+    const wrap = closestLocatablePill(event.target);
+    if (wrap) locateQueuedPrompt(Number(wrap.dataset.locateIndex));
+  });
+  annotationPills.addEventListener("focusout", (event) => {
+    const wrap = closestLocatablePill(event.target);
+    if (!wrap) return;
+    const to = event.relatedTarget;
+    if (to && wrap.contains && wrap.contains(to)) return;
+    clearLocateHighlight();
+  });
 }
 
 function updateSendState() {
@@ -1199,6 +1325,9 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
   }
+  if (msg.type === "lavish:annotationDraft") {
+    setAnnotationDraft(msg.draft);
+  }
   if (msg.type === "lavish:snapshot") {
     const snapshotAction = snapshotRequests.shift() || "submit";
     if (snapshotAction === "copy") {
@@ -1289,6 +1418,8 @@ frame.addEventListener("load", () => {
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
+  // Reopen a mid-typed annotation card the reload discarded, prefilled with its draft.
+  restoreAnnotationDraftToFrame();
   if (overlayIndex !== null) {
     inlineWhiteboardChannels.delete(overlayIndex);
     postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: overlayIndex });
@@ -1308,6 +1439,7 @@ events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(ev
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
 
+bindPillLocateHandlers();
 render();
 initialChat.forEach((item) => addChat(item.role, item.text));
 setAgentPresence("waiting");
