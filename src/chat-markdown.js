@@ -2,7 +2,7 @@ import createDOMPurify from "dompurify";
 import { marked, Renderer } from "marked";
 
 const ALLOWED_TAGS = ["p", "br", "strong", "em", "code", "pre", "ul", "ol", "li", "a"];
-const ALLOWED_ATTR = ["href", "title"];
+const ALLOWED_ATTR = ["href", "title", "start"];
 
 // Escape raw HTML tokens at the parser layer so fail-closed does not rely on
 // DOMPurify alone (defense in depth for chrome-origin agent replies).
@@ -66,15 +66,24 @@ export function renderAgentChatMarkdown(text, env) {
 
     // Fully stripped / empty sanitize output would paint a blank bubble and hide
     // the original reply — fall back to plain text instead of ok:true emptiness.
-    if (!fragment.childNodes.length) {
+    if (!hasMeaningfulContent(fragment)) {
       return { ok: false, plainText };
     }
 
     applyTrustedLinkDefaults(fragment);
+    applyTrustedOrderedListStarts(fragment);
     return { ok: true, node: /** @type {DocumentFragment} */ (fragment) };
   } catch {
     return { ok: false, plainText };
   }
+}
+
+/**
+ * @param {ParentNode} root
+ */
+function hasMeaningfulContent(root) {
+  if ((root.textContent || "").trim()) return true;
+  return Boolean(root.querySelector?.("br"));
 }
 
 /**
@@ -92,6 +101,19 @@ function applyTrustedLinkDefaults(root) {
     anchor.setAttribute("href", href);
     anchor.setAttribute("rel", "noopener noreferrer");
     anchor.setAttribute("target", "_blank");
+  }
+}
+
+/**
+ * @param {ParentNode} root
+ */
+function applyTrustedOrderedListStarts(root) {
+  const starts = root.querySelectorAll?.("[start]") || [];
+  for (const element of starts) {
+    const value = element.getAttribute("start") || "";
+    if (element.tagName !== "OL" || !/^-?\d+$/.test(value)) {
+      element.removeAttribute("start");
+    }
   }
 }
 

@@ -61,6 +61,12 @@ test("renders unordered and ordered lists", () => {
   assert.equal(result.node.querySelectorAll("li").length >= 4, true);
 });
 
+test("preserves authored ordered-list numbering", () => {
+  const result = render("3. Restart\n4. Continue");
+  assert.equal(result.ok, true);
+  assert.equal(result.node.querySelector("ol")?.getAttribute("start"), "3");
+});
+
 test("fenced code containing script markup stays text, not a script node", () => {
   const result = render("```\n<script>alert(1)</script>\n```");
   assert.equal(result.ok, true);
@@ -203,4 +209,9 @@ test("empty sanitize result falls back to plainText instead of blank ok fragment
   } else {
     assert.equal(result.plainText, "   \n\t  ");
   }
+});
+
+test("image-only markdown falls back when sanitization leaves an empty paragraph", () => {
+  const text = "![diagram](https://example.com/diagram.png)";
+  assert.deepEqual(render(text), { ok: false, plainText: text });
 });

@@ -46,14 +46,16 @@ test("public lavish skill is not marked internal", async () => {
 
 test("build copies local design assets for published artifact injection", async () => {
   const buildScript = await readFile(new URL("../scripts/build.js", import.meta.url), "utf8");
+  const chromeClientBuildScript = await readFile(new URL("../scripts/build-chrome-client.js", import.meta.url), "utf8");
 
   assert.match(buildScript, /daisyui\.css/);
   assert.match(buildScript, /daisyui-themes\.css/);
   assert.match(buildScript, /tailwindcss-browser\.js/);
   // Chrome client is bundled (marked/DOMPurify), not copyFile'd as raw ESM source.
-  assert.match(buildScript, /entryPoints:\s*\[["']src\/chrome-client\.js["']\]/);
+  assert.match(buildScript, /buildChromeClient/);
   assert.match(buildScript, /outfile:\s*["']dist\/chrome-client\.js["']/);
-  assert.doesNotMatch(buildScript, /copyFile\(["']src\/chrome-client\.js["']/);
+  assert.match(chromeClientBuildScript, /src\/chrome-client\.js/);
+  assert.doesNotMatch(`${buildScript}\n${chromeClientBuildScript}`, /copyFile\(["']src\/chrome-client\.js["']/);
 });
 
 test("package metadata matches the GitHub repository used for npm provenance", async () => {
