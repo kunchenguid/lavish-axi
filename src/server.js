@@ -38,7 +38,7 @@ import {
 } from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
-import { bindHost, hostForUrl, linkHost } from "./paths.js";
+import { bindHost, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
@@ -140,6 +140,32 @@ export async function serve({
 
   // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
   const whiteboardStateRoot = path.dirname(stateFile);
+
+  // DNS-rebinding guard. isSameOriginRequest (used on /share and the whiteboard
+  // write routes) stops classic cross-origin CSRF but NOT DNS rebinding: a page
+  // that rebinds its own domain to this loopback port sends that domain in both
+  // Origin and Host, so the two still match. The robust defense is a Host-header
+  // allowlist - a rebound browser carries the attacker's domain in Host, which is
+  // never one of our own hostnames. We only enforce it when bound to loopback;
+  // binding beyond loopback (LAVISH_AXI_HOST) is a documented opt-in to serve
+  // "anything that can reach it" (README "Network binding"), where legitimate
+  // clients arrive with their own Host and an allowlist would break them.
+  const enforceHostAllowlist = isLoopbackHostname(host);
+  const allowedHostnames = new Set(
+    [LOOPBACK_HOST, IPV6_LOOPBACK_HOST, "localhost", host, linkHostName]
+      .filter(Boolean)
+      .map((value) => String(value).trim().toLowerCase()),
+  );
+  if (enforceHostAllowlist) {
+    app.use((req, res, next) => {
+      if (isAllowedHostHeader(req.headers.host, allowedHostnames)) {
+        next();
+        return;
+      }
+      logEvent?.(`rejected request with disallowed Host header host=${req.headers.host ?? ""} path=${req.path}`);
+      res.status(403).json({ error: "forbidden host" });
+    });
+  }
 
   const defaultJsonParser = express.json({ limit: "2mb" });
   const whiteboardJsonParser = express.json({ limit: "20mb" });
@@ -849,6 +875,52 @@ function encodeRfc5987Value(value) {
     /['()*]/g,
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
   );
+}
+
+const LOOPBACK_HOSTNAMES = new Set([LOOPBACK_HOST, IPV6_LOOPBACK_HOST, "localhost"]);
+
+// True when the server binds to a loopback interface (the default). Only a
+// loopback-bound server is reachable exclusively from this machine, so a foreign
+// Host header can only be a DNS-rebinding attempt and the Host allowlist is safe
+// to enforce. When LAVISH_AXI_HOST binds beyond loopback (a wildcard or a
+// specific interface) the server is intentionally exposed and legitimate remote
+// clients arrive with their own Host, so the allowlist is not enforced.
+export function isLoopbackHostname(host) {
+  return LOOPBACK_HOSTNAMES.has(
+    String(host || "")
+      .trim()
+      .toLowerCase(),
+  );
+}
+
+// Extract the hostname (without port) from a Host header value, honoring
+// bracketed IPv6 literals ("[::1]:4387"). Returns null for a malformed authority.
+function hostnameFromHostHeader(value) {
+  const raw = String(value).trim();
+  if (raw.startsWith("[")) {
+    const end = raw.indexOf("]");
+    return end === -1 ? null : raw.slice(1, end).toLowerCase();
+  }
+  const colon = raw.indexOf(":");
+  const hostname = colon === -1 ? raw : raw.slice(0, colon);
+  // A bare, unbracketed IPv6 literal is not a valid authority; reject it rather
+  // than mistaking a hextet for a port.
+  if (hostname.includes(":")) return null;
+  return hostname.toLowerCase();
+}
+
+// DNS-rebinding defense: a loopback-bound server answers only to its own known
+// hostnames. A rebound browser carries the attacker's domain in Host and is
+// rejected. Host is mandatory in HTTP/1.1 and every browser sends it, so a
+// missing or blank value is never a legitimate client - reject it rather than
+// fail open.
+export function isAllowedHostHeader(hostHeader, allowedHostnames) {
+  if (hostHeader === undefined || hostHeader === null) return false;
+  const raw = String(hostHeader).trim();
+  if (raw === "") return false;
+  const hostname = hostnameFromHostHeader(raw);
+  if (hostname === null) return false;
+  return allowedHostnames.has(hostname);
 }
 
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
