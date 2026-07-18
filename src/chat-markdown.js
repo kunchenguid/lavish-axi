@@ -82,8 +82,7 @@ export function renderAgentChatMarkdown(text, env) {
  * @param {ParentNode} root
  */
 function hasMeaningfulContent(root) {
-  if ((root.textContent || "").trim()) return true;
-  return Boolean(root.querySelector?.("br"));
+  return Boolean((root.textContent || "").trim());
 }
 
 /**

@@ -202,16 +202,16 @@ test("parser escapes raw HTML before sanitize (defense in depth)", () => {
 });
 
 test("empty sanitize result falls back to plainText instead of blank ok fragment", () => {
-  // Whitespace-only is truthy for addChat but should not paint an empty rich bubble.
-  const result = render("   \n\t  ");
-  if (result.ok) {
-    assert.ok((result.node.textContent || "").trim().length > 0 || result.node.querySelector("br"));
-  } else {
-    assert.equal(result.plainText, "   \n\t  ");
-  }
+  const text = "   \n\t  ";
+  assert.deepEqual(render(text), { ok: false, plainText: text });
 });
 
 test("image-only markdown falls back when sanitization leaves an empty paragraph", () => {
   const text = "![diagram](https://example.com/diagram.png)";
+  assert.deepEqual(render(text), { ok: false, plainText: text });
+});
+
+test("image-only lines fall back when sanitization leaves only a break", () => {
+  const text = "![one](https://example.com/one.png)\n![two](https://example.com/two.png)";
   assert.deepEqual(render(text), { ok: false, plainText: text });
 });
