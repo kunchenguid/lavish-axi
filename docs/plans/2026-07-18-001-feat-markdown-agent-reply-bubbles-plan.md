@@ -113,10 +113,6 @@ Reviewers read multi-line agent replies with emphasis and structure as dense esc
 - Structured rich-reply protocol / JSON AST for agent messages.
 - Artifact-iframe Markdown (artifacts already choose their own HTML).
 
-**Deferred to follow-up work**
-
-- README one-liner that agent replies may include Markdown (optional docs polish; behavior is display-only).
-
 ---
 
 ## Planning Contract
