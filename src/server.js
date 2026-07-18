@@ -77,12 +77,11 @@ export function defaultWhiteboardAssetsDir() {
 // Never serve raw src/chrome-client.js once it has npm imports — only the built
 // asset under dist/. Packaged CLI lives in dist/ so the sibling path wins;
 // source runs fall back to ../dist/chrome-client.js after `pnpm run build`.
+// Missing build must 404 at GET /chrome-client.js, not fall through to src ESM.
 export function defaultChromeClientPath() {
   const sibling = fileURLToPath(new URL("./chrome-client.js", import.meta.url));
   const fromRepoDist = fileURLToPath(new URL("../dist/chrome-client.js", import.meta.url));
   if (path.basename(path.dirname(sibling)) === "dist" && existsSync(sibling)) return sibling;
-  if (existsSync(fromRepoDist)) return fromRepoDist;
-  if (existsSync(sibling)) return sibling;
   return fromRepoDist;
 }
 

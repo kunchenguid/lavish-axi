@@ -11,6 +11,7 @@ process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 import {
   createChromeHtml,
   createSdkJs,
+  defaultChromeClientPath,
   displayPathParts,
   exportContentDisposition,
   extractArtifactHead,
@@ -25,6 +26,10 @@ import { canonicalFile, sessionKey } from "../src/session-store.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
+}
+
+async function chromeClientBundle() {
+  return readFile(new URL("../dist/chrome-client.js", import.meta.url), "utf8");
 }
 
 async function chromeCssSource() {
@@ -731,7 +736,7 @@ test("annotation pill tooltip separates target and prompt details", async () => 
 
 test("chrome client built bundle is valid JavaScript", async () => {
   // Source is ESM (import chat-markdown); the served asset is the built IIFE.
-  const js = await readFile(new URL("../dist/chrome-client.js", import.meta.url), "utf8");
+  const js = await chromeClientBundle();
 
   assert.doesNotThrow(() => new Function(js));
   assert.doesNotMatch(js, /^\s*import\s/m);
@@ -1172,6 +1177,12 @@ test("long-poll sends heartbeat bytes before feedback arrives", async () => {
   }
 });
 
+test("defaultChromeClientPath never resolves to src ESM chrome-client", () => {
+  const resolved = defaultChromeClientPath();
+  assert.match(resolved, /chrome-client\.js$/);
+  assert.doesNotMatch(resolved.replace(/\\/g, "/"), /\/src\/chrome-client\.js$/);
+});
+
 test("/chrome-client.js serves the built chrome client bundle", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
@@ -1187,10 +1198,43 @@ test("/chrome-client.js serves the built chrome client bundle", async () => {
     assert.match(body, /EventSource/);
     assert.doesNotMatch(body, /from\s+["']marked["']/);
     assert.doesNotMatch(body, /from\s+["']dompurify["']/);
+    // Runtime sanitize markers must remain in the shipped bundle (not tree-shaken away).
+    assert.match(body, /ALLOWED_TAGS|DOMPurify|createDOMPurify|sanitize/i);
+    assert.match(body, /replaceChildren|bubble-content/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("/chrome-client.js 404s with build guidance when bundle path is missing", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const missing = path.join(dir, "missing-chrome-client.js");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    chromeClientPath: missing,
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/chrome-client.js`);
+    const body = await res.text();
+    assert.equal(res.status, 404);
+    assert.match(body, /pnpm run build/i);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent addChat path never assigns renderer HTML via innerHTML", async () => {
+  const source = await chromeClientSource();
+  const addChat = source.match(/function addChat\([\s\S]*?\n\}/);
+  assert.ok(addChat, "expected addChat function in chrome-client source");
+  const body = addChat[0];
+  assert.match(body, /replaceChildren\(rendered\.node\)/);
+  assert.match(body, /content\.textContent\s*=/);
+  assert.doesNotMatch(body, /content\.innerHTML\s*=/);
 });
 
 test("/chrome.css serves the extracted chrome stylesheet", async () => {

@@ -131,20 +131,28 @@ test("dangerous and non-http(s) link schemes are not navigable", () => {
   }
 });
 
-test("attacker-controlled target, style, id, event, and data attributes do not survive", () => {
+test("raw HTML anchors are escaped, not live DOM with attacker attributes", () => {
+  // Defense-in-depth: marked HTML tokens are escaped before sanitize, so raw
+  // <a ...> input never becomes a navigable element with attacker attrs.
   const result = render(
     '<a href="https://safe.example" target="_self" style="color:red" id="x" onclick="alert(1)" data-evil="1">link</a>',
   );
+  assert.equal(result.ok, true);
+  assert.equal(result.node.querySelector("a"), null);
+  assert.equal(result.node.querySelectorAll("[onclick],[style],[id]").length, 0);
+  assert.match(result.node.textContent || "", /link/);
+});
+
+test("markdown links still get trusted target and rel after sanitize", () => {
+  const result = render('[link](https://safe.example "t")');
   assert.equal(result.ok, true);
   const a = result.node.querySelector("a");
   assert.ok(a);
   assert.equal(a.getAttribute("href"), "https://safe.example");
   assert.equal(a.getAttribute("target"), "_blank");
   assert.equal(a.getAttribute("rel"), "noopener noreferrer");
-  assert.equal(a.getAttribute("style"), null);
-  assert.equal(a.getAttribute("id"), null);
   assert.equal(a.getAttribute("onclick"), null);
-  assert.equal(a.getAttribute("data-evil"), null);
+  assert.equal(a.getAttribute("style"), null);
 });
 
 test("success path returns a DocumentFragment, not an HTML string field", () => {
@@ -177,4 +185,22 @@ test("falls back to plainText when window is required but missing for sanitize",
   assert.equal(result2.plainText, "**bold**");
   // baseline still works with defaultView
   assert.equal(result.ok, true);
+});
+
+test("parser escapes raw HTML before sanitize (defense in depth)", () => {
+  const result = render("<script>alert(1)</script>\n\n**still bold**");
+  assert.equal(result.ok, true);
+  assert.equal(result.node.querySelectorAll("script").length, 0);
+  assert.match(result.node.textContent || "", /script/);
+  assert.ok(result.node.querySelector("strong"), "markdown after escaped HTML still formats");
+});
+
+test("empty sanitize result falls back to plainText instead of blank ok fragment", () => {
+  // Whitespace-only is truthy for addChat but should not paint an empty rich bubble.
+  const result = render("   \n\t  ");
+  if (result.ok) {
+    assert.ok((result.node.textContent || "").trim().length > 0 || result.node.querySelector("br"));
+  } else {
+    assert.equal(result.plainText, "   \n\t  ");
+  }
 });

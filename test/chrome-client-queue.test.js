@@ -525,6 +525,29 @@ test("user bubbles keep markdown markers as plain text", async () => {
   assert.equal(content.textContent, "**not bold** and `literal`");
 });
 
+test("agent-reply hostile payload is sanitized through the built chrome IIFE", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({
+      // Markdown first so formatting still applies; HTML/js links follow.
+      text: '**safe**\n\n<script>alert(1)</script>\n\n<img src=x onerror="alert(1)">\n\n[js](javascript:alert(1))',
+    }),
+  });
+  const bubble = chrome.element("chatLog").lastAppendedChild;
+  const content = bubble.querySelector(".bubble-content");
+  assert.ok(content);
+  assert.equal(content.querySelectorAll("script").length, 0);
+  assert.equal(content.querySelectorAll("img").length, 0);
+  assert.equal(content.querySelectorAll("[onerror],[onload],[onclick]").length, 0);
+  for (const anchor of content.querySelectorAll("a")) {
+    const href = anchor.getAttribute("href");
+    if (href == null) continue;
+    assert.match(href, /^https?:\/\//i, `unexpected href ${href}`);
+  }
+  assert.ok(content.querySelector("strong"), "expected bold still formats alongside hostile payload");
+  assert.match(content.textContent || "", /safe/);
+});
+
 test("chrome client posts layout warnings from the artifact iframe", async () => {
   const posts = [];
   const chrome = await createChromeHarness({

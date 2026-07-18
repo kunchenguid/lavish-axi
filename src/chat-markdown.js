@@ -1,13 +1,23 @@
 import createDOMPurify from "dompurify";
-import { marked } from "marked";
+import { marked, Renderer } from "marked";
 
 const ALLOWED_TAGS = ["p", "br", "strong", "em", "code", "pre", "ul", "ol", "li", "a"];
 const ALLOWED_ATTR = ["href", "title"];
+
+// Escape raw HTML tokens at the parser layer so fail-closed does not rely on
+// DOMPurify alone (defense in depth for chrome-origin agent replies).
+const markedRenderer = new Renderer();
+markedRenderer.html = ({ text }) =>
+  String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 
 const markedOptions = {
   async: false,
   breaks: true,
   gfm: true,
+  renderer: markedRenderer,
 };
 
 /**
@@ -51,6 +61,12 @@ export function renderAgentChatMarkdown(text, env) {
     });
 
     if (!fragment || fragment.nodeType !== 11) {
+      return { ok: false, plainText };
+    }
+
+    // Fully stripped / empty sanitize output would paint a blank bubble and hide
+    // the original reply — fall back to plain text instead of ok:true emptiness.
+    if (!fragment.childNodes.length) {
       return { ok: false, plainText };
     }
 
