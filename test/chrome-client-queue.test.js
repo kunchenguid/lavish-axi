@@ -1,20 +1,146 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { JSDOM } from "jsdom";
 
-const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
+// Built IIFE (pnpm run build / prepare). Source is ESM with npm imports and is not browser-loadable.
+const builtClientUrl = new URL("../dist/chrome-client.js", import.meta.url);
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: Array<{ role: string, text: string }> }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
+
+const CHROME_IDS = [
+  "lavish-session",
+  "artifact",
+  "panelScroll",
+  "annotationPills",
+  "chatLog",
+  "chatInput",
+  "send",
+  "sendAndEnd",
+  "sendHint",
+  "annotation",
+  "moreWrap",
+  "moreButton",
+  "moreMenu",
+  "reloadArtifact",
+  "copySnapshot",
+  "exportArtifact",
+  "shareArtifact",
+  "copyPath",
+  "copyHint",
+  "copyHintText",
+  "end",
+  "endedOverlay",
+  "presenceBanner",
+  "shareDialog",
+  "shareForm",
+  "sharePassword",
+  "sharePublish",
+  "shareStatus",
+  "shareResult",
+  "shareUrl",
+  "shareUpdateKey",
+  "shareClose",
+  "shareCancel",
+  "copyShareUrl",
+  "copyUpdateKey",
+  "layoutGateOverlay",
+  "layoutGateTitle",
+  "layoutGateCopy",
+  "layoutGateAction",
+  "layoutIssueBanner",
+  "whiteboardOverlay",
+  "whiteboardFrame",
+  "whiteboardClose",
+  "whiteboardError",
+];
+
+/**
+ * Instrument a real DOM node so existing harness tests can still read
+ * `.listeners`, `.onclick`, `lastAppendedChild`, and `scrolledIntoView`.
+ * @param {Element} el
+ * @returns {any}
+ */
+function instrumentElement(el) {
+  const node = /** @type {any} */ (el);
+  if (node.__lavishInstrumented) return node;
+  node.__lavishInstrumented = true;
+  const listeners = new Map();
+  node.listeners = listeners;
+  node.scrolledIntoView = null;
+  node.lastAppendedChild = null;
+  node.focused = false;
+  node.clicked = false;
+
+  const originalAdd = el.addEventListener.bind(el);
+  node.addEventListener = (type, handler, options) => {
+    listeners.set(type, handler);
+    return originalAdd(type, handler, options);
+  };
+
+  const originalAppend = el.appendChild.bind(el);
+  node.appendChild = (child) => {
+    node.lastAppendedChild = child;
+    return originalAppend(child);
+  };
+
+  node.scrollIntoView = (options) => {
+    node.scrolledIntoView = options;
+  };
+
+  const originalFocus = typeof node.focus === "function" ? node.focus.bind(el) : null;
+  node.focus = () => {
+    node.focused = true;
+    originalFocus?.();
+  };
+
+  let onclickHandler = null;
+  Object.defineProperty(node, "onclick", {
+    configurable: true,
+    get() {
+      return onclickHandler;
+    },
+    set(fn) {
+      onclickHandler = typeof fn === "function" ? fn : null;
+      listeners.set("click", onclickHandler);
+    },
+  });
+
+  const originalClick = typeof node.click === "function" ? node.click.bind(el) : null;
+  node.click = (event = {}) => {
+    node.clicked = true;
+    if (typeof onclickHandler === "function") return onclickHandler(event);
+    return originalClick?.();
+  };
+
+  // Mirror the prior fake-DOM setAttribute behavior used by tests that read
+  // `el["aria-pressed"]` as a data property rather than getAttribute().
+  const originalSetAttribute = el.setAttribute.bind(el);
+  node.setAttribute = (name, value) => {
+    originalSetAttribute(name, value);
+    try {
+      node[name] = String(value);
+    } catch {
+      // Some IDL attributes reject direct assignment; attribute still set.
+    }
+  };
+
+  return node;
+}
 
 async function createChromeHarness({
   fetchImpl = async () => ({ ok: true }),
   sessionData = defaultSessionData,
   artifactSrc = "",
 } = {}) {
-  const source = await readFile(sourceUrl, "utf8");
+  if (!existsSync(builtClientUrl)) {
+    throw new Error("dist/chrome-client.js missing - run `pnpm run build` before chrome-client tests");
+  }
+  const source = await readFile(builtClientUrl, "utf8");
   const storage = new Map();
   const postedToFrame = [];
   const postedToWhiteboard = [];
@@ -22,11 +148,52 @@ async function createChromeHarness({
   const eventSources = [];
   const windowListeners = new Map();
   const documentListeners = new Map();
-  const elements = new Map();
   const timers = new Map();
   const srcLoads = [];
   let nextTimerId = 1;
   let reloadCount = 0;
+
+  const idsHtml = CHROME_IDS.map((id) => {
+    if (id === "lavish-session") {
+      return `<script type="application/json" id="lavish-session">${JSON.stringify(sessionData).replace(/</g, "\\u003c")}</script>`;
+    }
+    if (id === "artifact") {
+      return `<iframe id="artifact" data-artifact-src="${artifactSrc}"></iframe>`;
+    }
+    if (id === "whiteboardFrame") {
+      return `<iframe id="whiteboardFrame"></iframe>`;
+    }
+    if (id === "exportArtifact") {
+      return `<button id="exportArtifact" type="button"><span>Export</span></button>`;
+    }
+    if (id === "chatInput") {
+      return `<textarea id="chatInput"></textarea>`;
+    }
+    if (id === "shareForm") {
+      return `<form id="shareForm"></form>`;
+    }
+    if (id === "sharePassword" || id === "shareUrl" || id === "shareUpdateKey") {
+      return `<input id="${id}" />`;
+    }
+    if (id === "annotationPills" || id === "chatLog" || id === "panelScroll" || id === "body") {
+      return `<div id="${id}"></div>`;
+    }
+    return `<div id="${id}"></div>`;
+  }).join("");
+
+  const dom = new JSDOM(`<!doctype html><html><body id="body">${idsHtml}</body></html>`, {
+    url: "http://127.0.0.1/",
+    pretendToBeVisual: true,
+    runScripts: "outside-only",
+  });
+  const { window } = dom;
+  const { document } = window;
+
+  for (const id of CHROME_IDS) {
+    const el = document.getElementById(id);
+    if (el) instrumentElement(el);
+  }
+  instrumentElement(document.body);
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -41,6 +208,7 @@ async function createChromeHarness({
 
   function fakeClearTimeout(timer) {
     if (timer && typeof timer === "object") timers.delete(timer.id);
+    else if (typeof timer === "number") timers.delete(timer);
   }
 
   function runTimers(ms) {
@@ -52,172 +220,142 @@ async function createChromeHarness({
   }
 
   function element(id) {
-    if (elements.has(id)) return elements.get(id);
-    const listeners = new Map();
-    const classes = new Set();
-    const el = {
-      id,
-      hidden: false,
-      disabled: false,
-      value: "",
-      innerHTML: "",
-      textContent: "",
-      scrollTop: 0,
-      scrollHeight: 0,
-      scrolledIntoView: null,
-      dataset: {},
-      onclick: null,
-      classList: {
-        add(...names) {
-          for (const name of names) classes.add(name);
-        },
-        remove(...names) {
-          for (const name of names) classes.delete(name);
-        },
-        toggle(name, force) {
-          const enabled = force === undefined ? !classes.has(name) : Boolean(force);
-          if (enabled) classes.add(name);
-          else classes.delete(name);
-          return enabled;
-        },
-        contains(name) {
-          return classes.has(name);
-        },
-        toString() {
-          return [...classes].join(" ");
-        },
-      },
-      style: {},
-      setAttribute(name, value) {
-        this[name] = String(value);
-      },
-      addEventListener(type, handler) {
-        listeners.set(type, handler);
-      },
-      querySelectorAll() {
-        return [];
-      },
-      querySelector(selector) {
-        if (selector !== "span") return null;
-        const childId = `${id}:span`;
-        if (!elements.has(childId)) element(childId);
-        return elements.get(childId);
-      },
-      appendChild(child) {
-        child.parentElement = this;
-        this.lastAppendedChild = child;
-        return child;
-      },
-      click(event = {}) {
-        this.clicked = true;
-        if (typeof this.onclick === "function") return this.onclick(event);
-        return undefined;
-      },
-      remove() {},
-      focus() {
-        this.focused = true;
-      },
-      select() {},
-      scrollIntoView(options) {
-        this.scrolledIntoView = options;
-      },
-      listeners,
-    };
-    elements.set(id, el);
-    return el;
+    if (id === "body") return /** @type {any} */ (document.body);
+    const el = document.getElementById(id);
+    assert.ok(el, `missing chrome element #${id}`);
+    return instrumentElement(el);
   }
 
-  element("lavish-session").textContent = JSON.stringify(sessionData);
   const frame = element("artifact");
-  frame.dataset.artifactSrc = artifactSrc;
+  let currentSrc = "";
   Object.defineProperty(frame, "src", {
+    configurable: true,
     get() {
-      return this.currentSrc || "";
+      return currentSrc;
     },
     set(value) {
-      this.currentSrc = String(value);
-      srcLoads.push({ src: this.currentSrc, hadMessageListener: windowListeners.has("message") });
+      currentSrc = String(value);
+      srcLoads.push({ src: currentSrc, hadMessageListener: windowListeners.has("message") });
     },
   });
-  frame.contentWindow = {
+  const frameContentWindow = {
     postMessage(message) {
       postedToFrame.push(message);
     },
   };
+  Object.defineProperty(frame, "contentWindow", {
+    configurable: true,
+    get() {
+      return frameContentWindow;
+    },
+  });
+
   const whiteboardFrame = element("whiteboardFrame");
-  whiteboardFrame.contentWindow = {
+  let whiteboardSrc = "";
+  Object.defineProperty(whiteboardFrame, "src", {
+    configurable: true,
+    get() {
+      return whiteboardSrc;
+    },
+    set(value) {
+      whiteboardSrc = String(value);
+    },
+  });
+  const whiteboardContentWindow = {
     postMessage(message) {
       postedToWhiteboard.push(message);
     },
   };
+  Object.defineProperty(whiteboardFrame, "contentWindow", {
+    configurable: true,
+    get() {
+      return whiteboardContentWindow;
+    },
+  });
 
-  const context = {
-    clearTimeout: fakeClearTimeout,
-    console,
-    fetch: fetchImpl,
-    location: {
-      reload() {
-        reloadCount += 1;
-      },
-    },
-    navigator: {},
-    setTimeout: fakeSetTimeout,
-    URL: {
-      createObjectURL() {
-        return "blob:lavish-test";
-      },
-      revokeObjectURL() {},
-    },
-    EventSource: class FakeEventSource {
-      constructor(url) {
-        this.url = url;
-        this.listeners = new Map();
-        eventSources.push(this);
-      }
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+      this.listeners = new Map();
+      eventSources.push(this);
+    }
 
-      addEventListener(type, handler) {
-        this.listeners.set(type, handler);
-      }
-    },
-    document: {
-      body: element("body"),
-      getElementById(id) {
-        return element(id);
-      },
-      addEventListener(type, handler, capture) {
-        if (!documentListeners.has(type)) documentListeners.set(type, []);
-        documentListeners.get(type).push({ handler, capture: Boolean(capture) });
-      },
-      createElement(tag) {
-        const el = element(`${tag}-${elements.size}`);
-        el.tagName = tag.toUpperCase();
-        return el;
-      },
-      execCommand() {
-        return true;
-      },
-    },
-    sessionStorage: {
-      getItem(key) {
-        return storage.has(key) ? storage.get(key) : null;
-      },
-      setItem(key, value) {
-        storage.set(key, String(value));
-      },
-      removeItem(key) {
-        storage.delete(key);
-      },
-    },
-    window: {
-      addEventListener(type, handler) {
-        if (!windowListeners.has(type)) windowListeners.set(type, []);
-        windowListeners.get(type).push(handler);
-      },
-    },
+    addEventListener(type, handler) {
+      this.listeners.set(type, handler);
+    }
+  }
+
+  const originalDocAdd = document.addEventListener.bind(document);
+  document.addEventListener = (type, handler, capture) => {
+    if (!documentListeners.has(type)) documentListeners.set(type, []);
+    documentListeners.get(type).push({ handler, capture: Boolean(capture) });
+    return originalDocAdd(type, handler, capture);
   };
 
-  vm.runInNewContext(source, context, { filename: "chrome-client.js" });
+  const originalWinAdd = window.addEventListener.bind(window);
+  window.addEventListener = (type, handler, options) => {
+    if (!windowListeners.has(type)) windowListeners.set(type, []);
+    windowListeners.get(type).push(handler);
+    return originalWinAdd(type, handler, options);
+  };
 
+  window.fetch = fetchImpl;
+  window.EventSource = FakeEventSource;
+  window.setTimeout = fakeSetTimeout;
+  window.clearTimeout = fakeClearTimeout;
+  window.console = console;
+  Object.defineProperty(window.navigator, "clipboard", {
+    configurable: true,
+    value: undefined,
+  });
+  window.URL.createObjectURL = () => "blob:lavish-test";
+  window.URL.revokeObjectURL = () => {};
+  const sessionStorageShim = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+    removeItem(key) {
+      storage.delete(key);
+    },
+  };
+  Object.defineProperty(window, "sessionStorage", {
+    configurable: true,
+    value: sessionStorageShim,
+  });
+
+  // Instrument createElement so dynamically created bubbles track scroll/append.
+  const originalCreateElement = document.createElement.bind(document);
+  document.createElement = (tagName, options) => instrumentElement(originalCreateElement(tagName, options));
+
+  // jsdom's location.reload is non-writable; run the IIFE in a sandbox that
+  // shares the jsdom window/document but supplies a controllable bare `location`.
+  const locationShim = {
+    href: "http://127.0.0.1/",
+    origin: "http://127.0.0.1",
+    reload() {
+      reloadCount += 1;
+    },
+  };
+  const sandbox = {
+    window,
+    self: window,
+    globalThis: window,
+    document,
+    console,
+    fetch: fetchImpl,
+    EventSource: FakeEventSource,
+    setTimeout: fakeSetTimeout,
+    clearTimeout: fakeClearTimeout,
+    sessionStorage: sessionStorageShim,
+    navigator: window.navigator,
+    URL: window.URL,
+    location: locationShim,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox, { filename: "chrome-client.js" });
   return {
     element,
     frame,
@@ -225,12 +363,12 @@ async function createChromeHarness({
     postedToWhiteboard,
     createInlineWhiteboard() {
       const posted = [];
-      const source = {
+      const sourceWindow = {
         postMessage(message) {
           posted.push(message);
         },
       };
-      const whiteboard = { source, posted };
+      const whiteboard = { source: sourceWindow, posted };
       inlineWhiteboards.push(whiteboard);
       return whiteboard;
     },
@@ -241,12 +379,12 @@ async function createChromeHarness({
     sendFrameMessage(data) {
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
-      for (const handler of handlers) handler({ source: frame.contentWindow, data });
+      for (const handler of handlers) handler({ source: frameContentWindow, data });
     },
     sendWhiteboardMessage(data) {
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
-      for (const handler of handlers) handler({ source: whiteboardFrame.contentWindow, data });
+      for (const handler of handlers) handler({ source: whiteboardContentWindow, data });
     },
     sendInlineWhiteboardMessage(whiteboard, data) {
       const handlers = windowListeners.get("message") || [];
@@ -281,7 +419,6 @@ async function createChromeHarness({
     srcLoads,
   };
 }
-
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -313,7 +450,7 @@ test("chrome client replaces queued prompts with the same internal key", async (
 test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {
   const chrome = await createChromeHarness();
   const panelScroll = chrome.element("panelScroll");
-  panelScroll.scrollHeight = 1800;
+  Object.defineProperty(panelScroll, "scrollHeight", { configurable: true, value: 1800, writable: true });
 
   chrome.sendFrameMessage({
     type: "lavish:queuePrompt",
@@ -330,6 +467,62 @@ test("chrome client scrolls new chat bubbles into view above queued prompts", as
   assert.equal(bubble.scrolledIntoView.block, "nearest");
   assert.equal(bubble.scrolledIntoView.inline, "nearest");
   assert.equal(panelScroll.scrollTop, 640);
+});
+
+test("agent-reply markdown renders bold inside bubble-content", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({ text: "Use **bold** and `code` here" }),
+  });
+  const bubble = chrome.element("chatLog").lastAppendedChild;
+  assert.ok(bubble.classList.contains("agent"));
+  const content = bubble.querySelector(".bubble-content");
+  assert.ok(content);
+  assert.ok(content.querySelector("strong"), "expected strong for bold markdown");
+  assert.ok(content.querySelector("code"), "expected code for inline code");
+  assert.match(content.textContent || "", /bold/);
+});
+
+test("initialChat agent markdown matches live agent-reply formatting", async () => {
+  const text = "List:\n\n- one\n- two\n\n**done**";
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [{ role: "agent", text }],
+    },
+  });
+  const bubble = chrome.element("chatLog").querySelector(".bubble.agent");
+  assert.ok(bubble);
+  const content = bubble.querySelector(".bubble-content");
+  assert.ok(content?.querySelector("strong"));
+  assert.ok(content?.querySelector("ul"));
+  assert.equal(content?.querySelectorAll("li").length >= 2, true);
+});
+
+test("chat-sync agent markdown matches the same content shape", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [{ role: "agent", text: "See **sync** path" }],
+    }),
+  });
+  const content = chrome.element("chatLog").querySelector(".bubble.agent .bubble-content");
+  assert.ok(content?.querySelector("strong"));
+  assert.match(content?.textContent || "", /sync/);
+});
+
+test("user bubbles keep markdown markers as plain text", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [{ role: "user", text: "**not bold** and `literal`" }],
+    }),
+  });
+  const content = chrome.element("chatLog").querySelector(".bubble.user .bubble-content");
+  assert.ok(content);
+  assert.equal(content.querySelector("strong"), null);
+  assert.equal(content.querySelector("code"), null);
+  assert.equal(content.textContent, "**not bold** and `literal`");
 });
 
 test("chrome client posts layout warnings from the artifact iframe", async () => {

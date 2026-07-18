@@ -22,7 +22,18 @@ await esbuild.build({
 });
 
 await chmod("dist/cli.mjs", 0o755);
-await copyFile("src/chrome-client.js", "dist/chrome-client.js");
+
+// Chrome client: browser IIFE bundling marked + DOMPurify + chat-markdown so
+// /chrome-client.js stays a single self-contained asset for packaged and source runs.
+await esbuild.build({
+  entryPoints: ["src/chrome-client.js"],
+  outfile: "dist/chrome-client.js",
+  bundle: true,
+  minify: true,
+  format: "iife",
+  platform: "browser",
+  target: ["es2022"],
+});
 await copyFile("src/chrome.css", "dist/chrome.css");
 await mkdir("dist/design", { recursive: true });
 await copyFile("node_modules/daisyui/daisyui.css", "dist/design/daisyui.css");

@@ -548,6 +548,8 @@ test("chrome chat bubbles follow the preview mock shades", async () => {
   assert.match(css, /\.bubble\.agent\{[^}]*background:transparent/);
   assert.match(css, /\.bubble\.agent\{[^}]*border-color:var\(--border-subtle\)/);
   assert.match(css, /border-top-color:var\(--accent\)/);
+  assert.match(css, /\.bubble-content\{/);
+  assert.match(css, /\.bubble-content pre\{/);
 });
 
 test("chrome queued-prompt pills use the preview mock steel treatment", async () => {
@@ -727,10 +729,12 @@ test("annotation pill tooltip separates target and prompt details", async () => 
   assert.doesNotMatch(css, /\.pill-tooltip\{[^}]*position:absolute/);
 });
 
-test("chrome client script is valid JavaScript", async () => {
-  const js = await chromeClientSource();
+test("chrome client built bundle is valid JavaScript", async () => {
+  // Source is ESM (import chat-markdown); the served asset is the built IIFE.
+  const js = await readFile(new URL("../dist/chrome-client.js", import.meta.url), "utf8");
 
   assert.doesNotThrow(() => new Function(js));
+  assert.doesNotMatch(js, /^\s*import\s/m);
 });
 
 test("chrome omits the extra conversation description copy", () => {
@@ -1168,7 +1172,7 @@ test("long-poll sends heartbeat bytes before feedback arrives", async () => {
   }
 });
 
-test("/chrome-client.js serves the extracted chrome client script", async () => {
+test("/chrome-client.js serves the built chrome client bundle", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
   try {
@@ -1177,8 +1181,12 @@ test("/chrome-client.js serves the extracted chrome client script", async () => 
 
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") || "", /application\/javascript/);
-    assert.match(body, /const sessionData/);
-    assert.match(body, /new EventSource\("\/events\/" \+ key\)/);
+    assert.match(res.headers.get("cache-control") || "", /no-cache/i);
+    // Built IIFE markers (minified): session bootstrap + EventSource path, no bare ESM imports.
+    assert.match(body, /\/events\//);
+    assert.match(body, /EventSource/);
+    assert.doesNotMatch(body, /from\s+["']marked["']/);
+    assert.doesNotMatch(body, /from\s+["']dompurify["']/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

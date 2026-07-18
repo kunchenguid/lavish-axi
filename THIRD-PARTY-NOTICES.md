@@ -2,7 +2,17 @@
 
 The published `lavish-axi` package vendors the following third-party software into `dist/`.
 Each component remains under its own license; the notices below satisfy their attribution requirements.
-The whiteboard bundle (`dist/whiteboard/`) is built from these packages by `scripts/build.js`.
+The whiteboard bundle (`dist/whiteboard/`) and chrome client (`dist/chrome-client.js`) are built from these packages by `scripts/build.js`.
+
+## Bundled into `dist/chrome-client.js`
+
+| Package     | License               | Copyright                                       |
+| ----------- | --------------------- | ----------------------------------------------- |
+| `marked`    | MIT                   | Copyright (c) 2018+, MarkedJS contributors      |
+| `dompurify` | Apache-2.0 or MPL-2.0 | Copyright 2025 Dr.-Ing. Mario Heiderich, Cure53 |
+
+`marked` is under the MIT license (same MIT text as in the whiteboard section below).
+`dompurify` is dual-licensed under Apache-2.0 or MPL-2.0; see the package for full license text.
 
 ## Bundled into `dist/whiteboard/whiteboard.js` and `whiteboard.css`
 

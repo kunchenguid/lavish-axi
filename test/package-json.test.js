@@ -50,6 +50,10 @@ test("build copies local design assets for published artifact injection", async 
   assert.match(buildScript, /daisyui\.css/);
   assert.match(buildScript, /daisyui-themes\.css/);
   assert.match(buildScript, /tailwindcss-browser\.js/);
+  // Chrome client is bundled (marked/DOMPurify), not copyFile'd as raw ESM source.
+  assert.match(buildScript, /entryPoints:\s*\[["']src\/chrome-client\.js["']\]/);
+  assert.match(buildScript, /outfile:\s*["']dist\/chrome-client\.js["']/);
+  assert.doesNotMatch(buildScript, /copyFile\(["']src\/chrome-client\.js["']/);
 });
 
 test("package metadata matches the GitHub repository used for npm provenance", async () => {

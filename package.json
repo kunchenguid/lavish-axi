@@ -33,7 +33,9 @@
     "axi-sdk-js": "^0.1.8",
     "chokidar": "^4.0.3",
     "daisyui": "^5.5.19",
+    "dompurify": "^3.4.12",
     "express": "^5.2.1",
+    "marked": "^18.0.6",
     "open": "^10.2.0",
     "parse5": "^8.0.1"
   },
@@ -46,6 +48,7 @@
     "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
     "mermaid": "11.12.1",
     "prettier": "^3.8.3",
     "react": "18.3.1",

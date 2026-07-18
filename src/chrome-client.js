@@ -1,5 +1,7 @@
 /* global EventSource, document, location, window */
 
+import { renderAgentChatMarkdown } from "./chat-markdown.js";
+
 const sessionDataElement = document.getElementById("lavish-session");
 const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
 const key = String(sessionData.key || "");
@@ -209,7 +211,27 @@ function addChat(role, text, shouldScroll = true) {
 
   const el = document.createElement("div");
   el.className = "bubble " + role;
-  el.innerHTML = "<small>" + (role === "agent" ? "Agent" : "You") + "</small><div>" + escapeHtml(text) + "</div>";
+  const label = document.createElement("small");
+  label.textContent = role === "agent" ? "Agent" : "You";
+  const content = document.createElement("div");
+  content.className = "bubble-content";
+  if (role === "agent") {
+    let rendered;
+    try {
+      rendered = renderAgentChatMarkdown(text, { document, window });
+    } catch {
+      rendered = { ok: false, plainText: String(text) };
+    }
+    if (rendered && rendered.ok && rendered.node) {
+      content.replaceChildren(rendered.node);
+    } else {
+      content.textContent = rendered && "plainText" in rendered ? rendered.plainText : String(text);
+    }
+  } else {
+    content.textContent = String(text);
+  }
+  el.appendChild(label);
+  el.appendChild(content);
   chatLog.appendChild(el);
   if (shouldScroll) scrollElementIntoView(el);
   return el;
