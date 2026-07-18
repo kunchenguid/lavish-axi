@@ -38,7 +38,7 @@ import {
 } from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
-import { bindHost, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
+import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
@@ -123,6 +123,7 @@ export async function serve({
   idleTimeoutMs = resolveIdleTimeoutMs(),
   host = bindHost(),
   linkHost: linkHostName = linkHost(),
+  allowedHosts = extraAllowedHosts(),
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 }) {
   const app = express();
@@ -146,23 +147,27 @@ export async function serve({
   // that rebinds its own domain to this loopback port sends that domain in both
   // Origin and Host, so the two still match. The robust defense is a Host-header
   // allowlist - a rebound browser carries the attacker's domain in Host, which is
-  // never one of our own hostnames. We only enforce it when bound to loopback;
-  // binding beyond loopback (LAVISH_AXI_HOST) is a documented opt-in to serve
-  // "anything that can reach it" (README "Network binding"), where legitimate
-  // clients arrive with their own Host and an allowlist would break them.
-  const enforceHostAllowlist = isLoopbackHostname(host);
-  const allowedHostnames = new Set(
-    [LOOPBACK_HOST, IPV6_LOOPBACK_HOST, "localhost", host, linkHostName]
-      .filter(Boolean)
-      .map((value) => String(value).trim().toLowerCase()),
-  );
-  if (enforceHostAllowlist) {
+  // never one of the hostnames this server answers to.
+  //
+  // Loopback names are always accepted. Binding to a concrete interface
+  // (LAVISH_AXI_HOST) or naming a link host (LAVISH_AXI_LINK_HOST) adds that host,
+  // so an operator who intentionally exposes the server on a specific interface
+  // keeps rebinding protection while their chosen hostname works. Additional
+  // names (a reverse-proxy hostname, extra interfaces) are an explicit opt-in via
+  // LAVISH_AXI_ALLOWED_HOSTS; a lone "*" there disables the guard for operators
+  // who front the server with their own authentication. When a reverse proxy sits
+  // in front, X-Forwarded-Host is validated too (see isAllowedRequestHost).
+  const allowedHostnames = buildAllowedHostnames({ host, linkHost: linkHostName, allowedHosts });
+  if (!allowsAllHosts(allowedHosts)) {
     app.use((req, res, next) => {
-      if (isAllowedHostHeader(req.headers.host, allowedHostnames)) {
+      const requestHost = { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] };
+      if (isAllowedRequestHost(requestHost, allowedHostnames)) {
         next();
         return;
       }
-      logEvent?.(`rejected request with disallowed Host header host=${req.headers.host ?? ""} path=${req.path}`);
+      logEvent?.(
+        `rejected request with disallowed host host=${req.headers.host ?? ""} x-forwarded-host=${req.headers["x-forwarded-host"] ?? ""} path=${req.path}`,
+      );
       res.status(403).json({ error: "forbidden host" });
     });
   }
@@ -877,20 +882,31 @@ function encodeRfc5987Value(value) {
   );
 }
 
-const LOOPBACK_HOSTNAMES = new Set([LOOPBACK_HOST, IPV6_LOOPBACK_HOST, "localhost"]);
+// Wildcard bind addresses ("all interfaces") are not connectable hostnames, so
+// they never belong in the Host allowlist - and "0.0.0.0" as a Host is a known
+// loopback-reach trick, so it must stay rejected.
+const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::"]);
 
-// True when the server binds to a loopback interface (the default). Only a
-// loopback-bound server is reachable exclusively from this machine, so a foreign
-// Host header can only be a DNS-rebinding attempt and the Host allowlist is safe
-// to enforce. When LAVISH_AXI_HOST binds beyond loopback (a wildcard or a
-// specific interface) the server is intentionally exposed and legitimate remote
-// clients arrive with their own Host, so the allowlist is not enforced.
-export function isLoopbackHostname(host) {
-  return LOOPBACK_HOSTNAMES.has(
-    String(host || "")
-      .trim()
-      .toLowerCase(),
+// The set of Host header hostnames this server answers to: loopback names plus
+// the resolved bind and link host and any explicit LAVISH_AXI_ALLOWED_HOSTS
+// extras, minus wildcard binds and the "*" sentinel. Lowercased for
+// case-insensitive comparison against the incoming Host.
+export function buildAllowedHostnames({ host, linkHost: linkHostName, allowedHosts = [] }) {
+  return new Set(
+    [LOOPBACK_HOST, IPV6_LOOPBACK_HOST, "localhost", host, linkHostName, ...allowedHosts]
+      .map((value) =>
+        String(value || "")
+          .trim()
+          .toLowerCase(),
+      )
+      .filter((value) => value && value !== "*" && !WILDCARD_BIND_HOSTS.has(value)),
   );
+}
+
+// A lone "*" in LAVISH_AXI_ALLOWED_HOSTS is an explicit opt-out of the Host
+// allowlist, for operators who front the server with their own auth/proxy.
+export function allowsAllHosts(allowedHosts = []) {
+  return allowedHosts.some((value) => String(value).trim() === "*");
 }
 
 // Extract the hostname (without port) from a Host header value, honoring
@@ -921,6 +937,24 @@ export function isAllowedHostHeader(hostHeader, allowedHostnames) {
   const hostname = hostnameFromHostHeader(raw);
   if (hostname === null) return false;
   return allowedHostnames.has(hostname);
+}
+
+// Validate a request's effective host for DNS-rebinding protection. The Host
+// header is required and must be allowlisted. When an X-Forwarded-Host is present
+// - a reverse proxy in front of the loopback server - its outermost (last) value
+// must ALSO be allowlisted, so a proxy works once its public hostname is added to
+// LAVISH_AXI_ALLOWED_HOSTS. This is an AND check: a client-spoofed forwarded host
+// can only narrow access (Host is still checked), never widen it into a bypass. A
+// blank forwarded host is treated as absent, matching how proxies omit it.
+/**
+ * @param {{ host?: string|undefined|null, forwardedHost?: string|undefined|null }} headers
+ * @param {Set<string>} allowedHostnames
+ */
+export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) {
+  if (!isAllowedHostHeader(host, allowedHostnames)) return false;
+  const forwarded = forwardedHost === undefined || forwardedHost === null ? "" : String(forwardedHost).trim();
+  if (forwarded === "") return true;
+  return isAllowedHostHeader(forwarded.split(",").pop(), allowedHostnames);
 }
 
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a

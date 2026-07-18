@@ -9,6 +9,8 @@ process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
 import {
+  allowsAllHosts,
+  buildAllowedHostnames,
   createChromeHtml,
   createSdkJs,
   displayPathParts,
@@ -16,7 +18,7 @@ import {
   extractArtifactHead,
   hasLiveReloadRootOptIn,
   isAllowedHostHeader,
-  isLoopbackHostname,
+  isAllowedRequestHost,
   resolveArtifactAsset,
   resolveDesignAssetPath,
   resolveIdleTimeoutMs,
@@ -1084,6 +1086,77 @@ test("loopback server honors the configured link host but still rejects others",
   }
 });
 
+test("server allows explicitly configured extra hosts and still rejects others", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    host: "127.0.0.1",
+    linkHost: "127.0.0.1",
+    allowedHosts: ["proxy.example"],
+  });
+  try {
+    const proxy = await rawRequest(server.port, "/health", { host: `proxy.example:${server.port}` });
+    assert.equal(proxy.status, 200);
+    const loopback = await rawRequest(server.port, "/health", { host: `127.0.0.1:${server.port}` });
+    assert.equal(loopback.status, 200);
+    const forged = await rawRequest(server.port, "/health", { host: `evil.example:${server.port}` });
+    assert.equal(forged.status, 403);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("server validates X-Forwarded-Host so it works behind a reverse proxy", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    host: "127.0.0.1",
+    linkHost: "127.0.0.1",
+    allowedHosts: ["proxy.example"],
+  });
+  try {
+    // A proxy rewrites Host to the loopback upstream and forwards the public host.
+    const proxied = await rawRequest(server.port, "/health", {
+      host: `127.0.0.1:${server.port}`,
+      headers: { "x-forwarded-host": "proxy.example" },
+    });
+    assert.equal(proxied.status, 200);
+    // A forwarded host that is not allowlisted is rejected even with a loopback Host.
+    const forgedForward = await rawRequest(server.port, "/health", {
+      host: `127.0.0.1:${server.port}`,
+      headers: { "x-forwarded-host": "evil.example" },
+    });
+    assert.equal(forgedForward.status, 403);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a '*' entry in allowedHosts disables the Host guard entirely", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    host: "127.0.0.1",
+    linkHost: "127.0.0.1",
+    allowedHosts: ["*"],
+  });
+  try {
+    const forged = await rawRequest(server.port, "/health", { host: `evil.example:${server.port}` });
+    assert.equal(forged.status, 200);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("isAllowedHostHeader enforces the loopback Host allowlist", () => {
   const allowed = new Set(["127.0.0.1", "::1", "localhost", "host.example"]);
   assert.equal(isAllowedHostHeader("127.0.0.1:4387", allowed), true);
@@ -1099,13 +1172,60 @@ test("isAllowedHostHeader enforces the loopback Host allowlist", () => {
   assert.equal(isAllowedHostHeader("   ", allowed), false);
 });
 
-test("isLoopbackHostname recognizes only loopback bind hosts", () => {
-  assert.equal(isLoopbackHostname("127.0.0.1"), true);
-  assert.equal(isLoopbackHostname("::1"), true);
-  assert.equal(isLoopbackHostname("localhost"), true);
-  assert.equal(isLoopbackHostname("0.0.0.0"), false);
-  assert.equal(isLoopbackHostname("::"), false);
-  assert.equal(isLoopbackHostname("192.168.1.5"), false);
+test("isAllowedRequestHost requires an allowlisted Host and validates X-Forwarded-Host", () => {
+  const allowed = new Set(["127.0.0.1", "proxy.example"]);
+  assert.equal(isAllowedRequestHost({ host: "127.0.0.1:4387" }, allowed), true);
+  // Missing Host is blocked (HTTP/1.1 requires it).
+  assert.equal(isAllowedRequestHost({ host: undefined }, allowed), false);
+  assert.equal(isAllowedRequestHost({ host: "evil.example" }, allowed), false);
+  // A reverse proxy's forwarded host must also be allowlisted.
+  assert.equal(isAllowedRequestHost({ host: "127.0.0.1", forwardedHost: "proxy.example" }, allowed), true);
+  assert.equal(isAllowedRequestHost({ host: "127.0.0.1", forwardedHost: "evil.example" }, allowed), false);
+  // A spoofed forwarded host cannot widen access past the Host check.
+  assert.equal(isAllowedRequestHost({ host: "evil.example", forwardedHost: "127.0.0.1" }, allowed), false);
+  // With multiple forwarded values, the outermost (last) one is validated.
+  assert.equal(
+    isAllowedRequestHost({ host: "127.0.0.1", forwardedHost: "evil.example, proxy.example" }, allowed),
+    true,
+  );
+  assert.equal(
+    isAllowedRequestHost({ host: "127.0.0.1", forwardedHost: "proxy.example, evil.example" }, allowed),
+    false,
+  );
+  // A blank forwarded host is treated as absent.
+  assert.equal(isAllowedRequestHost({ host: "127.0.0.1", forwardedHost: "" }, allowed), true);
+});
+
+test("buildAllowedHostnames covers loopback, bind/link host, and explicit extras", () => {
+  const loopback = buildAllowedHostnames({ host: "127.0.0.1", linkHost: "127.0.0.1" });
+  assert.ok(loopback.has("127.0.0.1"));
+  assert.ok(loopback.has("::1"));
+  assert.ok(loopback.has("localhost"));
+
+  // A concrete non-loopback interface bind is allowlisted so its own hostname works.
+  const iface = buildAllowedHostnames({ host: "192.168.1.5", linkHost: "192.168.1.5" });
+  assert.ok(iface.has("192.168.1.5"));
+
+  // Wildcard binds are not connectable hostnames and never enter the allowlist.
+  const wildcard = buildAllowedHostnames({ host: "0.0.0.0", linkHost: "127.0.0.1" });
+  assert.equal(wildcard.has("0.0.0.0"), false);
+  assert.ok(wildcard.has("127.0.0.1"));
+
+  // Explicit extras are lowercased; the "*" sentinel is not a literal hostname.
+  const extras = buildAllowedHostnames({
+    host: "127.0.0.1",
+    linkHost: "127.0.0.1",
+    allowedHosts: ["Proxy.Example", "*"],
+  });
+  assert.ok(extras.has("proxy.example"));
+  assert.equal(extras.has("*"), false);
+});
+
+test("allowsAllHosts detects the '*' opt-out sentinel", () => {
+  assert.equal(allowsAllHosts(["*"]), true);
+  assert.equal(allowsAllHosts([" * "]), true);
+  assert.equal(allowsAllHosts(["proxy.example"]), false);
+  assert.equal(allowsAllHosts([]), false);
 });
 
 test("serve rejects fast when the bind host is unavailable", async () => {
