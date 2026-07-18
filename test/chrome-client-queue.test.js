@@ -570,11 +570,16 @@ test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confus
   assert.equal(invalidResult.error, "invalid upload payload");
 
   // A single oversized (>256 MiB session quota) upload is refused BEFORE the network.
+  // The size check only reads `byteLength`, so allocating a real 300 MiB buffer here
+  // is pure CI OOM risk with no test value: spoof a real view that REPORTS an
+  // over-quota length (a shadowing own property) without reserving the bytes.
+  const oversized = new Uint8Array(0);
+  Object.defineProperty(oversized, "byteLength", { value: 300 * 1024 * 1024, configurable: true });
   chrome.sendFrameMessage({
     type: "lavish:uploadAttachment",
     localId: "big",
     mime: "image/png",
-    bytes: new ArrayBuffer(300 * 1024 * 1024),
+    bytes: oversized,
   });
   await flushPromises();
   assert.equal(fetches, 0, "quota-exceeding upload never hits the network");
