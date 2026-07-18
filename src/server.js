@@ -1089,13 +1089,25 @@ export async function serve({
         res.status(413).json({ error: `attachment exceeds the ${attachmentConfig.maxBytes} byte limit` });
         return;
       }
-      // Finalize under the lifecycle lock so the dedup mtime refresh (B3) and the
-      // dims sidecar write can't interleave with a concurrent sweep/delete.
-      const attachment = await store.runExclusive(() =>
-        writeAttachment(attachmentStateRoot, req.params.key, buffer, {
+      // Finalize under the lifecycle lock so the dedup mtime refresh (B3), the dims
+      // sidecar write, AND the disk-cap admission (reference snapshot + reclaim +
+      // write) are one atomic critical section. Admission is a HARD cap: a new object
+      // that can't fit after reclaiming unreferenced files is refused with 507, so
+      // concurrent pages can never push committed storage past `maxDiskBytes` via
+      // queued references (the sweep alone never evicts referenced files). The
+      // eviction grace keeps a just-uploaded ready card off the reclaim list so it
+      // survives until the user sends it.
+      const attachment = await store.runExclusive(async () => {
+        const referenced = await store.referencedAttachmentIds();
+        return writeAttachment(attachmentStateRoot, req.params.key, buffer, {
           maxBytes: attachmentConfig.maxBytes,
-        }),
-      );
+          maxDiskBytes: attachmentConfig.maxDiskBytes,
+          maxObjects: attachmentConfig.maxObjects,
+          ttlMs: attachmentConfig.ttlMs,
+          referenced,
+          evictionGraceMs: attachmentConfig.evictionGraceMs,
+        });
+      });
       res.json({ status: "stored", attachment });
     } catch (error) {
       next(error);
@@ -1268,6 +1280,7 @@ export async function serve({
           maxDiskBytes: attachmentConfig.maxDiskBytes,
           maxObjects: attachmentConfig.maxObjects,
           referenced,
+          evictionGraceMs: attachmentConfig.evictionGraceMs,
         });
       });
       if (result.deleted > 0) {

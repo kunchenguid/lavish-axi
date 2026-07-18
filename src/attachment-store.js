@@ -32,6 +32,17 @@ export const DEFAULT_ATTACHMENT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // by default lets the sweeper evict oldest UNREFERENCED bytes; `off`/`0` disables.
 export const DEFAULT_MAX_ATTACHMENT_DISK_BYTES = 512 * 1024 * 1024; // 512 MiB
 
+// How long a freshly written attachment is shielded from disk-cap eviction. An
+// unreferenced file this new may be a "ready card" the user dropped into the composer
+// but has not queued on a prompt yet; evicting it under disk pressure would delete the
+// bytes out from under an imminent Send (unrecoverable not-found). It is symmetric with
+// `ATTACHMENT_DELIVERY_GRACE_MS` in session-store: recently uploaded and recently
+// delivered attachments are both protected for a bounded window. The grace never lets
+// the total exceed the cap (admission still refuses new uploads with 507 when only
+// referenced/fresh bytes remain); it only makes the cap prefer refusing a new write
+// over destroying a ready card. The TTL still reclaims a genuinely abandoned card.
+export const ATTACHMENT_EVICTION_GRACE_MS = 60 * 60 * 1000; // 1 hour
+
 // Attachments are user screenshots: they can capture anything on screen, and the
 // state dir sits in a home directory that is commonly traversable by other local
 // users. The process umask (typically 0022) would otherwise leave them 0644 in
@@ -103,6 +114,9 @@ export function resolveAttachmentConfig(env = process.env) {
     // can only agree with the byte cap, never contradict it - avoiding a second
     // hand-picked constant that could drift out of sync.
     maxObjects: maxDiskBytes == null ? null : Math.floor(maxDiskBytes / (2 * ATTACHMENT_ALLOC_BLOCK_BYTES)),
+    // Fixed safety window (not env-tunable), so the server's periodic sweep and the
+    // upload admission both refuse to cap-evict a just-written ready card.
+    evictionGraceMs: ATTACHMENT_EVICTION_GRACE_MS,
   };
 }
 
@@ -266,9 +280,9 @@ function sidecarPath(file) {
   return `${file}.meta`;
 }
 
-async function writeSidecar(file, meta) {
+async function writeSidecar(file, serializedMeta) {
   try {
-    await writeFileAtomically(sidecarPath(file), JSON.stringify(meta));
+    await writeFileAtomically(sidecarPath(file), serializedMeta);
   } catch {
     // Dimensions are a display hint only; a sidecar write miss just means
     // resolveAttachment falls back to a one-off header parse.
@@ -324,6 +338,40 @@ function statusError(message, statusCode) {
   return error;
 }
 
+// Root cause B: THE single disk-admission chokepoint. Every write path that can ADD
+// bytes to attachment storage must route its charge through here before touching
+// disk - a new image+sidecar, and the dedup sidecar repair (a pre-D6 or
+// crash-orphaned image whose `.meta` is missing). The dedup mtime-refresh rewrite
+// replaces identical bytes in place (net-zero charge) and the sweep only removes, so
+// those are the only two byte-adding paths. First reclaim unreferenced/expired bytes
+// down toward (cap - newCharge), then measure the TRUE committed allocation that
+// survived and refuse when it plus the new charge still exceeds the cap (everything
+// left is referenced/fresh). The charge uses the SAME allocated accounting the cap
+// measures, so there is no separate counter and no undercount. The caller MUST hold
+// the lifecycle lock so the reference snapshot, the reclaim, and the write are one
+// atomic critical section.
+async function admitAttachmentCharge(
+  stateDir,
+  newCharge,
+  { ttlMs, maxDiskBytes, maxObjects, referenced, evictionGraceMs },
+) {
+  if (maxDiskBytes == null || newCharge <= 0) return true;
+  await sweepAttachments(stateDir, {
+    ttlMs,
+    maxDiskBytes: Math.max(0, maxDiskBytes - newCharge),
+    maxObjects,
+    referenced,
+    evictionGraceMs,
+  });
+  // BYTES are the admission invariant (`maxDiskBytes`). The object bound is a
+  // derived inode backstop, not reserved here: a new object can transiently sit at
+  // `maxObjects + 1` until the next sweep, but since `maxObjects = floor(cap / 8192)`
+  // and every object costs >= one block, the byte cap always binds first - the
+  // committed-byte total (checked below) can never exceed the cap.
+  const committed = await committedChargedBytes(stateDir);
+  return committed + newCharge <= maxDiskBytes;
+}
+
 // Validate (size + magic bytes, magic bytes authoritative), content-hash, and
 // write the bytes atomically. Identical content dedupes to the same file. Errors
 // carry an HTTP statusCode so the server's error handler surfaces 413/415/400.
@@ -331,7 +379,15 @@ export async function writeAttachment(
   stateDir,
   key,
   buffer,
-  { maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES, touchFile = utimes } = {},
+  {
+    maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES,
+    touchFile = utimes,
+    maxDiskBytes = null,
+    maxObjects = null,
+    ttlMs = null,
+    referenced = new Set(),
+    evictionGraceMs = 0,
+  } = {},
 ) {
   if (!isValidAttachmentKey(key)) throw statusError(`invalid attachment session key: ${key}`, 400);
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw statusError("empty attachment upload", 400);
@@ -339,11 +395,34 @@ export async function writeAttachment(
   const type = detectImageType(buffer);
   if (!type) throw statusError("unsupported image type (expected PNG, JPEG, or WebP)", 415);
   const id = `${crypto.createHash("sha256").update(buffer).digest("hex")}.${type.ext}`;
-  await ensureAttachmentDir(stateDir, key);
   const file = attachmentFile(stateDir, key, id);
   const dims = imageDimensions(buffer, type.mime);
-  if (!(await pathExists(file))) {
+  const sidecarContent = JSON.stringify({
+    v: 1,
+    mime: type.mime,
+    bytes: buffer.length,
+    width: dims?.width || 0,
+    height: dims?.height || 0,
+  });
+  // The admission sweep must never evict the very file this write dedupes into
+  // (it may be unreferenced until the prompt referencing it queues), so it is
+  // pinned alongside the caller's reference snapshot for the admission run only.
+  const protectedRefs = new Set(referenced);
+  protectedRefs.add(`${key}/${id}`);
+  const admission = { ttlMs, maxDiskBytes, maxObjects, referenced: protectedRefs, evictionGraceMs };
+  const isNew = !(await pathExists(file));
+  if (isNew) {
+    // Admission (hard cap): a NEW object must not push committed storage past the
+    // disk cap; refused with 507 (see admitAttachmentCharge). Runs BEFORE
+    // ensureAttachmentDir: the sweep prunes empty dirs, so creating the session
+    // dir afterwards guarantees it exists for the write below.
+    const newCharge = allocatedBytes(buffer.length) + allocatedBytes(sidecarContent.length);
+    if (!(await admitAttachmentCharge(stateDir, newCharge, admission))) {
+      throw statusError("attachment storage is full", 507);
+    }
+    await ensureAttachmentDir(stateDir, key);
     await writeFileAtomically(file, buffer);
+    await writeSidecar(file, sidecarContent);
   } else {
     // B3: dedup re-upload of identical content must refresh the mtime so a new
     // reference restarts the TTL clock. Otherwise an aged-but-re-referenced file
@@ -359,14 +438,20 @@ export async function writeAttachment(
       // reader never observes a partial file. If that fails too, report the failure.
       await writeFileAtomically(file, buffer);
     }
+    // Sidecar repair: a dedup hit whose `.meta` is missing (pre-D6 storage or a
+    // crashed sidecar write) would otherwise add a brand-new block with NO quota
+    // check. Route the repair through the SAME admission chokepoint; when it is
+    // refused (every remaining byte referenced, zero headroom) the repair is skipped
+    // - the sidecar is a display cache and resolveAttachment falls back to a header
+    // parse - rather than either failing the dedup upload or silently blowing the
+    // cap. An EXISTING sidecar is not rewritten at all: identical content would
+    // replace identical content.
+    if (!(await pathExists(sidecarPath(file)))) {
+      if (await admitAttachmentCharge(stateDir, allocatedBytes(sidecarContent.length), admission)) {
+        await writeSidecar(file, sidecarContent);
+      }
+    }
   }
-  await writeSidecar(file, {
-    v: 1,
-    mime: type.mime,
-    bytes: buffer.length,
-    width: dims?.width || 0,
-    height: dims?.height || 0,
-  });
   return buildMetadata(id, file, type.mime, buffer.length, dims);
 }
 
@@ -496,6 +581,12 @@ export async function sweepAttachments(stateDir, options = {}) {
     maxObjects = null,
     referenced = new Set(),
     now = Date.now(),
+    // A freshly written attachment may be a "ready card" the user dropped into the
+    // composer but has not queued on a prompt yet, so it is unreferenced. Cap eviction
+    // otherwise deletes it out from under the imminent Send (unrecoverable not-found).
+    // Files younger than this grace are never cap-evicted; 0 disables the grace so the
+    // pure mechanism (and its tests) evict oldest-unreferenced regardless of age.
+    evictionGraceMs = 0,
   } = options;
   const files = await listAttachments(stateDir);
   let deleted = 0;
@@ -530,7 +621,14 @@ export async function sweepAttachments(stateDir, options = {}) {
   // the running totals; each removal decrements them exactly once.
   const evictOldestUnreferenced = async (overBudget) => {
     const evictable = survivors
-      .filter((file) => !file.evicted && !file.referenced)
+      .filter((file) => {
+        if (file.evicted || file.referenced) return false;
+        // Protect just-written ready cards: an unreferenced file younger than the
+        // grace may be a composer card the user is about to send, and destroying it
+        // to reclaim disk is data loss. With the grace disabled (0), age is ignored.
+        if (evictionGraceMs > 0 && now - file.mtimeMs < evictionGraceMs) return false;
+        return true;
+      })
       .sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const file of evictable) {
       if (!overBudget()) break;
@@ -561,6 +659,29 @@ export async function sweepAttachments(stateDir, options = {}) {
   freedBytes += orphans.freedBytes;
   await pruneEmptyDirs(path.join(stateDir, "attachments"));
   return { deleted, freedBytes };
+}
+
+// The TRUE committed allocation on disk: every file in the attachments tree - images,
+// dims sidecars, and crash-orphaned temps/.meta debris the caps can't yet reclaim -
+// charged the SAME allocated cost the disk cap measures. Admission reads this AFTER a
+// reclaiming sweep so it bounds the post-write total against real bytes, counting the
+// undeletable/in-grace debris the sweep left behind rather than a curated survivor set.
+async function committedChargedBytes(stateDir) {
+  const root = path.join(stateDir, "attachments");
+  let total = 0;
+  for (const dirent of await readdirSafe(root)) {
+    if (!dirent.isDirectory() || !isValidAttachmentKey(dirent.name)) continue;
+    const dir = path.join(root, dirent.name);
+    for (const entry of await readdirSafe(dir)) {
+      if (!entry.isFile()) continue;
+      try {
+        total += allocatedBytes((await stat(path.join(dir, entry.name))).size);
+      } catch {
+        // Raced with a delete; skip it.
+      }
+    }
+  }
+  return total;
 }
 
 // Scan each session dir for files that leak past the caps because ID_RE hides them:
