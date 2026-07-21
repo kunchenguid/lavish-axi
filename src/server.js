@@ -911,11 +911,16 @@ export function allowsAllHosts(allowedHosts = []) {
 
 // Extract the hostname (without port) from a Host header value, honoring
 // bracketed IPv6 literals ("[::1]:4387"). Returns null for a malformed authority.
-function hostnameFromHostHeader(value) {
+export function hostnameFromHostHeader(value) {
   const raw = String(value).trim();
   if (raw.startsWith("[")) {
     const end = raw.indexOf("]");
-    return end === -1 ? null : raw.slice(1, end).toLowerCase();
+    if (end === -1) return null;
+    // Anything after the closing bracket must be a `:port` suffix; reject trailing
+    // garbage (e.g. "[::1]evil.com") instead of reading it as the bracketed host.
+    const rest = raw.slice(end + 1);
+    if (rest.length > 0 && !rest.startsWith(":")) return null;
+    return raw.slice(1, end).toLowerCase();
   }
   const colon = raw.indexOf(":");
   const hostname = colon === -1 ? raw : raw.slice(0, colon);

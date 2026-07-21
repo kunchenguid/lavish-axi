@@ -17,6 +17,7 @@ import {
   exportContentDisposition,
   extractArtifactHead,
   hasLiveReloadRootOptIn,
+  hostnameFromHostHeader,
   isAllowedHostHeader,
   isAllowedRequestHost,
   resolveArtifactAsset,
@@ -1170,6 +1171,20 @@ test("isAllowedHostHeader enforces the loopback Host allowlist", () => {
   assert.equal(isAllowedHostHeader(undefined, allowed), false);
   assert.equal(isAllowedHostHeader("", allowed), false);
   assert.equal(isAllowedHostHeader("   ", allowed), false);
+});
+
+test("hostnameFromHostHeader rejects trailing garbage after a bracketed IPv6 literal", () => {
+  // Only an empty string or a `:port` suffix may follow the closing bracket;
+  // anything else is a malformed authority and must not resolve to the IPv6 host.
+  assert.equal(hostnameFromHostHeader("[::1]evil.com"), null);
+  assert.equal(hostnameFromHostHeader("[::1]:4387"), "::1");
+  assert.equal(hostnameFromHostHeader("[::1]"), "::1");
+});
+
+test("isAllowedHostHeader rejects a bracketed IPv6 host with trailing garbage", () => {
+  const allowed = new Set(["127.0.0.1", "::1", "localhost"]);
+  assert.equal(isAllowedHostHeader("[::1]evil.com", allowed), false);
+  assert.equal(isAllowedHostHeader("[::1]:4387", allowed), true);
 });
 
 test("isAllowedRequestHost requires an allowlisted Host and validates X-Forwarded-Host", () => {
