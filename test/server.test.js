@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -145,11 +145,27 @@ test("export content disposition uses a safe fallback and encoded UTF-8 filename
   );
 });
 
-test("artifact assets resolve within the artifact directory", () => {
+test("artifact assets resolve within the artifact directory", async () => {
   const root = path.resolve("/tmp/lavish-artifact");
 
-  assert.equal(resolveArtifactAsset(root, "style.css"), path.join(root, "style.css"));
-  assert.equal(resolveArtifactAsset(root, "../secret.txt"), null);
+  assert.equal(await resolveArtifactAsset(root, "style.css"), path.join(root, "style.css"));
+  assert.equal(await resolveArtifactAsset(root, "../secret.txt"), null);
+});
+
+test("artifact assets reject a symlink that escapes the artifact directory", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
+  try {
+    const secret = path.join(outside, "secret.txt");
+    await writeFile(secret, "outside-secret\n");
+    const link = path.join(dir, "leak.txt");
+    await symlink(secret, link);
+
+    assert.equal(await resolveArtifactAsset(dir, "leak.txt"), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
 });
 
 test("chrome sandbox does not grant modal prompts", () => {
@@ -1343,6 +1359,36 @@ test("/artifact serves files copied under the artifact directory", async () => {
   } finally {
     await server.close();
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("/artifact refuses to serve a symlink that escapes the artifact directory", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
+  const dir = path.join(parent, ".lavish");
+  const artifact = path.join(dir, "artifact.html");
+  await mkdir(dir);
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const secret = path.join(outside, "secret.txt");
+  await writeFile(secret, "outside-secret\n");
+  await symlink(secret, path.join(dir, "leak.txt"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+    const leak = await fetch(`${base}/artifact/${session.key}/leak.txt`);
+
+    assert.equal(leak.status, 403);
+    assert.doesNotMatch(await leak.text(), /outside-secret/);
+  } finally {
+    await server.close();
+    await rm(parent, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 
