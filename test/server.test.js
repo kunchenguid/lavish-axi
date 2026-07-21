@@ -168,6 +168,20 @@ test("artifact assets reject a symlink that escapes the artifact directory", asy
   }
 });
 
+test("artifact asset resolution fails closed when realpath errors", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  try {
+    const linkA = path.join(dir, "loop-a");
+    const linkB = path.join(dir, "loop-b");
+    await symlink(linkB, linkA);
+    await symlink(linkA, linkB);
+
+    await assert.rejects(resolveArtifactAsset(dir, "loop-a"), { code: "ELOOP" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("chrome sandbox does not grant modal prompts", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 

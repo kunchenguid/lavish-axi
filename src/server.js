@@ -1221,10 +1221,14 @@ export async function resolveArtifactAsset(root, assetPath) {
   let real;
   try {
     real = await realpath(file);
-  } catch {
+  } catch (error) {
     // Nonexistent path (e.g. an asset that hasn't been built yet): nothing to read, so the
     // lexical confinement above is enough - the caller's existsSync/sendFile handles the 404.
-    return file;
+    // Every other realpath failure fails closed, like guardedRead.
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return file;
+    }
+    throw error;
   }
   let realRoot;
   try {
