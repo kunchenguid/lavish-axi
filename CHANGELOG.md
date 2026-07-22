@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.43](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.42...lavish-axi-v0.1.43) (2026-07-22)
+
+
+### Features
+
+* **server:** support non-loopback hosts and reverse proxies ([879794a](https://github.com/kunchenguid/lavish-axi/commit/879794adf947d9ff8da18df013da82c0d604f695))
+
+
+### Bug Fixes
+
+* **server:** clear delivered-feedback working presence on agent reply ([#161](https://github.com/kunchenguid/lavish-axi/issues/161)) ([50a5477](https://github.com/kunchenguid/lavish-axi/commit/50a54774b1dfcaa96fce46765e6b156b5a8eab1d))
+* **server:** reject trailing garbage after a bracketed IPv6 Host ([c229ef4](https://github.com/kunchenguid/lavish-axi/commit/c229ef49618a7f042b7004ca57e5a5733938e92f))
+* **server:** validate the Host header to close DNS rebinding ([f016972](https://github.com/kunchenguid/lavish-axi/commit/f016972251556a83cd4712cf081a475cfcf3646a))
+
 ## [0.1.42](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.41...lavish-axi-v0.1.42) (2026-07-14)
 
 
