@@ -1,0 +1,15 @@
+{
+  "legitimate_loopback_session_open": 200,
+  "forged_host_session_open": 403,
+  "forged_host_rejected_before_malformed_json_parse": 403,
+  "forged_host_artifact_read": 403,
+  "forged_host_prompt_injection": 403,
+  "forged_host_agent_poll": 403,
+  "configured_proxy_forwarded_host": 200,
+  "unlisted_proxy_forwarded_host": 403,
+  "bracketed_ipv6_trailing_garbage": 403,
+  "legitimate_poll_after_rejected_injection": "waiting"
+}
+{
+  "explicit_star_opt_out_foreign_host": 200
+}
