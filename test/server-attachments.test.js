@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -160,6 +161,71 @@ test("upload and delete reject cross-origin requests", async () => {
       headers: { origin: "https://attacker.example" },
     });
     assert.equal(del.status, 403);
+  });
+});
+
+// Issue a raw HTTP request so we can forge the Host header - browser `fetch`
+// treats Host as forbidden and won't override it, but a DNS rebinding attack is
+// exactly a real browser sending a foreign Host to this loopback port. Connect to
+// 127.0.0.1 while presenting an arbitrary Host (and matching Origin).
+/**
+ * @param {number} port
+ * @param {string} pathname
+ * @param {{ method?: string, host?: string, headers?: Record<string, string>, body?: string | Buffer }} [options]
+ */
+function rawRequest(port, pathname, { method = "GET", host, headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const finalHeaders = { ...headers };
+    if (host !== undefined) finalHeaders.host = host;
+    const req = httpRequest({ host: "127.0.0.1", port, path: pathname, method, headers: finalHeaders }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+    });
+    req.on("error", reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+// The attachment routes MUST sit behind Kun's Host-allowlist guard. The
+// same-origin guard alone does NOT stop DNS rebinding: a rebound page carries its
+// hostile domain in BOTH Origin and Host, so those still match and isSameOriginRequest
+// passes. Only the Host allowlist - which the rebound domain is never on - rejects it.
+test("attachment routes reject a rebound (forged-Host) request even when Origin matches Host", async () => {
+  await withSession(async ({ base, key }) => {
+    const port = Number(new URL(base).port);
+    // A legitimate loopback same-origin upload passes and yields a stored id.
+    const legit = await uploadImage(base, key, PNG_2x1);
+    assert.equal(legit.status, 200);
+    const { attachment } = await legit.json();
+
+    const evilHost = `evil.example:${port}`;
+    // Rebound upload: Origin matches the forged Host (same-origin passes), valid PNG
+    // bytes, so ONLY the Host allowlist can stop it. Must be a clean 403 forbidden host.
+    const uploadForged = await rawRequest(port, `/api/${key}/attachments`, {
+      method: "POST",
+      host: evilHost,
+      headers: { origin: `http://${evilHost}`, "content-type": "image/png" },
+      body: PNG_2x1,
+    });
+    assert.equal(uploadForged.status, 403);
+    assert.deepEqual(JSON.parse(uploadForged.body), { error: "forbidden host" });
+
+    // Rebound fetch of already-stored bytes must not reach the attacker's origin.
+    const fetchForged = await rawRequest(port, `/api/${key}/attachments/${attachment.id}`, { host: evilHost });
+    assert.equal(fetchForged.status, 403);
+
+    // Rebound delete must be refused before touching the lifecycle.
+    const delForged = await rawRequest(port, `/api/${key}/attachments/${attachment.id}`, {
+      method: "DELETE",
+      host: evilHost,
+      headers: { origin: `http://${evilHost}` },
+    });
+    assert.equal(delForged.status, 403);
+
+    // The rebound delete never ran: the bytes are still fetchable via a legit request.
+    assert.equal((await fetch(`${base}/api/${key}/attachments/${attachment.id}`)).status, 200);
   });
 });
 
