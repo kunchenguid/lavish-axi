@@ -279,7 +279,10 @@ test("the whiteboard frame page is served with the sandboxed chrome overlay poin
     assert.match(chrome, /id="whiteboardFrame"[^>]*sandbox="allow-scripts allow-popups"/);
     assert.doesNotMatch(chrome, /whiteboardFrame[^>]*allow-same-origin/);
     // The artifact iframe's sandbox must be unchanged by this feature.
-    assert.match(chrome, /id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads"/);
+    assert.match(
+      chrome,
+      /id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"/,
+    );
   } finally {
     await ctx.close();
   }

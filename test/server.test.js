@@ -3582,7 +3582,7 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   assert.match(html, /<body class="lavish layout-gate-active">/);
   assert.match(
     html,
-    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
+    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
   );
   assert.doesNotMatch(html, /<iframe id="artifact"[^>]* src=/);
   assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
