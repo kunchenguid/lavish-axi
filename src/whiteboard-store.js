@@ -78,7 +78,7 @@ export async function saveWhiteboard(
   stateDir,
   key,
   index,
-  { sourceHash, textMetricsVersion = 0, scene, baseline = null },
+  { sourceHash, textMetricsVersion = 0, scene, svg = "", baseline = null },
 ) {
   assertValidRef(key, index);
   const record = {
@@ -86,6 +86,10 @@ export async function saveWhiteboard(
     text_metrics_version: Math.max(0, Math.floor(Number(textMetricsVersion) || 0)),
     updated_at: new Date().toISOString(),
     scene: sanitizeWhiteboardScene(scene),
+    // The SVG exported alongside the scene, with its fonts inlined. Consumers
+    // that publish or archive the diagram need the appearance the author
+    // approved, not a re-render whose fonts may resolve differently.
+    svg: String(svg || ""),
     baseline: baseline ?? null,
   };
   return queueWhiteboardWrite(stateDir, key, index, async () => {
@@ -106,6 +110,7 @@ export async function loadWhiteboard(stateDir, key, index) {
       text_metrics_version: Math.max(0, Math.floor(Number(parsed.text_metrics_version) || 0)),
       updated_at: String(parsed.updated_at || ""),
       scene: parsed.scene ?? null,
+      svg: String(parsed.svg || ""),
       baseline: parsed.baseline ?? null,
     };
   } catch (error) {

@@ -108,9 +108,20 @@ test("whiteboard persistence payload keeps migration and baseline fields togethe
       sourceHash: "hash-1",
       textMetricsVersion: 1,
       scene,
+      svg: "",
       baseline: { elements: baselineElements },
     },
   );
+});
+
+test("whiteboard persistence payload carries the exported snapshot when one is captured", () => {
+  const scene = { elements: [rect("edited")] };
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>edited</text></svg>';
+  assert.equal(createWhiteboardPersistencePayload({ sceneSourceHash: "hash-1" }, scene, svg).svg, svg);
+  // A missing or non-string snapshot degrades to empty rather than throwing: a
+  // save must never be lost because the export failed.
+  assert.equal(createWhiteboardPersistencePayload({ sceneSourceHash: "hash-1" }, scene, null).svg, "");
+  assert.equal(createWhiteboardPersistencePayload({ sceneSourceHash: "hash-1" }, scene).svg, "");
 });
 
 // ---------------------------------------------------------------------------

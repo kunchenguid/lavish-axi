@@ -36,16 +36,25 @@ test("saveWhiteboard/loadWhiteboard strips persisted theme and canvas background
       files: {},
     };
     const baseline = { elements: [{ id: "A", type: "rectangle" }] };
-    await saveWhiteboard(dir, KEY, 0, { sourceHash: "hash-1", textMetricsVersion: 1, scene, baseline });
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>A</text></svg>';
+    await saveWhiteboard(dir, KEY, 0, { sourceHash: "hash-1", textMetricsVersion: 1, scene, svg, baseline });
     const loaded = await loadWhiteboard(dir, KEY, 0);
     assert.equal(loaded.source_hash, "hash-1");
     assert.equal(loaded.text_metrics_version, 1);
+    assert.equal(loaded.svg, svg);
     assert.deepEqual(loaded.scene, {
       ...scene,
       appState: { scrollX: 12 },
     });
     assert.deepEqual(loaded.baseline, baseline);
     assert.ok(loaded.updated_at);
+  });
+});
+
+test("saveWhiteboard defaults a missing snapshot to empty", async () => {
+  await withTempDir(async (dir) => {
+    await saveWhiteboard(dir, KEY, 0, { sourceHash: "h", scene: { elements: [] }, baseline: null });
+    assert.equal((await loadWhiteboard(dir, KEY, 0)).svg, "");
   });
 });
 

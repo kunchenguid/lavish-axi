@@ -950,6 +950,7 @@ async function persistWhiteboardScene(index, message) {
       source_hash: String(message.sourceHash || ""),
       text_metrics_version: Number(message.textMetricsVersion) || 0,
       scene: message.scene || null,
+      svg: String(message.svg || ""),
       baseline: message.baseline || null,
     }),
   });

@@ -105,11 +105,12 @@ export function repairSavedSceneTextMetrics(elements, { measure }) {
   return { elements: repairedElements, repaired };
 }
 
-export function createWhiteboardPersistencePayload(state, scene) {
+export function createWhiteboardPersistencePayload(state, scene, svg = "") {
   return {
     sourceHash: String(state?.sceneSourceHash || ""),
     textMetricsVersion: Math.max(0, Math.floor(Number(state?.textMetricsVersion) || 0)),
     scene: scene ?? null,
+    svg: String(svg || ""),
     baseline: { elements: Array.isArray(state?.baselineElements) ? state.baselineElements : [] },
   };
 }

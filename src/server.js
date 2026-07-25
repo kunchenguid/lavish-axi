@@ -706,6 +706,7 @@ export async function serve({
         sourceHash: String(body.source_hash || body.sourceHash || ""),
         textMetricsVersion: Number(body.text_metrics_version || body.textMetricsVersion) || 0,
         scene: body.scene ?? null,
+        svg: body.svg ?? "",
         baseline: body.baseline ?? null,
       });
       res.json({ status: "saved" });

@@ -21,6 +21,7 @@ import {
   Excalidraw,
   exportToBlob,
   exportToCanvas,
+  exportToSvg,
   FONT_FAMILY,
   restore,
 } from "@excalidraw/excalidraw";
@@ -219,13 +220,35 @@ function currentScene() {
   };
 }
 
-function postSave(flushId = "") {
+/** Serialise the current scene as a standalone SVG.
+ *
+ * exportToSvg inlines the fonts it uses as data: URIs, so the result renders
+ * identically with no network access. Returns "" when the export fails: a save
+ * must never be lost because a snapshot could not be produced.
+ */
+async function currentSceneSvg(scene) {
+  if (!scene) return "";
+  try {
+    const svg = await exportToSvg({
+      elements: scene.elements,
+      appState: { ...scene.appState, exportBackground: true },
+      files: scene.files || {},
+    });
+    return svg.outerHTML;
+  } catch (error) {
+    console.warn("could not export scene SVG", describeError(error));
+    return "";
+  }
+}
+
+async function postSave(flushId = "") {
   const scene = currentScene();
   if (!scene) return false;
+  const svg = await currentSceneSvg(scene);
   post({
     type: "lavish-whiteboard:save",
     diagramIndex: state.diagramIndex,
-    ...createWhiteboardPersistencePayload(state, scene),
+    ...createWhiteboardPersistencePayload(state, scene, svg),
     ...(flushId ? { flushId } : {}),
   });
   return true;
@@ -235,28 +258,28 @@ function scheduleSave() {
   if (state.teardownFlushId) return;
   window.clearTimeout(state.saveTimer);
   state.saveTimer = window.setTimeout(() => {
-    postSave();
+    void postSave();
   }, SAVE_DEBOUNCE_MS);
 }
 
-function prepareTeardown(message) {
+async function prepareTeardown(message) {
   const flushId = String(message.flushId || "");
   if (!flushId) return;
   state.teardownFlushId = flushId;
   window.clearTimeout(state.saveTimer);
   state.setLocked?.(true);
-  if (!postSave(flushId)) {
+  if (!(await postSave(flushId))) {
     state.teardownFlushId = "";
     post({ type: "lavish-whiteboard:teardownReady", flushId });
   }
 }
 
-function flushSaveNow(message) {
+async function flushSaveNow(message) {
   const flushId = String(message.flushId || "");
   if (!flushId || state.flushIds.has(flushId)) return;
   state.flushIds.add(flushId);
   window.clearTimeout(state.saveTimer);
-  if (!postSave(flushId)) {
+  if (!(await postSave(flushId))) {
     state.flushIds.delete(flushId);
     post({ type: "lavish-whiteboard:flushComplete", flushId, ok: true });
   }
