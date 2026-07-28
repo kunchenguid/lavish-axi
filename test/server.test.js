@@ -3096,3 +3096,40 @@ test("/session/:key reflects the stored device theme preference", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// Variant A states the light palette twice (once pinned, once behind prefers-color-scheme), so
+// the only real maintenance risk is the two drifting apart. Pin them together.
+test("the pinned and system light themes declare an identical palette", async () => {
+  const css = await readFile(new URL("../src/chrome.css", import.meta.url), "utf8");
+  const block = (marker) => {
+    const start = css.indexOf(marker);
+    assert.notEqual(start, -1, `missing block: ${marker}`);
+    const body = css.slice(start + marker.length, css.indexOf("}", start));
+    return body
+      .split(";")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .sort();
+  };
+
+  const pinned = block(':root[data-theme-pref="light"] {');
+  const system = block(':root[data-theme-pref="system"] {');
+
+  assert.ok(pinned.length > 20, `expected a full palette, got ${pinned.length} declarations`);
+  assert.deepEqual(system, pinned);
+});
+
+test("light theme reassigns every themeable token the dark theme defines", async () => {
+  const css = await readFile(new URL("../src/chrome.css", import.meta.url), "utf8");
+  const root = css.slice(css.indexOf(":root {"), css.indexOf("}"));
+  const light = css.slice(css.indexOf(':root[data-theme-pref="light"] {'));
+
+  const themeable = [
+    ...root.matchAll(/^\s*(--(?:bg|fg|border|accent|danger|hover|scrim|banner|shadow-color)[\w-]*)\s*:/gm),
+  ]
+    .map((match) => match[1])
+    .filter((token) => !token.startsWith("--shadow-tooltip") && !token.startsWith("--shadow-floating"));
+
+  const missing = themeable.filter((token) => !new RegExp(`\\s${token}:`).test(light));
+  assert.deepEqual(missing, [], `light theme never reassigns: ${missing.join(", ")}`);
+});
