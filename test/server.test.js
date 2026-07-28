@@ -359,7 +359,8 @@ test("chrome declares the Lavish design-system tokens", async () => {
   assert.match(css, /--text-display:92px/);
   assert.match(css, /--lh-display:1/);
   assert.match(css, /--space-32:64px/);
-  assert.match(css, /--shadow-floating:0 20px 70px rgba\(0,0,0,.35\)/);
+  assert.match(css, /--shadow-color:rgba\(0,0,0,.35\)/);
+  assert.match(css, /--shadow-floating:0 20px 70px var\(--shadow-color\)/);
   assert.match(css, /--ease:cubic-bezier\(.2,.6,.2,1\)/);
   assert.match(css, /--dur-slow:320ms/);
   assert.match(css, /--bar-h:56px/);
@@ -2825,7 +2826,8 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.match(html, /class="ended-copy">\/tmp\/artifact\.html</);
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
-  assert.match(css, /\.ended-overlay\{[^}]*background:rgba\(15,17,21,.86\)/);
+  assert.match(css, /\.ended-overlay\{[^}]*background:var\(--scrim-strong\)/);
+  assert.match(css, /--scrim-strong:rgba\(15,17,21,.86\)/);
   assert.match(css, /\.ended-title\{[^}]*font-family:var\(--font-serif\)/);
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);
@@ -3015,4 +3017,46 @@ test("extractArtifactHead reads the real href, not one hidden in another attribu
     '<head><link rel="icon" title="see href=data:image/png,decoy" href="https://cdn.example.com/logo.png"></head>',
   );
   assert.equal(inValue.faviconTag, '<link rel="icon" href="https://cdn.example.com/logo.png">');
+});
+
+// The chrome is themed purely through the semantic token layer, so any dark-only literal sitting
+// directly on a rule is a surface that would stay dark in light mode. `.frame` is the deliberate
+// exception: it is the artifact viewport, not chrome, and must stay white in both themes.
+test("chrome rules carry no dark-only color literals outside the token block", async () => {
+  const css = await readFile(new URL("../src/chrome.css", import.meta.url), "utf8");
+  const body = css.slice(css.indexOf("}") + 1);
+  const literals = [
+    ...body.matchAll(/^\s*(?:background|border|box-shadow|color)[^;]*?(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8})/gm),
+  ]
+    .map((match) => match[0].trim())
+    .filter((declaration) => !declaration.includes("#fff"));
+
+  assert.deepEqual(literals, [], `theme these through tokens instead: ${literals.join(" | ")}`);
+
+  // Same failure mode, harder to spot: a raw ramp swatch (--ink-*, --brass-*, ...) used straight
+  // in a rule is pinned to the dark ramp and never gets a light counterpart.
+  const rampUses = [
+    ...body.matchAll(/^\s*[a-z-]+:[^;]*var\(--(?:ink|steel|cream|brass|sage|amber|rust)-[^)]*\)[^;]*/gm),
+  ]
+    .map((match) => match[0].trim())
+    .filter((declaration) => !/^(?:--|font-)/.test(declaration));
+
+  assert.deepEqual(rampUses, [], `use a semantic token, not a raw ramp swatch: ${rampUses.join(" | ")}`);
+});
+
+test("every themeable chrome token is defined", async () => {
+  const css = await chromeCssSource();
+  for (const token of [
+    "--danger-tint",
+    "--hover",
+    "--scrim",
+    "--scrim-strong",
+    "--scrim-heavy",
+    "--banner-bg",
+    "--banner-border",
+    "--banner-fg",
+    "--shadow-color",
+  ]) {
+    assert.match(css, new RegExp(`${token}:`), `${token} is not defined`);
+  }
 });

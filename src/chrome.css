@@ -38,6 +38,15 @@
   --accent-hover: var(--brass-400);
   --accent-ink: var(--brass-ink);
   --danger: var(--rust-500);
+  --danger-tint: rgba(240, 100, 100, 0.1);
+  --hover: var(--steel-700);
+  --scrim: rgba(15, 17, 21, 0.72);
+  --scrim-strong: rgba(15, 17, 21, 0.86);
+  --scrim-heavy: rgba(15, 17, 21, 0.92);
+  --banner-bg: rgba(37, 35, 15, 0.92);
+  --banner-border: rgba(244, 201, 93, 0.35);
+  --banner-fg: var(--brass-400);
+  --shadow-color: rgba(0, 0, 0, 0.35);
   --font-serif: "EB Garamond", "Iowan Old Style", Georgia, serif;
   --font-sans: Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -93,8 +102,8 @@
   --radius-pill: 999px;
   --hairline: 1px solid var(--border);
   --hairline-subtle: 1px solid var(--border-subtle);
-  --shadow-tooltip: 0 16px 44px rgba(0, 0, 0, 0.35);
-  --shadow-floating: 0 20px 70px rgba(0, 0, 0, 0.35);
+  --shadow-tooltip: 0 16px 44px var(--shadow-color);
+  --shadow-floating: 0 20px 70px var(--shadow-color);
   --bar-h: 56px;
   --panel-w: 360px;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
@@ -234,7 +243,7 @@ body.lavish {
 .more-button:hover:not(:disabled),
 .more-button[aria-expanded="true"] {
   border-color: var(--border-strong);
-  background: var(--steel-700);
+  background: var(--hover);
   color: var(--fg);
 }
 .more-button:disabled {
@@ -286,7 +295,7 @@ body.lavish {
   color: var(--fg-muted);
 }
 .menu-file:hover {
-  background: var(--steel-700);
+  background: var(--hover);
 }
 .menu-file > svg {
   opacity: 0.7;
@@ -358,7 +367,7 @@ body.lavish {
   color: var(--fg);
 }
 .menu-item:hover:not(:disabled) {
-  background: var(--steel-700);
+  background: var(--hover);
 }
 .menu-item:disabled {
   cursor: not-allowed;
@@ -375,7 +384,7 @@ body.lavish {
   opacity: 1;
 }
 .menu-item.danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-tint);
 }
 .button {
   border: 0;
@@ -412,7 +421,7 @@ body.lavish {
   color: var(--danger);
 }
 .button-danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-tint);
 }
 .button-danger > svg {
   flex-shrink: 0;
@@ -424,7 +433,7 @@ body.lavish {
   display: grid;
   place-items: center;
   padding: var(--space-16);
-  background: rgba(15, 17, 21, 0.72);
+  background: var(--scrim);
 }
 .share-overlay[hidden] {
   display: none;
@@ -873,7 +882,7 @@ body.lavish {
 .ended-overlay {
   position: fixed;
   inset: var(--bar-h) 0 0 0;
-  background: rgba(15, 17, 21, 0.86);
+  background: var(--scrim-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -915,10 +924,10 @@ body.lavish {
   left: var(--space-8);
   right: var(--space-8);
   z-index: 20;
-  border: 1px solid rgba(244, 201, 93, 0.35);
+  border: 1px solid var(--banner-border);
   border-radius: var(--radius-lg);
-  background: rgba(37, 35, 15, 0.92);
-  color: var(--brass-400);
+  background: var(--banner-bg);
+  color: var(--banner-fg);
   padding: var(--space-6) var(--space-8);
   font-size: var(--text-sm);
   line-height: var(--lh-sm);
@@ -974,7 +983,7 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 17, 21, 0.92);
+  background: var(--scrim-heavy);
   z-index: 80;
   display: flex;
 }
