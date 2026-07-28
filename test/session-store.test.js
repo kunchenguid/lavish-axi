@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -702,6 +702,81 @@ test("freeform user prompts are stored in session chat history", async () => {
       updated.chat.map((item) => [item.role, item.text]),
       [["user", "Please make this clearer"]],
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("theme preference defaults to system and round-trips every supported value", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const store = new SessionStore(path.join(dir, "state.json"));
+    assert.equal(await store.getThemePreference(), "system");
+
+    for (const theme of ["light", "dark", "system"]) {
+      assert.equal(await store.setThemePreference(theme), theme);
+      assert.equal(await store.getThemePreference(), theme);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("setThemePreference rejects unsupported values and leaves the stored theme alone", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const store = new SessionStore(path.join(dir, "state.json"));
+    await store.setThemePreference("dark");
+
+    for (const bad of ["sepia", "", null, undefined, "DARK"]) {
+      await assert.rejects(() => store.setThemePreference(bad), /Unsupported theme preference/);
+    }
+    assert.equal(await store.getThemePreference(), "dark");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Regression: readState used to rebuild state from `sessions` alone, so any device config was
+// dropped by the next session write - the theme preference would silently reset itself.
+test("device config survives session writes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    await store.setThemePreference("light");
+
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    assert.equal(await store.getThemePreference(), "light");
+
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "u1", prompt: "tighten this", selector: "h1", tag: "annotation", text: "Hello" }],
+    });
+    assert.equal(await store.getThemePreference(), "light");
+
+    await store.addAgentReply(session.key, "done");
+    assert.equal(await store.getThemePreference(), "light");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readState preserves unrecognized top-level keys", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+    await writeFile(stateFile, JSON.stringify({ sessions: {}, future_key: { kept: true } }));
+
+    const store = new SessionStore(stateFile);
+    await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.deepEqual(state.future_key, { kept: true });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
