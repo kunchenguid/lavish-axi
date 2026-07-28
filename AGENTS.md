@@ -53,6 +53,7 @@ A Host-header allowlist middleware (`buildAllowedHostnames`/`isAllowedRequestHos
 README's Network binding bullet owns the user-facing env vars and the non-loopback security warning.
 Server self-shutdown keys off live connections (browser SSE and agent polls), not session status, so the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json` when it is still resumable; README's Server cleanup bullet owns the user-facing idle-timeout rules.
 State lives at `~/.lavish-axi/state.json` (`LAVISH_AXI_STATE_DIR`), shared across all projects and keyed by a sha256 prefix of the canonicalized file path - the canonical HTML path _is_ the identity, so the CLI never needs opaque session IDs (`src/session-store.js:sessionKey`).
+Alongside `sessions`, that file carries a top-level `config` object for device-wide settings (currently `config.theme`, written by `lavish-axi config`). `SessionStore.readState` therefore preserves top-level keys it does not recognize instead of rebuilding state from `sessions` - rebuilding is what used to drop the config on the next session write.
 
 ### Request flow
 

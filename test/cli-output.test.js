@@ -1909,3 +1909,60 @@ async function startFakeHtmlApp(requests) {
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
 }
+
+function runCli(args, stateDir) {
+  return spawnSync(process.execPath, [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), ...args], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_TELEMETRY: "0" },
+    encoding: "utf8",
+  });
+}
+
+test("config theme defaults to system and persists every supported value", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  try {
+    const unset = runCli(["config"], dir);
+    assert.equal(unset.status, 0, unset.stderr);
+    assert.match(unset.stdout, /theme: system/);
+
+    for (const theme of ["light", "dark", "system"]) {
+      const set = runCli(["config", "theme", theme], dir);
+      assert.equal(set.status, 0, set.stderr);
+      assert.match(set.stdout, new RegExp(`theme: ${theme}`));
+
+      const stored = JSON.parse(await readFile(`${dir}/state.json`, "utf8"));
+      assert.equal(stored.config.theme, theme);
+      assert.match(runCli(["config", "theme"], dir).stdout, new RegExp(`theme: ${theme}`));
+    }
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("config rejects unsupported themes and unknown keys without writing state", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  try {
+    runCli(["config", "theme", "dark"], dir);
+
+    const badTheme = runCli(["config", "theme", "sepia"], dir);
+    assert.notEqual(badTheme.status, 0);
+    assert.match(badTheme.stdout + badTheme.stderr, /VALIDATION_ERROR/);
+    assert.match(badTheme.stdout + badTheme.stderr, /system\|light\|dark/);
+
+    const badKey = runCli(["config", "colour"], dir);
+    assert.notEqual(badKey.status, 0);
+    assert.match(badKey.stdout + badKey.stderr, /VALIDATION_ERROR/);
+    assert.match(badKey.stdout + badKey.stderr, /Known keys: theme/);
+
+    const stored = JSON.parse(await readFile(`${dir}/state.json`, "utf8"));
+    assert.equal(stored.config.theme, "dark");
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("config is a real command, not an html path normalized to open", () => {
+  assert.deepEqual(normalizeArgv(["config"]), ["config"]);
+  assert.deepEqual(normalizeArgv(["config", "theme", "light"]), ["config", "theme", "light"]);
+  assert.match(getCommandHelp("config"), /lavish-axi config \[theme \[system\|light\|dark\]\]/);
+});
