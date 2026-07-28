@@ -26,7 +26,7 @@ import {
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
-import { canonicalFile, sessionKey } from "../src/session-store.js";
+import { canonicalFile, SessionStore, sessionKey } from "../src/session-store.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -3058,5 +3058,41 @@ test("every themeable chrome token is defined", async () => {
     "--shadow-color",
   ]) {
     assert.match(css, new RegExp(`${token}:`), `${token} is not defined`);
+  }
+});
+
+test("chrome html carries the device theme preference for CSS to resolve", async () => {
+  const session = { key: "abc123", file: "/tmp/report.html", chat: [] };
+
+  assert.match(createChromeHtml(session), /<html data-theme-pref="system">/);
+  for (const theme of ["system", "light", "dark"]) {
+    assert.match(
+      createChromeHtml(session, { themePreference: theme }),
+      new RegExp(`<html data-theme-pref="${theme}">`),
+    );
+  }
+  // An unknown preference must not reach the attribute.
+  assert.match(createChromeHtml(session, { themePreference: "sepia" }), /<html data-theme-pref="system">/);
+});
+
+test("/session/:key reflects the stored device theme preference", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  const artifact = path.join(dir, "report.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  const store = new SessionStore(stateFile);
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const session = await store.upsertSession(artifact, `http://127.0.0.1:${server.port}/session/x`);
+
+    for (const theme of ["light", "dark", "system"]) {
+      await store.setThemePreference(theme);
+      const res = await fetch(`http://127.0.0.1:${server.port}/session/${session.key}`);
+      assert.match(await res.text(), new RegExp(`<html data-theme-pref="${theme}">`));
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
