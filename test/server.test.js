@@ -359,7 +359,7 @@ test("chrome declares the Lavish design-system tokens", async () => {
   assert.match(css, /--text-display:92px/);
   assert.match(css, /--lh-display:1/);
   assert.match(css, /--space-32:64px/);
-  assert.match(css, /--shadow-color:rgba\(0,0,0,.35\)/);
+  assert.match(css, /--shadow-color:light-dark\(rgba\(76,62,40,.14\),rgba\(0,0,0,.35\)\)/);
   assert.match(css, /--shadow-floating:0 20px 70px var\(--shadow-color\)/);
   assert.match(css, /--ease:cubic-bezier\(.2,.6,.2,1\)/);
   assert.match(css, /--dur-slow:320ms/);
@@ -2827,7 +2827,7 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
   assert.match(css, /\.ended-overlay\{[^}]*background:var\(--scrim-strong\)/);
-  assert.match(css, /--scrim-strong:rgba\(15,17,21,.86\)/);
+  assert.match(css, /--scrim-strong:light-dark\(rgba\(242,237,226,.86\),rgba\(15,17,21,.86\)\)/);
   assert.match(css, /\.ended-title\{[^}]*font-family:var\(--font-serif\)/);
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);
@@ -3095,4 +3095,28 @@ test("/session/:key reflects the stored device theme preference", async () => {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// Variant C carries both palettes on each token and lets the preference pick a color-scheme, so
+// the invariants worth pinning are: the three color-scheme rules exist, and no themeable token
+// was left holding a single palette.
+test("the theme preference maps to a color-scheme", async () => {
+  const css = await chromeCssSource();
+
+  assert.match(css, /:root\[data-theme-pref="system"\]\{color-scheme:light dark;?\}/);
+  assert.match(css, /:root\[data-theme-pref="light"\]\{color-scheme:light;?\}/);
+  assert.match(css, /:root\[data-theme-pref="dark"\]\{color-scheme:dark;?\}/);
+});
+
+test("every themeable token carries both palettes", async () => {
+  const css = await readFile(new URL("../src/chrome.css", import.meta.url), "utf8");
+  const root = css.slice(css.indexOf(":root {"), css.indexOf("}"));
+
+  const singlePalette = [
+    ...root.matchAll(/^\s*(--(?:bg|fg|border|accent|danger|hover|scrim|banner)[\w-]*|--shadow-color)\s*:\s*([^;]+);/gm),
+  ]
+    .filter(([, , value]) => !value.includes("light-dark("))
+    .map(([, token]) => token);
+
+  assert.deepEqual(singlePalette, [], `these would stay dark in light mode: ${singlePalette.join(", ")}`);
 });
