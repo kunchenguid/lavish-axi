@@ -230,6 +230,7 @@ The Lavish Editor chrome follows your OS appearance by default. Pin it with:
 lavish-axi config theme light
 lavish-axi config theme dark
 lavish-axi config theme system   # default, follows the OS
+lavish-axi config theme          # print the current preference
 ```
 
 The preference is device-wide, stored in `state.json` next to your sessions, so every browser on the machine agrees. Open editor windows pick up a change on their next load.
