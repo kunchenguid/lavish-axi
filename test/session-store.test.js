@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -777,6 +777,36 @@ test("readState preserves unrecognized top-level keys", async () => {
 
     const state = JSON.parse(await readFile(stateFile, "utf8"));
     assert.deepEqual(state.future_key, { kept: true });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// state.json now has more than one possible writer (the server plus `lavish-axi config` when no
+// server is running), and a truncate-then-write can be caught half-finished - after which every
+// readState throws on JSON.parse forever. Writes must land through an atomic rename, with a temp
+// name unique per call so overlapping writes never share one.
+test("writeState never leaves a partial file or a stray temp file behind", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const bulky = (theme) => ({
+      config: { theme },
+      sessions: Object.fromEntries(
+        Array.from({ length: 200 }, (_, index) => [`k${index}`, { key: `k${index}`, note: "x".repeat(400) }]),
+      ),
+    });
+
+    await Promise.all([
+      new SessionStore(stateFile).writeState(bulky("light")),
+      new SessionStore(stateFile).writeState(bulky("dark")),
+      new SessionStore(stateFile).writeState(bulky("system")),
+    ]);
+
+    const parsed = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(Object.keys(parsed.sessions).length, 200);
+    assert.ok(["light", "dark", "system"].includes(parsed.config.theme));
+    assert.deepEqual(await readdir(dir), ["state.json"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -3120,3 +3120,47 @@ test("every themeable token carries both palettes", async () => {
 
   assert.deepEqual(singlePalette, [], `these would stay dark in light mode: ${singlePalette.join(", ")}`);
 });
+
+// The CLI posts here rather than writing state.json itself, so the server stays the only writer
+// of a file that is read-modify-written whole with no locking.
+test("POST /api/config stores a supported theme and rejects anything else", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  const store = new SessionStore(stateFile);
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  const post = (body) =>
+    fetch(`http://127.0.0.1:${server.port}/api/config`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    for (const theme of ["light", "dark", "system"]) {
+      const res = await post({ theme });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { config: { theme } });
+      assert.equal(await store.getThemePreference(), theme);
+    }
+
+    await post({ theme: "dark" });
+    for (const body of [{ theme: "sepia" }, { theme: "" }, {}]) {
+      assert.equal((await post(body)).status, 400);
+    }
+    assert.equal(await store.getThemePreference(), "dark");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the whiteboard editor follows the pinned chrome theme, not just the OS", async () => {
+  const js = await chromeClientSource();
+  const theme = js.slice(js.indexOf("function whiteboardTheme()"));
+
+  assert.match(theme, /dataset\.themePref/);
+  assert.match(theme, /prefers-color-scheme: dark/);
+  assert.ok(
+    theme.indexOf("dataset.themePref") < theme.indexOf("prefers-color-scheme"),
+    "a pinned preference must win over the OS appearance",
+  );
+});

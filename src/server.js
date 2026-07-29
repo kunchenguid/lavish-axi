@@ -199,6 +199,21 @@ export async function serve({
     setImmediate(shutdown);
   });
 
+  // Device-wide config writes go through here so this process stays the only writer of
+  // state.json, which is read-modify-written whole and has no cross-process locking.
+  app.post("/api/config", async (req, res, next) => {
+    try {
+      const theme = normalizeThemePreference((req.body || {}).theme);
+      if (!theme) {
+        res.status(400).json({ error: "unsupported theme preference" });
+        return;
+      }
+      res.json({ config: { theme: await store.setThemePreference(theme) } });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/sessions", async (req, res, next) => {
     try {
       const file = await canonicalFile(req.body.file);
