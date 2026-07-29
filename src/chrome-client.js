@@ -719,7 +719,12 @@ const whiteboardFlushes = new Map();
 const whiteboardSaveChains = new Map();
 const inlineWhiteboardChannels = new Map();
 
+// The chrome's own theme resolves in CSS from data-theme-pref, but Excalidraw needs the resolved
+// value as a prop, so mirror the same resolution here: a pinned preference wins, `system` follows
+// the OS. Without this a pinned light chrome would frame a dark canvas (and vice versa).
 function whiteboardTheme() {
+  const preference = document.documentElement.dataset.themePref;
+  if (preference === "light" || preference === "dark") return preference;
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 

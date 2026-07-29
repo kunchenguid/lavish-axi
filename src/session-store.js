@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
@@ -218,8 +218,19 @@ export class SessionStore {
     }
   }
 
+  // Write a per-call temp file and rename it into place. A truncate-then-write can be observed
+  // (or interleaved with a write from another process, or another in-flight request) as a
+  // half-written file, and every later readState would then throw on JSON.parse until the file is
+  // removed by hand. The temp name is unique per call so two overlapping writes never share it.
   async writeState(state) {
-    await writeFile(this.file, `${JSON.stringify(state, null, 2)}\n`);
+    const temp = `${this.file}.${process.pid}-${crypto.randomUUID()}.tmp`;
+    try {
+      await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`);
+      await rename(temp, this.file);
+    } catch (error) {
+      await unlink(temp).catch(() => {});
+      throw error;
+    }
   }
 }
 

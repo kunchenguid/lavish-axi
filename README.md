@@ -234,7 +234,7 @@ lavish-axi config theme system   # default, follows the OS and switches live wit
 
 The preference is device-wide, stored in `state.json` next to your sessions, so every browser on the machine agrees. Open editor windows pick up a change on their next load.
 
-This themes the chrome only, the top bar, conversation panel, and overlays. Artifacts are never restyled: their markup and CSS are untouched, so they keep rendering identically outside Lavish.
+This themes the chrome only, the top bar, conversation panel, overlays, and the whiteboard editor. Artifacts are never restyled: their markup and CSS are untouched, so they keep rendering identically outside Lavish.
 
 ## Development
 

@@ -1910,11 +1910,45 @@ async function startFakeHtmlApp(requests) {
   };
 }
 
-function runCli(args, stateDir) {
-  return spawnSync(process.execPath, [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), ...args], {
+function cliSpawnOptions(stateDir, port) {
+  return {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
-    env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_TELEMETRY: "0" },
+    env: {
+      ...process.env,
+      LAVISH_AXI_STATE_DIR: stateDir,
+      LAVISH_AXI_TELEMETRY: "0",
+      // Pin the control-channel port so these never reach a real server on the developer's machine.
+      LAVISH_AXI_PORT: String(port),
+    },
+  };
+}
+
+// Port 1 has nothing listening, so the CLI's control-channel health check refuses immediately.
+function runCli(args, stateDir, port = 1) {
+  return spawnSync(process.execPath, [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), ...args], {
+    ...cliSpawnOptions(stateDir, port),
     encoding: "utf8",
+  });
+}
+
+// Whenever the CLI talks to a server hosted by this test process, spawn asynchronously: spawnSync
+// blocks the event loop, so the in-process server could never answer and both sides would deadlock.
+function runCliAsync(args, stateDir, port) {
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), ...args],
+    cliSpawnOptions(stateDir, port),
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  return new Promise((resolve) => {
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
 }
 
@@ -1966,3 +2000,73 @@ test("config is a real command, not an html path normalized to open", () => {
   assert.deepEqual(normalizeArgv(["config", "theme", "light"]), ["config", "theme", "light"]);
   assert.match(getCommandHelp("config"), /lavish-axi config \[theme \[system\|light\|dark\]\]/);
 });
+
+// state.json is read-modify-written whole with no locking, so the running server has to stay its
+// only writer. A second writer would clobber a concurrent session write from its own stale snapshot.
+test("config theme hands the write to a running server instead of writing state itself", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  const requests = [];
+  const fake = await startFakeLavishServer(requests);
+  try {
+    const set = await runCliAsync(["config", "theme", "dark"], dir, fake.port);
+    assert.equal(set.status, 0, set.stderr);
+    assert.match(set.stdout, /theme: dark/);
+
+    assert.deepEqual(
+      requests.map((request) => `${request.method} ${request.url}`),
+      ["GET /health", "POST /api/config"],
+    );
+    assert.deepEqual(requests[1].body, { theme: "dark" });
+    assert.equal(existsSync(`${dir}/state.json`), false, "the CLI must not write state.json itself");
+  } finally {
+    await fake.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("config theme falls back to a direct write when the running server rejects the route", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  const requests = [];
+  const fake = await startFakeLavishServer(requests, { configStatus: 404 });
+  try {
+    const set = await runCliAsync(["config", "theme", "light"], dir, fake.port);
+    assert.equal(set.status, 0, set.stderr);
+    assert.match(set.stdout, /theme: light/);
+
+    const stored = JSON.parse(await readFile(`${dir}/state.json`, "utf8"));
+    assert.equal(stored.config.theme, "light");
+  } finally {
+    await fake.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+async function startFakeLavishServer(requests, { configStatus = 200 } = {}) {
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
+      if (req.url === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION }));
+        return;
+      }
+      if (req.url === "/api/config" && configStatus === 200) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ config: { theme: raw ? JSON.parse(raw).theme : "system" } }));
+        return;
+      }
+      res.writeHead(configStatus, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not found" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : 0,
+    close: () => new Promise((resolve) => server.close(() => resolve(undefined))),
+  };
+}
