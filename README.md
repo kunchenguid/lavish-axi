@@ -229,10 +229,12 @@ The Lavish Editor chrome follows your OS appearance by default. Pin it with:
 ```sh
 lavish-axi config theme light
 lavish-axi config theme dark
-lavish-axi config theme system   # default, follows the OS and switches live with it
+lavish-axi config theme system   # default, follows the OS
 ```
 
 The preference is device-wide, stored in `state.json` next to your sessions, so every browser on the machine agrees. Open editor windows pick up a change on their next load.
+
+Under `system`, the chrome follows the OS live: change your OS appearance and the top bar, conversation panel, and chrome overlays switch immediately. A whiteboard editor that is already open keeps the appearance it opened with and adopts the new one the next time it is opened.
 
 This themes the chrome surfaces only: the top bar, conversation panel, chrome overlays, and the whiteboard editor. Artifacts are never restyled: their markup and CSS are untouched, so they keep rendering identically outside Lavish. UI that Lavish injects inside the artifact iframe, such as the annotation card and its text highlight, stays dark regardless of this preference and is not covered by this setting.
 

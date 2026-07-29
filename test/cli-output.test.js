@@ -2024,24 +2024,49 @@ test("config theme hands the write to a running server instead of writing state 
   }
 });
 
-test("config theme falls back to a direct write when the running server rejects the route", async () => {
+// A server from an older release rejects /api/config and drops config on its next session write,
+// so a direct write beside it would report a preference that silently never sticks.
+test("config theme refuses to write beside a stale running server", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
   const requests = [];
-  const fake = await startFakeLavishServer(requests, { configStatus: 404 });
+  const fake = await startFakeLavishServer(requests, { configStatus: 404, version: "0.0.1-stale" });
   try {
     const set = await runCliAsync(["config", "theme", "light"], dir, fake.port);
-    assert.equal(set.status, 0, set.stderr);
-    assert.match(set.stdout, /theme: light/);
+    assert.notEqual(set.status, 0);
+    const output = set.stdout + set.stderr;
+    assert.match(output, /SERVER_ERROR/);
+    assert.match(output, /0\.0\.1-stale/);
+    assert.match(output, /lavish-axi stop/);
 
-    const stored = JSON.parse(await readFile(`${dir}/state.json`, "utf8"));
-    assert.equal(stored.config.theme, "light");
+    assert.deepEqual(
+      requests.map((request) => `${request.method} ${request.url}`),
+      ["GET /health"],
+      "a stale server must not be handed the write",
+    );
+    assert.equal(existsSync(`${dir}/state.json`), false, "the CLI must not write state.json itself");
   } finally {
     await fake.close();
     await rm(dir, { force: true, recursive: true });
   }
 });
 
-async function startFakeLavishServer(requests, { configStatus = 200 } = {}) {
+// Pre-handshake servers answer /health without a version at all.
+test("config theme refuses to write beside a pre-handshake running server", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  const requests = [];
+  const fake = await startFakeLavishServer(requests, { configStatus: 404, version: null });
+  try {
+    const set = await runCliAsync(["config", "theme", "light"], dir, fake.port);
+    assert.notEqual(set.status, 0);
+    assert.match(set.stdout + set.stderr, /SERVER_ERROR/);
+    assert.equal(existsSync(`${dir}/state.json`), false, "the CLI must not write state.json itself");
+  } finally {
+    await fake.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+async function startFakeLavishServer(requests, { configStatus = 200, version = VERSION } = {}) {
   const server = createServer((req, res) => {
     let raw = "";
     req.on("data", (chunk) => {
@@ -2051,7 +2076,7 @@ async function startFakeLavishServer(requests, { configStatus = 200 } = {}) {
       requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
       if (req.url === "/health") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION }));
+        res.end(JSON.stringify({ ok: true, app: "lavish-axi", ...(version ? { version } : {}) }));
         return;
       }
       if (req.url === "/api/config" && configStatus === 200) {
