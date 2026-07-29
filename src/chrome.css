@@ -132,7 +132,9 @@
 }
 /* Light theme. The ramp above holds both palettes, so only the semantic layer is reassigned here.
    `light` pins it; `system` resolves through prefers-color-scheme, which follows the OS live with
-   no JS involved. The stylesheet is render-blocking, so either resolves before first paint. */
+   no JS involved. The stylesheet is render-blocking, so either resolves before first paint.
+   The two blocks below are deliberately identical declaration lists - one selector cannot cover
+   both a pinned and an OS-resolved light - so any token added to one must be added to the other. */
 :root[data-theme-pref="light"] {
   color-scheme: light;
   --bg: var(--paper-300);
