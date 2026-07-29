@@ -247,22 +247,42 @@ async function configCommand(args) {
 // write from its own stale snapshot. Writing here directly is only safe when nothing is running,
 // and never spawns a server just to store a setting.
 async function writeThemePreference(store, value) {
-  const baseUrl = await runningServerBaseUrl();
-  if (baseUrl) {
-    try {
-      const response = await postJson(`${baseUrl}/api/config`, { theme: value });
-      return normalizeThemePreference(response?.config?.theme) || value;
-    } catch {
-      // Fall through: the server died between the health check and the write, or predates the route.
-    }
+  const port = defaultPort();
+  const running = await runningServer(port);
+  if (!running) {
+    return store.setThemePreference(value);
   }
-  return store.setThemePreference(value);
+  // A server too old to know /api/config would both reject the write and drop config on its next
+  // session write, so refuse instead of writing beside it and reporting a value that never sticks.
+  if (shouldRestartServer(VERSION, running.health)) {
+    throw staleServerConfigError(port, running.health);
+  }
+  try {
+    const response = await postJson(`${running.baseUrl}/api/config`, { theme: value });
+    return normalizeThemePreference(response?.config?.theme) || value;
+  } catch (error) {
+    // Take the write back only when the server is genuinely gone - it died between the health
+    // check and the write. One that still answers stays the sole writer of state.json.
+    if (await runningServer(port)) throw error;
+    return store.setThemePreference(value);
+  }
 }
 
-async function runningServerBaseUrl(port = defaultPort()) {
+function staleServerConfigError(port, health) {
+  const version =
+    typeof health?.version === "string" && health.version !== ""
+      ? `version ${health.version}`
+      : "a version older than this setting";
+  return new AxiError(`Lavish Editor server on port ${port} is running ${version}, not ${VERSION}`, "SERVER_ERROR", [
+    "That server cannot store this setting, and writing it here would clobber its session writes",
+    "Run `lavish-axi stop` to shut it down, then re-run this command",
+  ]);
+}
+
+async function runningServer(port = defaultPort()) {
   const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
   const health = await fetchHealth(baseUrl);
-  return health && health.app === "lavish-axi" ? baseUrl : null;
+  return health && health.app === "lavish-axi" ? { baseUrl, health } : null;
 }
 
 export function createOpenOutput({ file, url, status, agent = "generic" }) {
