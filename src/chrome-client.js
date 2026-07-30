@@ -25,6 +25,12 @@ const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("c
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
+const revisionWrap = /** @type {HTMLDivElement} */ (document.getElementById("revisionWrap"));
+const revisionLegendButton = /** @type {HTMLButtonElement} */ (document.getElementById("revisionLegendButton"));
+const revisionLegendPanel = /** @type {HTMLDivElement} */ (document.getElementById("revisionLegendPanel"));
+const revisionLegendCount = /** @type {HTMLSpanElement} */ (document.getElementById("revisionLegendCount"));
+const revisionLegendList = /** @type {HTMLDivElement} */ (document.getElementById("revisionLegendList"));
+const revisionToggleAll = /** @type {HTMLButtonElement} */ (document.getElementById("revisionToggleAll"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
 const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("moreButton"));
 const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMenu"));
@@ -219,6 +225,75 @@ function updateSendState() {
   if (warningsQueueButton) updateWarningSelectionState();
 }
 
+// The legend is absent (revisionWrap stays hidden) for any artifact without
+// a data-lavish-revisions registry, so legacy artifacts show no legend and
+// no controls — the SDK simply never posts this message for them.
+let lastRevisions = [];
+let allRevisionsVisible = true;
+
+function formatRevisionTimestamp(timestamp) {
+  if (!timestamp) return "";
+  try {
+    const formatted = new Date(timestamp).toLocaleString();
+    return formatted === "Invalid Date" ? "" : formatted;
+  } catch {
+    return "";
+  }
+}
+
+function renderRevisionRow(revision, visible) {
+  const id = String(revision.id || "");
+  const index = Number.isFinite(revision.index) ? revision.index : 0;
+  const label = escapeHtml(revision.label || `Revision ${index + 1}`);
+  const timestamp = formatRevisionTimestamp(revision.timestamp);
+  const color = revision.color || {};
+  const hex = /^#[0-9a-fA-F]{6}$/.test(String(color.hex)) ? color.hex : "#8c96aa";
+  const borderStyle = ["solid", "dashed", "dotted", "double"].includes(color.borderStyle) ? color.borderStyle : "solid";
+  const summary = revision.summary ? '<p class="revision-summary">' + escapeHtml(revision.summary) + "</p>" : "";
+  const sections = Array.isArray(revision.sections) ? revision.sections.filter(Boolean) : [];
+  const sectionsHtml = sections.length
+    ? '<div class="revision-sections"><span class="tooltip-label">Sections</span><div class="revision-section-list">' +
+      sections
+        .map((section) => '<span class="revision-section-tag">' + escapeHtml(String(section)) + "</span>")
+        .join("") +
+      "</div></div>"
+    : "";
+  return (
+    '<div class="revision-row">' +
+    '<div class="revision-row-head">' +
+    '<span class="revision-swatch" style="background-color:' +
+    hex +
+    ";border-style:" +
+    borderStyle +
+    '" aria-hidden="true"></span>' +
+    '<span class="revision-name">' +
+    label +
+    "</span>" +
+    (timestamp ? '<span class="revision-time">' + escapeHtml(timestamp) + "</span>" : "") +
+    "</div>" +
+    summary +
+    sectionsHtml +
+    '<label class="revision-visibility"><input type="checkbox" data-revision-id="' +
+    escapeHtml(id) +
+    '"' +
+    (visible ? " checked" : "") +
+    "><span>Show highlights</span></label>" +
+    "</div>"
+  );
+}
+
+function renderRevisionLegend(revisions) {
+  lastRevisions = revisions;
+  if (!revisions.length) {
+    revisionWrap.hidden = true;
+    revisionLegendList.innerHTML = "";
+    return;
+  }
+  revisionWrap.hidden = false;
+  revisionLegendCount.textContent = "(" + revisions.length + ")";
+  revisionLegendList.innerHTML = revisions.map((revision) => renderRevisionRow(revision, allRevisionsVisible)).join("");
+}
+
 function showSendHint() {
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);
@@ -240,6 +315,7 @@ function setMenuOpen(button, menu, open) {
 
 function closeMenus() {
   setMenuOpen(moreButton, moreMenu, false);
+  setMenuOpen(revisionLegendButton, revisionLegendPanel, false);
 }
 
 function toggleMenu(button, menu) {
@@ -1736,6 +1812,9 @@ window.addEventListener("message", (event) => {
       messageToken,
     ).catch(() => {});
   }
+  if (msg.type === "lavish:revisions") {
+    renderRevisionLegend(Array.isArray(msg.revisions) ? msg.revisions : []);
+  }
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
@@ -1761,6 +1840,23 @@ moreButton.onclick = () => {
 warningsButton.onclick = toggleWarningsDrawer;
 warningsSelectAll.onchange = toggleSelectAllWarnings;
 warningsQueueButton.onclick = queueSelectedWarningFixes;
+revisionLegendButton.onclick = () => {
+  closeWarningsDrawer();
+  toggleMenu(revisionLegendButton, revisionLegendPanel);
+};
+revisionToggleAll.onclick = () => {
+  allRevisionsVisible = !allRevisionsVisible;
+  revisionToggleAll.setAttribute("aria-pressed", String(allRevisionsVisible));
+  revisionToggleAll.textContent = allRevisionsVisible ? "Hide all highlights" : "Show all highlights";
+  postToFrame({ type: "lavish:setRevisionVisibility", id: "*", visible: allRevisionsVisible });
+  renderRevisionLegend(lastRevisions);
+};
+revisionLegendList.addEventListener("change", (event) => {
+  const target = /** @type {HTMLInputElement} */ (event.target);
+  const id = target && target.dataset ? target.dataset.revisionId : undefined;
+  if (id === undefined) return;
+  postToFrame({ type: "lavish:setRevisionVisibility", id, visible: Boolean(target.checked) });
+});
 chatInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -1790,6 +1886,9 @@ document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
   if (warningsDrawerOpen && !warningsWrap.contains(target)) closeWarningsDrawer();
+  if (!revisionLegendPanel.hidden && !revisionWrap.contains(target)) {
+    setMenuOpen(revisionLegendButton, revisionLegendPanel, false);
+  }
 });
 // A non-modal popover closes when focus leaves it, so keyboard users are never stranded inside a
 // panel they cannot see the end of.

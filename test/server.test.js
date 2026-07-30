@@ -4,10 +4,12 @@ import { createServer, request as httpRequest } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
+import { createArtifactSdk } from "../src/artifact-sdk.js";
 import {
   allowsAllHosts,
   buildAllowedHostnames,
@@ -170,6 +172,62 @@ test("artifact SDK script is valid JavaScript", () => {
   const js = createSdkJs("abc");
 
   assert.doesNotThrow(() => new Function(js));
+});
+
+// `new Function(js)` above only proves the bundle *parses*. createSdkJs serializes
+// each artifact-sdk.js helper individually with `.toString()` (see its own comment),
+// so a helper that calls a sibling not also declared as a same-scope const would
+// pass that syntax check yet ReferenceError the moment it actually runs in a
+// browser. Actually executing the revision-legend declarations together here — the
+// same way createArtifactSdk's closure would — catches exactly that class of bug.
+test("the SDK bundle's revision-legend declarations resolve each other correctly at runtime", () => {
+  const js = createSdkJs("abc");
+  const invocation = `(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken);`;
+  const idx = js.indexOf(invocation);
+  assert.notEqual(idx, -1, "createSdkJs should still invoke createArtifactSdk with this exact call");
+  const preamble = js.slice(0, idx);
+
+  const revisionScript = {
+    textContent: JSON.stringify([
+      { id: "1", label: "Draft", summary: "Initial layout", sections: ["Hero"] },
+      { id: "2", label: "Pricing fix" },
+    ]),
+  };
+  const markedElements = [
+    { getAttribute: (name) => (name === "data-lavish-revision" ? "1 2" : null) },
+    { getAttribute: (name) => (name === "data-lavish-revision" ? "1" : null) },
+  ];
+  const fakeDoc = {
+    querySelector: (sel) => (sel === "script[data-lavish-revisions]" ? revisionScript : null),
+    querySelectorAll: (sel) => (sel === "[data-lavish-revision]" ? markedElements : []),
+  };
+
+  const context = { fakeDoc, results: {} };
+  vm.runInNewContext(
+    preamble +
+      `
+results.registry = parseRevisionRegistry(fakeDoc);
+results.marked = collectRevisionMarkedElements(fakeDoc);
+results.resolvedMultiToken = resolveElementRevisionId("1 2", results.registry.map((r) => r.id));
+results.tint = revisionTintFromHex(results.registry[0].color.hex);
+})();
+`,
+    context,
+    { filename: "sdk-revision-legend-preamble.js" },
+  );
+
+  // The registry/sections values come from another vm realm, so re-materialize them
+  // with this realm's Array.from before deepEqual (which is prototype-sensitive)
+  // instead of comparing cross-realm array instances directly.
+  assert.deepEqual(
+    Array.from(context.results.registry, (r) => r.id),
+    ["1", "2"],
+  );
+  assert.equal(context.results.registry[0].summary, "Initial layout");
+  assert.deepEqual(Array.from(context.results.registry[0].sections), ["Hero"]);
+  assert.equal(context.results.marked.length, 2);
+  assert.equal(context.results.resolvedMultiToken, "2");
+  assert.match(context.results.tint, /^rgba\(/);
 });
 
 test("artifact SDK ignores Lavish-owned annotation UI", () => {
@@ -444,6 +502,21 @@ test("chrome top bar follows the design mock wordmark and overflow menu treatmen
   assert.doesNotMatch(html, /class="file-input"/);
   assert.doesNotMatch(html, /class="divider"/);
   assert.doesNotMatch(html, /class="file-icon"/);
+});
+
+test("chrome ships a revision legend that starts hidden until the SDK proves the artifact has revisions", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const css = await chromeCssSource();
+
+  assert.match(html, /class="revision-wrap" id="revisionWrap" hidden/);
+  assert.match(
+    html,
+    /class="revision-button" id="revisionLegendButton"[^>]*aria-haspopup="true"[^>]*aria-expanded="false"[^>]*aria-controls="revisionLegendPanel"/,
+  );
+  assert.match(html, /id="revisionLegendPanel" hidden role="region" aria-label="Revision history"/);
+  assert.match(html, /class="revision-toggle-all" id="revisionToggleAll"[^>]*aria-pressed="true"/);
+  assert.match(html, /id="revisionLegendList"/);
+  assert.match(css, /\.revision-wrap\[hidden\]\{display:none/);
 });
 
 test("overflow menu shows the artifact path with a copy affordance", async () => {

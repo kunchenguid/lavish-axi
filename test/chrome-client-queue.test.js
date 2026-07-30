@@ -200,6 +200,7 @@ async function createChromeHarness({
   element("whiteboardOverlay").hidden = true;
   element("shareDialog").hidden = true;
   element("moreMenu").hidden = true;
+  element("revisionLegendPanel").hidden = true;
   element("warningsDrawer").hidden = true;
   const whiteboardFrame = element("whiteboardFrame");
   whiteboardFrame.contentWindow = {
@@ -2130,6 +2131,7 @@ test("whiteboard close stays responsive while overlay initialization is pending"
   await flushPromises();
 });
 
+
 test("a silent artifact is probed for a fatal failure, and a talking one is not", async () => {
   const posts = [];
   const chrome = await createChromeHarness({
@@ -2197,4 +2199,207 @@ test("a local asset failure inside the artifact is reported as a fatal artifact 
   const failure = posts.find((post) => post.url === "/api/abc/artifact-failures");
   assert.equal(failure.body.failures[0].kind, "artifact-asset-unavailable");
   assert.match(failure.body.failures[0].detail, /logo\.png/);
+});
+
+// ---------------------------------------------------------------------------
+// Revision legend
+// ---------------------------------------------------------------------------
+
+function sampleRevisions() {
+  return [
+    {
+      id: "1",
+      label: "Initial draft",
+      timestamp: "2026-07-29T10:00:00.000Z",
+      summary: "First pass layout",
+      sections: ["Hero", "Pricing table"],
+      index: 0,
+      color: { hex: "#0072B2", borderStyle: "solid", pattern: "diagonal" },
+    },
+    {
+      id: "2",
+      label: "Pricing fix",
+      timestamp: "",
+      summary: "",
+      sections: [],
+      index: 1,
+      color: { hex: "#D55E00", borderStyle: "dashed", pattern: "dots" },
+    },
+  ];
+}
+
+test("revision legend stays hidden for a legacy artifact that never sends lavish:revisions", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.equal(chrome.element("revisionLegendList").innerHTML, "");
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:setRevisionVisibility"),
+    false,
+  );
+});
+
+test("revision legend renders color, label, timestamp, summary, and affected sections", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+
+  assert.equal(chrome.element("revisionWrap").hidden, false);
+  assert.equal(chrome.element("revisionLegendCount").textContent, "(2)");
+  const html = chrome.element("revisionLegendList").innerHTML;
+  assert.match(html, /Initial draft/);
+  assert.match(html, /First pass layout/);
+  assert.match(html, /Hero/);
+  assert.match(html, /Pricing table/);
+  assert.match(html, /background-color:#0072B2/);
+  assert.match(html, /border-style:solid/);
+  assert.match(html, /Pricing fix/);
+  assert.match(html, /border-style:dashed/);
+});
+
+test("revision legend escapes agent-controlled text before inserting it as HTML", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: [
+      {
+        id: "1",
+        label: "<img src=x onerror=alert(1)>",
+        timestamp: "",
+        summary: "<script>alert(2)</script>",
+        sections: ["<b>bold</b>"],
+        index: 0,
+        color: { hex: "#0072B2", borderStyle: "solid", pattern: "diagonal" },
+      },
+    ],
+  });
+
+  const html = chrome.element("revisionLegendList").innerHTML;
+  assert.doesNotMatch(html, /<img/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /<b>bold/);
+  assert.match(html, /&lt;img/);
+  assert.match(html, /&lt;script&gt;/);
+});
+
+test("revision legend hides again and clears its list when the SDK reports an empty registry", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  assert.equal(chrome.element("revisionWrap").hidden, false);
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: [] });
+  assert.equal(chrome.element("revisionWrap").hidden, true);
+  assert.equal(chrome.element("revisionLegendList").innerHTML, "");
+});
+
+test("revision legend toggle-all flips visibility, updates its accessible state, and re-renders checkboxes", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+
+  // The server-rendered aria-pressed="true" default isn't visible to this harness
+  // (it only reflects JS-driven attribute changes, not the initial static markup —
+  // server.test.js covers that starting attribute), so assert behavior from here.
+  assert.match(chrome.element("revisionLegendList").innerHTML, /checked><span>Show highlights/);
+
+  chrome.element("revisionToggleAll").onclick();
+
+  assert.equal(chrome.element("revisionToggleAll")["aria-pressed"], "false");
+  assert.equal(chrome.element("revisionToggleAll").textContent, "Show all highlights");
+  // postedToFrame message objects are built inside the vm-executed chrome-client.js
+  // source, so they live in a different vm realm than this test file; deepEqual is
+  // prototype-sensitive across realms (see the reference-equality note below), so
+  // compare fields individually instead of the whole object, matching how the rest
+  // of this file already reads chrome.postedToFrame.at(-1).<field>.
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setRevisionVisibility");
+  assert.equal(chrome.postedToFrame.at(-1).id, "*");
+  assert.equal(chrome.postedToFrame.at(-1).visible, false);
+  assert.doesNotMatch(chrome.element("revisionLegendList").innerHTML, /checked>/);
+
+  chrome.element("revisionToggleAll").onclick();
+  assert.equal(chrome.element("revisionToggleAll")["aria-pressed"], "true");
+  assert.equal(chrome.element("revisionToggleAll").textContent, "Hide all highlights");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setRevisionVisibility");
+  assert.equal(chrome.postedToFrame.at(-1).id, "*");
+  assert.equal(chrome.postedToFrame.at(-1).visible, true);
+});
+
+test("a per-revision checkbox posts a scoped visibility toggle for just that revision", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+
+  const changeHandler = chrome.element("revisionLegendList").listeners.get("change");
+  assert.equal(typeof changeHandler, "function");
+
+  changeHandler({ target: { dataset: { revisionId: "2" }, checked: false } });
+
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setRevisionVisibility");
+  assert.equal(chrome.postedToFrame.at(-1).id, "2");
+  assert.equal(chrome.postedToFrame.at(-1).visible, false);
+});
+
+test("the change listener ignores events from controls outside the revision checkboxes", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  const before = chrome.postedToFrame.length;
+
+  const changeHandler = chrome.element("revisionLegendList").listeners.get("change");
+  changeHandler({ target: { dataset: {} } });
+
+  assert.equal(chrome.postedToFrame.length, before);
+});
+
+// The chrome's real server-rendered HTML starts every menu panel with the
+// `hidden` attribute, but this harness's generic element stub defaults
+// `hidden` to false (see createChromeHarness's element() factory) since it
+// never parses actual markup — only server.test.js's markup assertions cover
+// that starting attribute. Prime the stubs to match before exercising toggle
+// behavior here, the same gap the pre-existing more-menu tests never hit
+// because none of them asserted the pre-click state.
+function primeMenusClosed(chrome) {
+  chrome.element("moreMenu").hidden = true;
+  chrome.element("revisionLegendPanel").hidden = true;
+  chrome.element("whiteboardOverlay").hidden = true;
+  chrome.element("shareDialog").hidden = true;
+}
+
+test("the revision legend button toggles the panel and its own aria-expanded state", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  primeMenusClosed(chrome);
+
+  chrome.element("revisionLegendButton").onclick();
+  assert.equal(chrome.element("revisionLegendPanel").hidden, false);
+  assert.equal(chrome.element("revisionLegendButton")["aria-expanded"], "true");
+
+  chrome.element("revisionLegendButton").onclick();
+  assert.equal(chrome.element("revisionLegendPanel").hidden, true);
+  assert.equal(chrome.element("revisionLegendButton")["aria-expanded"], "false");
+});
+
+test("Escape closes an open revision legend panel", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  primeMenusClosed(chrome);
+
+  chrome.element("revisionLegendButton").onclick();
+  assert.equal(chrome.element("revisionLegendPanel").hidden, false);
+
+  chrome.dispatchDocumentKeydown({ key: "Escape" });
+
+  assert.equal(chrome.element("revisionLegendPanel").hidden, true);
+  assert.equal(chrome.element("revisionLegendButton")["aria-expanded"], "false");
+});
+
+test("opening the revision legend closes the overflow menu and vice versa", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  primeMenusClosed(chrome);
+
+  chrome.element("moreButton").onclick();
+  assert.equal(chrome.element("moreMenu").hidden, false);
+
+  chrome.element("revisionLegendButton").onclick();
+  assert.equal(chrome.element("revisionLegendPanel").hidden, false);
+  assert.equal(chrome.element("moreMenu").hidden, true);
 });

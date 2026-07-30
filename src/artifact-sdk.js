@@ -246,6 +246,152 @@ export function isNearTotalOcclusion({ occludedSamples, totalSamples, minSamples
   return Number.isFinite(occluded) && Number.isFinite(total) && total >= minSamples && occluded / total >= minRatio;
 }
 
+// ---------------------------------------------------------------------------
+// Revision legend
+//
+// Agents own revision history: they embed a JSON registry in the artifact
+// itself (<script type="application/json" data-lavish-revisions>) and mark
+// elements they changed with data-lavish-revision="<id>". There is no
+// diffing here — the agent already knows what it changed, so it just says
+// so. Absence of the script tag means an empty registry, which keeps every
+// legacy artifact rendering with no legend and no highlight, unchanged.
+// Color is deliberately paired with a distinct border-style per palette
+// entry (solid/dashed/dotted/double) so the highlight is never color-only.
+// ---------------------------------------------------------------------------
+
+// Okabe-Ito colorblind-safe palette. Each entry also carries a distinct
+// border-style and background pattern so revisions stay distinguishable by
+// shape/texture alone, not just hue.
+export const REVISION_PALETTE = [
+  { hex: "#0072B2", borderStyle: "solid", pattern: "diagonal" },
+  { hex: "#D55E00", borderStyle: "dashed", pattern: "dots" },
+  { hex: "#009E73", borderStyle: "dotted", pattern: "diagonal" },
+  { hex: "#CC79A7", borderStyle: "double", pattern: "dots" },
+  { hex: "#E69F00", borderStyle: "solid", pattern: "dots" },
+  { hex: "#56B4E9", borderStyle: "dashed", pattern: "diagonal" },
+];
+
+export const REVISION_PATTERN_CSS = {
+  diagonal: {
+    backgroundImage:
+      "repeating-linear-gradient(45deg, rgba(0,0,0,0.16) 0, rgba(0,0,0,0.16) 1px, transparent 1px, transparent 9px)",
+    backgroundSize: "auto",
+  },
+  dots: {
+    backgroundImage: "radial-gradient(rgba(0,0,0,0.24) 1.1px, transparent 1.6px)",
+    backgroundSize: "9px 9px",
+  },
+};
+
+export function revisionTruncate(value, max) {
+  const str = String(value == null ? "" : value);
+  return str.length > max ? str.slice(0, max) : str;
+}
+
+export function revisionIsValidTimestamp(value) {
+  if (typeof value !== "string" || !value) return false;
+  return Number.isFinite(Date.parse(value));
+}
+
+// Deterministic, order-based color assignment so the same registry always
+// renders the same colors regardless of how many revisions exist.
+export function revisionColorForIndex(index) {
+  const length = REVISION_PALETTE.length;
+  const normalized = ((Number(index) % length) + length) % length;
+  return REVISION_PALETTE[normalized] || REVISION_PALETTE[0];
+}
+
+// A low-alpha rgba() tint for the highlight background layer, or a fully
+// transparent fallback for a malformed color so a bad palette entry never
+// throws mid-render.
+export function revisionTintFromHex(hex, alpha = 0.14) {
+  const clean = String(hex || "").replace("#", "");
+  if (clean.length !== 6) return "rgba(0,0,0,0)";
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if (![r, g, b].every(Number.isFinite)) return "rgba(0,0,0,0)";
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Coerces one raw registry entry into the fixed shape the legend and SDK
+// rely on, capping every field so a hostile or malformed artifact can't grow
+// unbounded UI or leak huge strings into the chrome.
+export function normalizeRevisionEntry(entry, index) {
+  const raw = entry && typeof entry === "object" ? entry : {};
+  const fallbackId = String(index + 1);
+  const idSource = raw.id != null && raw.id !== "" ? raw.id : fallbackId;
+  const id = revisionTruncate(idSource, 40) || fallbackId;
+  const label = revisionTruncate(raw.label || `Revision ${index + 1}`, 80) || `Revision ${index + 1}`;
+  const timestamp = revisionIsValidTimestamp(raw.timestamp) ? raw.timestamp : "";
+  const summary = revisionTruncate(raw.summary || "", 500);
+  const sectionsSource = Array.isArray(raw.sections) ? raw.sections : [];
+  const sections = sectionsSource
+    .filter((section) => typeof section === "string" || typeof section === "number")
+    .map((section) => revisionTruncate(section, 80))
+    .filter(Boolean)
+    .slice(0, 12);
+  return { id, label, timestamp, summary, sections, index, color: revisionColorForIndex(index) };
+}
+
+// Parses the artifact-authored revision registry. Returns [] for a missing
+// script tag, invalid JSON, a non-array payload, or (after normalization)
+// duplicate ids — every one of those cases is exactly "no revision metadata"
+// and must render identically to an artifact that never had this feature.
+export function parseRevisionRegistry(doc) {
+  if (!doc || typeof doc.querySelector !== "function") return [];
+  const scriptEl = doc.querySelector("script[data-lavish-revisions]");
+  if (!scriptEl) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(scriptEl.textContent || "");
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const seen = new Set();
+  const out = [];
+  for (const entry of parsed) {
+    if (out.length >= 50) break;
+    const normalized = normalizeRevisionEntry(entry, out.length);
+    if (seen.has(normalized.id)) continue;
+    seen.add(normalized.id);
+    out.push(normalized);
+  }
+  return out;
+}
+
+// An element may be touched across several revisions
+// (data-lavish-revision="1 2"); the most recent known revision wins so the
+// highlight always reflects the latest edit batch. Unknown tokens (typos,
+// stale ids after the agent trims the registry) are ignored rather than
+// crashing the highlight pass.
+export function resolveElementRevisionId(dataAttrValue, revisionOrder) {
+  const tokens = String(dataAttrValue || "")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!tokens.length) return null;
+  let best = null;
+  let bestIndex = -1;
+  for (const token of tokens) {
+    const idx = revisionOrder.indexOf(token);
+    if (idx > bestIndex) {
+      bestIndex = idx;
+      best = token;
+    }
+  }
+  return best;
+}
+
+// Every element the agent marked, anywhere in the document. Kept as its own
+// function (rather than inline in the closure) so the resolution logic above
+// is testable against a plain array instead of a live NodeList.
+export function collectRevisionMarkedElements(doc) {
+  if (!doc || typeof doc.querySelectorAll !== "function") return [];
+  return Array.from(doc.querySelectorAll("[data-lavish-revision]"));
+}
+
 export function createArtifactSdk(
   deriveQueueKey,
   isNativeInteractive = isNativeInteractiveControl,
@@ -1762,6 +1908,7 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
+    if (msg.type === "lavish:setRevisionVisibility") setRevisionVisibility(msg.id, msg.visible);
   });
 
   // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
@@ -1882,6 +2029,96 @@ export function createArtifactSdk(
     },
     true,
   );
+
+  // ---------------------------------------------------------------------
+  // Revision legend: highlights elements the agent marked with
+  // data-lavish-revision using the artifact's own registry. A no-op — no
+  // postMessage, no DOM style changes — when the artifact has none, so
+  // legacy artifacts render exactly as before.
+  // ---------------------------------------------------------------------
+  let revisionRegistry = [];
+  let revisionElements = []; // [{ el, id }]
+  const revisionVisibility = new Map(); // id -> boolean, default true
+
+  function revisionById(id) {
+    return revisionRegistry.find((revision) => revision.id === id) || null;
+  }
+
+  function applyRevisionHighlight(el, revision) {
+    const patternDef = REVISION_PATTERN_CSS[revision.color.pattern] || REVISION_PATTERN_CSS.diagonal;
+    const tint = revisionTintFromHex(revision.color.hex);
+    el.style.outline = `2px ${revision.color.borderStyle} ${revision.color.hex}`;
+    el.style.outlineOffset = "1px";
+    el.style.backgroundImage = `${patternDef.backgroundImage}, linear-gradient(${tint}, ${tint})`;
+    el.style.backgroundSize = `${patternDef.backgroundSize}, auto`;
+    el.setAttribute("data-lavish-revision-active", revision.id);
+    // A hover-only, non-color-dependent detail channel. The legend and the
+    // border-style/pattern are the primary always-visible signals.
+    el.title = revision.summary ? `${revision.label}: ${revision.summary}` : revision.label;
+  }
+
+  function clearRevisionHighlight(el) {
+    el.style.outline = "";
+    el.style.outlineOffset = "";
+    el.style.backgroundImage = "";
+    el.style.backgroundSize = "";
+    el.removeAttribute("data-lavish-revision-active");
+    el.removeAttribute("title");
+  }
+
+  function applyRevisionVisibilityToElements() {
+    for (const { el, id } of revisionElements) {
+      const revision = revisionById(id);
+      if (!revision) continue;
+      if (revisionVisibility.get(id) !== false) applyRevisionHighlight(el, revision);
+      else clearRevisionHighlight(el);
+    }
+  }
+
+  function setRevisionVisibility(id, visible) {
+    if (id === "*") {
+      for (const revision of revisionRegistry) revisionVisibility.set(revision.id, Boolean(visible));
+    } else if (typeof id === "string") {
+      revisionVisibility.set(id, Boolean(visible));
+    } else {
+      return;
+    }
+    applyRevisionVisibilityToElements();
+  }
+
+  // The SDK's own script runs as the last node in <body>, so by the time it
+  // executes the artifact's own markup — including every data-lavish-revision
+  // element — is already parsed into the DOM; no DOMContentLoaded wait needed.
+  function initRevisionLegend() {
+    revisionRegistry = parseRevisionRegistry(document);
+    if (!revisionRegistry.length) return;
+    const order = revisionRegistry.map((revision) => revision.id);
+    revisionElements = [];
+    for (const el of collectRevisionMarkedElements(document)) {
+      const id = resolveElementRevisionId(el.getAttribute("data-lavish-revision"), order);
+      if (!id) continue;
+      revisionElements.push({ el, id });
+      revisionVisibility.set(id, true);
+    }
+    applyRevisionVisibilityToElements();
+    parent.postMessage(
+      {
+        type: "lavish:revisions",
+        revisions: revisionRegistry.map(({ id, label, timestamp, summary, sections, index, color }) => ({
+          id,
+          label,
+          timestamp,
+          summary,
+          sections,
+          index,
+          color,
+        })),
+      },
+      "*",
+    );
+  }
+
+  initRevisionLegend();
 
   setAnnotationMode(annotationMode);
   if (document.readyState === "loading") {
