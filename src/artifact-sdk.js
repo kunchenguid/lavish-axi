@@ -1396,12 +1396,19 @@ export function createArtifactSdk(
     }
   }
 
-  function publishLayoutAudit(layout_warnings) {
-    const severe = layout_warnings.filter((finding) => finding?.severity === "error");
-    const signature = JSON.stringify(severe);
+  // A diagnostic pass reports its own completeness. An incomplete pass is uncertainty, never
+  // evidence that a previously detected failure is gone - the inbox preserves prior warnings as
+  // `unverified` instead of clearing them.
+  function publishLayoutAudit(findings, complete) {
+    const severe = findings.filter((finding) => finding?.severity === "error");
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const signature = JSON.stringify({ complete, viewportWidth, severe });
     if (signature === lastLayoutAuditSignature) return;
     lastLayoutAuditSignature = signature;
-    parent.postMessage({ type: "lavish:layoutWarnings", layout_warnings: severe }, "*");
+    parent.postMessage(
+      { type: "lavish:layoutDiagnostics", complete, viewport_width: viewportWidth, findings: severe },
+      "*",
+    );
   }
 
   async function runLayoutAudit(runId) {
@@ -1415,7 +1422,7 @@ export function createArtifactSdk(
     await new Promise((resolve) => window.setTimeout(resolve, layoutAuditStableSampleMs));
     await waitForAnimationFrames(2);
     if (runId !== layoutAuditRun) return;
-    publishLayoutAudit(findStableLayoutFindings(first, auditLayout()));
+    publishLayoutAudit(findStableLayoutFindings(first, auditLayout()), true);
   }
 
   function scheduleLayoutAudit() {
@@ -1423,7 +1430,7 @@ export function createArtifactSdk(
     const runId = ++layoutAuditRun;
     layoutAuditTimer = window.setTimeout(() => {
       runLayoutAudit(runId).catch(() => {
-        if (runId === layoutAuditRun) publishLayoutAudit([]);
+        if (runId === layoutAuditRun) publishLayoutAudit([], false);
       });
     }, 50);
   }
@@ -1436,6 +1443,142 @@ export function createArtifactSdk(
     window.addEventListener("transitionend", scheduleLayoutAudit, { passive: true });
   }
 
+  // The narrow fatal path. A local subresource the artifact declares but the server cannot serve
+  // makes the review unusable rather than merely mislaid, so it bypasses the passive inbox. Only
+  // same-document (relative or /artifact/-rooted) references count; a remote CDN outage is the
+  // viewer's network, not a defect in the artifact.
+  function reportLocalAssetFailure(event) {
+    const el = event.target;
+    if (!(el instanceof Element) || isLavishUi(el)) return;
+    const tag = String(el.tagName || "").toLowerCase();
+    if (!["img", "script", "link", "source", "video", "audio", "iframe"].includes(tag)) return;
+    const raw = String(el.getAttribute("src") || el.getAttribute("href") || "");
+    if (!raw) return;
+    let resolved;
+    try {
+      resolved = new URL(raw, document.baseURI);
+    } catch {
+      return;
+    }
+    if (resolved.origin !== window.location.origin) return;
+    parent.postMessage(
+      { type: "lavish:artifactAssetFailure", detail: "<" + tag + "> could not load " + resolved.pathname },
+      "*",
+    );
+  }
+
+  window.addEventListener("error", reportLocalAssetFailure, true);
+
+  // ---------------------------------------------------------------------------
+  // Review-context preservation. A live reload replaces this document wholesale, so anything the
+  // user typed or answered inside it is lost unless the chrome replays it. Lavish only ever
+  // replays state it owns: an open annotation card, and controls inside a `data-lavish-question`
+  // scope (the documented Lavish input contract). Application-owned form state is left alone
+  // because Lavish cannot tell an intentional reset from a preserved answer.
+  // ---------------------------------------------------------------------------
+
+  let activeCardContext = null;
+  let reviewStateTimer = 0;
+
+  function safeQuerySelector(selector) {
+    try {
+      return document.querySelector(String(selector || ""));
+    } catch {
+      return null;
+    }
+  }
+
+  function lavishQuestionControls() {
+    const entries = [];
+    for (const scope of document.querySelectorAll("[data-lavish-question]")) {
+      const question = String(scope.getAttribute("data-lavish-question") || "");
+      const controls = [...scope.querySelectorAll("input,select,textarea")];
+      controls.forEach((el, index) => {
+        const control = /** @type {any} */ (el);
+        const type = String(control.getAttribute("type") || control.type || "text").toLowerCase();
+        if (["button", "submit", "reset", "file", "image", "password"].includes(type)) return;
+        if (entries.length >= 200) return;
+        entries.push({
+          el: control,
+          key: [
+            question,
+            String(control.getAttribute("name") || control.id || ""),
+            type,
+            String(control.getAttribute("value") || ""),
+          ]
+            .join("|")
+            .slice(0, 300),
+          index,
+          question,
+          type,
+        });
+      });
+    }
+    return entries;
+  }
+
+  function collectReviewState() {
+    const card = shadow ? shadow.querySelector(".lavish-annotation-card") : null;
+    const textarea = card ? card.querySelector("textarea") : null;
+    const text = textarea ? String(textarea.value || "") : "";
+    return {
+      // A text-range card is anchored to a live Range, which a reload invalidates - restoring it
+      // could point the annotation at different text, so only element cards come back.
+      card:
+        activeCardContext && activeCardContext.tag !== "text" && text.trim()
+          ? { selector: String(activeCardContext.selector || ""), text: text.slice(0, 4000) }
+          : null,
+      fields: lavishQuestionControls().map((entry) => ({
+        key: entry.key,
+        index: entry.index,
+        question: entry.question,
+        type: entry.type,
+        value: String(entry.el.value === undefined || entry.el.value === null ? "" : entry.el.value).slice(0, 2000),
+        checked: entry.type === "checkbox" || entry.type === "radio" ? Boolean(entry.el.checked) : null,
+      })),
+    };
+  }
+
+  function scheduleReviewStateReport() {
+    if (reviewStateTimer) window.clearTimeout(reviewStateTimer);
+    reviewStateTimer = window.setTimeout(() => {
+      reviewStateTimer = 0;
+      parent.postMessage({ type: "lavish:reviewState", state: collectReviewState() }, "*");
+    }, 120);
+  }
+
+  function restoreReviewState(state) {
+    if (!state || typeof state !== "object") return;
+    const fields = Array.isArray(state.fields) ? state.fields : [];
+    if (fields.length) {
+      const entries = lavishQuestionControls();
+      for (const field of fields) {
+        const match =
+          entries.find((entry) => entry.key === field.key) ||
+          entries.find((entry) => entry.question === field.question && entry.index === field.index);
+        if (!match) continue;
+        // No synthetic change/input events: the artifact's own handlers queue prompts, and
+        // replaying them would silently re-queue answers the user already sent.
+        if (field.checked === null) match.el.value = String(field.value ?? "");
+        else match.el.checked = Boolean(field.checked);
+      }
+    }
+    const card = state.card;
+    if (!card || !card.selector || !String(card.text || "").trim()) return;
+    const target = safeQuerySelector(card.selector);
+    if (!target) return;
+    showAnnotationCard(target, { restoreText: String(card.text) });
+  }
+
+  document.addEventListener("change", (event) => {
+    const el = event.target;
+    if (el instanceof Element && el.closest("[data-lavish-question]")) scheduleReviewStateReport();
+  });
+  document.addEventListener("input", (event) => {
+    const el = event.target;
+    if (el instanceof Element && el.closest("[data-lavish-question]")) scheduleReviewStateReport();
+  });
+
   function ensureShadow() {
     if (shadow) return shadow;
 
@@ -1446,12 +1589,13 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
     shadow.appendChild(style);
     return shadow;
   }
 
   function closeCard() {
+    activeCardContext = null;
     if (shadow) {
       for (const el of [...shadow.querySelectorAll(".lavish-annotation-card")]) el.remove();
     }
@@ -1467,6 +1611,7 @@ export function createArtifactSdk(
     closeCard();
 
     const c = options.context || context(target);
+    activeCardContext = c;
     let anchor = target;
     if (options.range) {
       highlightTextRange(options.range);
@@ -1527,6 +1672,15 @@ export function createArtifactSdk(
         if (sendNow) sendQueuedPrompts();
       }
     });
+    // Unsent annotation text is review context Lavish owns, so it is reported to the chrome and
+    // replayed after a live reload.
+    textarea.addEventListener("input", scheduleReviewStateReport);
+    if (typeof options.restoreText === "string") {
+      textarea.value = options.restoreText;
+      // Re-report immediately so restored text survives a second reload too, rather than only
+      // living until the next keystroke.
+      scheduleReviewStateReport();
+    }
     setTimeout(() => textarea.focus(), 0);
   }
 
@@ -1548,7 +1702,28 @@ export function createArtifactSdk(
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
     }
+    if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
+    if (msg.type === "lavish:revealElement") revealElement(msg.selector);
   });
+
+  // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
+  // from the layout audit and never becomes a finding of its own.
+  function revealElement(selector) {
+    const target = selector === "html" ? document.documentElement : safeQuerySelector(selector);
+    if (!(target instanceof Element)) return;
+    target.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    const root = ensureShadow();
+    for (const el of [...root.querySelectorAll(".lavish-reveal-marker")]) el.remove();
+    const rect = target.getBoundingClientRect();
+    const marker = document.createElement("div");
+    marker.className = "lavish-reveal-marker";
+    marker.style.left = rect.left + "px";
+    marker.style.top = rect.top + "px";
+    marker.style.width = Math.max(rect.width, 4) + "px";
+    marker.style.height = Math.max(rect.height, 4) + "px";
+    root.appendChild(marker);
+    window.setTimeout(() => marker.remove(), 2400);
+  }
 
   // Capture phase so the mode hotkey fires no matter where focus is inside the artifact -
   // including a checkbox, button, link, or the annotation-card textarea - without disturbing

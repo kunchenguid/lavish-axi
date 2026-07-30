@@ -772,7 +772,7 @@ test("artifact SDK reports only stable severe layout failures after fonts, resiz
   assert.match(js, /activeAnimationTargets/);
   assert.match(js, /isAnimationAssociatedWithElement/);
   assert.match(js, /findStableLayoutFindings/);
-  assert.match(js, /type:\s*["']lavish:layoutWarnings["']/);
+  assert.match(js, /type:\s*["']lavish:layoutDiagnostics["']/);
   assert.match(js, /page-horizontal-overflow/);
   assert.match(js, /clipped-text/);
   assert.match(js, /overlapping-text/);
@@ -1300,7 +1300,161 @@ test("/artifact serves files copied under the artifact directory", async () => {
   }
 });
 
-test("layout warnings wake the same long-poll feedback channel as human prompts", async () => {
+test("detected layout warnings leave the long-poll pending and never wake an agent", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    await fetch(`${base}/artifact/${key}/index.html`);
+
+    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=600`).then((res) =>
+      res.json(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const diagnostics = await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        complete: true,
+        viewport_width: 720,
+        findings: [
+          { selector: "html", kind: "page-horizontal-overflow", overflowPx: 12, viewportWidth: 720, severity: "error" },
+        ],
+      }),
+    });
+    const recorded = await diagnostics.json();
+    assert.equal(recorded.status, "recorded");
+    assert.equal(recorded.active_count, 1);
+    assert.equal(recorded.warnings[0].status, "open");
+
+    // The poll must run out its bounded timeout rather than return on detection.
+    assert.deepEqual(await pollPromise, { status: "waiting" });
+
+    const inbox = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
+    assert.equal(inbox.warnings.length, 1);
+    assert.equal(inbox.warnings[0].active, true);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queueing selected warnings wakes the poll as one ordinary prompt", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    await fetch(`${base}/artifact/${key}/index.html`);
+    const recorded = await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        complete: true,
+        viewport_width: 1440,
+        findings: [
+          { selector: "button", kind: "clipped-control", axis: "horizontal", overflowPx: 20, severity: "error" },
+          { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 30, severity: "error" },
+        ],
+      }),
+    }).then((res) => res.json());
+    assert.equal(recorded.active_count, 2);
+
+    const queued = await fetch(`${base}/api/${key}/layout-warnings/queue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [recorded.warnings[0].id] }),
+    }).then((res) => res.json());
+    assert.equal(queued.queued_count, 1);
+    assert.equal(queued.prompt.target.warnings.length, 1);
+    // Both warnings stay unresolved: queueing is a request, not a fix.
+    assert.equal(queued.warnings.filter((warning) => warning.active).length, 2);
+
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompts: [
+          {
+            uid: "",
+            prompt: queued.prompt.prompt,
+            selector: "",
+            tag: "layout-warnings",
+            text: queued.prompt.text,
+            target: queued.prompt.target,
+          },
+        ],
+      }),
+    });
+
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
+      res.json(),
+    );
+    assert.equal(poll.status, "feedback");
+    assert.equal(poll.prompts.length, 1);
+    assert.equal(poll.prompts[0].tag, "layout-warnings");
+    assert.equal(poll.prompts[0].target.warnings[0].id, recorded.warnings[0].id);
+    assert.equal("layout_warnings" in poll, false, "no parallel agent protocol at the CLI boundary");
+    assert.equal("artifact_failures" in poll, false);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("warning-only layout observations never enter the inbox", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+
+    const response = await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        complete: true,
+        viewport_width: 720,
+        findings: [{ selector: ".accent", kind: "element-parent-overflow", overflowPx: 20, severity: "warning" }],
+      }),
+    });
+    const recorded = await response.json();
+    assert.equal(recorded.active_count, 0);
+    assert.deepEqual(recorded.warnings, []);
+
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=25`).then((res) =>
+      res.json(),
+    );
+    assert.deepEqual(poll, { status: "waiting" });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a fatal artifact failure still wakes the poll without user action", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -1318,45 +1472,25 @@ test("layout warnings wake the same long-poll feedback channel as human prompts"
       res.json(),
     );
     await new Promise((resolve) => setTimeout(resolve, 50));
-    const warningResponse = await fetch(`${base}/api/${key}/layout-warnings`, {
+    await fetch(`${base}/api/${key}/artifact-failures`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        layout_warnings: [
-          {
-            selector: "html",
-            kind: "page-horizontal-overflow",
-            overflowPx: 12,
-            viewportWidth: 720,
-            severity: "error",
-          },
-        ],
+        failures: [{ kind: "artifact-asset-unavailable", detail: "<img> could not load /artifact/x/logo.png" }],
       }),
     });
-    assert.equal(warningResponse.status, 200);
 
-    assert.deepEqual(await pollPromise, {
-      status: "feedback",
-      dom_snapshot: "",
-      prompts: [],
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 12,
-          viewportWidth: 720,
-          severity: "error",
-          persistent: false,
-        },
-      ],
-    });
+    const poll = await pollPromise;
+    assert.equal(poll.status, "feedback");
+    assert.equal(poll.artifact_failures.length, 1);
+    assert.equal(poll.artifact_failures[0].severity, "fatal");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("warning-only layout observations do not wake the long-poll feedback channel", async () => {
+test("the artifact revision advances on each served artifact load", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -1370,27 +1504,92 @@ test("warning-only layout observations do not wake the long-poll feedback channe
     });
     const { key } = await open.json();
 
-    const response = await fetch(`${base}/api/${key}/layout-warnings`, {
+    await fetch(`${base}/artifact/${key}/index.html`);
+    const first = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
+    await fetch(`${base}/artifact/${key}/index.html`);
+    const second = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
+
+    assert.equal(first.revision, 1);
+    assert.equal(second.revision, 2);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a newer complete matching-viewport pass resolves a warning and a different viewport cannot", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
+    const record = (body) =>
+      fetch(`${base}/api/${key}/layout-diagnostics`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((res) => res.json());
+
+    await fetch(`${base}/artifact/${key}/index.html`);
+    await record({ complete: true, viewport_width: 390, findings: [finding] });
+
+    // A desktop pass says nothing about the phone-only warning.
+    await fetch(`${base}/artifact/${key}/index.html`);
+    const desktop = await record({ complete: true, viewport_width: 1440, findings: [] });
+    assert.equal(desktop.active_count, 1);
+
+    // An incomplete phone pass preserves it as unverified.
+    const failed = await record({ complete: false, viewport_width: 390, findings: [] });
+    assert.equal(failed.active_count, 1);
+    assert.equal(failed.warnings[0].status, "unverified");
+
+    // A complete phone pass on a newer load finally resolves it.
+    await fetch(`${base}/artifact/${key}/index.html`);
+    const resolved = await record({ complete: true, viewport_width: 390, findings: [] });
+    assert.equal(resolved.active_count, 0);
+    assert.equal(resolved.warnings[0].status, "resolved");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the chrome bootstraps the inbox so it survives a browser refresh", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    await fetch(`${base}/artifact/${key}/index.html`);
+    await fetch(`${base}/api/${key}/layout-diagnostics`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        layout_warnings: [
-          {
-            selector: ".accent",
-            kind: "element-parent-overflow",
-            overflowPx: 20,
-            viewportWidth: 720,
-            severity: "warning",
-          },
-        ],
+        complete: true,
+        viewport_width: 1440,
+        findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" }],
       }),
     });
 
-    assert.deepEqual(await response.json(), { status: "recorded", layout_warnings: 0 });
-    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=25`).then((res) =>
-      res.json(),
-    );
-    assert.deepEqual(poll, { status: "waiting" });
+    const html = await fetch(`${base}/session/${key}`).then((res) => res.text());
+    assert.match(html, /id="warningsButton"/);
+    assert.match(html, /initialLayoutWarnings/);
+    assert.match(html, /Text cut off by its container/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

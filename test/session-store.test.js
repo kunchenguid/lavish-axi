@@ -8,7 +8,7 @@ import { SessionStore } from "../src/session-store.js";
 
 function feedbackResult(result) {
   assert.equal(result.status, "feedback");
-  return /** @type {{ status: string, dom_snapshot: string, prompts: any[], layout_warnings?: any[], session_ended?: boolean, ended_by?: string }} */ (
+  return /** @type {{ status: string, dom_snapshot: string, prompts: any[], artifact_failures?: any[], session_ended?: boolean, ended_by?: string }} */ (
     result
   );
 }
@@ -170,7 +170,7 @@ test("queued whiteboard prompts normalize the excalidraw-scene target to its fix
   }
 });
 
-test("layout warnings are returned as feedback and then cleared", async () => {
+test("a diagnostic pass records warnings passively and never becomes agent feedback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -179,42 +179,28 @@ test("layout warnings are returned as feedback and then cleared", async () => {
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const result = await store.recordLayoutWarnings(session.key, {
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 24.5,
-          viewportWidth: 720,
-          severity: "error",
-        },
+    await store.bumpArtifactRevision(session.key);
+    const result = await store.recordLayoutDiagnostics(session.key, {
+      complete: true,
+      viewport_width: 720,
+      findings: [
+        { selector: "html", kind: "page-horizontal-overflow", overflowPx: 24.5, viewportWidth: 720, severity: "error" },
       ],
     });
 
     assert.equal(result.changed, true);
-    assert.equal(result.hasWarnings, true);
-
-    const first = feedbackResult(await store.takeFeedback(session.key));
-    assert.deepEqual(first.prompts, []);
-    assert.deepEqual(first.layout_warnings, [
-      {
-        selector: "html",
-        kind: "page-horizontal-overflow",
-        overflowPx: 24.5,
-        viewportWidth: 720,
-        severity: "error",
-        persistent: false,
-      },
-    ]);
-
-    const second = await store.takeFeedback(session.key);
-    assert.equal(second.status, "waiting");
+    assert.equal(result.warnings.length, 1);
+    assert.equal(result.warnings[0].status, "open");
+    assert.equal(result.warnings[0].active, true);
+    assert.equal(result.warnings[0].selectable, true);
+    // The whole point of the passive inbox: detection alone must not make poll return.
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("warning-only layout observations never become agent feedback", async () => {
+test("non-severe observations never enter the inbox", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -223,8 +209,10 @@ test("warning-only layout observations never become agent feedback", async () =>
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const result = await store.recordLayoutWarnings(session.key, {
-      layout_warnings: [
+    const result = await store.recordLayoutDiagnostics(session.key, {
+      complete: true,
+      viewport_width: 720,
+      findings: [
         {
           selector: ".accent",
           kind: "element-parent-overflow",
@@ -232,23 +220,18 @@ test("warning-only layout observations never become agent feedback", async () =>
           viewportWidth: 720,
           severity: "warning",
         },
-        {
-          selector: ".unproven",
-          kind: "clipped-text",
-          overflowPx: 200,
-          viewportWidth: 720,
-        },
+        { selector: ".unproven", kind: "clipped-text", overflowPx: 200, viewportWidth: 720 },
       ],
     });
 
-    assert.equal(result.hasWarnings, false);
+    assert.equal(result.warnings.length, 0);
     assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("a severe finding re-reported after the agent already received it is marked persistent", async () => {
+test("queueing a warning produces one ordinary prompt and leaves the warning unresolved", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -257,61 +240,38 @@ test("a severe finding re-reported after the agent already received it is marked
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const warning = {
-      selector: "main > header > strong",
-      kind: "overlapping-text",
-      overflowPx: 0,
-      viewportWidth: 720,
-      severity: "error",
-    };
-
-    await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
-    const first = feedbackResult(await store.takeFeedback(session.key));
-    assert.equal(first.layout_warnings[0].persistent, false);
-
-    // Simulate a reload after an attempted fix that reports the identical finding again -
-    // the agent already saw this exact selector+kind, so it should now read as a repeat.
-    await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
-    const second = feedbackResult(await store.takeFeedback(session.key));
-    assert.equal(second.layout_warnings[0].persistent, true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a severe finding that materially worsens at mobile is fresh", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
-  try {
-    const stateFile = path.join(dir, "state.json");
-    const artifact = path.join(dir, "artifact.html");
-    await writeFile(artifact, "<p>Important content</p>");
-
-    const store = new SessionStore(stateFile);
-    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const base = {
-      selector: "p",
-      kind: "clipped-text",
-      axis: "vertical",
-      severity: "error",
-    };
-
-    await store.recordLayoutWarnings(session.key, {
-      layout_warnings: [{ ...base, overflowPx: 30, viewportWidth: 1080 }],
+    await store.bumpArtifactRevision(session.key);
+    const recorded = await store.recordLayoutDiagnostics(session.key, {
+      complete: true,
+      viewport_width: 1440,
+      findings: [
+        { selector: "button", kind: "clipped-control", axis: "horizontal", overflowPx: 20, severity: "error" },
+        { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" },
+      ],
     });
-    await store.takeFeedback(session.key);
-    await store.recordLayoutWarnings(session.key, {
-      layout_warnings: [{ ...base, overflowPx: 123, viewportWidth: 390 }],
-    });
+    const [first, second] = recorded.warnings;
 
-    const mobile = feedbackResult(await store.takeFeedback(session.key));
-    assert.equal(mobile.layout_warnings[0].persistent, false);
-    assert.equal(mobile.layout_warnings[0].axis, "vertical");
+    const queued = await store.queueLayoutWarningFixes(session.key, [first.id]);
+    assert.equal(queued.queued.length, 1);
+    assert.match(queued.prompt.prompt, /Fix this layout issue/);
+    assert.equal(queued.prompt.target.type, "layout-warnings");
+    assert.equal(queued.prompt.target.warnings[0].id, first.id);
+
+    const after = queued.warnings.find((warning) => warning.id === first.id);
+    // Queued is a repair request, not a resolution.
+    assert.equal(after.status, "queued");
+    assert.equal(after.active, true);
+    assert.equal(after.selectable, false);
+    assert.equal(after.outstanding, true);
+    assert.equal(queued.warnings.find((warning) => warning.id === second.id).status, "open");
+    // Queueing alone still does not wake the agent - the prompt does, through /prompts.
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("a severe finding is fresh again after a clean audit resolves it", async () => {
+test("a queued layout-warnings prompt is normalized like ordinary feedback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -320,88 +280,60 @@ test("a severe finding is fresh again after a clean audit resolves it", async ()
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const warning = {
-      selector: "main > header > strong",
-      kind: "overlapping-text",
-      overflowPx: 0,
-      viewportWidth: 720,
-      severity: "error",
-    };
-
-    await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
-    await store.takeFeedback(session.key);
-    const clean = await store.recordLayoutWarnings(session.key, { layout_warnings: [] });
-    await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
-
-    const result = feedbackResult(await store.takeFeedback(session.key));
-    assert.equal(clean.hasWarnings, false);
-    assert.equal(result.layout_warnings[0].persistent, false);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("persistence memory survives reopening the same artifact", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
-  try {
-    const stateFile = path.join(dir, "state.json");
-    const artifact = path.join(dir, "artifact.html");
-    await writeFile(artifact, "<h1>Hello</h1>");
-
-    const store = new SessionStore(stateFile);
-    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const warning = {
-      selector: "main > header > strong",
-      kind: "overlapping-text",
-      overflowPx: 0,
-      viewportWidth: 720,
-      severity: "error",
-    };
-
-    await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
-    await store.takeFeedback(session.key);
-
-    await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.recordLayoutWarnings(session.key, { layout_warnings: [warning] });
-    const result = feedbackResult(await store.takeFeedback(session.key));
-    assert.equal(result.layout_warnings[0].persistent, true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("reopening a session clears stale layout warnings", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
-  try {
-    const stateFile = path.join(dir, "state.json");
-    const artifact = path.join(dir, "artifact.html");
-    await writeFile(artifact, "<h1>Hello</h1>");
-
-    const store = new SessionStore(stateFile);
-    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.recordLayoutWarnings(session.key, {
-      layout_warnings: [
+    await store.queuePrompts(session.key, {
+      prompts: [
         {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 24,
-          viewportWidth: 720,
-          severity: "error",
+          uid: "",
+          prompt: "Fix these layout issues",
+          selector: "",
+          tag: "layout-warnings",
+          text: "Layout issues: 1 selected",
+          target: {
+            type: "layout-warnings",
+            warnings: [{ id: "abc", rule: "clipped-text", selector: "p", axis: "vertical", overflow_px: 27 }],
+          },
         },
       ],
+    });
+
+    const result = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(result.prompts.length, 1);
+    assert.equal(result.prompts[0].tag, "layout-warnings");
+    assert.equal(result.prompts[0].target.warnings[0].id, "abc");
+    assert.equal("artifact_failures" in result, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the inbox survives reopening the same artifact", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.bumpArtifactRevision(session.key);
+    await store.recordLayoutDiagnostics(session.key, {
+      complete: true,
+      viewport_width: 720,
+      findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
     });
 
     const reopened = await store.upsertSession(artifact, "http://localhost:4387/session/test");
 
     assert.equal(reopened.status, "open");
-    assert.deepEqual(reopened.layout_warnings, []);
+    assert.equal(reopened.layout_warnings.length, 1);
+    assert.equal((await store.listLayoutWarnings(session.key)).warnings[0].status, "open");
     assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("empty layout warning reports clear pending warnings without waking feedback", async () => {
+test("dismissing a warning lasts only for the current artifact revision", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -410,21 +342,58 @@ test("empty layout warning reports clear pending warnings without waking feedbac
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.recordLayoutWarnings(session.key, {
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 24,
-          viewportWidth: 720,
-          severity: "error",
-        },
-      ],
+    await store.bumpArtifactRevision(session.key);
+    const finding = { selector: "html", kind: "page-horizontal-overflow", overflowPx: 40, severity: "error" };
+    const recorded = await store.recordLayoutDiagnostics(session.key, {
+      complete: true,
+      viewport_width: 720,
+      findings: [finding],
     });
-    const cleared = await store.recordLayoutWarnings(session.key, { layout_warnings: [] });
+    const id = recorded.warnings[0].id;
 
-    assert.equal(cleared.changed, true);
-    assert.equal(cleared.hasWarnings, false);
+    const dismissed = await store.dismissLayoutWarning(session.key, id);
+    assert.equal(dismissed.warnings[0].status, "dismissed");
+    assert.equal(dismissed.warnings[0].active, false);
+
+    // Same revision: still dismissed even though the pass keeps seeing it.
+    const sameRevision = await store.recordLayoutDiagnostics(session.key, {
+      complete: true,
+      viewport_width: 720,
+      findings: [finding],
+    });
+    assert.equal(sameRevision.warnings[0].status, "dismissed");
+
+    await store.bumpArtifactRevision(session.key);
+    const laterRevision = await store.recordLayoutDiagnostics(session.key, {
+      complete: true,
+      viewport_width: 720,
+      findings: [finding],
+    });
+    assert.equal(laterRevision.warnings[0].status, "open");
+    assert.equal(laterRevision.warnings[0].active, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fatal artifact failures still reach the agent without user action", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const result = await store.recordArtifactFailures(session.key, [
+      { kind: "artifact-asset-unavailable", detail: "<img> could not load /artifact/x/logo.png" },
+      { kind: "not-a-real-kind", detail: "ignored" },
+    ]);
+    assert.equal(result.changed, true);
+
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(feedback.artifact_failures.length, 1);
+    assert.equal(feedback.artifact_failures[0].severity, "fatal");
     assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -598,7 +567,7 @@ test("late prompts after a user end preserve the ended session state", async () 
   }
 });
 
-test("late layout warnings do not reopen ended sessions", async () => {
+test("late layout diagnostics do not reopen ended sessions or become feedback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -608,25 +577,15 @@ test("late layout warnings do not reopen ended sessions", async () => {
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
     await store.endSession(session.key);
-    await store.recordLayoutWarnings(session.key, {
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 24,
-          viewportWidth: 720,
-          severity: "error",
-        },
-      ],
+    await store.recordLayoutDiagnostics(session.key, {
+      complete: true,
+      viewport_width: 720,
+      findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
     });
 
     const updated = await store.findByKey(session.key);
     assert.equal(updated.status, "ended");
-
-    const first = feedbackResult(await store.takeFeedback(session.key));
-    assert.equal(first.layout_warnings.length, 1);
-    const second = await store.takeFeedback(session.key);
-    assert.equal(second.status, "ended");
+    assert.equal((await store.takeFeedback(session.key)).status, "ended");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

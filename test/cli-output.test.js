@@ -665,7 +665,8 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
-  assert.match(output.next_step, /layout_warnings/);
+  assert.match(output.next_step, /Layout issues inbox/);
+  assert.doesNotMatch(output.next_step, /layout_warnings/);
   assert.match(output.next_step, /never kill it/);
   assertObservablePollWakePath(output.next_step);
   assert.doesNotMatch(output.next_step, /Codex/);
@@ -1051,6 +1052,7 @@ test("feedback next step keeps the next poll completion observable", () => {
     response: { status: "feedback", dom_snapshot: "", prompts: [] },
   });
 
+  assert.equal("artifact_failures" in output, false);
   assert.equal("layout_warnings" in output, false);
   assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /without --timeout-ms/);
@@ -1058,7 +1060,6 @@ test("feedback next step keeps the next poll completion observable", () => {
   assert.doesNotMatch(output.next_step, /Codex/);
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
-  assert.match(output.next_step, /fresh layout_warnings/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
 });
 
@@ -1074,31 +1075,66 @@ test("feedback next step is Codex-aware when requested", () => {
   assert.match(output.next_step, /keep the poll attached to the active turn/);
 });
 
-test("layout warning feedback tells agents to fix layout before involving the human", () => {
+test("detected layout warnings never appear in poll output", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [{ uid: "", prompt: "Tighten the header", selector: "h1", tag: "annotation", text: "Header" }],
+    },
+  });
+
+  assert.equal("layout_warnings" in output, false);
+  assert.equal("artifact_failures" in output, false);
+  assert.match(output.next_step, /Apply the requested changes/);
+});
+
+test("a queued layout-warnings batch reads as ordinary feedback with lifecycle guidance", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [
+        {
+          uid: "",
+          prompt: "Fix these 2 layout issues the browser detected in this artifact:\\n1. [w1] ...",
+          selector: "",
+          tag: "layout-warnings",
+          text: "Layout issues: 2 selected",
+          target: { type: "layout-warnings", warnings: [{ id: "w1" }, { id: "w2" }] },
+        },
+      ],
+    },
+  });
+
+  assert.equal("layout_warnings" in output, false, "no parallel protocol - it is just a prompt");
+  assert.equal(output.prompts[0].tag, "layout-warnings");
+  assert.match(output.next_step, /Layout issues inbox/);
+  assert.match(output.next_step, /in one pass before saving so the user's review refreshes once/);
+  assert.match(output.next_step, /Queueing is a repair request, not a resolution/);
+  assert.match(output.next_step, /newer artifact load and a complete check at the same viewport/);
+});
+
+test("a fatal artifact failure is the only thing that reaches the agent without user action", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
     response: {
       status: "feedback",
       dom_snapshot: "",
       prompts: [],
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 16,
-          viewportWidth: 720,
-          severity: "error",
-        },
+      artifact_failures: [
+        { kind: "artifact-asset-unavailable", detail: "<img> could not load /artifact/x/logo.png", severity: "fatal" },
       ],
     },
   });
 
-  assert.ok("layout_warnings" in output);
-  assert.equal(output.layout_warnings.length, 1);
-  assert.match(output.next_step, /1 proven severe layout failure detected/);
-  assert.match(output.next_step, /repair the inaccessible or unusable content/);
-  assert.match(output.next_step, /before involving the human/);
-  assert.doesNotMatch(output.next_step, /reload or re-open/);
+  assert.ok("artifact_failures" in output);
+  assert.equal(output.artifact_failures.length, 1);
+  assert.match(output.next_step, /1 fatal artifact failure detected/);
+  assert.match(output.next_step, /the review surface could not be used/);
+  assert.match(output.next_step, /artifact-asset-unavailable/);
 });
 
 test("whiteboard feedback tells agents to read the summary, inspect files when needed, and update the Mermaid source", () => {
@@ -1217,126 +1253,37 @@ test("the final feedback batch before an agent end preserves ended_by and allows
   assert.doesNotMatch(output.next_step, /user ended this Lavish Editor session/);
 });
 
-test("final user-ended feedback still requires severe layout repair without reopening", () => {
+test("final user-ended feedback still reports a fatal artifact failure without reopening", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
     response: {
       status: "feedback",
       prompts: [],
-      layout_warnings: [{ selector: "button", kind: "clipped-control", severity: "error" }],
+      artifact_failures: [{ kind: "artifact-unavailable", detail: "HTTP 404", severity: "fatal" }],
       session_ended: true,
       ended_by: "user",
     },
   });
 
-  assert.match(output.next_step, /Repair the inaccessible or unusable content/);
-  assert.match(output.next_step, /open it directly at the affected viewport/);
-  assert.match(output.next_step, /without reopening this ended Lavish session/);
+  assert.match(output.next_step, /fatal artifact failure/);
+  assert.match(output.next_step, /confirm it renders without reopening this ended Lavish session/);
   assert.doesNotMatch(output.next_step, /--reopen/);
 });
 
-test("final agent-ended feedback requires repair in a fresh audit session", () => {
+test("final agent-ended feedback points a fatal artifact failure at a fresh session", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
     response: {
       status: "feedback",
       prompts: [],
-      layout_warnings: [{ selector: "button", kind: "clipped-control", severity: "error" }],
+      artifact_failures: [{ kind: "artifact-unavailable", detail: "HTTP 404", severity: "fatal" }],
       session_ended: true,
       ended_by: "agent",
     },
   });
 
-  assert.match(output.next_step, /Repair the inaccessible or unusable content/);
-  assert.match(output.next_step, /open a fresh session and re-check the real-browser audit/);
-});
-
-test("persistent severe layout failures still require repair before review", () => {
-  const output = createPollOutput({
-    file: "/tmp/report.html",
-    response: {
-      status: "feedback",
-      dom_snapshot: "",
-      prompts: [],
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 120,
-          viewportWidth: 390,
-          severity: "error",
-          persistent: true,
-        },
-      ],
-    },
-  });
-
-  assert.match(output.next_step, /proven severe layout failure/);
-  assert.match(output.next_step, /before involving the human/);
-  assert.doesNotMatch(output.next_step, /fine to proceed/);
-});
-
-test("warning-only layout observations are omitted from poll output", () => {
-  const output = createPollOutput({
-    file: "/tmp/report.html",
-    response: {
-      status: "feedback",
-      dom_snapshot: "",
-      prompts: [],
-      layout_warnings: [
-        {
-          selector: ".accent",
-          kind: "element-parent-overflow",
-          overflowPx: 20,
-          viewportWidth: 720,
-          severity: "warning",
-          persistent: false,
-        },
-        {
-          selector: ".unproven",
-          kind: "clipped-text",
-          overflowPx: 200,
-          viewportWidth: 720,
-          persistent: false,
-        },
-      ],
-    },
-  });
-
-  assert.equal("layout_warnings" in output, false);
-  assert.doesNotMatch(output.next_step, /layout warning/);
-});
-
-test("a mix of fresh and persistent severe failures still mandates a fix pass", () => {
-  const output = createPollOutput({
-    file: "/tmp/report.html",
-    response: {
-      status: "feedback",
-      dom_snapshot: "",
-      prompts: [],
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 16,
-          viewportWidth: 720,
-          severity: "error",
-          persistent: false,
-        },
-        {
-          selector: ".badge",
-          kind: "clipped-text",
-          overflowPx: 12,
-          viewportWidth: 720,
-          severity: "error",
-          persistent: true,
-        },
-      ],
-    },
-  });
-
-  assert.match(output.next_step, /2 proven severe layout failures detected/);
-  assert.match(output.next_step, /before involving the human/);
+  assert.match(output.next_step, /fatal artifact failure/);
+  assert.match(output.next_step, /to open a fresh session/);
 });
 
 test("poll wait messages tell watching agents the silence is normal", () => {
