@@ -13,6 +13,7 @@ export const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_LEASE_TTL_MS = 60_000;
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const MAX_IDEMPOTENCY_TOMBSTONES = 10_000;
 
 /**
  * @param {() => number} [now]
@@ -179,6 +180,7 @@ export class ConsumerEventLog {
     this.metaPath = path.join(rootDir, "consumer.json");
     this.spillDir = path.join(rootDir, "spill");
     this.heldPath = path.join(rootDir, "held.jsonl");
+    this.idempotencyPath = path.join(rootDir, "idempotency.jsonl");
     /** @type {Map<string, object>} */
     this.eventsById = new Map();
     /** @type {object[]} */
@@ -189,6 +191,8 @@ export class ConsumerEventLog {
     this.ackedIds = new Set();
     /** @type {Set<string>} idempotency keys already published */
     this.idempotencyKeys = new Set();
+    /** @type {Set<string>} compacted event idempotency keys */
+    this.idempotencyTombstones = new Set();
     this.nextLogPosition = 1;
     this.loaded = false;
   }
@@ -209,11 +213,29 @@ export class ConsumerEventLog {
       } else throw error;
     }
     await chmodSafe(this.metaPath, 0o600);
+    await this.#loadIdempotencyTombstones();
     await this.#loadAcks();
     await this.#loadEvents();
     await this.#loadHeld();
     await this.compactIfNeeded();
     this.loaded = true;
+  }
+
+  async #loadIdempotencyTombstones() {
+    const raw = await readTextOrEmpty(this.idempotencyPath);
+    const { lines, tornTail } = splitCompleteLines(raw);
+    if (tornTail) await atomicWriteText(this.idempotencyPath, lines.length ? `${lines.join("\n")}\n` : "");
+    for (const line of lines.slice(-MAX_IDEMPOTENCY_TOMBSTONES)) {
+      try {
+        const key = String(JSON.parse(line).idempotency_key || "");
+        if (key) {
+          this.idempotencyTombstones.add(key);
+          this.idempotencyKeys.add(key);
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
 
   async #loadAcks() {
@@ -426,16 +448,31 @@ export class ConsumerEventLog {
         remaining.push(item);
         continue;
       }
-      const result = await this.appendDeliverable({
-        stream_key: item.stream_key,
-        generation: item.generation,
-        type: item.type,
-        payload: item.payload,
-        end_state: item.end_state,
-        idempotency_key: item.idempotency_key,
-        attributes: item.attributes,
-        created_at: item.created_at,
-      });
+      const existing = item.idempotency_key
+        ? this.unacked.find((event) => event.idempotency_key === item.idempotency_key)
+        : null;
+      if (existing) {
+        drained.push(existing);
+        continue;
+      }
+      if (item.idempotency_key && this.idempotencyTombstones.has(String(item.idempotency_key))) continue;
+      if (item.idempotency_key) this.idempotencyKeys.delete(String(item.idempotency_key));
+      let result;
+      try {
+        result = await this.appendDeliverable({
+          stream_key: item.stream_key,
+          generation: item.generation,
+          type: item.type,
+          payload: item.payload,
+          end_state: item.end_state,
+          idempotency_key: item.idempotency_key,
+          attributes: item.attributes,
+          created_at: item.created_at,
+        });
+      } catch (error) {
+        if (item.idempotency_key) this.idempotencyKeys.add(String(item.idempotency_key));
+        throw error;
+      }
       if (result.event) drained.push(result.event);
     }
     if (remaining.length !== this.held.length) {
@@ -472,10 +509,15 @@ export class ConsumerEventLog {
       results.push({ event_id: id, status: "acked" });
     }
     if (newly.length > 0) {
+      const tombstones = newly
+        .map((id) => this.eventsById.get(id)?.idempotency_key)
+        .filter(Boolean)
+        .map(String);
       const lines =
         newly.map((id) => JSON.stringify({ event_id: id, at: new Date(this.now()).toISOString() })).join("\n") + "\n";
       await appendFileDurable(this.acksPath, lines);
       await chmodSafe(this.acksPath, 0o600);
+      await this.#recordIdempotencyTombstones(tombstones);
       const drop = new Set(newly);
       this.unacked = this.unacked.filter((event) => !drop.has(event.event_id));
       for (const id of newly) {
@@ -507,9 +549,11 @@ export class ConsumerEventLog {
     await this.ensureLoaded();
     const drop = new Set((eventIds || []).map(String));
     if (drop.size === 0) return;
+    const tombstones = [];
     for (const id of drop) {
       this.ackedIds.add(id);
       const event = this.eventsById.get(id);
+      if (event?.idempotency_key) tombstones.push(String(event.idempotency_key));
       this.eventsById.delete(id);
       if (event?.type === "oversize" && event.payload?.spill_path) {
         await rm(String(event.payload.spill_path), { force: true }).catch(() => {});
@@ -521,7 +565,22 @@ export class ConsumerEventLog {
         .map((id) => JSON.stringify({ event_id: id, at: new Date(this.now()).toISOString(), reason: "retention" }))
         .join("\n") + "\n";
     await appendFileDurable(this.acksPath, lines);
+    await this.#recordIdempotencyTombstones(tombstones);
     await this.compactIfNeeded({ force: true });
+  }
+
+  async #recordIdempotencyTombstones(keys) {
+    const fresh = keys.filter((key) => key && !this.idempotencyTombstones.has(key));
+    if (fresh.length === 0) return;
+    await appendFileDurable(
+      this.idempotencyPath,
+      `${fresh.map((key) => JSON.stringify({ idempotency_key: key })).join("\n")}\n`,
+    );
+    await chmodSafe(this.idempotencyPath, 0o600);
+    for (const key of fresh) {
+      this.idempotencyTombstones.add(key);
+      this.idempotencyKeys.add(key);
+    }
   }
 
   async compactIfNeeded({ force = false } = {}) {
@@ -529,6 +588,12 @@ export class ConsumerEventLog {
     const body = this.unacked.map((event) => JSON.stringify(event)).join("\n");
     await atomicWriteText(this.eventsPath, body ? `${body}\n` : "");
     await atomicWriteText(this.acksPath, "");
+    const tombstones = [...this.idempotencyTombstones].slice(-MAX_IDEMPOTENCY_TOMBSTONES);
+    this.idempotencyTombstones = new Set(tombstones);
+    await atomicWriteText(
+      this.idempotencyPath,
+      tombstones.length ? `${tombstones.map((key) => JSON.stringify({ idempotency_key: key })).join("\n")}\n` : "",
+    );
     if (this.ackedIds.size > 10_000) this.ackedIds.clear();
   }
 }

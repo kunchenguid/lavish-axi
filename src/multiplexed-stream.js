@@ -310,6 +310,20 @@ export class MultiplexedEventStream {
     return log;
   }
 
+  #advanceGeneration(state, consumerKey, consumer, generation) {
+    const recorded = Number(consumer.generation) || 0;
+    if (generation <= recorded) return recorded;
+    consumer.generation = generation;
+    consumer.updated_at = new Date(this.now()).toISOString();
+    state.consumers[consumerKey] = consumer;
+    const subscription = this.subscriptions.get(consumerKey);
+    if (subscription && subscription.generation < generation) {
+      subscription.fence("fenced");
+      this.subscriptions.delete(consumerKey);
+    }
+    return generation;
+  }
+
   async ensureConsumer(consumerId, { consumerRoot = "" } = {}) {
     if (!isValidConsumerId(consumerId)) return { error: "invalid_consumer" };
     return this.runExclusive(async () => {
@@ -339,6 +353,8 @@ export class MultiplexedEventStream {
    *   attributes?: object,
    *   inode?: { dev: string, ino: string } | null,
    *   pathInsideRoot?: (attrs: object, root: string) => boolean | Promise<boolean>,
+   *   initialEvents?: object[],
+   *   orderedTerminal?: boolean,
    * }} [options]
    */
   async claim(consumerId, generation, streamKey, options = {}) {
@@ -358,7 +374,6 @@ export class MultiplexedEventStream {
       };
       const recorded = Number(consumer.generation) || 0;
       if (gen < recorded) return { error: "fenced", generation: recorded };
-      if (gen > recorded) consumer.generation = gen;
       consumer.consumer_root = options.consumerRoot || consumer.consumer_root || "";
       consumer.updated_at = new Date(this.now()).toISOString();
       state.consumers[key] = consumer;
@@ -374,6 +389,11 @@ export class MultiplexedEventStream {
           inside = Boolean(await options.pathInsideRoot(existing.attributes || {}, root));
         }
         if (!inside) return { error: "owned_by_other_consumer" };
+        const otherId = await this.#consumerIdForKey(existing.consumer_key);
+        const otherLog = otherId ? await this.#logFor(otherId) : null;
+        if (otherLog?.pendingCountForStream(streamKey)) {
+          return { error: "owned_by_other_consumer" };
+        }
       }
 
       const inode = options.inode || null;
@@ -390,6 +410,9 @@ export class MultiplexedEventStream {
         }
       }
 
+      this.#advanceGeneration(state, key, consumer, gen);
+      consumer.lease_expires_at = this.now() + this.bounds.leaseTtlMs;
+
       const prior = existing?.consumer_key === key ? existing : null;
       state.claims[streamKey] = {
         consumer_key: key,
@@ -401,6 +424,13 @@ export class MultiplexedEventStream {
       };
       await this.#writeState(state);
       await this.#logFor(consumerId);
+      const publications = [];
+      for (const event of options.initialEvents || []) {
+        const publication = await this.#publishLocked(streamKey, event, Boolean(options.orderedTerminal), true);
+        if (publication.error) return publication;
+        publications.push(publication);
+      }
+      if (publications.length > 0) await this.#flushPublished(streamKey);
       this.#log(`claim stream=${streamKey} consumer=${key}`);
       return {
         status: "claimed",
@@ -408,6 +438,7 @@ export class MultiplexedEventStream {
         generation: consumer.generation,
         existing: Boolean(prior),
         claim: { stream_key: streamKey, ...state.claims[streamKey] },
+        publications,
       };
     });
   }
@@ -430,6 +461,9 @@ export class MultiplexedEventStream {
       const claim = state.claims[streamKey];
       if (!claim) return { error: "not_claimed" };
       if (claim.consumer_key !== key) return { error: "owned_by_other_consumer" };
+
+      this.#advanceGeneration(state, key, consumer, gen);
+      if (gen > recorded) await this.#writeState(state);
 
       const log = await this.#logFor(consumerId);
       const pending = log.pendingCountForStream(streamKey);
@@ -485,43 +519,48 @@ export class MultiplexedEventStream {
    */
   async publish(streamKey, event) {
     if (!isValidStreamKey(streamKey)) return { error: "invalid_stream_key" };
+    return this.runExclusive(() => this.#publishLocked(streamKey, event, false));
+  }
+
+  async publishBatch(streamKey, events, { orderedTerminal = false } = {}) {
+    if (!isValidStreamKey(streamKey)) return { error: "invalid_stream_key" };
+    if (!Array.isArray(events) || events.length === 0) return { status: "ok", results: [] };
     return this.runExclusive(async () => {
       const state = await this.#readState();
-      const claim = state.claims[streamKey];
-      if (!claim) return { error: "not_claimed" };
-      const consumer = state.consumers[claim.consumer_key];
-      if (!consumer) return { error: "unknown_consumer" };
-
-      const consumerId = await this.#consumerIdForKey(claim.consumer_key);
-      if (!consumerId) return { error: "unknown_consumer" };
-      const log = await this.#logFor(consumerId);
-      const generation = Number(consumer.generation) || 0;
-
-      const type = String(event.type || "");
-      const isControl =
-        type === "backpressure" || type === "retention_overflow" || type === "oversize" || event.end_state != null;
-
-      const streamCount = log.unackedCountForStream(streamKey);
-      const consumerCount = log.unackedCount();
-      const streamFull = streamCount >= this.bounds.maxUnackedPerStream;
-      const consumerFull = consumerCount >= this.bounds.maxUnackedPerConsumer;
-
-      if (!isControl && (streamFull || consumerFull)) {
-        const held = await log.hold({
-          stream_key: streamKey,
-          generation,
-          type,
-          payload: event.payload,
-          end_state: event.end_state ?? null,
-          idempotency_key: event.idempotency_key,
-          attributes: event.attributes,
-        });
-        await this.#updateBackpressure(consumerId, generation);
-        await this.#deliver(consumerId);
-        return { status: "held", held: held.held, reason: "backpressure" };
+      if (!state.claims[streamKey]) return { error: "not_claimed" };
+      const results = [];
+      for (const event of events) {
+        const result = await this.#publishLocked(streamKey, event, orderedTerminal, true);
+        if (result.error) return result;
+        results.push(result);
       }
+      await this.#flushPublished(streamKey);
+      return { status: "ok", results };
+    });
+  }
 
-      const result = await log.appendDeliverable({
+  async #publishLocked(streamKey, event, forceDeliverable, deferSideEffects = false) {
+    const state = await this.#readState();
+    const claim = state.claims[streamKey];
+    if (!claim) return { error: "not_claimed" };
+    const consumer = state.consumers[claim.consumer_key];
+    if (!consumer) return { error: "unknown_consumer" };
+    const consumerId = await this.#consumerIdForKey(claim.consumer_key);
+    if (!consumerId) return { error: "unknown_consumer" };
+    const log = await this.#logFor(consumerId);
+    const generation = Number(consumer.generation) || 0;
+    const type = String(event.type || "");
+    const isControl =
+      forceDeliverable ||
+      type === "backpressure" ||
+      type === "retention_overflow" ||
+      type === "oversize" ||
+      event.end_state != null;
+    const streamFull = log.unackedCountForStream(streamKey) >= this.bounds.maxUnackedPerStream;
+    const consumerFull = log.unackedCount() >= this.bounds.maxUnackedPerConsumer;
+    let result;
+    if (!isControl && (streamFull || consumerFull)) {
+      const held = await log.hold({
         stream_key: streamKey,
         generation,
         type,
@@ -530,11 +569,34 @@ export class MultiplexedEventStream {
         idempotency_key: event.idempotency_key,
         attributes: event.attributes,
       });
+      result = { status: held.status, held: held.held, reason: "backpressure" };
+    } else {
+      result = await log.appendDeliverable({
+        stream_key: streamKey,
+        generation,
+        type,
+        payload: event.payload,
+        end_state: event.end_state ?? null,
+        idempotency_key: event.idempotency_key,
+        attributes: event.attributes,
+      });
+    }
+    if (!deferSideEffects) {
       await this.#updateBackpressure(consumerId, generation);
       await this.#deliver(consumerId);
-      this.#log(`publish stream=${streamKey} type=${type} status=${result.status}`);
-      return result;
-    });
+    }
+    this.#log(`publish stream=${streamKey} type=${type} status=${result.status}`);
+    return result;
+  }
+
+  async #flushPublished(streamKey) {
+    const state = await this.#readState();
+    const claim = state.claims[streamKey];
+    const consumer = claim ? state.consumers[claim.consumer_key] : null;
+    const consumerId = claim ? await this.#consumerIdForKey(claim.consumer_key) : null;
+    if (!consumer || !consumerId) return;
+    await this.#updateBackpressure(consumerId, Number(consumer.generation) || 0);
+    await this.#deliver(consumerId);
   }
 
   /**
@@ -564,11 +626,7 @@ export class MultiplexedEventStream {
           this.subscriptions.delete(key);
         }
 
-        if (gen > recorded) {
-          consumer.generation = gen;
-          consumer.updated_at = new Date(this.now()).toISOString();
-          state.consumers[key] = consumer;
-        }
+        this.#advanceGeneration(state, key, consumer, gen);
         consumer.lease_expires_at = this.now() + this.bounds.leaseTtlMs;
         state.consumers[key] = consumer;
         await this.#writeState(state);
@@ -668,6 +726,9 @@ export class MultiplexedEventStream {
         };
       }
 
+      if (!consumer) return { error: "unknown_consumer" };
+      this.#advanceGeneration(state, key, consumer, gen);
+
       const log = await this.#logFor(consumerId);
       const results = await log.acknowledge(eventIds);
       if (consumer) {
@@ -680,7 +741,7 @@ export class MultiplexedEventStream {
         maxUnackedPerStream: this.bounds.maxUnackedPerStream,
         maxUnackedPerConsumer: this.bounds.maxUnackedPerConsumer,
       });
-      await this.#updateBackpressure(consumerId, recorded);
+      await this.#updateBackpressure(consumerId, Number(consumer.generation) || gen);
       await this.#deliver(consumerId);
       return { status: "ok", results };
     });
@@ -697,10 +758,11 @@ export class MultiplexedEventStream {
       if (!consumer) return { error: "unknown_consumer" };
       const recorded = Number(consumer.generation) || 0;
       if (gen < recorded) return { error: "fenced", generation: recorded };
+      this.#advanceGeneration(state, key, consumer, gen);
       consumer.lease_expires_at = this.now() + this.bounds.leaseTtlMs;
       state.consumers[key] = consumer;
       await this.#writeState(state);
-      return { status: "renewed", generation: Math.max(recorded, gen) };
+      return { status: "renewed", generation: Number(consumer.generation) || gen };
     });
   }
 

@@ -222,3 +222,129 @@ test("idempotent re-publish via idempotency_key", async () => {
     assert.equal(b.status, "duplicate");
   });
 });
+
+test("held idempotent events drain exactly once", async () => {
+  await withTemp(async (dir) => {
+    const stream = new MultiplexedEventStream({
+      stateDir: dir,
+      bounds: {
+        maxPayloadBytes: 1024,
+        maxUnackedPerStream: 1,
+        maxUnackedPerConsumer: 100,
+        retentionMs: 7 * 864e5,
+        leaseTtlMs: 60_000,
+      },
+    });
+    const consumer = "cid_held_idem_aaaaaaaa";
+    await stream.claim(consumer, 1, "s");
+    await stream.publish("s", { type: "first", payload: {} });
+    assert.equal(
+      (await stream.publish("s", { type: "held", payload: {}, idempotency_key: "held-key" })).status,
+      "held",
+    );
+    const log = stream.logs.values().next().value;
+    await stream.acknowledge(
+      consumer,
+      1,
+      log.listUnacked().map((event) => event.event_id),
+    );
+    assert.equal(log.listUnacked().filter((event) => event.type === "held").length, 1);
+    assert.equal(
+      (await stream.publish("s", { type: "held", payload: {}, idempotency_key: "held-key" })).status,
+      "duplicate",
+    );
+  });
+});
+
+test("compaction preserves idempotency across restart", async () => {
+  await withTemp(async (dir) => {
+    const consumer = "cid_compact_idem_aaaaaa";
+    const stream = new MultiplexedEventStream({ stateDir: dir });
+    await stream.claim(consumer, 1, "s");
+    const event = await stream.publish("s", { type: "once", payload: {}, idempotency_key: "durable-key" });
+    await stream.acknowledge(consumer, 1, [event.event.event_id]);
+    const log = stream.logs.values().next().value;
+    await log.compactIfNeeded({ force: true });
+
+    const restarted = new MultiplexedEventStream({ stateDir: dir });
+    assert.equal(
+      (await restarted.publish("s", { type: "once", payload: {}, idempotency_key: "durable-key" })).status,
+      "duplicate",
+    );
+  });
+});
+
+test("higher generation claim fences an active subscriber", async () => {
+  await withTemp(async (dir) => {
+    const stream = new MultiplexedEventStream({ stateDir: dir });
+    const consumer = "cid_generation_aaaaaaaa";
+    await stream.claim(consumer, 1, "s");
+    const frames = [];
+    const sub = await stream.subscribe(consumer, 1, { write: (line) => frames.push(JSON.parse(line)) });
+    await sub.start();
+    await stream.claim(consumer, 2, "s");
+    await stream.publish("s", { type: "new", payload: {} });
+    assert.ok(frames.some((frame) => frame.type === "fenced"));
+    assert.equal(
+      frames.some((frame) => frame.type === "new"),
+      false,
+    );
+  });
+});
+
+test("takeover refuses to orphan pending events", async () => {
+  await withTemp(async (dir) => {
+    let now = 1_000;
+    const stream = new MultiplexedEventStream({
+      stateDir: dir,
+      now: () => now,
+      bounds: {
+        maxPayloadBytes: 1024,
+        maxUnackedPerStream: 10,
+        maxUnackedPerConsumer: 100,
+        retentionMs: 7 * 864e5,
+        leaseTtlMs: 100,
+      },
+    });
+    const root = dir;
+    await stream.claim("cid_takeover_old_aaaaa", 1, "s", { consumerRoot: root, attributes: { path: root } });
+    await stream.publish("s", { type: "pending", payload: {} });
+    now += 101;
+    const takeover = await stream.claim("cid_takeover_new_bbbbb", 1, "s", {
+      consumerRoot: root,
+      pathInsideRoot: () => true,
+    });
+    assert.equal(takeover.error, "owned_by_other_consumer");
+  });
+});
+
+test("ordered terminal batch bypasses pressure without reordering", async () => {
+  await withTemp(async (dir) => {
+    const stream = new MultiplexedEventStream({
+      stateDir: dir,
+      bounds: {
+        maxPayloadBytes: 1024,
+        maxUnackedPerStream: 1,
+        maxUnackedPerConsumer: 100,
+        retentionMs: 7 * 864e5,
+        leaseTtlMs: 60_000,
+      },
+    });
+    await stream.claim("cid_terminal_order_aaaa", 1, "s");
+    await stream.publish("s", { type: "existing", payload: {} });
+    const result = await stream.publishBatch(
+      "s",
+      [
+        { type: "feedback_final", payload: {} },
+        { type: "ended", payload: {}, end_state: "ended" },
+      ],
+      { orderedTerminal: true },
+    );
+    assert.equal(result.status, "ok");
+    const events = stream.logs.values().next().value.listUnacked();
+    assert.ok(
+      events.find((event) => event.type === "feedback_final").log_position <
+        events.find((event) => event.type === "ended").log_position,
+    );
+  });
+});

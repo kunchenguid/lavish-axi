@@ -1175,9 +1175,13 @@ async function eventsSubscribeCommand(args) {
     return "";
   }
 
-  const leaseTimer = setInterval(() => {
-    postEventControl(baseUrl, "/api/events/lease", token, { generation }).catch(() => {});
-  }, 20_000);
+  const leaseTtlMs = Number(response.headers["x-lavish-event-lease-ttl-ms"]) || 60_000;
+  const leaseTimer = setInterval(
+    () => {
+      postEventControl(baseUrl, "/api/events/lease", token, { generation }).catch(() => {});
+    },
+    Math.max(1, Math.floor(leaseTtlMs / 3)),
+  );
   leaseTimer.unref?.();
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });

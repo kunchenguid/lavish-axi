@@ -63,6 +63,26 @@ export class SessionStore {
     });
   }
 
+  async adoptSessionState(key, operation) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return { error: "unknown_review" };
+      const outcome = await operation(session);
+      if (!outcome?.adopted) return outcome;
+      if (outcome.clearPrompts) {
+        session.prompts = [];
+        session.pending_prompts = 0;
+        session.dom_snapshot = "";
+        if (!outcome.keepEnded && session.status === "feedback") session.status = "open";
+      }
+      if (outcome.clearFailures) session.artifact_failures = [];
+      session.updated_at = new Date().toISOString();
+      await this.writeState(state);
+      return outcome;
+    });
+  }
+
   async upsertSession(file, url) {
     const absolute = await canonicalFile(file);
     const key = sessionKey(absolute);
@@ -153,17 +173,18 @@ export class SessionStore {
       session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
       if (shouldEndSession) session.ended_by = "user";
 
-      const claimed = this.isClaimed ? await this.isClaimed(key) : false;
-      if (claimed && this.eventMirror && (acceptedPrompts.length > 0 || shouldEndSession)) {
-        await this.eventMirror.mirrorFeedback(key, {
-          prompts: acceptedPrompts,
-          dom_snapshot: session.dom_snapshot,
-          endSession: shouldEndSession || alreadyEnded,
-          ended_by: session.ended_by || (shouldEndSession ? "user" : undefined),
-          artifact_path: session.file,
-          claim: { stream_key: key },
-          idempotency_key: `q:${key}:${Date.now()}:${acceptedPrompts.length}:${shouldEndSession ? 1 : 0}`,
-        });
+      const mirror =
+        this.eventMirror && (acceptedPrompts.length > 0 || shouldEndSession)
+          ? await this.eventMirror.mirrorFeedback(key, {
+              prompts: acceptedPrompts,
+              dom_snapshot: session.dom_snapshot,
+              endSession: shouldEndSession || alreadyEnded,
+              ended_by: session.ended_by || (shouldEndSession ? "user" : undefined),
+              artifact_path: session.file,
+              idempotency_key: `q:${key}:${Date.now()}:${acceptedPrompts.length}:${shouldEndSession ? 1 : 0}`,
+            })
+          : { mirrored: false };
+      if (mirror.mirrored) {
         session.prompts = [];
         session.pending_prompts = 0;
         session.status = shouldEndSession || alreadyEnded ? "ended" : "open";
@@ -423,15 +444,15 @@ export class SessionStore {
       session.artifact_failures = merged.slice(-MAX_ARTIFACT_FAILURES);
       if (session.status !== "ended") session.status = "feedback";
       session.updated_at = new Date().toISOString();
-      const claimed = this.isClaimed ? await this.isClaimed(key) : false;
-      if (claimed && this.eventMirror) {
-        await this.eventMirror.mirrorFeedback(key, {
-          prompts: [],
-          artifact_failures: session.artifact_failures,
-          artifact_path: session.file,
-          claim: { stream_key: key },
-          idempotency_key: `fail:${key}:${session.artifact_failures.length}:${session.updated_at}`,
-        });
+      const mirror = this.eventMirror
+        ? await this.eventMirror.mirrorFeedback(key, {
+            prompts: [],
+            artifact_failures: session.artifact_failures,
+            artifact_path: session.file,
+            idempotency_key: `fail:${key}:${session.artifact_failures.length}:${session.updated_at}`,
+          })
+        : { mirrored: false };
+      if (mirror.mirrored) {
         session.artifact_failures = [];
         if (session.status !== "ended") session.status = "open";
       }
@@ -528,12 +549,10 @@ export class SessionStore {
       session.status = "ended";
       session.ended_by = nextEndedBy;
       session.updated_at = new Date().toISOString();
-      const claimed = this.isClaimed ? await this.isClaimed(key) : false;
-      if (!wasEnded && claimed && this.eventMirror) {
+      if (!wasEnded && this.eventMirror) {
         await this.eventMirror.mirrorEnded(key, {
           ended_by: nextEndedBy,
           artifact_path: session.file,
-          claim: { stream_key: key },
           idempotency_key: `end:${key}:${nextEndedBy}`,
         });
       }

@@ -65,88 +65,73 @@ export class LavishStreamAdapter {
    */
   async claimReview(homeId, generation, reviewId, { homeRoot = "" } = {}) {
     if (!isValidStreamKey(reviewId)) return { error: "invalid_review" };
-
-    const session = await this.store.findByKey(reviewId);
-    if (!session) {
-      return { error: "unknown_review", help: "Open the artifact with lavish-axi <html-file> before claiming it." };
-    }
-
-    /** @type {{ dev: string, ino: string } | null} */
-    const inode = await stat(session.file)
-      .then((st) => ({ dev: String(st.dev), ino: String(st.ino) }))
-      .catch(() => null);
-
-    const claimResult = await this.stream.claim(homeId, generation, reviewId, {
-      consumerRoot: homeRoot,
-      attributes: { artifact_path: session.file },
-      inode,
-      pathInsideRoot: async (attrs, root) => artifactResolvesInsideHome(String(attrs.artifact_path || ""), root),
-    });
-
-    if (claimResult.error) {
-      // Map foundation errors to Lavish vocabulary.
-      if (claimResult.error === "owned_by_other_consumer") return { error: "owned_by_other_home" };
-      if (claimResult.error === "identity_alias") {
-        return {
-          error: "hardlink_alias",
-          existing_review_id: claimResult.existing_stream_key,
-          help: claimResult.help,
-        };
+    const outcome = await this.store.adoptSessionState(reviewId, async (session) => {
+      const prompts = Array.isArray(session.prompts) ? session.prompts : [];
+      const failures = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
+      const ended = session.status === "ended";
+      const artifactPath = session.file || "";
+      const events = [];
+      if (prompts.length > 0 || failures.length > 0) {
+        events.push({
+          type: ended ? "feedback_final" : "feedback",
+          payload: {
+            prompts,
+            ...(session.dom_snapshot ? { dom_snapshot: session.dom_snapshot } : {}),
+            ...(failures.length ? { artifact_failures: failures } : {}),
+            ...(artifactPath ? { artifact_path: artifactPath } : {}),
+          },
+          idempotency_key: `adopt:${reviewId}:feedback:${payloadIdempotencyHash({ prompts, failures, ended })}`,
+        });
       }
-      if (claimResult.error === "invalid_consumer") return { error: "invalid_home" };
-      if (claimResult.error === "invalid_stream_key") return { error: "invalid_review" };
-      return claimResult;
-    }
-
-    // Adopt pending session state into the stream with idempotency keys so a crash
-    // between publish and session clear cannot double-deliver on retry.
-    await this.#adoptSessionIntoStream(reviewId, session, generation);
-
-    return {
-      status: "claimed",
-      review_id: reviewId,
-      generation: claimResult.generation,
-      existing: claimResult.existing,
-      artifact_path: session.file,
-    };
-  }
-
-  async #adoptSessionIntoStream(reviewId, session, generation) {
-    const prompts = Array.isArray(session.prompts) ? session.prompts : [];
-    const failures = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
-    const ended = session.status === "ended";
-    const artifactPath = session.file || "";
-
-    if (prompts.length > 0 || failures.length > 0) {
-      await this.stream.publish(reviewId, {
-        type: ended ? "feedback_final" : "feedback",
-        payload: {
-          prompts,
-          ...(session.dom_snapshot ? { dom_snapshot: session.dom_snapshot } : {}),
-          ...(failures.length ? { artifact_failures: failures } : {}),
-          ...(artifactPath ? { artifact_path: artifactPath } : {}),
-        },
-        idempotency_key: `adopt:${reviewId}:feedback:${payloadIdempotencyHash({ prompts, failures, ended })}`,
+      if (ended) {
+        events.push({
+          type: "ended",
+          payload: { ended_by: session.ended_by || "agent", ...(artifactPath ? { artifact_path: artifactPath } : {}) },
+          end_state: "ended",
+          idempotency_key: `adopt:${reviewId}:ended`,
+        });
+      }
+      const inode = await stat(session.file)
+        .then((st) => ({ dev: String(st.dev), ino: String(st.ino) }))
+        .catch(() => null);
+      const claimResult = await this.stream.claim(homeId, generation, reviewId, {
+        consumerRoot: homeRoot,
+        attributes: { artifact_path: session.file },
+        inode,
+        pathInsideRoot: async (attrs, root) => artifactResolvesInsideHome(String(attrs.artifact_path || ""), root),
+        initialEvents: events,
+        orderedTerminal: ended,
       });
-    }
-    if (ended) {
-      await this.stream.publish(reviewId, {
-        type: "ended",
-        payload: { ended_by: session.ended_by || "agent", ...(artifactPath ? { artifact_path: artifactPath } : {}) },
-        end_state: "ended",
-        idempotency_key: `adopt:${reviewId}:ended`,
-      });
-    }
-
-    // Clear adopted state from the session so poll cannot race.
-    if (prompts.length > 0 || failures.length > 0 || ended) {
-      await this.store.clearAdoptedStreamState(reviewId, {
+      if (claimResult.error) return { result: claimResult };
+      return {
+        adopted: true,
         clearPrompts: prompts.length > 0 || failures.length > 0,
         clearFailures: failures.length > 0,
         keepEnded: ended,
-      });
+        result: {
+          status: "claimed",
+          review_id: reviewId,
+          generation: claimResult.generation,
+          existing: claimResult.existing,
+          artifact_path: session.file,
+        },
+      };
+    });
+    if (outcome.error === "unknown_review") {
+      return { error: "unknown_review", help: "Open the artifact with lavish-axi <html-file> before claiming it." };
     }
-    void generation;
+    const result = outcome.result || outcome;
+    if (result.error === "owned_by_other_consumer") return { error: "owned_by_other_home" };
+    if (result.error === "identity_alias") {
+      return {
+        error: "hardlink_alias",
+        existing_review_id: result.existing_stream_key,
+        help: result.help,
+      };
+    }
+    if (result.error === "invalid_consumer") return { error: "invalid_home" };
+    if (result.error === "invalid_stream_key") return { error: "invalid_review" };
+    return result;
   }
 
   async retireReview(homeId, generation, reviewId) {
@@ -184,16 +169,16 @@ export class LavishStreamAdapter {
    * inside runExclusive with preloaded claim info - must not re-enter the store.
    */
   async mirrorFeedback(reviewId, batch) {
-    if (!batch?.claim) return { mirrored: false };
-    const artifactPath = batch.artifact_path || batch.claim.attributes?.artifact_path || "";
+    const artifactPath = batch.artifact_path || "";
     const hasPrompts = Array.isArray(batch.prompts) && batch.prompts.length > 0;
     const hasFailures = Array.isArray(batch.artifact_failures) && batch.artifact_failures.length > 0;
     /** @type {object[]} */
     const created = [];
 
+    const events = [];
     if (hasPrompts || hasFailures) {
       const type = batch.endSession ? "feedback_final" : "feedback";
-      const result = await this.stream.publish(reviewId, {
+      events.push({
         type,
         payload: {
           prompts: batch.prompts || [],
@@ -203,31 +188,34 @@ export class LavishStreamAdapter {
         },
         idempotency_key: batch.idempotency_key,
       });
-      if (result.event) created.push(result.event);
     }
     if (batch.endSession) {
-      const result = await this.stream.publish(reviewId, {
+      events.push({
         type: "ended",
         payload: { ended_by: batch.ended_by || "user", ...(artifactPath ? { artifact_path: artifactPath } : {}) },
         end_state: "ended",
         idempotency_key:
           batch.end_idempotency_key || (batch.idempotency_key ? `${batch.idempotency_key}:ended` : undefined),
       });
-      if (result.event) created.push(result.event);
     }
+    if (events.length === 0) return { mirrored: false };
+    const result = await this.stream.publishBatch(reviewId, events, { orderedTerminal: batch.endSession });
+    if (result.error === "not_claimed") return { mirrored: false };
+    if (result.error) return { mirrored: false, error: result.error };
+    for (const item of result.results || []) if (item.event) created.push(item.event);
     return { mirrored: true, events: created };
   }
 
   async mirrorEnded(reviewId, info) {
-    if (!info?.claim) return { mirrored: false };
-    const artifactPath = info.artifact_path || info.claim.attributes?.artifact_path || "";
+    const artifactPath = info.artifact_path || "";
     const result = await this.stream.publish(reviewId, {
       type: "ended",
       payload: { ended_by: info.ended_by || "agent", ...(artifactPath ? { artifact_path: artifactPath } : {}) },
       end_state: "ended",
       idempotency_key: info.idempotency_key || `ended:${reviewId}:${info.ended_by || "agent"}`,
     });
-    return { mirrored: true, events: result.event ? [result.event] : [] };
+    if (result.error === "not_claimed") return { mirrored: false };
+    return { mirrored: !result.error, events: result.event ? [result.event] : [] };
   }
 
   async mirrorLifecycle(reviewId, type, info = {}) {

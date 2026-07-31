@@ -710,6 +710,7 @@ export async function serve({
       res.setHeader("content-type", "application/x-ndjson; charset=utf-8");
       res.setHeader("cache-control", "no-cache");
       res.setHeader("connection", "keep-alive");
+      res.setHeader("x-lavish-event-lease-ttl-ms", String(eventStreamBounds.leaseTtlMs));
       res.flushHeaders?.();
       await result.start?.();
       refreshIdleTimer();
