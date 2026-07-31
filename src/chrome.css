@@ -22,22 +22,47 @@
   --amber-900: #25230f;
   --amber-700: #5d4d1b;
   --rust-500: #f06464;
-  --bg: var(--ink-900);
-  --bg-panel: var(--ink-800);
-  --bg-bar: var(--ink-700);
-  --bg-elevated: var(--ink-600);
-  --fg: var(--cream-100);
-  --fg-muted: var(--steel-100);
-  --fg-dim: var(--steel-200);
-  --fg-faint: var(--steel-300);
-  --fg-label: var(--steel-400);
-  --border: var(--steel-600);
-  --border-subtle: var(--steel-700);
-  --border-strong: var(--steel-500);
-  --accent: var(--brass-500);
-  --accent-hover: var(--brass-400);
-  --accent-ink: var(--brass-ink);
-  --danger: var(--rust-500);
+  --paper-50: #fffdf8;
+  --paper-100: #fdfaf3;
+  --paper-200: #f8f4ec;
+  --paper-300: #f2ede2;
+  --slate-900: #16191f;
+  --slate-700: #373c47;
+  --slate-600: #484f5c;
+  --slate-500: #565d6c;
+  --slate-400: #646e83;
+  --sand-300: #eae2d4;
+  --sand-400: #ded5c4;
+  --sand-500: #c8bda8;
+  --brass-700: #8a6a12;
+  --brass-800: #6f5410;
+  --brass-900: #6b4d05;
+  --rust-700: #b4322f;
+  --bg: light-dark(var(--paper-300), var(--ink-900));
+  --bg-panel: light-dark(var(--paper-200), var(--ink-800));
+  --bg-bar: light-dark(var(--paper-100), var(--ink-700));
+  --bg-elevated: light-dark(var(--paper-50), var(--ink-600));
+  --fg: light-dark(var(--slate-900), var(--cream-100));
+  --fg-muted: light-dark(var(--slate-700), var(--steel-100));
+  --fg-dim: light-dark(var(--slate-600), var(--steel-200));
+  --fg-faint: light-dark(var(--slate-500), var(--steel-300));
+  --fg-label: light-dark(var(--slate-400), var(--steel-400));
+  --border: light-dark(var(--sand-400), var(--steel-600));
+  --border-subtle: light-dark(var(--sand-300), var(--steel-700));
+  --border-strong: light-dark(var(--sand-500), var(--steel-500));
+  --accent: light-dark(var(--brass-700), var(--brass-500));
+  --accent-hover: light-dark(var(--brass-800), var(--brass-400));
+  --accent-ink: light-dark(var(--cream-50), var(--brass-ink));
+  --danger: light-dark(var(--rust-700), var(--rust-500));
+  --danger-tint: light-dark(rgba(180, 50, 47, 0.09), rgba(240, 100, 100, 0.1));
+  --hover: light-dark(rgba(70, 58, 34, 0.07), var(--steel-700));
+  --scrim: light-dark(rgba(242, 237, 226, 0.72), rgba(15, 17, 21, 0.72));
+  --scrim-strong: light-dark(rgba(242, 237, 226, 0.86), rgba(15, 17, 21, 0.86));
+  --scrim-heavy: light-dark(rgba(242, 237, 226, 0.92), rgba(15, 17, 21, 0.92));
+  --banner-bg: light-dark(rgba(253, 244, 221, 0.95), rgba(37, 35, 15, 0.92));
+  --banner-border: light-dark(rgba(138, 106, 18, 0.4), rgba(244, 201, 93, 0.35));
+  --banner-fg: light-dark(var(--brass-900), var(--brass-400));
+  --shadow-color: light-dark(rgba(76, 62, 40, 0.14), rgba(0, 0, 0, 0.35));
   --font-serif: "EB Garamond", "Iowan Old Style", Georgia, serif;
   --font-sans: Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -93,8 +118,8 @@
   --radius-pill: 999px;
   --hairline: 1px solid var(--border);
   --hairline-subtle: 1px solid var(--border-subtle);
-  --shadow-tooltip: 0 16px 44px rgba(0, 0, 0, 0.35);
-  --shadow-floating: 0 20px 70px rgba(0, 0, 0, 0.35);
+  --shadow-tooltip: 0 16px 44px var(--shadow-color);
+  --shadow-floating: 0 20px 70px var(--shadow-color);
   --bar-h: 56px;
   --panel-w: 360px;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
@@ -103,6 +128,19 @@
   --dur-slow: 320ms;
   --annotate-outline: 2px solid var(--accent);
   --annotate-offset: 2px;
+  color-scheme: light dark;
+}
+/* The preference only has to choose a color-scheme - every themed token above already carries
+   both palettes via light-dark(), so the browser picks per token. `system` leaves both in play so
+   it follows the OS live with no JS, and the render-blocking stylesheet means no flash either. */
+:root[data-theme-pref="system"] {
+  color-scheme: light dark;
+}
+:root[data-theme-pref="light"] {
+  color-scheme: light;
+}
+:root[data-theme-pref="dark"] {
+  color-scheme: dark;
 }
 * {
   box-sizing: border-box;
@@ -122,9 +160,6 @@ body {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-}
-body.lavish {
-  color-scheme: dark;
 }
 :focus-visible {
   outline: var(--annotate-outline);
@@ -234,7 +269,7 @@ body.lavish {
 .more-button:hover:not(:disabled),
 .more-button[aria-expanded="true"] {
   border-color: var(--border-strong);
-  background: var(--steel-700);
+  background: var(--hover);
   color: var(--fg);
 }
 .more-button:disabled {
@@ -286,7 +321,7 @@ body.lavish {
   color: var(--fg-muted);
 }
 .menu-file:hover {
-  background: var(--steel-700);
+  background: var(--hover);
 }
 .menu-file > svg {
   opacity: 0.7;
@@ -358,7 +393,7 @@ body.lavish {
   color: var(--fg);
 }
 .menu-item:hover:not(:disabled) {
-  background: var(--steel-700);
+  background: var(--hover);
 }
 .menu-item:disabled {
   cursor: not-allowed;
@@ -375,7 +410,7 @@ body.lavish {
   opacity: 1;
 }
 .menu-item.danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-tint);
 }
 .button {
   border: 0;
@@ -412,7 +447,7 @@ body.lavish {
   color: var(--danger);
 }
 .button-danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-tint);
 }
 .button-danger > svg {
   flex-shrink: 0;
@@ -424,7 +459,7 @@ body.lavish {
   display: grid;
   place-items: center;
   padding: var(--space-16);
-  background: rgba(15, 17, 21, 0.72);
+  background: var(--scrim);
 }
 .share-overlay[hidden] {
   display: none;
@@ -873,7 +908,7 @@ body.lavish {
 .ended-overlay {
   position: fixed;
   inset: var(--bar-h) 0 0 0;
-  background: rgba(15, 17, 21, 0.86);
+  background: var(--scrim-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -915,10 +950,10 @@ body.lavish {
   left: var(--space-8);
   right: var(--space-8);
   z-index: 20;
-  border: 1px solid rgba(244, 201, 93, 0.35);
+  border: 1px solid var(--banner-border);
   border-radius: var(--radius-lg);
-  background: rgba(37, 35, 15, 0.92);
-  color: var(--brass-400);
+  background: var(--banner-bg);
+  color: var(--banner-fg);
   padding: var(--space-6) var(--space-8);
   font-size: var(--text-sm);
   line-height: var(--lh-sm);
@@ -974,7 +1009,7 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 17, 21, 0.92);
+  background: var(--scrim-heavy);
   z-index: 80;
   display: flex;
 }

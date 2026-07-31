@@ -18,10 +18,29 @@ import { publishToHtmlApp } from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
-import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
+import {
+  canonicalFile,
+  normalizeThemePreference,
+  sessionKey,
+  SessionStore,
+  THEME_PREFERENCES,
+} from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+const COMMANDS = new Set([
+  "open",
+  "poll",
+  "end",
+  "stop",
+  "server",
+  "playbook",
+  "design",
+  "setup",
+  "export",
+  "share",
+  "config",
+]);
+const CONFIG_KEYS = Object.freeze(["theme"]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -96,6 +115,7 @@ export async function run(argv) {
         server: serverCommand,
         export: exportCommand,
         share: shareCommand,
+        config: configCommand,
       },
       getCommandHelp: (command) => getCommandHelp(command, { agent }),
     });
@@ -193,6 +213,76 @@ export function createPlaybookOutput(args) {
   }
 
   return { playbook };
+}
+
+// Device-wide settings live in state.json alongside sessions, so one machine has one answer
+// rather than one per browser profile.
+async function configCommand(args) {
+  const store = new SessionStore(stateFile());
+  const [key, value] = args.filter((arg) => !arg.startsWith("-"));
+
+  if (!key) {
+    return { config: { theme: await store.getThemePreference() } };
+  }
+  if (!CONFIG_KEYS.includes(key)) {
+    throw new AxiError(`Unknown config key: ${key}`, "VALIDATION_ERROR", [`Known keys: ${CONFIG_KEYS.join(", ")}`]);
+  }
+  if (value === undefined) {
+    return { config: { theme: await store.getThemePreference() } };
+  }
+  if (!normalizeThemePreference(value)) {
+    throw new AxiError(`Unsupported theme: ${value}`, "VALIDATION_ERROR", [
+      `Run \`lavish-axi config theme <${THEME_PREFERENCES.join("|")}>\``,
+    ]);
+  }
+
+  return {
+    config: { theme: await writeThemePreference(store, value) },
+    help: ["Open Lavish Editor windows pick this up on their next load"],
+  };
+}
+
+// state.json is read-modify-written whole with no cross-process locking, so hand the write to the
+// running server when there is one - a second writer would otherwise clobber a concurrent session
+// write from its own stale snapshot. Writing here directly is only safe when nothing is running,
+// and never spawns a server just to store a setting.
+async function writeThemePreference(store, value) {
+  const port = defaultPort();
+  const running = await runningServer(port);
+  if (!running) {
+    return store.setThemePreference(value);
+  }
+  // A server too old to know /api/config would both reject the write and drop config on its next
+  // session write, so refuse instead of writing beside it and reporting a value that never sticks.
+  if (shouldRestartServer(VERSION, running.health)) {
+    throw staleServerConfigError(port, running.health);
+  }
+  try {
+    const response = await postJson(`${running.baseUrl}/api/config`, { theme: value });
+    return normalizeThemePreference(response?.config?.theme) || value;
+  } catch (error) {
+    // Take the write back only when the server is genuinely gone - it died between the health
+    // check and the write. One that still answers stays the sole writer of state.json.
+    if (await runningServer(port)) throw error;
+    return store.setThemePreference(value);
+  }
+}
+
+function staleServerConfigError(port, health) {
+  const version =
+    typeof health?.version === "string" && health.version !== ""
+      ? `version ${health.version}`
+      : "a version older than this setting";
+  return new AxiError(`Lavish Editor server on port ${port} is running ${version}, not ${VERSION}`, "SERVER_ERROR", [
+    "That server cannot store this setting, and writing it here would clobber its session writes",
+    "Run `lavish-axi stop` to shut it down, then re-run this command",
+  ]);
+}
+
+async function runningServer(port = defaultPort()) {
+  const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
+  const health = await fetchHealth(baseUrl);
+  return health && health.app === "lavish-axi" ? { baseUrl, health } : null;
 }
 
 export function createOpenOutput({ file, url, status, agent = "generic" }) {
@@ -1057,7 +1147,7 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback, ends the session, or the browser proves a severe layout failure, staying silent while it waits - never kill it. Repair and re-check every returned layout failure before involving the human; cosmetic and uncertain observations are never returned. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi config [theme [${THEME_PREFERENCES.join("|")}]]\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback, ends the session, or the browser proves a severe layout failure, staying silent while it waits - never kill it. Repair and re-check every returned layout failure before involving the human; cosmetic and uncertain observations are never returned. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
@@ -1071,6 +1161,7 @@ function createCommandHelp({ agent = "generic" } = {}) {
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
     design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
     setup: `Usage: lavish-axi setup hooks\n\nInstall or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context.\n`,
+    config: `Usage: lavish-axi config [theme [${THEME_PREFERENCES.join("|")}]]\n\nRead or set device-wide Lavish settings, stored in state.json next to your sessions so every browser on this machine agrees.\n\n\`theme\` controls the appearance of the Lavish Editor chrome surfaces only (the top bar, conversation panel, chrome overlays, and whiteboard editor), not the artifact. \`system\` follows the OS appearance, switching the chrome live with it, while a whiteboard editor that is already open keeps the appearance it opened with and adopts the new one the next time it is opened; \`light\` and \`dark\` pin it. Defaults to \`system\`. Open editor windows pick up a change on their next load.\n\nThis does not alter the artifact's own markup or styling - artifacts stay portable and render identically outside Lavish. UI injected inside the artifact iframe, such as the annotation card, stays dark regardless of this preference.\n\nExamples:\n  lavish-axi config\n  lavish-axi config theme\n  lavish-axi config theme light\n`,
     server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n\nLAVISH_AXI_HOST sets the bind address (default 127.0.0.1; a wildcard 0.0.0.0 or :: binds every interface). Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. LAVISH_AXI_LINK_HOST sets the hostname written into generated session links (default: the bind address, or loopback when bound to a wildcard). See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
   };
 }

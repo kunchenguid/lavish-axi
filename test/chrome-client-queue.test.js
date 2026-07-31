@@ -180,6 +180,7 @@ async function createChromeHarness({
       }
     },
     document: {
+      documentElement: element("html"),
       body: element("body"),
       getElementById(id) {
         return element(id);

@@ -26,7 +26,7 @@ import {
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
-import { canonicalFile, sessionKey } from "../src/session-store.js";
+import { canonicalFile, SessionStore, sessionKey } from "../src/session-store.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -359,7 +359,8 @@ test("chrome declares the Lavish design-system tokens", async () => {
   assert.match(css, /--text-display:92px/);
   assert.match(css, /--lh-display:1/);
   assert.match(css, /--space-32:64px/);
-  assert.match(css, /--shadow-floating:0 20px 70px rgba\(0,0,0,.35\)/);
+  assert.match(css, /--shadow-color:light-dark\(rgba\(76,62,40,.14\),rgba\(0,0,0,.35\)\)/);
+  assert.match(css, /--shadow-floating:0 20px 70px var\(--shadow-color\)/);
   assert.match(css, /--ease:cubic-bezier\(.2,.6,.2,1\)/);
   assert.match(css, /--dur-slow:320ms/);
   assert.match(css, /--bar-h:56px/);
@@ -2825,7 +2826,8 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.match(html, /class="ended-copy">\/tmp\/artifact\.html</);
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
-  assert.match(css, /\.ended-overlay\{[^}]*background:rgba\(15,17,21,.86\)/);
+  assert.match(css, /\.ended-overlay\{[^}]*background:var\(--scrim-strong\)/);
+  assert.match(css, /--scrim-strong:light-dark\(rgba\(242,237,226,.86\),rgba\(15,17,21,.86\)\)/);
   assert.match(css, /\.ended-title\{[^}]*font-family:var\(--font-serif\)/);
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);
@@ -3015,4 +3017,150 @@ test("extractArtifactHead reads the real href, not one hidden in another attribu
     '<head><link rel="icon" title="see href=data:image/png,decoy" href="https://cdn.example.com/logo.png"></head>',
   );
   assert.equal(inValue.faviconTag, '<link rel="icon" href="https://cdn.example.com/logo.png">');
+});
+
+// The chrome is themed purely through the semantic token layer, so any dark-only literal sitting
+// directly on a rule is a surface that would stay dark in light mode. `.frame` is the deliberate
+// exception: it is the artifact viewport, not chrome, and must stay white in both themes.
+test("chrome rules carry no dark-only color literals outside the token block", async () => {
+  const css = await readFile(new URL("../src/chrome.css", import.meta.url), "utf8");
+  const body = css.slice(css.indexOf("}") + 1);
+  const literals = [
+    ...body.matchAll(/^\s*(?:background|border|box-shadow|color)[^;]*?(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8})/gm),
+  ]
+    .map((match) => match[0].trim())
+    .filter((declaration) => !declaration.includes("#fff"));
+
+  assert.deepEqual(literals, [], `theme these through tokens instead: ${literals.join(" | ")}`);
+
+  // Same failure mode, harder to spot: a raw ramp swatch (--ink-*, --brass-*, ...) used straight
+  // in a rule is pinned to the dark ramp and never gets a light counterpart.
+  const rampUses = [
+    ...body.matchAll(/^\s*[a-z-]+:[^;]*var\(--(?:ink|steel|cream|brass|sage|amber|rust)-[^)]*\)[^;]*/gm),
+  ]
+    .map((match) => match[0].trim())
+    .filter((declaration) => !/^(?:--|font-)/.test(declaration));
+
+  assert.deepEqual(rampUses, [], `use a semantic token, not a raw ramp swatch: ${rampUses.join(" | ")}`);
+});
+
+test("every themeable chrome token is defined", async () => {
+  const css = await chromeCssSource();
+  for (const token of [
+    "--danger-tint",
+    "--hover",
+    "--scrim",
+    "--scrim-strong",
+    "--scrim-heavy",
+    "--banner-bg",
+    "--banner-border",
+    "--banner-fg",
+    "--shadow-color",
+  ]) {
+    assert.match(css, new RegExp(`${token}:`), `${token} is not defined`);
+  }
+});
+
+test("chrome html carries the device theme preference for CSS to resolve", async () => {
+  const session = { key: "abc123", file: "/tmp/report.html", chat: [] };
+
+  assert.match(createChromeHtml(session), /<html data-theme-pref="system">/);
+  for (const theme of ["system", "light", "dark"]) {
+    assert.match(
+      createChromeHtml(session, { themePreference: theme }),
+      new RegExp(`<html data-theme-pref="${theme}">`),
+    );
+  }
+  // An unknown preference must not reach the attribute.
+  assert.match(createChromeHtml(session, { themePreference: "sepia" }), /<html data-theme-pref="system">/);
+});
+
+test("/session/:key reflects the stored device theme preference", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  const artifact = path.join(dir, "report.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  const store = new SessionStore(stateFile);
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const session = await store.upsertSession(artifact, `http://127.0.0.1:${server.port}/session/x`);
+
+    for (const theme of ["light", "dark", "system"]) {
+      await store.setThemePreference(theme);
+      const res = await fetch(`http://127.0.0.1:${server.port}/session/${session.key}`);
+      assert.match(await res.text(), new RegExp(`<html data-theme-pref="${theme}">`));
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Variant C carries both palettes on each token and lets the preference pick a color-scheme, so
+// the invariants worth pinning are: the three color-scheme rules exist, and no themeable token
+// was left holding a single palette.
+test("the theme preference maps to a color-scheme", async () => {
+  const css = await chromeCssSource();
+
+  assert.match(css, /:root\[data-theme-pref="system"\]\{color-scheme:light dark;?\}/);
+  assert.match(css, /:root\[data-theme-pref="light"\]\{color-scheme:light;?\}/);
+  assert.match(css, /:root\[data-theme-pref="dark"\]\{color-scheme:dark;?\}/);
+});
+
+test("every themeable token carries both palettes", async () => {
+  const css = await readFile(new URL("../src/chrome.css", import.meta.url), "utf8");
+  const root = css.slice(css.indexOf(":root {"), css.indexOf("}"));
+
+  const singlePalette = [
+    ...root.matchAll(/^\s*(--(?:bg|fg|border|accent|danger|hover|scrim|banner)[\w-]*|--shadow-color)\s*:\s*([^;]+);/gm),
+  ]
+    .filter(([, , value]) => !value.includes("light-dark("))
+    .map(([, token]) => token);
+
+  assert.deepEqual(singlePalette, [], `these would stay dark in light mode: ${singlePalette.join(", ")}`);
+});
+
+// The CLI posts here rather than writing state.json itself, so the server stays the only writer
+// of a file that is read-modify-written whole with no locking.
+test("POST /api/config stores a supported theme and rejects anything else", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  const store = new SessionStore(stateFile);
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  const post = (body) =>
+    fetch(`http://127.0.0.1:${server.port}/api/config`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    for (const theme of ["light", "dark", "system"]) {
+      const res = await post({ theme });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { config: { theme } });
+      assert.equal(await store.getThemePreference(), theme);
+    }
+
+    await post({ theme: "dark" });
+    for (const body of [{ theme: "sepia" }, { theme: "" }, {}]) {
+      assert.equal((await post(body)).status, 400);
+    }
+    assert.equal(await store.getThemePreference(), "dark");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the whiteboard editor follows the pinned chrome theme, not just the OS", async () => {
+  const js = await chromeClientSource();
+  const theme = js.slice(js.indexOf("function whiteboardTheme()"));
+
+  assert.match(theme, /dataset\.themePref/);
+  assert.match(theme, /prefers-color-scheme: dark/);
+  assert.ok(
+    theme.indexOf("dataset.themePref") < theme.indexOf("prefers-color-scheme"),
+    "a pinned preference must win over the OS appearance",
+  );
 });
