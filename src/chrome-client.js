@@ -321,7 +321,7 @@ function setHandoffSuperseded(visible) {
   if (handoffBanner) handoffBanner.hidden = ended || !visible;
 }
 
-async function refreshChromeLoadHandoff() {
+async function refreshChromeLoadHandoff(requestSequence) {
   const response = await fetch("/api/" + key + "/chrome-loads/begin", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -329,11 +329,13 @@ async function refreshChromeLoadHandoff() {
   const data = await response.json().catch(() => ({}));
   const token = String(data?.chrome_load_token || "");
   if (!response.ok || !token) throw new Error("failed to refresh chrome handoff");
+  if (requestSequence !== artifactLoadRequestSequence || ended) return false;
   chromeLoadToken = token;
   const revision = Number(data?.artifact_revision);
   const loadToken = String(data?.artifact_load_token || "");
   if (Number.isSafeInteger(revision) && revision >= 0) artifactLoadRevision = revision;
   if (loadToken) artifactLoadToken = loadToken;
+  return true;
 }
 
 function scrollPanelToBottom() {
@@ -1142,7 +1144,8 @@ async function replaceArtifactFrame() {
           if (handoffRefreshAttempted) return preservePreviousLoad();
           handoffRefreshAttempted = true;
           try {
-            await refreshChromeLoadHandoff();
+            const refreshed = await refreshChromeLoadHandoff(requestSequence);
+            if (!refreshed) return false;
           } catch {
             return preservePreviousLoad();
           }

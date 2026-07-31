@@ -439,6 +439,61 @@ test("chrome client surfaces a superseded reviewer without re-handshaking", asyn
   assert.equal(chrome.reloadCount(), 1);
 });
 
+test("stale re-handshake responses cannot overwrite a newer load", async () => {
+  let resolveOldHandoff;
+  const oldHandoffJson = new Promise((resolve) => {
+    resolveOldHandoff = resolve;
+  });
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: {
+      ...defaultSessionData,
+      chromeLoadToken: "old-handoff",
+      initialArtifactRevision: 1,
+      initialArtifactLoadToken: "old-load",
+    },
+    beginLoadResponses: [
+      { ok: false, status: 409, json: async () => ({ status: "no-handoff" }) },
+      { ok: false, status: 409, json: async () => ({ status: "no-handoff" }) },
+    ],
+    handoffResponses: [
+      { ok: true, json: async () => oldHandoffJson },
+      {
+        ok: true,
+        json: async () => ({
+          chrome_load_token: "new-handoff",
+          artifact_revision: 1,
+          artifact_load_token: "",
+          artifact_load_sequence: 0,
+        }),
+      },
+    ],
+  });
+
+  await flushPromises();
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+
+  resolveOldHandoff({
+    chrome_load_token: "old-recovery",
+    artifact_revision: 1,
+    artifact_load_token: "",
+    artifact_load_sequence: 0,
+  });
+  await flushPromises();
+  await flushPromises();
+
+  chrome.element("reloadArtifact").click();
+  await flushPromises();
+  await flushPromises();
+
+  const lastRequest = chrome.artifactBeginRequests.at(-1);
+  assert.match(lastRequest.init.body, /new-handoff/);
+  assert.doesNotMatch(lastRequest.init.body, /old-recovery/);
+  assert.equal(chrome.element("handoffBanner").hidden, true);
+});
+
 test("chrome client replaces queued prompts with the same internal key", async () => {
   const chrome = await createChromeHarness();
 
