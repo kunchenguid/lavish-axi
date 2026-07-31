@@ -255,6 +255,28 @@ test("a newer begun load invalidates an older diagnostic atomically", async () =
   }
 });
 
+test("a retried begin request reuses the same load epoch", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const first = await store.beginArtifactLoad(session.key, "request-1");
+    const retry = await store.beginArtifactLoad(session.key, "request-1");
+    const next = await store.beginArtifactLoad(session.key, "request-2");
+
+    assert.equal(retry.artifact_revision, first.artifact_revision);
+    assert.equal(retry.artifact_load_token, first.artifact_load_token);
+    assert.equal(next.artifact_revision, first.artifact_revision + 1);
+    assert.notEqual(next.artifact_load_token, first.artifact_load_token);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("non-severe observations never enter the inbox", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

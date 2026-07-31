@@ -106,6 +106,7 @@ let lastScroll = { x: 0, y: 0 };
 // it as it changes and the chrome replays it once the new document is up.
 let lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
+const ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS = [100, 300];
 let artifactLoadToken = "";
 let artifactLoadRevision = 0;
 let artifactLoadRequestSequence = 0;
@@ -1074,35 +1075,61 @@ async function publishShare(event) {
 
 async function replaceArtifactFrame() {
   clearTimeout(artifactSilenceTimer);
-  startLayoutGateCycle();
-  inlineWhiteboardChannels.clear();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
+    startLayoutGateCycle();
     frame.src = frame.src;
     return true;
   }
   const requestSequence = ++artifactLoadRequestSequence;
-  artifactLoadToken = "";
-  artifactLoadRevision = 0;
-  artifactSpokeToken = "";
-  try {
-    const response = await fetch("/api/" + key + "/artifact-loads/begin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-    });
-    if (!response.ok) throw new Error("failed to begin artifact load");
-    const load = await response.json();
-    if (requestSequence !== artifactLoadRequestSequence || ended) return false;
-    const revision = Number(load?.artifact_revision);
-    const token = String(load?.artifact_load_token || "");
-    if (!Number.isSafeInteger(revision) || revision < 0 || !token) return false;
-    artifactLoadRevision = revision;
-    artifactLoadToken = token;
-    frame.src = artifactFrameSrcForLoad({ revision, token });
-    return true;
-  } catch {
+  const requestId = `lavish-load-${Date.now().toString(36)}-${requestSequence}-${Math.random().toString(36).slice(2)}`;
+  const previousToken = artifactLoadToken;
+  const preservePreviousLoad = () => {
+    if (
+      requestSequence === artifactLoadRequestSequence &&
+      !ended &&
+      previousToken &&
+      artifactSpokeToken !== previousToken
+    ) {
+      armArtifactAvailabilityProbe(previousToken);
+    }
     return false;
+  };
+  let load = null;
+  for (let attempt = 0; attempt <= ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (requestSequence !== artifactLoadRequestSequence || ended) return false;
+    try {
+      const response = await fetch("/api/" + key + "/artifact-loads/begin", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ request_id: requestId }),
+      });
+      if (!response.ok) throw new Error("failed to begin artifact load");
+      const candidate = await response.json();
+      const candidateRevision = Number(candidate?.artifact_revision);
+      const candidateToken = String(candidate?.artifact_load_token || "");
+      if (!Number.isSafeInteger(candidateRevision) || candidateRevision < 0 || !candidateToken) {
+        throw new Error("invalid artifact load");
+      }
+      load = { artifact_revision: candidateRevision, artifact_load_token: candidateToken };
+      break;
+    } catch {
+      const delay = ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) return preservePreviousLoad();
+      await new Promise((resolve) => window.setTimeout(resolve, delay));
+    }
   }
+  if (requestSequence !== artifactLoadRequestSequence || ended) return false;
+  const revision = Number(load?.artifact_revision);
+  const token = String(load?.artifact_load_token || "");
+  if (!Number.isSafeInteger(revision) || revision < 0 || !token) return preservePreviousLoad();
+  artifactLoadRevision = revision;
+  artifactLoadToken = token;
+  artifactSpokeToken = "";
+  inlineWhiteboardChannels.clear();
+  startLayoutGateCycle();
+  frame.src = artifactFrameSrcForLoad({ revision, token });
+  return true;
 }
 
 function resetFrame() {

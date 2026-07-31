@@ -16,6 +16,7 @@ async function createChromeHarness({
   sessionData = defaultSessionData,
   artifactSrc = "",
   storage = new Map(),
+  beginLoadResponses = [],
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   const postedToFrame = [];
@@ -206,6 +207,7 @@ async function createChromeHarness({
 
   const harnessFetch = async (url, init) => {
     if (String(url).includes("/artifact-loads/begin")) {
+      if (beginLoadResponses.length > 0) return beginLoadResponses.shift();
       artifactRevision += 1;
       return {
         ok: true,
@@ -276,6 +278,8 @@ async function createChromeHarness({
       },
     },
     window: {
+      clearTimeout: fakeClearTimeout,
+      setTimeout: fakeSetTimeout,
       addEventListener(type, handler) {
         if (!windowListeners.has(type)) windowListeners.set(type, []);
         windowListeners.get(type).push(handler);
@@ -1121,6 +1125,66 @@ test("a stale prior-document diagnostic cannot reveal the new gate or clear its 
   chrome.runTimers(8000);
   await flushPromises();
   assert.ok(posts.some((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")));
+});
+
+test("a failed begin-load keeps the previous frame until a retry succeeds", async () => {
+  const beginLoadResponses = [];
+  const posts = [];
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    beginLoadResponses,
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  const previousSrc = chrome.frame.src;
+  beginLoadResponses.push(
+    { ok: false, status: 503 },
+    { ok: true, json: async () => ({ artifact_revision: 2, artifact_load_token: "retry-load" }) },
+  );
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  assert.equal(chrome.frame.src, previousSrc);
+
+  chrome.runTimers(100);
+  await flushPromises();
+  assert.match(chrome.frame.src, /artifact_load_token=retry-load/);
+  assert.equal(
+    posts.some((post) => post.url === "/api/abc/artifact-failures"),
+    false,
+  );
+});
+
+test("exhausted begin-load retries preserve the previous frame without waking the agent", async () => {
+  const beginLoadResponses = [];
+  const posts = [];
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    beginLoadResponses,
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  const previousSrc = chrome.frame.src;
+  const previousToken = chrome.artifactLoadToken();
+  beginLoadResponses.push({ ok: false, status: 503 }, { ok: false, status: 503 }, { ok: false, status: 503 });
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+  chrome.runTimers(300);
+  await flushPromises();
+
+  assert.equal(chrome.frame.src, previousSrc);
+  assert.equal(chrome.artifactLoadToken(), previousToken);
+  assert.equal(
+    posts.some((post) => post.url === "/api/abc/artifact-failures"),
+    false,
+  );
 });
 
 test("a current load token accepts artifact messages before the frame load event", async () => {

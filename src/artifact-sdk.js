@@ -1361,6 +1361,41 @@ export function createArtifactSdk(
     });
   }
 
+  function waitForDomHydrationQuiescence() {
+    return new Promise((resolve) => {
+      if (typeof MutationObserver === "undefined" || !document.documentElement) {
+        resolve(false);
+        return;
+      }
+      let observer = null;
+      let settleTimer = 0;
+      let maxTimer = 0;
+      let done = false;
+      const finish = (quiescent) => {
+        if (done) return;
+        done = true;
+        if (settleTimer) window.clearTimeout(settleTimer);
+        if (maxTimer) window.clearTimeout(maxTimer);
+        observer?.disconnect();
+        resolve(quiescent);
+      };
+      const scheduleFinish = () => {
+        if (settleTimer) window.clearTimeout(settleTimer);
+        settleTimer = window.setTimeout(() => finish(true), layoutAuditSettleMs);
+      };
+
+      observer = new MutationObserver(scheduleFinish);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        characterData: true,
+        childList: true,
+        subtree: true,
+      });
+      scheduleFinish();
+      maxTimer = window.setTimeout(() => finish(false), layoutAuditMaxWaitMs);
+    });
+  }
+
   function animationTarget(animation) {
     const target = /** @type {any} */ (animation.effect)?.target;
     if (target instanceof Element) return target;
@@ -1434,9 +1469,12 @@ export function createArtifactSdk(
     await waitForAnimationFrames(2);
     if (runId !== layoutAuditRun) return;
     const second = auditLayout();
-    const targetPresenceComplete = document.readyState === "complete";
+    const domHydrationQuiescent = await waitForDomHydrationQuiescence();
+    if (runId !== layoutAuditRun) return;
+    const final = domHydrationQuiescent ? auditLayout() : second;
+    const targetPresenceComplete = document.readyState === "complete" && domHydrationQuiescent;
     publishLayoutAudit(
-      findStableLayoutFindings(first, second),
+      findStableLayoutFindings(domHydrationQuiescent ? second : first, final),
       animationsSettled && activeDocumentAnimations().length === 0 && targetPresenceComplete,
       targetPresenceComplete,
     );

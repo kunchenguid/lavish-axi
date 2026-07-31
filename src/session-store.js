@@ -140,16 +140,30 @@ export class SessionStore {
     });
   }
 
-  async beginArtifactLoad(key) {
+  async beginArtifactLoad(key, requestId = "") {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
       if (!session) {
         return null;
       }
+      const normalizedRequestId = String(requestId || "");
+      const activeLoad = this.artifactLoads.get(key);
+      if (normalizedRequestId && activeLoad?.requestId === normalizedRequestId) {
+        return {
+          session,
+          artifact_revision: activeLoad.artifactRevision,
+          artifact_load_token: activeLoad.artifactLoadToken,
+        };
+      }
       const artifactRevision = normalizeRevision(session.artifact_revision) + 1;
       const artifactLoadToken = crypto.randomBytes(24).toString("base64url");
-      this.artifactLoads.set(key, { artifactRevision, artifactLoadToken, lastPassSequence: 0 });
+      this.artifactLoads.set(key, {
+        artifactRevision,
+        artifactLoadToken,
+        lastPassSequence: 0,
+        requestId: normalizedRequestId,
+      });
       session.artifact_revision = artifactRevision;
       session.updated_at = new Date().toISOString();
       await this.writeState(state);

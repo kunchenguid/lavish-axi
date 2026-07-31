@@ -794,6 +794,8 @@ test("artifact SDK reports only stable severe layout failures after fonts, resiz
   assert.match(js, /document\.getAnimations/);
   assert.match(js, /activeAnimationTargets/);
   assert.match(js, /activeDocumentAnimations\(\)\.length === 0/);
+  assert.match(js, /function waitForDomHydrationQuiescence/);
+  assert.match(js, /document\.readyState === "complete" && domHydrationQuiescent/);
   assert.match(js, /isAnimationAssociatedWithElement/);
   assert.match(js, /findStableLayoutFindings/);
   assert.match(js, /postArtifactMessage\(["']lavish:layoutDiagnostics["']/);

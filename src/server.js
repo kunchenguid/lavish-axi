@@ -582,7 +582,7 @@ export async function serve({
 
   app.post("/api/:key/artifact-loads/begin", async (req, res, next) => {
     try {
-      const result = await store.beginArtifactLoad(req.params.key);
+      const result = await store.beginArtifactLoad(req.params.key, req.body?.request_id);
       if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
