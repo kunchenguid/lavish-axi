@@ -81,6 +81,15 @@ test("createSkillMarkdown requires an observable wake path for every poll", () =
   assert.doesNotMatch(md, /Codex detected/);
 });
 
+test("createSkillMarkdown keeps layout detection passive", () => {
+  const md = createSkillMarkdown();
+
+  assert.match(md, /layout issues are filed passively/);
+  assert.match(md, /ordinary `layout-warnings` prompt only when the user selects and queues them/);
+  assert.doesNotMatch(md, /returned as `layout_warnings`/);
+  assert.doesNotMatch(md, /If poll returns `layout_warnings`/);
+});
+
 test("createSkillMarkdown requires opening every matching playbook", () => {
   const md = createSkillMarkdown();
   const playbooksSection = md.slice(md.indexOf("## Playbooks"), md.indexOf("## Commands & rules"));

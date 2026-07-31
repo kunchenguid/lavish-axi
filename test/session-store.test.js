@@ -194,7 +194,8 @@ test("a diagnostic pass records warnings passively and never becomes agent feedb
     assert.equal(result.warnings[0].active, true);
     assert.equal(result.warnings[0].selectable, true);
     // The whole point of the passive inbox: detection alone must not make poll return.
-    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+    const feedback = await store.takeFeedback(session.key);
+    assert.equal(feedback.status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -277,21 +278,25 @@ test("queueing a warning produces one ordinary prompt and leaves the warning unr
     });
     const [first, second] = recorded.warnings;
 
-    const queued = await store.queueLayoutWarningFixes(session.key, [first.id]);
+    const queued = await store.prepareLayoutWarningFixes(session.key, [first.id]);
     assert.equal(queued.queued.length, 1);
     assert.match(queued.prompt.prompt, /Fix this layout issue/);
     assert.equal(queued.prompt.target.type, "layout-warnings");
     assert.equal(queued.prompt.target.warnings[0].id, first.id);
 
-    const after = queued.warnings.find((warning) => warning.id === first.id);
-    // Queued is a repair request, not a resolution.
+    const prepared = queued.warnings.find((warning) => warning.id === first.id);
+    assert.equal(prepared.status, "open");
+    assert.equal(prepared.selectable, true);
+    assert.equal(queued.warnings.find((warning) => warning.id === second.id).status, "open");
+    await store.queuePrompts(session.key, { prompts: [{ ...queued.prompt, uid: "", tag: "layout-warnings" }] });
+    const after = (await store.listLayoutWarnings(session.key)).warnings.find((warning) => warning.id === first.id);
     assert.equal(after.status, "queued");
     assert.equal(after.active, true);
     assert.equal(after.selectable, false);
     assert.equal(after.outstanding, true);
-    assert.equal(queued.warnings.find((warning) => warning.id === second.id).status, "open");
-    // Queueing alone still does not wake the agent - the prompt does, through /prompts.
-    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+    const feedback = await store.takeFeedback(session.key);
+    assert.equal(feedback.status, "feedback");
+    assert.equal(feedback.prompts[0].tag, "layout-warnings");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

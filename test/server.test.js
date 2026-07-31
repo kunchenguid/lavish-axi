@@ -770,6 +770,7 @@ test("artifact SDK reports only stable severe layout failures after fonts, resiz
   assert.match(js, /new ResizeObserver\(scheduleFinish\)/);
   assert.match(js, /document\.getAnimations/);
   assert.match(js, /activeAnimationTargets/);
+  assert.match(js, /activeDocumentAnimations\(\)\.length === 0/);
   assert.match(js, /isAnimationAssociatedWithElement/);
   assert.match(js, /findStableLayoutFindings/);
   assert.match(js, /type:\s*["']lavish:layoutDiagnostics["']/);
@@ -1384,6 +1385,10 @@ test("queueing selected warnings wakes the poll as one ordinary prompt", async (
     assert.equal(queued.prompt.target.warnings.length, 1);
     // Both warnings stay unresolved: queueing is a request, not a fix.
     assert.equal(queued.warnings.filter((warning) => warning.active).length, 2);
+    assert.equal(queued.warnings[0].status, "open");
+
+    const beforeSend = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
+    assert.equal(beforeSend.warnings[0].status, "open");
 
     await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
@@ -1401,6 +1406,9 @@ test("queueing selected warnings wakes the poll as one ordinary prompt", async (
         ],
       }),
     });
+
+    const afterSend = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
+    assert.equal(afterSend.warnings[0].status, "queued");
 
     const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
       res.json(),
@@ -1511,6 +1519,32 @@ test("the artifact revision advances on each served artifact load", async () => 
 
     assert.equal(first.revision, 1);
     assert.equal(second.revision, 2);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the artifact availability probe does not advance the artifact revision", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+
+    await fetch(`${base}/artifact/${key}/index.html?probe=1`);
+    const probed = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
+    assert.equal(probed.revision, 0);
+    await fetch(`${base}/artifact/${key}/index.html`);
+    const loaded = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
+    assert.equal(loaded.revision, 1);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

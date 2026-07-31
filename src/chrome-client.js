@@ -564,7 +564,8 @@ function armArtifactAvailabilityProbe() {
 
 async function probeArtifactAvailability() {
   try {
-    const response = await fetch(artifactSrc, { cache: "no-store" });
+    const probeSrc = artifactSrc + (artifactSrc.includes("?") ? "&" : "?") + "probe=1";
+    const response = await fetch(probeSrc, { cache: "no-store" });
     if (response.ok) return;
     await reportArtifactFailures([
       { kind: "artifact-unavailable", detail: "the artifact document responded with HTTP " + response.status },
@@ -578,10 +579,24 @@ function activeWarnings() {
   return layoutWarnings.filter((warning) => warning && warning.active);
 }
 
+function pendingLayoutWarningIds() {
+  const ids = new Set();
+  for (const prompt of queued) {
+    if (prompt?.tag !== "layout-warnings" || prompt.target?.type !== "layout-warnings") continue;
+    for (const warning of Array.isArray(prompt.target.warnings) ? prompt.target.warnings : []) {
+      if (warning?.id) ids.add(String(warning.id));
+    }
+  }
+  return ids;
+}
+
 function setLayoutWarnings(next) {
   layoutWarnings = Array.isArray(next) ? next : [];
   // Selections only ever reference warnings the user may still act on.
-  const selectable = new Set(layoutWarnings.filter((warning) => warning.selectable).map((warning) => warning.id));
+  const pending = pendingLayoutWarningIds();
+  const selectable = new Set(
+    layoutWarnings.filter((warning) => warning.selectable && !pending.has(warning.id)).map((warning) => warning.id),
+  );
   for (const id of [...selectedWarningIds]) {
     if (!selectable.has(id)) selectedWarningIds.delete(id);
   }
@@ -616,15 +631,17 @@ function createWarningRow(warning) {
   const row = document.createElement("div");
   row.className = "warning-row" + (warning.outstanding ? " is-outstanding" : "");
   row.dataset.warningId = warning.id;
+  const pending = pendingLayoutWarningIds().has(warning.id);
+  const selectable = warning.selectable && !pending;
 
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.className = "warning-select";
-  checkbox.checked = selectedWarningIds.has(warning.id);
-  checkbox.disabled = !warning.selectable;
+  checkbox.checked = selectable && selectedWarningIds.has(warning.id);
+  checkbox.disabled = !selectable;
   checkbox.setAttribute(
     "aria-label",
-    warning.selectable
+    selectable
       ? "Select " + warning.title + " on " + warning.viewport_label
       : warning.title + " on " + warning.viewport_label + " is already queued for a fix",
   );
@@ -678,10 +695,10 @@ function createWarningRow(warning) {
   dismiss.type = "button";
   dismiss.className = "warning-action";
   dismiss.textContent = "Dismiss";
-  dismiss.disabled = !warning.selectable;
+  dismiss.disabled = !selectable;
   dismiss.setAttribute(
     "aria-label",
-    warning.selectable
+    selectable
       ? "Dismiss " + warning.title + " for this artifact revision"
       : warning.title + " cannot be dismissed while a fix is queued",
   );
@@ -695,6 +712,15 @@ function createWarningRow(warning) {
 
 function renderWarnings() {
   if (!warningsWrap) return;
+  const pending = pendingLayoutWarningIds();
+  let selectionChanged = false;
+  for (const id of [...selectedWarningIds]) {
+    if (pending.has(id)) {
+      selectedWarningIds.delete(id);
+      selectionChanged = true;
+    }
+  }
+  if (selectionChanged) persistWarningSelection();
   const active = activeWarnings();
   const count = active.length;
 
@@ -725,7 +751,8 @@ function renderWarnings() {
 }
 
 function updateWarningSelectionState() {
-  const selectable = activeWarnings().filter((warning) => warning.selectable);
+  const pending = pendingLayoutWarningIds();
+  const selectable = activeWarnings().filter((warning) => warning.selectable && !pending.has(warning.id));
   const selectedCount = selectable.filter((warning) => selectedWarningIds.has(warning.id)).length;
   warningsSelectAll.disabled = selectable.length === 0;
   // Default selection is never "everything": Select all is an explicit action.
@@ -736,7 +763,8 @@ function updateWarningSelectionState() {
 }
 
 function toggleSelectAllWarnings() {
-  const selectable = activeWarnings().filter((warning) => warning.selectable);
+  const pending = pendingLayoutWarningIds();
+  const selectable = activeWarnings().filter((warning) => warning.selectable && !pending.has(warning.id));
   const shouldSelect = warningsSelectAll.checked;
   for (const warning of selectable) {
     if (shouldSelect) selectedWarningIds.add(warning.id);

@@ -1636,7 +1636,7 @@ test("a silent artifact is probed for a fatal failure, and a talking one is not"
     artifactSrc: "/artifact/abc/index.html",
     fetchImpl: async (url, init) => {
       posts.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
-      if (url === "/artifact/abc/index.html") return { ok: false, status: 404, json: async () => ({}) };
+      if (url === "/artifact/abc/index.html?probe=1") return { ok: false, status: 404, json: async () => ({}) };
       return { ok: true, json: async () => ({}) };
     },
   });
@@ -1667,7 +1667,7 @@ test("an artifact that reports diagnostics is never probed as unavailable", asyn
   await flushPromises();
 
   assert.equal(
-    posts.some((post) => post.url === "/artifact/abc/index.html"),
+    posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
     false,
     "a healthy artifact costs exactly one document request",
   );

@@ -315,12 +315,19 @@ export async function serve({
   app.post("/api/:key/prompts", async (req, res, next) => {
     try {
       const shouldEndSession = Boolean(req.body?.endSession || req.body?.end_session);
+      const hasLayoutWarningPrompt = Array.isArray(req.body?.prompts)
+        ? req.body.prompts.some((prompt) => prompt?.tag === "layout-warnings")
+        : false;
       const session = await store.queuePrompts(req.params.key, req.body || {});
       if (!session) {
         res.status(404).json({ error: "session not found" });
         return;
       }
       if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      if (hasLayoutWarningPrompt) {
+        await syncOutstandingRepairs(req.params.key);
+        events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(session.layout_warnings));
+      }
       events.emit(shouldEndSession ? "ended" : "feedback", req.params.key);
       res.json({ status: "queued", pending_prompts: session.pending_prompts });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
@@ -364,22 +371,17 @@ export async function serve({
     }
   });
 
-  // Mark the user's selected warnings as an outstanding repair request. The prompt itself is
-  // queued by the chrome through /api/:key/prompts like any other feedback, so the CLI boundary
-  // sees one ordinary queued prompt.
+  // Prepare the user's selected warnings. The prompt commits the repair request through
+  // /api/:key/prompts with the rest of the ordinary feedback queue.
   app.post("/api/:key/layout-warnings/queue", async (req, res, next) => {
     try {
-      const result = await store.queueLayoutWarningFixes(req.params.key, req.body?.ids);
+      const result = await store.prepareLayoutWarningFixes(req.params.key, req.body?.ids);
       if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
-      if (result.queued.length > 0) {
-        outstandingRepairBatches.add(req.params.key);
-        events.emit("layout-warnings", req.params.key, result.warnings);
-      }
       res.json({
-        status: result.queued.length > 0 ? "queued" : "unchanged",
+        status: result.queued.length > 0 ? "prepared" : "unchanged",
         queued_count: result.queued.length,
         prompt: result.prompt,
         warnings: result.warnings,
@@ -575,7 +577,7 @@ export async function serve({
       // it is what defines an artifact revision. Warning lifecycle transitions that need "a newer
       // successful artifact load" (resolved, recurring, dismissal expiry) all key off this.
       const html = await readFile(session.file, "utf8");
-      await store.bumpArtifactRevision(key);
+      if (req.query.probe !== "1") await store.bumpArtifactRevision(key);
       res.type("html").send(injectLavishSdk(html, key));
     } catch (error) {
       next(error);

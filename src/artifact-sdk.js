@@ -1382,7 +1382,7 @@ export function createArtifactSdk(
       const endTime = Number(animation.effect?.getComputedTiming?.().endTime);
       return Number.isFinite(endTime);
     });
-    if (finite.length === 0) return true;
+    if (finite.length === 0) return activeDocumentAnimations().length === 0;
 
     let settled = false;
     await Promise.race([
@@ -1394,7 +1394,7 @@ export function createArtifactSdk(
     if (!settled) {
       for (const animation of finite) animation.finished.then(scheduleLayoutAudit, scheduleLayoutAudit);
     }
-    return settled;
+    return settled && activeDocumentAnimations().length === 0;
   }
 
   // A diagnostic pass reports its own completeness. An incomplete pass is uncertainty, never
@@ -1423,7 +1423,11 @@ export function createArtifactSdk(
     await new Promise((resolve) => window.setTimeout(resolve, layoutAuditStableSampleMs));
     await waitForAnimationFrames(2);
     if (runId !== layoutAuditRun) return;
-    publishLayoutAudit(findStableLayoutFindings(first, auditLayout()), animationsSettled);
+    const second = auditLayout();
+    publishLayoutAudit(
+      findStableLayoutFindings(first, second),
+      animationsSettled && activeDocumentAnimations().length === 0,
+    );
   }
 
   function scheduleLayoutAudit() {

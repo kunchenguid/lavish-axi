@@ -88,14 +88,30 @@ export class SessionStore {
       const shouldEndSession = Boolean(payload.endSession || payload.end_session);
       const alreadyEnded = session.status === "ended";
       const normalizedPrompts = prompts.map(normalizePrompt);
-      const userMessages = normalizedPrompts
+      const revision = normalizeRevision(session.artifact_revision);
+      const at = new Date().toISOString();
+      let warnings = normalizeStoredWarnings(session.layout_warnings);
+      const acceptedPrompts = [];
+      for (const prompt of normalizedPrompts) {
+        const warningIds = layoutWarningPromptIds(prompt);
+        if (warningIds === null) {
+          acceptedPrompts.push(prompt);
+          continue;
+        }
+        const hadKnownWarning = warningIds.some((id) => warnings.some((warning) => warning.id === id));
+        const result = queueWarningRecords(warnings, warningIds, { revision, at });
+        warnings = result.warnings;
+        if (result.queued.length > 0 || !hadKnownWarning) acceptedPrompts.push(prompt);
+      }
+      session.layout_warnings = warnings;
+      const userMessages = acceptedPrompts
         .filter((prompt) => prompt.tag === "message" && prompt.prompt)
         .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
-      session.prompts = [...(session.prompts || []), ...normalizedPrompts];
+      session.prompts = [...(session.prompts || []), ...acceptedPrompts];
       session.chat = [...(session.chat || []), ...userMessages];
       session.pending_prompts = session.prompts.length;
       session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-      session.status = shouldEndSession || alreadyEnded ? "ended" : "feedback";
+      session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
       if (shouldEndSession) session.ended_by = "user";
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
@@ -159,9 +175,8 @@ export class SessionStore {
     });
   }
 
-  // The user's explicit triage action. Queueing marks the warnings as an outstanding repair
-  // request - it never resolves them and never removes them from the active count.
-  async queueLayoutWarningFixes(key, ids) {
+  // Prepare the user's explicit triage action. The ordinary prompt queue commits it when sent.
+  async prepareLayoutWarningFixes(key, ids) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
@@ -171,17 +186,14 @@ export class SessionStore {
       const revision = normalizeRevision(session.artifact_revision);
       const at = new Date().toISOString();
       const result = queueWarningRecords(session.layout_warnings, ids, { revision, at });
-      if (!result.changed) {
+      if (!result.queued.length) {
         return { session, queued: [], prompt: null, warnings: serializeLayoutWarnings(session.layout_warnings) };
       }
-      session.layout_warnings = result.warnings;
-      session.updated_at = at;
-      await this.writeState(state);
       return {
         session,
         queued: result.queued,
         prompt: layoutWarningPromptPayload(result.queued),
-        warnings: serializeLayoutWarnings(result.warnings),
+        warnings: serializeLayoutWarnings(session.layout_warnings),
       };
     });
   }
@@ -379,6 +391,13 @@ function normalizePrompt(prompt) {
   const target = normalizeTarget(prompt.target);
   if (target) normalized.target = target;
   return normalized;
+}
+
+function layoutWarningPromptIds(prompt) {
+  if (prompt?.tag !== "layout-warnings" || prompt.target?.type !== LAYOUT_WARNINGS_TARGET_TYPE) return null;
+  return Array.isArray(prompt.target.warnings)
+    ? prompt.target.warnings.map((warning) => String(warning?.id || "")).filter(Boolean)
+    : [];
 }
 
 function normalizeRevision(value) {
