@@ -74,7 +74,9 @@ const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElem
 const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
-const queued = loadQueuedPrompts();
+const restoredQueueState = loadQueueState();
+const queued = restoredQueueState.prompts;
+let pendingSubmission = restoredQueueState.submission;
 let annotation = true;
 let ended = false;
 let agentPresence = "waiting";
@@ -167,19 +169,27 @@ function saveJsonState(storageKey, value) {
   }
 }
 
-function loadQueuedPrompts() {
+function loadQueueState() {
   try {
     const parsed = JSON.parse(sessionStorage.getItem(queueStorageKey) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((prompt) => prompt && typeof prompt === "object") : [];
+    const prompts = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.prompts) ? parsed.prompts : [];
+    const submission =
+      !Array.isArray(parsed) &&
+      parsed?.submission &&
+      typeof parsed.submission.id === "string" &&
+      Array.isArray(parsed.submission.prompts)
+        ? parsed.submission
+        : null;
+    return { prompts: prompts.filter((prompt) => prompt && typeof prompt === "object"), submission };
   } catch {
-    return [];
+    return { prompts: [], submission: null };
   }
 }
 
 function persistQueuedPrompts() {
   try {
-    if (queued.length) {
-      sessionStorage.setItem(queueStorageKey, JSON.stringify(queued));
+    if (queued.length || pendingSubmission) {
+      sessionStorage.setItem(queueStorageKey, JSON.stringify({ prompts: queued, submission: pendingSubmission }));
     } else {
       sessionStorage.removeItem(queueStorageKey);
     }
@@ -434,7 +444,7 @@ async function submitQueued() {
       endAfterSubmit = false;
     } else if (!ended && shouldSubmitAgain) {
       if (queued.length) {
-        submitQueued();
+        submitQueued().catch(() => {});
       } else if (endAfterSubmit) {
         endAfterSubmit = false;
         endSession();
@@ -444,10 +454,22 @@ async function submitQueued() {
 }
 
 async function submitQueuedOnce() {
-  const prompts = queued.slice();
-  const shouldEndSession = endAfterSubmit;
-  const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
-  if (shouldEndSession) body.endSession = true;
+  if (!pendingSubmission) {
+    pendingSubmission = {
+      id: createSubmissionId(),
+      prompts: queued.slice().map(stripInternalPromptFields),
+      domSnapshot: pendingSnapshot,
+      endSession: Boolean(endAfterSubmit),
+    };
+    persistQueuedPrompts();
+  }
+  const submission = pendingSubmission;
+  const body = {
+    submissionId: submission.id,
+    prompts: submission.prompts,
+    domSnapshot: submission.domSnapshot,
+  };
+  if (submission.endSession) body.endSession = true;
   const response = await fetch("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -457,23 +479,33 @@ async function submitQueuedOnce() {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
+      pendingSubmission = null;
+      persistQueuedPrompts();
       endAfterSubmit = false;
       return false;
     }
     throw new Error("failed to submit queued prompts");
   }
-  for (const prompt of prompts) {
-    const index = queued.indexOf(prompt);
+  for (const submittedPrompt of submission.prompts) {
+    const serialized = JSON.stringify(submittedPrompt);
+    const index = queued.findIndex((prompt) => JSON.stringify(stripInternalPromptFields(prompt)) === serialized);
     if (index !== -1) queued.splice(index, 1);
   }
+  pendingSubmission = null;
   persistQueuedPrompts();
   render();
-  if (shouldEndSession) {
+  if (submission.endSession) {
     endAfterSubmit = false;
     markSessionEnded();
     return;
   }
   if (agentPresence === "listening") setAgentPresence("working");
+}
+
+function createSubmissionId() {
+  const randomUuid = window.crypto?.randomUUID;
+  if (typeof randomUuid === "function") return randomUuid.call(window.crypto);
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function normalizeLayoutFindings(value) {
@@ -1748,7 +1780,7 @@ window.addEventListener("message", (event) => {
       copyText(msg.snapshot || "");
     } else {
       pendingSnapshot = msg.snapshot || "";
-      submitQueued();
+      submitQueued().catch(() => {});
     }
   }
   if (msg.type === "lavish:scroll") {

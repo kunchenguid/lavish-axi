@@ -223,6 +223,21 @@ test("idempotent re-publish via idempotency_key", async () => {
   });
 });
 
+test("duplicate IDs in one acknowledge batch are already acknowledged", async () => {
+  await withTemp(async (dir) => {
+    const stream = new MultiplexedEventStream({ stateDir: dir });
+    const consumer = "cid_ack_duplicate_aaaaaa";
+    await stream.claim(consumer, 1, "s");
+    const published = await stream.publish("s", { type: "once", payload: {} });
+    const eventId = published.event.event_id;
+    const result = await stream.acknowledge(consumer, 1, [eventId, eventId]);
+    assert.deepEqual(
+      result.results.map((item) => item.status),
+      ["acked", "already_acked"],
+    );
+  });
+});
+
 test("held idempotent events drain exactly once", async () => {
   await withTemp(async (dir) => {
     const stream = new MultiplexedEventStream({

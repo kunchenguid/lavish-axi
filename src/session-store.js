@@ -172,6 +172,7 @@ export class SessionStore {
       session.chat = [...(session.chat || []), ...userMessages];
       session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
       if (shouldEndSession) session.ended_by = "user";
+      const submissionId = normalizeSubmissionId(payload.submissionId || payload.submission_id);
 
       const mirror =
         this.eventMirror && (acceptedPrompts.length > 0 || shouldEndSession)
@@ -181,12 +182,16 @@ export class SessionStore {
               endSession: shouldEndSession || alreadyEnded,
               ended_by: session.ended_by || (shouldEndSession ? "user" : undefined),
               artifact_path: session.file,
-              idempotency_key: `q:${key}:${stableIdempotencyHash({
-                prompts: acceptedPrompts,
-                dom_snapshot: session.dom_snapshot,
-                end_session: shouldEndSession || alreadyEnded,
-                ended_by: session.ended_by || "",
-              })}`,
+              idempotency_key: `q:${key}:${stableIdempotencyHash(
+                submissionId
+                  ? { submission_id: submissionId }
+                  : {
+                      prompts: acceptedPrompts,
+                      dom_snapshot: session.dom_snapshot,
+                      end_session: shouldEndSession || alreadyEnded,
+                      ended_by: session.ended_by || "",
+                    },
+              )}`,
             })
           : { mirrored: false };
       if (mirror.mirrored) {
@@ -661,6 +666,11 @@ export function sessionKey(file) {
 
 function stableIdempotencyHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
+}
+
+function normalizeSubmissionId(value) {
+  const id = String(value || "");
+  return id.length >= 8 && id.length <= 128 && /^[A-Za-z0-9_-]+$/.test(id) ? id : "";
 }
 
 function normalizePrompt(prompt) {

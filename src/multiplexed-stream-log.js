@@ -502,12 +502,13 @@ export class ConsumerEventLog {
     const results = [];
     /** @type {string[]} */
     const newly = [];
+    const seen = new Set(this.ackedIds);
     for (const id of ids) {
       if (!id) {
         results.push({ event_id: id, status: "unknown" });
         continue;
       }
-      if (this.ackedIds.has(id)) {
+      if (seen.has(id)) {
         results.push({ event_id: id, status: "already_acked" });
         continue;
       }
@@ -515,6 +516,7 @@ export class ConsumerEventLog {
         results.push({ event_id: id, status: "unknown" });
         continue;
       }
+      seen.add(id);
       newly.push(id);
       results.push({ event_id: id, status: "acked" });
     }
