@@ -688,8 +688,8 @@ test("send and end submits queued prompts before ending the session", async () =
 
   assert.match(js, /let endAfterSubmit = false/);
   assert.match(js, /sendQueued\(true\)/);
-  assert.match(js, /if \(shouldEndSession\) body\.endSession = true/);
-  assert.match(js, /if \(shouldEndSession\) \{\n {4}endAfterSubmit = false;\n {4}markSessionEnded\(\)/);
+  assert.match(js, /if \(submission\.endSession\) body\.endSession = true/);
+  assert.match(js, /if \(submission\.endSession\) \{\n {4}endAfterSubmit = false;\n {4}markSessionEnded\(\)/);
   assert.match(js, /if \(!succeeded\) \{\n {6}endAfterSubmit = false/);
   assert.doesNotMatch(js, /await endSession\(\)/);
 });
@@ -896,8 +896,9 @@ test("chrome restores queued prompts from tab storage after reload", async () =>
   const js = await chromeClientSource();
 
   assert.match(js, /lavish-axi:queued:/);
-  assert.match(js, /function loadQueuedPrompts\(\)/);
-  assert.match(js, /const queued = loadQueuedPrompts\(\)/);
+  assert.match(js, /function loadQueueState\(\)/);
+  assert.match(js, /const restoredQueueState = loadQueueState\(\)/);
+  assert.match(js, /const queued = restoredQueueState\.prompts/);
   assert.match(js, /sessionStorage\.getItem\(queueStorageKey\)/);
 });
 
@@ -906,10 +907,12 @@ test("chrome keeps queued prompts persisted until submit succeeds", async () => 
 
   assert.doesNotMatch(js, /const prompts = queued\.splice\(0, queued\.length\)/);
   assert.match(js, /await fetch\("\/api\/" \+ key \+ "\/prompts", \{/);
-  assert.doesNotMatch(js, /queued\.splice\(0, prompts\.length\)/);
-  assert.match(js, /for \(const prompt of prompts\) \{/);
-  assert.match(js, /const index = queued\.indexOf\(prompt\)/);
-  assert.match(js, /if \(index !== -1\) queued\.splice\(index, 1\)/);
+  assert.match(js, /const submittedItemIds = new Set\(submission\.itemIds \|\| \[\]\)/);
+  assert.match(js, /for \(let index = queued\.length - 1; index >= 0; index -= 1\) \{/);
+  assert.match(
+    js,
+    /if \(submittedItemIds\.has\(queued\[index\]\[internalQueueItemIdField\]\)\) queued\.splice\(index, 1\)/,
+  );
 });
 
 test("chrome ignores concurrent queued prompt submits", async () => {
