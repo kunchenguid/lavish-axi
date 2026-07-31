@@ -75,8 +75,6 @@ export class SessionStore {
         updated_at: new Date().toISOString(),
       };
       state.sessions[key] = session;
-      this.artifactLoads.delete(key);
-      this.chromeLoadContexts.delete(key);
       await this.writeState(state);
       return session;
     });
@@ -142,7 +140,7 @@ export class SessionStore {
     });
   }
 
-  async beginChromeLoadContext(key) {
+  async issueReviewerHandoff(key) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
@@ -162,7 +160,7 @@ export class SessionStore {
     });
   }
 
-  async beginArtifactLoad(key, requestId = "", requestSequence = 0, chromeLoadToken = "") {
+  async beginArtifactLoad(key, { requestId = "", requestSequence = 0, handoffToken = "" } = {}) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
@@ -173,21 +171,25 @@ export class SessionStore {
       const parsedRequestSequence = Number(requestSequence);
       const normalizedRequestSequence =
         Number.isSafeInteger(parsedRequestSequence) && parsedRequestSequence > 0 ? parsedRequestSequence : 0;
-      const normalizedChromeLoadToken = String(chromeLoadToken || "");
-      const activeChromeLoadToken = this.chromeLoadContexts.get(key) || "";
+      const normalizedHandoffToken = String(handoffToken || "");
+      const activeHandoffToken = this.chromeLoadContexts.get(key) || "";
       const activeLoad = this.artifactLoads.get(key);
-      if (!normalizedChromeLoadToken || normalizedChromeLoadToken !== activeChromeLoadToken) {
-        return {
-          session,
-          stale: true,
-          artifact_revision: activeLoad?.artifactRevision ?? normalizeRevision(session.artifact_revision),
-          artifact_load_token: activeLoad?.artifactLoadToken || "",
-        };
+      const staleResult = (status) => ({
+        session,
+        stale: status,
+        artifact_revision: activeLoad?.artifactRevision ?? normalizeRevision(session.artifact_revision),
+        artifact_load_token: activeLoad?.artifactLoadToken || "",
+      });
+      if (!activeHandoffToken || !normalizedHandoffToken) {
+        return staleResult("no-handoff");
+      }
+      if (normalizedHandoffToken !== activeHandoffToken) {
+        return staleResult("superseded");
       }
       if (
         normalizedRequestId &&
         activeLoad?.requestId === normalizedRequestId &&
-        (!normalizedChromeLoadToken || activeLoad.chromeLoadToken === normalizedChromeLoadToken)
+        activeLoad.handoffToken === normalizedHandoffToken
       ) {
         return {
           session,
@@ -197,15 +199,10 @@ export class SessionStore {
       }
       if (
         normalizedRequestSequence > 0 &&
-        activeLoad?.chromeLoadToken === normalizedChromeLoadToken &&
+        activeLoad?.handoffToken === normalizedHandoffToken &&
         activeLoad.requestSequence > normalizedRequestSequence
       ) {
-        return {
-          session,
-          stale: true,
-          artifact_revision: activeLoad.artifactRevision,
-          artifact_load_token: activeLoad.artifactLoadToken,
-        };
+        return staleResult("out-of-order");
       }
       const artifactRevision = normalizeRevision(session.artifact_revision) + 1;
       const artifactLoadToken = crypto.randomBytes(24).toString("base64url");
@@ -215,21 +212,13 @@ export class SessionStore {
         lastPassSequence: 0,
         requestId: normalizedRequestId,
         requestSequence: normalizedRequestSequence,
-        chromeLoadToken: normalizedChromeLoadToken || activeChromeLoadToken,
+        handoffToken: normalizedHandoffToken,
       });
       session.artifact_revision = artifactRevision;
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
       return { session, artifact_revision: artifactRevision, artifact_load_token: artifactLoadToken };
     });
-  }
-
-  async bumpArtifactRevision(key) {
-    const context = await this.beginChromeLoadContext(key);
-    const result = context
-      ? await this.beginArtifactLoad(key, "", context.artifact_load_sequence + 1, context.chrome_load_token)
-      : null;
-    return result?.session || null;
   }
 
   async verifyArtifactLoad(key, artifactLoadToken, artifactRevision) {

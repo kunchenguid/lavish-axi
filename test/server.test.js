@@ -1640,7 +1640,7 @@ test("an older overlapping begin request cannot replace the current epoch", asyn
     const currentLoad = await begin("new-load", 2).then((response) => response.json());
     const staleResponse = await begin("old-load", 1);
     assert.equal(staleResponse.status, 409);
-    assert.deepEqual(await staleResponse.json(), { status: "stale" });
+    assert.deepEqual(await staleResponse.json(), { status: "out-of-order" });
 
     const currentDocument = await fetch(artifactLoadUrl(base, key, currentLoad));
     assert.equal(currentDocument.status, 200);
@@ -1675,8 +1675,10 @@ test("begin-load requires the current chrome handoff before any first or direct 
 
     const missing = await begin({ request_id: "missing", request_sequence: 1 });
     assert.equal(missing.status, 409);
+    assert.deepEqual(await missing.json(), { status: "no-handoff" });
     const unknown = await begin({ request_id: "unknown", request_sequence: 1, chrome_load_token: "unknown" });
     assert.equal(unknown.status, 409);
+    assert.deepEqual(await unknown.json(), { status: "superseded" });
     const firstLoad = await begin({
       request_id: "first",
       request_sequence: 1,
@@ -1688,8 +1690,92 @@ test("begin-load requires the current chrome handoff before any first or direct 
     assert.equal(directRedirect.status, 302);
     const directArtifact = await fetch(`${base}${directRedirect.headers.get("location")}`);
     assert.equal(directArtifact.status, 409);
+    assert.match(directArtifact.headers.get("content-type") || "", /text\/html/);
+    assert.match(await directArtifact.text(), /Artifact load expired/);
     const revision = await fetch(`${base}/api/${key}/layout-warnings`).then((response) => response.json());
     assert.equal(revision.revision, firstLoad.artifact_revision);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reopening a session preserves the existing chrome handoff and artifact load", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>reopen</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+    const begin = (requestId, requestSequence) =>
+      fetch(`${base}/api/${key}/artifact-loads/begin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          request_id: requestId,
+          request_sequence: requestSequence,
+          chrome_load_token: chrome.chromeLoadToken,
+        }),
+      });
+
+    const firstLoad = await begin("first-load", 1).then((response) => response.json());
+    const firstDocument = await fetch(artifactLoadUrl(base, key, firstLoad));
+    assert.equal(firstDocument.status, 200);
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+
+    const preservedDocument = await fetch(artifactLoadUrl(base, key, firstLoad));
+    const secondLoad = await begin("second-load", 2).then((response) => response.json());
+
+    assert.equal(preservedDocument.status, 200);
+    assert.equal(secondLoad.artifact_revision, firstLoad.artifact_revision + 1);
+    assert.equal((await fetch(artifactLoadUrl(base, key, secondLoad))).status, 200);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("same-origin chrome handoff recovery issues a usable reviewer token", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const crossOrigin = await fetch(`${base}/api/${key}/chrome-loads/begin`, { method: "POST" });
+    assert.equal(crossOrigin.status, 403);
+    const handoff = await fetch(`${base}/api/${key}/chrome-loads/begin`, {
+      method: "POST",
+      headers: { origin: base },
+    }).then((response) => response.json());
+    const load = await fetch(`${base}/api/${key}/artifact-loads/begin`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request_id: "recovered-load",
+        request_sequence: 1,
+        chrome_load_token: handoff.chrome_load_token,
+      }),
+    }).then((response) => response.json());
+    assert.ok(handoff.chrome_load_token);
+    assert.equal((await fetch(artifactLoadUrl(base, key, load))).status, 200);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1727,6 +1813,7 @@ test("a refreshed chrome receives a new handoff and establishes the newest load"
     const firstLoad = await begin(firstChrome, "first-load", firstChrome.initialArtifactLoadSequence + 1).then(
       (response) => response.json(),
     );
+    assert.equal(firstLoad.artifact_revision, 1);
     const secondLoad = await begin(firstChrome, "second-load", firstChrome.initialArtifactLoadSequence + 2).then(
       (response) => response.json(),
     );

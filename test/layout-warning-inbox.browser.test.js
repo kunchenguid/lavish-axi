@@ -156,6 +156,24 @@ test(
       assert.equal(detected.loads, 0, "detection alone never refreshes the artifact");
       assert.equal(detected.pills, 0, "detection alone never queues feedback");
 
+      openArtifact(artifact);
+      await writeFile(artifact, `${await readFile(artifact, "utf8")}\n<!-- reopened -->`);
+      wait(4500);
+      const reopened = inbox();
+      assert.equal(reopened.loads, 1, "reopening the session preserves live artifact reloads");
+      assert.equal(
+        evaluate(
+          'JSON.stringify(new URL(document.getElementById("artifact").src).searchParams.get("artifact_revision"))',
+        ),
+        2,
+      );
+      const sessionKey = new URL(url).pathname.split("/").pop();
+      const warningState = evaluate(
+        `fetch("/api/${sessionKey}/layout-warnings").then((response) => response.json()).then((data) => JSON.stringify(data))`,
+      );
+      assert.ok(warningState.warnings.every((warning) => warning.last_seen_revision === 2));
+      instrumentArtifactLoads();
+
       // A bounded poll must run out its timeout rather than return on detection.
       assert.match(poll(artifact, 4000), /status:\s*waiting/);
 

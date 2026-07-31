@@ -1002,6 +1002,25 @@ body.lavish {
 .presence-banner[hidden] {
   display: none;
 }
+.handoff-banner {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.handoff-takeover {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: var(--w-semibold);
+  padding: 0;
+  white-space: nowrap;
+}
+.handoff-takeover:hover {
+  color: var(--fg);
+}
 .annotation-pills {
   display: flex;
   flex-wrap: wrap;

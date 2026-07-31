@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[] }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
 
@@ -17,6 +17,7 @@ async function createChromeHarness({
   artifactSrc = "",
   storage = new Map(),
   beginLoadResponses = [],
+  handoffResponses = [],
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   const postedToFrame = [];
@@ -28,6 +29,8 @@ async function createChromeHarness({
   const elements = new Map();
   const timers = new Map();
   const srcLoads = [];
+  const beginRequests = [];
+  const artifactBeginRequests = [];
   const focusLog = [];
   let nextTimerId = 1;
   let reloadCount = 0;
@@ -206,7 +209,16 @@ async function createChromeHarness({
   };
 
   const harnessFetch = async (url, init) => {
+    if (String(url).includes("/chrome-loads/begin")) {
+      beginRequests.push({ url, init });
+      if (handoffResponses.length > 0) return handoffResponses.shift();
+      return {
+        ok: true,
+        json: async () => ({ chrome_load_token: "harness-chrome-refresh", artifact_revision: artifactRevision }),
+      };
+    }
     if (String(url).includes("/artifact-loads/begin")) {
+      artifactBeginRequests.push({ url, init });
       if (beginLoadResponses.length > 0) return beginLoadResponses.shift();
       artifactRevision += 1;
       return {
@@ -369,6 +381,8 @@ async function createChromeHarness({
     },
     runTimers,
     srcLoads,
+    beginRequests,
+    artifactBeginRequests,
     artifactLoadToken: frameLoadToken,
   };
 }
@@ -376,6 +390,54 @@ async function createChromeHarness({
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("chrome client re-handshakes once after a missing reviewer handoff", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: {
+      ...defaultSessionData,
+      chromeLoadToken: "expired-handoff",
+      initialArtifactRevision: 1,
+      initialArtifactLoadToken: "old-load",
+    },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "no-handoff" }) }],
+    handoffResponses: [
+      {
+        ok: true,
+        json: async () => ({
+          chrome_load_token: "fresh-handoff",
+          artifact_revision: 1,
+          artifact_load_token: "",
+          artifact_load_sequence: 0,
+        }),
+      },
+    ],
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.beginRequests.length, 1);
+  assert.equal(chrome.artifactBeginRequests.length, 2);
+  assert.match(chrome.artifactBeginRequests[0].init.body, /expired-handoff/);
+  assert.match(chrome.artifactBeginRequests[1].init.body, /fresh-handoff/);
+  assert.equal(chrome.element("handoffBanner").hidden, true);
+});
+
+test("chrome client surfaces a superseded reviewer without re-handshaking", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, chromeLoadToken: "old-handoff" },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.beginRequests.length, 0);
+  assert.equal(chrome.artifactBeginRequests.length, 1);
+  assert.equal(chrome.element("handoffBanner").hidden, false);
+  chrome.element("handoffTakeover").click();
+  assert.equal(chrome.reloadCount(), 1);
+});
 
 test("chrome client replaces queued prompts with the same internal key", async () => {
   const chrome = await createChromeHarness();

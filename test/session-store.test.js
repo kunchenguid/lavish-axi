@@ -9,14 +9,13 @@ import { SessionStore } from "../src/session-store.js";
 let beginRequestSequence = 0;
 
 async function beginArtifactLoad(store, key) {
-  const context = await store.beginChromeLoadContext(key);
+  const context = await store.issueReviewerHandoff(key);
   const requestSequence = context.artifact_load_sequence + 1;
-  const load = await store.beginArtifactLoad(
-    key,
-    `test-load-${++beginRequestSequence}`,
+  const load = await store.beginArtifactLoad(key, {
+    requestId: `test-load-${++beginRequestSequence}`,
     requestSequence,
-    context.chrome_load_token,
-  );
+    handoffToken: context.chrome_load_token,
+  });
   assert.ok(load?.artifact_load_token);
   return load;
 }
@@ -244,14 +243,13 @@ test("a newer begun load invalidates an older diagnostic atomically", async () =
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
     const load = await beginArtifactLoad(store, session.key);
-    const newerContext = await store.beginChromeLoadContext(session.key);
+    const newerContext = await store.issueReviewerHandoff(session.key);
     await Promise.all([
-      store.beginArtifactLoad(
-        session.key,
-        "newer-load",
-        newerContext.artifact_load_sequence + 1,
-        newerContext.chrome_load_token,
-      ),
+      store.beginArtifactLoad(session.key, {
+        requestId: "newer-load",
+        requestSequence: newerContext.artifact_load_sequence + 1,
+        handoffToken: newerContext.chrome_load_token,
+      }),
       store.recordLayoutDiagnostics(
         session.key,
         diagnosticPayload(load, 1, {
@@ -279,21 +277,118 @@ test("a retried begin request reuses the same load epoch", async () => {
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const context = await store.beginChromeLoadContext(session.key);
-    const first = await store.beginArtifactLoad(session.key, "request-1", 1, context.chrome_load_token);
-    const retry = await store.beginArtifactLoad(session.key, "request-1", 1, context.chrome_load_token);
-    const next = await store.beginArtifactLoad(session.key, "request-2", 2, context.chrome_load_token);
+    const context = await store.issueReviewerHandoff(session.key);
+    const first = await store.beginArtifactLoad(session.key, {
+      requestId: "request-1",
+      requestSequence: 1,
+      handoffToken: context.chrome_load_token,
+    });
+    const retry = await store.beginArtifactLoad(session.key, {
+      requestId: "request-1",
+      requestSequence: 1,
+      handoffToken: context.chrome_load_token,
+    });
+    const next = await store.beginArtifactLoad(session.key, {
+      requestId: "request-2",
+      requestSequence: 2,
+      handoffToken: context.chrome_load_token,
+    });
 
     assert.equal(retry.artifact_revision, first.artifact_revision);
     assert.equal(retry.artifact_load_token, first.artifact_load_token);
     assert.equal(next.artifact_revision, first.artifact_revision + 1);
     assert.notEqual(next.artifact_load_token, first.artifact_load_token);
 
-    const stale = await store.beginArtifactLoad(session.key, "request-1", 1, context.chrome_load_token);
-    assert.equal(stale.stale, true);
+    const stale = await store.beginArtifactLoad(session.key, {
+      requestId: "request-1",
+      requestSequence: 1,
+      handoffToken: context.chrome_load_token,
+    });
+    assert.equal(stale.stale, "out-of-order");
     assert.equal(stale.artifact_revision, next.artifact_revision);
     assert.equal(stale.artifact_load_token, next.artifact_load_token);
     assert.equal((await store.findByKey(session.key)).artifact_revision, next.artifact_revision);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reopening a session preserves the live reviewer handoff and artifact load", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const handoff = await store.issueReviewerHandoff(session.key);
+    const load = await store.beginArtifactLoad(session.key, {
+      requestId: "live-load",
+      requestSequence: 1,
+      handoffToken: handoff.chrome_load_token,
+    });
+    const before = await store.verifyArtifactLoad(session.key, load.artifact_load_token, load.artifact_revision);
+
+    await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const after = await store.verifyArtifactLoad(session.key, load.artifact_load_token, load.artifact_revision);
+    const next = await store.beginArtifactLoad(session.key, {
+      requestId: "next-load",
+      requestSequence: 2,
+      handoffToken: handoff.chrome_load_token,
+    });
+
+    assert.equal(before.valid, true);
+    assert.equal(after.valid, true);
+    assert.equal(next.artifact_revision, load.artifact_revision + 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("typed handoff outcomes separate superseded and no-handoff begins", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const noHandoff = await store.beginArtifactLoad(session.key, {
+      requestId: "missing",
+      requestSequence: 1,
+      handoffToken: "",
+    });
+    assert.equal(noHandoff.stale, "no-handoff");
+    const unknownNoHandoff = await store.beginArtifactLoad(session.key, {
+      requestId: "unknown",
+      requestSequence: 1,
+      handoffToken: "unknown",
+    });
+    assert.equal(unknownNoHandoff.stale, "no-handoff");
+
+    const firstHandoff = await store.issueReviewerHandoff(session.key);
+    const firstLoad = await store.beginArtifactLoad(session.key, {
+      requestId: "first",
+      requestSequence: 1,
+      handoffToken: firstHandoff.chrome_load_token,
+    });
+    const secondHandoff = await store.issueReviewerHandoff(session.key);
+    const superseded = await store.beginArtifactLoad(session.key, {
+      requestId: "old",
+      requestSequence: 2,
+      handoffToken: firstHandoff.chrome_load_token,
+    });
+    const current = await store.beginArtifactLoad(session.key, {
+      requestId: "current",
+      requestSequence: secondHandoff.artifact_load_sequence + 1,
+      handoffToken: secondHandoff.chrome_load_token,
+    });
+
+    assert.equal(firstLoad.artifact_revision, 1);
+    assert.equal(superseded.stale, "superseded");
+    assert.equal(current.artifact_revision, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

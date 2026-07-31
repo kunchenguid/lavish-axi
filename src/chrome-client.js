@@ -50,6 +50,8 @@ const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
 const copyHintText = /** @type {HTMLSpanElement} */ (document.getElementById("copyHintText"));
 const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("presenceBanner"));
+const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
+const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
 const endedOverlay = /** @type {HTMLDivElement} */ (document.getElementById("endedOverlay"));
 const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateOverlay"));
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
@@ -110,7 +112,7 @@ const ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS = [100, 300];
 let artifactLoadToken = "";
 let artifactLoadRevision = Number(sessionData.initialArtifactRevision) || 0;
 let artifactLoadRequestSequence = Number(sessionData.initialArtifactLoadSequence) || 0;
-const chromeLoadToken = String(sessionData.chromeLoadToken || "");
+let chromeLoadToken = String(sessionData.chromeLoadToken || "");
 artifactLoadToken = String(sessionData.initialArtifactLoadToken || "");
 let artifactSpokeToken = "";
 let artifactMessageSequence = 0;
@@ -313,6 +315,25 @@ function setAgentPresence(state) {
     chatLog.appendChild(workingBubble);
   }
   scrollElementIntoView(workingBubble);
+}
+
+function setHandoffSuperseded(visible) {
+  if (handoffBanner) handoffBanner.hidden = ended || !visible;
+}
+
+async function refreshChromeLoadHandoff() {
+  const response = await fetch("/api/" + key + "/chrome-loads/begin", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  const data = await response.json().catch(() => ({}));
+  const token = String(data?.chrome_load_token || "");
+  if (!response.ok || !token) throw new Error("failed to refresh chrome handoff");
+  chromeLoadToken = token;
+  const revision = Number(data?.artifact_revision);
+  const loadToken = String(data?.artifact_load_token || "");
+  if (Number.isSafeInteger(revision) && revision >= 0) artifactLoadRevision = revision;
+  if (loadToken) artifactLoadToken = loadToken;
 }
 
 function scrollPanelToBottom() {
@@ -931,6 +952,7 @@ function markSessionEnded() {
   chatInput.disabled = true;
   updateSendState();
   if (presenceBanner) presenceBanner.hidden = true;
+  if (handoffBanner) handoffBanner.hidden = true;
   layoutGateManuallyBypassed = true;
   revealLayoutGate();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
@@ -1080,7 +1102,8 @@ async function replaceArtifactFrame() {
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
     startLayoutGateCycle();
-    frame.src = frame.src;
+    const currentSrc = frame.src || "about:blank";
+    frame.src = currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now();
     return true;
   }
   const requestSequence = ++artifactLoadRequestSequence;
@@ -1098,7 +1121,9 @@ async function replaceArtifactFrame() {
     return false;
   };
   let load = null;
-  for (let attempt = 0; attempt <= ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS.length; attempt += 1) {
+  let transportAttempt = 0;
+  let handoffRefreshAttempted = false;
+  while (true) {
     if (requestSequence !== artifactLoadRequestSequence || ended) return false;
     try {
       const response = await fetch("/api/" + key + "/artifact-loads/begin", {
@@ -1110,8 +1135,26 @@ async function replaceArtifactFrame() {
           chrome_load_token: chromeLoadToken,
         }),
       });
-      if (!response.ok) throw new Error("failed to begin artifact load");
-      const candidate = await response.json();
+      const candidate = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const status = String(candidate?.status || "");
+        if (status === "no-handoff") {
+          if (handoffRefreshAttempted) return preservePreviousLoad();
+          handoffRefreshAttempted = true;
+          try {
+            await refreshChromeLoadHandoff();
+          } catch {
+            return preservePreviousLoad();
+          }
+          continue;
+        }
+        if (status === "superseded") {
+          setHandoffSuperseded(true);
+          return preservePreviousLoad();
+        }
+        if (status === "out-of-order") return preservePreviousLoad();
+        throw new Error("failed to begin artifact load");
+      }
       const candidateRevision = Number(candidate?.artifact_revision);
       const candidateToken = String(candidate?.artifact_load_token || "");
       if (!Number.isSafeInteger(candidateRevision) || candidateRevision < 0 || !candidateToken) {
@@ -1120,7 +1163,7 @@ async function replaceArtifactFrame() {
       load = { artifact_revision: candidateRevision, artifact_load_token: candidateToken };
       break;
     } catch {
-      const delay = ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS[attempt];
+      const delay = ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS[transportAttempt++];
       if (delay === undefined) return preservePreviousLoad();
       await new Promise((resolve) => window.setTimeout(resolve, delay));
     }
@@ -1133,6 +1176,7 @@ async function replaceArtifactFrame() {
   artifactLoadToken = token;
   artifactSpokeToken = "";
   inlineWhiteboardChannels.clear();
+  setHandoffSuperseded(false);
   startLayoutGateCycle();
   frame.src = artifactFrameSrcForLoad({ revision, token });
   return true;
@@ -1765,6 +1809,7 @@ endButton.onclick = () => {
   closeMenus();
   endSession();
 };
+handoffTakeoverButton.onclick = () => location.reload();
 document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
