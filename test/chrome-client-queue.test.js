@@ -271,6 +271,11 @@ async function createChromeHarness({
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
   if (artifactSrc) frame.dispatch("load");
 
+  function frameLoadToken() {
+    const match = String(frame.src).match(/[?&]artifact_load_token=([^&]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
   return {
     element,
     frame,
@@ -294,7 +299,11 @@ async function createChromeHarness({
     sendFrameMessage(data) {
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
-      for (const handler of handlers) handler({ source: frame.contentWindow, data });
+      const message =
+        artifactSrc && !Object.hasOwn(data || {}, "artifact_load_token")
+          ? { ...data, artifact_load_token: frameLoadToken() }
+          : data;
+      for (const handler of handlers) handler({ source: frame.contentWindow, data: message });
     },
     sendWhiteboardMessage(data) {
       const handlers = windowListeners.get("message") || [];
@@ -340,6 +349,7 @@ async function createChromeHarness({
     },
     runTimers,
     srcLoads,
+    artifactLoadToken: frameLoadToken,
   };
 }
 
@@ -446,6 +456,7 @@ test("chrome client posts a completed diagnostic pass and never queues feedback 
     type: "lavish:layoutDiagnostics",
     artifact_revision: 7,
     complete: true,
+    target_presence_complete: true,
     viewport_width: 720,
     findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 18, severity: "error" }],
   });
@@ -455,6 +466,7 @@ test("chrome client posts a completed diagnostic pass and never queues feedback 
   assert.equal(diagnostics.length, 1);
   assert.equal(diagnostics[0].body.artifact_revision, 7);
   assert.equal(diagnostics[0].body.complete, true);
+  assert.equal(diagnostics[0].body.target_presence_complete, true);
   assert.equal(diagnostics[0].body.viewport_width, 720);
   assert.equal(diagnostics[0].body.findings.length, 1);
   // Detection must never touch the prompt queue.
@@ -950,7 +962,9 @@ test("chrome client treats a whitespace-only share password as public", async ()
 test("chrome client registers message listener before loading the artifact iframe", async () => {
   const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
 
-  assert.deepEqual(chrome.srcLoads, [{ src: "/artifact/abc/index.html", hadMessageListener: true }]);
+  assert.equal(chrome.srcLoads.length, 1);
+  assert.match(chrome.srcLoads[0].src, /^\/artifact\/abc\/index\.html\?artifact_load_token=/);
+  assert.equal(chrome.srcLoads[0].hadMessageListener, true);
 });
 
 test("the layout gate reveals after a completed pass with no findings", async () => {
@@ -1059,9 +1073,11 @@ test("a stale prior-document diagnostic cannot reveal the new gate or clear its 
     artifactSrc: "/artifact/abc/index.html",
   });
 
+  const oldToken = chrome.artifactLoadToken();
   chrome.runTimers(25);
   chrome.eventSource().listeners.get("reload")();
   chrome.sendFrameMessage({
+    artifact_load_token: oldToken,
     type: "lavish:layoutDiagnostics",
     artifact_revision: 1,
     complete: true,
@@ -1077,6 +1093,7 @@ test("a stale prior-document diagnostic cannot reveal the new gate or clear its 
   assert.equal(chrome.element("layoutGateOverlay").hidden, false);
   chrome.frame.dispatch("load");
   chrome.sendFrameMessage({
+    artifact_load_token: oldToken,
     type: "lavish:layoutDiagnostics",
     artifact_revision: 1,
     complete: true,
@@ -1089,7 +1106,7 @@ test("a stale prior-document diagnostic cannot reveal the new gate or clear its 
   assert.ok(posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"));
 });
 
-test("stale artifact messages are ignored until the current frame load", async () => {
+test("a current load token accepts artifact messages before the frame load event", async () => {
   const posts = [];
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -1100,9 +1117,71 @@ test("stale artifact messages are ignored until the current frame load", async (
   });
 
   chrome.eventSource().listeners.get("reload")();
-  chrome.sendFrameMessage({ type: "lavish:reviewState", state: { card: { selector: "h1", text: "stale" } } });
-  chrome.sendFrameMessage({ type: "lavish:scroll", x: 8, y: 44 });
-  chrome.sendFrameMessage({ type: "lavish:artifactAssetFailure", detail: "stale asset" });
+  const currentToken = chrome.artifactLoadToken();
+  chrome.sendFrameMessage({
+    artifact_load_token: currentToken,
+    type: "lavish:artifactAssetFailure",
+    detail: "current asset before load",
+  });
+  await flushPromises();
+
+  assert.equal(posts.filter((post) => post.url === "/api/abc/artifact-failures").length, 1);
+  chrome.frame.dispatch("load");
+});
+
+test("a pre-load diagnostic silences the probe even while its response is delayed", async () => {
+  const posts = [];
+  let releaseDiagnostic;
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url === "/api/abc/layout-diagnostics") {
+        return new Promise((resolve) => {
+          releaseDiagnostic = () => resolve({ ok: true, json: async () => ({ warnings: [] }) });
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    },
+  });
+
+  chrome.eventSource().listeners.get("reload")();
+  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, findings: [] });
+  await flushPromises();
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+
+  assert.equal(
+    posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
+    false,
+  );
+  releaseDiagnostic();
+  await flushPromises();
+});
+
+test("stale artifact messages are ignored until the current frame load", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  const oldToken = chrome.artifactLoadToken();
+  chrome.eventSource().listeners.get("reload")();
+  chrome.sendFrameMessage({
+    artifact_load_token: oldToken,
+    type: "lavish:reviewState",
+    state: { card: { selector: "h1", text: "stale" } },
+  });
+  chrome.sendFrameMessage({ artifact_load_token: oldToken, type: "lavish:scroll", x: 8, y: 44 });
+  chrome.sendFrameMessage({
+    artifact_load_token: oldToken,
+    type: "lavish:artifactAssetFailure",
+    detail: "stale asset",
+  });
   await flushPromises();
 
   assert.equal(
@@ -1154,6 +1233,73 @@ test("a delayed diagnostic response does not delay silencing the artifact probe"
     posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
     false,
   );
+});
+
+test("a stale artifact probe cannot report failure after a reload", async () => {
+  const posts = [];
+  let releaseProbe;
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url === "/artifact/abc/index.html?probe=1") {
+        return new Promise((resolve) => {
+          releaseProbe = () => resolve({ ok: false, status: 503 });
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    },
+  });
+
+  chrome.runTimers(8000);
+  await flushPromises();
+  assert.equal(posts.filter((post) => post.url === "/artifact/abc/index.html?probe=1").length, 1);
+
+  chrome.eventSource().listeners.get("reload")();
+  releaseProbe();
+  await flushPromises();
+
+  assert.equal(
+    posts.some((post) => post.url === "/api/abc/artifact-failures"),
+    false,
+  );
+});
+
+test("a delayed older diagnostic response cannot repaint the inbox", async () => {
+  const posts = [];
+  const releases = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url !== "/api/abc/layout-diagnostics") return Promise.resolve({ ok: true, json: async () => ({}) });
+      const requestIndex = releases.length;
+      return new Promise((resolve) => {
+        releases.push(() =>
+          resolve({
+            ok: true,
+            json: async () => ({ warnings: [warningPayload({ id: requestIndex === 0 ? "old" : "new" })] }),
+          }),
+        );
+      });
+    },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, findings: [] });
+  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, findings: [] });
+  releases[1]();
+  await flushPromises();
+  assert.deepEqual(
+    chrome.warningRows().map((row) => row.dataset.warningId),
+    ["new"],
+  );
+
+  releases[0]();
+  await flushPromises();
+  assert.deepEqual(
+    chrome.warningRows().map((row) => row.dataset.warningId),
+    ["new"],
+  );
+  assert.equal(posts.filter((post) => post.url === "/api/abc/layout-diagnostics").length, 2);
 });
 
 test("layout gate manual override reveals immediately", async () => {
@@ -1631,7 +1777,7 @@ test("artifact reload waits for inline whiteboards to flush", async () => {
   await flushPromises();
 
   assert.equal(chrome.srcLoads.length, initialLoadCount + 1);
-  assert.equal(chrome.element("artifact").src, "/artifact/abc/index.html");
+  assert.match(chrome.element("artifact").src, /^\/artifact\/abc\/index\.html\?artifact_load_token=/);
 });
 
 test("server restart flushes an authenticated inline whiteboard before reloading", async () => {

@@ -227,12 +227,13 @@ test("artifact SDK registers a capture-phase document keydown listener for the m
   assert.match(js, /const MODE_TOGGLE_HOTKEY_KEY="i"/);
   assert.match(js, /function isModeToggleHotkeyEvent\(event\)/);
   assert.match(js, /if \(!isModeToggleHotkeyEvent\(event\)\) return;/);
-  assert.match(js, /parent\.postMessage\(\{ type: "lavish:toggleAnnotationMode" \}, "\*"\);/);
+  assert.match(js, /function postArtifactMessage\(type,\s*payload\s*=\s*\{\}\)/);
+  assert.match(js, /postArtifactMessage\("lavish:toggleAnnotationMode"\)/);
   // Registered with the capture flag so it fires regardless of where focus is inside the
   // sandboxed artifact document, without a duplicate call sneaking in un-captured.
   assert.match(
     js,
-    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isModeToggleHotkeyEvent\(event\)\) return;\s*event\.preventDefault\(\);\s*parent\.postMessage\(\{ type: "lavish:toggleAnnotationMode" \}, "\*"\);\s*\},\s*true,?\s*\);/,
+    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isModeToggleHotkeyEvent\(event\)\) return;\s*event\.preventDefault\(\);\s*postArtifactMessage\("lavish:toggleAnnotationMode"\);\s*\},\s*true,?\s*\);/,
   );
 });
 
@@ -760,12 +761,14 @@ test("hot reload resets iframe src instead of crossing sandbox location", async 
   const js = await chromeClientSource();
 
   assert.doesNotMatch(js, /contentWindow\.location\.reload/);
-  assert.match(js, /frame\.src\s*=\s*artifactSrc \|\| frame\.src/);
+  assert.match(js, /frame\.src\s*=\s*artifactFrameSrcForToken\(mintArtifactLoadToken\(\)\)/);
 });
 
 test("artifact SDK reports only stable severe layout failures after fonts, resize, and animations settle", () => {
-  const js = createSdkJs("abc");
+  const js = createSdkJs("abc", 7, "load-token");
 
+  assert.match(js, /const artifactLoadToken="load-token"/);
+  assert.match(js, /artifact_load_token: String\(artifactLoadToken \|\| ""\)/);
   assert.match(js, /document\.fonts\?\.ready/);
   assert.match(js, /new ResizeObserver\(scheduleFinish\)/);
   assert.match(js, /document\.getAnimations/);
@@ -773,7 +776,8 @@ test("artifact SDK reports only stable severe layout failures after fonts, resiz
   assert.match(js, /activeDocumentAnimations\(\)\.length === 0/);
   assert.match(js, /isAnimationAssociatedWithElement/);
   assert.match(js, /findStableLayoutFindings/);
-  assert.match(js, /type:\s*["']lavish:layoutDiagnostics["']/);
+  assert.match(js, /postArtifactMessage\(["']lavish:layoutDiagnostics["']/);
+  assert.match(js, /target_presence_complete/);
   assert.match(js, /page-horizontal-overflow/);
   assert.match(js, /clipped-text/);
   assert.match(js, /overlapping-text/);
@@ -818,7 +822,7 @@ test("artifact SDK reports its scroll position and restores it on request", () =
   const js = createSdkJs("abc");
 
   assert.match(js, /addEventListener\(\s*["']scroll["']/);
-  assert.match(js, /type:\s*["']lavish:scroll["']/);
+  assert.match(js, /postArtifactMessage\(["']lavish:scroll["']/);
   assert.match(js, /window\.scrollX/);
   assert.match(js, /window\.scrollY/);
   assert.match(js, /msg\.type === ["']lavish:restoreScroll["']/);
@@ -1512,14 +1516,16 @@ test("the artifact revision advances on each served artifact load", async () => 
     });
     const { key } = await open.json();
 
-    const firstHtml = await fetch(`${base}/artifact/${key}/index.html`).then((res) => res.text());
+    const firstHtml = await fetch(`${base}/artifact/${key}/index.html?artifact_load_token=load-a`).then((res) =>
+      res.text(),
+    );
     const first = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
     await fetch(`${base}/artifact/${key}/index.html`);
     const second = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
 
     assert.equal(first.revision, 1);
     assert.equal(second.revision, 2);
-    assert.match(firstHtml, /sdk\.js\?key=[^"&]+&artifact_revision=1/);
+    assert.match(firstHtml, /sdk\.js\?key=[^"&]+&artifact_revision=1&artifact_load_token=load-a/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1570,7 +1576,7 @@ test("stale diagnostic passes are ignored after a newer artifact load", async ()
       fetch(`${base}/api/${key}/layout-diagnostics`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ target_presence_complete: true, ...body }),
       }).then((res) => res.json());
 
     await fetch(`${base}/artifact/${key}/index.html`);
@@ -1617,7 +1623,13 @@ test("stale layout prompts return a conflict without entering feedback", async (
     await fetch(`${base}/api/${key}/layout-diagnostics`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ artifact_revision: 2, complete: true, viewport_width: 1440, findings: [] }),
+      body: JSON.stringify({
+        artifact_revision: 2,
+        complete: true,
+        target_presence_complete: true,
+        viewport_width: 1440,
+        findings: [],
+      }),
     });
     const response = await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
@@ -1658,7 +1670,7 @@ test("a newer complete matching-viewport pass resolves a warning and a different
       fetch(`${base}/api/${key}/layout-diagnostics`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ target_presence_complete: true, ...body }),
       }).then((res) => res.json());
 
     await fetch(`${base}/artifact/${key}/index.html`);
@@ -1704,6 +1716,7 @@ test("the chrome bootstraps the inbox so it survives a browser refresh", async (
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         complete: true,
+        target_presence_complete: true,
         viewport_width: 1440,
         findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" }],
       }),

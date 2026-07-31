@@ -251,8 +251,12 @@ export function createArtifactSdk(
   isNativeInteractive = isNativeInteractiveControl,
   mermaid = mermaidHelpers,
   artifactRevision = 0,
+  artifactLoadToken = "",
 ) {
   const { isMermaidSvg, mermaidNodeFrom, mermaidNodeElement } = mermaid;
+  function postArtifactMessage(type, payload = {}) {
+    parent.postMessage({ type, ...payload, artifact_load_token: String(artifactLoadToken || "") }, "*");
+  }
   let annotationMode = true;
   let hovered = null;
   let selected = null;
@@ -697,15 +701,15 @@ export function createArtifactSdk(
     if (options.target) item.target = options.target;
     if (options.data) item.prompt += "\n\nContext data:\n" + JSON.stringify(options.data, null, 2);
 
-    parent.postMessage({ type: "lavish:queuePrompt", prompt: item }, "*");
+    postArtifactMessage("lavish:queuePrompt", { prompt: item });
   }
 
   function sendQueuedPrompts() {
-    parent.postMessage({ type: "lavish:sendQueuedPrompts" }, "*");
+    postArtifactMessage("lavish:sendQueuedPrompts");
   }
 
   function endSession() {
-    parent.postMessage({ type: "lavish:endSession" }, "*");
+    postArtifactMessage("lavish:endSession");
   }
 
   function snapshot() {
@@ -1401,22 +1405,19 @@ export function createArtifactSdk(
   // A diagnostic pass reports its own completeness. An incomplete pass is uncertainty, never
   // evidence that a previously detected failure is gone - the inbox preserves prior warnings as
   // `unverified` instead of clearing them.
-  function publishLayoutAudit(findings, complete) {
+  function publishLayoutAudit(findings, complete, targetPresenceComplete = false) {
     const severe = findings.filter((finding) => finding?.severity === "error");
     const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-    const signature = JSON.stringify({ complete, viewportWidth, severe });
+    const signature = JSON.stringify({ complete, targetPresenceComplete, viewportWidth, severe });
     if (signature === lastLayoutAuditSignature) return;
     lastLayoutAuditSignature = signature;
-    parent.postMessage(
-      {
-        type: "lavish:layoutDiagnostics",
-        complete,
-        artifact_revision: artifactRevision,
-        viewport_width: viewportWidth,
-        findings: severe,
-      },
-      "*",
-    );
+    postArtifactMessage("lavish:layoutDiagnostics", {
+      complete,
+      artifact_revision: artifactRevision,
+      target_presence_complete: targetPresenceComplete === true,
+      viewport_width: viewportWidth,
+      findings: severe,
+    });
   }
 
   async function runLayoutAudit(runId) {
@@ -1431,9 +1432,11 @@ export function createArtifactSdk(
     await waitForAnimationFrames(2);
     if (runId !== layoutAuditRun) return;
     const second = auditLayout();
+    const targetPresenceComplete = document.readyState === "complete";
     publishLayoutAudit(
       findStableLayoutFindings(first, second),
-      animationsSettled && activeDocumentAnimations().length === 0,
+      animationsSettled && activeDocumentAnimations().length === 0 && targetPresenceComplete,
+      targetPresenceComplete,
     );
   }
 
@@ -1473,10 +1476,9 @@ export function createArtifactSdk(
       return;
     }
     if (resolved.origin !== window.location.origin) return;
-    parent.postMessage(
-      { type: "lavish:artifactAssetFailure", detail: "<" + tag + "> could not load " + resolved.pathname },
-      "*",
-    );
+    postArtifactMessage("lavish:artifactAssetFailure", {
+      detail: "<" + tag + "> could not load " + resolved.pathname,
+    });
   }
 
   window.addEventListener("error", reportLocalAssetFailure, true);
@@ -1555,7 +1557,7 @@ export function createArtifactSdk(
     if (reviewStateTimer) window.clearTimeout(reviewStateTimer);
     reviewStateTimer = window.setTimeout(() => {
       reviewStateTimer = 0;
-      parent.postMessage({ type: "lavish:reviewState", state: collectReviewState() }, "*");
+      postArtifactMessage("lavish:reviewState", { state: collectReviewState() });
     }, 120);
   }
 
@@ -1702,7 +1704,7 @@ export function createArtifactSdk(
     sendQueuedPrompts,
     endSession,
     getQueuedPrompts: () => [],
-    setStatus: (message) => parent.postMessage({ type: "lavish:status", message: String(message) }, "*"),
+    setStatus: (message) => postArtifactMessage("lavish:status", { message: String(message) }),
     snapshot,
   };
 
@@ -1710,7 +1712,7 @@ export function createArtifactSdk(
     const msg = event.data || {};
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
     if (msg.type === "lavish:requestSnapshot") {
-      parent.postMessage({ type: "lavish:snapshot", snapshot: snapshot() }, "*");
+      postArtifactMessage("lavish:snapshot", { snapshot: snapshot() });
     }
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
@@ -1747,7 +1749,7 @@ export function createArtifactSdk(
     (event) => {
       if (!isModeToggleHotkeyEvent(event)) return;
       event.preventDefault();
-      parent.postMessage({ type: "lavish:toggleAnnotationMode" }, "*");
+      postArtifactMessage("lavish:toggleAnnotationMode");
     },
     true,
   );
@@ -1761,7 +1763,7 @@ export function createArtifactSdk(
       if (scrollFrame) return;
       scrollFrame = window.requestAnimationFrame(() => {
         scrollFrame = 0;
-        parent.postMessage({ type: "lavish:scroll", x: window.scrollX, y: window.scrollY }, "*");
+        postArtifactMessage("lavish:scroll", { x: window.scrollX, y: window.scrollY });
       });
     },
     { passive: true },

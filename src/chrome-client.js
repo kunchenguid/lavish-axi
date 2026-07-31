@@ -106,8 +106,9 @@ let lastScroll = { x: 0, y: 0 };
 // it as it changes and the chrome replays it once the new document is up.
 let lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
-let artifactLoadGeneration = 0;
-let artifactReadyGeneration = 0;
+let artifactLoadToken = "";
+let artifactLoadTokenCounter = 0;
+let artifactSpokeToken = "";
 let artifactMessageSequence = 0;
 let layoutDiagnosticSequence = 0;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
@@ -116,6 +117,18 @@ let artifactSilenceTimer;
 let copyHintTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendHintTimer;
+
+function mintArtifactLoadToken() {
+  artifactLoadTokenCounter += 1;
+  artifactLoadToken = `lavish-${Date.now().toString(36)}-${artifactLoadTokenCounter}`;
+  artifactSpokeToken = "";
+  return artifactLoadToken;
+}
+
+function artifactFrameSrcForToken(token) {
+  const separator = artifactSrc.includes("?") ? "&" : "?";
+  return artifactSrc + separator + "artifact_load_token=" + encodeURIComponent(token);
+}
 
 function escapeHtml(value) {
   return String(value).replace(
@@ -545,18 +558,18 @@ async function submitLayoutDiagnostics(pass) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       complete: pass?.complete !== false,
+      target_presence_complete: pass?.targetPresenceComplete === true,
       artifact_revision: Number(pass?.artifactRevision) || 0,
       viewport_width: Number(pass?.viewportWidth) || 0,
       findings: normalizeLayoutFindings(pass?.findings),
     }),
   });
   if (!response.ok) throw new Error("failed to submit layout diagnostics");
-  const data = await response.json();
-  if (Array.isArray(data.warnings)) setLayoutWarnings(data.warnings);
-  return data;
+  return response.json();
 }
 
-async function reportArtifactFailures(failures) {
+async function reportArtifactFailures(failures, loadToken = artifactLoadToken) {
+  if (loadToken !== artifactLoadToken) return;
   await fetch("/api/" + key + "/artifact-failures", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -568,22 +581,26 @@ async function reportArtifactFailures(failures) {
 // nothing ever arrives we ask the server whether the document is servable at all. Probing only on
 // silence keeps the normal path to a single artifact request, and a non-OK answer is the one
 // signal that separates "the review is unusable" from "the review has layout problems".
-function armArtifactAvailabilityProbe() {
+function armArtifactAvailabilityProbe(loadToken = artifactLoadToken) {
   clearTimeout(artifactSilenceTimer);
   artifactSilenceTimer = setTimeout(() => {
-    probeArtifactAvailability().catch(() => {});
+    if (loadToken !== artifactLoadToken) return;
+    probeArtifactAvailability(loadToken).catch(() => {});
   }, ARTIFACT_SILENCE_PROBE_MS);
   artifactSilenceTimer?.unref?.();
 }
 
-async function probeArtifactAvailability() {
+async function probeArtifactAvailability(loadToken) {
+  if (loadToken !== artifactLoadToken) return;
   try {
     const probeSrc = artifactSrc + (artifactSrc.includes("?") ? "&" : "?") + "probe=1";
     const response = await fetch(probeSrc, { cache: "no-store" });
+    if (loadToken !== artifactLoadToken) return;
     if (response.ok) return;
-    await reportArtifactFailures([
-      { kind: "artifact-unavailable", detail: "the artifact document responded with HTTP " + response.status },
-    ]);
+    await reportArtifactFailures(
+      [{ kind: "artifact-unavailable", detail: "the artifact document responded with HTTP " + response.status }],
+      loadToken,
+    );
   } catch {
     // A transient fetch failure is uncertainty, not proof - stay silent.
   }
@@ -1041,13 +1058,15 @@ async function publishShare(event) {
 }
 
 function replaceArtifactFrame() {
-  artifactLoadGeneration += 1;
-  if (!artifactSrc) artifactReadyGeneration = artifactLoadGeneration;
   clearTimeout(artifactSilenceTimer);
   startLayoutGateCycle();
   inlineWhiteboardChannels.clear();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
-  frame.src = artifactSrc || frame.src;
+  if (artifactSrc) {
+    frame.src = artifactFrameSrcForToken(mintArtifactLoadToken());
+  } else {
+    frame.src = frame.src;
+  }
 }
 
 function resetFrame() {
@@ -1523,17 +1542,14 @@ window.addEventListener("message", (event) => {
   const message = event.data || {};
   if (event.source === whiteboardFrame.contentWindow) {
     handleOverlayWhiteboardMessage(event, message);
-  } else {
+  } else if (event.source !== frame.contentWindow) {
     handleInlineWhiteboardMessage(event, message);
   }
 });
 
 function loadFrame() {
   if (artifactSrc) {
-    artifactLoadGeneration += 1;
-    frame.src = artifactSrc;
-  } else {
-    artifactReadyGeneration = artifactLoadGeneration;
+    frame.src = artifactFrameSrcForToken(mintArtifactLoadToken());
   }
 }
 
@@ -1577,22 +1593,25 @@ window.addEventListener("message", (event) => {
   if (event.source !== frame.contentWindow) return;
 
   const msg = event.data || {};
-  const messageGeneration = artifactLoadGeneration;
-  if (messageGeneration !== artifactReadyGeneration) return;
+  const messageToken = String(msg.artifact_load_token || "");
+  if (messageToken !== artifactLoadToken) return;
   const messageSequence = ++artifactMessageSequence;
+  artifactSpokeToken = messageToken;
   clearTimeout(artifactSilenceTimer);
   if (msg.type === "lavish:layoutDiagnostics") {
     const diagnosticSequence = ++layoutDiagnosticSequence;
     submitLayoutDiagnostics({
       complete: msg.complete !== false,
+      targetPresenceComplete: msg.target_presence_complete === true,
       artifactRevision: msg.artifact_revision,
       viewportWidth: msg.viewport_width,
       findings: msg.findings,
     })
       .then((result) => {
-        if (messageGeneration !== artifactLoadGeneration || diagnosticSequence !== layoutDiagnosticSequence) return;
+        if (messageToken !== artifactLoadToken || diagnosticSequence !== layoutDiagnosticSequence) return;
+        if (Array.isArray(result?.warnings)) setLayoutWarnings(result.warnings);
         if (result?.status === "stale") {
-          if (messageSequence === artifactMessageSequence) armArtifactAvailabilityProbe();
+          if (messageSequence === artifactMessageSequence) armArtifactAvailabilityProbe(messageToken);
           return;
         }
         if (msg.complete !== false) handleLayoutGatePass();
@@ -1620,9 +1639,10 @@ window.addEventListener("message", (event) => {
     lastReviewState = msg.state && typeof msg.state === "object" ? msg.state : null;
   }
   if (msg.type === "lavish:artifactAssetFailure") {
-    reportArtifactFailures([
-      { kind: "artifact-asset-unavailable", detail: String(msg.detail || "a local artifact asset failed to load") },
-    ]).catch(() => {});
+    reportArtifactFailures(
+      [{ kind: "artifact-asset-unavailable", detail: String(msg.detail || "a local artifact asset failed to load") }],
+      messageToken,
+    ).catch(() => {});
   }
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
@@ -1710,8 +1730,7 @@ document.addEventListener(
   true,
 );
 frame.addEventListener("load", () => {
-  artifactReadyGeneration = artifactLoadGeneration;
-  armArtifactAvailabilityProbe();
+  if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });

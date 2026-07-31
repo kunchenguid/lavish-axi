@@ -38,8 +38,17 @@ const CLIPPED = {
   severity: "error",
 };
 
-function pass(findings, { revision = 1, viewportWidth = 1440, complete = true, at = "2026-07-30T00:00:00.000Z" } = {}) {
-  return { findings, revision, viewportWidth, complete, at };
+function pass(
+  findings,
+  {
+    revision = 1,
+    viewportWidth = 1440,
+    complete = true,
+    targetPresenceComplete = true,
+    at = "2026-07-30T00:00:00.000Z",
+  } = {},
+) {
+  return { findings, revision, viewportWidth, complete, targetPresenceComplete, at };
 }
 
 function detect(findings, options) {
@@ -113,6 +122,17 @@ test("a newer complete matching-viewport pass without the finding resolves it", 
   assert.equal(resolved.warnings[0].status, "resolved");
   assert.equal(activeLayoutWarningCount(resolved.warnings), 0);
   assert.ok(resolved.warnings[0].history.some((entry) => entry.event === "resolved"));
+});
+
+test("absence without target-presence completeness stays unverified", () => {
+  const detected = detect([OVERFLOW], { revision: 3 });
+  const transient = applyDiagnosticPass(detected, pass([], { revision: 4, targetPresenceComplete: false }));
+
+  assert.equal(transient.warnings[0].status, "unverified");
+  assert.equal(activeLayoutWarningCount(transient.warnings), 1);
+
+  const stable = applyDiagnosticPass(transient.warnings, pass([], { revision: 5 }));
+  assert.equal(stable.warnings[0].status, "resolved");
 });
 
 test("a different viewport class can never clear a warning", () => {

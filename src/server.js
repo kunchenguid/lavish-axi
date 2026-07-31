@@ -589,7 +589,7 @@ export async function serve({
       // successful artifact load" (resolved, recurring, dismissal expiry) all key off this.
       const html = await readFile(session.file, "utf8");
       const loadedSession = req.query.probe === "1" ? session : await store.bumpArtifactRevision(key);
-      res.type("html").send(injectLavishSdk(html, key, loadedSession.artifact_revision));
+      res.type("html").send(injectLavishSdk(html, key, loadedSession.artifact_revision, req.query.artifact_load_token));
     } catch (error) {
       next(error);
     }
@@ -699,7 +699,9 @@ export async function serve({
   });
 
   app.get("/sdk.js", (req, res) => {
-    res.type("application/javascript").send(createSdkJs(String(req.query.key || ""), req.query.artifact_revision));
+    res
+      .type("application/javascript")
+      .send(createSdkJs(String(req.query.key || ""), req.query.artifact_revision, req.query.artifact_load_token));
   });
 
   // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
@@ -1427,7 +1429,7 @@ export function createWhiteboardFrameHtml(channelToken = "") {
 </html>`;
 }
 
-export function createSdkJs(key, artifactRevision = 0) {
+export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "") {
   // Serialize every helper exported by mermaid-node.js as a same-scope const so
   // cross-helper calls (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the
   // browser. Deriving this from the module's exports — rather than a hand-kept
@@ -1437,10 +1439,12 @@ export function createSdkJs(key, artifactRevision = 0) {
   const mermaidHelperKeys = mermaidHelperEntries.map(([name]) => name).join(", ");
   const revisionNumber = Number(artifactRevision);
   const revision = Number.isFinite(revisionNumber) && revisionNumber >= 0 ? Math.trunc(revisionNumber) : 0;
+  const loadToken = String(artifactLoadToken || "").slice(0, 200);
   return `(() => {
 const key=${JSON.stringify(key)};
 void key;
 const artifactRevision=${revision};
+const artifactLoadToken=${JSON.stringify(loadToken)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
@@ -1452,7 +1456,7 @@ const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision);
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken);
 })();`;
 }
 

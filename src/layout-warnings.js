@@ -162,7 +162,7 @@ export function isSelectableLayoutWarning(warning) {
  * Fold one completed (or failed) browser diagnostic pass into the stored warning records.
  *
  * @param {any[]} warnings stored records
- * @param {{ complete?: boolean, viewportWidth?: number, revision?: number, at?: string, findings?: any[] }} pass
+ * @param {{ complete?: boolean, targetPresenceComplete?: boolean, viewportWidth?: number, revision?: number, at?: string, findings?: any[] }} pass
  * @returns {{ warnings: any[], changed: boolean }}
  */
 export function applyDiagnosticPass(warnings, pass) {
@@ -172,6 +172,7 @@ export function applyDiagnosticPass(warnings, pass) {
   const viewportWidth = finiteNumber(pass?.viewportWidth);
   const viewportClass = viewportClassFor(viewportWidth);
   const complete = pass?.complete !== false;
+  const targetPresenceComplete = pass?.targetPresenceComplete === true;
   const observations = new Map();
   for (const finding of normalizeFindings(pass?.findings, viewportWidth)) {
     const fingerprint = layoutWarningFingerprint({
@@ -193,7 +194,7 @@ export function applyDiagnosticPass(warnings, pass) {
       return recordDetection(warning, observation, { at, revision, viewportWidth });
     }
     // Absence is only evidence when the pass actually completed.
-    if (!complete) return recordUnverified(warning, { at, revision });
+    if (!complete || !targetPresenceComplete) return recordUnverified(warning, { at, revision });
     // Temporary absence within the same artifact load is not proof of repair - resolution needs
     // a newer successful load plus a complete pass.
     if (revision <= finiteNumber(warning.last_seen_revision)) return warning;

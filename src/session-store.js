@@ -181,6 +181,7 @@ export class SessionStore {
       const at = new Date().toISOString();
       const pass = applyDiagnosticPass(session.layout_warnings, {
         complete: payload.complete !== false,
+        targetPresenceComplete: payload.target_presence_complete === true || payload.targetPresenceComplete === true,
         viewportWidth: payload.viewport_width ?? payload.viewportWidth,
         findings: payload.findings || payload.layout_warnings || payload.layoutWarnings || [],
         revision,

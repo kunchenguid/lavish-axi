@@ -329,6 +329,7 @@ test("a prepared layout prompt conflicts when its warning changes before sending
     const resolved = await store.recordLayoutDiagnostics(session.key, {
       artifact_revision: 2,
       complete: true,
+      target_presence_complete: true,
       viewport_width: 1440,
       findings: [],
     });
