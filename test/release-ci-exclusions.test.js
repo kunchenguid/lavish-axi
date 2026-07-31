@@ -75,7 +75,7 @@ function loadWorkflowOn(filePath) {
       break;
     }
 
-    const eventMatch = line.match(/^  ([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/);
+    const eventMatch = line.match(/^ {2}([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/);
     if (!eventMatch) {
       i += 1;
       continue;
@@ -93,7 +93,7 @@ function loadWorkflowOn(filePath) {
     const event = {};
     while (i < lines.length) {
       const body = lines[i];
-      if (/^  [A-Za-z_]/.test(body) || (/^[^ #\t]/.test(body) && body.trim() !== "")) {
+      if (/^ {2}[A-Za-z_]/.test(body) || (/^[^ #\t]/.test(body) && body.trim() !== "")) {
         break;
       }
       if (body.trim() === "" || body.trimStart().startsWith("#")) {
@@ -101,7 +101,7 @@ function loadWorkflowOn(filePath) {
         continue;
       }
 
-      const keyMatch = body.match(/^    ([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/);
+      const keyMatch = body.match(/^ {4}([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/);
       if (!keyMatch) {
         i += 1;
         continue;
@@ -128,7 +128,7 @@ function loadWorkflowOn(filePath) {
       const values = [];
       while (i < lines.length) {
         const item = lines[i];
-        const listMatch = item.match(/^      -\s+(.+)$/);
+        const listMatch = item.match(/^ {6}-\s+(.+)$/);
         if (!listMatch) break;
         values.push(listMatch[1].trim().replace(/^["']|["']$/g, ""));
         i += 1;
