@@ -39,7 +39,13 @@ import {
 import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
-import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import {
+  canonicalFile,
+  DEFAULT_THEME_PREFERENCE,
+  normalizeThemePreference,
+  SessionStore,
+  sessionKey,
+} from "./session-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -191,6 +197,21 @@ export async function serve({
     res.json({ status: "shutting-down" });
     // Defer until after the response flushes so the client gets confirmation.
     setImmediate(shutdown);
+  });
+
+  // Device-wide config writes go through here so this process stays the only writer of
+  // state.json, which is read-modify-written whole and has no cross-process locking.
+  app.post("/api/config", async (req, res, next) => {
+    try {
+      const theme = normalizeThemePreference((req.body || {}).theme);
+      if (!theme) {
+        res.status(400).json({ error: "unsupported theme preference" });
+        return;
+      }
+      res.json({ config: { theme: await store.setThemePreference(theme) } });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/sessions", async (req, res, next) => {
@@ -463,6 +484,7 @@ export async function serve({
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
           faviconTag,
           title: title ? `${title} · Lavish` : "Lavish Editor",
+          themePreference: await store.getThemePreference(),
         }),
       );
     } catch (error) {
@@ -1230,7 +1252,12 @@ export function extractArtifactHead(html) {
 
 export function createChromeHtml(
   session,
-  { layoutGateEnabled = true, faviconTag = LAVISH_DEFAULT_FAVICON, title = "Lavish Editor" } = {},
+  {
+    layoutGateEnabled = true,
+    faviconTag = LAVISH_DEFAULT_FAVICON,
+    title = "Lavish Editor",
+    themePreference = DEFAULT_THEME_PREFERENCE,
+  } = {},
 ) {
   const sessionJson = jsonScript({
     key: session.key,
@@ -1244,8 +1271,11 @@ export function createChromeHtml(
   const layoutGateHidden = layoutGateEnabled ? "" : " hidden";
   const modeHotkeyUpper = MODE_TOGGLE_HOTKEY_KEY.toUpperCase();
   const modeToggleHint = `Toggle annotate/explore mode (⌘${modeHotkeyUpper} / Ctrl+${modeHotkeyUpper})`;
+  // The stylesheet below is render-blocking, so keying the theme off this attribute resolves it
+  // before first paint - no inline boot script and no flash of the wrong theme.
+  const themePref = normalizeThemePreference(themePreference) || DEFAULT_THEME_PREFERENCE;
   return `<!doctype html>
-<html>
+<html data-theme-pref="${themePref}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

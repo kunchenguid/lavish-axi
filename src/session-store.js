@@ -1,9 +1,16 @@
 import crypto from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
 import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./whiteboard-core.js";
+
+export const THEME_PREFERENCES = Object.freeze(["system", "light", "dark"]);
+export const DEFAULT_THEME_PREFERENCE = "system";
+
+export function normalizeThemePreference(value) {
+  return THEME_PREFERENCES.includes(value) ? value : null;
+}
 
 export class SessionStore {
   constructor(file) {
@@ -180,11 +187,29 @@ export class SessionStore {
     return session;
   }
 
+  async getThemePreference() {
+    const state = await this.readState();
+    return normalizeThemePreference(state.config?.theme) || DEFAULT_THEME_PREFERENCE;
+  }
+
+  async setThemePreference(value) {
+    const theme = normalizeThemePreference(value);
+    if (!theme) throw new Error(`Unsupported theme preference: ${value}`);
+    const state = await this.readState();
+    state.config = { ...(isPlainObject(state.config) ? state.config : {}), theme };
+    await this.writeState(state);
+    return theme;
+  }
+
+  // Spread the parsed state rather than picking `sessions` out of it: state.json also carries
+  // top-level device config (see setThemePreference), and rebuilding the object from a single key
+  // would drop that config on the next session write.
   async readState() {
     try {
       const raw = await readFile(this.file, "utf8");
       const parsed = JSON.parse(raw);
-      return { sessions: parsed.sessions || {} };
+      const state = isPlainObject(parsed) ? parsed : {};
+      return { ...state, sessions: isPlainObject(state.sessions) ? state.sessions : {} };
     } catch (error) {
       if (error && error.code === "ENOENT") {
         return { sessions: {} };
@@ -193,8 +218,19 @@ export class SessionStore {
     }
   }
 
+  // Write a per-call temp file and rename it into place. A truncate-then-write can be observed
+  // (or interleaved with a write from another process, or another in-flight request) as a
+  // half-written file, and every later readState would then throw on JSON.parse until the file is
+  // removed by hand. The temp name is unique per call so two overlapping writes never share it.
   async writeState(state) {
-    await writeFile(this.file, `${JSON.stringify(state, null, 2)}\n`);
+    const temp = `${this.file}.${process.pid}-${crypto.randomUUID()}.tmp`;
+    try {
+      await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`);
+      await rename(temp, this.file);
+    } catch (error) {
+      await unlink(temp).catch(() => {});
+      throw error;
+    }
   }
 }
 
@@ -272,6 +308,10 @@ function normalizeLayoutWarnings(layoutWarnings, deliveredKeys = new Set()) {
         ),
       };
     });
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizeFiniteNumber(value) {

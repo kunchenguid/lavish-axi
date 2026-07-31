@@ -22,6 +22,23 @@
   --amber-900: #25230f;
   --amber-700: #5d4d1b;
   --rust-500: #f06464;
+  --paper-50: #fffdf8;
+  --paper-100: #fdfaf3;
+  --paper-200: #f8f4ec;
+  --paper-300: #f2ede2;
+  --slate-900: #16191f;
+  --slate-700: #373c47;
+  --slate-600: #484f5c;
+  --slate-500: #565d6c;
+  --slate-400: #646e83;
+  --sand-300: #eae2d4;
+  --sand-400: #ded5c4;
+  --sand-500: #c8bda8;
+  --brass-700: #8a6a12;
+  --brass-800: #6f5410;
+  --brass-900: #6b4d05;
+  --rust-700: #b4322f;
+  color-scheme: dark;
   --bg: var(--ink-900);
   --bg-panel: var(--ink-800);
   --bg-bar: var(--ink-700);
@@ -38,6 +55,15 @@
   --accent-hover: var(--brass-400);
   --accent-ink: var(--brass-ink);
   --danger: var(--rust-500);
+  --danger-tint: rgba(240, 100, 100, 0.1);
+  --hover: var(--steel-700);
+  --scrim: rgba(15, 17, 21, 0.72);
+  --scrim-strong: rgba(15, 17, 21, 0.86);
+  --scrim-heavy: rgba(15, 17, 21, 0.92);
+  --banner-bg: rgba(37, 35, 15, 0.92);
+  --banner-border: rgba(244, 201, 93, 0.35);
+  --banner-fg: var(--brass-400);
+  --shadow-color: rgba(0, 0, 0, 0.35);
   --font-serif: "EB Garamond", "Iowan Old Style", Georgia, serif;
   --font-sans: Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -93,8 +119,8 @@
   --radius-pill: 999px;
   --hairline: 1px solid var(--border);
   --hairline-subtle: 1px solid var(--border-subtle);
-  --shadow-tooltip: 0 16px 44px rgba(0, 0, 0, 0.35);
-  --shadow-floating: 0 20px 70px rgba(0, 0, 0, 0.35);
+  --shadow-tooltip: 0 16px 44px var(--shadow-color);
+  --shadow-floating: 0 20px 70px var(--shadow-color);
   --bar-h: 56px;
   --panel-w: 360px;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
@@ -103,6 +129,69 @@
   --dur-slow: 320ms;
   --annotate-outline: 2px solid var(--accent);
   --annotate-offset: 2px;
+}
+/* Light theme. The ramp above holds both palettes, so only the semantic layer is reassigned here.
+   `light` pins it; `system` resolves through prefers-color-scheme, which follows the OS live with
+   no JS involved. The stylesheet is render-blocking, so either resolves before first paint.
+   The two blocks below are deliberately identical declaration lists - one selector cannot cover
+   both a pinned and an OS-resolved light - so any token added to one must be added to the other. */
+:root[data-theme-pref="light"] {
+  color-scheme: light;
+  --bg: var(--paper-300);
+  --bg-panel: var(--paper-200);
+  --bg-bar: var(--paper-100);
+  --bg-elevated: var(--paper-50);
+  --fg: var(--slate-900);
+  --fg-muted: var(--slate-700);
+  --fg-dim: var(--slate-600);
+  --fg-faint: var(--slate-500);
+  --fg-label: var(--slate-400);
+  --border: var(--sand-400);
+  --border-subtle: var(--sand-300);
+  --border-strong: var(--sand-500);
+  --accent: var(--brass-700);
+  --accent-hover: var(--brass-800);
+  --accent-ink: var(--cream-50);
+  --danger: var(--rust-700);
+  --danger-tint: rgba(180, 50, 47, 0.09);
+  --hover: rgba(70, 58, 34, 0.07);
+  --scrim: rgba(242, 237, 226, 0.72);
+  --scrim-strong: rgba(242, 237, 226, 0.86);
+  --scrim-heavy: rgba(242, 237, 226, 0.92);
+  --banner-bg: rgba(253, 244, 221, 0.95);
+  --banner-border: rgba(138, 106, 18, 0.4);
+  --banner-fg: var(--brass-900);
+  --shadow-color: rgba(76, 62, 40, 0.14);
+}
+@media (prefers-color-scheme: light) {
+  :root[data-theme-pref="system"] {
+    color-scheme: light;
+    --bg: var(--paper-300);
+    --bg-panel: var(--paper-200);
+    --bg-bar: var(--paper-100);
+    --bg-elevated: var(--paper-50);
+    --fg: var(--slate-900);
+    --fg-muted: var(--slate-700);
+    --fg-dim: var(--slate-600);
+    --fg-faint: var(--slate-500);
+    --fg-label: var(--slate-400);
+    --border: var(--sand-400);
+    --border-subtle: var(--sand-300);
+    --border-strong: var(--sand-500);
+    --accent: var(--brass-700);
+    --accent-hover: var(--brass-800);
+    --accent-ink: var(--cream-50);
+    --danger: var(--rust-700);
+    --danger-tint: rgba(180, 50, 47, 0.09);
+    --hover: rgba(70, 58, 34, 0.07);
+    --scrim: rgba(242, 237, 226, 0.72);
+    --scrim-strong: rgba(242, 237, 226, 0.86);
+    --scrim-heavy: rgba(242, 237, 226, 0.92);
+    --banner-bg: rgba(253, 244, 221, 0.95);
+    --banner-border: rgba(138, 106, 18, 0.4);
+    --banner-fg: var(--brass-900);
+    --shadow-color: rgba(76, 62, 40, 0.14);
+  }
 }
 * {
   box-sizing: border-box;
@@ -122,9 +211,6 @@ body {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-}
-body.lavish {
-  color-scheme: dark;
 }
 :focus-visible {
   outline: var(--annotate-outline);
@@ -234,7 +320,7 @@ body.lavish {
 .more-button:hover:not(:disabled),
 .more-button[aria-expanded="true"] {
   border-color: var(--border-strong);
-  background: var(--steel-700);
+  background: var(--hover);
   color: var(--fg);
 }
 .more-button:disabled {
@@ -286,7 +372,7 @@ body.lavish {
   color: var(--fg-muted);
 }
 .menu-file:hover {
-  background: var(--steel-700);
+  background: var(--hover);
 }
 .menu-file > svg {
   opacity: 0.7;
@@ -358,7 +444,7 @@ body.lavish {
   color: var(--fg);
 }
 .menu-item:hover:not(:disabled) {
-  background: var(--steel-700);
+  background: var(--hover);
 }
 .menu-item:disabled {
   cursor: not-allowed;
@@ -375,7 +461,7 @@ body.lavish {
   opacity: 1;
 }
 .menu-item.danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-tint);
 }
 .button {
   border: 0;
@@ -412,7 +498,7 @@ body.lavish {
   color: var(--danger);
 }
 .button-danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-tint);
 }
 .button-danger > svg {
   flex-shrink: 0;
@@ -424,7 +510,7 @@ body.lavish {
   display: grid;
   place-items: center;
   padding: var(--space-16);
-  background: rgba(15, 17, 21, 0.72);
+  background: var(--scrim);
 }
 .share-overlay[hidden] {
   display: none;
@@ -873,7 +959,7 @@ body.lavish {
 .ended-overlay {
   position: fixed;
   inset: var(--bar-h) 0 0 0;
-  background: rgba(15, 17, 21, 0.86);
+  background: var(--scrim-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -915,10 +1001,10 @@ body.lavish {
   left: var(--space-8);
   right: var(--space-8);
   z-index: 20;
-  border: 1px solid rgba(244, 201, 93, 0.35);
+  border: 1px solid var(--banner-border);
   border-radius: var(--radius-lg);
-  background: rgba(37, 35, 15, 0.92);
-  color: var(--brass-400);
+  background: var(--banner-bg);
+  color: var(--banner-fg);
   padding: var(--space-6) var(--space-8);
   font-size: var(--text-sm);
   line-height: var(--lh-sm);
@@ -974,7 +1060,7 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 17, 21, 0.92);
+  background: var(--scrim-heavy);
   z-index: 80;
   display: flex;
 }

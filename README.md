@@ -200,6 +200,7 @@ pnpm link
 | `lavish-axi design`             | Show agent-facing design guidance, including optional CDN and Mermaid snippets.                                                                                                                                                                                                                |
 | `lavish-axi setup hooks`        | Install or repair optional SessionStart hooks for Claude Code, Codex, OpenCode, and GitHub Copilot CLI; restart the agent session afterward.                                                                                                                                                   |
 | `lavish-axi server`             | Run the local Lavish Editor server.                                                                                                                                                                                                                                                            |
+| `lavish-axi config [theme]`     | Read or set device-wide settings. `lavish-axi config theme <system\|light\|dark>` controls the appearance of the editor chrome; artifacts are never restyled.                                                                                                                                  |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.
 One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so agents must match against each `use_when` trigger and open every matching playbook before writing HTML.
@@ -220,6 +221,23 @@ For flows, architecture, state, or sequence diagrams, open the diagram playbook 
 | `lavish-axi poll`        | `--timeout-ms <ms>`   | Test/debug escape hatch only; agents should normally omit it and leave the long poll running.                                                                                                                                       |
 | `lavish-axi stop`        | `--port <port>`       | Shut down a server running on a non-default port.                                                                                                                                                                                   |
 | `lavish-axi server`      | `--verbose`           | Log session and watcher events to stderr; can also be enabled with `LAVISH_AXI_DEBUG=1`. Detached server output is appended to `~/.lavish-axi/server.log` (or `LAVISH_AXI_STATE_DIR/server.log`) for startup and crash diagnostics. |
+
+### Appearance
+
+The Lavish Editor chrome follows your OS appearance by default. Pin it with:
+
+```sh
+lavish-axi config theme light
+lavish-axi config theme dark
+lavish-axi config theme system   # default, follows the OS
+lavish-axi config theme          # print the current preference
+```
+
+The preference is device-wide, stored in `state.json` next to your sessions, so every browser on the machine agrees. Open editor windows pick up a change on their next load.
+
+Under `system`, the chrome follows the OS live: change your OS appearance and the top bar, conversation panel, and chrome overlays switch immediately. A whiteboard editor that is already open keeps the appearance it opened with and adopts the new one the next time it is opened.
+
+This themes the chrome surfaces only: the top bar, conversation panel, chrome overlays, and the whiteboard editor. Artifacts are never restyled: their markup and CSS are untouched, so they keep rendering identically outside Lavish. UI that Lavish injects inside the artifact iframe, such as the annotation card and its text highlight, stays dark regardless of this preference and is not covered by this setting.
 
 ## Development
 

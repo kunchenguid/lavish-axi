@@ -1909,3 +1909,189 @@ async function startFakeHtmlApp(requests) {
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
 }
+
+function cliSpawnOptions(stateDir, port) {
+  return {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    env: {
+      ...process.env,
+      LAVISH_AXI_STATE_DIR: stateDir,
+      LAVISH_AXI_TELEMETRY: "0",
+      // Pin the control-channel port so these never reach a real server on the developer's machine.
+      LAVISH_AXI_PORT: String(port),
+    },
+  };
+}
+
+// Port 1 has nothing listening, so the CLI's control-channel health check refuses immediately.
+function runCli(args, stateDir, port = 1) {
+  return spawnSync(process.execPath, [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), ...args], {
+    ...cliSpawnOptions(stateDir, port),
+    encoding: "utf8",
+  });
+}
+
+// Whenever the CLI talks to a server hosted by this test process, spawn asynchronously: spawnSync
+// blocks the event loop, so the in-process server could never answer and both sides would deadlock.
+function runCliAsync(args, stateDir, port) {
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), ...args],
+    cliSpawnOptions(stateDir, port),
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  return new Promise((resolve) => {
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+test("config theme defaults to system and persists every supported value", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  try {
+    const unset = runCli(["config"], dir);
+    assert.equal(unset.status, 0, unset.stderr);
+    assert.match(unset.stdout, /theme: system/);
+
+    for (const theme of ["light", "dark", "system"]) {
+      const set = runCli(["config", "theme", theme], dir);
+      assert.equal(set.status, 0, set.stderr);
+      assert.match(set.stdout, new RegExp(`theme: ${theme}`));
+
+      const stored = JSON.parse(await readFile(`${dir}/state.json`, "utf8"));
+      assert.equal(stored.config.theme, theme);
+      assert.match(runCli(["config", "theme"], dir).stdout, new RegExp(`theme: ${theme}`));
+    }
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("config rejects unsupported themes and unknown keys without writing state", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  try {
+    runCli(["config", "theme", "dark"], dir);
+
+    const badTheme = runCli(["config", "theme", "sepia"], dir);
+    assert.notEqual(badTheme.status, 0);
+    assert.match(badTheme.stdout + badTheme.stderr, /VALIDATION_ERROR/);
+    assert.match(badTheme.stdout + badTheme.stderr, /system\|light\|dark/);
+
+    const badKey = runCli(["config", "colour"], dir);
+    assert.notEqual(badKey.status, 0);
+    assert.match(badKey.stdout + badKey.stderr, /VALIDATION_ERROR/);
+    assert.match(badKey.stdout + badKey.stderr, /Known keys: theme/);
+
+    const stored = JSON.parse(await readFile(`${dir}/state.json`, "utf8"));
+    assert.equal(stored.config.theme, "dark");
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("config is a real command, not an html path normalized to open", () => {
+  assert.deepEqual(normalizeArgv(["config"]), ["config"]);
+  assert.deepEqual(normalizeArgv(["config", "theme", "light"]), ["config", "theme", "light"]);
+  assert.match(getCommandHelp("config"), /lavish-axi config \[theme \[system\|light\|dark\]\]/);
+});
+
+// state.json is read-modify-written whole with no locking, so the running server has to stay its
+// only writer. A second writer would clobber a concurrent session write from its own stale snapshot.
+test("config theme hands the write to a running server instead of writing state itself", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  const requests = [];
+  const fake = await startFakeLavishServer(requests);
+  try {
+    const set = await runCliAsync(["config", "theme", "dark"], dir, fake.port);
+    assert.equal(set.status, 0, set.stderr);
+    assert.match(set.stdout, /theme: dark/);
+
+    assert.deepEqual(
+      requests.map((request) => `${request.method} ${request.url}`),
+      ["GET /health", "POST /api/config"],
+    );
+    assert.deepEqual(requests[1].body, { theme: "dark" });
+    assert.equal(existsSync(`${dir}/state.json`), false, "the CLI must not write state.json itself");
+  } finally {
+    await fake.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+// A server from an older release rejects /api/config and drops config on its next session write,
+// so a direct write beside it would report a preference that silently never sticks.
+test("config theme refuses to write beside a stale running server", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  const requests = [];
+  const fake = await startFakeLavishServer(requests, { configStatus: 404, version: "0.0.1-stale" });
+  try {
+    const set = await runCliAsync(["config", "theme", "light"], dir, fake.port);
+    assert.notEqual(set.status, 0);
+    const output = set.stdout + set.stderr;
+    assert.match(output, /SERVER_ERROR/);
+    assert.match(output, /0\.0\.1-stale/);
+    assert.match(output, /lavish-axi stop/);
+
+    assert.deepEqual(
+      requests.map((request) => `${request.method} ${request.url}`),
+      ["GET /health"],
+      "a stale server must not be handed the write",
+    );
+    assert.equal(existsSync(`${dir}/state.json`), false, "the CLI must not write state.json itself");
+  } finally {
+    await fake.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+// Pre-handshake servers answer /health without a version at all.
+test("config theme refuses to write beside a pre-handshake running server", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-config-test-`);
+  const requests = [];
+  const fake = await startFakeLavishServer(requests, { configStatus: 404, version: null });
+  try {
+    const set = await runCliAsync(["config", "theme", "light"], dir, fake.port);
+    assert.notEqual(set.status, 0);
+    assert.match(set.stdout + set.stderr, /SERVER_ERROR/);
+    assert.equal(existsSync(`${dir}/state.json`), false, "the CLI must not write state.json itself");
+  } finally {
+    await fake.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+async function startFakeLavishServer(requests, { configStatus = 200, version = VERSION } = {}) {
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
+      if (req.url === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, app: "lavish-axi", ...(version ? { version } : {}) }));
+        return;
+      }
+      if (req.url === "/api/config" && configStatus === 200) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ config: { theme: raw ? JSON.parse(raw).theme : "system" } }));
+        return;
+      }
+      res.writeHead(configStatus, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not found" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : 0,
+    close: () => new Promise((resolve) => server.close(() => resolve(undefined))),
+  };
+}
