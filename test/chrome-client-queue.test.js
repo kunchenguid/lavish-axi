@@ -1731,9 +1731,10 @@ test("chrome retries the persisted submission identity with its original batch",
 });
 
 test("successful cleanup preserves an identical replacement queued in flight", async () => {
+  /** @type {() => void} */
   let resolvePost = () => {};
   const pendingPost = new Promise((resolve) => {
-    resolvePost = resolve;
+    resolvePost = () => resolve();
   });
   const posts = [];
   const chrome = await createChromeHarness({

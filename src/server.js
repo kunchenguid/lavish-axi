@@ -115,8 +115,8 @@ export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-// A detached server should not live forever. When no browser chrome (SSE) and no agent poll
-// are connected for this long, the server shuts itself down so it stops dangling. The next
+// A detached server should not live forever. When no browser chrome (SSE), agent poll, or
+// event-stream subscription is connected for this long, the server shuts down. The next
 // `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
 // state.json. Browser-ended sessions still require the explicit --reopen opt-in. Set
 // LAVISH_AXI_IDLE_TIMEOUT_MS to 0/off to disable, or to a custom millisecond budget.
@@ -1240,10 +1240,10 @@ export async function serve({
   }
 
   // When the final open session ends with nothing connected, there is nothing left to serve,
-  // so step down immediately rather than waiting out the idle timeout. If a browser chrome or
-  // poll is still attached (e.g. the user is about to reopen), leave the server up and let the
-  // idle timer reap it once those connections drop. Best-effort: never let a read failure
-  // block the end response.
+  // so step down immediately rather than waiting out the idle timeout. If a browser chrome,
+  // poll, or event-stream subscription is still attached (e.g. the user is about to reopen),
+  // leave the server up and let the idle timer reap it once those connections drop.
+  // Best-effort: never let a read failure block the end response.
   async function shutdownIfNoLiveSessions() {
     if (sseClients.size > 0 || activePolls.size > 0 || eventStream.activeSubscriptionCount() > 0) return;
     try {

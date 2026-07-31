@@ -110,7 +110,9 @@ export async function appendFileDurable(file, data) {
     } finally {
       closeSync(dfd);
     }
-  } catch {}
+  } catch {
+    // Some filesystems do not support fsync on directories.
+  }
 }
 
 export async function atomicWriteText(file, text) {

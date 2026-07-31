@@ -61,8 +61,10 @@ Maps at the boundary only:
 
 ```sh
 lavish-axi capabilities --json
-lavish-axi home init --root <path>
-lavish-axi review claim|retire|list --home-file <path> --generation <n> [--review <id|file>]
+lavish-axi home init --root <path> [--file <path>]
+lavish-axi review claim --home-file <path> --generation <n> --review <id|file>
+lavish-axi review retire --home-file <path> --generation <n> --review <id|file>
+lavish-axi review list --home-file <path>
 lavish-axi events subscribe --home-file <path> --generation <n> [--cursor <n>]
 ```
 
@@ -86,6 +88,4 @@ stdin: `{"ack":["..."]}`, `{"bye":true}`.
 - Foundation: `$LAVISH_AXI_STATE_DIR/multiplexed-stream.json` + `events/<consumerHash>/` (0600, fsync, torn-tail recovery).
 - Lavish sessions: `state.json` atomic temp-and-rename + 0600; additive `state_version: 2` migration from 0.1.x.
 
-### Bounds env
-
-`LAVISH_AXI_EVENT_MAX_PAYLOAD_BYTES`, `LAVISH_AXI_EVENT_MAX_UNACKED_STREAM` (alias `..._REVIEW`), `LAVISH_AXI_EVENT_MAX_UNACKED_CONSUMER` (alias `..._HOME`), `LAVISH_AXI_EVENT_RETENTION_MS`, `LAVISH_AXI_EVENT_LEASE_TTL_MS`.
+Runtime limits, environment variables, aliases, and defaults are documented in the README's [Multiplexed event stream](../README.md#how-it-works) feature contract.

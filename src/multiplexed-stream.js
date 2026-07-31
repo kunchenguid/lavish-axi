@@ -427,7 +427,7 @@ export class MultiplexedEventStream {
       const publications = [];
       for (const event of options.initialEvents || []) {
         const publication = await this.#publishLocked(streamKey, event, Boolean(options.orderedTerminal), true);
-        if (publication.error) return publication;
+        if ("error" in publication) return publication;
         publications.push(publication);
       }
       if (publications.length > 0) await this.#flushPublished(streamKey);
@@ -531,7 +531,7 @@ export class MultiplexedEventStream {
       const results = [];
       for (const event of events) {
         const result = await this.#publishLocked(streamKey, event, orderedTerminal, true);
-        if (result.error) return result;
+        if ("error" in result) return result;
         results.push(result);
       }
       await this.#flushPublished(streamKey);

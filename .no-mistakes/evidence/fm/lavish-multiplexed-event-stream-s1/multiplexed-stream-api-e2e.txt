@@ -1,0 +1,8 @@
+END-TO-END: durable multiplexed stream with thin Lavish adapter
+{"capability_file_mode":"600","capability_secret_exposed":false}
+{"queued_before_claim":{"status":"queued","pending_prompts":1},"claim":{"status":"claimed","review_id":"bd9cd32154510974","generation":1,"existing":false,"artifact_path":"/Users/kunchen/.no-mistakes/worktrees/ea3c5e639a16/01KYWYQBW9HKM906H9464F1D2P/.no-mistakes/tmp-event-e2e/artifact.html"}}
+{"ordinary_poll_after_claim":{"status":"claimed","help":"This review is claimed by a home event stream. Feedback is delivered via `lavish-axi events subscribe`, not poll."}}
+{"server_restart":"completed before subscription"}
+{"received_after_restart":{"schema":"lavish.event/1","type":"feedback","review_id":"bd9cd32154510974","generation":1,"log_position":1,"prompt":"Persist this feedback across the server restart"}}
+{"acknowledge":{"status":"ok","results":[{"event_id":"01KYX0H1GA7WKG08YZK7M3WFVK","status":"acked"}]}}
+{"retire":{"status":"retired","review_id":"bd9cd32154510974"},"reviews_after_retire":[]}

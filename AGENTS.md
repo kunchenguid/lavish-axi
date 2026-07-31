@@ -43,7 +43,7 @@ When a change touches an owned contract, update the owner; edit this file only w
 
 ## Architecture
 
-Lavish Editor is a CLI + local HTTP server that opens agent-generated HTML artifacts in a browser, lets the user annotate elements and selected text ranges or edit Mermaid diagrams as whiteboards, and ships that feedback back to the agent over a long-polling API.
+Lavish Editor is a CLI + local HTTP server that opens agent-generated HTML artifacts in a browser, lets the user annotate elements and selected text ranges or edit Mermaid diagrams as whiteboards, and ships that feedback back to the agent through a long poll or a claimed multiplexed stream.
 
 ### Process model
 
@@ -52,7 +52,7 @@ Later CLI invocations reuse the running server only when its health version matc
 Host, port, and link-host resolution lives in `src/paths.js` (`bindHost`/`clientHost`/`linkHost`); the CLI's own control-channel requests dial the bind host, falling back to loopback when it is a wildcard.
 A Host-header allowlist middleware (`buildAllowedHostnames`/`isAllowedRequestHost`) rejects any request whose `Host` is missing or not one this server answers to - the DNS-rebinding defense, since `isSameOriginRequest` alone does not stop rebinding (a rebound page sends its hostile domain in _both_ `Origin` and `Host`, so they still match). The allowlist is loopback names + the resolved bind/link host + explicit `LAVISH_AXI_ALLOWED_HOSTS` extras (`src/paths.js:extraAllowedHosts`), minus wildcard binds; a lone `*` (`allowsAllHosts`) disables the guard for operators fronting it with their own auth. When a reverse proxy sits in front, `X-Forwarded-Host`'s outermost value is validated against the same allowlist (an AND check, so a spoofed forwarded host only narrows access, never bypasses `Host`). README's Allowed hosts bullet owns the user-facing contract. So a specific-interface bind stays rebinding-protected while its own hostname works, rather than the guard switching off outside loopback.
 README's Network binding bullet owns the user-facing env vars and the non-loopback security warning.
-Server self-shutdown keys off live connections (browser SSE and agent polls), not session status, so the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json` when it is still resumable; README's Server cleanup bullet owns the user-facing idle-timeout rules.
+Server self-shutdown keys off live connections (browser SSE, agent polls, and event-stream subscriptions), not session status, so the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json` when it is still resumable; README's Server cleanup bullet owns the user-facing idle-timeout rules.
 State lives at `~/.lavish-axi/state.json` (`LAVISH_AXI_STATE_DIR`), shared across all projects and keyed by a sha256 prefix of the canonicalized file path - the canonical HTML path _is_ the identity, so the CLI never needs opaque session IDs (`src/session-store.js:sessionKey`).
 
 ### Request flow
@@ -85,12 +85,7 @@ State lives at `~/.lavish-axi/state.json` (`LAVISH_AXI_STATE_DIR`), shared acros
 
 ### Multiplexed event stream (foundation + Lavish adapter)
 
-Primary architecture: domain-neutral foundation, Lavish as first consumer.
-
-- Foundation (`src/multiplexed-stream.js`, `src/multiplexed-stream-log.js`): consumer/stream_key/generation/lease; durable append-only log + held buffer; serialized claim/publish/ack/retire; subscribe admission serialized per consumer; pressure holds new volume while retained unacked stay deliverable; no Lavish vocabulary in schema or foundation tests.
-- Adapter (`src/lavish-stream-adapter.js`): review_id/home_id mapping, claim adoption of pre-claim session state with idempotency keys, wire rename to `lavish.event/1` for Firstmate, exclusive claimed poll (`status: claimed` including ended).
-- `state.json` uses atomic temp-and-rename + 0600; foundation state is separate (`multiplexed-stream.json` + `events/`).
-- Capability input is `--home-file` only. Never log tokens or payloads.
+`docs/event-stream-protocol.md` owns the architecture, protocol, persistence, compatibility, and security contract.
 
 Invariants easy to break: re-entering store exclusive from a mirror that calls back into the store; blocking delivery of retained backlog under pressure (must hold ingestion only); claim/publish/retire without the shared exclusive queue; putting foundation types into Lavish session schema.
 
