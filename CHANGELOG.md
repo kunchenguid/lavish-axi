@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.45](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.44...lavish-axi-v0.1.45) (2026-07-31)
+
+
+### Features
+
+* add passive layout warning triage ([#210](https://github.com/kunchenguid/lavish-axi/issues/210)) ([3c75e1f](https://github.com/kunchenguid/lavish-axi/commit/3c75e1f86350a78bbad21b1779e559cd11738e52))
+
 ## [0.1.44](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.43...lavish-axi-v0.1.44) (2026-07-23)
 
 
