@@ -294,9 +294,85 @@ test("queueing a warning produces one ordinary prompt and leaves the warning unr
     assert.equal(after.active, true);
     assert.equal(after.selectable, false);
     assert.equal(after.outstanding, true);
+    const retry = await store.queuePrompts(session.key, {
+      prompts: [{ ...queued.prompt, uid: "", tag: "layout-warnings" }],
+    });
+    assert.equal(retry.conflict, undefined);
+    assert.equal(retry.prompts.length, 1);
     const feedback = await store.takeFeedback(session.key);
     assert.equal(feedback.status, "feedback");
     assert.equal(feedback.prompts[0].tag, "layout-warnings");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a prepared layout prompt conflicts when its warning changes before sending", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.bumpArtifactRevision(session.key);
+    const recorded = await store.recordLayoutDiagnostics(session.key, {
+      artifact_revision: 1,
+      complete: true,
+      viewport_width: 1440,
+      findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" }],
+    });
+    const prepared = await store.prepareLayoutWarningFixes(session.key, [recorded.warnings[0].id]);
+
+    await store.bumpArtifactRevision(session.key);
+    const resolved = await store.recordLayoutDiagnostics(session.key, {
+      artifact_revision: 2,
+      complete: true,
+      viewport_width: 1440,
+      findings: [],
+    });
+    assert.equal(resolved.warnings[0].status, "resolved");
+
+    const conflict = await store.queuePrompts(session.key, {
+      prompts: [{ ...prepared.prompt, uid: "", selector: "", tag: "layout-warnings" }],
+    });
+    assert.equal(conflict.conflict, true);
+    assert.deepEqual(conflict.warning_ids, [recorded.warnings[0].id]);
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stale diagnostic pass cannot mutate the current revision", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.bumpArtifactRevision(session.key);
+    const recorded = await store.recordLayoutDiagnostics(session.key, {
+      artifact_revision: 1,
+      complete: true,
+      viewport_width: 1440,
+      findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" }],
+    });
+
+    await store.bumpArtifactRevision(session.key);
+    const stale = await store.recordLayoutDiagnostics(session.key, {
+      artifact_revision: 1,
+      complete: true,
+      viewport_width: 1440,
+      findings: [],
+    });
+    assert.equal(stale.stale, true);
+    assert.equal(stale.warnings[0].status, "open");
+    assert.equal(stale.warnings[0].last_seen_revision, 1);
+    assert.equal(recorded.warnings[0].id, stale.warnings[0].id);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

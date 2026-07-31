@@ -1512,13 +1512,14 @@ test("the artifact revision advances on each served artifact load", async () => 
     });
     const { key } = await open.json();
 
-    await fetch(`${base}/artifact/${key}/index.html`);
+    const firstHtml = await fetch(`${base}/artifact/${key}/index.html`).then((res) => res.text());
     const first = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
     await fetch(`${base}/artifact/${key}/index.html`);
     const second = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
 
     assert.equal(first.revision, 1);
     assert.equal(second.revision, 2);
+    assert.match(firstHtml, /sdk\.js\?key=[^"&]+&artifact_revision=1/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1545,6 +1546,94 @@ test("the artifact availability probe does not advance the artifact revision", a
     await fetch(`${base}/artifact/${key}/index.html`);
     const loaded = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
     assert.equal(loaded.revision, 1);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stale diagnostic passes are ignored after a newer artifact load", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
+    const record = (body) =>
+      fetch(`${base}/api/${key}/layout-diagnostics`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((res) => res.json());
+
+    await fetch(`${base}/artifact/${key}/index.html`);
+    await record({ artifact_revision: 1, complete: true, viewport_width: 1440, findings: [finding] });
+    await fetch(`${base}/artifact/${key}/index.html`);
+    const stale = await record({ artifact_revision: 1, complete: true, viewport_width: 1440, findings: [] });
+
+    assert.equal(stale.status, "stale");
+    assert.equal(stale.warnings[0].status, "open");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stale layout prompts return a conflict without entering feedback", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
+
+    await fetch(`${base}/artifact/${key}/index.html`);
+    const recorded = await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ artifact_revision: 1, complete: true, viewport_width: 1440, findings: [finding] }),
+    }).then((res) => res.json());
+    const prepared = await fetch(`${base}/api/${key}/layout-warnings/queue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [recorded.warnings[0].id] }),
+    }).then((res) => res.json());
+
+    await fetch(`${base}/artifact/${key}/index.html`);
+    await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ artifact_revision: 2, complete: true, viewport_width: 1440, findings: [] }),
+    });
+    const response = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompts: [{ ...prepared.prompt, uid: "", selector: "", tag: "layout-warnings" }] }),
+    });
+    const conflict = await response.json();
+
+    assert.equal(response.status, 409);
+    assert.equal(conflict.status, "conflict");
+    assert.equal(conflict.warnings[0].status, "resolved");
+    assert.equal(
+      (await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=100`).then((res) => res.json()))
+        .status,
+      "waiting",
+    );
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

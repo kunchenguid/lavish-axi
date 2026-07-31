@@ -443,6 +443,7 @@ test("chrome client posts a completed diagnostic pass and never queues feedback 
 
   chrome.sendFrameMessage({
     type: "lavish:layoutDiagnostics",
+    artifact_revision: 7,
     complete: true,
     viewport_width: 720,
     findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 18, severity: "error" }],
@@ -451,6 +452,7 @@ test("chrome client posts a completed diagnostic pass and never queues feedback 
 
   const diagnostics = posts.filter((post) => post.url === "/api/abc/layout-diagnostics");
   assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].body.artifact_revision, 7);
   assert.equal(diagnostics[0].body.complete, true);
   assert.equal(diagnostics[0].body.viewport_width, 720);
   assert.equal(diagnostics[0].body.findings.length, 1);
@@ -597,7 +599,53 @@ test("queueing a selected subset produces exactly one ordinary prompt with only 
   assert.equal(chrome.element("warningsCount").textContent, "2");
   assert.equal(chrome.warningRows()[0].children[0].disabled, true);
   assert.equal(chrome.warningRows()[0].children[1].children.at(-1).children.at(-1).disabled, true);
+  assert.equal(chrome.warningRows()[0].children[1].children[2].children[1].textContent, "Queued for send");
   assert.equal(chrome.element("warningsSelected").textContent, "None selected");
+});
+
+test("a stale queued layout prompt remains available for user re-decision", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url.endsWith("/layout-warnings/queue")) {
+        return {
+          ok: true,
+          json: async () => ({
+            queued_count: 1,
+            warnings: [warningPayload()],
+            prompt: {
+              prompt: "Fix this layout issue",
+              text: "Layout issue: 1 selected",
+              target: { type: "layout-warnings", artifact_revision: 1, warnings: [{ id: "w1" }] },
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/prompts")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ warnings: [warningPayload({ status: "recurring", status_label: "Still present" })] }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.eventSource().listeners.get("layout-warnings")({
+    data: JSON.stringify({ warnings: [warningPayload()] }),
+  });
+
+  const [row] = chrome.warningRows();
+  row.children[0].checked = true;
+  row.children[0].dispatch("change");
+  await chrome.element("warningsQueueButton").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "" });
+  await flushPromises();
+
+  assert.ok(posts.some((post) => post.url === "/api/abc/prompts"));
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.warningRows()[0].children[1].children[2].children[1].textContent, "Queued for send");
 });
 
 test("dismissing a warning asks the server and never clears it locally on failure", async () => {

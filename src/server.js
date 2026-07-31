@@ -323,6 +323,15 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (session.conflict) {
+        res.status(409).json({
+          status: "conflict",
+          error: "a layout warning changed before it was sent; review the warning again",
+          warning_ids: session.warning_ids,
+          warnings: session.warnings,
+        });
+        return;
+      }
       if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       if (hasLayoutWarningPrompt) {
         await syncOutstandingRepairs(req.params.key);
@@ -350,9 +359,11 @@ export async function serve({
         return;
       }
       const activeCount = activeLayoutWarningCount(result.session.layout_warnings);
-      await syncOutstandingRepairs(req.params.key);
-      if (result.changed) events.emit("layout-warnings", req.params.key, result.warnings);
-      res.json({ status: "recorded", active_count: activeCount, warnings: result.warnings });
+      if (!result.stale) {
+        await syncOutstandingRepairs(req.params.key);
+        if (result.changed) events.emit("layout-warnings", req.params.key, result.warnings);
+      }
+      res.json({ status: result.stale ? "stale" : "recorded", active_count: activeCount, warnings: result.warnings });
     } catch (error) {
       next(error);
     }
@@ -577,8 +588,8 @@ export async function serve({
       // it is what defines an artifact revision. Warning lifecycle transitions that need "a newer
       // successful artifact load" (resolved, recurring, dismissal expiry) all key off this.
       const html = await readFile(session.file, "utf8");
-      if (req.query.probe !== "1") await store.bumpArtifactRevision(key);
-      res.type("html").send(injectLavishSdk(html, key));
+      const loadedSession = req.query.probe === "1" ? session : await store.bumpArtifactRevision(key);
+      res.type("html").send(injectLavishSdk(html, key, loadedSession.artifact_revision));
     } catch (error) {
       next(error);
     }
@@ -688,7 +699,7 @@ export async function serve({
   });
 
   app.get("/sdk.js", (req, res) => {
-    res.type("application/javascript").send(createSdkJs(String(req.query.key || "")));
+    res.type("application/javascript").send(createSdkJs(String(req.query.key || ""), req.query.artifact_revision));
   });
 
   // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
@@ -1416,7 +1427,7 @@ export function createWhiteboardFrameHtml(channelToken = "") {
 </html>`;
 }
 
-export function createSdkJs(key) {
+export function createSdkJs(key, artifactRevision = 0) {
   // Serialize every helper exported by mermaid-node.js as a same-scope const so
   // cross-helper calls (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the
   // browser. Deriving this from the module's exports — rather than a hand-kept
@@ -1424,9 +1435,12 @@ export function createSdkJs(key) {
   const mermaidHelperEntries = Object.entries(mermaidNode).filter(([, value]) => typeof value === "function");
   const mermaidHelperDecls = mermaidHelperEntries.map(([name, fn]) => `const ${name}=${fn.toString()};`).join("\n");
   const mermaidHelperKeys = mermaidHelperEntries.map(([name]) => name).join(", ");
+  const revisionNumber = Number(artifactRevision);
+  const revision = Number.isFinite(revisionNumber) && revisionNumber >= 0 ? Math.trunc(revisionNumber) : 0;
   return `(() => {
 const key=${JSON.stringify(key)};
 void key;
+const artifactRevision=${revision};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
@@ -1438,7 +1452,7 @@ const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers);
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision);
 })();`;
 }
 

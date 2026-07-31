@@ -380,7 +380,7 @@ async function submitQueued() {
   submitQueuedPromise = submitQueuedOnce();
   try {
     const result = await submitQueuedPromise;
-    succeeded = true;
+    succeeded = result !== false;
     return result;
   } finally {
     submitQueuedPromise = null;
@@ -409,7 +409,15 @@ async function submitQueuedOnce() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error("failed to submit queued prompts");
+  if (!response.ok) {
+    if (response.status === 409) {
+      const data = await response.json().catch(() => null);
+      if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
+      endAfterSubmit = false;
+      return false;
+    }
+    throw new Error("failed to submit queued prompts");
+  }
   for (const prompt of prompts) {
     const index = queued.indexOf(prompt);
     if (index !== -1) queued.splice(index, 1);
@@ -533,6 +541,7 @@ async function submitLayoutDiagnostics(pass) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       complete: pass?.complete !== false,
+      artifact_revision: Number(pass?.artifactRevision) || 0,
       viewport_width: Number(pass?.viewportWidth) || 0,
       findings: normalizeLayoutFindings(pass?.findings),
     }),
@@ -633,6 +642,8 @@ function createWarningRow(warning) {
   row.dataset.warningId = warning.id;
   const pending = pendingLayoutWarningIds().has(warning.id);
   const selectable = warning.selectable && !pending;
+  const unavailableLabel = pending ? "is queued to send" : "is already queued for a fix";
+  const statusLabel = pending ? "Queued for send" : warning.status_label;
 
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
@@ -643,7 +654,7 @@ function createWarningRow(warning) {
     "aria-label",
     selectable
       ? "Select " + warning.title + " on " + warning.viewport_label
-      : warning.title + " on " + warning.viewport_label + " is already queued for a fix",
+      : warning.title + " on " + warning.viewport_label + " " + unavailableLabel,
   );
   checkbox.addEventListener("change", () => {
     if (checkbox.checked) selectedWarningIds.add(warning.id);
@@ -669,7 +680,7 @@ function createWarningRow(warning) {
   const meta = document.createElement("div");
   meta.className = "warning-meta";
   meta.appendChild(createWarningChip("Severe", "severity"));
-  meta.appendChild(createWarningChip(warning.status_label, "status-" + warning.status));
+  meta.appendChild(createWarningChip(statusLabel, "status-" + warning.status));
   meta.appendChild(createWarningChip(warning.viewport_label + " · " + warning.viewport_width + "px"));
   const seen = warningRelativeTime(warning.last_seen_at);
   if (seen) meta.appendChild(createWarningChip("Seen " + seen));
@@ -700,7 +711,7 @@ function createWarningRow(warning) {
     "aria-label",
     selectable
       ? "Dismiss " + warning.title + " for this artifact revision"
-      : warning.title + " cannot be dismissed while a fix is queued",
+      : warning.title + " cannot be dismissed while " + (pending ? "queued to send" : "a fix is queued"),
   );
   dismiss.addEventListener("click", () => dismissWarning(warning.id));
   actions.appendChild(dismiss);
@@ -1577,6 +1588,7 @@ window.addEventListener("message", (event) => {
     if (msg.complete !== false) handleLayoutGatePass();
     submitLayoutDiagnostics({
       complete: msg.complete !== false,
+      artifactRevision: msg.artifact_revision,
       viewportWidth: msg.viewport_width,
       findings: msg.findings,
     }).catch(() => {});

@@ -261,6 +261,13 @@ test("the queued prompt payload carries bounded structured warning detail", () =
   assert.equal(payload.target.type, "layout-warnings");
   assert.equal(payload.target.warnings.length, 2);
   assert.equal(payload.target.warnings[1].rule, "clipped-text");
+
+  const queued = queueLayoutWarnings(
+    detected,
+    detected.map((warning) => warning.id),
+    { revision: 2 },
+  );
+  assert.equal(layoutWarningPromptPayload(queued.queued).target.artifact_revision, 2);
 });
 
 test("queueing more than one prompt batch leaves overflow selections selectable", () => {
@@ -286,6 +293,7 @@ test("queueing more than one prompt batch leaves overflow selections selectable"
 test("a queued prompt target is normalized and bounded", () => {
   const normalized = normalizeLayoutWarningsTarget({
     type: "layout-warnings",
+    artifact_revision: 7,
     warnings: Array.from({ length: 80 }, (_, index) => ({
       id: `id-${index}`,
       rule: "clipped-text",
@@ -299,6 +307,7 @@ test("a queued prompt target is normalized and bounded", () => {
   assert.equal(normalized.warnings[0].selector.length, 300);
   assert.equal(normalized.warnings[0].axis, "horizontal");
   assert.equal(normalized.warnings[0].overflow_px, 0);
+  assert.equal(normalized.artifact_revision, 7);
 });
 
 test("stored records describe their real magnitude, not a zero", () => {

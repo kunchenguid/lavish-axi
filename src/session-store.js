@@ -6,6 +6,7 @@ import {
   applyDiagnosticPass,
   dismissLayoutWarning as dismissWarningRecord,
   hasOutstandingRepairRequest,
+  isSelectableLayoutWarning,
   layoutWarningPromptPayload,
   markObsoleteViewportWarnings,
   normalizeLayoutWarningsTarget,
@@ -91,17 +92,35 @@ export class SessionStore {
       const revision = normalizeRevision(session.artifact_revision);
       const at = new Date().toISOString();
       let warnings = normalizeStoredWarnings(session.layout_warnings);
-      const acceptedPrompts = [];
+      const layoutPlans = [];
+      const conflicts = new Set();
       for (const prompt of normalizedPrompts) {
         const warningIds = layoutWarningPromptIds(prompt);
         if (warningIds === null) {
-          acceptedPrompts.push(prompt);
+          layoutPlans.push({ prompt, warningIds: null });
           continue;
         }
-        const hadKnownWarning = warningIds.some((id) => warnings.some((warning) => warning.id === id));
-        const result = queueWarningRecords(warnings, warningIds, { revision, at });
+        const plan = planLayoutWarningPrompt(warnings, prompt, revision);
+        for (const id of plan.conflicts) conflicts.add(id);
+        layoutPlans.push({ prompt, ...plan });
+      }
+      if (conflicts.size > 0) {
+        return {
+          conflict: true,
+          session,
+          warning_ids: [...conflicts],
+          warnings: serializeLayoutWarnings(warnings),
+        };
+      }
+      const acceptedPrompts = [];
+      for (const plan of layoutPlans) {
+        if (plan.warningIds === null) {
+          acceptedPrompts.push(plan.prompt);
+          continue;
+        }
+        const result = queueWarningRecords(warnings, plan.queueIds, { revision, at });
         warnings = result.warnings;
-        if (result.queued.length > 0 || !hadKnownWarning) acceptedPrompts.push(prompt);
+        if (result.queued.length > 0 || !plan.hadKnownWarning) acceptedPrompts.push(plan.prompt);
       }
       session.layout_warnings = warnings;
       const userMessages = acceptedPrompts
@@ -150,6 +169,15 @@ export class SessionStore {
         return null;
       }
       const revision = normalizeRevision(session.artifact_revision);
+      const reportedRevision = parseDiagnosticRevision(payload);
+      if (reportedRevision.present && reportedRevision.value !== revision) {
+        return {
+          session,
+          changed: false,
+          stale: true,
+          warnings: serializeLayoutWarnings(session.layout_warnings),
+        };
+      }
       const at = new Date().toISOString();
       const pass = applyDiagnosticPass(session.layout_warnings, {
         complete: payload.complete !== false,
@@ -400,9 +428,50 @@ function layoutWarningPromptIds(prompt) {
     : [];
 }
 
+function planLayoutWarningPrompt(warnings, prompt, revision) {
+  const warningIds = layoutWarningPromptIds(prompt);
+  const hasRevision = Object.hasOwn(prompt.target || {}, "artifact_revision");
+  const expectedRevision = hasRevision ? parseRevisionValue(prompt.target.artifact_revision) : null;
+  const conflicts = [];
+  const queueIds = [];
+  let hadKnownWarning = false;
+
+  for (const id of warningIds) {
+    const warning = warnings.find((candidate) => candidate.id === id);
+    if (!warning) continue;
+    hadKnownWarning = true;
+    const duplicate =
+      warning.status === "queued" &&
+      Boolean(warning.queued_at) &&
+      expectedRevision !== null &&
+      warning.queued_revision === expectedRevision;
+    if (duplicate) continue;
+    if (hasRevision && (expectedRevision === null || expectedRevision !== revision)) {
+      conflicts.push(id);
+      continue;
+    }
+    if (isSelectableLayoutWarning(warning)) queueIds.push(id);
+    else if (hasRevision) conflicts.push(id);
+  }
+
+  return { warningIds, expectedRevision, conflicts, queueIds, hadKnownWarning };
+}
+
 function normalizeRevision(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.trunc(number) : 0;
+}
+
+function parseRevisionValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : null;
+}
+
+function parseDiagnosticRevision(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const present = Object.hasOwn(source, "artifact_revision") || Object.hasOwn(source, "artifactRevision");
+  if (!present) return { present: false, value: null };
+  return { present: true, value: parseRevisionValue(source.artifact_revision ?? source.artifactRevision) };
 }
 
 const ARTIFACT_FAILURE_KINDS = new Set(["artifact-unavailable", "artifact-asset-unavailable"]);

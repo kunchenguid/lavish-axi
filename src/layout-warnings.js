@@ -329,31 +329,33 @@ export function layoutWarningPromptPayload(warnings) {
     `${lines.join("\n")}\n\n` +
     "Apply every listed fix in one pass before saving so the review refreshes once. " +
     "A queued layout issue is a repair request, not a resolved issue: Lavish only marks it resolved after a newer artifact load and a complete diagnostic pass for the same viewport no longer detects it.";
+  const target = {
+    type: "layout-warnings",
+    artifact_revision: Math.max(0, Math.trunc(finiteNumber(selected[0]?.queued_revision))),
+    warnings: selected.map((warning) => ({
+      id: warning.id,
+      rule: warning.rule,
+      selector: warning.selector,
+      component: warning.component,
+      axis: warning.axis,
+      overflow_px: warning.overflow_px,
+      viewport_class: warning.viewport_class,
+      viewport_width: warning.viewport_width,
+      status: warning.status,
+      last_seen_at: warning.last_seen_at,
+    })),
+  };
   return {
     prompt,
     text: count === 1 ? "Layout issue: 1 selected" : `Layout issues: ${count} selected`,
-    target: {
-      type: "layout-warnings",
-      warnings: selected.map((warning) => ({
-        id: warning.id,
-        rule: warning.rule,
-        selector: warning.selector,
-        component: warning.component,
-        axis: warning.axis,
-        overflow_px: warning.overflow_px,
-        viewport_class: warning.viewport_class,
-        viewport_width: warning.viewport_width,
-        status: warning.status,
-        last_seen_at: warning.last_seen_at,
-      })),
-    },
+    target,
   };
 }
 
 // Prompt-target normalization for the queued batch, mirroring the other structured targets.
 export function normalizeLayoutWarningsTarget(target) {
   const warnings = Array.isArray(target?.warnings) ? target.warnings : [];
-  return {
+  const normalized = {
     type: "layout-warnings",
     warnings: warnings.slice(0, MAX_QUEUED_WARNINGS_PER_PROMPT).map((warning) => ({
       id: normalizeText(warning?.id).slice(0, 64),
@@ -368,6 +370,10 @@ export function normalizeLayoutWarningsTarget(target) {
       last_seen_at: normalizeText(warning?.last_seen_at).slice(0, 40),
     })),
   };
+  if (Object.hasOwn(target || {}, "artifact_revision")) {
+    normalized.artifact_revision = Math.max(0, Math.trunc(finiteNumber(target.artifact_revision)));
+  }
+  return normalized;
 }
 
 export function resolveDiagnosticViewportClasses(env = process.env) {

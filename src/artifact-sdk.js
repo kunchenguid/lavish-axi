@@ -250,6 +250,7 @@ export function createArtifactSdk(
   deriveQueueKey,
   isNativeInteractive = isNativeInteractiveControl,
   mermaid = mermaidHelpers,
+  artifactRevision = 0,
 ) {
   const { isMermaidSvg, mermaidNodeFrom, mermaidNodeElement } = mermaid;
   let annotationMode = true;
@@ -1407,7 +1408,13 @@ export function createArtifactSdk(
     if (signature === lastLayoutAuditSignature) return;
     lastLayoutAuditSignature = signature;
     parent.postMessage(
-      { type: "lavish:layoutDiagnostics", complete, viewport_width: viewportWidth, findings: severe },
+      {
+        type: "lavish:layoutDiagnostics",
+        complete,
+        artifact_revision: artifactRevision,
+        viewport_width: viewportWidth,
+        findings: severe,
+      },
       "*",
     );
   }
