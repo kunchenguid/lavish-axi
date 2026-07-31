@@ -176,7 +176,7 @@ export class SessionStore {
       const normalizedChromeLoadToken = String(chromeLoadToken || "");
       const activeChromeLoadToken = this.chromeLoadContexts.get(key) || "";
       const activeLoad = this.artifactLoads.get(key);
-      if (normalizedChromeLoadToken && normalizedChromeLoadToken !== activeChromeLoadToken) {
+      if (!normalizedChromeLoadToken || normalizedChromeLoadToken !== activeChromeLoadToken) {
         return {
           session,
           stale: true,
@@ -225,7 +225,10 @@ export class SessionStore {
   }
 
   async bumpArtifactRevision(key) {
-    const result = await this.beginArtifactLoad(key);
+    const context = await this.beginChromeLoadContext(key);
+    const result = context
+      ? await this.beginArtifactLoad(key, "", context.artifact_load_sequence + 1, context.chrome_load_token)
+      : null;
     return result?.session || null;
   }
 

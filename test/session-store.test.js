@@ -6,8 +6,17 @@ import test from "node:test";
 
 import { SessionStore } from "../src/session-store.js";
 
+let beginRequestSequence = 0;
+
 async function beginArtifactLoad(store, key) {
-  const load = await store.beginArtifactLoad(key);
+  const context = await store.beginChromeLoadContext(key);
+  const requestSequence = context.artifact_load_sequence + 1;
+  const load = await store.beginArtifactLoad(
+    key,
+    `test-load-${++beginRequestSequence}`,
+    requestSequence,
+    context.chrome_load_token,
+  );
   assert.ok(load?.artifact_load_token);
   return load;
 }
@@ -235,8 +244,14 @@ test("a newer begun load invalidates an older diagnostic atomically", async () =
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
     const load = await beginArtifactLoad(store, session.key);
+    const newerContext = await store.beginChromeLoadContext(session.key);
     await Promise.all([
-      store.beginArtifactLoad(session.key),
+      store.beginArtifactLoad(
+        session.key,
+        "newer-load",
+        newerContext.artifact_load_sequence + 1,
+        newerContext.chrome_load_token,
+      ),
       store.recordLayoutDiagnostics(
         session.key,
         diagnosticPayload(load, 1, {
@@ -264,16 +279,17 @@ test("a retried begin request reuses the same load epoch", async () => {
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const first = await store.beginArtifactLoad(session.key, "request-1", 1);
-    const retry = await store.beginArtifactLoad(session.key, "request-1", 1);
-    const next = await store.beginArtifactLoad(session.key, "request-2", 2);
+    const context = await store.beginChromeLoadContext(session.key);
+    const first = await store.beginArtifactLoad(session.key, "request-1", 1, context.chrome_load_token);
+    const retry = await store.beginArtifactLoad(session.key, "request-1", 1, context.chrome_load_token);
+    const next = await store.beginArtifactLoad(session.key, "request-2", 2, context.chrome_load_token);
 
     assert.equal(retry.artifact_revision, first.artifact_revision);
     assert.equal(retry.artifact_load_token, first.artifact_load_token);
     assert.equal(next.artifact_revision, first.artifact_revision + 1);
     assert.notEqual(next.artifact_load_token, first.artifact_load_token);
 
-    const stale = await store.beginArtifactLoad(session.key, "request-1", 1);
+    const stale = await store.beginArtifactLoad(session.key, "request-1", 1, context.chrome_load_token);
     assert.equal(stale.stale, true);
     assert.equal(stale.artifact_revision, next.artifact_revision);
     assert.equal(stale.artifact_load_token, next.artifact_load_token);

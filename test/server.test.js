@@ -44,10 +44,21 @@ function normalizeCssForAssertions(css) {
 }
 
 async function beginArtifactLoad(base, key) {
-  const response = await fetch(`${base}/api/${key}/artifact-loads/begin`, { method: "POST" });
+  const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+  const response = await fetch(`${base}/api/${key}/artifact-loads/begin`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      request_id: `test-load-${++beginRequestSequence}`,
+      request_sequence: chrome.initialArtifactLoadSequence + 1,
+      chrome_load_token: chrome.chromeLoadToken,
+    }),
+  });
   assert.equal(response.status, 200);
   return response.json();
 }
+
+let beginRequestSequence = 0;
 
 function artifactLoadUrl(base, key, load, { probe = false } = {}) {
   const query = `artifact_revision=${load.artifact_revision}&artifact_load_token=${encodeURIComponent(load.artifact_load_token)}`;
@@ -1614,11 +1625,16 @@ test("an older overlapping begin request cannot replace the current epoch", asyn
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
+    const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
     const begin = (requestId, requestSequence) =>
       fetch(`${base}/api/${key}/artifact-loads/begin`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ request_id: requestId, request_sequence: requestSequence }),
+        body: JSON.stringify({
+          request_id: requestId,
+          request_sequence: requestSequence,
+          chrome_load_token: chrome.chromeLoadToken,
+        }),
       });
 
     const currentLoad = await begin("new-load", 2).then((response) => response.json());
@@ -1630,6 +1646,50 @@ test("an older overlapping begin request cannot replace the current epoch", asyn
     assert.equal(currentDocument.status, 200);
     const revision = await fetch(`${base}/api/${key}/layout-warnings`).then((response) => response.json());
     assert.equal(revision.revision, currentLoad.artifact_revision);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("begin-load requires the current chrome handoff before any first or direct load", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>direct</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+    const begin = (body) =>
+      fetch(`${base}/api/${key}/artifact-loads/begin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const missing = await begin({ request_id: "missing", request_sequence: 1 });
+    assert.equal(missing.status, 409);
+    const unknown = await begin({ request_id: "unknown", request_sequence: 1, chrome_load_token: "unknown" });
+    assert.equal(unknown.status, 409);
+    const firstLoad = await begin({
+      request_id: "first",
+      request_sequence: 1,
+      chrome_load_token: chrome.chromeLoadToken,
+    }).then((response) => response.json());
+    assert.equal((await fetch(artifactLoadUrl(base, key, firstLoad))).status, 200);
+
+    const directRedirect = await fetch(`${base}/artifact/${key}`, { redirect: "manual" });
+    assert.equal(directRedirect.status, 302);
+    const directArtifact = await fetch(`${base}${directRedirect.headers.get("location")}`);
+    assert.equal(directArtifact.status, 409);
+    const revision = await fetch(`${base}/api/${key}/layout-warnings`).then((response) => response.json());
+    assert.equal(revision.revision, firstLoad.artifact_revision);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
