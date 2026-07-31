@@ -1089,6 +1089,73 @@ test("a stale prior-document diagnostic cannot reveal the new gate or clear its 
   assert.ok(posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"));
 });
 
+test("stale artifact messages are ignored until the current frame load", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.eventSource().listeners.get("reload")();
+  chrome.sendFrameMessage({ type: "lavish:reviewState", state: { card: { selector: "h1", text: "stale" } } });
+  chrome.sendFrameMessage({ type: "lavish:scroll", x: 8, y: 44 });
+  chrome.sendFrameMessage({ type: "lavish:artifactAssetFailure", detail: "stale asset" });
+  await flushPromises();
+
+  assert.equal(
+    posts.some((post) => post.url === "/api/abc/artifact-failures"),
+    false,
+  );
+  chrome.frame.dispatch("load");
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:restoreReviewState"),
+    false,
+  );
+  const restoredScroll = chrome.postedToFrame.filter((message) => message.type === "lavish:restoreScroll").at(-1);
+  assert.equal(restoredScroll.x, 0);
+  assert.equal(restoredScroll.y, 0);
+
+  chrome.sendFrameMessage({ type: "lavish:artifactAssetFailure", detail: "current asset" });
+  await flushPromises();
+  assert.equal(posts.filter((post) => post.url === "/api/abc/artifact-failures").length, 1);
+});
+
+test("a delayed diagnostic response does not delay silencing the artifact probe", async () => {
+  const posts = [];
+  let releaseDiagnostic;
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url === "/api/abc/layout-diagnostics") {
+        return new Promise((resolve) => {
+          releaseDiagnostic = () => resolve({ ok: true, json: async () => ({ warnings: [] }) });
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, viewport_width: 1440, findings: [] });
+  await flushPromises();
+  chrome.runTimers(8000);
+  await flushPromises();
+
+  assert.equal(
+    posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
+    false,
+  );
+  releaseDiagnostic();
+  await flushPromises();
+  assert.equal(
+    posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
+    false,
+  );
+});
+
 test("layout gate manual override reveals immediately", async () => {
   const chrome = await createChromeHarness();
 

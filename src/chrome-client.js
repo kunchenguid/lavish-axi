@@ -108,6 +108,8 @@ let lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
 let artifactLoadGeneration = 0;
 let artifactReadyGeneration = 0;
+let artifactMessageSequence = 0;
+let layoutDiagnosticSequence = 0;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let artifactSilenceTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
@@ -1576,8 +1578,11 @@ window.addEventListener("message", (event) => {
 
   const msg = event.data || {};
   const messageGeneration = artifactLoadGeneration;
+  if (messageGeneration !== artifactReadyGeneration) return;
+  const messageSequence = ++artifactMessageSequence;
+  clearTimeout(artifactSilenceTimer);
   if (msg.type === "lavish:layoutDiagnostics") {
-    if (messageGeneration !== artifactReadyGeneration) return;
+    const diagnosticSequence = ++layoutDiagnosticSequence;
     submitLayoutDiagnostics({
       complete: msg.complete !== false,
       artifactRevision: msg.artifact_revision,
@@ -1585,15 +1590,17 @@ window.addEventListener("message", (event) => {
       findings: msg.findings,
     })
       .then((result) => {
-        if (messageGeneration !== artifactLoadGeneration || result?.status === "stale") return;
-        clearTimeout(artifactSilenceTimer);
+        if (messageGeneration !== artifactLoadGeneration || diagnosticSequence !== layoutDiagnosticSequence) return;
+        if (result?.status === "stale") {
+          if (messageSequence === artifactMessageSequence) armArtifactAvailabilityProbe();
+          return;
+        }
         if (msg.complete !== false) handleLayoutGatePass();
       })
       .catch(() => {});
     return;
   }
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
-  clearTimeout(artifactSilenceTimer);
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
   }
