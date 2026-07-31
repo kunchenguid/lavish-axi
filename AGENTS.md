@@ -36,6 +36,7 @@ Every behavior contract has one owner surface; other surfaces point at it instea
 
 - README.md owns the user-facing contract: features, CLI/flag reference, environment variables and their defaults, keyboard shortcuts, export/share semantics, and session-end etiquette.
 - Runtime guidance strings (`src/cli.js`, `src/design-reference.js`, `src/playbooks.js`) own everything agents are told while using Lavish; the generated skill mirrors them via `src/skill.js`.
+- `docs/event-stream-protocol.md` owns the domain-neutral multiplexed event-stream foundation and the Lavish adapter boundary.
 - This file owns only what neither shows at a glance: architecture internals, invariants, security rationale, and easy-to-reintroduce failure modes.
 
 When a change touches an owned contract, update the owner; edit this file only when an invariant changed.
@@ -81,6 +82,17 @@ State lives at `~/.lavish-axi/state.json` (`LAVISH_AXI_STATE_DIR`), shared acros
    If SIGINT or SIGTERM interrupts a no-timeout poll, the CLI writes re-run guidance to stderr and exits with the conventional signal code; queued feedback persists, so re-running the same poll is safe.
 8. The `/events/:key` SSE stream emits `agent-presence` states: `waiting` before any poll has attached, `listening` while one is active, and `working` after a poll has delivered feedback and released; the chrome allows queued feedback while waiting or listening and blocks sends only while working. An agent reply (`POST /api/:key/agent-reply`, the CLI's `--agent-reply`) concludes the working state and returns presence to `waiting`, so sends re-enable as soon as the agent answers instead of staying blocked until another poll attaches.
    `--agent-reply` posts a chat message into the session before polling, rendered in the browser conversation panel via the same stream.
+
+### Multiplexed event stream (foundation + Lavish adapter)
+
+Primary architecture: domain-neutral foundation, Lavish as first consumer.
+
+- Foundation (`src/multiplexed-stream.js`, `src/multiplexed-stream-log.js`): consumer/stream_key/generation/lease; durable append-only log + held buffer; serialized claim/publish/ack/retire; subscribe admission serialized per consumer; pressure holds new volume while retained unacked stay deliverable; no Lavish vocabulary in schema or foundation tests.
+- Adapter (`src/lavish-stream-adapter.js`): review_id/home_id mapping, claim adoption of pre-claim session state with idempotency keys, wire rename to `lavish.event/1` for Firstmate, exclusive claimed poll (`status: claimed` including ended).
+- `state.json` uses atomic temp-and-rename + 0600; foundation state is separate (`multiplexed-stream.json` + `events/`).
+- Capability input is `--home-file` only. Never log tokens or payloads.
+
+Invariants easy to break: re-entering store exclusive from a mirror that calls back into the store; blocking delivery of retained backlog under pressure (must hold ingestion only); claim/publish/retire without the shared exclusive queue; putting foundation types into Lavish session schema.
 
 ### Passive layout-warning inbox
 

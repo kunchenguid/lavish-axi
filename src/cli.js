@@ -7,6 +7,9 @@ import { fileURLToPath } from "node:url";
 
 import { AxiError, installSessionStartHooks, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
 
+import http from "node:http";
+import { createInterface } from "node:readline";
+
 import { createDesignOutput, DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "./design-reference.js";
 import {
   buildSelfContainedHtml,
@@ -14,6 +17,12 @@ import {
   exportWarningSummaries,
   splitExportWarnings,
 } from "./export-bundle.js";
+import {
+  createCapabilitiesOutput,
+  initHomeCapability,
+  isValidReviewId,
+  readHomeCapabilityFile,
+} from "./lavish-stream-adapter.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
@@ -21,7 +30,22 @@ import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+const COMMANDS = new Set([
+  "open",
+  "poll",
+  "end",
+  "stop",
+  "server",
+  "playbook",
+  "design",
+  "setup",
+  "export",
+  "share",
+  "capabilities",
+  "home",
+  "events",
+  "review",
+]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -96,6 +120,10 @@ export async function run(argv) {
         server: serverCommand,
         export: exportCommand,
         share: shareCommand,
+        capabilities: capabilitiesCommand,
+        home: homeCommand,
+        events: eventsCommand,
+        review: reviewCommand,
       },
       getCommandHelp: (command) => getCommandHelp(command, { agent }),
     });
@@ -351,6 +379,13 @@ export function createPollOutput({ file, response, agent = "generic" }) {
     throw new AxiError("No active Lavish Editor session for this file", "NOT_FOUND", [
       `Run \`lavish-axi ${file}\` first`,
     ]);
+  }
+  if (response.status === "claimed") {
+    return {
+      session: { file, status: "claimed" },
+      next_step:
+        "This review is claimed by a home event stream. Feedback is delivered via `lavish-axi events subscribe --home-file <path> --generation <n>`, not poll. Retire the claim before using poll on this file.",
+    };
   }
   if (response.status === "feedback") {
     const artifactFailures = Array.isArray(response.artifact_failures) ? response.artifact_failures : [];
@@ -1056,12 +1091,316 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function capabilitiesCommand(args) {
+  const output = createCapabilitiesOutput({ version: VERSION });
+  if (args.includes("--json")) return JSON.stringify(output);
+  return output;
+}
+
+async function homeCommand(args) {
+  if (args[0] !== "init") {
+    throw new AxiError("Unknown home action", "VALIDATION_ERROR", [
+      "Run `lavish-axi home init --root <path> [--file <path>]`",
+    ]);
+  }
+  const root = flagValue(args, "--root");
+  if (!root) throw new AxiError("--root is required", "VALIDATION_ERROR");
+  const result = await initHomeCapability({ root, file: flagValue(args, "--file") || undefined });
+  if (result.error) {
+    throw new AxiError(
+      `home init failed: ${result.error}`,
+      "VALIDATION_ERROR",
+      [result.file ? `file: ${result.file}` : ""].filter(Boolean),
+    );
+  }
+  return {
+    home: { status: result.status, file: result.file, home_root: result.home_root },
+    next_step: "Pass this file via --home-file. Keep mode 0600. Never put the home_id in argv, logs, or notifications.",
+  };
+}
+
+async function eventsCommand(args) {
+  if (args[0] !== "subscribe") {
+    throw new AxiError("Unknown events action", "VALIDATION_ERROR", [
+      "Run `lavish-axi events subscribe --home-file <path> --generation <n> [--cursor <n>]`",
+    ]);
+  }
+  return eventsSubscribeCommand(args.slice(1));
+}
+
+async function eventsSubscribeCommand(args) {
+  const homeFile = flagValue(args, "--home-file");
+  const generation = Number(flagValue(args, "--generation"));
+  const cursorRaw = flagValue(args, "--cursor");
+  if (!homeFile) throw new AxiError("--home-file is required", "VALIDATION_ERROR");
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new AxiError("--generation must be a positive integer", "VALIDATION_ERROR");
+  }
+  const cursor = cursorRaw ? Number(cursorRaw) : 0;
+  const home = await readHomeCapabilityFile(homeFile);
+  if (home.error) {
+    throw new AxiError(`home capability unreadable: ${home.error}`, "VALIDATION_ERROR");
+  }
+  const baseUrl = await ensureServer();
+  const streamUrl = new URL(`${baseUrl}/api/events/stream`);
+  streamUrl.searchParams.set("generation", String(generation));
+  if (cursor > 0) streamUrl.searchParams.set("cursor", String(cursor));
+  if (home.home_root) streamUrl.searchParams.set("home_root", home.home_root);
+
+  const token = home.home_id || home.consumer_id;
+  let shuttingDown = false;
+  const response = await new Promise((resolve, reject) => {
+    const req = http.request(
+      streamUrl,
+      { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "application/x-ndjson" } },
+      (res) => resolve(res),
+    );
+    req.on("error", reject);
+    req.end();
+  });
+
+  if (response.statusCode && response.statusCode >= 400) {
+    const body = await readHttpBody(response);
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      parsed = { error: "subscribe_failed" };
+    }
+    process.stdout.write(
+      `${JSON.stringify({ schema: "multiplexed.stream/1", type: "subscribe_refused", reason: parsed.error })}\n`,
+    );
+    process.stderr.write(`[lavish-axi] subscribe refused: ${parsed.error || response.statusCode}\n`);
+    process.exitCode = 2;
+    return "";
+  }
+
+  const leaseTimer = setInterval(() => {
+    postEventControl(baseUrl, "/api/events/lease", token, { generation }).catch(() => {});
+  }, 20_000);
+  leaseTimer.unref?.();
+
+  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  rl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let frame;
+    try {
+      frame = JSON.parse(trimmed);
+    } catch {
+      process.stdout.write(
+        `${JSON.stringify({ schema: "multiplexed.stream/1", type: "invalid_frame", reason: "malformed_json" })}\n`,
+      );
+      return;
+    }
+    if (frame?.bye === true) {
+      shuttingDown = true;
+      rl.close();
+      response.destroy();
+      return;
+    }
+    if (Array.isArray(frame?.ack)) {
+      postEventControl(baseUrl, "/api/events/ack", token, { generation, ack: frame.ack })
+        .then((result) => {
+          if (result?.status === "rejected") {
+            for (const item of result.results || []) {
+              if (item.status === "rejected") {
+                process.stdout.write(
+                  `${JSON.stringify({
+                    schema: "multiplexed.stream/1",
+                    type: "ack_rejected",
+                    reason: item.reason || "fenced",
+                    event_id: item.event_id,
+                  })}\n`,
+                );
+              }
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  });
+
+  await new Promise((resolve) => {
+    let buf = "";
+    response.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      let idx;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const out = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        if (!out) continue;
+        const ok = process.stdout.write(`${out}\n`);
+        if (!ok) {
+          response.pause();
+          process.stdout.once("drain", () => response.resume());
+        }
+      }
+    });
+    response.on("end", resolve);
+    response.on("close", resolve);
+    response.on("error", resolve);
+  });
+
+  clearInterval(leaseTimer);
+  rl.close();
+  if (!shuttingDown) {
+    process.stdout.write(
+      `${JSON.stringify({ schema: "multiplexed.stream/1", type: "stream_error", reason: "connection_lost" })}\n`,
+    );
+    process.stderr.write("[lavish-axi] event stream disconnected; re-run events subscribe\n");
+    process.exitCode = 1;
+  }
+  return "";
+}
+
+async function reviewCommand(args) {
+  const sub = args[0];
+  if (sub === "claim") return reviewClaimCommand(args.slice(1));
+  if (sub === "retire") return reviewRetireCommand(args.slice(1));
+  if (sub === "list") return reviewListCommand(args.slice(1));
+  throw new AxiError("Unknown review action", "VALIDATION_ERROR", [
+    "Run `lavish-axi review claim|retire|list --home-file <path> ...`",
+  ]);
+}
+
+async function reviewClaimCommand(args) {
+  const homeFile = flagValue(args, "--home-file");
+  const generation = Number(flagValue(args, "--generation"));
+  const reviewArg = flagValue(args, "--review");
+  if (!homeFile || !reviewArg || !Number.isSafeInteger(generation) || generation < 1) {
+    throw new AxiError("claim requires --home-file, --generation, and --review", "VALIDATION_ERROR");
+  }
+  const home = await readHomeCapabilityFile(homeFile);
+  if (home.error) throw new AxiError(`home capability unreadable: ${home.error}`, "VALIDATION_ERROR");
+  const reviewId = await resolveReviewId(reviewArg);
+  const baseUrl = await ensureServer();
+  const result = await postJsonAuth(`${baseUrl}/api/review/claim`, home.home_id || home.consumer_id, {
+    generation,
+    review_id: reviewId,
+    home_root: home.home_root || home.consumer_root,
+  });
+  if (result.error) {
+    throw new AxiError(
+      `review claim refused: ${result.error}`,
+      "VALIDATION_ERROR",
+      [result.help || ""].filter(Boolean),
+    );
+  }
+  return {
+    review: {
+      status: result.status,
+      review_id: result.review_id,
+      generation: result.generation,
+      existing: Boolean(result.existing),
+      artifact_path: result.artifact_path,
+    },
+    next_step: "Run `lavish-axi events subscribe --home-file <path> --generation <n>` for durable feedback.",
+  };
+}
+
+async function reviewRetireCommand(args) {
+  const homeFile = flagValue(args, "--home-file");
+  const generation = Number(flagValue(args, "--generation"));
+  const reviewArg = flagValue(args, "--review");
+  if (!homeFile || !reviewArg || !Number.isSafeInteger(generation) || generation < 1) {
+    throw new AxiError("retire requires --home-file, --generation, and --review", "VALIDATION_ERROR");
+  }
+  const home = await readHomeCapabilityFile(homeFile);
+  if (home.error) throw new AxiError(`home capability unreadable: ${home.error}`, "VALIDATION_ERROR");
+  const reviewId = await resolveReviewId(reviewArg);
+  const baseUrl = await ensureServer();
+  const result = await postJsonAuth(`${baseUrl}/api/review/retire`, home.home_id || home.consumer_id, {
+    generation,
+    review_id: reviewId,
+  });
+  if (result.error) {
+    throw new AxiError(
+      `review retire refused: ${result.error}`,
+      "VALIDATION_ERROR",
+      [result.pending_events != null ? `pending_events: ${result.pending_events}` : ""].filter(Boolean),
+    );
+  }
+  return { review: { status: result.status, review_id: result.review_id } };
+}
+
+async function reviewListCommand(args) {
+  const homeFile = flagValue(args, "--home-file");
+  if (!homeFile) throw new AxiError("--home-file is required", "VALIDATION_ERROR");
+  const home = await readHomeCapabilityFile(homeFile);
+  if (home.error) throw new AxiError(`home capability unreadable: ${home.error}`, "VALIDATION_ERROR");
+  const baseUrl = await ensureServer();
+  const result = await getJsonAuth(`${baseUrl}/api/review/list`, home.home_id || home.consumer_id);
+  if (result.error) throw new AxiError(`review list failed: ${result.error}`, "SERVER_ERROR");
+  return { reviews: result.reviews || [] };
+}
+
+async function resolveReviewId(reviewArg) {
+  const value = String(reviewArg || "");
+  if (isValidReviewId(value)) return value;
+  return sessionKey(await canonicalFile(value));
+}
+
+async function postJsonAuth(url, token, body) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw serverConnectionError();
+  }
+  const parsed = await response.json().catch(() => ({}));
+  if (!response.ok && !parsed?.error) {
+    throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
+  }
+  return parsed;
+}
+
+async function getJsonAuth(url, token) {
+  let response;
+  try {
+    response = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+  } catch {
+    throw serverConnectionError();
+  }
+  const parsed = await response.json().catch(() => ({}));
+  if (!response.ok && !parsed?.error) {
+    throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
+  }
+  return parsed;
+}
+
+async function postEventControl(baseUrl, pathName, token, body) {
+  const response = await fetch(`${baseUrl}${pathName}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function readHttpBody(res) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    res.on("data", (c) => chunks.push(c));
+    res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    res.on("error", reject);
+  });
+}
+
 export function getCommandHelp(command, { agent = "generic" } = {}) {
   return createCommandHelp({ agent })[command] || null;
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi capabilities [--json]\n  lavish-axi home init --root <path>\n  lavish-axi review claim|retire|list --home-file <path> ...\n  lavish-axi events subscribe --home-file <path> --generation <n>\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\nSupervisors multiplex reviews via the domain-neutral event-stream foundation (Lavish is the first consumer). See docs/event-stream-protocol.md.\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
@@ -1076,6 +1415,10 @@ function createCommandHelp({ agent = "generic" } = {}) {
     design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
     setup: `Usage: lavish-axi setup hooks\n\nInstall or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context.\n`,
     server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n\nLAVISH_AXI_HOST sets the bind address (default 127.0.0.1; a wildcard 0.0.0.0 or :: binds every interface). Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. LAVISH_AXI_LINK_HOST sets the hostname written into generated session links (default: the bind address, or loopback when bound to a wildcard). See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
+    capabilities: `Usage: lavish-axi capabilities [--json]\n\nPrint machine-readable protocol capabilities including protocol.event_stream for the domain-neutral multiplexed event-stream foundation.\n`,
+    home: `Usage: lavish-axi home init --root <path> [--file <path>]\n\nMint a 0600 home capability file. The unguessable token stays in the file; pass it via --home-file only.\n`,
+    review: `Usage: lavish-axi review claim|retire|list --home-file <path> [--generation <n>] [--review <id|file>]\n\nLavish adapter over the multiplexed stream foundation. See docs/event-stream-protocol.md.\n`,
+    events: `Usage: lavish-axi events subscribe --home-file <path> --generation <n> [--cursor <n>]\n\nSubscribe to the multiplexed durable event stream for every review claimed by this home. stdout NDJSON; stdin {"ack":[...]} / {"bye":true}. See docs/event-stream-protocol.md.\n`,
   };
 }
 

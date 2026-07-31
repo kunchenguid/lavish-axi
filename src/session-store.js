@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+
+import { atomicWriteText } from "./multiplexed-stream.js";
 
 import {
   applyDiagnosticPass,
@@ -20,13 +22,23 @@ import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./
 export const LAYOUT_WARNINGS_TARGET_TYPE = "layout-warnings";
 const MAX_ARTIFACT_FAILURES = 20;
 
+export const STATE_VERSION = 2;
+
 export class SessionStore {
-  constructor(file) {
+  /**
+   * @param {string} file
+   * @param {{ eventMirror?: object | null, isClaimed?: ((key: string) => Promise<boolean>) | null }} [options]
+   */
+  constructor(file, options = {}) {
     this.file = file;
     /** @type {Promise<unknown>} */
     this.stateOperationQueue = Promise.resolve();
     this.artifactLoads = new Map();
     this.chromeLoadContexts = new Map();
+    /** @type {object | null} */
+    this.eventMirror = options.eventMirror ?? null;
+    /** @type {((key: string) => Promise<boolean>) | null} */
+    this.isClaimed = options.isClaimed ?? null;
   }
 
   async listSessions() {
@@ -136,12 +148,30 @@ export class SessionStore {
       const userMessages = acceptedPrompts
         .filter((prompt) => prompt.tag === "message" && prompt.prompt)
         .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
-      session.prompts = [...(session.prompts || []), ...acceptedPrompts];
+      const nextPrompts = [...(session.prompts || []), ...acceptedPrompts];
       session.chat = [...(session.chat || []), ...userMessages];
-      session.pending_prompts = session.prompts.length;
       session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-      session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
       if (shouldEndSession) session.ended_by = "user";
+
+      const claimed = this.isClaimed ? await this.isClaimed(key) : false;
+      if (claimed && this.eventMirror && (acceptedPrompts.length > 0 || shouldEndSession)) {
+        await this.eventMirror.mirrorFeedback(key, {
+          prompts: acceptedPrompts,
+          dom_snapshot: session.dom_snapshot,
+          endSession: shouldEndSession || alreadyEnded,
+          ended_by: session.ended_by || (shouldEndSession ? "user" : undefined),
+          artifact_path: session.file,
+          claim: { stream_key: key },
+          idempotency_key: `q:${key}:${Date.now()}:${acceptedPrompts.length}:${shouldEndSession ? 1 : 0}`,
+        });
+        session.prompts = [];
+        session.pending_prompts = 0;
+        session.status = shouldEndSession || alreadyEnded ? "ended" : "open";
+      } else {
+        session.prompts = nextPrompts;
+        session.pending_prompts = session.prompts.length;
+        session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
+      }
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
       return session;
@@ -393,6 +423,18 @@ export class SessionStore {
       session.artifact_failures = merged.slice(-MAX_ARTIFACT_FAILURES);
       if (session.status !== "ended") session.status = "feedback";
       session.updated_at = new Date().toISOString();
+      const claimed = this.isClaimed ? await this.isClaimed(key) : false;
+      if (claimed && this.eventMirror) {
+        await this.eventMirror.mirrorFeedback(key, {
+          prompts: [],
+          artifact_failures: session.artifact_failures,
+          artifact_path: session.file,
+          claim: { stream_key: key },
+          idempotency_key: `fail:${key}:${session.artifact_failures.length}:${session.updated_at}`,
+        });
+        session.artifact_failures = [];
+        if (session.status !== "ended") session.status = "open";
+      }
       await this.writeState(state);
       return { session, changed: true };
     });
@@ -426,6 +468,15 @@ export class SessionStore {
       const session = state.sessions[key];
       if (!session) {
         return { status: "missing" };
+      }
+      // Claimed reviews deliver exclusively through the multiplexed event stream, including
+      // ended ones - poll must not expose the terminal transition on a second transport.
+      const claimed = this.isClaimed ? await this.isClaimed(key) : false;
+      if (claimed) {
+        return {
+          status: "claimed",
+          help: "This review is claimed by a home event stream. Feedback is delivered via `lavish-axi events subscribe`, not poll.",
+        };
       }
       // Prompts queued before the session ended (a browser send-and-end) must still reach the
       // agent, so deliver them before reporting the ended state; the next poll then sees ended.
@@ -473,8 +524,37 @@ export class SessionStore {
       }
       const existingEndedBy = session.status === "ended" ? session.ended_by : undefined;
       const nextEndedBy = endedBy === "user" || existingEndedBy === "user" ? "user" : "agent";
+      const wasEnded = session.status === "ended";
       session.status = "ended";
       session.ended_by = nextEndedBy;
+      session.updated_at = new Date().toISOString();
+      const claimed = this.isClaimed ? await this.isClaimed(key) : false;
+      if (!wasEnded && claimed && this.eventMirror) {
+        await this.eventMirror.mirrorEnded(key, {
+          ended_by: nextEndedBy,
+          artifact_path: session.file,
+          claim: { stream_key: key },
+          idempotency_key: `end:${key}:${nextEndedBy}`,
+        });
+      }
+      await this.writeState(state);
+      return session;
+    });
+  }
+
+  /** Clear session fields after the adapter has durably adopted them into the event stream. */
+  async clearAdoptedStreamState(key, { clearPrompts = false, clearFailures = false, keepEnded = false } = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return null;
+      if (clearPrompts) {
+        session.prompts = [];
+        session.pending_prompts = 0;
+        session.dom_snapshot = "";
+        if (!keepEnded && session.status === "feedback") session.status = "open";
+      }
+      if (clearFailures) session.artifact_failures = [];
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
       return session;
@@ -513,17 +593,32 @@ export class SessionStore {
     try {
       const raw = await readFile(this.file, "utf8");
       const parsed = JSON.parse(raw);
-      return { sessions: parsed.sessions || {} };
+      const { sessions, state_version, ...rest } = parsed && typeof parsed === "object" ? parsed : {};
+      return {
+        ...rest,
+        state_version: Number(state_version) || 0,
+        sessions: sessions && typeof sessions === "object" ? sessions : {},
+      };
     } catch (error) {
       if (error && error.code === "ENOENT") {
-        return { sessions: {} };
+        return { state_version: 0, sessions: {} };
       }
       throw error;
     }
   }
 
   async writeState(state) {
-    await writeFile(this.file, `${JSON.stringify(state, null, 2)}\n`);
+    const next = {
+      ...state,
+      state_version: STATE_VERSION,
+      sessions: state.sessions || {},
+    };
+    await atomicWriteText(this.file, `${JSON.stringify(next, null, 2)}\n`);
+    try {
+      await chmod(this.file, 0o600);
+    } catch {
+      // ignore
+    }
   }
 }
 
