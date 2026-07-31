@@ -271,6 +271,8 @@ test("compaction preserves idempotency across restart", async () => {
       (await restarted.publish("s", { type: "once", payload: {}, idempotency_key: "durable-key" })).status,
       "duplicate",
     );
+    const retryAck = await restarted.acknowledge(consumer, 1, [event.event.event_id]);
+    assert.equal(retryAck.results[0].status, "already_acked");
   });
 });
 

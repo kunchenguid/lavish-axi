@@ -181,7 +181,12 @@ export class SessionStore {
               endSession: shouldEndSession || alreadyEnded,
               ended_by: session.ended_by || (shouldEndSession ? "user" : undefined),
               artifact_path: session.file,
-              idempotency_key: `q:${key}:${Date.now()}:${acceptedPrompts.length}:${shouldEndSession ? 1 : 0}`,
+              idempotency_key: `q:${key}:${stableIdempotencyHash({
+                prompts: acceptedPrompts,
+                dom_snapshot: session.dom_snapshot,
+                end_session: shouldEndSession || alreadyEnded,
+                ended_by: session.ended_by || "",
+              })}`,
             })
           : { mirrored: false };
       if (mirror.mirrored) {
@@ -449,7 +454,11 @@ export class SessionStore {
             prompts: [],
             artifact_failures: session.artifact_failures,
             artifact_path: session.file,
-            idempotency_key: `fail:${key}:${session.artifact_failures.length}:${session.updated_at}`,
+            idempotency_key: `fail:${key}:${stableIdempotencyHash({
+              failures: session.artifact_failures,
+              artifact_revision: reportedRevision.value,
+              artifact_load_token: artifactLoadToken,
+            })}`,
           })
         : { mirrored: false };
       if (mirror.mirrored) {
@@ -648,6 +657,10 @@ export async function canonicalFile(file) {
 
 export function sessionKey(file) {
   return crypto.createHash("sha256").update(file).digest("hex").slice(0, 16);
+}
+
+function stableIdempotencyHash(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
 }
 
 function normalizePrompt(prompt) {
