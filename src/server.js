@@ -420,9 +420,13 @@ export async function serve({
   // to load. There is no usable review to triage from, so this still reaches the agent directly.
   app.post("/api/:key/artifact-failures", async (req, res, next) => {
     try {
-      const result = await store.recordArtifactFailures(req.params.key, req.body?.failures);
+      const result = await store.recordArtifactFailures(req.params.key, req.body || {});
       if (!result) {
         res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.stale) {
+        res.status(409).json({ status: "stale" });
         return;
       }
       if (result.changed) events.emit("feedback", req.params.key);
@@ -576,20 +580,40 @@ export async function serve({
     res.redirect(`/artifact/${req.params.key}/index.html`);
   });
 
+  app.post("/api/:key/artifact-loads/begin", async (req, res, next) => {
+    try {
+      const result = await store.beginArtifactLoad(req.params.key);
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.json({ artifact_revision: result.artifact_revision, artifact_load_token: result.artifact_load_token });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get(/^\/artifact\/([^/]+)\/index\.html$/, async (req, res, next) => {
     try {
       const key = req.params[0];
-      const session = await store.findByKey(key);
-      if (!session) {
+      const token = String(req.query.artifact_load_token || "");
+      const revision = req.query.artifact_revision;
+      const beforeRead = await store.verifyArtifactLoad(key, token, revision);
+      if (!beforeRead) {
         res.status(404).send("Session not found");
         return;
       }
-      // Serving the artifact document is the one point where a new artifact load is certain, so
-      // it is what defines an artifact revision. Warning lifecycle transitions that need "a newer
-      // successful artifact load" (resolved, recurring, dismissal expiry) all key off this.
-      const html = await readFile(session.file, "utf8");
-      const loadedSession = req.query.probe === "1" ? session : await store.bumpArtifactRevision(key);
-      res.type("html").send(injectLavishSdk(html, key, loadedSession.artifact_revision, req.query.artifact_load_token));
+      if (!beforeRead.valid) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      const html = await readFile(beforeRead.session.file, "utf8");
+      const verified = await store.verifyArtifactLoad(key, token, revision);
+      if (!verified?.valid) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
     } catch (error) {
       next(error);
     }
@@ -698,10 +722,27 @@ export async function serve({
     }
   });
 
-  app.get("/sdk.js", (req, res) => {
-    res
-      .type("application/javascript")
-      .send(createSdkJs(String(req.query.key || ""), req.query.artifact_revision, req.query.artifact_load_token));
+  app.get("/sdk.js", async (req, res, next) => {
+    try {
+      const verified = await store.verifyArtifactLoad(
+        String(req.query.key || ""),
+        req.query.artifact_load_token,
+        req.query.artifact_revision,
+      );
+      if (!verified) {
+        res.status(404).send("Session not found");
+        return;
+      }
+      if (!verified.valid) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      res
+        .type("application/javascript")
+        .send(createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token));
+    } catch (error) {
+      next(error);
+    }
   });
 
   // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed

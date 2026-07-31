@@ -30,6 +30,7 @@ async function createChromeHarness({
   const focusLog = [];
   let nextTimerId = 1;
   let reloadCount = 0;
+  let artifactRevision = 0;
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -203,10 +204,24 @@ async function createChromeHarness({
     },
   };
 
+  const harnessFetch = async (url, init) => {
+    if (String(url).includes("/artifact-loads/begin")) {
+      artifactRevision += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          artifact_revision: artifactRevision,
+          artifact_load_token: `harness-load-${artifactRevision}`,
+        }),
+      };
+    }
+    return fetchImpl(url, init);
+  };
+
   const context = {
     clearTimeout: fakeClearTimeout,
     console,
-    fetch: fetchImpl,
+    fetch: harnessFetch,
     location: {
       reload() {
         reloadCount += 1;
@@ -269,6 +284,7 @@ async function createChromeHarness({
   };
 
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
+  await flushPromises();
   if (artifactSrc) frame.dispatch("load");
 
   function frameLoadToken() {
@@ -963,7 +979,7 @@ test("chrome client registers message listener before loading the artifact ifram
   const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
 
   assert.equal(chrome.srcLoads.length, 1);
-  assert.match(chrome.srcLoads[0].src, /^\/artifact\/abc\/index\.html\?artifact_load_token=/);
+  assert.match(chrome.srcLoads[0].src, /^\/artifact\/abc\/index\.html\?artifact_revision=\d+&artifact_load_token=/);
   assert.equal(chrome.srcLoads[0].hadMessageListener, true);
 });
 
@@ -1076,6 +1092,7 @@ test("a stale prior-document diagnostic cannot reveal the new gate or clear its 
   const oldToken = chrome.artifactLoadToken();
   chrome.runTimers(25);
   chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
   chrome.sendFrameMessage({
     artifact_load_token: oldToken,
     type: "lavish:layoutDiagnostics",
@@ -1103,7 +1120,7 @@ test("a stale prior-document diagnostic cannot reveal the new gate or clear its 
   await flushPromises();
   chrome.runTimers(8000);
   await flushPromises();
-  assert.ok(posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"));
+  assert.ok(posts.some((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")));
 });
 
 test("a current load token accepts artifact messages before the frame load event", async () => {
@@ -1117,6 +1134,7 @@ test("a current load token accepts artifact messages before the frame load event
   });
 
   chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
   const currentToken = chrome.artifactLoadToken();
   chrome.sendFrameMessage({
     artifact_load_token: currentToken,
@@ -1146,13 +1164,14 @@ test("a pre-load diagnostic silences the probe even while its response is delaye
   });
 
   chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
   chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, findings: [] });
   await flushPromises();
   chrome.frame.dispatch("load");
   chrome.runTimers(8000);
 
   assert.equal(
-    posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
+    posts.some((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")),
     false,
   );
   releaseDiagnostic();
@@ -1171,6 +1190,7 @@ test("stale artifact messages are ignored until the current frame load", async (
 
   const oldToken = chrome.artifactLoadToken();
   chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
   chrome.sendFrameMessage({
     artifact_load_token: oldToken,
     type: "lavish:reviewState",
@@ -1224,13 +1244,13 @@ test("a delayed diagnostic response does not delay silencing the artifact probe"
   await flushPromises();
 
   assert.equal(
-    posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
+    posts.some((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")),
     false,
   );
   releaseDiagnostic();
   await flushPromises();
   assert.equal(
-    posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
+    posts.some((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")),
     false,
   );
 });
@@ -1242,7 +1262,7 @@ test("a stale artifact probe cannot report failure after a reload", async () => 
     artifactSrc: "/artifact/abc/index.html",
     fetchImpl: (url, init = {}) => {
       posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
-      if (url === "/artifact/abc/index.html?probe=1") {
+      if (String(url).includes("/artifact/abc/index.html?") && String(url).includes("probe=1")) {
         return new Promise((resolve) => {
           releaseProbe = () => resolve({ ok: false, status: 503 });
         });
@@ -1253,9 +1273,13 @@ test("a stale artifact probe cannot report failure after a reload", async () => 
 
   chrome.runTimers(8000);
   await flushPromises();
-  assert.equal(posts.filter((post) => post.url === "/artifact/abc/index.html?probe=1").length, 1);
+  assert.equal(
+    posts.filter((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")).length,
+    1,
+  );
 
   chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
   releaseProbe();
   await flushPromises();
 
@@ -1777,7 +1801,10 @@ test("artifact reload waits for inline whiteboards to flush", async () => {
   await flushPromises();
 
   assert.equal(chrome.srcLoads.length, initialLoadCount + 1);
-  assert.match(chrome.element("artifact").src, /^\/artifact\/abc\/index\.html\?artifact_load_token=/);
+  assert.match(
+    chrome.element("artifact").src,
+    /^\/artifact\/abc\/index\.html\?artifact_revision=\d+&artifact_load_token=/,
+  );
 });
 
 test("server restart flushes an authenticated inline whiteboard before reloading", async () => {
@@ -1942,7 +1969,8 @@ test("a silent artifact is probed for a fatal failure, and a talking one is not"
     artifactSrc: "/artifact/abc/index.html",
     fetchImpl: async (url, init) => {
       posts.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
-      if (url === "/artifact/abc/index.html?probe=1") return { ok: false, status: 404, json: async () => ({}) };
+      if (String(url).includes("/artifact/abc/index.html?") && String(url).includes("probe=1"))
+        return { ok: false, status: 404, json: async () => ({}) };
       return { ok: true, json: async () => ({}) };
     },
   });
@@ -1974,7 +2002,7 @@ test("an artifact that reports diagnostics is never probed as unavailable", asyn
   await flushPromises();
 
   assert.equal(
-    posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"),
+    posts.some((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")),
     false,
     "a healthy artifact costs exactly one document request",
   );

@@ -43,6 +43,25 @@ function normalizeCssForAssertions(css) {
     .replace(/0\./g, ".");
 }
 
+async function beginArtifactLoad(base, key) {
+  const response = await fetch(`${base}/api/${key}/artifact-loads/begin`, { method: "POST" });
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
+function artifactLoadUrl(base, key, load, { probe = false } = {}) {
+  const query = `artifact_revision=${load.artifact_revision}&artifact_load_token=${encodeURIComponent(load.artifact_load_token)}`;
+  return `${base}/artifact/${key}/index.html?${query}${probe ? "&probe=1" : ""}`;
+}
+
+function artifactMutation(load, body = {}) {
+  return {
+    artifact_load_token: load.artifact_load_token,
+    artifact_revision: load.artifact_revision,
+    ...body,
+  };
+}
+
 async function startPresenceStream(base, key) {
   const controller = new AbortController();
   const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
@@ -761,7 +780,8 @@ test("hot reload resets iframe src instead of crossing sandbox location", async 
   const js = await chromeClientSource();
 
   assert.doesNotMatch(js, /contentWindow\.location\.reload/);
-  assert.match(js, /frame\.src\s*=\s*artifactFrameSrcForToken\(mintArtifactLoadToken\(\)\)/);
+  assert.match(js, /frame\.src\s*=\s*artifactFrameSrcForLoad\(\{ revision, token \}\)/);
+  assert.match(js, /artifact-loads\/begin/);
 });
 
 test("artifact SDK reports only stable severe layout failures after fonts, resize, and animations settle", () => {
@@ -1057,7 +1077,9 @@ test("loopback server rejects forged non-loopback Host headers (DNS rebinding)",
     assert.equal((await pollCheck.json()).status, "waiting");
 
     // Sanity: the same routes still work for a loopback Host.
-    const artifactOk = await rawRequest(server.port, `/artifact/${key}/index.html`, {
+    const load = await beginArtifactLoad(`http://127.0.0.1:${server.port}`, key);
+    const artifactUrl = new URL(artifactLoadUrl(`http://127.0.0.1:${server.port}`, key, load));
+    const artifactOk = await rawRequest(server.port, artifactUrl.pathname + artifactUrl.search, {
       host: `127.0.0.1:${server.port}`,
     });
     assert.equal(artifactOk.status, 200);
@@ -1318,7 +1340,8 @@ test("detected layout warnings leave the long-poll pending and never wake an age
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    await fetch(`${base}/artifact/${key}/index.html`);
+    const load = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, load));
 
     const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=600`).then((res) =>
       res.json(),
@@ -1328,6 +1351,7 @@ test("detected layout warnings leave the long-poll pending and never wake an age
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        ...artifactMutation(load, { artifact_pass_sequence: 1 }),
         complete: true,
         viewport_width: 720,
         findings: [
@@ -1365,11 +1389,13 @@ test("queueing selected warnings wakes the poll as one ordinary prompt", async (
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    await fetch(`${base}/artifact/${key}/index.html`);
+    const load = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, load));
     const recorded = await fetch(`${base}/api/${key}/layout-diagnostics`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        ...artifactMutation(load, { artifact_pass_sequence: 1 }),
         complete: true,
         viewport_width: 1440,
         findings: [
@@ -1442,11 +1468,13 @@ test("warning-only layout observations never enter the inbox", async () => {
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
+    const load = await beginArtifactLoad(base, key);
 
     const response = await fetch(`${base}/api/${key}/layout-diagnostics`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        ...artifactMutation(load, { artifact_pass_sequence: 1 }),
         complete: true,
         viewport_width: 720,
         findings: [{ selector: ".accent", kind: "element-parent-overflow", overflowPx: 20, severity: "warning" }],
@@ -1479,6 +1507,7 @@ test("a fatal artifact failure still wakes the poll without user action", async 
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
+    const load = await beginArtifactLoad(base, key);
 
     const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=5000`).then((res) =>
       res.json(),
@@ -1488,6 +1517,7 @@ test("a fatal artifact failure still wakes the poll without user action", async 
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        ...artifactMutation(load),
         failures: [{ kind: "artifact-asset-unavailable", detail: "<img> could not load /artifact/x/logo.png" }],
       }),
     });
@@ -1502,7 +1532,7 @@ test("a fatal artifact failure still wakes the poll without user action", async 
   }
 });
 
-test("the artifact revision advances on each served artifact load", async () => {
+test("the artifact revision advances on each begun artifact load", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -1516,16 +1546,19 @@ test("the artifact revision advances on each served artifact load", async () => 
     });
     const { key } = await open.json();
 
-    const firstHtml = await fetch(`${base}/artifact/${key}/index.html?artifact_load_token=load-a`).then((res) =>
-      res.text(),
-    );
+    const firstLoad = await beginArtifactLoad(base, key);
+    const firstHtml = await fetch(artifactLoadUrl(base, key, firstLoad)).then((res) => res.text());
     const first = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
-    await fetch(`${base}/artifact/${key}/index.html`);
+    const secondLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, secondLoad));
     const second = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
 
     assert.equal(first.revision, 1);
     assert.equal(second.revision, 2);
-    assert.match(firstHtml, /sdk\.js\?key=[^"&]+&artifact_revision=1&artifact_load_token=load-a/);
+    assert.match(
+      firstHtml,
+      new RegExp(`sdk\\.js\\?key=[^"&]+&artifact_revision=1&artifact_load_token=${firstLoad.artifact_load_token}`),
+    );
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1546,12 +1579,89 @@ test("the artifact availability probe does not advance the artifact revision", a
     });
     const { key } = await open.json();
 
-    await fetch(`${base}/artifact/${key}/index.html?probe=1`);
+    const load = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, load, { probe: true }));
     const probed = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
-    assert.equal(probed.revision, 0);
-    await fetch(`${base}/artifact/${key}/index.html`);
+    assert.equal(probed.revision, 1);
+    const nextLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, nextLoad));
     const loaded = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
-    assert.equal(loaded.revision, 1);
+    assert.equal(loaded.revision, 2);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a newer begun load fences stale document and artifact mutations", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const firstLoad = await beginArtifactLoad(base, key);
+    const secondLoad = await beginArtifactLoad(base, key);
+
+    const staleDocument = await fetch(artifactLoadUrl(base, key, firstLoad));
+    assert.equal(staleDocument.status, 409);
+    const currentDocument = await fetch(artifactLoadUrl(base, key, secondLoad));
+    assert.equal(currentDocument.status, 200);
+    assert.match(await currentDocument.text(), new RegExp(`artifact_load_token=${secondLoad.artifact_load_token}`));
+
+    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=100`).then((res) =>
+      res.json(),
+    );
+    const staleDiagnostic = await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        artifactMutation(firstLoad, {
+          artifact_pass_sequence: 1,
+          complete: true,
+          target_presence_complete: true,
+          viewport_width: 1440,
+          findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 20, severity: "error" }],
+        }),
+      ),
+    });
+    assert.equal(staleDiagnostic.status, 200);
+    assert.equal((await staleDiagnostic.json()).status, "stale");
+
+    const staleFailure = await fetch(`${base}/api/${key}/artifact-failures`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        artifactMutation(firstLoad, {
+          failures: [{ kind: "artifact-asset-unavailable", detail: "stale asset" }],
+        }),
+      ),
+    });
+    assert.equal(staleFailure.status, 409);
+    assert.equal((await staleFailure.json()).status, "stale");
+    assert.deepEqual(await pollPromise, { status: "waiting" });
+
+    const currentDiagnostic = await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        artifactMutation(secondLoad, {
+          artifact_pass_sequence: 1,
+          complete: true,
+          target_presence_complete: true,
+          viewport_width: 1440,
+          findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 20, severity: "error" }],
+        }),
+      ),
+    });
+    assert.equal(currentDiagnostic.status, 200);
+    assert.equal((await currentDiagnostic.json()).status, "recorded");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1572,17 +1682,25 @@ test("stale diagnostic passes are ignored after a newer artifact load", async ()
     });
     const { key } = await open.json();
     const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
-    const record = (body) =>
+    const record = (load, body) =>
       fetch(`${base}/api/${key}/layout-diagnostics`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target_presence_complete: true, ...body }),
+        body: JSON.stringify(artifactMutation(load, { target_presence_complete: true, ...body })),
       }).then((res) => res.json());
 
-    await fetch(`${base}/artifact/${key}/index.html`);
-    await record({ artifact_revision: 1, complete: true, viewport_width: 1440, findings: [finding] });
-    await fetch(`${base}/artifact/${key}/index.html`);
-    const stale = await record({ artifact_revision: 1, complete: true, viewport_width: 1440, findings: [] });
+    const firstLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, firstLoad));
+    await record(firstLoad, { artifact_pass_sequence: 1, complete: true, viewport_width: 1440, findings: [finding] });
+    const secondLoad = await beginArtifactLoad(base, key);
+    const stale = await record(secondLoad, {
+      artifact_load_token: firstLoad.artifact_load_token,
+      artifact_revision: firstLoad.artifact_revision,
+      artifact_pass_sequence: 2,
+      complete: true,
+      viewport_width: 1440,
+      findings: [],
+    });
 
     assert.equal(stale.status, "stale");
     assert.equal(stale.warnings[0].status, "open");
@@ -1607,11 +1725,19 @@ test("stale layout prompts return a conflict without entering feedback", async (
     const { key } = await open.json();
     const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
 
-    await fetch(`${base}/artifact/${key}/index.html`);
+    const firstLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, firstLoad));
     const recorded = await fetch(`${base}/api/${key}/layout-diagnostics`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ artifact_revision: 1, complete: true, viewport_width: 1440, findings: [finding] }),
+      body: JSON.stringify(
+        artifactMutation(firstLoad, {
+          artifact_pass_sequence: 1,
+          complete: true,
+          viewport_width: 1440,
+          findings: [finding],
+        }),
+      ),
     }).then((res) => res.json());
     const prepared = await fetch(`${base}/api/${key}/layout-warnings/queue`, {
       method: "POST",
@@ -1619,12 +1745,13 @@ test("stale layout prompts return a conflict without entering feedback", async (
       body: JSON.stringify({ ids: [recorded.warnings[0].id] }),
     }).then((res) => res.json());
 
-    await fetch(`${base}/artifact/${key}/index.html`);
+    const secondLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, secondLoad));
     await fetch(`${base}/api/${key}/layout-diagnostics`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        artifact_revision: 2,
+        ...artifactMutation(secondLoad, { artifact_pass_sequence: 1 }),
         complete: true,
         target_presence_complete: true,
         viewport_width: 1440,
@@ -1666,29 +1793,47 @@ test("a newer complete matching-viewport pass resolves a warning and a different
     });
     const { key } = await open.json();
     const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
-    const record = (body) =>
+    const record = (load, body) =>
       fetch(`${base}/api/${key}/layout-diagnostics`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target_presence_complete: true, ...body }),
+        body: JSON.stringify(artifactMutation(load, { target_presence_complete: true, ...body })),
       }).then((res) => res.json());
 
-    await fetch(`${base}/artifact/${key}/index.html`);
-    await record({ complete: true, viewport_width: 390, findings: [finding] });
+    const firstLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, firstLoad));
+    await record(firstLoad, { artifact_pass_sequence: 1, complete: true, viewport_width: 390, findings: [finding] });
 
     // A desktop pass says nothing about the phone-only warning.
-    await fetch(`${base}/artifact/${key}/index.html`);
-    const desktop = await record({ complete: true, viewport_width: 1440, findings: [] });
+    const secondLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, secondLoad));
+    const desktop = await record(secondLoad, {
+      artifact_pass_sequence: 1,
+      complete: true,
+      viewport_width: 1440,
+      findings: [],
+    });
     assert.equal(desktop.active_count, 1);
 
     // An incomplete phone pass preserves it as unverified.
-    const failed = await record({ complete: false, viewport_width: 390, findings: [] });
+    const failed = await record(secondLoad, {
+      artifact_pass_sequence: 2,
+      complete: false,
+      viewport_width: 390,
+      findings: [],
+    });
     assert.equal(failed.active_count, 1);
     assert.equal(failed.warnings[0].status, "unverified");
 
     // A complete phone pass on a newer load finally resolves it.
-    await fetch(`${base}/artifact/${key}/index.html`);
-    const resolved = await record({ complete: true, viewport_width: 390, findings: [] });
+    const thirdLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, thirdLoad));
+    const resolved = await record(thirdLoad, {
+      artifact_pass_sequence: 1,
+      complete: true,
+      viewport_width: 390,
+      findings: [],
+    });
     assert.equal(resolved.active_count, 0);
     assert.equal(resolved.warnings[0].status, "resolved");
   } finally {
@@ -1710,11 +1855,13 @@ test("the chrome bootstraps the inbox so it survives a browser refresh", async (
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    await fetch(`${base}/artifact/${key}/index.html`);
+    const load = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, load));
     await fetch(`${base}/api/${key}/layout-diagnostics`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        ...artifactMutation(load, { artifact_pass_sequence: 1 }),
         complete: true,
         target_presence_complete: true,
         viewport_width: 1440,

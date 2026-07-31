@@ -735,6 +735,7 @@ export function createArtifactSdk(
   let layoutAuditTimer = 0;
   let layoutAuditRun = 0;
   let lastLayoutAuditSignature = null;
+  let layoutAuditPassSequence = 0;
 
   function toPixelNumber(value) {
     const parsed = Number.parseFloat(String(value || "0"));
@@ -1414,6 +1415,7 @@ export function createArtifactSdk(
     postArtifactMessage("lavish:layoutDiagnostics", {
       complete,
       artifact_revision: artifactRevision,
+      artifact_pass_sequence: ++layoutAuditPassSequence,
       target_presence_complete: targetPresenceComplete === true,
       viewport_width: viewportWidth,
       findings: severe,

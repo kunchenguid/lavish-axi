@@ -24,6 +24,7 @@ export class SessionStore {
   constructor(file) {
     this.file = file;
     this.stateOperationQueue = Promise.resolve();
+    this.artifactLoads = new Map();
   }
 
   async listSessions() {
@@ -73,6 +74,7 @@ export class SessionStore {
         updated_at: new Date().toISOString(),
       };
       state.sessions[key] = session;
+      this.artifactLoads.delete(key);
       await this.writeState(state);
       return session;
     });
@@ -138,20 +140,49 @@ export class SessionStore {
     });
   }
 
-  // A successful artifact document load is one artifact revision. Every diagnostic observation is
-  // tied to the revision it was taken on, which is what makes "resolved" (absent from a complete
-  // pass on a NEWER revision) and "recurring" (still present on a newer revision) decidable.
-  async bumpArtifactRevision(key) {
+  async beginArtifactLoad(key) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
       if (!session) {
         return null;
       }
-      session.artifact_revision = normalizeRevision(session.artifact_revision) + 1;
+      const artifactRevision = normalizeRevision(session.artifact_revision) + 1;
+      const artifactLoadToken = crypto.randomBytes(24).toString("base64url");
+      this.artifactLoads.set(key, { artifactRevision, artifactLoadToken, lastPassSequence: 0 });
+      session.artifact_revision = artifactRevision;
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
-      return session;
+      return { session, artifact_revision: artifactRevision, artifact_load_token: artifactLoadToken };
+    });
+  }
+
+  async bumpArtifactRevision(key) {
+    const result = await this.beginArtifactLoad(key);
+    return result?.session || null;
+  }
+
+  async verifyArtifactLoad(key, artifactLoadToken, artifactRevision) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const load = this.artifactLoads.get(key);
+      const revision = parseRevisionValue(artifactRevision);
+      const valid = Boolean(
+        load &&
+        String(artifactLoadToken || "") &&
+        String(artifactLoadToken) === load.artifactLoadToken &&
+        revision === load.artifactRevision,
+      );
+      return {
+        session,
+        valid,
+        artifact_revision: load?.artifactRevision ?? normalizeRevision(session.artifact_revision),
+        artifact_load_token: load?.artifactLoadToken || "",
+      };
     });
   }
 
@@ -169,8 +200,18 @@ export class SessionStore {
         return null;
       }
       const revision = normalizeRevision(session.artifact_revision);
+      const load = this.artifactLoads.get(key);
+      const artifactLoadToken = String(payload?.artifact_load_token || payload?.artifactLoadToken || "");
       const reportedRevision = parseDiagnosticRevision(payload);
-      if (reportedRevision.present && reportedRevision.value !== revision) {
+      const passSequence = parsePassSequence(payload);
+      if (
+        !load ||
+        artifactLoadToken !== load.artifactLoadToken ||
+        !reportedRevision.present ||
+        reportedRevision.value !== load.artifactRevision ||
+        !passSequence.present ||
+        passSequence.value <= load.lastPassSequence
+      ) {
         return {
           session,
           changed: false,
@@ -178,6 +219,7 @@ export class SessionStore {
           warnings: serializeLayoutWarnings(session.layout_warnings),
         };
       }
+      load.lastPassSequence = passSequence.value;
       const at = new Date().toISOString();
       const pass = applyDiagnosticPass(session.layout_warnings, {
         complete: payload.complete !== false,
@@ -250,14 +292,25 @@ export class SessionStore {
   // served, or one of its own local assets cannot be loaded). These are NOT layout findings and
   // do not enter the passive inbox - they still reach the agent immediately, because there is no
   // usable review for the user to triage from.
-  async recordArtifactFailures(key, failures) {
+  async recordArtifactFailures(key, payload) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
       if (!session) {
         return null;
       }
-      const normalized = normalizeArtifactFailures(failures);
+      const load = this.artifactLoads.get(key);
+      const artifactLoadToken = String(payload?.artifact_load_token || payload?.artifactLoadToken || "");
+      const reportedRevision = parseDiagnosticRevision(payload);
+      if (
+        !load ||
+        artifactLoadToken !== load.artifactLoadToken ||
+        !reportedRevision.present ||
+        reportedRevision.value !== load.artifactRevision
+      ) {
+        return { session, changed: false, stale: true };
+      }
+      const normalized = normalizeArtifactFailures(payload?.failures);
       const previous = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
       const merged = [...previous];
       let changed = false;
@@ -473,6 +526,13 @@ function parseDiagnosticRevision(payload) {
   const present = Object.hasOwn(source, "artifact_revision") || Object.hasOwn(source, "artifactRevision");
   if (!present) return { present: false, value: null };
   return { present: true, value: parseRevisionValue(source.artifact_revision ?? source.artifactRevision) };
+}
+
+function parsePassSequence(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const present = Object.hasOwn(source, "artifact_pass_sequence") || Object.hasOwn(source, "artifactPassSequence");
+  const value = Number(source.artifact_pass_sequence ?? source.artifactPassSequence);
+  return { present, value: Number.isSafeInteger(value) && value > 0 ? value : null };
 }
 
 const ARTIFACT_FAILURE_KINDS = new Set(["artifact-unavailable", "artifact-asset-unavailable"]);

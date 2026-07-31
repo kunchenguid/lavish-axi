@@ -107,7 +107,8 @@ let lastScroll = { x: 0, y: 0 };
 let lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
 let artifactLoadToken = "";
-let artifactLoadTokenCounter = 0;
+let artifactLoadRevision = 0;
+let artifactLoadRequestSequence = 0;
 let artifactSpokeToken = "";
 let artifactMessageSequence = 0;
 let layoutDiagnosticSequence = 0;
@@ -118,16 +119,16 @@ let copyHintTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendHintTimer;
 
-function mintArtifactLoadToken() {
-  artifactLoadTokenCounter += 1;
-  artifactLoadToken = `lavish-${Date.now().toString(36)}-${artifactLoadTokenCounter}`;
-  artifactSpokeToken = "";
-  return artifactLoadToken;
-}
-
-function artifactFrameSrcForToken(token) {
+function artifactFrameSrcForLoad(load) {
   const separator = artifactSrc.includes("?") ? "&" : "?";
-  return artifactSrc + separator + "artifact_load_token=" + encodeURIComponent(token);
+  return (
+    artifactSrc +
+    separator +
+    "artifact_revision=" +
+    encodeURIComponent(load.revision) +
+    "&artifact_load_token=" +
+    encodeURIComponent(load.token)
+  );
 }
 
 function escapeHtml(value) {
@@ -560,6 +561,8 @@ async function submitLayoutDiagnostics(pass) {
       complete: pass?.complete !== false,
       target_presence_complete: pass?.targetPresenceComplete === true,
       artifact_revision: Number(pass?.artifactRevision) || 0,
+      artifact_load_token: String(pass?.artifactLoadToken || artifactLoadToken),
+      artifact_pass_sequence: Number(pass?.artifactPassSequence) || 0,
       viewport_width: Number(pass?.viewportWidth) || 0,
       findings: normalizeLayoutFindings(pass?.findings),
     }),
@@ -573,7 +576,7 @@ async function reportArtifactFailures(failures, loadToken = artifactLoadToken) {
   await fetch("/api/" + key + "/artifact-failures", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ failures }),
+    body: JSON.stringify({ failures, artifact_load_token: loadToken, artifact_revision: artifactLoadRevision }),
   });
 }
 
@@ -590,12 +593,24 @@ function armArtifactAvailabilityProbe(loadToken = artifactLoadToken) {
   artifactSilenceTimer?.unref?.();
 }
 
+function artifactProbeSrc() {
+  const separator = artifactSrc.includes("?") ? "&" : "?";
+  return (
+    artifactSrc +
+    separator +
+    "probe=1&artifact_revision=" +
+    encodeURIComponent(artifactLoadRevision) +
+    "&artifact_load_token=" +
+    encodeURIComponent(artifactLoadToken)
+  );
+}
+
 async function probeArtifactAvailability(loadToken) {
   if (loadToken !== artifactLoadToken) return;
   try {
-    const probeSrc = artifactSrc + (artifactSrc.includes("?") ? "&" : "?") + "probe=1";
-    const response = await fetch(probeSrc, { cache: "no-store" });
+    const response = await fetch(artifactProbeSrc(), { cache: "no-store" });
     if (loadToken !== artifactLoadToken) return;
+    if (response.status === 409) return;
     if (response.ok) return;
     await reportArtifactFailures(
       [{ kind: "artifact-unavailable", detail: "the artifact document responded with HTTP " + response.status }],
@@ -1057,15 +1072,36 @@ async function publishShare(event) {
   }
 }
 
-function replaceArtifactFrame() {
+async function replaceArtifactFrame() {
   clearTimeout(artifactSilenceTimer);
   startLayoutGateCycle();
   inlineWhiteboardChannels.clear();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
-  if (artifactSrc) {
-    frame.src = artifactFrameSrcForToken(mintArtifactLoadToken());
-  } else {
+  if (!artifactSrc) {
     frame.src = frame.src;
+    return true;
+  }
+  const requestSequence = ++artifactLoadRequestSequence;
+  artifactLoadToken = "";
+  artifactLoadRevision = 0;
+  artifactSpokeToken = "";
+  try {
+    const response = await fetch("/api/" + key + "/artifact-loads/begin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
+    if (!response.ok) throw new Error("failed to begin artifact load");
+    const load = await response.json();
+    if (requestSequence !== artifactLoadRequestSequence || ended) return false;
+    const revision = Number(load?.artifact_revision);
+    const token = String(load?.artifact_load_token || "");
+    if (!Number.isSafeInteger(revision) || revision < 0 || !token) return false;
+    artifactLoadRevision = revision;
+    artifactLoadToken = token;
+    frame.src = artifactFrameSrcForLoad({ revision, token });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1075,14 +1111,12 @@ function resetFrame() {
     ([index, channel]) => channel.initialized && index !== overlayIndex,
   );
   if (!hasLiveInlineWhiteboard) {
-    replaceArtifactFrame();
-    return Promise.resolve(true);
+    return replaceArtifactFrame();
   }
   artifactResetPromise = flushInlineWhiteboards()
     .then((flushed) => {
       if (!flushed) return false;
-      replaceArtifactFrame();
-      return true;
+      return replaceArtifactFrame();
     })
     .finally(() => {
       artifactResetPromise = null;
@@ -1549,7 +1583,7 @@ window.addEventListener("message", (event) => {
 
 function loadFrame() {
   if (artifactSrc) {
-    frame.src = artifactFrameSrcForToken(mintArtifactLoadToken());
+    replaceArtifactFrame().catch(() => {});
   }
 }
 
@@ -1604,6 +1638,8 @@ window.addEventListener("message", (event) => {
       complete: msg.complete !== false,
       targetPresenceComplete: msg.target_presence_complete === true,
       artifactRevision: msg.artifact_revision,
+      artifactLoadToken: msg.artifact_load_token,
+      artifactPassSequence: msg.artifact_pass_sequence,
       viewportWidth: msg.viewport_width,
       findings: msg.findings,
     })

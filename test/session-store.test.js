@@ -6,6 +6,21 @@ import test from "node:test";
 
 import { SessionStore } from "../src/session-store.js";
 
+async function beginArtifactLoad(store, key) {
+  const load = await store.beginArtifactLoad(key);
+  assert.ok(load?.artifact_load_token);
+  return load;
+}
+
+function diagnosticPayload(load, sequence, body = {}) {
+  return {
+    artifact_load_token: load.artifact_load_token,
+    artifact_revision: load.artifact_revision,
+    artifact_pass_sequence: sequence,
+    ...body,
+  };
+}
+
 function feedbackResult(result) {
   assert.equal(result.status, "feedback");
   return /** @type {{ status: string, dom_snapshot: string, prompts: any[], artifact_failures?: any[], session_ended?: boolean, ended_by?: string }} */ (
@@ -179,14 +194,23 @@ test("a diagnostic pass records warnings passively and never becomes agent feedb
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.bumpArtifactRevision(session.key);
-    const result = await store.recordLayoutDiagnostics(session.key, {
-      complete: true,
-      viewport_width: 720,
-      findings: [
-        { selector: "html", kind: "page-horizontal-overflow", overflowPx: 24.5, viewportWidth: 720, severity: "error" },
-      ],
-    });
+    const load = await beginArtifactLoad(store, session.key);
+    const result = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(load, 1, {
+        complete: true,
+        viewport_width: 720,
+        findings: [
+          {
+            selector: "html",
+            kind: "page-horizontal-overflow",
+            overflowPx: 24.5,
+            viewportWidth: 720,
+            severity: "error",
+          },
+        ],
+      }),
+    );
 
     assert.equal(result.changed, true);
     assert.equal(result.warnings.length, 1);
@@ -201,7 +225,7 @@ test("a diagnostic pass records warnings passively and never becomes agent feedb
   }
 });
 
-test("concurrent session mutations preserve both artifact revisions and warning records", async () => {
+test("a newer begun load invalidates an older diagnostic atomically", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -210,18 +234,22 @@ test("concurrent session mutations preserve both artifact revisions and warning 
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const load = await beginArtifactLoad(store, session.key);
     await Promise.all([
-      store.bumpArtifactRevision(session.key),
-      store.recordLayoutDiagnostics(session.key, {
-        complete: true,
-        viewport_width: 1440,
-        findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
-      }),
+      store.beginArtifactLoad(session.key),
+      store.recordLayoutDiagnostics(
+        session.key,
+        diagnosticPayload(load, 1, {
+          complete: true,
+          viewport_width: 1440,
+          findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
+        }),
+      ),
     ]);
 
     const updated = await store.findByKey(session.key);
-    assert.equal(updated.artifact_revision, 1);
-    assert.equal(updated.layout_warnings.length, 1);
+    assert.equal(updated.artifact_revision, 2);
+    assert.equal(updated.layout_warnings.length, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -236,20 +264,24 @@ test("non-severe observations never enter the inbox", async () => {
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const result = await store.recordLayoutDiagnostics(session.key, {
-      complete: true,
-      viewport_width: 720,
-      findings: [
-        {
-          selector: ".accent",
-          kind: "element-parent-overflow",
-          overflowPx: 20,
-          viewportWidth: 720,
-          severity: "warning",
-        },
-        { selector: ".unproven", kind: "clipped-text", overflowPx: 200, viewportWidth: 720 },
-      ],
-    });
+    const load = await beginArtifactLoad(store, session.key);
+    const result = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(load, 1, {
+        complete: true,
+        viewport_width: 720,
+        findings: [
+          {
+            selector: ".accent",
+            kind: "element-parent-overflow",
+            overflowPx: 20,
+            viewportWidth: 720,
+            severity: "warning",
+          },
+          { selector: ".unproven", kind: "clipped-text", overflowPx: 200, viewportWidth: 720 },
+        ],
+      }),
+    );
 
     assert.equal(result.warnings.length, 0);
     assert.equal((await store.takeFeedback(session.key)).status, "waiting");
@@ -267,15 +299,18 @@ test("queueing a warning produces one ordinary prompt and leaves the warning unr
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.bumpArtifactRevision(session.key);
-    const recorded = await store.recordLayoutDiagnostics(session.key, {
-      complete: true,
-      viewport_width: 1440,
-      findings: [
-        { selector: "button", kind: "clipped-control", axis: "horizontal", overflowPx: 20, severity: "error" },
-        { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" },
-      ],
-    });
+    const load = await beginArtifactLoad(store, session.key);
+    const recorded = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(load, 1, {
+        complete: true,
+        viewport_width: 1440,
+        findings: [
+          { selector: "button", kind: "clipped-control", axis: "horizontal", overflowPx: 20, severity: "error" },
+          { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" },
+        ],
+      }),
+    );
     const [first, second] = recorded.warnings;
 
     const queued = await store.prepareLayoutWarningFixes(session.key, [first.id]);
@@ -316,23 +351,27 @@ test("a prepared layout prompt conflicts when its warning changes before sending
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.bumpArtifactRevision(session.key);
-    const recorded = await store.recordLayoutDiagnostics(session.key, {
-      artifact_revision: 1,
-      complete: true,
-      viewport_width: 1440,
-      findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" }],
-    });
+    const firstLoad = await beginArtifactLoad(store, session.key);
+    const recorded = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(firstLoad, 1, {
+        complete: true,
+        viewport_width: 1440,
+        findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" }],
+      }),
+    );
     const prepared = await store.prepareLayoutWarningFixes(session.key, [recorded.warnings[0].id]);
 
-    await store.bumpArtifactRevision(session.key);
-    const resolved = await store.recordLayoutDiagnostics(session.key, {
-      artifact_revision: 2,
-      complete: true,
-      target_presence_complete: true,
-      viewport_width: 1440,
-      findings: [],
-    });
+    const secondLoad = await beginArtifactLoad(store, session.key);
+    const resolved = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(secondLoad, 1, {
+        complete: true,
+        target_presence_complete: true,
+        viewport_width: 1440,
+        findings: [],
+      }),
+    );
     assert.equal(resolved.warnings[0].status, "resolved");
 
     const conflict = await store.queuePrompts(session.key, {
@@ -355,21 +394,27 @@ test("a stale diagnostic pass cannot mutate the current revision", async () => {
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.bumpArtifactRevision(session.key);
-    const recorded = await store.recordLayoutDiagnostics(session.key, {
-      artifact_revision: 1,
-      complete: true,
-      viewport_width: 1440,
-      findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" }],
-    });
+    const firstLoad = await beginArtifactLoad(store, session.key);
+    const recorded = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(firstLoad, 1, {
+        complete: true,
+        viewport_width: 1440,
+        findings: [{ selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" }],
+      }),
+    );
 
-    await store.bumpArtifactRevision(session.key);
-    const stale = await store.recordLayoutDiagnostics(session.key, {
-      artifact_revision: 1,
-      complete: true,
-      viewport_width: 1440,
-      findings: [],
-    });
+    const secondLoad = await beginArtifactLoad(store, session.key);
+    const stale = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(secondLoad, 1, {
+        artifact_load_token: firstLoad.artifact_load_token,
+        artifact_revision: firstLoad.artifact_revision,
+        complete: true,
+        viewport_width: 1440,
+        findings: [],
+      }),
+    );
     assert.equal(stale.stale, true);
     assert.equal(stale.warnings[0].status, "open");
     assert.equal(stale.warnings[0].last_seen_revision, 1);
@@ -423,12 +468,15 @@ test("the inbox survives reopening the same artifact", async () => {
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.bumpArtifactRevision(session.key);
-    await store.recordLayoutDiagnostics(session.key, {
-      complete: true,
-      viewport_width: 720,
-      findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
-    });
+    const load = await beginArtifactLoad(store, session.key);
+    await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(load, 1, {
+        complete: true,
+        viewport_width: 720,
+        findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
+      }),
+    );
 
     const reopened = await store.upsertSession(artifact, "http://localhost:4387/session/test");
 
@@ -450,13 +498,16 @@ test("dismissing a warning lasts only for the current artifact revision", async 
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await store.bumpArtifactRevision(session.key);
+    const firstLoad = await beginArtifactLoad(store, session.key);
     const finding = { selector: "html", kind: "page-horizontal-overflow", overflowPx: 40, severity: "error" };
-    const recorded = await store.recordLayoutDiagnostics(session.key, {
-      complete: true,
-      viewport_width: 720,
-      findings: [finding],
-    });
+    const recorded = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(firstLoad, 1, {
+        complete: true,
+        viewport_width: 720,
+        findings: [finding],
+      }),
+    );
     const id = recorded.warnings[0].id;
 
     const dismissed = await store.dismissLayoutWarning(session.key, id);
@@ -464,19 +515,25 @@ test("dismissing a warning lasts only for the current artifact revision", async 
     assert.equal(dismissed.warnings[0].active, false);
 
     // Same revision: still dismissed even though the pass keeps seeing it.
-    const sameRevision = await store.recordLayoutDiagnostics(session.key, {
-      complete: true,
-      viewport_width: 720,
-      findings: [finding],
-    });
+    const sameRevision = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(firstLoad, 2, {
+        complete: true,
+        viewport_width: 720,
+        findings: [finding],
+      }),
+    );
     assert.equal(sameRevision.warnings[0].status, "dismissed");
 
-    await store.bumpArtifactRevision(session.key);
-    const laterRevision = await store.recordLayoutDiagnostics(session.key, {
-      complete: true,
-      viewport_width: 720,
-      findings: [finding],
-    });
+    const secondLoad = await beginArtifactLoad(store, session.key);
+    const laterRevision = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(secondLoad, 1, {
+        complete: true,
+        viewport_width: 720,
+        findings: [finding],
+      }),
+    );
     assert.equal(laterRevision.warnings[0].status, "open");
     assert.equal(laterRevision.warnings[0].active, true);
   } finally {
@@ -493,15 +550,62 @@ test("fatal artifact failures still reach the agent without user action", async 
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const result = await store.recordArtifactFailures(session.key, [
-      { kind: "artifact-asset-unavailable", detail: "<img> could not load /artifact/x/logo.png" },
-      { kind: "not-a-real-kind", detail: "ignored" },
-    ]);
+    const load = await beginArtifactLoad(store, session.key);
+    const result = await store.recordArtifactFailures(session.key, {
+      ...diagnosticPayload(load, 1),
+      failures: [
+        { kind: "artifact-asset-unavailable", detail: "<img> could not load /artifact/x/logo.png" },
+        { kind: "not-a-real-kind", detail: "ignored" },
+      ],
+    });
     assert.equal(result.changed, true);
 
     const feedback = feedbackResult(await store.takeFeedback(session.key));
     assert.equal(feedback.artifact_failures.length, 1);
     assert.equal(feedback.artifact_failures[0].severity, "fatal");
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stale artifact failures and duplicate diagnostic sequences have no side effects", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const load = await beginArtifactLoad(store, session.key);
+    const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 20, severity: "error" };
+    const first = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(load, 1, {
+        complete: true,
+        target_presence_complete: true,
+        viewport_width: 1440,
+        findings: [finding],
+      }),
+    );
+    const duplicate = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(load, 1, {
+        complete: true,
+        target_presence_complete: true,
+        viewport_width: 1440,
+        findings: [],
+      }),
+    );
+    assert.equal(first.changed, true);
+    assert.equal(duplicate.stale, true);
+    assert.equal(duplicate.warnings[0].status, "open");
+
+    const staleFailure = await store.recordArtifactFailures(session.key, {
+      failures: [{ kind: "artifact-asset-unavailable", detail: "missing token" }],
+    });
+    assert.equal(staleFailure.stale, true);
     assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -685,11 +789,15 @@ test("late layout diagnostics do not reopen ended sessions or become feedback", 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
     await store.endSession(session.key);
-    await store.recordLayoutDiagnostics(session.key, {
-      complete: true,
-      viewport_width: 720,
-      findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
-    });
+    const load = await beginArtifactLoad(store, session.key);
+    await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(load, 1, {
+        complete: true,
+        viewport_width: 720,
+        findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
+      }),
+    );
 
     const updated = await store.findByKey(session.key);
     assert.equal(updated.status, "ended");
