@@ -440,6 +440,7 @@ test("chrome client surfaces a superseded reviewer without re-handshaking", asyn
 });
 
 test("stale re-handshake responses cannot overwrite a newer load", async () => {
+  /** @type {((value: any) => void) | undefined} */
   let resolveOldHandoff;
   const oldHandoffJson = new Promise((resolve) => {
     resolveOldHandoff = resolve;
@@ -475,6 +476,7 @@ test("stale re-handshake responses cannot overwrite a newer load", async () => {
   await flushPromises();
   await flushPromises();
 
+  assert.ok(resolveOldHandoff);
   resolveOldHandoff({
     chrome_load_token: "old-recovery",
     artifact_revision: 1,
@@ -1330,6 +1332,7 @@ test("a current load token accepts artifact messages before the frame load event
 
 test("a pre-load diagnostic silences the probe even while its response is delayed", async () => {
   const posts = [];
+  /** @type {(() => void) | undefined} */
   let releaseDiagnostic;
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -1355,6 +1358,7 @@ test("a pre-load diagnostic silences the probe even while its response is delaye
     posts.some((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")),
     false,
   );
+  assert.ok(releaseDiagnostic);
   releaseDiagnostic();
   await flushPromises();
 });
@@ -1405,6 +1409,7 @@ test("stale artifact messages are ignored until the current frame load", async (
 
 test("a delayed diagnostic response does not delay silencing the artifact probe", async () => {
   const posts = [];
+  /** @type {(() => void) | undefined} */
   let releaseDiagnostic;
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -1428,6 +1433,7 @@ test("a delayed diagnostic response does not delay silencing the artifact probe"
     posts.some((post) => post.url.includes("/artifact/abc/index.html?") && post.url.includes("probe=1")),
     false,
   );
+  assert.ok(releaseDiagnostic);
   releaseDiagnostic();
   await flushPromises();
   assert.equal(
@@ -1438,6 +1444,7 @@ test("a delayed diagnostic response does not delay silencing the artifact probe"
 
 test("a stale artifact probe cannot report failure after a reload", async () => {
   const posts = [];
+  /** @type {(() => void) | undefined} */
   let releaseProbe;
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -1461,6 +1468,7 @@ test("a stale artifact probe cannot report failure after a reload", async () => 
 
   chrome.eventSource().listeners.get("reload")();
   await flushPromises();
+  assert.ok(releaseProbe);
   releaseProbe();
   await flushPromises();
 
