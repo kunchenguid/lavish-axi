@@ -556,11 +556,12 @@ export async function serve({
 
   app.get("/session/:key", async (req, res, next) => {
     try {
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
+      const chromeLoad = await store.beginChromeLoadContext(req.params.key);
+      if (!chromeLoad) {
         res.status(404).send("Session not found");
         return;
       }
+      const session = chromeLoad.session;
       await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
@@ -569,6 +570,10 @@ export async function serve({
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
           faviconTag,
           title: title ? `${title} · Lavish` : "Lavish Editor",
+          artifactRevision: chromeLoad.artifact_revision,
+          artifactLoadToken: chromeLoad.artifact_load_token,
+          artifactLoadSequence: chromeLoad.artifact_load_sequence,
+          chromeLoadToken: chromeLoad.chrome_load_token,
         }),
       );
     } catch (error) {
@@ -582,7 +587,12 @@ export async function serve({
 
   app.post("/api/:key/artifact-loads/begin", async (req, res, next) => {
     try {
-      const result = await store.beginArtifactLoad(req.params.key, req.body?.request_id, req.body?.request_sequence);
+      const result = await store.beginArtifactLoad(
+        req.params.key,
+        req.body?.request_id,
+        req.body?.request_sequence,
+        req.body?.chrome_load_token,
+      );
       if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
@@ -1419,7 +1429,15 @@ export function extractArtifactHead(html) {
 
 export function createChromeHtml(
   session,
-  { layoutGateEnabled = true, faviconTag = LAVISH_DEFAULT_FAVICON, title = "Lavish Editor" } = {},
+  {
+    layoutGateEnabled = true,
+    faviconTag = LAVISH_DEFAULT_FAVICON,
+    title = "Lavish Editor",
+    artifactRevision = 0,
+    artifactLoadToken = "",
+    artifactLoadSequence = 0,
+    chromeLoadToken = "",
+  } = {},
 ) {
   const sessionJson = jsonScript({
     key: session.key,
@@ -1428,6 +1446,10 @@ export function createChromeHtml(
     // Bootstrapping the inbox from the server is what makes it survive a browser refresh or a
     // reconnect: the chrome never owns warning state, it only renders it.
     initialLayoutWarnings: serializeLayoutWarnings(session.layout_warnings),
+    initialArtifactRevision: artifactRevision,
+    initialArtifactLoadToken: artifactLoadToken,
+    initialArtifactLoadSequence: artifactLoadSequence,
+    chromeLoadToken,
     layoutGateEnabled,
     modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
   });

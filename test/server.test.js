@@ -62,6 +62,12 @@ function artifactMutation(load, body = {}) {
   };
 }
 
+function chromeSessionData(html) {
+  const match = String(html).match(/<script id="lavish-session" type="application\/json">([\s\S]*?)<\/script>/);
+  assert.ok(match);
+  return JSON.parse(match[1]);
+}
+
 async function startPresenceStream(base, key) {
   const controller = new AbortController();
   const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
@@ -1624,6 +1630,75 @@ test("an older overlapping begin request cannot replace the current epoch", asyn
     assert.equal(currentDocument.status, 200);
     const revision = await fetch(`${base}/api/${key}/layout-warnings`).then((response) => response.json());
     assert.equal(revision.revision, currentLoad.artifact_revision);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a refreshed chrome receives a new handoff and establishes the newest load", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  let server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const loadChrome = async () =>
+      chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+    const begin = (chrome, requestId, requestSequence) =>
+      fetch(`${base}/api/${key}/artifact-loads/begin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          request_id: requestId,
+          request_sequence: requestSequence,
+          chrome_load_token: chrome.chromeLoadToken,
+        }),
+      });
+
+    const firstChrome = await loadChrome();
+    const firstLoad = await begin(firstChrome, "first-load", firstChrome.initialArtifactLoadSequence + 1).then(
+      (response) => response.json(),
+    );
+    const secondLoad = await begin(firstChrome, "second-load", firstChrome.initialArtifactLoadSequence + 2).then(
+      (response) => response.json(),
+    );
+    const staleOld = await begin(firstChrome, "delayed-old-load", firstChrome.initialArtifactLoadSequence + 1);
+    assert.equal(staleOld.status, 409);
+
+    const refreshedChrome = await loadChrome();
+    assert.equal(refreshedChrome.initialArtifactLoadToken, secondLoad.artifact_load_token);
+    assert.equal(refreshedChrome.initialArtifactLoadSequence, firstChrome.initialArtifactLoadSequence + 2);
+    const refreshedLoad = await begin(refreshedChrome, "refreshed-load", 1).then((response) => response.json());
+    assert.equal(refreshedLoad.artifact_revision, secondLoad.artifact_revision + 1);
+    assert.equal((await fetch(artifactLoadUrl(base, key, refreshedLoad))).status, 200);
+
+    await server.close();
+    server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+    const restartedBase = `http://127.0.0.1:${server.port}`;
+    const restartedChrome = chromeSessionData(
+      await fetch(`${restartedBase}/session/${key}`).then((response) => response.text()),
+    );
+    assert.equal(restartedChrome.initialArtifactLoadToken, "");
+    assert.equal((await fetch(artifactLoadUrl(restartedBase, key, refreshedLoad))).status, 409);
+    const restartedLoad = await fetch(`${restartedBase}/api/${key}/artifact-loads/begin`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request_id: "restarted-load",
+        request_sequence: 1,
+        chrome_load_token: restartedChrome.chromeLoadToken,
+      }),
+    }).then((response) => response.json());
+    assert.equal(restartedLoad.artifact_revision, refreshedLoad.artifact_revision + 1);
+    assert.equal((await fetch(artifactLoadUrl(restartedBase, key, restartedLoad))).status, 200);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

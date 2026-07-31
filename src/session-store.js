@@ -25,6 +25,7 @@ export class SessionStore {
     this.file = file;
     this.stateOperationQueue = Promise.resolve();
     this.artifactLoads = new Map();
+    this.chromeLoadContexts = new Map();
   }
 
   async listSessions() {
@@ -75,6 +76,7 @@ export class SessionStore {
       };
       state.sessions[key] = session;
       this.artifactLoads.delete(key);
+      this.chromeLoadContexts.delete(key);
       await this.writeState(state);
       return session;
     });
@@ -140,7 +142,27 @@ export class SessionStore {
     });
   }
 
-  async beginArtifactLoad(key, requestId = "", requestSequence = 0) {
+  async beginChromeLoadContext(key) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const chromeLoadToken = crypto.randomBytes(24).toString("base64url");
+      this.chromeLoadContexts.set(key, chromeLoadToken);
+      const activeLoad = this.artifactLoads.get(key);
+      return {
+        session,
+        chrome_load_token: chromeLoadToken,
+        artifact_revision: activeLoad?.artifactRevision ?? normalizeRevision(session.artifact_revision),
+        artifact_load_token: activeLoad?.artifactLoadToken || "",
+        artifact_load_sequence: activeLoad?.requestSequence || 0,
+      };
+    });
+  }
+
+  async beginArtifactLoad(key, requestId = "", requestSequence = 0, chromeLoadToken = "") {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
@@ -151,15 +173,33 @@ export class SessionStore {
       const parsedRequestSequence = Number(requestSequence);
       const normalizedRequestSequence =
         Number.isSafeInteger(parsedRequestSequence) && parsedRequestSequence > 0 ? parsedRequestSequence : 0;
+      const normalizedChromeLoadToken = String(chromeLoadToken || "");
+      const activeChromeLoadToken = this.chromeLoadContexts.get(key) || "";
       const activeLoad = this.artifactLoads.get(key);
-      if (normalizedRequestId && activeLoad?.requestId === normalizedRequestId) {
+      if (normalizedChromeLoadToken && normalizedChromeLoadToken !== activeChromeLoadToken) {
+        return {
+          session,
+          stale: true,
+          artifact_revision: activeLoad?.artifactRevision ?? normalizeRevision(session.artifact_revision),
+          artifact_load_token: activeLoad?.artifactLoadToken || "",
+        };
+      }
+      if (
+        normalizedRequestId &&
+        activeLoad?.requestId === normalizedRequestId &&
+        (!normalizedChromeLoadToken || activeLoad.chromeLoadToken === normalizedChromeLoadToken)
+      ) {
         return {
           session,
           artifact_revision: activeLoad.artifactRevision,
           artifact_load_token: activeLoad.artifactLoadToken,
         };
       }
-      if (normalizedRequestSequence > 0 && activeLoad?.requestSequence > normalizedRequestSequence) {
+      if (
+        normalizedRequestSequence > 0 &&
+        activeLoad?.chromeLoadToken === normalizedChromeLoadToken &&
+        activeLoad.requestSequence > normalizedRequestSequence
+      ) {
         return {
           session,
           stale: true,
@@ -175,6 +215,7 @@ export class SessionStore {
         lastPassSequence: 0,
         requestId: normalizedRequestId,
         requestSequence: normalizedRequestSequence,
+        chromeLoadToken: normalizedChromeLoadToken || activeChromeLoadToken,
       });
       session.artifact_revision = artifactRevision;
       session.updated_at = new Date().toISOString();

@@ -108,8 +108,10 @@ let lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
 const ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS = [100, 300];
 let artifactLoadToken = "";
-let artifactLoadRevision = 0;
-let artifactLoadRequestSequence = 0;
+let artifactLoadRevision = Number(sessionData.initialArtifactRevision) || 0;
+let artifactLoadRequestSequence = Number(sessionData.initialArtifactLoadSequence) || 0;
+const chromeLoadToken = String(sessionData.chromeLoadToken || "");
+artifactLoadToken = String(sessionData.initialArtifactLoadToken || "");
 let artifactSpokeToken = "";
 let artifactMessageSequence = 0;
 let layoutDiagnosticSequence = 0;
@@ -1102,7 +1104,11 @@ async function replaceArtifactFrame() {
       const response = await fetch("/api/" + key + "/artifact-loads/begin", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ request_id: requestId, request_sequence: requestSequence }),
+        body: JSON.stringify({
+          request_id: requestId,
+          request_sequence: requestSequence,
+          chrome_load_token: chromeLoadToken,
+        }),
       });
       if (!response.ok) throw new Error("failed to begin artifact load");
       const candidate = await response.json();
@@ -1610,6 +1616,9 @@ window.addEventListener("message", (event) => {
 
 function loadFrame() {
   if (artifactSrc) {
+    if (artifactLoadToken) {
+      frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken });
+    }
     replaceArtifactFrame().catch(() => {});
   }
 }
