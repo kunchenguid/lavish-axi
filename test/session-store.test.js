@@ -200,6 +200,32 @@ test("a diagnostic pass records warnings passively and never becomes agent feedb
   }
 });
 
+test("concurrent session mutations preserve both artifact revisions and warning records", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await Promise.all([
+      store.bumpArtifactRevision(session.key),
+      store.recordLayoutDiagnostics(session.key, {
+        complete: true,
+        viewport_width: 1440,
+        findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 24, severity: "error" }],
+      }),
+    ]);
+
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.artifact_revision, 1);
+    assert.equal(updated.layout_warnings.length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("non-severe observations never enter the inbox", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

@@ -1382,7 +1382,7 @@ export function createArtifactSdk(
       const endTime = Number(animation.effect?.getComputedTiming?.().endTime);
       return Number.isFinite(endTime);
     });
-    if (finite.length === 0) return;
+    if (finite.length === 0) return true;
 
     let settled = false;
     await Promise.race([
@@ -1394,6 +1394,7 @@ export function createArtifactSdk(
     if (!settled) {
       for (const animation of finite) animation.finished.then(scheduleLayoutAudit, scheduleLayoutAudit);
     }
+    return settled;
   }
 
   // A diagnostic pass reports its own completeness. An incomplete pass is uncertainty, never
@@ -1414,7 +1415,7 @@ export function createArtifactSdk(
   async function runLayoutAudit(runId) {
     await waitForDocumentFontsReady();
     await waitForResizeObserverSettle();
-    await waitForFiniteAnimationsSettle();
+    const animationsSettled = await waitForFiniteAnimationsSettle();
     await waitForAnimationFrames(2);
     if (runId !== layoutAuditRun) return;
 
@@ -1422,7 +1423,7 @@ export function createArtifactSdk(
     await new Promise((resolve) => window.setTimeout(resolve, layoutAuditStableSampleMs));
     await waitForAnimationFrames(2);
     if (runId !== layoutAuditRun) return;
-    publishLayoutAudit(findStableLayoutFindings(first, auditLayout()), true);
+    publishLayoutAudit(findStableLayoutFindings(first, auditLayout()), animationsSettled);
   }
 
   function scheduleLayoutAudit() {
@@ -1604,6 +1605,7 @@ export function createArtifactSdk(
     hovered = null;
     clearTextHighlight();
     selected = null;
+    scheduleReviewStateReport();
   }
 
   function showAnnotationCard(target, options = {}) {

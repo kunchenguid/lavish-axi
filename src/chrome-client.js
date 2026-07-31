@@ -678,7 +678,13 @@ function createWarningRow(warning) {
   dismiss.type = "button";
   dismiss.className = "warning-action";
   dismiss.textContent = "Dismiss";
-  dismiss.setAttribute("aria-label", "Dismiss " + warning.title + " for this artifact revision");
+  dismiss.disabled = !warning.selectable;
+  dismiss.setAttribute(
+    "aria-label",
+    warning.selectable
+      ? "Dismiss " + warning.title + " for this artifact revision"
+      : warning.title + " cannot be dismissed while a fix is queued",
+  );
   dismiss.addEventListener("click", () => dismissWarning(warning.id));
   actions.appendChild(dismiss);
   body.appendChild(actions);
@@ -1540,7 +1546,7 @@ window.addEventListener("message", (event) => {
     lastReviewState = msg.state && typeof msg.state === "object" ? msg.state : null;
   }
   if (msg.type === "lavish:layoutDiagnostics") {
-    handleLayoutGatePass();
+    if (msg.complete !== false) handleLayoutGatePass();
     submitLayoutDiagnostics({
       complete: msg.complete !== false,
       viewportWidth: msg.viewport_width,

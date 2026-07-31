@@ -211,7 +211,9 @@ export function applyDiagnosticPass(warnings, pass) {
 
 /** Mark warnings as queued for repair. They stay unresolved and counted. */
 export function queueLayoutWarnings(warnings, ids, { revision = 0, at = new Date().toISOString() } = {}) {
-  const wanted = new Set((Array.isArray(ids) ? ids : []).map((id) => String(id)));
+  const wanted = new Set(
+    (Array.isArray(ids) ? ids : []).slice(0, MAX_QUEUED_WARNINGS_PER_PROMPT).map((id) => String(id)),
+  );
   const previous = normalizeStoredWarnings(warnings);
   const queued = [];
   const next = previous.map((warning) => {
@@ -237,7 +239,7 @@ export function dismissLayoutWarning(warnings, id, { revision = 0, at = new Date
   const target = String(id || "");
   let changed = false;
   const next = normalizeStoredWarnings(warnings).map((warning) => {
-    if (warning.id !== target || !isActiveLayoutWarning(warning)) return warning;
+    if (warning.id !== target || !isSelectableLayoutWarning(warning)) return warning;
     changed = true;
     return withHistory(
       {

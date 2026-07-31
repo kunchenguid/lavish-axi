@@ -471,6 +471,7 @@ test("a failed diagnostic pass reports its incompleteness rather than an empty r
 
   assert.equal(posts[0].body.complete, false);
   assert.equal(chrome.element("warningsWrap").hidden, false);
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
 });
 
 test("warning-only observations are discarded before they reach the server", async () => {
@@ -595,6 +596,7 @@ test("queueing a selected subset produces exactly one ordinary prompt with only 
   // Queueing does not clear the warning; it stays counted and becomes unselectable.
   assert.equal(chrome.element("warningsCount").textContent, "2");
   assert.equal(chrome.warningRows()[0].children[0].disabled, true);
+  assert.equal(chrome.warningRows()[0].children[1].children.at(-1).children.at(-1).disabled, true);
   assert.equal(chrome.element("warningsSelected").textContent, "None selected");
 });
 

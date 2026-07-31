@@ -178,6 +178,16 @@ test("a queued warning knocked to unverified is not re-requestable and returns t
   assert.equal(stillQueued[0].status, "queued");
 });
 
+test("a queued warning cannot be dismissed", () => {
+  const detected = detect([OVERFLOW], { revision: 2 });
+  const queued = queueLayoutWarnings(detected, [detected[0].id], { revision: 2 }).warnings;
+  const dismissed = dismissLayoutWarning(queued, queued[0].id, { revision: 2 });
+
+  assert.equal(dismissed.changed, false);
+  assert.equal(dismissed.warnings[0].status, "queued");
+  assert.equal(activeLayoutWarningCount(dismissed.warnings), 1);
+});
+
 test("a resolved warning that returns on a later revision reopens with bounded history", () => {
   const detected = detect([OVERFLOW], { revision: 2 });
   const resolved = applyDiagnosticPass(detected, pass([], { revision: 3 })).warnings;
@@ -251,6 +261,26 @@ test("the queued prompt payload carries bounded structured warning detail", () =
   assert.equal(payload.target.type, "layout-warnings");
   assert.equal(payload.target.warnings.length, 2);
   assert.equal(payload.target.warnings[1].rule, "clipped-text");
+});
+
+test("queueing more than one prompt batch leaves overflow selections selectable", () => {
+  const warnings = detect(
+    Array.from({ length: 60 }, (_, index) => ({
+      ...OVERFLOW,
+      selector: `p#item-${index}`,
+    })),
+    { revision: 2 },
+  );
+  const queued = queueLayoutWarnings(
+    warnings,
+    warnings.map((warning) => warning.id),
+    { revision: 2 },
+  );
+
+  assert.equal(queued.queued.length, 50);
+  assert.equal(queued.warnings.filter((warning) => warning.status === "queued").length, 50);
+  assert.equal(queued.warnings.filter((warning) => warning.status === "open").length, 10);
+  assert.equal(layoutWarningPromptPayload(queued.queued).target.warnings.length, 50);
 });
 
 test("a queued prompt target is normalized and bounded", () => {

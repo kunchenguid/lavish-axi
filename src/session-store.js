@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   applyDiagnosticPass,
   dismissLayoutWarning as dismissWarningRecord,
+  hasOutstandingRepairRequest,
   layoutWarningPromptPayload,
   markObsoleteViewportWarnings,
   normalizeLayoutWarningsTarget,
@@ -21,89 +22,102 @@ const MAX_ARTIFACT_FAILURES = 20;
 export class SessionStore {
   constructor(file) {
     this.file = file;
+    this.stateOperationQueue = Promise.resolve();
   }
 
   async listSessions() {
-    const state = await this.readState();
-    return Object.values(state.sessions).sort((a, b) => a.file.localeCompare(b.file));
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      return Object.values(state.sessions).sort((a, b) => a.file.localeCompare(b.file));
+    });
   }
 
   async findByFile(file) {
     const absolute = await canonicalFile(file);
-    const state = await this.readState();
-    return state.sessions[sessionKey(absolute)] || null;
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      return state.sessions[sessionKey(absolute)] || null;
+    });
   }
 
   async findByKey(key) {
-    const state = await this.readState();
-    return state.sessions[key] || null;
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      return state.sessions[key] || null;
+    });
   }
 
   async upsertSession(file, url) {
     const absolute = await canonicalFile(file);
     const key = sessionKey(absolute);
-    const state = await this.readState();
-    const existing = state.sessions[key] || {};
-    const existingPrompts = existing.prompts || [];
-    const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
-    const session = {
-      key,
-      file: absolute,
-      url,
-      status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
-      pending_prompts: existing.pending_prompts || 0,
-      prompts: existingPrompts,
-      // The warning inbox is durable review state, not deliverable feedback: reopening a session
-      // must never silently drop unresolved warnings the user has not triaged yet.
-      layout_warnings: normalizeStoredWarnings(existing.layout_warnings),
-      artifact_revision: normalizeRevision(existing.artifact_revision),
-      artifact_failures: Array.isArray(existing.artifact_failures) ? existing.artifact_failures : [],
-      dom_snapshot: existing.dom_snapshot || "",
-      chat: existing.chat || [],
-      updated_at: new Date().toISOString(),
-    };
-    state.sessions[key] = session;
-    await this.writeState(state);
-    return session;
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const existing = state.sessions[key] || {};
+      const existingPrompts = existing.prompts || [];
+      const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
+      const session = {
+        key,
+        file: absolute,
+        url,
+        status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
+        pending_prompts: existing.pending_prompts || 0,
+        prompts: existingPrompts,
+        // The warning inbox is durable review state, not deliverable feedback: reopening a session
+        // must never silently drop unresolved warnings the user has not triaged yet.
+        layout_warnings: normalizeStoredWarnings(existing.layout_warnings),
+        artifact_revision: normalizeRevision(existing.artifact_revision),
+        artifact_failures: Array.isArray(existing.artifact_failures) ? existing.artifact_failures : [],
+        dom_snapshot: existing.dom_snapshot || "",
+        chat: existing.chat || [],
+        updated_at: new Date().toISOString(),
+      };
+      state.sessions[key] = session;
+      await this.writeState(state);
+      return session;
+    });
   }
 
   async queuePrompts(key, payload) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
-    const shouldEndSession = Boolean(payload.endSession || payload.end_session);
-    const alreadyEnded = session.status === "ended";
-    const normalizedPrompts = prompts.map(normalizePrompt);
-    const userMessages = normalizedPrompts
-      .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-      .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
-    session.prompts = [...(session.prompts || []), ...normalizedPrompts];
-    session.chat = [...(session.chat || []), ...userMessages];
-    session.pending_prompts = session.prompts.length;
-    session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-    session.status = shouldEndSession || alreadyEnded ? "ended" : "feedback";
-    if (shouldEndSession) session.ended_by = "user";
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      const shouldEndSession = Boolean(payload.endSession || payload.end_session);
+      const alreadyEnded = session.status === "ended";
+      const normalizedPrompts = prompts.map(normalizePrompt);
+      const userMessages = normalizedPrompts
+        .filter((prompt) => prompt.tag === "message" && prompt.prompt)
+        .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+      session.prompts = [...(session.prompts || []), ...normalizedPrompts];
+      session.chat = [...(session.chat || []), ...userMessages];
+      session.pending_prompts = session.prompts.length;
+      session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
+      session.status = shouldEndSession || alreadyEnded ? "ended" : "feedback";
+      if (shouldEndSession) session.ended_by = "user";
+      session.updated_at = new Date().toISOString();
+      await this.writeState(state);
+      return session;
+    });
   }
 
   // A successful artifact document load is one artifact revision. Every diagnostic observation is
   // tied to the revision it was taken on, which is what makes "resolved" (absent from a complete
   // pass on a NEWER revision) and "recurring" (still present on a newer revision) decidable.
   async bumpArtifactRevision(key) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    session.artifact_revision = normalizeRevision(session.artifact_revision) + 1;
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      session.artifact_revision = normalizeRevision(session.artifact_revision) + 1;
+      session.updated_at = new Date().toISOString();
+      await this.writeState(state);
+      return session;
+    });
   }
 
   // Fold one browser diagnostic pass into the passive warning inbox. This deliberately does NOT
@@ -112,77 +126,83 @@ export class SessionStore {
    * @param {{ viewportClasses?: string[] }} [options]
    */
   async recordLayoutDiagnostics(key, payload, options = {}) {
-    const viewportClasses = options.viewportClasses;
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const revision = normalizeRevision(session.artifact_revision);
-    const at = new Date().toISOString();
-    const pass = applyDiagnosticPass(session.layout_warnings, {
-      complete: payload.complete !== false,
-      viewportWidth: payload.viewport_width ?? payload.viewportWidth,
-      findings: payload.findings || payload.layout_warnings || payload.layoutWarnings || [],
-      revision,
-      at,
+    return this.runExclusive(async () => {
+      const viewportClasses = options.viewportClasses;
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const revision = normalizeRevision(session.artifact_revision);
+      const at = new Date().toISOString();
+      const pass = applyDiagnosticPass(session.layout_warnings, {
+        complete: payload.complete !== false,
+        viewportWidth: payload.viewport_width ?? payload.viewportWidth,
+        findings: payload.findings || payload.layout_warnings || payload.layoutWarnings || [],
+        revision,
+        at,
+      });
+      let warnings = pass.warnings;
+      let changed = pass.changed;
+      if (viewportClasses) {
+        const obsolete = markObsoleteViewportWarnings(warnings, viewportClasses, { at, revision });
+        warnings = obsolete.warnings;
+        changed = changed || obsolete.changed;
+      }
+      if (!changed) {
+        return { session, changed: false, warnings: serializeLayoutWarnings(warnings) };
+      }
+      session.layout_warnings = warnings;
+      session.updated_at = at;
+      await this.writeState(state);
+      return { session, changed: true, warnings: serializeLayoutWarnings(warnings) };
     });
-    let warnings = pass.warnings;
-    let changed = pass.changed;
-    if (viewportClasses) {
-      const obsolete = markObsoleteViewportWarnings(warnings, viewportClasses, { at, revision });
-      warnings = obsolete.warnings;
-      changed = changed || obsolete.changed;
-    }
-    if (!changed) {
-      return { session, changed: false, warnings: serializeLayoutWarnings(warnings) };
-    }
-    session.layout_warnings = warnings;
-    session.updated_at = at;
-    await this.writeState(state);
-    return { session, changed: true, warnings: serializeLayoutWarnings(warnings) };
   }
 
   // The user's explicit triage action. Queueing marks the warnings as an outstanding repair
   // request - it never resolves them and never removes them from the active count.
   async queueLayoutWarningFixes(key, ids) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const revision = normalizeRevision(session.artifact_revision);
-    const at = new Date().toISOString();
-    const result = queueWarningRecords(session.layout_warnings, ids, { revision, at });
-    if (!result.changed) {
-      return { session, queued: [], prompt: null, warnings: serializeLayoutWarnings(session.layout_warnings) };
-    }
-    session.layout_warnings = result.warnings;
-    session.updated_at = at;
-    await this.writeState(state);
-    return {
-      session,
-      queued: result.queued,
-      prompt: layoutWarningPromptPayload(result.queued),
-      warnings: serializeLayoutWarnings(result.warnings),
-    };
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const revision = normalizeRevision(session.artifact_revision);
+      const at = new Date().toISOString();
+      const result = queueWarningRecords(session.layout_warnings, ids, { revision, at });
+      if (!result.changed) {
+        return { session, queued: [], prompt: null, warnings: serializeLayoutWarnings(session.layout_warnings) };
+      }
+      session.layout_warnings = result.warnings;
+      session.updated_at = at;
+      await this.writeState(state);
+      return {
+        session,
+        queued: result.queued,
+        prompt: layoutWarningPromptPayload(result.queued),
+        warnings: serializeLayoutWarnings(result.warnings),
+      };
+    });
   }
 
   async dismissLayoutWarning(key, id) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const revision = normalizeRevision(session.artifact_revision);
-    const result = dismissWarningRecord(session.layout_warnings, id, { revision });
-    if (!result.changed) {
-      return { session, changed: false, warnings: serializeLayoutWarnings(session.layout_warnings) };
-    }
-    session.layout_warnings = result.warnings;
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return { session, changed: true, warnings: serializeLayoutWarnings(result.warnings) };
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const revision = normalizeRevision(session.artifact_revision);
+      const result = dismissWarningRecord(session.layout_warnings, id, { revision });
+      if (!result.changed) {
+        return { session, changed: false, warnings: serializeLayoutWarnings(session.layout_warnings) };
+      }
+      session.layout_warnings = result.warnings;
+      session.updated_at = new Date().toISOString();
+      await this.writeState(state);
+      return { session, changed: true, warnings: serializeLayoutWarnings(result.warnings) };
+    });
   }
 
   // The narrow fatal path: failures that make the review itself unusable (the artifact cannot be
@@ -190,112 +210,135 @@ export class SessionStore {
   // do not enter the passive inbox - they still reach the agent immediately, because there is no
   // usable review for the user to triage from.
   async recordArtifactFailures(key, failures) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const normalized = normalizeArtifactFailures(failures);
-    const previous = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
-    const merged = [...previous];
-    let changed = false;
-    for (const failure of normalized) {
-      if (merged.some((item) => item.kind === failure.kind && item.detail === failure.detail)) continue;
-      merged.push(failure);
-      changed = true;
-    }
-    if (!changed) {
-      return { session, changed: false };
-    }
-    session.artifact_failures = merged.slice(-MAX_ARTIFACT_FAILURES);
-    if (session.status !== "ended") session.status = "feedback";
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return { session, changed: true };
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const normalized = normalizeArtifactFailures(failures);
+      const previous = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
+      const merged = [...previous];
+      let changed = false;
+      for (const failure of normalized) {
+        if (merged.some((item) => item.kind === failure.kind && item.detail === failure.detail)) continue;
+        merged.push(failure);
+        changed = true;
+      }
+      if (!changed) {
+        return { session, changed: false };
+      }
+      session.artifact_failures = merged.slice(-MAX_ARTIFACT_FAILURES);
+      if (session.status !== "ended") session.status = "feedback";
+      session.updated_at = new Date().toISOString();
+      await this.writeState(state);
+      return { session, changed: true };
+    });
   }
 
   async listLayoutWarnings(key) {
-    const session = await this.findByKey(key);
-    if (!session) return null;
-    return {
-      warnings: serializeLayoutWarnings(session.layout_warnings),
-      revision: normalizeRevision(session.artifact_revision),
-    };
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return null;
+      return {
+        warnings: serializeLayoutWarnings(session.layout_warnings),
+        revision: normalizeRevision(session.artifact_revision),
+      };
+    });
   }
 
   async hasOutstandingLayoutRepairs(key) {
-    const session = await this.findByKey(key);
-    if (!session) return false;
-    return normalizeStoredWarnings(session.layout_warnings).some((warning) => warning.status === "queued");
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return false;
+      return normalizeStoredWarnings(session.layout_warnings).some(hasOutstandingRepairRequest);
+    });
   }
 
   async takeFeedback(key) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return { status: "missing" };
-    }
-    // Prompts queued before the session ended (a browser send-and-end) must still reach the
-    // agent, so deliver them before reporting the ended state; the next poll then sees ended.
-    const prompts = session.prompts || [];
-    // Layout warnings are NOT delivered here. Detection is passive: the user decides which
-    // warnings become work by queueing them, and that arrives as an ordinary prompt above.
-    // Only artifact failures - a review that cannot be used at all - still reach the agent
-    // without user action.
-    const artifactFailures = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
-    const alreadyEnded = session.status === "ended";
-    if (prompts.length === 0 && artifactFailures.length === 0) {
-      return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
-    }
-    const result = {
-      status: "feedback",
-      dom_snapshot: session.dom_snapshot || "",
-      prompts,
-      ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
-      // This is the final delivery before the session shows as ended - flag it so the agent
-      // knows not to expect (or force) a reopened browser afterward.
-      ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
-    };
-    session.prompts = [];
-    session.artifact_failures = [];
-    session.pending_prompts = 0;
-    session.dom_snapshot = "";
-    if (!alreadyEnded) {
-      session.status = "open";
-    }
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return result;
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return { status: "missing" };
+      }
+      // Prompts queued before the session ended (a browser send-and-end) must still reach the
+      // agent, so deliver them before reporting the ended state; the next poll then sees ended.
+      const prompts = session.prompts || [];
+      // Layout warnings are NOT delivered here. Detection is passive: the user decides which
+      // warnings become work by queueing them, and that arrives as an ordinary prompt above.
+      // Only artifact failures - a review that cannot be used at all - still reach the agent
+      // without user action.
+      const artifactFailures = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
+      const alreadyEnded = session.status === "ended";
+      if (prompts.length === 0 && artifactFailures.length === 0) {
+        return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
+      }
+      const result = {
+        status: "feedback",
+        dom_snapshot: session.dom_snapshot || "",
+        prompts,
+        ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
+        // This is the final delivery before the session shows as ended - flag it so the agent
+        // knows not to expect (or force) a reopened browser afterward.
+        ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
+      };
+      session.prompts = [];
+      session.artifact_failures = [];
+      session.pending_prompts = 0;
+      session.dom_snapshot = "";
+      if (!alreadyEnded) {
+        session.status = "open";
+      }
+      session.updated_at = new Date().toISOString();
+      await this.writeState(state);
+      return result;
+    });
   }
 
   // `endedBy` distinguishes a human ending review from the browser chrome ("user") from an
   // agent explicitly closing the loop via `lavish-axi end` ("agent"). Only a user-initiated end
   // blocks a plain reopen - see `SessionStore` callers in server.js.
   async endSession(key, endedBy = "agent") {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    const existingEndedBy = session.status === "ended" ? session.ended_by : undefined;
-    const nextEndedBy = endedBy === "user" || existingEndedBy === "user" ? "user" : "agent";
-    session.status = "ended";
-    session.ended_by = nextEndedBy;
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const existingEndedBy = session.status === "ended" ? session.ended_by : undefined;
+      const nextEndedBy = endedBy === "user" || existingEndedBy === "user" ? "user" : "agent";
+      session.status = "ended";
+      session.ended_by = nextEndedBy;
+      session.updated_at = new Date().toISOString();
+      await this.writeState(state);
+      return session;
+    });
   }
 
   async addAgentReply(key, text) {
-    const state = await this.readState();
-    const session = state.sessions[key];
-    if (!session) {
-      return null;
-    }
-    session.chat = [...(session.chat || []), { role: "agent", text: String(text || ""), at: new Date().toISOString() }];
-    session.updated_at = new Date().toISOString();
-    await this.writeState(state);
-    return session;
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      session.chat = [
+        ...(session.chat || []),
+        { role: "agent", text: String(text || ""), at: new Date().toISOString() },
+      ];
+      session.updated_at = new Date().toISOString();
+      await this.writeState(state);
+      return session;
+    });
+  }
+
+  runExclusive(operation) {
+    const result = this.stateOperationQueue.then(operation);
+    this.stateOperationQueue = result.catch(() => {});
+    return result;
   }
 
   async readState() {
