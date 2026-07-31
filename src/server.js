@@ -41,7 +41,6 @@ import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 
-const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
 const designAssetUrls = {
   "daisyui.css": {
@@ -72,6 +71,18 @@ export function defaultWhiteboardAssetsDir() {
   const packaged = fileURLToPath(new URL("./whiteboard", import.meta.url));
   if (existsSync(packaged)) return packaged;
   return fileURLToPath(new URL("../dist/whiteboard", import.meta.url));
+}
+
+// Chrome client is an esbuild browser IIFE (marked + DOMPurify + chrome-client).
+// Never serve raw src/chrome-client.js once it has npm imports — only the built
+// asset under dist/. Packaged CLI lives in dist/ so the sibling path wins;
+// source runs fall back to ../dist/chrome-client.js after `pnpm run build`.
+// Missing build must 404 at GET /chrome-client.js, not fall through to src ESM.
+export function defaultChromeClientPath() {
+  const sibling = fileURLToPath(new URL("./chrome-client.js", import.meta.url));
+  const fromRepoDist = fileURLToPath(new URL("../dist/chrome-client.js", import.meta.url));
+  if (path.basename(path.dirname(sibling)) === "dist" && existsSync(sibling)) return sibling;
+  return fromRepoDist;
 }
 
 // Whiteboard scene saves carry full Excalidraw scenes (and, at queue time, a
@@ -125,6 +136,7 @@ export async function serve({
   linkHost: linkHostName = linkHost(),
   allowedHosts = extraAllowedHosts(),
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
+  chromeClientPath = defaultChromeClientPath(),
 }) {
   const app = express();
   const store = new SessionStore(stateFile);
@@ -556,7 +568,13 @@ export async function serve({
 
   app.get("/chrome-client.js", async (req, res, next) => {
     try {
-      res.type("application/javascript").send(await readFile(chromeClientUrl, "utf8"));
+      if (!existsSync(chromeClientPath)) {
+        res.status(404).type("text/plain").send("Chrome client bundle missing - run `pnpm run build`");
+        return;
+      }
+      // Unversioned URL: revalidate so upgrades and local rebuilds are not sticky-cached.
+      res.setHeader("cache-control", "no-cache");
+      res.type("application/javascript").send(await readFile(chromeClientPath, "utf8"));
     } catch (error) {
       next(error);
     }

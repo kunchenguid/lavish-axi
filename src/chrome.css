@@ -705,6 +705,53 @@ body.lavish {
 .bubble.user small {
   text-align: right;
 }
+.bubble-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.bubble-content > :first-child {
+  margin-top: 0;
+}
+.bubble-content > :last-child {
+  margin-bottom: 0;
+}
+.bubble-content p {
+  margin: 0.4em 0;
+}
+.bubble-content ul,
+.bubble-content ol {
+  margin: 0.4em 0;
+  padding-left: 1.25em;
+}
+.bubble-content li {
+  margin: 0.15em 0;
+}
+.bubble-content pre {
+  margin: 0.45em 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-panel);
+  border: var(--hairline-subtle);
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+.bubble-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92em;
+}
+.bubble-content pre code {
+  font-size: inherit;
+}
+.bubble-content a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
 @keyframes spin {
   to {
     transform: rotate(360deg);

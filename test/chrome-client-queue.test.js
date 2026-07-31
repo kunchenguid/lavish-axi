@@ -1,290 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import vm from "node:vm";
 
-const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
-
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string }} HarnessSessionData */
-/** @type {HarnessSessionData} */
-const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
-
-async function createChromeHarness({
-  fetchImpl = async () => ({ ok: true }),
-  sessionData = defaultSessionData,
-  artifactSrc = "",
-} = {}) {
-  const source = await readFile(sourceUrl, "utf8");
-  const storage = new Map();
-  const postedToFrame = [];
-  const postedToWhiteboard = [];
-  const inlineWhiteboards = [];
-  const eventSources = [];
-  const windowListeners = new Map();
-  const documentListeners = new Map();
-  const elements = new Map();
-  const timers = new Map();
-  const srcLoads = [];
-  let nextTimerId = 1;
-  let reloadCount = 0;
-
-  function fakeSetTimeout(fn, ms) {
-    const timer = {
-      id: nextTimerId++,
-      ms,
-      fn,
-      unref() {},
-    };
-    timers.set(timer.id, timer);
-    return timer;
-  }
-
-  function fakeClearTimeout(timer) {
-    if (timer && typeof timer === "object") timers.delete(timer.id);
-  }
-
-  function runTimers(ms) {
-    for (const timer of [...timers.values()]) {
-      if (ms !== undefined && timer.ms !== ms) continue;
-      timers.delete(timer.id);
-      timer.fn();
-    }
-  }
-
-  function element(id) {
-    if (elements.has(id)) return elements.get(id);
-    const listeners = new Map();
-    const classes = new Set();
-    const el = {
-      id,
-      hidden: false,
-      disabled: false,
-      value: "",
-      innerHTML: "",
-      textContent: "",
-      scrollTop: 0,
-      scrollHeight: 0,
-      scrolledIntoView: null,
-      dataset: {},
-      onclick: null,
-      classList: {
-        add(...names) {
-          for (const name of names) classes.add(name);
-        },
-        remove(...names) {
-          for (const name of names) classes.delete(name);
-        },
-        toggle(name, force) {
-          const enabled = force === undefined ? !classes.has(name) : Boolean(force);
-          if (enabled) classes.add(name);
-          else classes.delete(name);
-          return enabled;
-        },
-        contains(name) {
-          return classes.has(name);
-        },
-        toString() {
-          return [...classes].join(" ");
-        },
-      },
-      style: {},
-      setAttribute(name, value) {
-        this[name] = String(value);
-      },
-      addEventListener(type, handler) {
-        listeners.set(type, handler);
-      },
-      querySelectorAll() {
-        return [];
-      },
-      querySelector(selector) {
-        if (selector !== "span") return null;
-        const childId = `${id}:span`;
-        if (!elements.has(childId)) element(childId);
-        return elements.get(childId);
-      },
-      appendChild(child) {
-        child.parentElement = this;
-        this.lastAppendedChild = child;
-        return child;
-      },
-      click(event = {}) {
-        this.clicked = true;
-        if (typeof this.onclick === "function") return this.onclick(event);
-        return undefined;
-      },
-      remove() {},
-      focus() {
-        this.focused = true;
-      },
-      select() {},
-      scrollIntoView(options) {
-        this.scrolledIntoView = options;
-      },
-      listeners,
-    };
-    elements.set(id, el);
-    return el;
-  }
-
-  element("lavish-session").textContent = JSON.stringify(sessionData);
-  const frame = element("artifact");
-  frame.dataset.artifactSrc = artifactSrc;
-  Object.defineProperty(frame, "src", {
-    get() {
-      return this.currentSrc || "";
-    },
-    set(value) {
-      this.currentSrc = String(value);
-      srcLoads.push({ src: this.currentSrc, hadMessageListener: windowListeners.has("message") });
-    },
-  });
-  frame.contentWindow = {
-    postMessage(message) {
-      postedToFrame.push(message);
-    },
-  };
-  const whiteboardFrame = element("whiteboardFrame");
-  whiteboardFrame.contentWindow = {
-    postMessage(message) {
-      postedToWhiteboard.push(message);
-    },
-  };
-
-  const context = {
-    clearTimeout: fakeClearTimeout,
-    console,
-    fetch: fetchImpl,
-    location: {
-      reload() {
-        reloadCount += 1;
-      },
-    },
-    navigator: {},
-    setTimeout: fakeSetTimeout,
-    URL: {
-      createObjectURL() {
-        return "blob:lavish-test";
-      },
-      revokeObjectURL() {},
-    },
-    EventSource: class FakeEventSource {
-      constructor(url) {
-        this.url = url;
-        this.listeners = new Map();
-        eventSources.push(this);
-      }
-
-      addEventListener(type, handler) {
-        this.listeners.set(type, handler);
-      }
-    },
-    document: {
-      body: element("body"),
-      getElementById(id) {
-        return element(id);
-      },
-      addEventListener(type, handler, capture) {
-        if (!documentListeners.has(type)) documentListeners.set(type, []);
-        documentListeners.get(type).push({ handler, capture: Boolean(capture) });
-      },
-      createElement(tag) {
-        const el = element(`${tag}-${elements.size}`);
-        el.tagName = tag.toUpperCase();
-        return el;
-      },
-      execCommand() {
-        return true;
-      },
-    },
-    sessionStorage: {
-      getItem(key) {
-        return storage.has(key) ? storage.get(key) : null;
-      },
-      setItem(key, value) {
-        storage.set(key, String(value));
-      },
-      removeItem(key) {
-        storage.delete(key);
-      },
-    },
-    window: {
-      addEventListener(type, handler) {
-        if (!windowListeners.has(type)) windowListeners.set(type, []);
-        windowListeners.get(type).push(handler);
-      },
-    },
-  };
-
-  vm.runInNewContext(source, context, { filename: "chrome-client.js" });
-
-  return {
-    element,
-    frame,
-    postedToFrame,
-    postedToWhiteboard,
-    createInlineWhiteboard() {
-      const posted = [];
-      const source = {
-        postMessage(message) {
-          posted.push(message);
-        },
-      };
-      const whiteboard = { source, posted };
-      inlineWhiteboards.push(whiteboard);
-      return whiteboard;
-    },
-    eventSource() {
-      assert.equal(eventSources.length, 1);
-      return eventSources[0];
-    },
-    sendFrameMessage(data) {
-      const handlers = windowListeners.get("message") || [];
-      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
-      for (const handler of handlers) handler({ source: frame.contentWindow, data });
-    },
-    sendWhiteboardMessage(data) {
-      const handlers = windowListeners.get("message") || [];
-      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
-      for (const handler of handlers) handler({ source: whiteboardFrame.contentWindow, data });
-    },
-    sendInlineWhiteboardMessage(whiteboard, data) {
-      const handlers = windowListeners.get("message") || [];
-      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
-      for (const handler of handlers) handler({ source: whiteboard.source, data });
-    },
-    dispatchDocumentKeydown(eventProps) {
-      const handlers = documentListeners.get("keydown") || [];
-      assert.ok(handlers.length > 0, "chrome-client registered a document keydown handler");
-      const event = {
-        key: "",
-        metaKey: false,
-        ctrlKey: false,
-        shiftKey: false,
-        isComposing: false,
-        defaultPrevented: false,
-        ...eventProps,
-        preventDefault() {
-          this.defaultPrevented = true;
-        },
-      };
-      for (const { handler } of handlers) handler(event);
-      return event;
-    },
-    queued() {
-      return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
-    },
-    reloadCount() {
-      return reloadCount;
-    },
-    runTimers,
-    srcLoads,
-  };
-}
-
-function flushPromises() {
-  return new Promise((resolve) => setImmediate(resolve));
-}
+import { createChromeHarness, defaultSessionData, flushPromises } from "./helpers/chrome-client-harness.js";
 
 test("chrome client replaces queued prompts with the same internal key", async () => {
   const chrome = await createChromeHarness();
@@ -313,7 +30,7 @@ test("chrome client replaces queued prompts with the same internal key", async (
 test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {
   const chrome = await createChromeHarness();
   const panelScroll = chrome.element("panelScroll");
-  panelScroll.scrollHeight = 1800;
+  Object.defineProperty(panelScroll, "scrollHeight", { configurable: true, value: 1800, writable: true });
 
   chrome.sendFrameMessage({
     type: "lavish:queuePrompt",
@@ -330,6 +47,85 @@ test("chrome client scrolls new chat bubbles into view above queued prompts", as
   assert.equal(bubble.scrolledIntoView.block, "nearest");
   assert.equal(bubble.scrolledIntoView.inline, "nearest");
   assert.equal(panelScroll.scrollTop, 640);
+});
+
+test("agent-reply markdown renders bold inside bubble-content", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({ text: "Use **bold** and `code` here" }),
+  });
+  const bubble = chrome.element("chatLog").lastAppendedChild;
+  assert.ok(bubble.classList.contains("agent"));
+  const content = bubble.querySelector(".bubble-content");
+  assert.ok(content);
+  assert.ok(content.querySelector("strong"), "expected strong for bold markdown");
+  assert.ok(content.querySelector("code"), "expected code for inline code");
+  assert.match(content.textContent || "", /bold/);
+});
+
+test("initialChat agent markdown matches live agent-reply formatting", async () => {
+  const text = "List:\n\n- one\n- two\n\n**done**";
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [{ role: "agent", text }],
+    },
+  });
+  const bubble = chrome.element("chatLog").querySelector(".bubble.agent");
+  assert.ok(bubble);
+  const content = bubble.querySelector(".bubble-content");
+  assert.ok(content?.querySelector("strong"));
+  assert.ok(content?.querySelector("ul"));
+  assert.equal(content?.querySelectorAll("li").length >= 2, true);
+});
+
+test("chat-sync agent markdown matches the same content shape", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [{ role: "agent", text: "See **sync** path" }],
+    }),
+  });
+  const content = chrome.element("chatLog").querySelector(".bubble.agent .bubble-content");
+  assert.ok(content?.querySelector("strong"));
+  assert.match(content?.textContent || "", /sync/);
+});
+
+test("user bubbles keep markdown markers as plain text", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [{ role: "user", text: "**not bold** and `literal`" }],
+    }),
+  });
+  const content = chrome.element("chatLog").querySelector(".bubble.user .bubble-content");
+  assert.ok(content);
+  assert.equal(content.querySelector("strong"), null);
+  assert.equal(content.querySelector("code"), null);
+  assert.equal(content.textContent, "**not bold** and `literal`");
+});
+
+test("agent-reply hostile payload is sanitized through the built chrome IIFE", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({
+      // Markdown first so formatting still applies; HTML/js links follow.
+      text: '**safe**\n\n<script>alert(1)</script>\n\n<img src=x onerror="alert(1)">\n\n[js](javascript:alert(1))',
+    }),
+  });
+  const bubble = chrome.element("chatLog").lastAppendedChild;
+  const content = bubble.querySelector(".bubble-content");
+  assert.ok(content);
+  assert.equal(content.querySelectorAll("script").length, 0);
+  assert.equal(content.querySelectorAll("img").length, 0);
+  assert.equal(content.querySelectorAll("[onerror],[onload],[onclick]").length, 0);
+  for (const anchor of content.querySelectorAll("a")) {
+    const href = anchor.getAttribute("href");
+    if (href == null) continue;
+    assert.match(href, /^https?:\/\//i, `unexpected href ${href}`);
+  }
+  assert.ok(content.querySelector("strong"), "expected bold still formats alongside hostile payload");
+  assert.match(content.textContent || "", /safe/);
 });
 
 test("chrome client posts layout warnings from the artifact iframe", async () => {
