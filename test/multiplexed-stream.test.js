@@ -197,7 +197,9 @@ test("torn tail recovery and consumer capability 0600", async () => {
     await mkdir(root, { recursive: true });
     const minted = await initConsumerCapability({ root });
     assert.equal(minted.status, "created");
-    assert.equal((await stat(minted.file)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(minted.file)).mode & 0o777, 0o600);
+    }
     const cap = await readConsumerCapabilityFile(minted.file);
     assert.ok(cap.consumer_id);
 

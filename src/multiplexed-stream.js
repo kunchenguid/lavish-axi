@@ -153,7 +153,9 @@ export async function readConsumerCapabilityFile(file) {
   }
   if (!st.isFile()) return { error: "consumer_file_missing", file: absolute };
   const mode = st.mode & 0o777;
-  if (mode & 0o077) {
+  // Windows does not implement POSIX permission bits: chmod(0600) is a no-op
+  // and stat commonly reports 0666 for files created with mode 0600.
+  if (process.platform !== "win32" && mode & 0o077) {
     return {
       error: "consumer_file_insecure_permissions",
       file: absolute,
