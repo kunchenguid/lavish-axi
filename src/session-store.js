@@ -140,7 +140,7 @@ export class SessionStore {
     });
   }
 
-  async beginArtifactLoad(key, requestId = "") {
+  async beginArtifactLoad(key, requestId = "", requestSequence = 0) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
@@ -148,10 +148,21 @@ export class SessionStore {
         return null;
       }
       const normalizedRequestId = String(requestId || "");
+      const parsedRequestSequence = Number(requestSequence);
+      const normalizedRequestSequence =
+        Number.isSafeInteger(parsedRequestSequence) && parsedRequestSequence > 0 ? parsedRequestSequence : 0;
       const activeLoad = this.artifactLoads.get(key);
       if (normalizedRequestId && activeLoad?.requestId === normalizedRequestId) {
         return {
           session,
+          artifact_revision: activeLoad.artifactRevision,
+          artifact_load_token: activeLoad.artifactLoadToken,
+        };
+      }
+      if (normalizedRequestSequence > 0 && activeLoad?.requestSequence > normalizedRequestSequence) {
+        return {
+          session,
+          stale: true,
           artifact_revision: activeLoad.artifactRevision,
           artifact_load_token: activeLoad.artifactLoadToken,
         };
@@ -163,6 +174,7 @@ export class SessionStore {
         artifactLoadToken,
         lastPassSequence: 0,
         requestId: normalizedRequestId,
+        requestSequence: normalizedRequestSequence,
       });
       session.artifact_revision = artifactRevision;
       session.updated_at = new Date().toISOString();

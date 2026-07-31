@@ -1595,6 +1595,41 @@ test("the artifact availability probe does not advance the artifact revision", a
   }
 });
 
+test("an older overlapping begin request cannot replace the current epoch", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const begin = (requestId, requestSequence) =>
+      fetch(`${base}/api/${key}/artifact-loads/begin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ request_id: requestId, request_sequence: requestSequence }),
+      });
+
+    const currentLoad = await begin("new-load", 2).then((response) => response.json());
+    const staleResponse = await begin("old-load", 1);
+    assert.equal(staleResponse.status, 409);
+    assert.deepEqual(await staleResponse.json(), { status: "stale" });
+
+    const currentDocument = await fetch(artifactLoadUrl(base, key, currentLoad));
+    assert.equal(currentDocument.status, 200);
+    const revision = await fetch(`${base}/api/${key}/layout-warnings`).then((response) => response.json());
+    assert.equal(revision.revision, currentLoad.artifact_revision);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a newer begun load fences stale document and artifact mutations", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

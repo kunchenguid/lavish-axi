@@ -1102,7 +1102,7 @@ async function replaceArtifactFrame() {
       const response = await fetch("/api/" + key + "/artifact-loads/begin", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ request_id: requestId }),
+        body: JSON.stringify({ request_id: requestId, request_sequence: requestSequence }),
       });
       if (!response.ok) throw new Error("failed to begin artifact load");
       const candidate = await response.json();

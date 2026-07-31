@@ -264,14 +264,20 @@ test("a retried begin request reuses the same load epoch", async () => {
 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const first = await store.beginArtifactLoad(session.key, "request-1");
-    const retry = await store.beginArtifactLoad(session.key, "request-1");
-    const next = await store.beginArtifactLoad(session.key, "request-2");
+    const first = await store.beginArtifactLoad(session.key, "request-1", 1);
+    const retry = await store.beginArtifactLoad(session.key, "request-1", 1);
+    const next = await store.beginArtifactLoad(session.key, "request-2", 2);
 
     assert.equal(retry.artifact_revision, first.artifact_revision);
     assert.equal(retry.artifact_load_token, first.artifact_load_token);
     assert.equal(next.artifact_revision, first.artifact_revision + 1);
     assert.notEqual(next.artifact_load_token, first.artifact_load_token);
+
+    const stale = await store.beginArtifactLoad(session.key, "request-1", 1);
+    assert.equal(stale.stale, true);
+    assert.equal(stale.artifact_revision, next.artifact_revision);
+    assert.equal(stale.artifact_load_token, next.artifact_load_token);
+    assert.equal((await store.findByKey(session.key)).artifact_revision, next.artifact_revision);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
