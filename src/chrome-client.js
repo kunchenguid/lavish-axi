@@ -106,6 +106,8 @@ let lastScroll = { x: 0, y: 0 };
 // it as it changes and the chrome replays it once the new document is up.
 let lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
+let artifactLoadGeneration = 0;
+let artifactReadyGeneration = 0;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let artifactSilenceTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
@@ -549,6 +551,7 @@ async function submitLayoutDiagnostics(pass) {
   if (!response.ok) throw new Error("failed to submit layout diagnostics");
   const data = await response.json();
   if (Array.isArray(data.warnings)) setLayoutWarnings(data.warnings);
+  return data;
 }
 
 async function reportArtifactFailures(failures) {
@@ -1036,6 +1039,9 @@ async function publishShare(event) {
 }
 
 function replaceArtifactFrame() {
+  artifactLoadGeneration += 1;
+  if (!artifactSrc) artifactReadyGeneration = artifactLoadGeneration;
+  clearTimeout(artifactSilenceTimer);
   startLayoutGateCycle();
   inlineWhiteboardChannels.clear();
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
@@ -1521,7 +1527,12 @@ window.addEventListener("message", (event) => {
 });
 
 function loadFrame() {
-  if (artifactSrc) frame.src = artifactSrc;
+  if (artifactSrc) {
+    artifactLoadGeneration += 1;
+    frame.src = artifactSrc;
+  } else {
+    artifactReadyGeneration = artifactLoadGeneration;
+  }
 }
 
 function reloadArtifact() {
@@ -1564,6 +1575,23 @@ window.addEventListener("message", (event) => {
   if (event.source !== frame.contentWindow) return;
 
   const msg = event.data || {};
+  const messageGeneration = artifactLoadGeneration;
+  if (msg.type === "lavish:layoutDiagnostics") {
+    if (messageGeneration !== artifactReadyGeneration) return;
+    submitLayoutDiagnostics({
+      complete: msg.complete !== false,
+      artifactRevision: msg.artifact_revision,
+      viewportWidth: msg.viewport_width,
+      findings: msg.findings,
+    })
+      .then((result) => {
+        if (messageGeneration !== artifactLoadGeneration || result?.status === "stale") return;
+        clearTimeout(artifactSilenceTimer);
+        if (msg.complete !== false) handleLayoutGatePass();
+      })
+      .catch(() => {});
+    return;
+  }
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
   clearTimeout(artifactSilenceTimer);
   if (msg.type === "lavish:queuePrompt") {
@@ -1583,15 +1611,6 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:reviewState") {
     lastReviewState = msg.state && typeof msg.state === "object" ? msg.state : null;
-  }
-  if (msg.type === "lavish:layoutDiagnostics") {
-    if (msg.complete !== false) handleLayoutGatePass();
-    submitLayoutDiagnostics({
-      complete: msg.complete !== false,
-      artifactRevision: msg.artifact_revision,
-      viewportWidth: msg.viewport_width,
-      findings: msg.findings,
-    }).catch(() => {});
   }
   if (msg.type === "lavish:artifactAssetFailure") {
     reportArtifactFailures([
@@ -1684,6 +1703,7 @@ document.addEventListener(
   true,
 );
 frame.addEventListener("load", () => {
+  artifactReadyGeneration = artifactLoadGeneration;
   armArtifactAvailabilityProbe();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.

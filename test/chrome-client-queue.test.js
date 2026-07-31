@@ -269,6 +269,7 @@ async function createChromeHarness({
   };
 
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
+  if (artifactSrc) frame.dispatch("load");
 
   return {
     element,
@@ -1044,6 +1045,50 @@ test("layout gate re-arms on reload and still reveals on the next completed pass
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
 });
 
+test("a stale prior-document diagnostic cannot reveal the new gate or clear its probe", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url === "/api/abc/layout-diagnostics") {
+        return { ok: true, json: async () => ({ status: "stale", warnings: [] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+    sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
+    artifactSrc: "/artifact/abc/index.html",
+  });
+
+  chrome.runTimers(25);
+  chrome.eventSource().listeners.get("reload")();
+  chrome.sendFrameMessage({
+    type: "lavish:layoutDiagnostics",
+    artifact_revision: 1,
+    complete: true,
+    viewport_width: 720,
+    findings: [],
+  });
+  await flushPromises();
+
+  assert.equal(
+    posts.some((post) => post.url === "/api/abc/layout-diagnostics"),
+    false,
+  );
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+  chrome.frame.dispatch("load");
+  chrome.sendFrameMessage({
+    type: "lavish:layoutDiagnostics",
+    artifact_revision: 1,
+    complete: true,
+    viewport_width: 720,
+    findings: [],
+  });
+  await flushPromises();
+  chrome.runTimers(8000);
+  await flushPromises();
+  assert.ok(posts.some((post) => post.url === "/artifact/abc/index.html?probe=1"));
+});
+
 test("layout gate manual override reveals immediately", async () => {
   const chrome = await createChromeHarness();
 
@@ -1711,6 +1756,7 @@ test("an artifact that reports diagnostics is never probed as unavailable", asyn
 
   chrome.element("artifact").dispatch("load");
   chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, viewport_width: 1440, findings: [] });
+  await flushPromises();
   chrome.runTimers(8000);
   await flushPromises();
 
