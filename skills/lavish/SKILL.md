@@ -35,7 +35,7 @@ Use lavish-axi when the user asks for a visual artifact, HTML explainer, interac
 3. Run `npx -y lavish-axi poll <html-file>` to long-poll for the user's annotations and queued prompts.
    On the first poll, prefer `--agent-reply "<one-line summary of what you built and what to review first>"` so the conversation panel opens with context.
    Browser-detected layout issues are filed passively in the user's Layout issues inbox and arrive as an ordinary `layout-warnings` prompt only when the user selects and queues them. Never edit an issue the user has not queued. The only response that arrives without user action is `artifact_failures`, when the review surface itself is unusable.
-   The poll stays silent until the user acts or the real browser proves meaningful content is inaccessible or unusable - leave it running, never kill it.
+   The poll stays silent until the user acts or a fatal artifact failure makes the review surface unusable - leave it running, never kill it.
    Cosmetic, intentional, transient, tiny, and uncertain observations remain silent.
    Keep the poll in the foreground by default and let it return the feedback directly to the agent.
    A background poll is allowed only through a harness-native tracked background-job facility whose completion result is guaranteed to resume or notify the same agent.

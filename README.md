@@ -121,8 +121,8 @@ pnpm link
 ┌────────────────────────┐
 │ Human annotates text   │
 │ or elements, sends     │
-│ chat, or browser audit │
-│ proves severe failures │
+│ chat, or queues layout │
+│ issues from the inbox  │
 └───────┬────────────────┘
         ▼
 ┌────────────────────────┐

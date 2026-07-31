@@ -1122,7 +1122,7 @@ async function replaceArtifactFrame() {
     }
     return false;
   };
-  let load = null;
+  let load;
   let transportAttempt = 0;
   let handoffRefreshAttempted = false;
   while (true) {

@@ -273,7 +273,7 @@ test(
       const afterQueue = inbox();
       assert.equal(afterQueue.badge, beforeQueue.badge, "queueing never removes a warning from the active count");
       assert.equal(afterQueue.pills, 1, "the selected group becomes exactly one queued prompt");
-      const queuedRows = afterQueue.rows.filter((row) => row.status === "Queued for fix");
+      const queuedRows = afterQueue.rows.filter((row) => row.status === "Queued for send");
       assert.equal(queuedRows.length, 2);
       assert.deepEqual(
         queuedRows.map((row) => row.target).sort(),

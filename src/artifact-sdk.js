@@ -1423,7 +1423,10 @@ export function createArtifactSdk(
       const endTime = Number(animation.effect?.getComputedTiming?.().endTime);
       return Number.isFinite(endTime);
     });
-    if (finite.length === 0) return activeDocumentAnimations().length === 0;
+    // Infinite animations are allowed to continue while the audit reports stable findings that
+    // are unrelated to their targets. Completeness only waits for finite animations to settle;
+    // active animation targets are still used by the audit to suppress motion-associated noise.
+    if (finite.length === 0) return true;
 
     let settled = false;
     await Promise.race([
@@ -1435,7 +1438,7 @@ export function createArtifactSdk(
     if (!settled) {
       for (const animation of finite) animation.finished.then(scheduleLayoutAudit, scheduleLayoutAudit);
     }
-    return settled && activeDocumentAnimations().length === 0;
+    return settled;
   }
 
   // A diagnostic pass reports its own completeness. An incomplete pass is uncertainty, never
@@ -1475,7 +1478,7 @@ export function createArtifactSdk(
     const targetPresenceComplete = document.readyState === "complete" && domHydrationQuiescent;
     publishLayoutAudit(
       findStableLayoutFindings(domHydrationQuiescent ? second : first, final),
-      animationsSettled && activeDocumentAnimations().length === 0 && targetPresenceComplete,
+      animationsSettled && targetPresenceComplete,
       targetPresenceComplete,
     );
   }

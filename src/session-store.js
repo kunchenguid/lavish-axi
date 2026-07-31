@@ -23,6 +23,7 @@ const MAX_ARTIFACT_FAILURES = 20;
 export class SessionStore {
   constructor(file) {
     this.file = file;
+    /** @type {Promise<unknown>} */
     this.stateOperationQueue = Promise.resolve();
     this.artifactLoads = new Map();
     this.chromeLoadContexts = new Map();
@@ -99,7 +100,14 @@ export class SessionStore {
       for (const prompt of normalizedPrompts) {
         const warningIds = layoutWarningPromptIds(prompt);
         if (warningIds === null) {
-          layoutPlans.push({ prompt, warningIds: null });
+          layoutPlans.push({
+            prompt,
+            warningIds: null,
+            expectedRevision: null,
+            conflicts: [],
+            queueIds: [],
+            hadKnownWarning: false,
+          });
           continue;
         }
         const plan = planLayoutWarningPrompt(warnings, prompt, revision);
@@ -160,6 +168,7 @@ export class SessionStore {
     });
   }
 
+  /** @returns {Promise<any>} */
   async beginArtifactLoad(key, { requestId = "", requestSequence = 0, handoffToken = "" } = {}) {
     return this.runExclusive(async () => {
       const state = await this.readState();
@@ -410,6 +419,7 @@ export class SessionStore {
     });
   }
 
+  /** @returns {Promise<any>} */
   async takeFeedback(key) {
     return this.runExclusive(async () => {
       const state = await this.readState();
@@ -488,6 +498,11 @@ export class SessionStore {
     });
   }
 
+  /**
+   * @template T
+   * @param {() => Promise<T>} operation
+   * @returns {Promise<T>}
+   */
   runExclusive(operation) {
     const result = this.stateOperationQueue.then(operation);
     this.stateOperationQueue = result.catch(() => {});

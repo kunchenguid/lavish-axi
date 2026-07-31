@@ -101,7 +101,10 @@ test(
       run("chrome-devtools-axi", ["open", url], chromeEnv);
       run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
       let inbox = readInbox();
-      if (expectedCount > 0 && Number(inbox.badge) !== expectedCount) {
+      // A busy browser can return from navigation before the refreshed chrome has painted its
+      // first diagnostic result. Re-open once when the gate is still checking (or a warning-count
+      // assertion is otherwise not ready), then keep the final gate assertion strict.
+      if (inbox.gate || (expectedCount > 0 && Number(inbox.badge) !== expectedCount)) {
         run("chrome-devtools-axi", ["open", url], chromeEnv);
         run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
         inbox = readInbox();
