@@ -10,7 +10,6 @@ const queueStorageKey = "lavish-axi:queued:" + key;
 const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
 const warningAckStorageKey = "lavish-axi:warning-ack:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
-const internalQueueItemIdField = "_lavishQueueItemId";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 
@@ -75,9 +74,7 @@ const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElem
 const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
-const restoredQueueState = loadQueueState();
-const queued = restoredQueueState.prompts;
-let pendingSubmission = restoredQueueState.submission;
+const queued = loadQueuedPrompts();
 let annotation = true;
 let ended = false;
 let agentPresence = "waiting";
@@ -170,39 +167,19 @@ function saveJsonState(storageKey, value) {
   }
 }
 
-function loadQueueState() {
+function loadQueuedPrompts() {
   try {
     const parsed = JSON.parse(sessionStorage.getItem(queueStorageKey) || "[]");
-    const storedPrompts = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.prompts) ? parsed.prompts : [];
-    const prompts = storedPrompts
-      .filter((prompt) => prompt && typeof prompt === "object")
-      .map((prompt) => ensureQueueItemId(prompt));
-    const submission =
-      !Array.isArray(parsed) &&
-      parsed?.submission &&
-      typeof parsed.submission.id === "string" &&
-      Array.isArray(parsed.submission.prompts)
-        ? parsed.submission
-        : null;
-    if (submission && !Array.isArray(submission.itemIds)) {
-      const available = prompts.slice();
-      submission.itemIds = submission.prompts.map((submittedPrompt) => {
-        const serialized = JSON.stringify(submittedPrompt);
-        const index = available.findIndex((prompt) => JSON.stringify(stripInternalPromptFields(prompt)) === serialized);
-        if (index === -1) return "";
-        return available.splice(index, 1)[0][internalQueueItemIdField];
-      });
-    }
-    return { prompts, submission };
+    return Array.isArray(parsed) ? parsed.filter((prompt) => prompt && typeof prompt === "object") : [];
   } catch {
-    return { prompts: [], submission: null };
+    return [];
   }
 }
 
 function persistQueuedPrompts() {
   try {
-    if (queued.length || pendingSubmission) {
-      sessionStorage.setItem(queueStorageKey, JSON.stringify({ prompts: queued, submission: pendingSubmission }));
+    if (queued.length) {
+      sessionStorage.setItem(queueStorageKey, JSON.stringify(queued));
     } else {
       sessionStorage.removeItem(queueStorageKey);
     }
@@ -383,17 +360,16 @@ function promptQueueKey(prompt) {
 function enqueuePrompt(prompt) {
   if (!prompt || typeof prompt !== "object") return;
 
-  const queueItem = ensureQueueItemId(prompt);
   const queueKey = promptQueueKey(prompt);
   if (queueKey) {
     const index = queued.findIndex((item) => promptQueueKey(item) === queueKey);
     if (index !== -1) {
-      queued[index] = queueItem;
+      queued[index] = prompt;
     } else {
-      queued.push(queueItem);
+      queued.push(prompt);
     }
   } else {
-    queued.push(queueItem);
+    queued.push(prompt);
   }
 
   persistQueuedPrompts();
@@ -404,14 +380,7 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
-  delete clean[internalQueueItemIdField];
   return clean;
-}
-
-function ensureQueueItemId(prompt) {
-  const existing = String(prompt?.[internalQueueItemIdField] || "");
-  if (existing) return prompt;
-  return { ...prompt, [internalQueueItemIdField]: createSubmissionId() };
 }
 
 function postToFrame(message) {
@@ -429,7 +398,7 @@ function sendQueued(endAfter) {
 
   const text = chatInput.value.trim();
   if (text) {
-    queued.push(ensureQueueItemId({ uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" }));
+    queued.push({ uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" });
     persistQueuedPrompts();
     addChat("user", text);
     chatInput.value = "";
@@ -465,7 +434,7 @@ async function submitQueued() {
       endAfterSubmit = false;
     } else if (!ended && shouldSubmitAgain) {
       if (queued.length) {
-        submitQueued().catch(() => {});
+        submitQueued();
       } else if (endAfterSubmit) {
         endAfterSubmit = false;
         endSession();
@@ -475,23 +444,10 @@ async function submitQueued() {
 }
 
 async function submitQueuedOnce() {
-  if (!pendingSubmission) {
-    pendingSubmission = {
-      id: createSubmissionId(),
-      itemIds: queued.map((prompt) => prompt[internalQueueItemIdField]),
-      prompts: queued.slice().map(stripInternalPromptFields),
-      domSnapshot: pendingSnapshot,
-      endSession: Boolean(endAfterSubmit),
-    };
-    persistQueuedPrompts();
-  }
-  const submission = pendingSubmission;
-  const body = {
-    submissionId: submission.id,
-    prompts: submission.prompts,
-    domSnapshot: submission.domSnapshot,
-  };
-  if (submission.endSession) body.endSession = true;
+  const prompts = queued.slice();
+  const shouldEndSession = endAfterSubmit;
+  const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
+  if (shouldEndSession) body.endSession = true;
   const response = await fetch("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -501,32 +457,23 @@ async function submitQueuedOnce() {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
-      pendingSubmission = null;
-      persistQueuedPrompts();
       endAfterSubmit = false;
       return false;
     }
     throw new Error("failed to submit queued prompts");
   }
-  const submittedItemIds = new Set(submission.itemIds || []);
-  for (let index = queued.length - 1; index >= 0; index -= 1) {
-    if (submittedItemIds.has(queued[index][internalQueueItemIdField])) queued.splice(index, 1);
+  for (const prompt of prompts) {
+    const index = queued.indexOf(prompt);
+    if (index !== -1) queued.splice(index, 1);
   }
-  pendingSubmission = null;
   persistQueuedPrompts();
   render();
-  if (submission.endSession) {
+  if (shouldEndSession) {
     endAfterSubmit = false;
     markSessionEnded();
     return;
   }
   if (agentPresence === "listening") setAgentPresence("working");
-}
-
-function createSubmissionId() {
-  const randomUuid = window.crypto?.randomUUID;
-  if (typeof randomUuid === "function") return randomUuid.call(window.crypto);
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function normalizeLayoutFindings(value) {
@@ -1801,7 +1748,7 @@ window.addEventListener("message", (event) => {
       copyText(msg.snapshot || "");
     } else {
       pendingSnapshot = msg.snapshot || "";
-      submitQueued().catch(() => {});
+      submitQueued();
     }
   }
   if (msg.type === "lavish:scroll") {

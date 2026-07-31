@@ -41,7 +41,6 @@ import {
   exportWarningSummaries,
   splitExportWarnings,
 } from "./export-bundle.js";
-import { LavishStreamAdapter, createCapabilitiesProtocolBlock, resolveStreamBounds } from "./lavish-stream-adapter.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
@@ -93,10 +92,6 @@ export function isWhiteboardWriteApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
 }
 
-export function isEventStreamPath(pathname) {
-  return String(pathname || "") === "/api/events/stream";
-}
-
 export function createWhiteboardChannelToken(secret, now = Date.now()) {
   const payload = `${now}.${crypto.randomBytes(24).toString("base64url")}`;
   const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
@@ -115,8 +110,8 @@ export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-// A detached server should not live forever. When no browser chrome (SSE), agent poll, or
-// event-stream subscription is connected for this long, the server shuts down. The next
+// A detached server should not live forever. When no browser chrome (SSE) and no agent poll
+// are connected for this long, the server shuts itself down so it stops dangling. The next
 // `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
 // state.json. Browser-ended sessions still require the explicit --reopen opt-in. Set
 // LAVISH_AXI_IDLE_TIMEOUT_MS to 0/off to disable, or to a custom millisecond budget.
@@ -141,7 +136,6 @@ export async function serve({
   linkHost: linkHostName = linkHost(),
   allowedHosts = extraAllowedHosts(),
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
-  eventStreamBounds = resolveStreamBounds(),
 }) {
   const app = express();
   const store = new SessionStore(stateFile);
@@ -161,19 +155,6 @@ export async function serve({
 
   // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
   const whiteboardStateRoot = path.dirname(stateFile);
-  const stateDir = path.dirname(stateFile);
-
-  // Domain-neutral multiplexed stream + thin Lavish adapter. Logs never include payloads.
-  const eventStream = new LavishStreamAdapter({
-    store,
-    stateDir,
-    bounds: eventStreamBounds,
-    log: logEvent ? (line) => logEvent(`event-stream ${line}`) : null,
-  });
-  // Finish foundation dir creation before any request or test teardown can race it.
-  await eventStream.ready;
-  store.eventMirror = eventStream;
-  store.isClaimed = (key) => eventStream.isClaimed(key);
 
   // DNS-rebinding guard. isSameOriginRequest (used on /share and the whiteboard
   // write routes) stops classic cross-origin CSRF but NOT DNS rebinding: a page
@@ -207,25 +188,12 @@ export async function serve({
 
   const defaultJsonParser = express.json({ limit: "2mb" });
   const whiteboardJsonParser = express.json({ limit: "20mb" });
-  app.use((req, res, next) => {
-    if (isEventStreamPath(req.path)) {
-      next();
-      return;
-    }
-    if (isWhiteboardWriteApiPath(req.path)) {
-      whiteboardJsonParser(req, res, next);
-      return;
-    }
-    defaultJsonParser(req, res, next);
-  });
+  app.use((req, res, next) =>
+    isWhiteboardWriteApiPath(req.path) ? whiteboardJsonParser(req, res, next) : defaultJsonParser(req, res, next),
+  );
 
   app.get("/health", (req, res) => {
-    res.json({
-      ok: true,
-      app: "lavish-axi",
-      version,
-      protocol: createCapabilitiesProtocolBlock(),
-    });
+    res.json({ ok: true, app: "lavish-axi", version });
   });
 
   let shutdownResolve;
@@ -263,7 +231,7 @@ export async function serve({
       }
       logEvent?.(`session opened key=${key} file=${file}`);
       await syncOutstandingRepairs(key);
-      await watchSession(session, watchers, events, logEvent, reloadDebounceMs, onArtifactUnlink);
+      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       res.json({ key, file, url, status: "opened" });
     } catch (error) {
       next(error);
@@ -586,198 +554,6 @@ export async function serve({
     }
   });
 
-  // --- Multiplexed event stream (Lavish adapter over domain-neutral foundation) -------------
-
-  app.post("/api/review/claim", async (req, res, next) => {
-    try {
-      const token = bearerToken(req);
-      if (!token) {
-        res.status(401).json({ error: "missing_home_capability" });
-        return;
-      }
-      const generation = Number(req.body?.generation);
-      const reviewId = String(req.body?.review_id || req.body?.review || "");
-      const homeRoot = String(req.body?.home_root || "");
-      const result = await eventStream.claimReview(token, generation, reviewId, { homeRoot });
-      if (result.error) {
-        res.status(result.error === "unknown_review" ? 404 : 409).json(result);
-        return;
-      }
-      refreshIdleTimer();
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/review/retire", async (req, res, next) => {
-    try {
-      const token = bearerToken(req);
-      if (!token) {
-        res.status(401).json({ error: "missing_home_capability" });
-        return;
-      }
-      const result = await eventStream.retireReview(
-        token,
-        Number(req.body?.generation),
-        String(req.body?.review_id || req.body?.review || ""),
-      );
-      if (result.error) {
-        res.status(409).json(result);
-        return;
-      }
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/review/list", async (req, res, next) => {
-    try {
-      const token = bearerToken(req);
-      if (!token) {
-        res.status(401).json({ error: "missing_home_capability" });
-        return;
-      }
-      const result = /** @type {any} */ (await eventStream.listClaims(token));
-      if (result.error) {
-        res.status(400).json(result);
-        return;
-      }
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/events/stream", async (req, res, next) => {
-    try {
-      const token = bearerToken(req);
-      if (!token) {
-        res.status(401).json({ error: "missing_home_capability" });
-        return;
-      }
-      const generation = Number(req.query.generation || req.headers["x-lavish-generation"] || 0);
-      const cursor = Number(req.query.cursor || req.headers["x-lavish-cursor"] || 0);
-      const homeRoot = String(req.query.home_root || req.headers["x-lavish-home-root"] || "");
-      let closed = false;
-      const write = (line) => {
-        if (closed || res.writableEnded) return false;
-        // Adapter boundary: foundation envelopes -> Lavish wire names for Firstmate.
-        try {
-          const obj = JSON.parse(line);
-          if (obj.schema === "multiplexed.event/1") {
-            const mapped = {
-              schema: "lavish.event/1",
-              event_id: obj.event_id,
-              log_position: obj.log_position,
-              review_id: obj.stream_key,
-              home_id: obj.consumer_id,
-              generation: obj.generation,
-              type: obj.type,
-              created_at: obj.created_at,
-              artifact_path: obj.payload?.artifact_path || obj.attributes?.artifact_path || "",
-              payload: obj.payload || {},
-              end_state: obj.end_state ?? null,
-            };
-            return res.write(`${JSON.stringify(mapped)}\n`);
-          }
-          if (obj.schema === "multiplexed.stream/1") {
-            return res.write(`${JSON.stringify({ ...obj, schema: "lavish.stream/1", home_key: obj.consumer_key })}\n`);
-          }
-        } catch {
-          // fall through
-        }
-        return res.write(line);
-      };
-      const result = /** @type {any} */ (
-        await eventStream.subscribe(token, generation, {
-          cursor,
-          homeRoot,
-          write,
-          onClose: () => {
-            closed = true;
-            if (!res.writableEnded) res.end();
-            refreshIdleTimer();
-          },
-        })
-      );
-      if (result.error) {
-        res.status(result.error === "duplicate_subscriber" || result.error === "fenced" ? 409 : 400).json(result);
-        return;
-      }
-      res.status(200);
-      res.setHeader("content-type", "application/x-ndjson; charset=utf-8");
-      res.setHeader("cache-control", "no-cache");
-      res.setHeader("connection", "keep-alive");
-      res.setHeader("x-lavish-event-lease-ttl-ms", String(eventStreamBounds.leaseTtlMs));
-      res.flushHeaders?.();
-      await result.start?.();
-      refreshIdleTimer();
-      const onDrain = () => {
-        eventStream.resumeDelivery(token).catch(() => {});
-      };
-      res.on("drain", onDrain);
-      const leaseTimer = setInterval(
-        () => {
-          eventStream.sweepLeases().catch(() => {});
-        },
-        Math.max(1_000, Math.floor(eventStreamBounds.leaseTtlMs / 3)),
-      );
-      leaseTimer.unref?.();
-      req.on("close", () => {
-        clearInterval(leaseTimer);
-        res.off("drain", onDrain);
-        result.close?.();
-        closed = true;
-        refreshIdleTimer();
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/events/ack", async (req, res, next) => {
-    try {
-      const token = bearerToken(req);
-      if (!token) {
-        res.status(401).json({ error: "missing_home_capability" });
-        return;
-      }
-      const eventIds = Array.isArray(req.body?.ack)
-        ? req.body.ack
-        : Array.isArray(req.body?.event_ids)
-          ? req.body.event_ids
-          : [];
-      const result = /** @type {any} */ (await eventStream.acknowledge(token, Number(req.body?.generation), eventIds));
-      if (result.error) {
-        res.status(400).json(result);
-        return;
-      }
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/events/lease", async (req, res, next) => {
-    try {
-      const token = bearerToken(req);
-      if (!token) {
-        res.status(401).json({ error: "missing_home_capability" });
-        return;
-      }
-      const result = await eventStream.renewLease(token, Number(req.body?.generation));
-      if (result.error) {
-        res.status(result.error === "fenced" ? 409 : 400).json(result);
-        return;
-      }
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  });
-
   app.get("/session/:key", async (req, res, next) => {
     try {
       const chromeLoad = await store.issueReviewerHandoff(req.params.key);
@@ -786,7 +562,7 @@ export async function serve({
         return;
       }
       const session = chromeLoad.session;
-      await watchSession(session, watchers, events, logEvent, reloadDebounceMs, onArtifactUnlink);
+      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
       res.type("html").send(
@@ -1214,8 +990,8 @@ export async function serve({
     }
   }
 
-  // Idle self-shutdown: the timer only runs while nothing is connected. Any live SSE chrome,
-  // active long-poll, or event-stream subscription cancels it; losing the last connection (re)arms it.
+  // Idle self-shutdown: the timer only runs while nothing is connected. Any live SSE chrome or
+  // active long-poll cancels it; losing the last connection (re)arms it.
   let idleTimer = null;
   function refreshIdleTimer() {
     if (idleTimer) {
@@ -1223,15 +999,10 @@ export async function serve({
       idleTimer = null;
     }
     if (shuttingDown || idleTimeoutMs == null) return;
-    if (sseClients.size > 0 || activePolls.size > 0 || eventStream.activeSubscriptionCount() > 0) return;
+    if (sseClients.size > 0 || activePolls.size > 0) return;
     idleTimer = setTimeout(() => {
       idleTimer = null;
-      if (
-        !shuttingDown &&
-        sseClients.size === 0 &&
-        activePolls.size === 0 &&
-        eventStream.activeSubscriptionCount() === 0
-      ) {
+      if (!shuttingDown && sseClients.size === 0 && activePolls.size === 0) {
         logEvent?.(`idle for ${idleTimeoutMs}ms with no connections, shutting down`);
         shutdown();
       }
@@ -1240,12 +1011,12 @@ export async function serve({
   }
 
   // When the final open session ends with nothing connected, there is nothing left to serve,
-  // so step down immediately rather than waiting out the idle timeout. If a browser chrome,
-  // poll, or event-stream subscription is still attached (e.g. the user is about to reopen),
-  // leave the server up and let the idle timer reap it once those connections drop.
-  // Best-effort: never let a read failure block the end response.
+  // so step down immediately rather than waiting out the idle timeout. If a browser chrome or
+  // poll is still attached (e.g. the user is about to reopen), leave the server up and let the
+  // idle timer reap it once those connections drop. Best-effort: never let a read failure
+  // block the end response.
   async function shutdownIfNoLiveSessions() {
-    if (sseClients.size > 0 || activePolls.size > 0 || eventStream.activeSubscriptionCount() > 0) return;
+    if (sseClients.size > 0 || activePolls.size > 0) return;
     try {
       const sessions = await store.listSessions();
       if (sessions.every((session) => session.status === "ended")) {
@@ -1255,10 +1026,6 @@ export async function serve({
     } catch {
       // ignore - the idle timer remains as a backstop
     }
-  }
-
-  function onArtifactUnlink(key, artifactPath) {
-    eventStream.mirrorLifecycle(key, "artifact_missing", { artifact_path: artifactPath }).catch(() => {});
   }
 
   // A queued repair batch is outstanding until a diagnostic pass re-checks it. While it is, the
@@ -1441,13 +1208,6 @@ function optionalBodyString(value) {
   return trimmed || undefined;
 }
 
-/** Extract a Bearer token from Authorization. Never log the value. */
-export function bearerToken(req) {
-  const header = String(req.get?.("authorization") || req.headers?.authorization || "");
-  const match = /^Bearer\s+(\S+)/i.exec(header);
-  return match ? match[1] : "";
-}
-
 export function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
@@ -1460,14 +1220,7 @@ export function resolveArtifactAsset(root, assetPath) {
 /**
  * @param {(key: string) => number} reloadDebounceMs
  */
-async function watchSession(
-  session,
-  watchers,
-  events,
-  logEvent,
-  reloadDebounceMs = () => RELOAD_DEBOUNCE_MS,
-  onArtifactUnlink = null,
-) {
+async function watchSession(session, watchers, events, logEvent, reloadDebounceMs = () => RELOAD_DEBOUNCE_MS) {
   if (watchers.has(session.key)) {
     return;
   }
@@ -1480,12 +1233,6 @@ async function watchSession(
   let timer = null;
   watcher.on("all", (event, file) => {
     logEvent?.(`watch event=${event} session=${session.key} file=${file ?? ""}`);
-    if (event === "unlink" || event === "unlinkDir") {
-      const gone = file ? path.resolve(file) : "";
-      if (!gone || gone === path.resolve(session.file)) {
-        onArtifactUnlink?.(session.key, session.file);
-      }
-    }
     clearTimeout(timer);
     timer = setTimeout(() => events.emit("reload", session.key), reloadDebounceMs(session.key));
   });

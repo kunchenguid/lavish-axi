@@ -63,56 +63,6 @@ test("queued prompts are returned with DOM snapshot context and then cleared", a
   }
 });
 
-test("mirror retries reuse stable prompt and artifact-failure identities", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
-  try {
-    const stateFile = path.join(dir, "state.json");
-    const artifact = path.join(dir, "artifact.html");
-    await writeFile(artifact, "<h1>Hello</h1>");
-    const batches = [];
-    const store = new SessionStore(stateFile, {
-      eventMirror: {
-        mirrorFeedback: async (_key, batch) => {
-          batches.push(batch);
-          return { mirrored: true };
-        },
-      },
-    });
-    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    const writeState = store.writeState.bind(store);
-    let failWrite = true;
-    store.writeState = async (state) => {
-      if (failWrite) {
-        failWrite = false;
-        throw new Error("simulated state write failure");
-      }
-      return writeState(state);
-    };
-    const promptPayload = {
-      submissionId: "submission-stable-1",
-      domSnapshot: 'uid=1 h1 "Hello"',
-      prompts: [{ uid: "stable-1", prompt: "Make this warmer", selector: "h1", tag: "h1", text: "Hello" }],
-    };
-    await assert.rejects(store.queuePrompts(session.key, promptPayload), /simulated state write failure/);
-    await store.queuePrompts(session.key, { ...promptPayload, domSnapshot: "changed while retrying" });
-    assert.equal(batches[0].idempotency_key, batches[1].idempotency_key);
-
-    await store.queuePrompts(session.key, { ...promptPayload, submissionId: "submission-stable-2" });
-    assert.notEqual(batches[1].idempotency_key, batches[2].idempotency_key);
-
-    const load = await beginArtifactLoad(store, session.key);
-    failWrite = true;
-    const failurePayload = diagnosticPayload(load, 1, {
-      failures: [{ kind: "artifact-unavailable", detail: "failed to load" }],
-    });
-    await assert.rejects(store.recordArtifactFailures(session.key, failurePayload), /simulated state write failure/);
-    await store.recordArtifactFailures(session.key, failurePayload);
-    assert.equal(batches[3].idempotency_key, batches[4].idempotency_key);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("queued text selection prompts preserve range anchors", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

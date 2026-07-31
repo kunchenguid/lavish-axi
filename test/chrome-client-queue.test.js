@@ -366,8 +366,7 @@ async function createChromeHarness({
       return event;
     },
     queued() {
-      const value = JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
-      return Array.isArray(value) ? value : value.prompts || [];
+      return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
     },
     reloadCount() {
       return reloadCount;
@@ -1593,8 +1592,6 @@ test("chrome client strips the internal queue key before posting prompts", async
 
   assert.equal(posts.length, 1);
   assert.equal(posts[0].url, "/api/abc/prompts");
-  assert.equal(typeof posts[0].body.submissionId, "string");
-  delete posts[0].body.submissionId;
   assert.deepEqual(posts[0].body, {
     prompts: [{ prompt: "Use plan B", selector: "input#plan-b", tag: "choice", text: "Plan B" }],
     domSnapshot: "uid=1 body",
@@ -1626,8 +1623,6 @@ test("chrome send and end carries the end intent with queued prompts", async () 
     posts.map((post) => post.url),
     ["/api/abc/prompts"],
   );
-  assert.equal(typeof posts[0].body.submissionId, "string");
-  delete posts[0].body.submissionId;
   assert.deepEqual(posts[0].body, {
     prompts: [{ prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" }],
     domSnapshot: "uid=1 body",
@@ -1693,8 +1688,6 @@ test("chrome send and end during an in-flight submit still ends after the submit
     posts.map((post) => post.url),
     ["/api/abc/prompts", "/api/abc/end"],
   );
-  assert.equal(typeof posts[0].body.submissionId, "string");
-  delete posts[0].body.submissionId;
   assert.deepEqual(posts[0].body, {
     prompts: [{ prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" }],
     domSnapshot: "uid=1 body",
@@ -1702,88 +1695,6 @@ test("chrome send and end during an in-flight submit still ends after the submit
   assert.equal(posts[1].body, null);
   assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("chatInput").disabled, true);
-});
-
-test("chrome retries the persisted submission identity with its original batch", async () => {
-  const posts = [];
-  const chrome = await createChromeHarness({
-    fetchImpl: async (url, init = {}) => {
-      posts.push({ url, body: JSON.parse(init.body) });
-      return posts.length === 1 ? { ok: false, status: 500 } : { ok: true };
-    },
-  });
-  chrome.element("chatInput").value = "Repeat safely";
-  chrome.element("send").onclick();
-  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "first snapshot" });
-  await flushPromises();
-  await flushPromises();
-
-  chrome.element("send").onclick();
-  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "changed snapshot" });
-  await flushPromises();
-  await flushPromises();
-
-  assert.equal(posts.length, 2);
-  assert.equal(posts[0].body.submissionId, posts[1].body.submissionId);
-  assert.equal(posts[1].body.domSnapshot, "first snapshot");
-  assert.deepEqual(posts[1].body.prompts, posts[0].body.prompts);
-  assert.equal(chrome.queued().length, 0);
-});
-
-test("successful cleanup preserves an identical replacement queued in flight", async () => {
-  /** @type {() => void} */
-  let resolvePost = () => {};
-  const pendingPost = new Promise((resolve) => {
-    resolvePost = () => resolve();
-  });
-  const posts = [];
-  const chrome = await createChromeHarness({
-    fetchImpl: async (url, init = {}) => {
-      posts.push({ url, body: JSON.parse(init.body) });
-      await pendingPost;
-      return { ok: true };
-    },
-  });
-  const prompt = {
-    prompt: "Use plan B",
-    selector: "input#plan-b",
-    tag: "choice",
-    text: "Plan B",
-    _lavishQueueKey: "plan",
-  };
-  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt });
-  chrome.element("send").onclick();
-  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
-  await flushPromises();
-
-  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { ...prompt } });
-  resolvePost();
-  await flushPromises();
-  await flushPromises();
-
-  assert.equal(posts.length, 1);
-  assert.equal(Object.hasOwn(posts[0].body.prompts[0], "_lavishQueueItemId"), false);
-  assert.equal(chrome.queued().length, 1);
-  assert.equal(chrome.queued()[0].prompt, "Use plan B");
-});
-
-test("chrome gives intentional identical messages distinct submission identities", async () => {
-  const posts = [];
-  const chrome = await createChromeHarness({
-    fetchImpl: async (url, init = {}) => {
-      posts.push({ url, body: JSON.parse(init.body) });
-      return { ok: true };
-    },
-  });
-  for (let index = 0; index < 2; index += 1) {
-    chrome.element("chatInput").value = "Same words";
-    chrome.element("send").onclick();
-    chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "same snapshot" });
-    await flushPromises();
-    await flushPromises();
-  }
-  assert.equal(posts.length, 2);
-  assert.notEqual(posts[0].body.submissionId, posts[1].body.submissionId);
 });
 
 test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of focus", async () => {

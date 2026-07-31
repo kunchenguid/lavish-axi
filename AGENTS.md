@@ -36,14 +36,13 @@ Every behavior contract has one owner surface; other surfaces point at it instea
 
 - README.md owns the user-facing contract: features, CLI/flag reference, environment variables and their defaults, keyboard shortcuts, export/share semantics, and session-end etiquette.
 - Runtime guidance strings (`src/cli.js`, `src/design-reference.js`, `src/playbooks.js`) own everything agents are told while using Lavish; the generated skill mirrors them via `src/skill.js`.
-- `docs/event-stream-protocol.md` owns the domain-neutral multiplexed event-stream foundation and the Lavish adapter boundary.
 - This file owns only what neither shows at a glance: architecture internals, invariants, security rationale, and easy-to-reintroduce failure modes.
 
 When a change touches an owned contract, update the owner; edit this file only when an invariant changed.
 
 ## Architecture
 
-Lavish Editor is a CLI + local HTTP server that opens agent-generated HTML artifacts in a browser, lets the user annotate elements and selected text ranges or edit Mermaid diagrams as whiteboards, and ships that feedback back to the agent through a long poll or a claimed multiplexed stream.
+Lavish Editor is a CLI + local HTTP server that opens agent-generated HTML artifacts in a browser, lets the user annotate elements and selected text ranges or edit Mermaid diagrams as whiteboards, and ships that feedback back to the agent over a long-polling API.
 
 ### Process model
 
@@ -52,7 +51,7 @@ Later CLI invocations reuse the running server only when its health version matc
 Host, port, and link-host resolution lives in `src/paths.js` (`bindHost`/`clientHost`/`linkHost`); the CLI's own control-channel requests dial the bind host, falling back to loopback when it is a wildcard.
 A Host-header allowlist middleware (`buildAllowedHostnames`/`isAllowedRequestHost`) rejects any request whose `Host` is missing or not one this server answers to - the DNS-rebinding defense, since `isSameOriginRequest` alone does not stop rebinding (a rebound page sends its hostile domain in _both_ `Origin` and `Host`, so they still match). The allowlist is loopback names + the resolved bind/link host + explicit `LAVISH_AXI_ALLOWED_HOSTS` extras (`src/paths.js:extraAllowedHosts`), minus wildcard binds; a lone `*` (`allowsAllHosts`) disables the guard for operators fronting it with their own auth. When a reverse proxy sits in front, `X-Forwarded-Host`'s outermost value is validated against the same allowlist (an AND check, so a spoofed forwarded host only narrows access, never bypasses `Host`). README's Allowed hosts bullet owns the user-facing contract. So a specific-interface bind stays rebinding-protected while its own hostname works, rather than the guard switching off outside loopback.
 README's Network binding bullet owns the user-facing env vars and the non-loopback security warning.
-Server self-shutdown keys off live connections (browser SSE, agent polls, and event-stream subscriptions), not session status, so the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json` when it is still resumable; README's Server cleanup bullet owns the user-facing idle-timeout rules.
+Server self-shutdown keys off live connections (browser SSE and agent polls), not session status, so the next `lavish-axi <file>` re-spawns a fresh server and adopts the session from `state.json` when it is still resumable; README's Server cleanup bullet owns the user-facing idle-timeout rules.
 State lives at `~/.lavish-axi/state.json` (`LAVISH_AXI_STATE_DIR`), shared across all projects and keyed by a sha256 prefix of the canonicalized file path - the canonical HTML path _is_ the identity, so the CLI never needs opaque session IDs (`src/session-store.js:sessionKey`).
 
 ### Request flow
@@ -82,12 +81,6 @@ State lives at `~/.lavish-axi/state.json` (`LAVISH_AXI_STATE_DIR`), shared acros
    If SIGINT or SIGTERM interrupts a no-timeout poll, the CLI writes re-run guidance to stderr and exits with the conventional signal code; queued feedback persists, so re-running the same poll is safe.
 8. The `/events/:key` SSE stream emits `agent-presence` states: `waiting` before any poll has attached, `listening` while one is active, and `working` after a poll has delivered feedback and released; the chrome allows queued feedback while waiting or listening and blocks sends only while working. An agent reply (`POST /api/:key/agent-reply`, the CLI's `--agent-reply`) concludes the working state and returns presence to `waiting`, so sends re-enable as soon as the agent answers instead of staying blocked until another poll attaches.
    `--agent-reply` posts a chat message into the session before polling, rendered in the browser conversation panel via the same stream.
-
-### Multiplexed event stream (foundation + Lavish adapter)
-
-`docs/event-stream-protocol.md` owns the architecture, protocol, persistence, compatibility, and security contract.
-
-Invariants easy to break: re-entering store exclusive from a mirror that calls back into the store; blocking delivery of retained backlog under pressure (must hold ingestion only); claim/publish/retire without the shared exclusive queue; putting foundation types into Lavish session schema.
 
 ### Passive layout-warning inbox
 
