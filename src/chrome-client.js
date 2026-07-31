@@ -10,6 +10,7 @@ const queueStorageKey = "lavish-axi:queued:" + key;
 const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
 const warningAckStorageKey = "lavish-axi:warning-ack:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
+const internalQueueItemIdField = "_lavishQueueItemId";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 
@@ -172,7 +173,10 @@ function saveJsonState(storageKey, value) {
 function loadQueueState() {
   try {
     const parsed = JSON.parse(sessionStorage.getItem(queueStorageKey) || "[]");
-    const prompts = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.prompts) ? parsed.prompts : [];
+    const storedPrompts = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.prompts) ? parsed.prompts : [];
+    const prompts = storedPrompts
+      .filter((prompt) => prompt && typeof prompt === "object")
+      .map((prompt) => ensureQueueItemId(prompt));
     const submission =
       !Array.isArray(parsed) &&
       parsed?.submission &&
@@ -180,7 +184,16 @@ function loadQueueState() {
       Array.isArray(parsed.submission.prompts)
         ? parsed.submission
         : null;
-    return { prompts: prompts.filter((prompt) => prompt && typeof prompt === "object"), submission };
+    if (submission && !Array.isArray(submission.itemIds)) {
+      const available = prompts.slice();
+      submission.itemIds = submission.prompts.map((submittedPrompt) => {
+        const serialized = JSON.stringify(submittedPrompt);
+        const index = available.findIndex((prompt) => JSON.stringify(stripInternalPromptFields(prompt)) === serialized);
+        if (index === -1) return "";
+        return available.splice(index, 1)[0][internalQueueItemIdField];
+      });
+    }
+    return { prompts, submission };
   } catch {
     return { prompts: [], submission: null };
   }
@@ -370,16 +383,17 @@ function promptQueueKey(prompt) {
 function enqueuePrompt(prompt) {
   if (!prompt || typeof prompt !== "object") return;
 
+  const queueItem = ensureQueueItemId(prompt);
   const queueKey = promptQueueKey(prompt);
   if (queueKey) {
     const index = queued.findIndex((item) => promptQueueKey(item) === queueKey);
     if (index !== -1) {
-      queued[index] = prompt;
+      queued[index] = queueItem;
     } else {
-      queued.push(prompt);
+      queued.push(queueItem);
     }
   } else {
-    queued.push(prompt);
+    queued.push(queueItem);
   }
 
   persistQueuedPrompts();
@@ -390,7 +404,14 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
+  delete clean[internalQueueItemIdField];
   return clean;
+}
+
+function ensureQueueItemId(prompt) {
+  const existing = String(prompt?.[internalQueueItemIdField] || "");
+  if (existing) return prompt;
+  return { ...prompt, [internalQueueItemIdField]: createSubmissionId() };
 }
 
 function postToFrame(message) {
@@ -408,7 +429,7 @@ function sendQueued(endAfter) {
 
   const text = chatInput.value.trim();
   if (text) {
-    queued.push({ uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" });
+    queued.push(ensureQueueItemId({ uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" }));
     persistQueuedPrompts();
     addChat("user", text);
     chatInput.value = "";
@@ -457,6 +478,7 @@ async function submitQueuedOnce() {
   if (!pendingSubmission) {
     pendingSubmission = {
       id: createSubmissionId(),
+      itemIds: queued.map((prompt) => prompt[internalQueueItemIdField]),
       prompts: queued.slice().map(stripInternalPromptFields),
       domSnapshot: pendingSnapshot,
       endSession: Boolean(endAfterSubmit),
@@ -486,10 +508,9 @@ async function submitQueuedOnce() {
     }
     throw new Error("failed to submit queued prompts");
   }
-  for (const submittedPrompt of submission.prompts) {
-    const serialized = JSON.stringify(submittedPrompt);
-    const index = queued.findIndex((prompt) => JSON.stringify(stripInternalPromptFields(prompt)) === serialized);
-    if (index !== -1) queued.splice(index, 1);
+  const submittedItemIds = new Set(submission.itemIds || []);
+  for (let index = queued.length - 1; index >= 0; index -= 1) {
+    if (submittedItemIds.has(queued[index][internalQueueItemIdField])) queued.splice(index, 1);
   }
   pendingSubmission = null;
   persistQueuedPrompts();

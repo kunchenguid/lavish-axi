@@ -1730,6 +1730,42 @@ test("chrome retries the persisted submission identity with its original batch",
   assert.equal(chrome.queued().length, 0);
 });
 
+test("successful cleanup preserves an identical replacement queued in flight", async () => {
+  let resolvePost = () => {};
+  const pendingPost = new Promise((resolve) => {
+    resolvePost = resolve;
+  });
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: JSON.parse(init.body) });
+      await pendingPost;
+      return { ok: true };
+    },
+  });
+  const prompt = {
+    prompt: "Use plan B",
+    selector: "input#plan-b",
+    tag: "choice",
+    text: "Plan B",
+    _lavishQueueKey: "plan",
+  };
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt });
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { ...prompt } });
+  resolvePost();
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(Object.hasOwn(posts[0].body.prompts[0], "_lavishQueueItemId"), false);
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.queued()[0].prompt, "Use plan B");
+});
+
 test("chrome gives intentional identical messages distinct submission identities", async () => {
   const posts = [];
   const chrome = await createChromeHarness({
