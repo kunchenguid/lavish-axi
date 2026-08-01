@@ -898,14 +898,12 @@ export async function serve({
         res.status(409).json({ status: "stale" });
         return;
       }
-      res
-        .type("application/javascript")
-        .send(
-          createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token, {
-            maxAttachmentCount: attachmentConfig.maxPerPrompt,
-            maxAttachmentBytes: attachmentConfig.maxBytes,
-          }),
-        );
+      res.type("application/javascript").send(
+        createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token, {
+          maxAttachmentCount: attachmentConfig.maxPerPrompt,
+          maxAttachmentBytes: attachmentConfig.maxBytes,
+        }),
+      );
     } catch (error) {
       next(error);
     }
