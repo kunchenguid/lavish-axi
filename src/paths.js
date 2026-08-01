@@ -56,6 +56,12 @@ export function stateFile() {
   return path.join(stateDir(), "state.json");
 }
 
+// Persisted `lavish-axi tailnet` state (hostname + HTTPS port), owned by
+// src/tailnet.js; lives beside state.json so LAVISH_AXI_STATE_DIR moves it too.
+export function tailnetStateFile() {
+  return path.join(stateDir(), "tailnet.json");
+}
+
 export function serverLogFile() {
   return path.join(stateDir(), "server.log");
 }

@@ -45,6 +45,7 @@ import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import { tailnetAllowedHosts } from "./tailnet.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -134,7 +135,9 @@ export async function serve({
   idleTimeoutMs = resolveIdleTimeoutMs(),
   host = bindHost(),
   linkHost: linkHostName = linkHost(),
-  allowedHosts = extraAllowedHosts(),
+  // `lavish-axi tailnet` contributes the MagicDNS hostname while enabled (read
+  // at boot from tailnet.json; the CLI restarts this server when toggling).
+  allowedHosts = [...extraAllowedHosts(), ...tailnetAllowedHosts()],
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 }) {
   const app = express();

@@ -1,5 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,7 +24,15 @@ import {
   splitExportWarnings,
 } from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
-import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
+import {
+  clientHost,
+  defaultPort,
+  ensureStateDir,
+  hostForUrl,
+  serverLogFile,
+  stateFile,
+  tailnetStateFile,
+} from "./paths.js";
 import {
   computeVsCodePluginLocationsUpdate,
   linkCursorLocalPlugin,
@@ -29,9 +46,30 @@ import {
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
+import {
+  buildServeArgs,
+  buildServeOffArgs,
+  MACOS_TAILSCALE_APP_BINARY,
+  parseSelfDnsName,
+  readTailnetState,
+  resolveTailnetHttpsPort,
+  tailnetUrlFor,
+} from "./tailnet.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+const COMMANDS = new Set([
+  "open",
+  "poll",
+  "end",
+  "stop",
+  "server",
+  "playbook",
+  "design",
+  "setup",
+  "export",
+  "share",
+  "tailnet",
+]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -119,6 +157,7 @@ export async function run(argv) {
         server: serverCommand,
         export: exportCommand,
         share: shareCommand,
+        tailnet: tailnetCommand,
       },
       getCommandHelp: (command) => getCommandHelp(command, { agent }),
     });
@@ -191,6 +230,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
       "Run `lavish-axi share <html-file> [--password <pw>] [--token <t>]` to publish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and get back a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Local assets are inlined; remote refs load over the network. It returns the url plus a secret update_key for managing the page later. Use --token or LAVISH_AXI_HTML_APP_TOKEN only when you have an optional bearer token; it is never required. Users can also publish from the browser chrome's overflow menu",
+      "Run `lavish-axi tailnet` to serve live sessions to the user's other Tailscale devices (phone, tablet), private to their tailnet - session output then includes a tailnet_url to hand the user; `--off` stops it. Public exposure is deliberately unsupported",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
       DESIGN_SYSTEM_HINT,
@@ -218,9 +258,9 @@ export function createPlaybookOutput(args) {
   return { playbook };
 }
 
-export function createOpenOutput({ file, url, status, agent = "generic" }) {
+export function createOpenOutput({ file, url, status, agent = "generic", tailnetUrl = undefined }) {
   return {
-    session: { file, url, status },
+    session: { file, url, status, ...(tailnetUrl ? { tailnet_url: tailnetUrl } : {}) },
     next_step: `Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Layout issues the browser detects do not return this poll; they wait in the user's Layout issues inbox until the user queues them, then arrive as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use. ${pollExecutionGuidance({ agent })} After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback. If the user ends the session, stop polling and do not reopen it by re-running \`lavish-axi ${file}\` unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-axi ${file} --reopen\`.`,
   };
 }
@@ -258,11 +298,13 @@ async function openCommand(args) {
       response.status = "ready";
     }
   }
+  const tailnetState = readTailnetState();
   return createOpenOutput({
     file: absolute,
     url: response.url,
     status: response.status || "opened",
     agent: detectInvokingAgent(process.env),
+    tailnetUrl: tailnetState ? tailnetUrlFor(tailnetState, response.url) : undefined,
   });
 }
 
@@ -585,6 +627,126 @@ export function createShareOutput({ source, site, warnings, passwordProtected = 
       `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
       hostNote;
   }
+  return result;
+}
+
+// Live-session access from the user's other tailnet devices via Tailscale Serve. The server
+// stays loopback-bound: tailscaled terminates TLS on the tailnet and proxies to loopback
+// locally, port-scoped to its own HTTPS port so an operator's existing serve config on :443
+// is never touched. Enabling writes tailnet.json - the server's Host allowlist picks the
+// MagicDNS name up from it (src/tailnet.js:tailnetAllowedHosts) - and force-restarts the
+// detached server so the allowlist takes effect; sessions persist in state.json across that
+// restart. Public exposure (`tailscale funnel`) is deliberately unsupported: session keys
+// derive from file paths and the server is unauthenticated, so the tailnet's WireGuard
+// device authentication is the access control.
+async function tailnetCommand(args) {
+  if (args.includes("--status")) {
+    return createTailnetOutput({ state: readTailnetState(), sessions: await visibleSessions() });
+  }
+  if (args.includes("--off")) {
+    const state = readTailnetState();
+    const httpsPort = state ? state.httpsPort : resolveTailnetHttpsPort();
+    const tailscale = findTailscaleBinary();
+    if (tailscale) {
+      spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
+    }
+    rmSync(tailnetStateFile(), { force: true });
+    if (state) await ensureServer({ forceRestart: true });
+    return {
+      tailnet: { active: false },
+      next_step: state
+        ? "Tailnet access is off: the port-scoped Tailscale Serve config was cleared and the server restarted without the tailnet hostname in its Host allowlist. Local sessions keep working unchanged."
+        : "Tailnet access was already off.",
+    };
+  }
+
+  const tailscale = findTailscaleBinary();
+  if (!tailscale) {
+    throw new AxiError("Tailscale CLI not found", "VALIDATION_ERROR", [
+      "Install Tailscale (https://tailscale.com/download) and sign the device into your tailnet, then re-run `lavish-axi tailnet`",
+    ]);
+  }
+  const status = spawnSync(tailscale, ["status", "--json"], { encoding: "utf8" });
+  if (status.status !== 0) {
+    throw new AxiError("`tailscale status` failed - is Tailscale running and signed in?", "VALIDATION_ERROR", [
+      (status.stderr || "").trim() || "Start Tailscale, sign in, then re-run `lavish-axi tailnet`",
+    ]);
+  }
+  const hostname = parseSelfDnsName(status.stdout);
+  if (!hostname) {
+    throw new AxiError("This device has no MagicDNS name", "VALIDATION_ERROR", [
+      "Enable MagicDNS for your tailnet (https://tailscale.com/kb/1081/magicdns), then re-run `lavish-axi tailnet`",
+    ]);
+  }
+  const httpsPort = resolveTailnetHttpsPort();
+  const state = { hostname, httpsPort };
+  writeFileSync(tailnetStateFile(), `${JSON.stringify(state, null, 2)}\n`);
+  await ensureServer({ forceRestart: true });
+  const serveResult = spawnSync(
+    tailscale,
+    buildServeArgs({ httpsPort, port: Number(flagValue(args, "--port") || defaultPort()) }),
+    {
+      encoding: "utf8",
+    },
+  );
+  if (serveResult.status !== 0) {
+    rmSync(tailnetStateFile(), { force: true });
+    throw new AxiError("`tailscale serve` failed to start", "VALIDATION_ERROR", [
+      (serveResult.stderr || "").trim() ||
+        "Serving over HTTPS may need to be enabled once for your tailnet - run `tailscale serve status` for the enablement link",
+    ]);
+  }
+  const file = firstPositionalArg(args, ["--port"]);
+  return createTailnetOutput({
+    state,
+    sessions: await visibleSessions(),
+    file: file ? await canonicalFile(file) : undefined,
+  });
+}
+
+// Locate the Tailscale CLI: PATH first, then the macOS app-bundle binary that exists
+// when the GUI app is installed without the CLI shim.
+function findTailscaleBinary() {
+  const onPath = spawnSync("tailscale", ["version"], { encoding: "utf8" });
+  if (!onPath.error && onPath.status === 0) return "tailscale";
+  return existsSync(MACOS_TAILSCALE_APP_BINARY) ? MACOS_TAILSCALE_APP_BINARY : "";
+}
+
+export function createTailnetOutput({ state, sessions = [], file = undefined }) {
+  if (!state) {
+    return {
+      tailnet: { active: false },
+      next_step:
+        "Tailnet access is off. Run `lavish-axi tailnet` to serve live sessions to the user's other Tailscale devices (phone, tablet) - private to their tailnet.",
+    };
+  }
+  const portPart = state.httpsPort === 443 ? "" : `:${state.httpsPort}`;
+  const mapped = sessions.map((session) => ({
+    file: session.file,
+    status: session.status,
+    url: session.url,
+    tailnet_url: tailnetUrlFor(state, session.url),
+  }));
+  const highlighted = file ? mapped.find((session) => session.file === file) : undefined;
+  const result = {
+    tailnet: {
+      active: true,
+      hostname: state.hostname,
+      https_port: state.httpsPort,
+      base_url: `https://${state.hostname}${portPart}/`,
+    },
+    sessions: mapped,
+  };
+  if (highlighted) result.session = highlighted;
+  const target = highlighted ? highlighted.tailnet_url : "each session's tailnet_url";
+  result.next_step =
+    `Tailnet access is ON, private to the user's own Tailscale devices. Give the user ${target} - it opens the same live review session (annotations and feedback flow back through \`lavish-axi poll\` exactly as on the desktop) on any device signed into their tailnet, such as a phone. ` +
+    `The link does not work off the tailnet, and that is the point: the server stays loopback-bound and Tailscale's device authentication is the access control. Run \`lavish-axi tailnet --off\` to stop.` +
+    (highlighted
+      ? ""
+      : file
+        ? " The named file has no session yet - run `lavish-axi <html-file>` first, then re-run `lavish-axi tailnet <html-file>`."
+        : "");
   return result;
 }
 
@@ -1325,6 +1487,7 @@ function createCommandHelp({ agent = "generic" } = {}) {
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
     share: `Usage: lavish-axi share <html-file> [--password <pw>] [--token <t>]\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for updating or deleting the page later. Set LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token; it is never required. The annotation SDK is never included.\n`,
+    tailnet: `Usage: lavish-axi tailnet [<html-file>] [--status] [--off]\n\nServe live review sessions to the user's other Tailscale devices (phone, tablet) - private to their tailnet. The server stays loopback-bound; tailscaled terminates TLS on the tailnet and proxies to loopback via a port-scoped \`tailscale serve --https=<port>\` config (default 8443, LAVISH_AXI_TAILNET_HTTPS_PORT), so an existing serve config on :443 is never touched. The device's MagicDNS hostname joins the server's Host allowlist while enabled, keeping DNS-rebinding protection on. Session URLs become https://<magicdns>:<port>/session/<key>; annotations and \`lavish-axi poll\` feedback work exactly as on the desktop. Requires the Tailscale CLI, a signed-in device, and MagicDNS. Public exposure (tailscale funnel) is deliberately unsupported: session keys are derived from file paths and the server is unauthenticated, so the tailnet's WireGuard device authentication is the access control. --status shows the current state; --off clears only Lavish's port-scoped serve config and restarts the server without the tailnet hostname.\n`,
     stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
     design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
