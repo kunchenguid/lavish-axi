@@ -507,7 +507,7 @@ export async function serve({
   // loopback server.
   app.post("/api/:key/share", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!sameOriginFromReq(req)) {
         res.status(403).json({ error: "cross-origin share request rejected" });
         return;
       }
@@ -590,7 +590,7 @@ export async function serve({
 
   app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!sameOriginFromReq(req)) {
         res.status(403).json({ error: "cross-origin chrome handoff rejected" });
         return;
       }
@@ -873,7 +873,7 @@ export async function serve({
 
   app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!sameOriginFromReq(req)) {
         res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
         return;
       }
@@ -898,7 +898,7 @@ export async function serve({
   // loopback server.
   app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!sameOriginFromReq(req)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -925,7 +925,7 @@ export async function serve({
   // target. Files stay on this machine; the prompt carries only the paths.
   app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!sameOriginFromReq(req)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -1186,21 +1186,40 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
   return isAllowedHostHeader(forwarded.split(",").pop(), allowedHostnames);
 }
 
-// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
-// browser attaches an Origin/Referer that must match this server's own origin.
-function isSameOriginRequest(req) {
-  const expectedOrigin = `${req.protocol}://${req.get("host")}`;
-  const origin = req.get("origin");
+// Guard state-changing routes (share, whiteboard writes, chrome handoff) against CSRF: a browser
+// attaches an Origin/Referer whose host (including port) must match the request Host. Scheme is
+// intentionally ignored so a TLS terminator (tailscale serve, reverse proxies) that forwards
+// https→http does not break same-origin checks; the Host allowlist remains the DNS-rebinding
+// defense and already ran before these routes.
+/**
+ * @param {{ host?: string|undefined|null, origin?: string|undefined|null, referer?: string|undefined|null }} headers
+ */
+export function isSameOriginRequest({ host, origin, referer }) {
+  const requestHost = normalizeRequestHost(host);
+  if (!requestHost) return false;
   if (origin) {
-    return normalizeOrigin(origin) === expectedOrigin;
+    return originRequestHost(origin) === requestHost;
   }
-  const referer = req.get("referer");
-  return Boolean(referer) && normalizeOrigin(referer) === expectedOrigin;
+  return Boolean(referer) && originRequestHost(referer) === requestHost;
 }
 
-function normalizeOrigin(value) {
+function sameOriginFromReq(req) {
+  return isSameOriginRequest({
+    host: req.get("host"),
+    origin: req.get("origin"),
+    referer: req.get("referer"),
+  });
+}
+
+function normalizeRequestHost(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function originRequestHost(value) {
   try {
-    return new URL(value).origin;
+    return new URL(value).host.toLowerCase();
   } catch {
     return "";
   }

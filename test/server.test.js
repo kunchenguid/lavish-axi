@@ -20,6 +20,7 @@ import {
   hostnameFromHostHeader,
   isAllowedHostHeader,
   isAllowedRequestHost,
+  isSameOriginRequest,
   resolveArtifactAsset,
   resolveDesignAssetPath,
   resolveIdleTimeoutMs,
@@ -1231,6 +1232,57 @@ test("isAllowedHostHeader rejects a bracketed IPv6 host with trailing garbage", 
   const allowed = new Set(["127.0.0.1", "::1", "localhost"]);
   assert.equal(isAllowedHostHeader("[::1]evil.com", allowed), false);
   assert.equal(isAllowedHostHeader("[::1]:4387", allowed), true);
+});
+
+test("isSameOriginRequest matches host including port and ignores scheme (TLS terminator)", () => {
+  // Tailscale Serve / reverse proxies terminate TLS and forward http to loopback: the browser
+  // sends Origin: https://… while Node sees req.protocol http. Host (with port) still matches.
+  assert.equal(
+    isSameOriginRequest({
+      host: "devcube.tail1234.ts.net:8443",
+      origin: "https://devcube.tail1234.ts.net:8443",
+    }),
+    true,
+  );
+  assert.equal(
+    isSameOriginRequest({
+      host: "devcube.tail1234.ts.net:8443",
+      origin: "http://devcube.tail1234.ts.net:8443",
+    }),
+    true,
+  );
+  assert.equal(
+    isSameOriginRequest({
+      host: "127.0.0.1:4387",
+      origin: "http://127.0.0.1:4387",
+    }),
+    true,
+  );
+  // Referer fallback when Origin is absent (same host compare).
+  assert.equal(
+    isSameOriginRequest({
+      host: "devcube.tail1234.ts.net:8443",
+      referer: "https://devcube.tail1234.ts.net:8443/session/abc",
+    }),
+    true,
+  );
+  // Cross-origin stays rejected.
+  assert.equal(
+    isSameOriginRequest({
+      host: "devcube.tail1234.ts.net:8443",
+      origin: "https://evil.example",
+    }),
+    false,
+  );
+  assert.equal(
+    isSameOriginRequest({
+      host: "devcube.tail1234.ts.net:8443",
+      origin: "https://devcube.tail1234.ts.net:9443",
+    }),
+    false,
+  );
+  assert.equal(isSameOriginRequest({ host: "127.0.0.1:4387" }), false);
+  assert.equal(isSameOriginRequest({ host: "", origin: "http://127.0.0.1:4387" }), false);
 });
 
 test("isAllowedRequestHost requires an allowlisted Host and validates X-Forwarded-Host", () => {

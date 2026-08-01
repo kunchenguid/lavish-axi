@@ -633,9 +633,9 @@ export function createShareOutput({ source, site, warnings, passwordProtected = 
 // Live-session access from the user's other tailnet devices via Tailscale Serve. The server
 // stays loopback-bound: tailscaled terminates TLS on the tailnet and proxies to loopback
 // locally, port-scoped to its own HTTPS port so an operator's existing serve config on :443
-// is never touched. Enabling writes tailnet.json - the server's Host allowlist picks the
-// MagicDNS name up from it (src/tailnet.js:tailnetAllowedHosts) - and force-restarts the
-// detached server so the allowlist takes effect; sessions persist in state.json across that
+// is never touched. Enabling configures serve first, then writes tailnet.json and force-restarts
+// the detached server so the Host allowlist (src/tailnet.js:tailnetAllowedHosts) picks up the
+// MagicDNS name only after the proxy is live; sessions persist in state.json across that
 // restart. Public exposure (`tailscale funnel`) is deliberately unsupported: session keys
 // derive from file paths and the server is unauthenticated, so the tailnet's WireGuard
 // device authentication is the access control.
@@ -647,8 +647,19 @@ async function tailnetCommand(args) {
     const state = readTailnetState();
     const httpsPort = state ? state.httpsPort : resolveTailnetHttpsPort();
     const tailscale = findTailscaleBinary();
+    if (state && !tailscale) {
+      throw new AxiError("Tailscale CLI not found; cannot clear Tailscale Serve", "VALIDATION_ERROR", [
+        "Install Tailscale (https://tailscale.com/download), then re-run `lavish-axi tailnet --off` so the port-scoped serve config is cleared before state is removed",
+      ]);
+    }
     if (tailscale) {
-      spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
+      const offResult = spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
+      if (offResult.status !== 0) {
+        throw new AxiError("`tailscale serve` failed to clear the port-scoped config", "VALIDATION_ERROR", [
+          (offResult.stderr || "").trim() ||
+            `Run \`tailscale serve --https=${httpsPort} off\` manually, then re-run \`lavish-axi tailnet --off\``,
+        ]);
+      }
     }
     rmSync(tailnetStateFile(), { force: true });
     if (state) await ensureServer({ forceRestart: true });
@@ -679,9 +690,22 @@ async function tailnetCommand(args) {
     ]);
   }
   const httpsPort = resolveTailnetHttpsPort();
-  const state = { hostname, httpsPort };
-  writeFileSync(tailnetStateFile(), `${JSON.stringify(state, null, 2)}\n`);
-  await ensureServer({ forceRestart: true });
+  const prior = readTailnetState();
+  if (prior && prior.httpsPort !== httpsPort) {
+    const clearPrior = spawnSync(tailscale, buildServeOffArgs({ httpsPort: prior.httpsPort }), {
+      encoding: "utf8",
+    });
+    if (clearPrior.status !== 0) {
+      throw new AxiError(
+        `Failed to clear previous Tailscale Serve config on port ${prior.httpsPort}`,
+        "VALIDATION_ERROR",
+        [
+          (clearPrior.stderr || "").trim() ||
+            `Run \`tailscale serve --https=${prior.httpsPort} off\`, then re-run \`lavish-axi tailnet\``,
+        ],
+      );
+    }
+  }
   const serveResult = spawnSync(
     tailscale,
     buildServeArgs({ httpsPort, port: Number(flagValue(args, "--port") || defaultPort()) }),
@@ -690,11 +714,19 @@ async function tailnetCommand(args) {
     },
   );
   if (serveResult.status !== 0) {
-    rmSync(tailnetStateFile(), { force: true });
     throw new AxiError("`tailscale serve` failed to start", "VALIDATION_ERROR", [
       (serveResult.stderr || "").trim() ||
         "Serving over HTTPS may need to be enabled once for your tailnet - run `tailscale serve status` for the enablement link",
     ]);
+  }
+  const state = { hostname, httpsPort };
+  try {
+    writeFileSync(tailnetStateFile(), `${JSON.stringify(state, null, 2)}\n`);
+    await ensureServer({ forceRestart: true });
+  } catch (error) {
+    rmSync(tailnetStateFile(), { force: true });
+    spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
+    throw error;
   }
   const file = firstPositionalArg(args, ["--port"]);
   return createTailnetOutput({
