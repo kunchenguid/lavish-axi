@@ -726,8 +726,7 @@ async function tailnetCommand(args) {
     try {
       await ensureServer({ forceRestart: true });
     } catch (restartError) {
-      const restartDetail =
-        restartError instanceof Error ? restartError.message : String(restartError);
+      const restartDetail = restartError instanceof Error ? restartError.message : String(restartError);
       rollbackDetails.push(
         `Server restart during rollback failed (${restartDetail}); re-run \`lavish-axi tailnet\` or \`lavish-axi tailnet --off\` so the Host allowlist matches tailnet state`,
       );
