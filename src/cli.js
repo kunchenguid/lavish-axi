@@ -708,17 +708,36 @@ async function tailnetCommand(args) {
     writeFileSync(tailnetStateFile(), `${JSON.stringify(state, null, 2)}\n`);
     await ensureServer({ forceRestart: true });
   } catch (error) {
-    rmSync(tailnetStateFile(), { force: true });
-    const offResult = spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
-    if (offResult.status !== 0) {
-      const detail =
-        (offResult.stderr || "").trim() ||
-        `Run \`tailscale serve --https=${httpsPort} off\` manually to clear the orphaned serve config`;
+    if (prior) {
+      writeFileSync(tailnetStateFile(), `${JSON.stringify(prior, null, 2)}\n`);
+    } else {
+      rmSync(tailnetStateFile(), { force: true });
+    }
+    const rollbackDetails = [];
+    if (!prior || prior.httpsPort !== httpsPort) {
+      const offResult = spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
+      if (offResult.status !== 0) {
+        rollbackDetails.push(
+          (offResult.stderr || "").trim() ||
+            `Run \`tailscale serve --https=${httpsPort} off\` manually to clear the orphaned serve config`,
+        );
+      }
+    }
+    try {
+      await ensureServer({ forceRestart: true });
+    } catch (restartError) {
+      const restartDetail =
+        restartError instanceof Error ? restartError.message : String(restartError);
+      rollbackDetails.push(
+        `Server restart during rollback failed (${restartDetail}); re-run \`lavish-axi tailnet\` or \`lavish-axi tailnet --off\` so the Host allowlist matches tailnet state`,
+      );
+    }
+    if (rollbackDetails.length) {
       const cause = error instanceof Error ? error.message : String(error);
       throw new AxiError(
-        `Tailnet enable failed (${cause}) and rolling back Tailscale Serve on port ${httpsPort} also failed`,
+        `Tailnet enable failed (${cause}) and rollback did not fully complete`,
         "VALIDATION_ERROR",
-        [detail],
+        rollbackDetails,
       );
     }
     throw error;
