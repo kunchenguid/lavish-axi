@@ -654,7 +654,7 @@ async function tailnetCommand(args) {
     }
     if (tailscale) {
       const offResult = spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
-      if (offResult.status !== 0) {
+      if (state && offResult.status !== 0) {
         throw new AxiError("`tailscale serve` failed to clear the port-scoped config", "VALIDATION_ERROR", [
           (offResult.stderr || "").trim() ||
             `Run \`tailscale serve --https=${httpsPort} off\` manually, then re-run \`lavish-axi tailnet --off\``,
@@ -694,21 +694,6 @@ async function tailnetCommand(args) {
   const httpsPort = resolveTailnetHttpsPort();
   const port = defaultPort();
   const prior = readTailnetState();
-  if (prior && prior.httpsPort !== httpsPort) {
-    const clearPrior = spawnSync(tailscale, buildServeOffArgs({ httpsPort: prior.httpsPort }), {
-      encoding: "utf8",
-    });
-    if (clearPrior.status !== 0) {
-      throw new AxiError(
-        `Failed to clear previous Tailscale Serve config on port ${prior.httpsPort}`,
-        "VALIDATION_ERROR",
-        [
-          (clearPrior.stderr || "").trim() ||
-            `Run \`tailscale serve --https=${prior.httpsPort} off\`, then re-run \`lavish-axi tailnet\``,
-        ],
-      );
-    }
-  }
   const serveResult = spawnSync(tailscale, buildServeArgs({ httpsPort, port }), {
     encoding: "utf8",
   });
@@ -724,8 +709,34 @@ async function tailnetCommand(args) {
     await ensureServer({ forceRestart: true });
   } catch (error) {
     rmSync(tailnetStateFile(), { force: true });
-    spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
+    const offResult = spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
+    if (offResult.status !== 0) {
+      const detail =
+        (offResult.stderr || "").trim() ||
+        `Run \`tailscale serve --https=${httpsPort} off\` manually to clear the orphaned serve config`;
+      const cause = error instanceof Error ? error.message : String(error);
+      throw new AxiError(
+        `Tailnet enable failed (${cause}) and rolling back Tailscale Serve on port ${httpsPort} also failed`,
+        "VALIDATION_ERROR",
+        [detail],
+      );
+    }
     throw error;
+  }
+  if (prior && prior.httpsPort !== httpsPort) {
+    const clearPrior = spawnSync(tailscale, buildServeOffArgs({ httpsPort: prior.httpsPort }), {
+      encoding: "utf8",
+    });
+    if (clearPrior.status !== 0) {
+      throw new AxiError(
+        `Tailnet is on port ${httpsPort}, but the previous Tailscale Serve config on port ${prior.httpsPort} could not be cleared`,
+        "VALIDATION_ERROR",
+        [
+          (clearPrior.stderr || "").trim() ||
+            `Run \`tailscale serve --https=${prior.httpsPort} off\` manually to drop the orphaned serve entry`,
+        ],
+      );
+    }
   }
   return createTailnetOutput({
     state,
