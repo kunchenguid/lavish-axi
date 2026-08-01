@@ -689,7 +689,10 @@ async function tailnetCommand(args) {
       "Enable MagicDNS for your tailnet (https://tailscale.com/kb/1081/magicdns), then re-run `lavish-axi tailnet`",
     ]);
   }
+  const fileArg = firstPositionalArg(args, ["--port"]);
+  const file = fileArg ? await canonicalFile(fileArg) : undefined;
   const httpsPort = resolveTailnetHttpsPort();
+  const port = defaultPort();
   const prior = readTailnetState();
   if (prior && prior.httpsPort !== httpsPort) {
     const clearPrior = spawnSync(tailscale, buildServeOffArgs({ httpsPort: prior.httpsPort }), {
@@ -706,13 +709,9 @@ async function tailnetCommand(args) {
       );
     }
   }
-  const serveResult = spawnSync(
-    tailscale,
-    buildServeArgs({ httpsPort, port: Number(flagValue(args, "--port") || defaultPort()) }),
-    {
-      encoding: "utf8",
-    },
-  );
+  const serveResult = spawnSync(tailscale, buildServeArgs({ httpsPort, port }), {
+    encoding: "utf8",
+  });
   if (serveResult.status !== 0) {
     throw new AxiError("`tailscale serve` failed to start", "VALIDATION_ERROR", [
       (serveResult.stderr || "").trim() ||
@@ -728,11 +727,10 @@ async function tailnetCommand(args) {
     spawnSync(tailscale, buildServeOffArgs({ httpsPort }), { encoding: "utf8" });
     throw error;
   }
-  const file = firstPositionalArg(args, ["--port"]);
   return createTailnetOutput({
     state,
     sessions: await visibleSessions(),
-    file: file ? await canonicalFile(file) : undefined,
+    file,
   });
 }
 
