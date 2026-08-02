@@ -8,6 +8,7 @@ import {
   resolveElementRevisionId,
   REVISION_PALETTE,
   revisionColorForIndex,
+  revisionHighlightBackground,
   revisionIsValidTimestamp,
   revisionTintFromHex,
   revisionTruncate,
@@ -248,4 +249,21 @@ test("revisionTintFromHex falls back to transparent for a malformed hex", () => 
   assert.equal(revisionTintFromHex("not-a-color"), "rgba(0,0,0,0)");
   assert.equal(revisionTintFromHex(""), "rgba(0,0,0,0)");
   assert.equal(revisionTintFromHex(null), "rgba(0,0,0,0)");
+});
+
+test("revisionHighlightBackground preserves stylesheet-defined background layers", () => {
+  assert.deepEqual(
+    revisionHighlightBackground(
+      "repeating-linear-gradient(45deg, black 0, transparent 1px)",
+      "auto",
+      "rgba(0, 114, 178, 0.14)",
+      'url("hero.png")',
+      "cover",
+    ),
+    {
+      image:
+        'repeating-linear-gradient(45deg, black 0, transparent 1px), linear-gradient(rgba(0, 114, 178, 0.14), rgba(0, 114, 178, 0.14)), url("hero.png")',
+      size: "auto, auto, cover",
+    },
+  );
 });

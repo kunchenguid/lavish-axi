@@ -314,6 +314,15 @@ export function revisionTintFromHex(hex, alpha = 0.14) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+export function revisionHighlightBackground(patternImage, patternSize, tint, backgroundImage, backgroundSize) {
+  const existingImage = backgroundImage && backgroundImage !== "none" ? `, ${backgroundImage}` : "";
+  const existingSize = existingImage ? `, ${backgroundSize || "auto"}` : "";
+  return {
+    image: `${patternImage}, linear-gradient(${tint}, ${tint})${existingImage}`,
+    size: `${patternSize}, auto${existingSize}`,
+  };
+}
+
 // Coerces one raw registry entry into the fixed shape the legend and SDK
 // rely on, capping every field so a hostile or malformed artifact can't grow
 // unbounded UI or leak huge strings into the chrome.
@@ -2050,11 +2059,14 @@ export function createArtifactSdk(
     const tint = revisionTintFromHex(revision.color.hex);
     let original = revisionOriginalStyles.get(el);
     if (!original) {
+      const computedStyle = getComputedStyle(el);
       original = {
         outline: el.style.outline,
         outlineOffset: el.style.outlineOffset,
         backgroundImage: el.style.backgroundImage,
         backgroundSize: el.style.backgroundSize,
+        computedBackgroundImage: computedStyle.backgroundImage,
+        computedBackgroundSize: computedStyle.backgroundSize,
         hasTitle: el.hasAttribute("title"),
         title: el.getAttribute("title"),
       };
@@ -2062,10 +2074,15 @@ export function createArtifactSdk(
     }
     el.style.outline = `2px ${revision.color.borderStyle} ${revision.color.hex}`;
     el.style.outlineOffset = "1px";
-    const existingImage = original.backgroundImage && original.backgroundImage !== "none" ? `, ${original.backgroundImage}` : "";
-    const existingSize = existingImage ? `, ${original.backgroundSize || "auto"}` : "";
-    el.style.backgroundImage = `${patternDef.backgroundImage}, linear-gradient(${tint}, ${tint})${existingImage}`;
-    el.style.backgroundSize = `${patternDef.backgroundSize}, auto${existingSize}`;
+    const background = revisionHighlightBackground(
+      patternDef.backgroundImage,
+      patternDef.backgroundSize,
+      tint,
+      original.computedBackgroundImage,
+      original.computedBackgroundSize,
+    );
+    el.style.backgroundImage = background.image;
+    el.style.backgroundSize = background.size;
     el.setAttribute("data-lavish-revision-active", revision.id);
     // A hover-only, non-color-dependent detail channel. The legend and the
     // border-style/pattern are the primary always-visible signals.

@@ -27,6 +27,7 @@ import {
   REVISION_PATTERN_CSS,
   resolveElementRevisionId,
   revisionColorForIndex,
+  revisionHighlightBackground,
   revisionIsValidTimestamp,
   revisionTintFromHex,
   revisionTruncate,
@@ -1568,6 +1569,7 @@ const revisionTruncate=${revisionTruncate.toString()};
 const revisionIsValidTimestamp=${revisionIsValidTimestamp.toString()};
 const revisionColorForIndex=${revisionColorForIndex.toString()};
 const revisionTintFromHex=${revisionTintFromHex.toString()};
+const revisionHighlightBackground=${revisionHighlightBackground.toString()};
 const normalizeRevisionEntry=${normalizeRevisionEntry.toString()};
 const parseRevisionRegistry=${parseRevisionRegistry.toString()};
 const resolveElementRevisionId=${resolveElementRevisionId.toString()};
