@@ -10,6 +10,7 @@ const queueStorageKey = "lavish-axi:queued:" + key;
 const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
 const warningAckStorageKey = "lavish-axi:warning-ack:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
+const internalQuestionKeyField = "_lavishQuestionKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 
@@ -79,6 +80,7 @@ let annotation = true;
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
+let lastSyncedQueuedQuestionKeys = null;
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
 const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
 const layoutGateMaxHoldMs =
@@ -213,6 +215,7 @@ function render() {
     closeButton.addEventListener("click", (event) => removeQueuedPrompt(Number(closeButton.dataset.index), event));
   }
   updateSendState();
+  syncQueuedQuestionKeys();
   scrollPanelToBottom();
 }
 
@@ -357,6 +360,23 @@ function promptQueueKey(prompt) {
   return prompt && typeof prompt[internalQueueKeyField] === "string" ? prompt[internalQueueKeyField].trim() : "";
 }
 
+function syncQueuedQuestionKeys(force = false) {
+  const keys = queued
+    .map((prompt) => {
+      const questionKey =
+        prompt && typeof prompt[internalQuestionKeyField] === "string" ? prompt[internalQuestionKeyField].trim() : "";
+      return questionKey || promptQueueKey(prompt);
+    })
+    .filter((queueKey) => queueKey.startsWith("question:"));
+  if (!force && lastSyncedQueuedQuestionKeys === null && keys.length === 0) return;
+  if (!force && lastSyncedQueuedQuestionKeys && lastSyncedQueuedQuestionKeys.join("\0") === keys.join("\0")) return;
+  lastSyncedQueuedQuestionKeys = keys;
+  postToFrame({
+    type: "lavish:setQueuedQuestionKeys",
+    keys,
+  });
+}
+
 function enqueuePrompt(prompt) {
   if (!prompt || typeof prompt !== "object") return;
 
@@ -380,6 +400,7 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
+  delete clean[internalQuestionKeyField];
   return clean;
 }
 
@@ -1852,6 +1873,7 @@ document.addEventListener(
 frame.addEventListener("load", () => {
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
+  syncQueuedQuestionKeys(true);
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });

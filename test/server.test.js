@@ -188,6 +188,17 @@ test("artifact SDK isolates Lavish annotation UI in Shadow DOM", () => {
   assert.match(js, /lavish-annotation-root/);
 });
 
+test("artifact SDK renders queued feedback state on question scopes", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /msg\.type === "lavish:setQueuedQuestionKeys"/);
+  assert.match(js, /document\.querySelectorAll\("\[data-lavish-question\]"\)/);
+  assert.match(js, /lavish-queued-question/);
+  assert.match(js, /✓ Queued/);
+  assert.match(js, /aria-label", "Answer queued"/);
+  assert.match(js, /_lavishQuestionKey/);
+});
+
 test("annotation card does not block its own Queue button", () => {
   const js = createSdkJs("abc");
 

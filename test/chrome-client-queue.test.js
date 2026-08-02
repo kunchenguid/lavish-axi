@@ -337,6 +337,9 @@ async function createChromeHarness({
           : data;
       for (const handler of handlers) handler({ source: frame.contentWindow, data: message });
     },
+    removeQueuedPrompt(index) {
+      context.removeQueuedPrompt(index);
+    },
     sendWhiteboardMessage(data) {
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
@@ -518,6 +521,78 @@ test("chrome client replaces queued prompts with the same internal key", async (
   );
   assert.match(chrome.element("annotationPills").innerHTML, /Use plan B/);
   assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /Use plan A/);
+});
+
+test("chrome client syncs queued question state back to the artifact", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Use plan A",
+      selector: "form#plan",
+      tag: "choice",
+      text: "Plan A",
+      _lavishQueueKey: "question:deployment-plan",
+    },
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Enable audit logs",
+      selector: "form#audit",
+      tag: "choice",
+      text: "Audit logs",
+      _lavishQueueKey: "question:audit-logs",
+      _lavishQuestionKey: "question:audit-logs",
+    },
+  });
+
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setQueuedQuestionKeys");
+  assert.deepEqual([...chrome.postedToFrame.at(-1).keys], ["question:deployment-plan", "question:audit-logs"]);
+});
+
+test("chrome client clears queued question state after removing its prompt", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Use plan A",
+      selector: "form#plan",
+      tag: "choice",
+      text: "Plan A",
+      _lavishQueueKey: "question:deployment-plan",
+    },
+  });
+  chrome.removeQueuedPrompt(0);
+
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setQueuedQuestionKeys");
+  assert.deepEqual([...chrome.postedToFrame.at(-1).keys], []);
+});
+
+test("chrome client restores queued question state when the artifact reloads", async () => {
+  const storage = new Map([
+    [
+      "lavish-axi:queued:abc",
+      JSON.stringify([
+        {
+          prompt: "Use plan A",
+          selector: "form#plan",
+          tag: "choice",
+          text: "Plan A",
+          _lavishQueueKey: "question:deployment-plan",
+        },
+      ]),
+    ],
+  ]);
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+
+  chrome.postedToFrame.length = 0;
+  chrome.frame.dispatch("load");
+
+  const queuedState = chrome.postedToFrame.find((message) => message.type === "lavish:setQueuedQuestionKeys");
+  assert.deepEqual([...queuedState.keys], ["question:deployment-plan"]);
 });
 
 test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {
@@ -1582,7 +1657,14 @@ test("chrome client strips the internal queue key before posting prompts", async
 
   chrome.sendFrameMessage({
     type: "lavish:queuePrompt",
-    prompt: { prompt: "Use plan B", selector: "input#plan-b", tag: "choice", text: "Plan B", _lavishQueueKey: "plan" },
+    prompt: {
+      prompt: "Use plan B",
+      selector: "input#plan-b",
+      tag: "choice",
+      text: "Plan B",
+      _lavishQueueKey: "plan",
+      _lavishQuestionKey: "question:deployment-plan",
+    },
   });
   chrome.element("send").onclick();
   assert.equal(chrome.postedToFrame.at(-1).type, "lavish:requestSnapshot");
@@ -1597,6 +1679,7 @@ test("chrome client strips the internal queue key before posting prompts", async
     domSnapshot: "uid=1 body",
   });
   assert.equal(chrome.queued().length, 0);
+  assert.deepEqual([...chrome.postedToFrame.at(-1).keys], []);
 });
 
 test("chrome send and end carries the end intent with queued prompts", async () => {

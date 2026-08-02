@@ -3,6 +3,7 @@
 import * as mermaidHelpers from "./mermaid-node.js";
 
 export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
+export const LAVISH_INTERNAL_QUESTION_KEY = "_lavishQuestionKey";
 
 export const MODE_TOGGLE_HOTKEY_KEY = "i";
 
@@ -264,6 +265,8 @@ export function createArtifactSdk(
   let shadow = null;
   let counter = 0;
   const ids = new WeakMap();
+  const queuedQuestionKeys = new Set();
+  let queuedQuestionFrame = 0;
 
   function uid(el) {
     if (!ids.has(el)) ids.set(el, String(++counter));
@@ -686,13 +689,19 @@ export function createArtifactSdk(
 
   function queuePrompt(prompt, options = {}) {
     const originElement = options.element || document.activeElement || document.body;
-    /** @type {{ uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown, _lavishQueueKey?: string }} */
+    /** @type {{ uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown, _lavishQueueKey?: string, _lavishQuestionKey?: string }} */
     const item = {
       ...context(originElement),
       prompt: String(prompt || ""),
     };
     const queueKey = typeof deriveQueueKey === "function" ? deriveQueueKey(originElement, options) : "";
     if (queueKey) item._lavishQueueKey = String(queueKey);
+    const questionScope = originElement?.closest?.("[data-lavish-question]");
+    const question = String(questionScope?.getAttribute?.("data-lavish-question") || "").trim();
+    const explicitQueueKey = Object.hasOwn(options, "queueKey");
+    if (question && (!explicitQueueKey || String(options.queueKey || "").trim())) {
+      item._lavishQuestionKey = `question:${question}`;
+    }
 
     if (options.uid) item.uid = String(options.uid);
     if (options.selector) item.selector = String(options.selector);
@@ -1646,9 +1655,58 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-queued-question{position:fixed;pointer-events:none;border:2px solid #22c55e;border-radius:10px;box-shadow:0 0 0 3px rgba(34,197,94,.18)}.lavish-queued-question-label{position:absolute;right:6px;top:6px;padding:4px 8px;border-radius:999px;background:#166534;color:#f0fdf4;box-shadow:0 2px 8px rgba(0,0,0,.24);font:700 12px/1.2 var(--font-sans);letter-spacing:.01em;white-space:nowrap}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
     shadow.appendChild(style);
     return shadow;
+  }
+
+  function renderQueuedQuestionState() {
+    queuedQuestionFrame = 0;
+    if (shadow) {
+      for (const marker of [...shadow.querySelectorAll(".lavish-queued-question")]) marker.remove();
+    }
+    if (!queuedQuestionKeys.size) return;
+
+    const root = ensureShadow();
+    for (const scope of document.querySelectorAll("[data-lavish-question]")) {
+      const queueKey = `question:${String(scope.getAttribute("data-lavish-question") || "").trim()}`;
+      if (!queuedQuestionKeys.has(queueKey)) continue;
+      const rect = scope.getBoundingClientRect();
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        rect.bottom < 0 ||
+        rect.top > window.innerHeight ||
+        rect.right < 0 ||
+        rect.left > window.innerWidth
+      )
+        continue;
+
+      const marker = document.createElement("div");
+      marker.className = "lavish-queued-question";
+      marker.setAttribute("role", "status");
+      marker.setAttribute("aria-label", "Answer queued");
+      marker.style.left = Math.max(0, rect.left) + "px";
+      marker.style.top = Math.max(0, rect.top) + "px";
+      marker.style.width = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(0, rect.left)) + "px";
+      marker.style.height = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(0, rect.top)) + "px";
+      marker.innerHTML = '<span class="lavish-queued-question-label">✓ Queued</span>';
+      root.appendChild(marker);
+    }
+  }
+
+  function scheduleQueuedQuestionRender() {
+    if (queuedQuestionFrame) return;
+    queuedQuestionFrame = window.requestAnimationFrame(renderQueuedQuestionState);
+  }
+
+  function setQueuedQuestionKeys(keys) {
+    queuedQuestionKeys.clear();
+    for (const key of Array.isArray(keys) ? keys : []) {
+      const queueKey = String(key || "").trim();
+      if (queueKey.startsWith("question:")) queuedQuestionKeys.add(queueKey);
+    }
+    scheduleQueuedQuestionRender();
   }
 
   function closeCard() {
@@ -1761,6 +1819,7 @@ export function createArtifactSdk(
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
+    if (msg.type === "lavish:setQueuedQuestionKeys") setQueuedQuestionKeys(msg.keys);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
   });
 
@@ -1803,6 +1862,7 @@ export function createArtifactSdk(
   window.addEventListener(
     "scroll",
     () => {
+      scheduleQueuedQuestionRender();
       if (scrollFrame) return;
       scrollFrame = window.requestAnimationFrame(() => {
         scrollFrame = 0;
@@ -1811,6 +1871,7 @@ export function createArtifactSdk(
     },
     { passive: true },
   );
+  window.addEventListener("resize", scheduleQueuedQuestionRender, { passive: true });
 
   document.addEventListener(
     "mouseover",
@@ -1896,6 +1957,9 @@ export function createArtifactSdk(
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", enhanceMermaid, { once: true });
   }
-  const mermaidObserver = new MutationObserver(() => scheduleMermaidEnhance());
+  const mermaidObserver = new MutationObserver(() => {
+    scheduleMermaidEnhance();
+    scheduleQueuedQuestionRender();
+  });
   mermaidObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
