@@ -441,15 +441,38 @@ async function convertSource(source) {
     return elements;
   };
   const elements = restoreMermaidLabelLineBreaks(
-    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-      convert: materialize,
-      loadFonts: async (fallbackElements) => {
-        await loadSceneFonts(fallbackElements, files);
-      },
-    }),
+    applyCleanStyle(
+      await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+        convert: materialize,
+        loadFonts: async (fallbackElements) => {
+          await loadSceneFonts(fallbackElements, files);
+        },
+      }),
+    ),
     { measure: measureSceneText },
   );
   return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
+}
+
+// LOCAL PATCH: render converted diagrams in a clean, drafting style rather than
+// Excalidraw's sketchy default. A converted Mermaid diagram is a technical figure,
+// not a sketch: the wobbly strokes and handwriting font read as informal and make
+// dense flowcharts harder to follow. Excalidraw's own defaults apply here because
+// the Mermaid converter never sets these fields.
+//
+//   roughness   0 = architect (clean), 1 = artist (default), 2 = cartoonist
+//   fontFamily  1 = Virgil/handwritten (default), 2 = Helvetica, 3 = Cascadia
+//
+// The user can still switch any element back from the Excalidraw toolbar.
+const CLEAN_ROUGHNESS = 0;
+const CLEAN_FONT_FAMILY = 2;
+
+function applyCleanStyle(elements) {
+  return elements.map((element) => {
+    const clean = { ...element, roughness: CLEAN_ROUGHNESS };
+    if (element.type === "text") clean.fontFamily = CLEAN_FONT_FAMILY;
+    return clean;
+  });
 }
 
 // Theme is passed only through the <Excalidraw theme> prop - putting it in
@@ -459,6 +482,11 @@ async function convertSource(source) {
 function defaultAppState() {
   return {
     viewBackgroundColor: "#ffffff",
+    // LOCAL PATCH: match applyCleanStyle, so shapes the reviewer draws on top of a
+    // converted diagram come out in the same clean style as the diagram itself
+    // instead of reverting to Excalidraw's sketchy defaults.
+    currentItemRoughness: CLEAN_ROUGHNESS,
+    currentItemFontFamily: CLEAN_FONT_FAMILY,
   };
 }
 
