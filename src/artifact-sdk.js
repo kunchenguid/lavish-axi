@@ -2340,9 +2340,24 @@ export function createArtifactSdk(
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
     }
+    // LOCAL ADDITION: paging keys forwarded from the chrome. The artifact is the only
+    // scrollable surface, but it lives in a sandboxed iframe, so a PageDown pressed while
+    // focus sits anywhere in the chrome never reaches it. See the forwarder in
+    // chrome-client.js for why the chrome cannot just scroll itself.
+    if (msg.type === "lavish:scrollKey") scrollByKey(String(msg.key || ""));
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
   });
+
+  // LOCAL ADDITION: apply a paging key the chrome forwarded. Overlap by a couple of lines
+  // the way a browser's own PageDown does, so the line you were reading stays on screen.
+  function scrollByKey(pressedKey) {
+    const page = Math.max(120, window.innerHeight - 72);
+    if (pressedKey === "PageDown") window.scrollBy(0, page);
+    else if (pressedKey === "PageUp") window.scrollBy(0, -page);
+    else if (pressedKey === "Home") window.scrollTo(window.scrollX, 0);
+    else if (pressedKey === "End") window.scrollTo(window.scrollX, document.documentElement.scrollHeight);
+  }
 
   // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
   // from the layout audit and never becomes a finding of its own.

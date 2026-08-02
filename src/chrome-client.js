@@ -2200,6 +2200,42 @@ document.addEventListener(
   },
   true,
 );
+
+// LOCAL ADDITION: make PageUp/PageDown/Home/End page the artifact.
+//
+// Three things conspire to make them dead keys upstream: the chrome's own body is
+// overflow:hidden so it is never the scroller; the artifact is the only scrollable
+// surface but lives in a sandbox without allow-same-origin, so the chrome cannot
+// scroll it directly; and keyboard events only reach the iframe once it has focus,
+// which in annotate mode costs you a stray annotation to obtain. So the chrome
+// handles the keys itself and forwards the intent over the same postMessage channel
+// that already carries lavish:restoreScroll.
+//
+// Not in the capture phase, and never while typing: a paging key inside a textarea
+// or the conversation panel belongs to whatever is focused there.
+const ARTIFACT_SCROLL_KEYS = new Set(["PageDown", "PageUp", "Home", "End"]);
+
+function isTypingTarget(target) {
+  if (!target || typeof target.tagName !== "string") return false;
+  if (target.isContentEditable) return true;
+  return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
+}
+
+// Duck-typed like isTypingTarget: event.target is an EventTarget, and narrowing it to a
+// Node needs either a global this file's eslint config does not declare or a cast tsc
+// then rejects. An untyped parameter satisfies both.
+function isInsideConversationPanel(target) {
+  return Boolean(target && typeof target.nodeType === "number" && panelScroll.contains(target));
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  if (!ARTIFACT_SCROLL_KEYS.has(event.key)) return;
+  if (isTypingTarget(event.target)) return;
+  if (isInsideConversationPanel(event.target)) return;
+  event.preventDefault();
+  postToFrame({ type: "lavish:scrollKey", key: event.key });
+});
 frame.addEventListener("load", () => {
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });

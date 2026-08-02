@@ -166,6 +166,26 @@ function buildShell(theme, mode) {
       queueButton.click();
     }
   });
+  // LOCAL ADDITION: Escape leaves the fullscreen whiteboard.
+  //
+  // The chrome already closes the overlay on Escape, but only when the key reaches the
+  // chrome document. Once you click into the canvas - which you must, to edit - focus is
+  // inside this frame and the chrome never sees it, so the only way out was the small
+  // close button. Excalidraw's own Escape (deselect) is worth giving up here: fullscreen
+  // is now the only editable mode, so an obvious way out matters more.
+  //
+  // Skipped while a text field has focus or the link dialog is up, since Escape belongs
+  // to those first; the dialog's own handler stops propagation before this one runs.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (state.mode !== "overlay") return;
+    if (!linkConfirm.hidden) return;
+    const target = /** @type {any} */ (event.target);
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+    event.preventDefault();
+    post({ type: "lavish-whiteboard:close", diagramIndex: state.diagramIndex });
+  });
+
   linkConfirmCancel.onclick = dismissLinkConfirmation;
   linkConfirmOpen.onclick = () => {
     const safe = String(linkConfirm.dataset.url || "");
@@ -319,7 +339,22 @@ function onLinkOpen(element, event) {
 
 // Inline frames start locked in view mode behind a click-catcher: a page of
 // embedded whiteboards must scroll like a page, not trap every wheel event in
-// canvas zoom. The first click unlocks this one editor.
+// canvas zoom.
+//
+// LOCAL PATCH: upstream's click-catcher unlocks the inline editor in place. Editing a
+// diagram in a band a few hundred pixels tall, inside a scrolling artifact, inside the
+// review chrome, is cramped in itself and it also re-arms the wheel-trapping the lock
+// existed to prevent. So inline stays a preview permanently and the click goes straight
+// to fullscreen, which is the only editable mode. Escape leaves fullscreen - see the
+// handler further down.
+function activateInlineWhiteboard(setLocked) {
+  if (state.mode === "inline") {
+    post({ type: "lavish-whiteboard:maximize", diagramIndex: state.diagramIndex });
+    return;
+  }
+  setLocked(false);
+}
+
 function EditorApp({ elements, appState, files, theme, startLocked }) {
   const [locked, setLocked] = React.useState(startLocked);
   state.setLocked = setLocked;
@@ -360,12 +395,16 @@ function EditorApp({ elements, appState, files, theme, startLocked }) {
             className: "wb-activate",
             role: "button",
             tabIndex: 0,
-            onClick: () => setLocked(false),
+            onClick: () => activateInlineWhiteboard(setLocked),
             onKeyDown: (event) => {
-              if (event.key === "Enter" || event.key === " ") setLocked(false);
+              if (event.key === "Enter" || event.key === " ") activateInlineWhiteboard(setLocked);
             },
           },
-          React.createElement("span", { className: "wb-activate-label" }, "Click to edit"),
+          React.createElement(
+            "span",
+            { className: "wb-activate-label" },
+            state.mode === "inline" ? "Click to edit full screen" : "Click to edit",
+          ),
         )
       : null,
   );
