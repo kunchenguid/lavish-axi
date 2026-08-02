@@ -2131,7 +2131,6 @@ test("whiteboard close stays responsive while overlay initialization is pending"
   await flushPromises();
 });
 
-
 test("a silent artifact is probed for a fatal failure, and a talking one is not", async () => {
   const posts = [];
   const chrome = await createChromeHarness({

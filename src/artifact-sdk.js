@@ -2140,14 +2140,14 @@ export function createArtifactSdk(
     applyRevisionVisibilityToElements();
     postArtifactMessage("lavish:revisions", {
       revisions: revisionRegistry.map(({ id, label, timestamp, summary, sections, index, color }) => ({
-          id,
-          label,
-          timestamp,
-          summary,
-          sections,
-          index,
-          color,
-        })),
+        id,
+        label,
+        timestamp,
+        summary,
+        sections,
+        index,
+        color,
+      })),
     });
   }
 
