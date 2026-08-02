@@ -998,21 +998,20 @@ test("password-protected share output with unresolved assets still mentions the 
   assert.doesNotMatch(output.next_step, /anyone with the link can view/);
 });
 
-test("share command publishes the artifact to ht-ml.app and returns the public url", async () => {
+// LOCAL PATCH: upstream had two tests here proving `share` publishes to ht-ml.app - public by
+// default, or password-protected with --password. That behavior is deliberately gone, so the
+// same harness now proves the opposite, which is the assertion that actually matters: the fake
+// host receives ZERO requests. A refusal message alone would not prove nothing left the machine.
+test("share never contacts the publishing host, even with the API url pointed at a live server", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
   const artifact = `${dir}/report.html`;
-  await writeFile(`${dir}/theme.css`, ".btn{color:teal}", "utf8");
-  await writeFile(
-    artifact,
-    '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body><h1>Hi</h1></body></html>',
-    "utf8",
-  );
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
 
   const requests = [];
   const htmlApp = await startFakeHtmlApp(requests);
   try {
-    // Use async spawn (not spawnSync): the child publishes to the fake ht-ml.app server hosted
-    // on this process's event loop, which spawnSync would block, deadlocking the request.
+    // Use async spawn (not spawnSync): the fake ht-ml.app server is hosted on this process's
+    // event loop, which spawnSync would block.
     const child = spawn(
       process.execPath,
       [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", "--password", "pw", artifact],
@@ -1022,6 +1021,8 @@ test("share command publishes the artifact to ht-ml.app and returns the public u
           ...process.env,
           LAVISH_AXI_STATE_DIR: dir,
           LAVISH_AXI_TELEMETRY: "0",
+          // Deliberately reachable: the env-var pin is the weakest of the three guards, so this
+          // test removes it to prove the in-code guard stands on its own.
           LAVISH_AXI_HTML_APP_API_URL: `http://127.0.0.1:${htmlApp.port}`,
         },
       },
@@ -1036,57 +1037,12 @@ test("share command publishes the artifact to ht-ml.app and returns the public u
     });
     const code = await new Promise((resolve) => child.on("close", resolve));
 
-    assert.equal(code, 0, stderr);
-    assert.match(stdout, /abc123\.ht-ml\.app/);
-    assert.match(stdout, /PASSWORD-PROTECTED/);
-    assert.match(stdout, /viewers also need the password/);
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].url, "/v1/sites");
-    assert.match(requests[0].body.html_content, /<style>\.btn\{color:teal\}<\/style>/);
-    assert.equal(requests[0].body.password, "pw");
-  } finally {
-    await htmlApp.close();
-    await rm(dir, { force: true, recursive: true });
-  }
-});
-
-test("share command treats a whitespace-only password as public", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  try {
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", "--password", "   ", artifact],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: {
-          ...process.env,
-          LAVISH_AXI_STATE_DIR: dir,
-          LAVISH_AXI_TELEMETRY: "0",
-          LAVISH_AXI_HTML_APP_API_URL: `http://127.0.0.1:${htmlApp.port}`,
-        },
-      },
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    const code = await new Promise((resolve) => child.on("close", resolve));
-
-    assert.equal(code, 0, stderr);
-    assert.match(stdout, /PUBLIC/);
-    assert.match(stdout, /anyone with the link can view/);
-    assert.doesNotMatch(stdout, /PASSWORD-PROTECTED/);
-    assert.equal(requests.length, 1);
-    assert.equal("password" in requests[0].body, false);
+    assert.notEqual(code, 0);
+    assert.equal(requests.length, 0, "nothing may be sent to the publishing host");
+    const combined = `${stdout}${stderr}`;
+    assert.match(combined, /`lavish-axi share` is disabled in this installation/);
+    assert.match(combined, /must not be published to any third-party host/);
+    assert.doesNotMatch(combined, /ht-ml\.app\/[a-z0-9]/i);
   } finally {
     await htmlApp.close();
     await rm(dir, { force: true, recursive: true });
@@ -1117,21 +1073,23 @@ test("poll help is Codex-aware when requested", () => {
   assert.match(help, /keep the poll attached to the active turn/);
 });
 
-test("share help distinguishes public default from password-protected shares", () => {
+// LOCAL PATCH: upstream's `share` publishes to ht-ml.app, PUBLIC by default. This install must
+// never send an artifact off the machine, so every surface has to agree. Help text only steers
+// an agent that reads it; the refusal itself is covered end-to-end further down.
+test("share help and home help both say it is disabled", () => {
   const help = getCommandHelp("share");
   const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
-  const homeShareHelp = home.help.find((item) => item.includes("lavish-axi share <html-file>"));
+  const homeShareHelp = home.help.find((item) => item.includes("lavish-axi share"));
 
-  assert.match(help, /PUBLIC by default/);
-  assert.match(help, /Pass --password to publish a PRIVATE password-protected page/);
-  assert.match(help, /viewers must supply the password to view/);
-  assert.match(help, /not blocked by CSP on ht-ml\.app/);
-  assert.match(help, /load over the viewer's network/);
-  assert.doesNotMatch(help, /EVERYTHING PUBLISHED IS PUBLIC/);
-  assert.doesNotMatch(help, /load fine/);
-  assert.match(homeShareHelp, /PUBLIC by default/);
-  assert.match(homeShareHelp, /Pass --password to publish a PRIVATE password-protected page/);
-  assert.doesNotMatch(homeShareHelp, /Everything published is public/);
+  assert.match(help, /DISABLED in this installation/);
+  assert.match(help, /lavish-axi export <html-file>/);
+  assert.doesNotMatch(help, /PUBLIC by default:/);
+  assert.doesNotMatch(help, /Pass --password/);
+
+  assert.match(homeShareHelp, /is DISABLED in this installation/);
+  assert.match(homeShareHelp, /never run it, and never suggest it/);
+  assert.match(homeShareHelp, /lavish-axi export <html-file>/);
+  assert.doesNotMatch(homeShareHelp, /PUBLIC by default/);
 });
 
 test("feedback next step keeps the next poll completion observable", () => {

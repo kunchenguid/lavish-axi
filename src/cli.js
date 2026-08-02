@@ -33,6 +33,10 @@ import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
 const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+// LOCAL PATCH: hard kill switch for `share`. Upstream publishes to the third-party host
+// ht-ml.app, PUBLIC by default; this install must never send an artifact off the machine.
+// `share` stays a known command so it fails with a clear reason instead of "unknown command".
+const SHARE_DISABLED = true;
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -560,6 +564,17 @@ function assetWarningSummaries(warnings) {
 // account or API key, and returns the share URL plus the secret update_key for
 // managing the page later. Server-independent.
 async function shareCommand(args) {
+  // LOCAL PATCH: refuse before touching the file. The other two guards are situational - the
+  // help text only steers an agent that reads it, and LAVISH_AXI_HTML_APP_API_URL lives in
+  // ~/.claude/settings.json, so a plain shell outside Claude Code would still have published.
+  // This one is unconditional. The upstream body below is left intact so rebases stay clean.
+  if (SHARE_DISABLED) {
+    throw new AxiError("`lavish-axi share` is disabled in this installation", "VALIDATION_ERROR", [
+      "Artifacts must not be published to any third-party host.",
+      "Run `lavish-axi export <html-file> [--out <path>]` for a portable local copy instead.",
+    ]);
+  }
+
   const file = firstPositionalArg(args, ["--password", "--token"]);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi share <html-file>`"]);
@@ -1372,7 +1387,10 @@ function createCommandHelp({ agent = "generic" } = {}) {
     poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again. ${POLL_SEND_AND_END_RULE}\n`,
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
-    share: `Usage: lavish-axi share <html-file> [--password <pw>] [--token <t>]\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for updating or deleting the page later. Set LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token; it is never required. The annotation SDK is never included.\n`,
+    // LOCAL PATCH: the help for a disabled command must say so. Upstream's text here is a
+    // step-by-step guide to publishing the artifact publicly on a third-party host, which is
+    // exactly what an agent reaching for `share --help` must not be handed.
+    share: `Usage: lavish-axi share <html-file>\n\nDISABLED in this installation. \`share\` publishes the artifact to ht-ml.app, a third-party host, PUBLIC by default - this install must never send an artifact off the machine, so the command refuses before reading the file. Use \`lavish-axi export <html-file> [--out <path>]\` for a portable local copy instead.\n`,
     stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
     // LOCAL PATCH: the CDN snippet is gone, replaced by a local per-artifact compile. This help
