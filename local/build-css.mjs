@@ -8,7 +8,7 @@
 // useful half. This gets it back: compile only the classes THIS artifact uses into a
 // sibling .css file. Self-contained, no runtime compile, no CDN.
 //
-// Usage:  node <this> <artifact.html> [--minify]
+// Usage:  node <this> <artifact.html> [--minify] [--theme <daisyui-theme>]
 // Output: <artifact-basename>.css next to the artifact, plus the <link> tag to paste.
 
 import { spawnSync } from "node:child_process";
@@ -16,21 +16,43 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { DAISYUI_THEMES } from "../src/design-reference.js";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "node_modules", ".bin", "tailwindcss");
+const USAGE = "usage: node build-css.mjs <artifact.html> [--minify] [--theme <daisyui-theme>]";
 
 function fail(message) {
   console.error(`error: ${message}`);
   process.exit(1);
 }
 
-const args = process.argv.slice(2).filter((a) => a !== "--minify");
-const minify = process.argv.includes("--minify");
-if (args.length !== 1) fail("usage: node build-css.mjs <artifact.html> [--minify]");
+// A DaisyUI theme only exists in the output if the build was told to compile it, so the
+// theme list `lavish-axi design` advertises is only honest with this flag in place.
+const argv = process.argv.slice(2);
+const minify = argv.includes("--minify");
+const themeFlag = argv.indexOf("--theme");
+let theme = null;
+if (themeFlag !== -1) {
+  theme = argv[themeFlag + 1];
+  if (!theme || theme.startsWith("--")) fail(`--theme needs a theme name\n${USAGE}`);
+  if (!DAISYUI_THEMES.includes(theme)) {
+    fail(`unknown DaisyUI theme "${theme}" - pick one of: ${DAISYUI_THEMES.join(", ")}`);
+  }
+  argv.splice(themeFlag, 2);
+}
+
+const args = argv.filter((a) => a !== "--minify");
+if (args.length !== 1) fail(USAGE);
 
 const artifact = resolve(args[0]);
 if (!existsSync(artifact)) fail(`no such file: ${artifact}`);
 if (!existsSync(CLI)) fail(`toolchain missing - run: npm install --prefix ${HERE}`);
+
+// light and dark always ship; --theme only changes which one is the default.
+const themeList = theme
+  ? [`${theme} --default`, ...["light", "dark"].filter((t) => t !== theme)]
+  : ["light --default", "dark"];
 
 const outDir = dirname(artifact);
 const outName = `${basename(artifact).replace(/\.html?$/i, "")}.css`;
@@ -52,9 +74,10 @@ writeFileSync(
     `@source "${artifact.replace(/["\\]/g, "\\$&")}";`,
     "",
     "/* Light is the default theme here by house rule; dark ships but is opt-in via",
-    '   data-theme="dark" rather than following the OS, so artifacts stay light unless asked. */',
+    '   data-theme="dark" rather than following the OS, so artifacts stay light unless asked.',
+    "   --theme <name> makes another DaisyUI theme the default; light and dark stay available. */",
     '@plugin "daisyui" {',
-    "  themes: light --default, dark;",
+    `  themes: ${themeList.join(", ")};`,
     "}",
     "",
   ].join("\n"),

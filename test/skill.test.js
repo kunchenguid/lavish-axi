@@ -10,8 +10,12 @@ import {
   validateSkillMarkdown,
 } from "../src/skill.js";
 
+// LOCAL PATCH: upstream rewrites every command into the `npx -y lavish-axi` form. This install
+// is `npm link`-ed from the checkout, so npx would fetch the UNPATCHED package from npm and
+// silently undo every patch in this fork. Commands pass through unchanged; see the
+// "never routes commands through npx" test below for the guard that matters.
 function skillCommandText(text) {
-  return text.replaceAll("`lavish-axi", "`npx -y lavish-axi");
+  return text;
 }
 
 test("createSkillMarkdown emits valid frontmatter naming the lavish skill", () => {
@@ -164,22 +168,29 @@ test("createSkillMarkdown omits setup guidance", () => {
   assert.doesNotMatch(md, /setup plugin/);
 });
 
-test("createSkillMarkdown uses non-interactive npx commands", () => {
+// LOCAL PATCH: this is the single most load-bearing patch in the fork. Every other patch lives
+// in this checkout's dist; one `npx -y` anywhere in the skill sends the agent to the published
+// package instead, and the artifact silently lands in the repo, styled from a CDN, with sharing
+// live again. The failure is invisible - it still works, just unpatched.
+test("createSkillMarkdown never routes commands through npx", () => {
   const md = createSkillMarkdown();
 
-  assert.match(md, /`npx -y lavish-axi <html-file>`/);
-  assert.match(md, /If lavish-axi output shows a follow-up command starting with `lavish-axi`/);
-  assert.match(md, /run it as `npx -y lavish-axi/);
-  assert.doesNotMatch(md, /`npx lavish-axi/);
-  assert.doesNotMatch(md, /Run `lavish-axi/);
+  // No command in the skill may be an npx invocation. The one permitted mention of the word is
+  // the prohibition itself, which is asserted below.
+  assert.doesNotMatch(md, /`npx/);
+  assert.doesNotMatch(md, /npx -y/);
+  assert.match(md, /`npm link`-ed from a git checkout/);
+  assert.match(md, /Always invoke the bare `lavish-axi \.\.\.` command/);
+  assert.match(md, /NEVER run it through npx/);
+  assert.match(md, /Run `lavish-axi <html-file>` to open or resume a review session/);
+  assert.match(md, /Run `lavish-axi end <html-file>` when the review is finished/);
 });
 
-test("createSkillMarkdown documents installed-copy fallback for restricted sandboxes", () => {
+// LOCAL PATCH: the artifact must never land in the working directory or any git repo.
+test("createSkillMarkdown puts artifacts in /tmp, never in the working directory", () => {
   const md = createSkillMarkdown();
 
-  assert.match(md, /restricted subprocess sandboxes/);
-  assert.match(md, /status 216/);
-  assert.match(md, /`node "\$\(npm root\)\/lavish-axi\/dist\/cli\.mjs" <html-file>`/);
-  assert.match(md, /`node "\$\(npm root -g\)\/lavish-axi\/dist\/cli\.mjs" <html-file>`/);
-  assert.match(md, /bare `lavish-axi <html-file>` bin/);
+  assert.match(md, /default location `\/tmp\/<name>\.html`/);
+  assert.match(md, /never inside the project working directory or any git repo/);
+  assert.doesNotMatch(md, /default location `\.lavish\//);
 });

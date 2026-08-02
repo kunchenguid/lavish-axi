@@ -171,11 +171,20 @@ test("the design-priority rule is single-sourced and keeps its three-step semant
   assert.match(DESIGN_PRIORITY_RULE, /current working directory/);
   assert.match(DESIGN_PRIORITY_RULE, /previews, proposes, or mocks/);
   assert.match(DESIGN_PRIORITY_RULE, /app's own design system/);
-  assert.match(DESIGN_PRIORITY_RULE, /Tailwind CSS browser runtime v4 \+ DaisyUI v5/);
   assert.match(DESIGN_PRIORITY_RULE, /only when both steps come up empty/);
-  assert.match(DESIGN_PRIORITY_RULE, /hand-writing styles/);
-  assert.match(DESIGN_PRIORITY_RULE, /unless explicitly instructed/);
   assert.doesNotMatch(DESIGN_PRIORITY_RULE, /inspect the current project/i);
+
+  // LOCAL PATCH: tier 3 is a local compile, not a CDN runtime. Both halves matter - the
+  // vocabulary must stay (an earlier cut removed it along with the CDN and the artifacts
+  // regressed to hand-written CSS), and the delivery must stay local (a CDN-styled artifact
+  // survives `lavish-axi export` as a file that silently needs network to render).
+  assert.match(DESIGN_PRIORITY_RULE, /Tailwind \+ DaisyUI classes and compile them locally/);
+  assert.match(DESIGN_PRIORITY_RULE, /light theme by default/);
+  assert.match(DESIGN_PRIORITY_RULE, /LOCAL sibling \.css file referenced by a relative href/);
+  assert.match(DESIGN_PRIORITY_RULE, /Never load a CDN-hosted style runtime/);
+  assert.match(DESIGN_PRIORITY_RULE, /never use the root-absolute `\/design\/\.\.\.` route/);
+  assert.doesNotMatch(DESIGN_PRIORITY_RULE, /Tailwind CSS browser runtime v4/);
+  assert.doesNotMatch(DESIGN_PRIORITY_RULE, /hand-writing styles/);
 
   assert.ok(DESIGN_SYSTEM_HINT.includes(DESIGN_PRIORITY_RULE), "the home/skill hint embeds the rule");
   assert.match(DESIGN_SYSTEM_HINT, /does not auto-inject/);
@@ -330,7 +339,10 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /lavish-axi playbook <playbook_id>/);
     assert.match(result.stdout, /reference other filesystem assets/);
     assert.match(result.stdout, /same directory as the HTML file/);
-    assert.match(result.stdout, /Tailwind CSS browser runtime v4/);
+    assert.match(result.stdout, /local Tailwind\+DaisyUI build command/);
+    // LOCAL PATCH: no surface may hand the agent a jsdelivr URL - not the style runtime it
+    // no longer uses, and not Mermaid, which is pinned to an npmmirror mirror instead.
+    assert.doesNotMatch(result.stdout, /cdn\.jsdelivr\.net/);
     assert.match(result.stdout, /lavish-axi design/);
     assert.match(result.stdout, /strict priority order/);
     assert.match(result.stdout, /never kill it/);
@@ -344,7 +356,7 @@ test("top-level help renders static home output without dynamic sessions", async
   }
 });
 
-test("design output prints copy-pasteable CDN URLs so agents can opt in to DaisyUI", () => {
+test("design output ships the DaisyUI vocabulary with a local build instead of CDN URLs", () => {
   const output = createDesignOutput();
 
   assert.match(output.playbook_router.instruction, /MUST open each matching playbook before writing HTML/);
@@ -355,38 +367,45 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   );
   assert.ok(output.design.summary.includes(DESIGN_PRIORITY_RULE), "design summary embeds the single-sourced rule");
   assert.match(output.design.summary, /does not auto-inject/);
-  assert.match(output.design.summary, /^Use this .*fallback only if/i);
-  assert.match(output.design.summary, /no design direction/i);
-  assert.match(output.design.summary, /check first/i);
-  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
-  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
-  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@/);
+  // LOCAL PATCH: upstream opened with "Use this ... fallback only if"; DaisyUI is not a
+  // fallback here, so the summary leads with portability and the priority rule instead.
+  assert.match(output.design.summary, /^Lavish does not auto-inject any design system/);
+  assert.doesNotMatch(output.design.summary, /fallback only if/i);
+  // LOCAL PATCH: no CDN snippet or urls at all - the delivery half of the DaisyUI story is a
+  // local per-artifact compile now. `styling` below is what replaced them.
+  assert.equal("cdn_snippet" in output.design, false);
+  assert.equal("cdn_urls" in output.design, false);
+  assert.match(output.design.summary, /There is no CDN snippet to paste/);
   assert.match(output.design.layout_safety_snippet, /min-width: 0/);
   assert.match(output.design.layout_safety_snippet, /overflow-wrap: anywhere/);
   assert.match(output.design.layout_safety_snippet, /max-width: 100%/);
   assert.match(output.design.layout_safety_note, /Optional copy-paste CSS/);
   assert.match(output.design.layout_safety_note, /never auto-injects/);
-  assert.match(
-    output.design.cdn_urls.daisyui,
-    /^https:\/\/cdn\.jsdelivr\.net\/npm\/daisyui@\d+\.\d+\.\d+\/daisyui\.css$/,
-  );
-  assert.match(
-    output.design.cdn_urls.daisyuiThemes,
-    /^https:\/\/cdn\.jsdelivr\.net\/npm\/daisyui@\d+\.\d+\.\d+\/themes\.css$/,
-  );
-  assert.match(
-    output.design.cdn_urls.tailwind,
-    /^https:\/\/cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@\d+\.\d+\.\d+\/dist\/index\.global\.js$/,
-  );
   assert.match(output.design.other_design_systems, /different design system|other design system/i);
+
+  // LOCAL PATCH: the per-artifact CSS builder replaces the CDN. Assert the whole contract the
+  // agent needs to act on, because "build it locally" is useless without the command.
+  assert.match(output.styling.how, /compiles ONLY the classes this artifact uses/);
+  assert.match(output.styling.build_command, /^node \S+[/\\]local[/\\]build-css\.mjs <artifact\.html> --minify/);
+  assert.match(output.styling.build_command, /\[--theme <daisyui-theme>\]/);
+  assert.match(output.styling.link_tag, /RELATIVE href/);
+  assert.match(output.styling.link_tag, /Never a leading slash/);
+  assert.match(output.styling.themes, /light \(default\) and dark are both compiled in/);
+  assert.match(output.styling.themes, /--theme <name>/);
+  assert.match(output.styling.rebuild_note, /re-run build_command/);
+  assert.ok(output.styling.rules.some((item) => item.includes("Every asset must be local")));
+  assert.ok(output.styling.rules.some((item) => /Mermaid is the one deliberate remote dependency/.test(item)));
+
   assert.match(output.diagram_tooling.use_when, /flows \/ architecture \/ state \/ sequence diagrams/);
   assert.match(output.diagram_tooling.use_when, /hand-built div\/flexbox boxes/);
-  assert.match(output.diagram_tooling.mermaid_cdn_snippet, /cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+/);
   assert.match(output.diagram_tooling.mermaid_cdn_snippet, /mermaid\.initialize/);
+  // LOCAL PATCH: jsdelivr is unreliable from here, so Mermaid comes off an npmmirror mirror.
   assert.match(
     output.diagram_tooling.cdn_urls.mermaid,
-    /^https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+\/dist\/mermaid\.esm\.min\.mjs$/,
+    /^https:\/\/registry\.npmmirror\.com\/mermaid\/\d+\.\d+\.\d+\/files\/dist\/mermaid\.esm\.min\.mjs$/,
   );
+  assert.ok(output.diagram_tooling.mermaid_cdn_snippet.includes(output.diagram_tooling.cdn_urls.mermaid));
+  assert.doesNotMatch(output.diagram_tooling.mermaid_cdn_snippet, /jsdelivr/);
   assert.equal(output.diagram_tooling.versions.mermaid, "11.15.0");
   assert.equal("opt_out" in output.design, false);
   assert.equal("rule" in output.design, false);
@@ -405,12 +424,19 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
 });
 
-test("design output recommends luxury as the default theme and warns against @apply on DaisyUI classes", () => {
+// LOCAL PATCH: upstream defaults to `luxury`, which is dark. This install is light-first, and
+// the guidance has to agree with what build-css.mjs actually compiles - a theme the agent is
+// told to use but the build never emitted just silently loses its colors.
+test("design output defaults to light and warns against @apply on DaisyUI classes", () => {
   const output = createDesignOutput();
 
-  assert.ok(output.theme_usage.some((item) => /default.*luxury|luxury.*default/i.test(item)));
+  assert.ok(output.theme_usage.some((item) => /^Light is the default/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /data-theme="dark"/.test(item) && /opt-in/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /does NOT follow the OS/i.test(item)));
+  assert.ok(output.theme_usage.some((item) => /`--theme <name>` on the build command/.test(item)));
+  assert.ok(!output.theme_usage.some((item) => /luxury/i.test(item)));
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
-  assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
+  assert.ok(output.theme_usage.some((item) => /aborts the whole compile/i.test(item)));
 });
 
 test("playbook index output lists known playbooks with concise descriptions", () => {
@@ -664,10 +690,19 @@ test("Mermaid after evidence embeds the shipped theme-aware snippet", async () =
 
   assert.notEqual(start, -1);
   assert.notEqual(closingScript, -1);
+
+  // LOCAL PATCH: this install serves Mermaid from an npmmirror mirror, but the evidence pair
+  // is upstream's record of an upstream task - rewriting it would only invent rebase
+  // conflicts. Normalize the one line that differs so the rest still has to match exactly:
+  // the theme-aware init and the re-render-on-theme-change wiring are what this guards.
+  const shipped = createDesignOutput().diagram_tooling.mermaid_cdn_snippet;
+  const normalize = (text) => text.replace(/from "[^"]*mermaid[^"]*"/, 'from "<mermaid-esm-url>"');
+
   assert.equal(
-    evidence.slice(start, closingScript + "    </script>".length).replace(/^ {4}/gm, ""),
-    createDesignOutput().diagram_tooling.mermaid_cdn_snippet,
+    normalize(evidence.slice(start, closingScript + "    </script>".length).replace(/^ {4}/gm, "")),
+    normalize(shipped),
   );
+  assert.notEqual(normalize(shipped), shipped, "the normalizer actually matched the import line");
 });
 
 test("playbook detail output returns focused Lavish-native guidance", () => {
@@ -2120,8 +2155,11 @@ test("open can resume a session without opening another browser window", () => {
   assert.match(getCommandHelp("design"), /lavish-axi design/);
   assert.match(getCommandHelp("design"), /portable/);
   assert.ok(getCommandHelp("design").includes(DESIGN_PRIORITY_RULE), "design help embeds the single-sourced rule");
-  assert.match(getCommandHelp("design"), /fallback, not the default/i);
-  assert.match(getCommandHelp("design"), /inspect the subject project/i);
+  // LOCAL PATCH: upstream framed DaisyUI as an opt-in CDN fallback. Here it is the vocabulary
+  // and the only thing that changed is delivery, so the help must not still call it a fallback.
+  assert.match(getCommandHelp("design"), /this install has no CDN fallback/i);
+  assert.match(getCommandHelp("design"), /compiled locally per artifact into a sibling \.css file/i);
+  assert.doesNotMatch(getCommandHelp("design"), /fallback, not the default/i);
   assert.doesNotMatch(getCommandHelp("design"), /auto-injects/);
 });
 
