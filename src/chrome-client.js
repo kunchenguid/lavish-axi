@@ -292,6 +292,7 @@ function renderRevisionLegend(revisions) {
   revisionWrap.hidden = false;
   revisionLegendCount.textContent = "(" + revisions.length + ")";
   revisionLegendList.innerHTML = revisions.map((revision) => renderRevisionRow(revision, allRevisionsVisible)).join("");
+  if (!allRevisionsVisible) postToFrame({ type: "lavish:setRevisionVisibility", id: "*", visible: false });
 }
 
 function showSendHint() {

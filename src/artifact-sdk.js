@@ -2039,6 +2039,7 @@ export function createArtifactSdk(
   let revisionRegistry = [];
   let revisionElements = []; // [{ el, id }]
   const revisionVisibility = new Map(); // id -> boolean, default true
+  const revisionOriginalStyles = new WeakMap();
 
   function revisionById(id) {
     return revisionRegistry.find((revision) => revision.id === id) || null;
@@ -2047,10 +2048,24 @@ export function createArtifactSdk(
   function applyRevisionHighlight(el, revision) {
     const patternDef = REVISION_PATTERN_CSS[revision.color.pattern] || REVISION_PATTERN_CSS.diagonal;
     const tint = revisionTintFromHex(revision.color.hex);
+    let original = revisionOriginalStyles.get(el);
+    if (!original) {
+      original = {
+        outline: el.style.outline,
+        outlineOffset: el.style.outlineOffset,
+        backgroundImage: el.style.backgroundImage,
+        backgroundSize: el.style.backgroundSize,
+        hasTitle: el.hasAttribute("title"),
+        title: el.getAttribute("title"),
+      };
+      revisionOriginalStyles.set(el, original);
+    }
     el.style.outline = `2px ${revision.color.borderStyle} ${revision.color.hex}`;
     el.style.outlineOffset = "1px";
-    el.style.backgroundImage = `${patternDef.backgroundImage}, linear-gradient(${tint}, ${tint})`;
-    el.style.backgroundSize = `${patternDef.backgroundSize}, auto`;
+    const existingImage = original.backgroundImage && original.backgroundImage !== "none" ? `, ${original.backgroundImage}` : "";
+    const existingSize = existingImage ? `, ${original.backgroundSize || "auto"}` : "";
+    el.style.backgroundImage = `${patternDef.backgroundImage}, linear-gradient(${tint}, ${tint})${existingImage}`;
+    el.style.backgroundSize = `${patternDef.backgroundSize}, auto${existingSize}`;
     el.setAttribute("data-lavish-revision-active", revision.id);
     // A hover-only, non-color-dependent detail channel. The legend and the
     // border-style/pattern are the primary always-visible signals.
@@ -2058,12 +2073,17 @@ export function createArtifactSdk(
   }
 
   function clearRevisionHighlight(el) {
-    el.style.outline = "";
-    el.style.outlineOffset = "";
-    el.style.backgroundImage = "";
-    el.style.backgroundSize = "";
+    const original = revisionOriginalStyles.get(el);
+    if (original) {
+      el.style.outline = original.outline;
+      el.style.outlineOffset = original.outlineOffset;
+      el.style.backgroundImage = original.backgroundImage;
+      el.style.backgroundSize = original.backgroundSize;
+      if (original.hasTitle) el.setAttribute("title", original.title || "");
+      else el.removeAttribute("title");
+      revisionOriginalStyles.delete(el);
+    }
     el.removeAttribute("data-lavish-revision-active");
-    el.removeAttribute("title");
   }
 
   function applyRevisionVisibilityToElements() {
@@ -2101,10 +2121,8 @@ export function createArtifactSdk(
       revisionVisibility.set(id, true);
     }
     applyRevisionVisibilityToElements();
-    parent.postMessage(
-      {
-        type: "lavish:revisions",
-        revisions: revisionRegistry.map(({ id, label, timestamp, summary, sections, index, color }) => ({
+    postArtifactMessage("lavish:revisions", {
+      revisions: revisionRegistry.map(({ id, label, timestamp, summary, sections, index, color }) => ({
           id,
           label,
           timestamp,
@@ -2113,9 +2131,7 @@ export function createArtifactSdk(
           index,
           color,
         })),
-      },
-      "*",
-    );
+    });
   }
 
   initRevisionLegend();

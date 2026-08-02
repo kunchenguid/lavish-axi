@@ -2324,6 +2324,20 @@ test("revision legend toggle-all flips visibility, updates its accessible state,
   assert.equal(chrome.postedToFrame.at(-1).visible, true);
 });
 
+test("revision legend replays hidden-all state after a replacement artifact reports its registry", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  chrome.element("revisionToggleAll").onclick();
+  const before = chrome.postedToFrame.length;
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+
+  assert.equal(chrome.postedToFrame.length, before + 1);
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setRevisionVisibility");
+  assert.equal(chrome.postedToFrame.at(-1).id, "*");
+  assert.equal(chrome.postedToFrame.at(-1).visible, false);
+});
+
 test("a per-revision checkbox posts a scoped visibility toggle for just that revision", async () => {
   const chrome = await createChromeHarness();
   chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });

@@ -897,6 +897,13 @@ test("artifact SDK reports only stable severe layout failures after fonts, resiz
   assert.doesNotMatch(js, /element-parent-overflow/);
 });
 
+test("artifact SDK sends revision registries through the tokenized artifact message channel", () => {
+  const js = createSdkJs("abc", 7, "load-token");
+
+  assert.match(js, /postArtifactMessage\(\s*"lavish:revisions"/);
+  assert.doesNotMatch(js, /parent\.postMessage\(\s*\{\s*type:\s*"lavish:revisions"/);
+});
+
 test("artifact SDK verifies severe clipping from direct rendered text fragments", () => {
   const js = createSdkJs("abc");
 
