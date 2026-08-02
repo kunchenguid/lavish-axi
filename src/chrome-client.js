@@ -70,6 +70,28 @@ function isModeToggleHotkeyEvent(event) {
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
 }
 
+// LOCAL ADDITION: two chrome hotkeys upstream does not have.
+//
+//   Cmd/Ctrl + \      collapse or restore the conversation panel
+//   Cmd/Ctrl + Enter  send to agent from anywhere, not just the message box
+//
+// Upstream's only send binding is bare Enter inside #chatInput, which is useless
+// while focus sits in an annotation card. Both are checked in the capture phase
+// alongside the mode hotkey so they work regardless of focus.
+const panelCollapsedStorageKey = "lavish-axi:panel-collapsed:" + key;
+
+function isPanelToggleHotkeyEvent(event) {
+  if (event.shiftKey || event.altKey) return false;
+  // event.code is used rather than event.key because the character a backslash
+  // produces varies by keyboard layout, while the physical key does not.
+  return Boolean(event.metaKey || event.ctrlKey) && (event.key === "\\" || event.code === "Backslash");
+}
+
+function isSendHotkeyEvent(event) {
+  if (event.shiftKey || event.altKey) return false;
+  return Boolean(event.metaKey || event.ctrlKey) && (event.key === "Enter" || event.code === "Enter");
+}
+
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
 const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
 const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
@@ -78,6 +100,7 @@ const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("c
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
+const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
 const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("moreButton"));
 const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMenu"));
@@ -1359,7 +1382,10 @@ const whiteboardSaveChains = new Map();
 const inlineWhiteboardChannels = new Map();
 
 function whiteboardTheme() {
-  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  // LOCAL PATCH: the chrome is light-only in this install, so a dark whiteboard would
+  // clash with both the chrome around it and the light artifact it was converted from.
+  // Upstream followed prefers-color-scheme, which only made sense with its dark chrome.
+  return "light";
 }
 
 function postToWhiteboardOverlay(message) {
@@ -2058,6 +2084,32 @@ function toggleAnnotationMode() {
 
 annotationSwitch.onclick = toggleAnnotationMode;
 
+// LOCAL ADDITION: collapse the conversation panel to give the artifact the full width.
+// Persisted per session, so a reload or a hot-reload keeps the layout you were reading in.
+function setPanelCollapsed(collapsed) {
+  document.body.classList.toggle("panel-collapsed", collapsed);
+  panelToggle.setAttribute("aria-pressed", String(collapsed));
+  panelToggle.setAttribute("aria-label", collapsed ? "Show conversation panel" : "Collapse conversation panel");
+  try {
+    if (collapsed) window.localStorage.setItem(panelCollapsedStorageKey, "1");
+    else window.localStorage.removeItem(panelCollapsedStorageKey);
+  } catch {
+    // Private mode or a blocked storage partition - the toggle still works for this tab.
+  }
+}
+
+function restorePanelCollapsed() {
+  let collapsed = false;
+  try {
+    collapsed = window.localStorage.getItem(panelCollapsedStorageKey) === "1";
+  } catch {
+    // Storage unavailable - fall back to the panel being shown.
+  }
+  setPanelCollapsed(collapsed);
+}
+
+restorePanelCollapsed();
+
 sendButton.onclick = () => sendQueued(false);
 sendAndEndButton.onclick = () => sendQueued(true);
 moreButton.onclick = () => {
@@ -2068,11 +2120,15 @@ warningsButton.onclick = toggleWarningsDrawer;
 warningsSelectAll.onchange = toggleSelectAllWarnings;
 warningsQueueButton.onclick = queueSelectedWarningFixes;
 chatInput.addEventListener("keydown", (event) => {
+  // Cmd/Ctrl+Enter is handled globally in the capture phase; let it through rather
+  // than sending twice.
+  if (event.metaKey || event.ctrlKey) return;
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     sendQueued(false);
   }
 });
+panelToggle.onclick = () => setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
 chatInput.addEventListener("input", hideSendHint);
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
@@ -2125,6 +2181,22 @@ document.addEventListener(
     if (!isModeToggleHotkeyEvent(event)) return;
     event.preventDefault();
     toggleAnnotationMode();
+  },
+  true,
+);
+// LOCAL ADDITION: panel collapse and global send, same capture-phase reasoning.
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (isPanelToggleHotkeyEvent(event)) {
+      event.preventDefault();
+      setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
+      return;
+    }
+    if (isSendHotkeyEvent(event)) {
+      event.preventDefault();
+      sendQueued(false);
+    }
   },
   true,
 );

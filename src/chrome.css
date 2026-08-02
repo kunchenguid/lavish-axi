@@ -1348,3 +1348,124 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-error[hidden] {
   display: none;
 }
+
+/* ============================================================================
+ * LOCAL PATCH: light chrome, a shorter top bar, and a collapsible side panel.
+ *
+ * Appended as one block at the end rather than edited into the rules above, so
+ * an upstream rebase touching those rules does not conflict with this.
+ *
+ * Upstream ships a dark-only chrome. House rule here is light by default, and
+ * the artifact iframe is light anyway - a dark frame around a light page is the
+ * worst of both. Only the semantic tokens are re-pointed; the raw palette above
+ * stays as upstream wrote it, and the handful of rules that reach past the
+ * semantic layer into the palette are overridden individually below.
+ * ========================================================================== */
+
+:root {
+  --bg: #f2f3f5;
+  --bg-panel: #ffffff;
+  --bg-bar: #ffffff;
+  --bg-elevated: #ffffff;
+  --fg: #1a1d24;
+  --fg-muted: #3b414d;
+  --fg-dim: #4b515e;
+  --fg-faint: #6a7180;
+  --fg-label: #878e9c;
+  --border: #dce0e7;
+  --border-subtle: #e6e9ef;
+  --border-strong: #c3c9d4;
+  /* Brass at its original lightness is unreadable as text or an outline on
+   * white, and it is used for both fills and text. Deepening it once keeps a
+   * single accent token working in every context; --accent-ink flips to white
+   * so filled buttons stay legible. */
+  --accent: #9a6f14;
+  --accent-hover: #7d5a10;
+  --accent-ink: #ffffff;
+  --danger: #c0392b;
+  --shadow-tooltip: 0 12px 32px rgba(15, 17, 21, 0.13);
+  --shadow-floating: 0 18px 56px rgba(15, 17, 21, 0.15);
+  /* Upstream 56px. The bar holds one 22px brand lockup and a few controls; the
+   * extra height came out of the artifact, which is the thing being reviewed. */
+  --bar-h: 42px;
+}
+body.lavish {
+  color-scheme: light;
+}
+.brand {
+  height: 18px;
+}
+.brand-mark {
+  font-size: 18px;
+}
+.brand-support {
+  font-size: 9px;
+}
+
+/* Rules that bypass the semantic layer and name palette entries directly. */
+.warnings-button {
+  border-color: rgba(154, 111, 20, 0.35);
+  background: rgba(244, 201, 93, 0.18);
+  color: var(--accent);
+}
+.warnings-button[aria-expanded="true"] {
+  border-color: rgba(154, 111, 20, 0.6);
+  background: rgba(244, 201, 93, 0.34);
+}
+.warning-row.is-outstanding {
+  background: #fdf7e8;
+}
+.warning-chip {
+  background: #f2f4f7;
+}
+.more-button[aria-expanded="true"],
+.menu-file:hover,
+.menu-item:hover:not(:disabled) {
+  background: #eceff4;
+}
+.layout-issue-banner {
+  border-color: rgba(154, 111, 20, 0.35);
+  background: #fdf6e3;
+  color: var(--accent);
+}
+.menu {
+  box-shadow: var(--shadow-floating);
+}
+
+/* Collapsible side panel. Cmd/Ctrl+\ toggles it; state persists per session.
+ * The panel is display:none rather than width:0 so its scroll container cannot
+ * keep stealing wheel events from the artifact underneath. */
+.panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: var(--hairline);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.panel-toggle:hover {
+  background: #eceff4;
+  color: var(--fg);
+}
+.panel-toggle svg {
+  display: block;
+}
+body.panel-collapsed .layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+body.panel-collapsed .panel {
+  display: none;
+}
+body.panel-collapsed .panel-toggle {
+  background: #eceff4;
+  color: var(--accent);
+}

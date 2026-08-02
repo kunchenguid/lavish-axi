@@ -236,11 +236,11 @@ export function createDesignOutput() {
       how: localCssBuilderPath()
         ? "Write the artifact with Tailwind utility classes and DaisyUI components, then run build_command. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server."
         : "LOCAL TOOLCHAIN MISSING: local/build-css.mjs was not found in this checkout. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
-      build_command: localCssBuilderPath()
-        ? `node ${localCssBuilderPath()} <artifact.html> --minify`
-        : null,
-      link_tag: 'Reference the built file with a RELATIVE href in <head>: <link rel="stylesheet" href="<artifact-basename>.css">. Never a leading slash.',
-      themes: "light (default) and dark are both compiled in. Light applies automatically; dark is opt-in via data-theme=\"dark\" rather than following the OS, so artifacts stay light unless the user asks.",
+      build_command: localCssBuilderPath() ? `node ${localCssBuilderPath()} <artifact.html> --minify` : null,
+      link_tag:
+        'Reference the built file with a RELATIVE href in <head>: <link rel="stylesheet" href="<artifact-basename>.css">. Never a leading slash.',
+      themes:
+        'light (default) and dark are both compiled in. Light applies automatically; dark is opt-in via data-theme="dark" rather than following the OS, so artifacts stay light unless the user asks.',
       rebuild_note:
         "The build is a snapshot of the classes present at build time. Add or change classes -> re-run build_command before telling the user to look.",
       rules: [
