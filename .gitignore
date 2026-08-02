@@ -7,3 +7,6 @@ coverage/
 *.log
 package-lock.json
 .no-mistakes/evidence/
+
+# local toolchain scratch
+local/.build-*/

@@ -1,0 +1,11 @@
+{
+  "name": "lavish-local-design",
+  "private": true,
+  "type": "module",
+  "description": "Local Tailwind+DaisyUI toolchain for the patched lavish install. Compiles a per-artifact CSS file so artifacts get the DaisyUI component vocabulary while staying self-contained (no CDN, no runtime compile).",
+  "dependencies": {
+    "@tailwindcss/cli": "4.2.4",
+    "tailwindcss": "4.2.4",
+    "daisyui": "5.5.19"
+  }
+}
