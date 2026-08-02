@@ -199,6 +199,24 @@ test("artifact SDK renders queued feedback state on question scopes", () => {
   assert.match(js, /_lavishQuestionKey/);
 });
 
+// The marker is a position:fixed overlay carrying a role="status" live region, so it has two
+// standing obligations: it must follow its question scope through every kind of reflow, and it
+// must be the same node across passes. Rebuilding it per pass re-announces "Answer queued" on
+// every scroll frame, and a bubble-phase window scroll listener alone never sees nested scrollers.
+test("artifact SDK keeps queued-question markers stable and attached through reflows", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /queuedQuestionMarkers\.get\(scope\)/);
+  assert.doesNotMatch(js, /shadow\.querySelectorAll\("\.lavish-queued-question"\)/);
+  assert.match(js, /"scroll",\s*scheduleQueuedQuestionRender,\s*\{\s*capture: true/);
+  assert.match(js, /new ResizeObserver\(scheduleQueuedQuestionRender\)/);
+  assert.match(js, /queuedQuestionMutationObserver = new MutationObserver\(scheduleQueuedQuestionRender\)/);
+  assert.match(
+    js,
+    /queuedQuestionMutationObserver\?\.observe\(document\.documentElement, \{\s*attributes: true,\s*characterData: true,/,
+  );
+});
+
 test("annotation card does not block its own Queue button", () => {
   const js = createSdkJs("abc");
 

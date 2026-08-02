@@ -266,7 +266,11 @@ export function createArtifactSdk(
   let counter = 0;
   const ids = new WeakMap();
   const queuedQuestionKeys = new Set();
+  const queuedQuestionMarkers = new Map();
   let queuedQuestionFrame = 0;
+  let queuedQuestionResizeObserver = null;
+  let queuedQuestionMutationObserver = null;
+  let queuedQuestionObserving = false;
 
   function uid(el) {
     if (!ids.has(el)) ids.set(el, String(++counter));
@@ -1660,38 +1664,65 @@ export function createArtifactSdk(
     return shadow;
   }
 
+  function queuedQuestionScopeKey(scope) {
+    return `question:${String(scope.getAttribute("data-lavish-question") || "").trim()}`;
+  }
+
+  // One marker node per question scope, created when the answer is queued and kept until it
+  // leaves the queue. Repositioning mutates only inline styles, so the role="status" region's
+  // contents never change and a screen reader announces the queued state exactly once.
+  function ensureQueuedQuestionMarker(scope) {
+    const existing = queuedQuestionMarkers.get(scope);
+    if (existing) return existing;
+
+    const marker = document.createElement("div");
+    marker.className = "lavish-queued-question";
+    marker.setAttribute("role", "status");
+    marker.setAttribute("aria-label", "Answer queued");
+    marker.innerHTML = '<span class="lavish-queued-question-label">✓ Queued</span>';
+    ensureShadow().appendChild(marker);
+    queuedQuestionMarkers.set(scope, marker);
+    queuedQuestionResizeObserver?.observe(scope);
+    return marker;
+  }
+
+  function releaseQueuedQuestionMarker(scope, marker) {
+    marker.remove();
+    queuedQuestionMarkers.delete(scope);
+    queuedQuestionResizeObserver?.unobserve(scope);
+  }
+
+  function positionQueuedQuestionMarker(scope, marker) {
+    const rect = scope.getBoundingClientRect();
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const width = Math.min(rect.right, window.innerWidth) - left;
+    const height = Math.min(rect.bottom, window.innerHeight) - top;
+    // Fade rather than unmount when the scope has no box or scrolls out of view: the answer is
+    // still queued, and removing the node would re-announce it the moment it scrolled back.
+    if (rect.width <= 0 || rect.height <= 0 || width <= 0 || height <= 0) {
+      marker.style.opacity = "0";
+      return;
+    }
+    marker.style.opacity = "";
+    marker.style.left = left + "px";
+    marker.style.top = top + "px";
+    marker.style.width = width + "px";
+    marker.style.height = height + "px";
+  }
+
   function renderQueuedQuestionState() {
     queuedQuestionFrame = 0;
-    if (shadow) {
-      for (const marker of [...shadow.querySelectorAll(".lavish-queued-question")]) marker.remove();
+    const active = new Set();
+    if (queuedQuestionKeys.size) {
+      for (const scope of document.querySelectorAll("[data-lavish-question]")) {
+        if (!queuedQuestionKeys.has(queuedQuestionScopeKey(scope))) continue;
+        active.add(scope);
+        positionQueuedQuestionMarker(scope, ensureQueuedQuestionMarker(scope));
+      }
     }
-    if (!queuedQuestionKeys.size) return;
-
-    const root = ensureShadow();
-    for (const scope of document.querySelectorAll("[data-lavish-question]")) {
-      const queueKey = `question:${String(scope.getAttribute("data-lavish-question") || "").trim()}`;
-      if (!queuedQuestionKeys.has(queueKey)) continue;
-      const rect = scope.getBoundingClientRect();
-      if (
-        rect.width <= 0 ||
-        rect.height <= 0 ||
-        rect.bottom < 0 ||
-        rect.top > window.innerHeight ||
-        rect.right < 0 ||
-        rect.left > window.innerWidth
-      )
-        continue;
-
-      const marker = document.createElement("div");
-      marker.className = "lavish-queued-question";
-      marker.setAttribute("role", "status");
-      marker.setAttribute("aria-label", "Answer queued");
-      marker.style.left = Math.max(0, rect.left) + "px";
-      marker.style.top = Math.max(0, rect.top) + "px";
-      marker.style.width = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(0, rect.left)) + "px";
-      marker.style.height = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(0, rect.top)) + "px";
-      marker.innerHTML = '<span class="lavish-queued-question-label">✓ Queued</span>';
-      root.appendChild(marker);
+    for (const [scope, marker] of [...queuedQuestionMarkers]) {
+      if (!active.has(scope)) releaseQueuedQuestionMarker(scope, marker);
     }
   }
 
@@ -1700,12 +1731,47 @@ export function createArtifactSdk(
     queuedQuestionFrame = window.requestAnimationFrame(renderQueuedQuestionState);
   }
 
+  // Markers are position:fixed overlays, so anything that moves or resizes a question scope has
+  // to schedule a reposition. Window scroll and resize are not enough: scroll events from nested
+  // scrollers never reach a bubble-phase window listener, attribute-driven reflows (accordions,
+  // tabs) emit no childList records, and late image or font loads emit no event at all. These run
+  // only while something is queued so artifacts that never use questions pay nothing.
+  function startQueuedQuestionObservers() {
+    if (queuedQuestionObserving) return;
+    queuedQuestionObserving = true;
+    if (!queuedQuestionResizeObserver && typeof ResizeObserver !== "undefined") {
+      queuedQuestionResizeObserver = new ResizeObserver(scheduleQueuedQuestionRender);
+    }
+    for (const root of [document.documentElement, document.body]) {
+      if (root) queuedQuestionResizeObserver?.observe(root);
+    }
+    for (const scope of queuedQuestionMarkers.keys()) queuedQuestionResizeObserver?.observe(scope);
+    if (!queuedQuestionMutationObserver && typeof MutationObserver !== "undefined") {
+      queuedQuestionMutationObserver = new MutationObserver(scheduleQueuedQuestionRender);
+    }
+    queuedQuestionMutationObserver?.observe(document.documentElement, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  function stopQueuedQuestionObservers() {
+    if (!queuedQuestionObserving) return;
+    queuedQuestionObserving = false;
+    queuedQuestionResizeObserver?.disconnect();
+    queuedQuestionMutationObserver?.disconnect();
+  }
+
   function setQueuedQuestionKeys(keys) {
     queuedQuestionKeys.clear();
     for (const key of Array.isArray(keys) ? keys : []) {
       const queueKey = String(key || "").trim();
       if (queueKey.startsWith("question:")) queuedQuestionKeys.add(queueKey);
     }
+    if (queuedQuestionKeys.size) startQueuedQuestionObservers();
+    else stopQueuedQuestionObservers();
     scheduleQueuedQuestionRender();
   }
 
@@ -1862,7 +1928,6 @@ export function createArtifactSdk(
   window.addEventListener(
     "scroll",
     () => {
-      scheduleQueuedQuestionRender();
       if (scrollFrame) return;
       scrollFrame = window.requestAnimationFrame(() => {
         scrollFrame = 0;
@@ -1871,6 +1936,10 @@ export function createArtifactSdk(
     },
     { passive: true },
   );
+
+  // Capture phase so scrolling any nested overflow container repositions the markers too -
+  // scroll events do not bubble, so a bubble-phase window listener only ever sees the page scroll.
+  window.addEventListener("scroll", scheduleQueuedQuestionRender, { capture: true, passive: true });
   window.addEventListener("resize", scheduleQueuedQuestionRender, { passive: true });
 
   document.addEventListener(
@@ -1957,9 +2026,6 @@ export function createArtifactSdk(
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", enhanceMermaid, { once: true });
   }
-  const mermaidObserver = new MutationObserver(() => {
-    scheduleMermaidEnhance();
-    scheduleQueuedQuestionRender();
-  });
+  const mermaidObserver = new MutationObserver(() => scheduleMermaidEnhance());
   mermaidObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
