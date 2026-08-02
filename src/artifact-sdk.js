@@ -1739,8 +1739,7 @@ export function createArtifactSdk(
     // The marker is a position:fixed overlay, so it is clipped by nothing while the question it
     // traces is clipped by every scroll or overflow ancestor. Without that intersection a question
     // inside a scrollable panel rings whatever follows the panel.
-    const box =
-      rect.width > 0 && rect.height > 0 ? intersectClipRects(rect, queuedQuestionClipRects(scope)) : null;
+    const box = rect.width > 0 && rect.height > 0 ? intersectClipRects(rect, queuedQuestionClipRects(scope)) : null;
     // Fade rather than unmount when the scope has no box or is clipped fully out of view: the
     // answer is still queued, and removing the node would re-announce it the moment it came back.
     if (!box) {
