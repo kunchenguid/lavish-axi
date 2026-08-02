@@ -217,6 +217,19 @@ test("artifact SDK keeps queued-question markers stable and attached through ref
   );
 });
 
+// The overlay is clipped by nothing, so it must reconstruct the browser's clip chain itself or a
+// question inside a scrollable panel rings whatever follows the panel. Clamping to the viewport
+// alone is the regression this pins; the geometry itself is covered in test/artifact-sdk.test.js.
+test("artifact SDK clamps queued-question markers to their clipping ancestors", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /function intersectClipRects\(rect, clips\)/);
+  assert.match(js, /intersectClipRects\(rect, queuedQuestionClipRects\(scope\)\)/);
+  assert.match(js, /style\.overflowX !== "visible" \|\| style\.overflowY !== "visible"/);
+  assert.match(js, /clips\.push\(paddingBoxRect\(node\)\)/);
+  assert.doesNotMatch(js, /Math\.min\(rect\.right, window\.innerWidth\)/);
+});
+
 test("annotation card does not block its own Queue button", () => {
   const js = createSdkJs("abc");
 

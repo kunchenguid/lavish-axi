@@ -241,6 +241,32 @@ export function findStableLayoutFindings(first, second) {
   );
 }
 
+// Overlays are position:fixed, so nothing clips them the way the browser clips the element they
+// trace. Callers rebuild that clip chain and intersect it here. A clip edge that is not a finite
+// number is ignored rather than collapsing the box, so an unreadable ancestor never hides an
+// overlay that is genuinely on screen. Returns null when the intersection is empty.
+export function intersectClipRects(rect, clips) {
+  // Number.isFinite without a Number() cast on purpose: every real clip edge comes from a
+  // DOMRect and is already a number, while the cast would turn null or "" into a legitimate-
+  // looking 0 and collapse the box to nothing.
+  const tighten = (/** @type {number} */ current, /** @type {unknown} */ edge, inward) =>
+    Number.isFinite(edge) ? inward(current, edge) : current;
+  let left = Number(rect?.left);
+  let top = Number(rect?.top);
+  let right = Number(rect?.right);
+  let bottom = Number(rect?.bottom);
+  for (const clip of Array.isArray(clips) ? clips : []) {
+    left = tighten(left, clip?.left, Math.max);
+    top = tighten(top, clip?.top, Math.max);
+    right = tighten(right, clip?.right, Math.min);
+    bottom = tighten(bottom, clip?.bottom, Math.min);
+  }
+  const width = right - left;
+  const height = bottom - top;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { left, top, width, height };
+}
+
 export function isNearTotalOcclusion({ occludedSamples, totalSamples, minSamples = 5, minRatio = 0.9 }) {
   const occluded = Number(occludedSamples);
   const total = Number(totalSamples);
@@ -1692,23 +1718,40 @@ export function createArtifactSdk(
     queuedQuestionResizeObserver?.unobserve(scope);
   }
 
+  // Every ancestor that scrolls or hides its overflow bounds the visible question at its own
+  // padding box - the edge `overflow` actually clips at - and the viewport bounds it last. The
+  // audit's `clippingBoundariesFor` deliberately ignores auto/scroll because a scroller is not a
+  // layout failure, but a scroller still clips paint, so this walk treats any non-visible overflow
+  // as a boundary.
+  function queuedQuestionClipRects(scope) {
+    const clips = [{ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }];
+    let node = scope?.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      const style = getComputedStyle(node);
+      if (style.overflowX !== "visible" || style.overflowY !== "visible") clips.push(paddingBoxRect(node));
+      node = node.parentElement;
+    }
+    return clips;
+  }
+
   function positionQueuedQuestionMarker(scope, marker) {
     const rect = scope.getBoundingClientRect();
-    const left = Math.max(0, rect.left);
-    const top = Math.max(0, rect.top);
-    const width = Math.min(rect.right, window.innerWidth) - left;
-    const height = Math.min(rect.bottom, window.innerHeight) - top;
-    // Fade rather than unmount when the scope has no box or scrolls out of view: the answer is
-    // still queued, and removing the node would re-announce it the moment it scrolled back.
-    if (rect.width <= 0 || rect.height <= 0 || width <= 0 || height <= 0) {
+    // The marker is a position:fixed overlay, so it is clipped by nothing while the question it
+    // traces is clipped by every scroll or overflow ancestor. Without that intersection a question
+    // inside a scrollable panel rings whatever follows the panel.
+    const box =
+      rect.width > 0 && rect.height > 0 ? intersectClipRects(rect, queuedQuestionClipRects(scope)) : null;
+    // Fade rather than unmount when the scope has no box or is clipped fully out of view: the
+    // answer is still queued, and removing the node would re-announce it the moment it came back.
+    if (!box) {
       marker.style.opacity = "0";
       return;
     }
     marker.style.opacity = "";
-    marker.style.left = left + "px";
-    marker.style.top = top + "px";
-    marker.style.width = width + "px";
-    marker.style.height = height + "px";
+    marker.style.left = box.left + "px";
+    marker.style.top = box.top + "px";
+    marker.style.width = box.width + "px";
+    marker.style.height = box.height + "px";
   }
 
   function renderQueuedQuestionState() {

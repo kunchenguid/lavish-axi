@@ -6,6 +6,7 @@ import {
   classifySevereTextOverflow,
   deriveLavishQueueKey,
   findStableLayoutFindings,
+  intersectClipRects,
   isMaterialPageOverflow,
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
@@ -296,6 +297,59 @@ test("findStableLayoutFindings keeps only severe roots present in both samples",
   ];
 
   assert.deepEqual(findStableLayoutFindings(first, second), [second[0]]);
+});
+
+// The queued-question marker is a position:fixed overlay, so the browser clips nothing for it
+// while it clips the question it traces at every scroll/overflow ancestor. Clamping to the
+// viewport alone let a question inside a scrollable panel ring content that follows the panel.
+test("intersectClipRects clamps a scope to a scrollable ancestor's padding box", () => {
+  const viewport = { left: 0, top: 0, right: 1200, bottom: 900 };
+  const panelPaddingBox = { left: 30, top: 99, right: 1170, bottom: 343 };
+  const scope = { left: 42, top: 111, right: 1158, bottom: 593 };
+
+  assert.deepEqual(intersectClipRects(scope, [viewport, panelPaddingBox]), {
+    left: 42,
+    top: 111,
+    width: 1116,
+    height: 232,
+  });
+});
+
+test("intersectClipRects leaves a scope with no clipping ancestor exactly on its own box", () => {
+  const viewport = { left: 0, top: 0, right: 1200, bottom: 900 };
+  const scope = { left: 24, top: 437, right: 1176, bottom: 487 };
+
+  assert.deepEqual(intersectClipRects(scope, [viewport]), { left: 24, top: 437, width: 1152, height: 50 });
+});
+
+test("intersectClipRects tightens to the innermost of nested clipping ancestors", () => {
+  const scope = { left: 0, top: 0, right: 500, bottom: 500 };
+  const outer = { left: 10, top: 10, right: 400, bottom: 400 };
+  const inner = { left: 20, top: 5, right: 300, bottom: 450 };
+
+  assert.deepEqual(intersectClipRects(scope, [outer, inner]), { left: 20, top: 10, width: 280, height: 390 });
+});
+
+// Fully clipped is not the same as gone: the caller fades the marker instead of unmounting it, so
+// scrolling the question back into its panel never re-announces "Answer queued".
+test("intersectClipRects reports an empty intersection when the scope is clipped fully out", () => {
+  const panel = { left: 30, top: 99, right: 1170, bottom: 343 };
+
+  assert.equal(intersectClipRects({ left: 42, top: -201, right: 1158, bottom: -151 }, [panel]), null);
+  assert.equal(intersectClipRects({ left: 42, top: 99, right: 42, bottom: 343 }, [panel]), null);
+});
+
+// An ancestor whose box cannot be read must never shrink a marker that is genuinely on screen.
+test("intersectClipRects ignores clip edges that are not finite numbers", () => {
+  const scope = { left: 10, top: 20, right: 110, bottom: 120 };
+
+  assert.deepEqual(intersectClipRects(scope, [{ left: NaN, top: undefined, right: null, bottom: "x" }]), {
+    left: 10,
+    top: 20,
+    width: 100,
+    height: 100,
+  });
+  assert.deepEqual(intersectClipRects(scope, undefined), { left: 10, top: 20, width: 100, height: 100 });
 });
 
 test("isNearTotalOcclusion requires enough samples and at least ninety percent coverage", () => {
