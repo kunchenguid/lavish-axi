@@ -31,6 +31,7 @@ const PLUGIN_AUTHOR = Object.freeze({ name: "Kun Chen", url: "https://github.com
  * @property {typeof rmSync} [rmSync]
  * @property {typeof statSync} [statSync]
  * @property {typeof symlinkSync} [symlinkSync]
+ * @property {NodeJS.Platform} [platform]
  */
 
 /**
@@ -168,13 +169,24 @@ export function computeVsCodePluginLocationsUpdate(settings, pluginRoot, pluginN
  * @returns {string} absolute settings.json path
  */
 export function resolveVsCodeSettingsFile(env = process.env, homeDir = os.homedir(), platform = process.platform) {
+  const platformPath = platform === "win32" ? path.win32 : path.posix;
   if (platform === "win32") {
-    return path.join(env.APPDATA || path.join(homeDir, "AppData", "Roaming"), "Code", "User", "settings.json");
+    return platformPath.join(
+      env.APPDATA || platformPath.join(homeDir, "AppData", "Roaming"),
+      "Code",
+      "User",
+      "settings.json",
+    );
   }
   if (platform === "darwin") {
-    return path.join(homeDir, "Library", "Application Support", "Code", "User", "settings.json");
+    return platformPath.join(homeDir, "Library", "Application Support", "Code", "User", "settings.json");
   }
-  return path.join(env.XDG_CONFIG_HOME || path.join(homeDir, ".config"), "Code", "User", "settings.json");
+  return platformPath.join(
+    env.XDG_CONFIG_HOME || platformPath.join(homeDir, ".config"),
+    "Code",
+    "User",
+    "settings.json",
+  );
 }
 
 /**
@@ -250,12 +262,22 @@ export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName, o
     if (path.resolve(readlinkSync(target)) === pluginRoot) return { status: "current", target };
     mkdirSync(localPluginsDir, { recursive: true });
     const replacement = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    const previous = `${target}.${process.pid}.${randomUUID()}.old`;
+    let movedPrevious = false;
     try {
       createSymlink(pluginRoot, replacement);
+      if ((operations.platform || process.platform) === "win32") {
+        // Windows cannot rename over an existing directory symlink. Move the old link
+        // aside first and restore it if installing the replacement does not complete.
+        rename(target, previous);
+        movedPrevious = true;
+      }
       rename(replacement, target);
+      if (movedPrevious) remove(previous, { force: true });
     } catch (error) {
       try {
         remove(replacement, { force: true });
+        if (movedPrevious) rename(previous, target);
       } catch {
         // Preserve the original replacement error.
       }

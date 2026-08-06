@@ -90,6 +90,7 @@ async function waitForPollListening(base, key, timeoutMs = 10_000) {
   }
 }
 
+/** @returns {NodeJS.ProcessEnv} */
 function setupHooksEnv(homeDir, stateDir) {
   // eslint-disable-next-line no-unused-vars
   const { COPILOT_HOME, ...env } = process.env;
@@ -1578,7 +1579,10 @@ test("setup hooks exits with an error when hook installation fails", async () =>
 // `copilot` is a real binary on developer machines; an empty PATH keeps `setup plugin`
 // from registering the plugin into the tester's own Copilot CLI.
 function setupPluginEnv(homeDir, stateDir, pathDir) {
-  return { ...setupHooksEnv(homeDir, stateDir), PATH: pathDir, Path: pathDir };
+  const env = setupHooksEnv(homeDir, stateDir);
+  delete env.APPDATA;
+  delete env.XDG_CONFIG_HOME;
+  return { ...env, PATH: pathDir, Path: pathDir };
 }
 
 function runSetupPlugin(homeDir, stateDir, pathDir) {

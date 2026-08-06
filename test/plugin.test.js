@@ -186,7 +186,8 @@ test("Cursor registration links, no-ops, and repairs the local plugin slot", () 
   assert.equal(linkCursorLocalPlugin(localPlugins, pluginRoot, "lavish-axi").status, "current");
 
   const moved = writePlugin(path.join(dir, "pkg2", "lavish-axi"), "lavish-axi");
-  const repaired = linkCursorLocalPlugin(localPlugins, moved, "lavish-axi");
+  // Exercise Windows' move-aside replacement path even when this suite runs elsewhere.
+  const repaired = linkCursorLocalPlugin(localPlugins, moved, "lavish-axi", { platform: "win32" });
   assert.equal(repaired.status, "repaired");
   assert.equal(path.resolve(readlinkSync(repaired.target)), moved);
 });
@@ -279,7 +280,7 @@ test("client config locations follow each platform's convention", () => {
   );
   assert.equal(
     resolveVsCodeSettingsFile({ APPDATA: "C:\\Users\\kun\\AppData\\Roaming" }, "C:\\Users\\kun", "win32"),
-    path.join("C:\\Users\\kun\\AppData\\Roaming", "Code", "User", "settings.json"),
+    path.win32.join("C:\\Users\\kun\\AppData\\Roaming", "Code", "User", "settings.json"),
   );
-  assert.equal(resolveCursorLocalPluginsDir("/home/kun"), "/home/kun/.cursor/plugins/local");
+  assert.equal(resolveCursorLocalPluginsDir("/home/kun"), path.join("/home/kun", ".cursor", "plugins", "local"));
 });
