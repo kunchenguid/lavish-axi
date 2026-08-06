@@ -26,6 +26,7 @@ import {
   resolveCursorLocalPluginsDir,
   resolvePluginRoot,
   resolveVsCodeSettingsFile,
+  writeTextFileAtomically,
 } from "../src/plugin.js";
 import { validateSkillMarkdown } from "../src/skill.js";
 
@@ -213,6 +214,44 @@ test("Cursor registration replaces a dangling symlink", () => {
 
   assert.equal(result.status, "repaired");
   assert.equal(path.resolve(readlinkSync(result.target)), pluginRoot);
+});
+
+test("Cursor registration preserves the old link when replacement fails", async () => {
+  const dir = tempDir();
+  const localPlugins = path.join(dir, "local");
+  const original = writePlugin(path.join(dir, "old", "lavish-axi"), "lavish-axi");
+  const replacement = writePlugin(path.join(dir, "new", "lavish-axi"), "lavish-axi");
+  mkdirSync(localPlugins, { recursive: true });
+  const target = path.join(localPlugins, "lavish-axi");
+  symlinkSync(original, target);
+
+  assert.throws(() =>
+    linkCursorLocalPlugin(localPlugins, replacement, "lavish-axi", {
+      renameSync: () => {
+        throw new Error("replacement failed");
+      },
+    }),
+  );
+
+  assert.equal(path.resolve(readlinkSync(target)), original);
+  assert.deepEqual(await readdir(localPlugins), ["lavish-axi"]);
+});
+
+test("atomic text replacement preserves the original when swapping fails", async () => {
+  const dir = tempDir();
+  const target = path.join(dir, "settings.json");
+  writeFileSync(target, "original");
+
+  assert.throws(() =>
+    writeTextFileAtomically(target, "replacement", {
+      renameSync: () => {
+        throw new Error("replacement failed");
+      },
+    }),
+  );
+
+  assert.equal(await readFile(target, "utf8"), "original");
+  assert.deepEqual(await readdir(dir), ["settings.json"]);
 });
 
 test("client config locations follow each platform's convention", () => {

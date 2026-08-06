@@ -1,4 +1,15 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +20,14 @@ export const PLUGIN_SCHEMA_URL = "https://agent-plugins.org/schemas/1.0.0/plugin
 
 // Not in package.json (npm infers no author), so the one authoritative copy lives here.
 const PLUGIN_AUTHOR = Object.freeze({ name: "Kun Chen", url: "https://github.com/kunchenguid" });
+
+/**
+ * @typedef {object} AtomicFsOperations
+ * @property {typeof writeFileSync} [writeFileSync]
+ * @property {typeof renameSync} [renameSync]
+ * @property {typeof rmSync} [rmSync]
+ * @property {typeof symlinkSync} [symlinkSync]
+ */
 
 /**
  * @typedef {object} PluginManifest
@@ -165,6 +184,27 @@ export function resolveCursorLocalPluginsDir(homeDir = os.homedir()) {
 }
 
 /**
+ * @param {string} file target file
+ * @param {string} content replacement contents
+ * @param {AtomicFsOperations} [operations] filesystem operations
+ */
+export function writeTextFileAtomically(file, content, operations = {}) {
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  const write = operations.writeFileSync || writeFileSync;
+  const rename = operations.renameSync || renameSync;
+  const remove = operations.rmSync || rmSync;
+  try {
+    write(temporary, content, "utf8");
+    rename(temporary, file);
+  } catch (error) {
+    try {
+      remove(temporary, { force: true });
+    } catch {}
+    throw error;
+  }
+}
+
+/**
  * Point Cursor's local plugin slot at the installed package via symlink, which is what
  * Cursor's own docs recommend so an upgrade in place needs no re-registration.
  *
@@ -173,10 +213,14 @@ export function resolveCursorLocalPluginsDir(homeDir = os.homedir()) {
  * @param {string} localPluginsDir Cursor local plugins directory
  * @param {string} pluginRoot absolute plugin root
  * @param {string} pluginName manifest name
+ * @param {AtomicFsOperations} [operations] filesystem operations
  * @returns {{ status: "linked" | "repaired" | "current" | "occupied", target: string }} outcome
  */
-export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName) {
+export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName, operations = {}) {
   const target = path.join(localPluginsDir, pluginName);
+  const createSymlink = operations.symlinkSync || symlinkSync;
+  const rename = operations.renameSync || renameSync;
+  const remove = operations.rmSync || rmSync;
   let existing = null;
   try {
     existing = lstatSync(target);
@@ -189,13 +233,21 @@ export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName) {
   }
   if (existing) {
     if (path.resolve(readlinkSync(target)) === pluginRoot) return { status: "current", target };
-    rmSync(target);
     mkdirSync(localPluginsDir, { recursive: true });
-    symlinkSync(pluginRoot, target);
+    const replacement = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      createSymlink(pluginRoot, replacement);
+      rename(replacement, target);
+    } catch (error) {
+      try {
+        remove(replacement, { force: true });
+      } catch {}
+      throw error;
+    }
     return { status: "repaired", target };
   }
 
   mkdirSync(localPluginsDir, { recursive: true });
-  symlinkSync(pluginRoot, target);
+  createSymlink(pluginRoot, target);
   return { status: "linked", target };
 }

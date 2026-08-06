@@ -23,6 +23,7 @@ import {
   resolveCursorLocalPluginsDir,
   resolvePluginRoot,
   resolveVsCodeSettingsFile,
+  writeTextFileAtomically,
 } from "./plugin.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
@@ -741,7 +742,8 @@ function registerVsCodePlugin(pluginRoot, pluginName) {
   if (!changed) return { client: "vscode", status: "current", detail: collapseHome(settingsFile) };
 
   try {
-    writeFileSync(settingsFile, `${JSON.stringify(updated, null, 2)}\n`);
+    const writeTarget = hasSettingsFile ? realpathSync(settingsFile) : settingsFile;
+    writeTextFileAtomically(writeTarget, `${JSON.stringify(updated, null, 2)}\n`);
   } catch (error) {
     return { client: "vscode", status: "failed", detail: String(error instanceof Error ? error.message : error) };
   }
