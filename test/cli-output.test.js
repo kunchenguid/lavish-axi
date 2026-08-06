@@ -1730,6 +1730,33 @@ test("setup plugin repairs Copilot registration without trusting list text", asy
   }
 });
 
+test("setup plugin preserves Copilot registration when replacement fails", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-path-`);
+  const installedSource = path.join(homeDir, "copilot-installed-source");
+  const copilot = path.join(pathDir, "copilot");
+  const originalSource = "/working/lavish-axi";
+  try {
+    await writeFile(installedSource, originalSource);
+    await writeFile(
+      copilot,
+      `#!/bin/sh\nif [ "$1 $2" = "plugin list" ]; then\n  echo "lavish-axi 0.1.44"\n  exit 0\nfi\nif [ "$1 $2" = "plugin uninstall" ]; then\n  printf '%s' "removed" > ${JSON.stringify(installedSource)}\n  exit 0\nfi\nif [ "$1 $2" = "plugin install" ]; then\n  echo "replacement failed" >&2\n  exit 1\nfi\nexit 1\n`,
+      { encoding: "utf8", mode: 0o755 },
+    );
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /copilot,failed/);
+    assert.equal(await readFile(installedSource, "utf8"), originalSource);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
 test("setup rejects an unknown action and names both supported ones", async () => {
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-state-`);
   const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-home-`);

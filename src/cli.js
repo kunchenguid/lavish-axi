@@ -688,7 +688,7 @@ async function setupPluginCommand() {
   const clients = [
     registerVsCodePlugin(pluginRoot, manifest.name),
     registerCursorPlugin(pluginRoot, manifest.name),
-    registerCopilotPlugin(pluginRoot, manifest.name),
+    registerCopilotPlugin(pluginRoot),
   ];
 
   const help = ["Restart or reload each client so it discovers the plugin"];
@@ -780,16 +780,13 @@ function registerCursorPlugin(pluginRoot, pluginName) {
 
 /**
  * @param {string} pluginRoot absolute plugin root
- * @param {string} pluginName manifest name
  * @returns {{ client: string, status: string, detail: string }} outcome row
  */
-function registerCopilotPlugin(pluginRoot, pluginName) {
+function registerCopilotPlugin(pluginRoot) {
   const listed = spawnSync("copilot", ["plugin", "list"], { encoding: "utf8" });
   if (listed.error) {
     return { client: "copilot", status: "absent", detail: "copilot CLI not found on PATH" };
   }
-
-  spawnSync("copilot", ["plugin", "uninstall", pluginName], { encoding: "utf8" });
 
   const installed = spawnSync("copilot", ["plugin", "install", pluginRoot], { encoding: "utf8" });
   if (installed.status !== 0) {
