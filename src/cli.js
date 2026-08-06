@@ -762,13 +762,22 @@ function registerCursorPlugin(pluginRoot, pluginName) {
   }
 
   try {
-    const { status, target } = linkCursorLocalPlugin(
+    const { status, target, reason } = linkCursorLocalPlugin(
       resolveCursorLocalPluginsDir(resolveHookHomeDir()),
       pluginRoot,
       pluginName,
     );
     if (status === "occupied") {
       return { client: "cursor", status: "manual", detail: `${collapseHome(target)} exists and is not a symlink` };
+    }
+    if (status === "unsupported") {
+      // Windows without Developer Mode is the common case. Say what to do instead of
+      // leaking a bare EPERM, and leave the other clients registered.
+      return {
+        client: "cursor",
+        status: "manual",
+        detail: `cannot link ${collapseHome(target)} (${reason}); link it to ${pluginRoot} manually, or enable Developer Mode on Windows`,
+      };
     }
     return {
       client: "cursor",

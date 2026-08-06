@@ -1836,6 +1836,36 @@ test("setup plugin does not install when Copilot records are invalid", async () 
   }
 });
 
+test("setup plugin isolates a client it cannot register from the ones it can", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-path-`);
+  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
+  try {
+    // A real directory in Cursor's slot is unregisterable - the same reported (not thrown)
+    // path a Windows box without Developer Mode takes when link creation is refused.
+    const occupied = `${homeDir}/.cursor/plugins/local/lavish-axi`;
+    await mkdir(occupied, { recursive: true });
+    await writeFile(`${occupied}/keep.txt`, "user content", "utf8");
+    await mkdir(path.dirname(settingsFile), { recursive: true });
+    await writeFile(settingsFile, JSON.stringify({ "editor.fontSize": 13 }), "utf8");
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, "an unregisterable client never fails the command");
+    assert.match(result.stdout, /cursor,manual/);
+    assert.match(result.stdout, /vscode,registered/, "the other client is still registered");
+
+    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
+    assert.equal(Object.keys(settings["chat.pluginLocations"]).length, 1);
+    assert.equal(await readFile(`${occupied}/keep.txt`, "utf8"), "user content", "user content survives");
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
 test("setup rejects an unknown action and names both supported ones", async () => {
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-state-`);
   const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-home-`);

@@ -243,9 +243,37 @@ export function writeTextFileAtomically(file, content, operations = {}) {
  * @param {AtomicFsOperations} [operations] filesystem operations
  * @returns {{ status: "linked" | "repaired" | "current" | "occupied", target: string }} outcome
  */
+/**
+ * Create a directory link, preferring a junction on Windows.
+ *
+ * A Windows *directory symlink* needs SeCreateSymbolicLinkPrivilege - Developer Mode or
+ * an elevated shell - which an ordinary account does not have, so plain `symlinkSync`
+ * fails with EPERM there. A junction points at a local directory with no extra rights,
+ * so Cursor registration keeps working on a normal Windows install. Everywhere else the
+ * default symlink is correct.
+ *
+ * @param {(target: string, linkPath: string, type?: string) => void} createSymlink link creator
+ * @param {string} pluginRoot absolute plugin root the link points at
+ * @param {string} linkPath absolute path of the link to create
+ * @param {NodeJS.Platform} platform host platform
+ */
+function createDirectoryLink(createSymlink, pluginRoot, linkPath, platform) {
+  if (platform === "win32") {
+    try {
+      createSymlink(pluginRoot, linkPath, "junction");
+      return;
+    } catch {
+      // Fall through: a junction can fail across volumes, where a symlink may still work.
+    }
+  }
+  createSymlink(pluginRoot, linkPath);
+}
+
 export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName, operations = {}) {
   const target = path.join(localPluginsDir, pluginName);
-  const createSymlink = operations.symlinkSync || symlinkSync;
+  const platform = operations.platform || process.platform;
+  const createSymlink = (linkTarget, linkPath) =>
+    createDirectoryLink(operations.symlinkSync || symlinkSync, linkTarget, linkPath, platform);
   const rename = operations.renameSync || renameSync;
   const remove = operations.rmSync || rmSync;
   let existing = null;
@@ -266,7 +294,7 @@ export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName, o
     let movedPrevious = false;
     try {
       createSymlink(pluginRoot, replacement);
-      if ((operations.platform || process.platform) === "win32") {
+      if (platform === "win32") {
         // Windows cannot rename over an existing directory symlink. Move the old link
         // aside first and restore it if installing the replacement does not complete.
         rename(target, previous);
@@ -281,12 +309,24 @@ export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName, o
       } catch {
         // Preserve the original replacement error.
       }
-      throw error;
+      // The existing registration is intact after rollback; report rather than throw so
+      // one unlinkable client never aborts registration of the others.
+      return { status: "unsupported", target, reason: linkFailureReason(error) };
     }
     return { status: "repaired", target };
   }
 
   mkdirSync(localPluginsDir, { recursive: true });
-  createSymlink(pluginRoot, target);
+  try {
+    createSymlink(pluginRoot, target);
+  } catch (error) {
+    return { status: "unsupported", target, reason: linkFailureReason(error) };
+  }
   return { status: "linked", target };
+}
+
+/** @param {unknown} error thrown link-creation error @returns {string} short reason */
+function linkFailureReason(error) {
+  const message = String(error instanceof Error ? error.message : error).split("\n")[0];
+  return message || "link creation failed";
 }

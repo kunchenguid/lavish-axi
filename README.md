@@ -108,12 +108,14 @@ lavish-axi setup plugin
 
 That registers the installed package with every supported client it finds - **VS Code**, **Cursor**, and **GitHub Copilot CLI** - and reports which ones were absent. It is opt-in and idempotent, and it repairs the registered path after a reinstall or relocation. Reload each client afterward.
 
+Each client is registered independently: one that cannot be registered is reported with what to do about it, and never blocks the others or fails the command.
+
 To register by hand instead, point any client at the package directory (`npm root -g`/`lavish-axi`):
 
 | Client             | Register with                                                                                                      |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------ |
 | VS Code            | `"chat.pluginLocations": { "<package-dir>": true }` in user settings                                               |
-| Cursor             | symlink the package dir into `~/.cursor/plugins/local/lavish-axi`                                                  |
+| Cursor             | symlink the package dir into `~/.cursor/plugins/local/lavish-axi` (a junction on Windows)                          |
 | GitHub Copilot CLI | `copilot plugin install <package-dir>` (or `copilot plugin install kunchenguid/lavish-axi` straight from the repo) |
 
 Codex and ChatGPT install plugins only from marketplace sources, so Codex users should use the session hook above instead.

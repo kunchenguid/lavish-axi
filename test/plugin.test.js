@@ -53,6 +53,21 @@ function tempDir() {
   return dir;
 }
 
+// Creating a directory symlink needs a privilege an ordinary Windows account lacks, so
+// the tests that assert on a *real* on-disk link skip there rather than failing. The
+// link-creation logic itself stays covered everywhere through injected operations.
+const symlinkSupport = (() => {
+  const probe = mkdtempSync(path.join(os.tmpdir(), "lavish-symlink-probe-"));
+  try {
+    symlinkSync(path.join(probe, "target"), path.join(probe, "link"));
+    return { supported: true, skip: false };
+  } catch (error) {
+    return { supported: false, skip: `symlink creation unavailable: ${error.code || error.message}` };
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+
 function writePlugin(root, name) {
   mkdirSync(root, { recursive: true });
   writeFileSync(path.join(root, "plugin.json"), JSON.stringify({ $schema: PLUGIN_SCHEMA_URL, name }));
@@ -174,7 +189,7 @@ test("a removed install directory is only treated as stale when it was ours", ()
   assert.equal(isStalePluginLocation(path.join(dir, "gone", "someone-else"), "lavish-axi"), false);
 });
 
-test("Cursor registration links, no-ops, and repairs the local plugin slot", () => {
+test("Cursor registration links, no-ops, and repairs the local plugin slot", { skip: symlinkSupport.skip }, () => {
   const dir = tempDir();
   const localPlugins = path.join(dir, "local");
   const pluginRoot = writePlugin(path.join(dir, "pkg", "lavish-axi"), "lavish-axi");
@@ -206,7 +221,7 @@ test("Cursor registration refuses to clobber a real directory in the slot", () =
   assert.equal(existsSync(path.join(occupied, "keep.txt")), true, "user content survives");
 });
 
-test("Cursor registration replaces a dangling symlink", () => {
+test("Cursor registration replaces a dangling symlink", { skip: symlinkSupport.skip }, () => {
   const dir = tempDir();
   const localPlugins = path.join(dir, "local");
   mkdirSync(localPlugins, { recursive: true });
@@ -219,7 +234,7 @@ test("Cursor registration replaces a dangling symlink", () => {
   assert.equal(path.resolve(readlinkSync(result.target)), pluginRoot);
 });
 
-test("Cursor registration preserves the old link when replacement fails", async () => {
+test("Cursor registration preserves the old link when replacement fails", { skip: symlinkSupport.skip }, async () => {
   const dir = tempDir();
   const localPlugins = path.join(dir, "local");
   const original = writePlugin(path.join(dir, "old", "lavish-axi"), "lavish-axi");
@@ -228,16 +243,63 @@ test("Cursor registration preserves the old link when replacement fails", async 
   const target = path.join(localPlugins, "lavish-axi");
   symlinkSync(original, target);
 
-  assert.throws(() =>
-    linkCursorLocalPlugin(localPlugins, replacement, "lavish-axi", {
-      renameSync: () => {
-        throw new Error("replacement failed");
-      },
-    }),
-  );
+  const result = linkCursorLocalPlugin(localPlugins, replacement, "lavish-axi", {
+    renameSync: () => {
+      throw new Error("replacement failed");
+    },
+  });
 
-  assert.equal(path.resolve(readlinkSync(target)), original);
+  // Reported, not thrown: one unlinkable client must never abort the whole command.
+  assert.equal(result.status, "unsupported");
+  assert.match(result.reason, /replacement failed/);
+  assert.equal(path.resolve(readlinkSync(target)), original, "the old registration survives");
   assert.deepEqual(await readdir(localPlugins), ["lavish-axi"]);
+});
+
+test("Cursor registration reports rather than throws when links cannot be created", () => {
+  // Windows without Developer Mode: creating a directory symlink fails with EPERM.
+  const dir = tempDir();
+  const denied = () => {
+    throw Object.assign(new Error("EPERM: operation not permitted, symlink"), { code: "EPERM" });
+  };
+
+  const result = linkCursorLocalPlugin(path.join(dir, "local"), path.join(dir, "pkg"), "lavish-axi", {
+    symlinkSync: denied,
+  });
+
+  assert.equal(result.status, "unsupported");
+  assert.match(result.reason, /EPERM/);
+});
+
+test("Cursor registration links with a junction on Windows", () => {
+  // A junction needs no elevated privilege, so an ordinary Windows account can register.
+  const dir = tempDir();
+  const attempts = [];
+
+  const result = linkCursorLocalPlugin(path.join(dir, "local"), path.join(dir, "pkg"), "lavish-axi", {
+    platform: "win32",
+    symlinkSync: (target, linkPath, type) => attempts.push(type),
+  });
+
+  assert.equal(result.status, "linked");
+  assert.deepEqual(attempts, ["junction"], "a junction is used instead of a privileged symlink");
+});
+
+test("Cursor registration falls back to a symlink when a junction is refused", () => {
+  const dir = tempDir();
+  const attempts = [];
+
+  const result = linkCursorLocalPlugin(path.join(dir, "local"), path.join(dir, "pkg"), "lavish-axi", {
+    platform: "win32",
+    symlinkSync: (target, linkPath, type) => {
+      attempts.push(type);
+      // Junctions cannot span volumes; a symlink still can.
+      if (type === "junction") throw new Error("EXDEV: cross-device link");
+    },
+  });
+
+  assert.equal(result.status, "linked");
+  assert.deepEqual(attempts, ["junction", undefined]);
 });
 
 test("atomic text replacement preserves the original when swapping fails", async () => {
