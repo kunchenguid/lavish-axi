@@ -1652,6 +1652,29 @@ test("setup plugin registers VS Code without disturbing existing settings", asyn
   }
 });
 
+test("setup plugin creates VS Code settings for a fresh installation", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-path-`);
+  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
+  try {
+    await mkdir(path.dirname(settingsFile), { recursive: true });
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /vscode,registered/);
+    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
+    const registered = Object.keys(settings["chat.pluginLocations"]);
+    assert.equal(registered.length, 1);
+    assert.ok(existsSync(`${registered[0]}/plugin.json`));
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
 test("setup plugin leaves unparseable VS Code settings alone", async () => {
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-state-`);
   const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-home-`);
@@ -1667,6 +1690,39 @@ test("setup plugin leaves unparseable VS Code settings alone", async () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /vscode,manual/);
     assert.equal(await readFile(settingsFile, "utf8"), original, "settings are not rewritten");
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin repairs Copilot registration without trusting list text", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-path-`);
+  const installedSource = path.join(homeDir, "copilot-installed-source");
+  const copilot = path.join(pathDir, "copilot");
+  try {
+    await writeFile(
+      copilot,
+      `#!/bin/sh\nif [ "$1 $2" = "plugin list" ]; then\n  echo "lavish-axi-tools 9.9.9"\n  exit 0\nfi\nif [ "$1 $2" = "plugin uninstall" ]; then\n  : > ${JSON.stringify(installedSource)}\n  exit 0\nfi\nif [ "$1 $2" = "plugin install" ]; then\n  printf '%s' "$3" > ${JSON.stringify(installedSource)}\n  exit 0\nfi\nexit 1\n`,
+      { encoding: "utf8", mode: 0o755 },
+    );
+
+    const first = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    assert.match(first.stdout, /copilot,registered/);
+    const pluginRoot = await realpath(fileURLToPath(new URL("..", import.meta.url)));
+    assert.equal(await realpath(await readFile(installedSource, "utf8")), pluginRoot);
+
+    await writeFile(installedSource, "/stale/lavish-axi");
+    const second = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    assert.match(second.stdout, /copilot,registered/);
+    assert.equal(await realpath(await readFile(installedSource, "utf8")), pluginRoot);
   } finally {
     await rm(stateDir, { force: true, recursive: true });
     await rm(homeDir, { force: true, recursive: true });

@@ -715,22 +715,26 @@ function collapseHome(target) {
  */
 function registerVsCodePlugin(pluginRoot, pluginName) {
   const settingsFile = resolveVsCodeSettingsFile(process.env, resolveHookHomeDir());
-  if (!existsSync(settingsFile)) {
-    return { client: "vscode", status: "absent", detail: "no VS Code user settings found" };
+  const settingsDir = path.dirname(settingsFile);
+  const hasSettingsFile = existsSync(settingsFile);
+  if (!hasSettingsFile && !existsSync(settingsDir)) {
+    return { client: "vscode", status: "absent", detail: "no VS Code user configuration found" };
   }
 
-  let settings;
-  try {
-    settings = JSON.parse(readFileSync(settingsFile, "utf8"));
-  } catch {
-    // VS Code settings may legally contain comments or trailing commas. Rewriting a file
-    // we cannot faithfully parse would destroy the user's configuration, so we bail out
-    // and tell them the one line to add instead.
-    return {
-      client: "vscode",
-      status: "manual",
-      detail: `add "chat.pluginLocations": {"${pluginRoot}": true} to ${collapseHome(settingsFile)}`,
-    };
+  let settings = {};
+  if (hasSettingsFile) {
+    try {
+      settings = JSON.parse(readFileSync(settingsFile, "utf8"));
+    } catch {
+      // VS Code settings may legally contain comments or trailing commas. Rewriting a file
+      // we cannot faithfully parse would destroy the user's configuration, so we bail out
+      // and tell them the one line to add instead.
+      return {
+        client: "vscode",
+        status: "manual",
+        detail: `add "chat.pluginLocations": {"${pluginRoot}": true} to ${collapseHome(settingsFile)}`,
+      };
+    }
   }
 
   const [updated, changed] = computeVsCodePluginLocationsUpdate(settings, pluginRoot, pluginName);
@@ -784,9 +788,8 @@ function registerCopilotPlugin(pluginRoot, pluginName) {
   if (listed.error) {
     return { client: "copilot", status: "absent", detail: "copilot CLI not found on PATH" };
   }
-  if (listed.status === 0 && String(listed.stdout).includes(pluginName)) {
-    return { client: "copilot", status: "current", detail: "already installed" };
-  }
+
+  spawnSync("copilot", ["plugin", "uninstall", pluginName], { encoding: "utf8" });
 
   const installed = spawnSync("copilot", ["plugin", "install", pluginRoot], { encoding: "utf8" });
   if (installed.status !== 0) {
