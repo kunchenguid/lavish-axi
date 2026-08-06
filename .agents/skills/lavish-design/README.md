@@ -128,7 +128,7 @@ The brand mark **Lavish Editor** is set in Geist Sans at `font-weight: 750` with
 
 - **8-pt grid** with a `4` and `2` half-step. The chrome uses `6 / 8 / 10 / 12 / 16 / 24 / 32` repeatedly.
 - **Top bar height: 56px.** Sticky. The one truly fixed element.
-- **Panel gutter: 360px** for the side conversation panel; the artifact takes the rest.
+- **Panel gutter: 360px default** for the side conversation panel; the user can drag the splitter to resize it (clamped to `min 280` and `60%` of the viewport), the choice persists in `localStorage` and resets to 360 on a splitter double-click. The artifact takes the rest.
 - Composer padding: `12px 16px`. Buttons: `9–10px 12px`.
 
 ### Radii
@@ -184,7 +184,7 @@ A "card" in Lavish is a slab of `#11141a` or `#1c212b` with a 1px border (`#3037
 ### Layout rules
 
 - The top bar is fixed at 56px, full-width, sticky.
-- The side conversation panel is a fixed 360px wide on the right.
+- The side conversation panel defaults to 360px wide on the right and can be resized by dragging the splitter between the artifact and the panel.
 - The artifact takes the remainder.
 - The annotation card is positioned relative to the clicked element or selected text range via `getBoundingClientRect()` and clamped 12px from any viewport edge.
 - The chat input lives at the bottom of the side panel; pills (queued prompts) sit _above_ the textarea, never inside it.

@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+import { PANEL_STORAGE_KEY } from "../src/panel-width.js";
+
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
 /** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number }} HarnessSessionData */
@@ -18,8 +20,12 @@ async function createChromeHarness({
   storage = new Map(),
   beginLoadResponses = [],
   handoffResponses = [],
+  innerWidth = 1200,
+  localStorageValues = new Map(),
+  localStorageGetItemThrows = false,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
+  const localStorageMap = new Map(localStorageValues);
   const postedToFrame = [];
   const postedToWhiteboard = [];
   const inlineWhiteboards = [];
@@ -35,6 +41,8 @@ async function createChromeHarness({
   let nextTimerId = 1;
   let reloadCount = 0;
   let artifactRevision = 0;
+  let currentInnerWidth = innerWidth;
+  let mobileBreakpointMatches = false;
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -97,13 +105,30 @@ async function createChromeHarness({
         contains(name) {
           return classes.has(name);
         },
+        has(name) {
+          return classes.has(name);
+        },
         toString() {
           return [...classes].join(" ");
         },
       },
-      style: {},
+      style: {
+        setProperty(name, value) {
+          this[name] = String(value);
+        },
+        getPropertyValue(name) {
+          const value = this[name];
+          return value === undefined ? "" : String(value);
+        },
+        removeProperty(name) {
+          delete this[name];
+        },
+      },
       setAttribute(name, value) {
         this[name] = String(value);
+      },
+      getAttribute(name) {
+        return Object.hasOwn(this, name) ? this[name] : null;
       },
       addEventListener(type, handler) {
         listeners.set(type, handler);
@@ -232,6 +257,20 @@ async function createChromeHarness({
     return fetchImpl(url, init);
   };
 
+  const localStorageApi = {
+    getItem(key) {
+      if (localStorageGetItemThrows) throw new Error("getItem blocked");
+      return localStorageMap.has(key) ? localStorageMap.get(key) : null;
+    },
+    setItem(key, value) {
+      localStorageMap.set(key, String(value));
+      localStorageWriteCount += 1;
+    },
+    removeItem(key) {
+      localStorageMap.delete(key);
+    },
+  };
+  let localStorageWriteCount = 0;
   const context = {
     clearTimeout: fakeClearTimeout,
     console,
@@ -262,12 +301,21 @@ async function createChromeHarness({
     },
     document: {
       body: element("body"),
+      get documentElement() {
+        return element("html");
+      },
       getElementById(id) {
         return element(id);
       },
       addEventListener(type, handler, capture) {
         if (!documentListeners.has(type)) documentListeners.set(type, []);
         documentListeners.get(type).push({ handler, capture: Boolean(capture) });
+      },
+      removeEventListener(type, handler) {
+        const list = documentListeners.get(type);
+        if (!list) return;
+        const index = list.findIndex((entry) => entry.handler === handler);
+        if (index !== -1) list.splice(index, 1);
       },
       createElement(tag) {
         const el = element(`${tag}-${elements.size}`);
@@ -296,7 +344,48 @@ async function createChromeHarness({
         if (!windowListeners.has(type)) windowListeners.set(type, []);
         windowListeners.get(type).push(handler);
       },
+      removeEventListener(type, handler) {
+        const list = windowListeners.get(type);
+        if (!list) return;
+        const index = list.indexOf(handler);
+        if (index !== -1) list.splice(index, 1);
+      },
+      dispatchEvent(event) {
+        const list = windowListeners.get(event.type) || [];
+        for (const handler of list) handler(event);
+        return !event.defaultPrevented;
+      },
+      get innerWidth() {
+        return currentInnerWidth;
+      },
+      set innerWidth(value) {
+        currentInnerWidth = Number(value);
+      },
+      localStorage: localStorageApi,
+      matchMedia(query) {
+        if (query === "(max-width: 860px)") {
+          return {
+            get matches() {
+              return mobileBreakpointMatches;
+            },
+          };
+        }
+        return {
+          get matches() {
+            return false;
+          },
+        };
+      },
     },
+    localStorage: localStorageApi,
+  };
+  const helpers = await import("../src/panel-width.js");
+  context.LavishPanelWidth = {
+    PANEL_DEFAULTS: helpers.PANEL_DEFAULTS,
+    PANEL_STORAGE_KEY: helpers.PANEL_STORAGE_KEY,
+    clampPanelWidth: helpers.clampPanelWidth,
+    loadStoredPanelWidth: helpers.loadStoredPanelWidth,
+    savePanelWidth: helpers.savePanelWidth,
   };
 
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
@@ -338,13 +427,13 @@ async function createChromeHarness({
       for (const handler of handlers) handler({ source: frame.contentWindow, data: message });
     },
     sendWhiteboardMessage(data) {
-      const handlers = windowListeners.get("message") || [];
-      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
+      const handlers = windowListeners.get("message");
+      assert.ok(handlers && handlers.length > 0, "chrome-client registered a message handler");
       for (const handler of handlers) handler({ source: whiteboardFrame.contentWindow, data });
     },
     sendInlineWhiteboardMessage(whiteboard, data) {
-      const handlers = windowListeners.get("message") || [];
-      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
+      const handlers = windowListeners.get("message");
+      assert.ok(handlers && handlers.length > 0, "chrome-client registered a message handler");
       for (const handler of handlers) handler({ source: whiteboard.source, data });
     },
     dispatchDocumentKeydown(eventProps) {
@@ -384,6 +473,87 @@ async function createChromeHarness({
     beginRequests,
     artifactBeginRequests,
     artifactLoadToken: frameLoadToken,
+    panelWidthPx() {
+      const value = element("html").style["--panel-w"];
+      return value ? Number(String(value).replace("px", "")) : null;
+    },
+    isDraggingSplitter() {
+      return Boolean(element("body").classList.has("dragging-splitter"));
+    },
+    storedPanelWidth() {
+      return localStorageMap.get(PANEL_STORAGE_KEY) ?? null;
+    },
+    localStorageWriteCount() {
+      return localStorageWriteCount;
+    },
+    setInnerWidth(value) {
+      currentInnerWidth = Number(value);
+    },
+    setMobileBreakpoint(matches) {
+      mobileBreakpointMatches = matches;
+    },
+    dispatchWindowResize() {
+      const handlers = windowListeners.get("resize") || [];
+      for (const handler of handlers) handler({});
+    },
+    fireSplitterPointer(
+      type,
+      {
+        clientX = 600,
+        pointerId = 1,
+        button = 0,
+        metaKey = false,
+        ctrlKey = false,
+        altKey = false,
+        shiftKey = false,
+      } = {},
+    ) {
+      const splitter = element("splitter");
+      const pointerdownHandler = splitter.listeners.get("pointerdown");
+      if (type === "pointerdown") {
+        if (!pointerdownHandler)
+          throw new Error("chrome-client did not register a pointerdown handler on the splitter");
+      }
+      const event = {
+        type,
+        pointerId,
+        clientX,
+        button,
+        metaKey,
+        ctrlKey,
+        altKey,
+        shiftKey,
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      if (type === "pointerdown") {
+        pointerdownHandler(event);
+        return event;
+      }
+      // Drag listeners live on `window`, not `document`, so dispatch via the
+      // fake window's event listener map to match how the chrome wires them.
+      const winHandlers = windowListeners.get(type) || [];
+      assert.ok(winHandlers.length > 0, `chrome-client did not register a window ${type} handler`);
+      for (const handler of winHandlers) handler(event);
+      return event;
+    },
+    fireSplitterEvent(type, eventProps = {}) {
+      const splitter = element("splitter");
+      const handler = splitter.listeners.get(type);
+      if (!handler) throw new Error(`chrome-client did not register a ${type} handler on the splitter`);
+      const event = {
+        key: "",
+        defaultPrevented: false,
+        ...eventProps,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      handler(event);
+      return event;
+    },
   };
 }
 
@@ -2219,4 +2389,176 @@ test("a local asset failure inside the artifact is reported as a fatal artifact 
   const failure = posts.find((post) => post.url === "/api/abc/artifact-failures");
   assert.equal(failure.body.failures[0].kind, "artifact-asset-unavailable");
   assert.match(failure.body.failures[0].detail, /logo\.png/);
+});
+
+test("chrome client applies a stored panel width on init and re-clamps it to the viewport", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1000,
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "500"]]),
+  });
+
+  // 60% of 1000 = 600, so 500 sits inside the allowed range.
+  assert.equal(chrome.panelWidthPx(), 500);
+  assert.equal(chrome.storedPanelWidth(), "500");
+  // The stored value already satisfied the clamp, so the init commit must be
+  // a no-op and skip the localStorage write entirely.
+  assert.equal(chrome.localStorageWriteCount(), 0);
+});
+
+test("chrome client falls back to the default and rewrites the corrupt stored value", async () => {
+  const chrome = await createChromeHarness({
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "not-a-number"]]),
+  });
+
+  assert.equal(chrome.panelWidthPx(), 360);
+  // A corrupt value is replaced with the computed fallback so subsequent reloads
+  // don't have to repeat the recovery.
+  assert.equal(chrome.storedPanelWidth(), "360");
+});
+
+test("chrome client clamps a stored width that exceeds the viewport on init", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1000,
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "5000"]]),
+  });
+
+  // 60% of 1000 = 600, the cap.
+  assert.equal(chrome.panelWidthPx(), 600);
+  // The clamped value should be persisted back so the next load does the same.
+  assert.equal(chrome.storedPanelWidth(), "600");
+});
+
+test("chrome client survives a localStorage.getItem that throws and still commits the default", async () => {
+  const chrome = await createChromeHarness({ localStorageGetItemThrows: true });
+
+  // getItem threw, so the chrome must still apply the default width instead
+  // of crashing during init.
+  assert.equal(chrome.panelWidthPx(), 360);
+  // And the self-heal commit should still write the default so a subsequent
+  // reload (with a working storage) lands on the same value.
+  assert.equal(chrome.storedPanelWidth(), "360");
+});
+
+test("chrome client drags the splitter to a new width and persists the result", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  chrome.fireSplitterPointer("pointerdown", { clientX: 800 });
+  assert.equal(chrome.isDraggingSplitter(), true);
+  // initial move from the same pointerdown (cursor 800px from the left in a 1200px viewport -> 400px panel)
+  assert.equal(chrome.panelWidthPx(), 400);
+
+  chrome.fireSplitterPointer("pointermove", { clientX: 700 });
+  assert.equal(chrome.panelWidthPx(), 500);
+
+  chrome.fireSplitterPointer("pointerup", { clientX: 700 });
+  assert.equal(chrome.isDraggingSplitter(), false);
+  assert.equal(chrome.storedPanelWidth(), "500");
+});
+
+test("chrome client does not preventDefault on pointerup so the dblclick chain still fires", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  // pointerdown still prevents default - the chrome uses that to suppress
+  // focus and text selection when the user grabs the splitter.
+  const downEvent = chrome.fireSplitterPointer("pointerdown", { clientX: 800 });
+  assert.equal(downEvent.defaultPrevented, true);
+
+  // pointerup must NOT preventDefault. The browser's default action for
+  // pointerup synthesizes the click event that dblclick depends on; calling
+  // preventDefault here would silently break the "double-click to reset"
+  // affordance documented on the splitter.
+  const upEvent = chrome.fireSplitterPointer("pointerup", { clientX: 700 });
+  assert.equal(upEvent.defaultPrevented, false);
+});
+
+test("chrome client ignores right-clicks when starting a splitter drag", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  chrome.fireSplitterPointer("pointerdown", { clientX: 800, button: 2 });
+  assert.equal(chrome.isDraggingSplitter(), false);
+  assert.equal(chrome.panelWidthPx(), 360);
+});
+
+test("chrome client ignores modifier-keyed pointerdowns so the browser keeps its shortcuts", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  chrome.fireSplitterPointer("pointerdown", { clientX: 800, metaKey: true });
+  assert.equal(chrome.isDraggingSplitter(), false);
+});
+
+test("chrome client ignores pointermove for a different pointer than the active drag", async () => {
+  const chrome = await createChromeHarness({ innerWidth: 1200 });
+
+  chrome.fireSplitterPointer("pointerdown", { clientX: 900, pointerId: 7 });
+  assert.equal(chrome.isDraggingSplitter(), true);
+  chrome.fireSplitterPointer("pointermove", { clientX: 600, pointerId: 99 });
+  // Different pointerId should be ignored; width should still reflect the last accepted move.
+  assert.equal(chrome.panelWidthPx(), 300);
+});
+
+test("chrome client resets the panel width on splitter double-click and persists the default", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1200,
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "500"]]),
+  });
+  assert.equal(chrome.panelWidthPx(), 500);
+
+  chrome.fireSplitterEvent("dblclick", {});
+  assert.equal(chrome.panelWidthPx(), 360);
+  assert.equal(chrome.storedPanelWidth(), "360");
+});
+
+test("chrome client re-clamps the panel width when the window resizes", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1200,
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "600"]]),
+  });
+  assert.equal(chrome.panelWidthPx(), 600);
+
+  // Shrink the viewport below the stored width; the panel must clamp.
+  chrome.setInnerWidth(800);
+  // 60% of 800 = 480
+  chrome.dispatchWindowResize();
+  assert.equal(chrome.panelWidthPx(), 480);
+  assert.equal(chrome.storedPanelWidth(), "480");
+});
+
+test("chrome client leaves the stored width alone when the resize lands in the mobile breakpoint", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1200,
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "600"]]),
+  });
+  assert.equal(chrome.panelWidthPx(), 600);
+
+  // Simulate the user opening DevTools or briefly resizing the window onto a
+  // phone-width viewport. The splitter is hidden in that mode, so the resize
+  // listener must not silently shrink the stored width and overwrite
+  // localStorage - otherwise the desktop choice would be lost.
+  chrome.setMobileBreakpoint(true);
+  chrome.setInnerWidth(420);
+  chrome.dispatchWindowResize();
+
+  assert.equal(chrome.panelWidthPx(), 600);
+  assert.equal(chrome.storedPanelWidth(), "600");
+});
+
+test("chrome client resumes resync when the window leaves the mobile breakpoint", async () => {
+  const chrome = await createChromeHarness({
+    innerWidth: 1200,
+    localStorageValues: new Map([[PANEL_STORAGE_KEY, "600"]]),
+  });
+  assert.equal(chrome.panelWidthPx(), 600);
+
+  chrome.setMobileBreakpoint(true);
+  chrome.setInnerWidth(420);
+  chrome.dispatchWindowResize();
+  // Still at the desktop-chosen width - the mobile resize was a no-op.
+  assert.equal(chrome.panelWidthPx(), 600);
+
+  chrome.setMobileBreakpoint(false);
+  chrome.setInnerWidth(800);
+  chrome.dispatchWindowResize();
+  // 60% of 800 = 480
+  assert.equal(chrome.panelWidthPx(), 480);
+  assert.equal(chrome.storedPanelWidth(), "480");
 });

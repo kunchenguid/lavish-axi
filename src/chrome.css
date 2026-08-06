@@ -874,7 +874,7 @@ body.lavish {
   height: calc(100vh - var(--bar-h));
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--panel-w);
+  grid-template-columns: minmax(0, 1fr) auto var(--panel-w);
 }
 .frame {
   min-width: 0;
@@ -882,6 +882,55 @@ body.lavish {
   background: #fff;
   position: relative;
   overflow: hidden;
+}
+.splitter {
+  width: 8px;
+  margin: 0 -4px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  touch-action: none;
+  outline: none;
+}
+.splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.splitter::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.splitter:hover::after,
+.splitter:hover::before,
+body.dragging-splitter .splitter::after,
+body.dragging-splitter .splitter::before {
+  opacity: 1;
+}
+body.dragging-splitter {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.dragging-splitter iframe,
+body.dragging-splitter .frame {
+  pointer-events: none;
 }
 .panel {
   width: var(--panel-w);
@@ -1250,6 +1299,9 @@ body.layout-gate-active iframe#artifact {
     height: calc(100vh - var(--bar-h));
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) min(42vh, 360px);
+  }
+  .splitter {
+    display: none;
   }
   .panel {
     width: 100%;
