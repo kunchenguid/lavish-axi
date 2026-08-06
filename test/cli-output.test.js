@@ -1593,6 +1593,55 @@ function runSetupPlugin(homeDir, stateDir, pathDir) {
   );
 }
 
+async function writeCopilotCommandStub(pathDir, options) {
+  const source = `
+const fs = require("node:fs");
+const options = ${JSON.stringify(options)};
+const args = process.argv.slice(2);
+const command = args.slice(0, 2).join(" ");
+if (command === "plugins list") {
+  if (options.invalidList) {
+    process.stdout.write("not json\\n");
+  } else {
+    const records = [{ kind: "plugin", name: "lavish-axi-tools", source: "direct" }];
+    if (options.installedSource && fs.existsSync(options.installedSource)) {
+      records.push(options.listSourcePath
+        ? { kind: "plugin", name: "lavish-axi", sourcePath: fs.readFileSync(options.installedSource, "utf8") }
+        : { kind: "plugin", name: "lavish-axi", source: "direct" });
+    }
+    process.stdout.write(JSON.stringify(records));
+  }
+  process.exit(0);
+}
+if (command === "plugin install") {
+  if (options.installFails) {
+    process.stderr.write("replacement failed\\n");
+    process.exit(1);
+  }
+  const pluginRoot = args[2];
+  if (options.installedSource) fs.writeFileSync(options.installedSource, pluginRoot);
+  if (options.copilotConfig) {
+    fs.writeFileSync(options.copilotConfig, JSON.stringify({
+      installedPlugins: [{ name: "lavish-axi", source: { source: "local", path: pluginRoot } }],
+    }));
+  }
+  if (options.installLog) fs.appendFileSync(options.installLog, "install\\n");
+  process.exit(0);
+}
+process.exit(1);
+`;
+  if (process.platform === "win32") {
+    const script = path.join(pathDir, "copilot-stub.cjs");
+    await writeFile(script, source, "utf8");
+    await writeFile(path.join(pathDir, "copilot.cmd"), `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`, "utf8");
+    return;
+  }
+  await writeFile(path.join(pathDir, "copilot"), `#!${process.execPath}\n${source}`, {
+    encoding: "utf8",
+    mode: 0o755,
+  });
+}
+
 test("setup plugin registers the installed package in the clients that are present", async () => {
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-state-`);
   const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-home-`);
@@ -1704,15 +1753,10 @@ test("setup plugin repairs Copilot registration without trusting list text", asy
   const installedSource = path.join(homeDir, "copilot-installed-source");
   const installLog = path.join(homeDir, "copilot-install-log");
   const copilotConfig = path.join(homeDir, ".copilot", "config.json");
-  const copilot = path.join(pathDir, "copilot");
   try {
     await mkdir(path.dirname(copilotConfig), { recursive: true });
     await writeFile(copilotConfig, '{"installedPlugins":[]}');
-    await writeFile(
-      copilot,
-      `#!/bin/sh\nif [ "$1 $2" = "plugins list" ]; then\n  if [ -s ${JSON.stringify(installedSource)} ]; then\n    printf '[{"kind":"plugin","name":"lavish-axi-tools","source":"direct"},{"kind":"plugin","name":"lavish-axi","source":"direct"}]\\n'\n  else\n    printf '[{"kind":"plugin","name":"lavish-axi-tools","source":"direct"}]\\n'\n  fi\n  exit 0\nfi\nif [ "$1 $2" = "plugin install" ]; then\n  printf '%s' "$3" > ${JSON.stringify(installedSource)}\n  printf '{"installedPlugins":[{"name":"lavish-axi","source":{"source":"local","path":"%s"}}]}' "$3" > ${JSON.stringify(copilotConfig)}\n  printf 'install\\n' >> ${JSON.stringify(installLog)}\n  exit 0\nfi\nexit 1\n`,
-      { encoding: "utf8", mode: 0o755 },
-    );
+    await writeCopilotCommandStub(pathDir, { installedSource, installLog, copilotConfig });
 
     const first = runSetupPlugin(homeDir, stateDir, pathDir);
 
@@ -1751,15 +1795,10 @@ test("setup plugin preserves Copilot registration when replacement fails", async
   const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-home-`);
   const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-path-`);
   const installedSource = path.join(homeDir, "copilot-installed-source");
-  const copilot = path.join(pathDir, "copilot");
   const originalSource = "/working/lavish-axi";
   try {
     await writeFile(installedSource, originalSource);
-    await writeFile(
-      copilot,
-      `#!/bin/sh\nif [ "$1 $2" = "plugins list" ]; then\n  IFS= read -r source < ${JSON.stringify(installedSource)}\n  printf '[{"kind":"plugin","name":"lavish-axi","sourcePath":"%s"}]\\n' "$source"\n  exit 0\nfi\nif [ "$1 $2" = "plugin install" ]; then\n  echo "replacement failed" >&2\n  exit 1\nfi\nexit 1\n`,
-      { encoding: "utf8", mode: 0o755 },
-    );
+    await writeCopilotCommandStub(pathDir, { installedSource, listSourcePath: true, installFails: true });
 
     const result = runSetupPlugin(homeDir, stateDir, pathDir);
 
@@ -1778,13 +1817,8 @@ test("setup plugin does not install when Copilot records are invalid", async () 
   const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-invalid-home-`);
   const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-invalid-path-`);
   const installLog = path.join(homeDir, "copilot-install-log");
-  const copilot = path.join(pathDir, "copilot");
   try {
-    await writeFile(
-      copilot,
-      `#!/bin/sh\nif [ "$1 $2" = "plugins list" ]; then\n  echo "not json"\n  exit 0\nfi\nif [ "$1 $2" = "plugin install" ]; then\n  printf 'install\\n' >> ${JSON.stringify(installLog)}\n  exit 0\nfi\nexit 1\n`,
-      { encoding: "utf8", mode: 0o755 },
-    );
+    await writeCopilotCommandStub(pathDir, { invalidList: true, installLog });
 
     const result = runSetupPlugin(homeDir, stateDir, pathDir);
 

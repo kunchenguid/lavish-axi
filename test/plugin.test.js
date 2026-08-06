@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readlinkSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -252,6 +254,17 @@ test("atomic text replacement preserves the original when swapping fails", async
 
   assert.equal(await readFile(target, "utf8"), "original");
   assert.deepEqual(await readdir(dir), ["settings.json"]);
+});
+
+test("atomic text replacement preserves restricted permissions", { skip: process.platform === "win32" }, () => {
+  const dir = tempDir();
+  const target = path.join(dir, "settings.json");
+  writeFileSync(target, "original");
+  chmodSync(target, 0o600);
+
+  writeTextFileAtomically(target, "replacement");
+
+  assert.equal(statSync(target).mode & 0o777, 0o600);
 });
 
 test("client config locations follow each platform's convention", () => {

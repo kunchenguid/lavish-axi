@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -7,6 +8,7 @@ import {
   readlinkSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -23,9 +25,11 @@ const PLUGIN_AUTHOR = Object.freeze({ name: "Kun Chen", url: "https://github.com
 
 /**
  * @typedef {object} AtomicFsOperations
+ * @property {typeof chmodSync} [chmodSync]
  * @property {typeof writeFileSync} [writeFileSync]
  * @property {typeof renameSync} [renameSync]
  * @property {typeof rmSync} [rmSync]
+ * @property {typeof statSync} [statSync]
  * @property {typeof symlinkSync} [symlinkSync]
  */
 
@@ -193,8 +197,15 @@ export function writeTextFileAtomically(file, content, operations = {}) {
   const write = operations.writeFileSync || writeFileSync;
   const rename = operations.renameSync || renameSync;
   const remove = operations.rmSync || rmSync;
+  const chmod = operations.chmodSync || chmodSync;
+  const stat = operations.statSync || statSync;
+  let mode;
   try {
-    write(temporary, content, "utf8");
+    mode = stat(file).mode & 0o777;
+  } catch {}
+  try {
+    write(temporary, content, mode === undefined ? "utf8" : { encoding: "utf8", mode });
+    if (mode !== undefined) chmod(temporary, mode);
     rename(temporary, file);
   } catch (error) {
     try {
