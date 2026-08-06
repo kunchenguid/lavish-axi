@@ -369,11 +369,22 @@ test("annotation card shadow styles use Lavish design-system variables", () => {
 test("chrome top bar uses an Annotate switch instead of a labeled toggle button", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
-  assert.match(html, /class="annotate-switch" id="annotation"[^>]*aria-pressed="true"/);
+  assert.match(html, /class="annotate-switch" id="annotation"[^>]*aria-pressed="false"/);
   assert.match(html, /class="switch-track"/);
   assert.match(html, />Annotate</);
   assert.doesNotMatch(html, /Annotation: On/);
   assert.doesNotMatch(html, /Inspect/);
+});
+
+// dealernet: a sessao abre em modo EXPLORAR. O artefato de fase e primeiro um documento para ler;
+// abrir anotando faz o primeiro clique virar anotacao acidental. O atalho continua alternando.
+test("dealernet: a sessao abre com anotacao desligada", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+
+  assert.match(html, /id="annotation"[^>]*aria-pressed="false"/);
+  assert.match(js, /let annotation = false;/);
+  assert.match(js, /annotationSwitch\.onclick = toggleAnnotationMode/);
 });
 
 test("annotate switch shows a brass track and ink knob when enabled", async () => {

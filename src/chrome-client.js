@@ -64,7 +64,10 @@ const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
-let annotation = true;
+// dealernet: a sessao abre em modo EXPLORAR, nao anotar. O artefato de fase e primeiro um
+// documento para ler — abrir anotando faz o primeiro clique virar anotacao acidental em vez de
+// rolagem/interacao. Cmd/Ctrl+I (e o switch da barra) continuam alternando normalmente.
+let annotation = false;
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";

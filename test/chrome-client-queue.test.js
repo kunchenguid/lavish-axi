@@ -1577,15 +1577,15 @@ test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of
 
   const metaEvent = chrome.dispatchDocumentKeydown({ key: "i", metaKey: true });
   assert.equal(metaEvent.defaultPrevented, true);
-  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
-  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
-  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
-
-  const ctrlEvent = chrome.dispatchDocumentKeydown({ key: "I", ctrlKey: true });
-  assert.equal(ctrlEvent.defaultPrevented, true);
   assert.equal(chrome.element("annotation")["aria-pressed"], "true");
   assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
   assert.equal(chrome.postedToFrame.at(-1).enabled, true);
+
+  const ctrlEvent = chrome.dispatchDocumentKeydown({ key: "I", ctrlKey: true });
+  assert.equal(ctrlEvent.defaultPrevented, true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
 });
 
 test("plain 'i' and other modifier combos do not toggle annotation mode", async () => {
@@ -1623,9 +1623,9 @@ test("chrome client reads the mode toggle hotkey from the session bootstrap", as
 
   const bootstrapHotkeyEvent = chrome.dispatchDocumentKeydown({ key: "K", metaKey: true });
   assert.equal(bootstrapHotkeyEvent.defaultPrevented, true);
-  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.element("annotation")["aria-pressed"], "true");
   assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
-  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+  assert.equal(chrome.postedToFrame.at(-1).enabled, true);
 });
 
 test("chrome client toggles annotation mode when the artifact SDK requests it via postMessage", async () => {
@@ -1633,21 +1633,21 @@ test("chrome client toggles annotation mode when the artifact SDK requests it vi
 
   chrome.sendFrameMessage({ type: "lavish:toggleAnnotationMode" });
 
-  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
-  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
-  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
-
-  chrome.sendFrameMessage({ type: "lavish:toggleAnnotationMode" });
   assert.equal(chrome.element("annotation")["aria-pressed"], "true");
   assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
   assert.equal(chrome.postedToFrame.at(-1).enabled, true);
+
+  chrome.sendFrameMessage({ type: "lavish:toggleAnnotationMode" });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationMode");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
 });
 
 test("chrome client ignores annotation mode toggles after the session ends", async () => {
   const chrome = await createChromeHarness();
 
   chrome.dispatchDocumentKeydown({ key: "i", metaKey: true });
-  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.element("annotation")["aria-pressed"], "true");
 
   chrome.sendFrameMessage({ type: "lavish:endSession" });
   await flushPromises();
@@ -1656,7 +1656,7 @@ test("chrome client ignores annotation mode toggles after the session ends", asy
   chrome.dispatchDocumentKeydown({ key: "i", metaKey: true });
   chrome.sendFrameMessage({ type: "lavish:toggleAnnotationMode" });
 
-  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.element("annotation")["aria-pressed"], "true");
   assert.equal(chrome.postedToFrame.length, afterEndPostCount);
 });
 
