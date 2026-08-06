@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -688,7 +688,7 @@ async function setupPluginCommand() {
   const clients = [
     registerVsCodePlugin(pluginRoot, manifest.name),
     registerCursorPlugin(pluginRoot, manifest.name),
-    registerCopilotPlugin(pluginRoot),
+    registerCopilotPlugin(pluginRoot, manifest.name),
   ];
 
   const help = ["Restart or reload each client so it discovers the plugin"];
@@ -780,12 +780,39 @@ function registerCursorPlugin(pluginRoot, pluginName) {
 
 /**
  * @param {string} pluginRoot absolute plugin root
+ * @param {string} pluginName manifest name
  * @returns {{ client: string, status: string, detail: string }} outcome row
  */
-function registerCopilotPlugin(pluginRoot) {
-  const listed = spawnSync("copilot", ["plugin", "list"], { encoding: "utf8" });
+function registerCopilotPlugin(pluginRoot, pluginName) {
+  const listed = spawnSync("copilot", ["plugins", "list", "--scope", "user", "--kind", "plugin", "--json"], {
+    encoding: "utf8",
+  });
   if (listed.error) {
     return { client: "copilot", status: "absent", detail: "copilot CLI not found on PATH" };
+  }
+  if (listed.status !== 0) {
+    const detail = String(listed.stderr || listed.stdout || `exit ${listed.status}`).trim();
+    return {
+      client: "copilot",
+      status: "manual",
+      detail: `could not verify installed plugins: ${detail.split("\n")[0]}`,
+    };
+  }
+
+  const records = parseCopilotPluginRecords(listed.stdout);
+  if (!records) {
+    return { client: "copilot", status: "manual", detail: "could not parse installed plugin records" };
+  }
+
+  const existing = records.find((record) => record.name === pluginName && (!record.kind || record.kind === "plugin"));
+  if (existing) {
+    const source = copilotPluginSourcePath(existing) || installedCopilotPluginSourcePath(pluginName);
+    if (!source) {
+      return { client: "copilot", status: "manual", detail: "could not verify the installed plugin source" };
+    }
+    if (sameResolvedPath(source, pluginRoot)) {
+      return { client: "copilot", status: "current", detail: collapseHome(pluginRoot) };
+    }
   }
 
   const installed = spawnSync("copilot", ["plugin", "install", pluginRoot], { encoding: "utf8" });
@@ -794,6 +821,64 @@ function registerCopilotPlugin(pluginRoot) {
     return { client: "copilot", status: "failed", detail: detail.split("\n")[0] };
   }
   return { client: "copilot", status: "registered", detail: "copilot plugin install" };
+}
+
+/** @param {unknown} output @returns {Record<string, any>[] | null} */
+function parseCopilotPluginRecords(output) {
+  try {
+    const parsed = JSON.parse(String(output));
+    const records = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.plugins) ? parsed.plugins : parsed?.items;
+    return Array.isArray(records) && records.every((record) => record && typeof record === "object") ? records : null;
+  } catch {
+    return null;
+  }
+}
+
+/** @param {string} pluginName @returns {string | null} */
+function installedCopilotPluginSourcePath(pluginName) {
+  const configDir = process.env.COPILOT_HOME || path.join(resolveHookHomeDir(), ".copilot");
+  try {
+    const config = JSON.parse(readFileSync(path.join(configDir, "config.json"), "utf8"));
+    const record = Array.isArray(config.installedPlugins)
+      ? config.installedPlugins.find((candidate) => candidate?.name === pluginName)
+      : null;
+    return record ? copilotPluginSourcePath(record) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** @param {Record<string, any>} record @returns {string | null} */
+function copilotPluginSourcePath(record) {
+  const candidates = [
+    record.sourcePath,
+    record.source_path,
+    record.pluginRoot,
+    record.plugin_root,
+    record.path,
+    record.source?.path,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    if (candidate.startsWith("file:")) {
+      try {
+        return fileURLToPath(candidate);
+      } catch {
+        continue;
+      }
+    }
+    if (path.isAbsolute(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** @param {string} left @param {string} right @returns {boolean} */
+function sameResolvedPath(left, right) {
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return path.resolve(left) === path.resolve(right);
+  }
 }
 
 export function resolveHookHomeDir(env = process.env, fallback = os.homedir()) {
