@@ -8,3 +8,6 @@ package-lock.json
 CHANGELOG.md
 .agents
 .claude/settings.local.json
+# dealernet: CLAUDE.md e um symlink para AGENTS.md. No checkout Windows (sem core.symlinks)
+# ele vira um arquivo de texto de 9 bytes e o Prettier reprova. Nao e conteudo nosso.
+CLAUDE.md
