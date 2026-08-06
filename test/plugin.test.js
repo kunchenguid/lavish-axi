@@ -28,6 +28,7 @@ import {
   resolveCursorLocalPluginsDir,
   resolvePluginRoot,
   resolveVsCodeSettingsFile,
+  spawnPluginClientSync,
   writeTextFileAtomically,
 } from "../src/plugin.js";
 import { validateSkillMarkdown } from "../src/skill.js";
@@ -47,8 +48,8 @@ const ALLOWED_MANIFEST_FIELDS = [
 ];
 const MANIFEST_NAME_PATTERN = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 
-function tempDir() {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "lavish-plugin-"));
+function tempDir(prefix = "lavish-plugin-") {
+  const dir = mkdtempSync(path.join(os.tmpdir(), prefix));
   test.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -345,4 +346,24 @@ test("client config locations follow each platform's convention", () => {
     path.win32.join("C:\\Users\\kun\\AppData\\Roaming", "Code", "User", "settings.json"),
   );
   assert.equal(resolveCursorLocalPluginsDir("/home/kun"), path.join("/home/kun", ".cursor", "plugins", "local"));
+});
+
+test("plugin client launch preserves Windows batch arguments", { skip: process.platform !== "win32" }, async () => {
+  const dir = tempDir("lavish plugin client ");
+  const script = path.join(dir, "copilot-stub.cjs");
+  const launcher = path.join(dir, "copilot.cmd");
+  const output = path.join(dir, "received.json");
+  const pluginRoot = path.join(dir, "Jane Doe & team", "lavish-axi");
+  writeFileSync(script, `require("node:fs").writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)))`);
+  writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${previousPath || ""}`;
+  try {
+    const result = spawnPluginClientSync("copilot", [output, "plugin", "install", pluginRoot]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), ["plugin", "install", pluginRoot]);
+  } finally {
+    process.env.PATH = previousPath;
+  }
 });

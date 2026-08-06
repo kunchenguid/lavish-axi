@@ -34,6 +34,7 @@
     "@tailwindcss/browser": "4.2.4",
     "axi-sdk-js": "^0.1.8",
     "chokidar": "^4.0.3",
+    "cross-spawn": "7.0.6",
     "daisyui": "^5.5.19",
     "express": "^5.2.1",
     "open": "^10.2.0",

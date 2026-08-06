@@ -12,9 +12,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const crossSpawn = createRequire(import.meta.url)("cross-spawn");
 
 // Canonical schema identifier for the Agent Plugins version this manifest targets.
 // Clients select their local validation rules from this string; they never fetch it.
@@ -22,6 +25,10 @@ export const PLUGIN_SCHEMA_URL = "https://agent-plugins.org/schemas/1.0.0/plugin
 
 // Not in package.json (npm infers no author), so the one authoritative copy lives here.
 const PLUGIN_AUTHOR = Object.freeze({ name: "Kun Chen", url: "https://github.com/kunchenguid" });
+
+export function spawnPluginClientSync(command, args) {
+  return crossSpawn.sync(command, args, { encoding: "utf8" });
+}
 
 /**
  * @typedef {object} AtomicFsOperations

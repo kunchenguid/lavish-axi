@@ -23,6 +23,7 @@ import {
   resolveCursorLocalPluginsDir,
   resolvePluginRoot,
   resolveVsCodeSettingsFile,
+  spawnPluginClientSync,
   writeTextFileAtomically,
 } from "./plugin.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
@@ -795,12 +796,15 @@ function registerCursorPlugin(pluginRoot, pluginName) {
  * @returns {{ client: string, status: string, detail: string }} outcome row
  */
 function registerCopilotPlugin(pluginRoot, pluginName) {
-  const spawnOptions = /** @type {const} */ ({ encoding: "utf8", shell: process.platform === "win32" });
-  const listed = spawnSync(
-    "copilot",
-    ["plugins", "list", "--scope", "user", "--kind", "plugin", "--json"],
-    spawnOptions,
-  );
+  const listed = spawnPluginClientSync("copilot", [
+    "plugins",
+    "list",
+    "--scope",
+    "user",
+    "--kind",
+    "plugin",
+    "--json",
+  ]);
   if (listed.error) {
     return { client: "copilot", status: "absent", detail: "copilot CLI not found on PATH" };
   }
@@ -829,7 +833,7 @@ function registerCopilotPlugin(pluginRoot, pluginName) {
     }
   }
 
-  const installed = spawnSync("copilot", ["plugin", "install", pluginRoot], spawnOptions);
+  const installed = spawnPluginClientSync("copilot", ["plugin", "install", pluginRoot]);
   if (installed.status !== 0) {
     const detail = String(installed.stderr || installed.stdout || `exit ${installed.status}`).trim();
     return { client: "copilot", status: "failed", detail: detail.split("\n")[0] };
