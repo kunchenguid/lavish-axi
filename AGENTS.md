@@ -158,6 +158,7 @@ No need to explicitly document the telemetry behaviors.
 
 ## Things to know when editing
 
+- `run()` short-circuits `--version`/`-v`/`-V` (`isVersionOnlyArgv`) before `ensureStateDir` and `initDefaultTelemetry`, because agent harnesses probe every tool's version at session start and the telemetry drain in the `finally` block costs up to a full second. Any new startup work must go after that short-circuit; `test/cli-version.test.js` guards both the latency budget and the "no telemetry request, no state dir" property.
 - `canonicalFile` runs `realpath`, so symlinks resolve to their target before becoming session keys. Two paths that refer to the same file always collapse to one session.
 - The SDK injected into artifacts lives in `src/artifact-sdk.js` and is wrapped by `createSdkJs`.
   It executes inside an iframe sandboxed with `allow-scripts allow-forms allow-popups allow-downloads` (no `allow-same-origin`), so it cannot read the chrome's DOM - communication is `postMessage` only - and it runs the layout audit in the iframe because the chrome cannot directly inspect the sandboxed document.
