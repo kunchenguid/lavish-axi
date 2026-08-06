@@ -95,6 +95,30 @@ This installs a `SessionStart` hook for **Claude Code**, **Codex**, **OpenCode**
 Unlike the skill, the hook also shows your live open sessions, so a fresh agent session can resume an in-flight review.
 **Restart your agent session after running this** so the new hook takes effect.
 
+### Agent Plugin
+
+Lavish also ships as an [Agent Plugin](https://agent-plugins.org) - the vendor-neutral packaging standard for skills and MCP servers - so clients that speak that format can load it directly.
+
+**No marketplace is involved.** The installed npm package _is_ the plugin: `plugin.json` sits at the package root next to the `skills/` directory, so whatever `npm install` already put on disk is a complete, conformant plugin. Install the CLI, then register it:
+
+```sh
+npm install -g lavish-axi
+lavish-axi setup plugin
+```
+
+That registers the installed package with every supported client it finds - **VS Code**, **Cursor**, and **GitHub Copilot CLI** - and reports which ones were absent. It is opt-in and idempotent, and it repairs the registered path after a reinstall or relocation. Reload each client afterward.
+
+To register by hand instead, point any client at the package directory (`npm root -g`/`lavish-axi`):
+
+| Client             | Register with                                                                                                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| VS Code            | `"chat.pluginLocations": { "<package-dir>": true }` in user settings                                               |
+| Cursor             | symlink the package dir into `~/.cursor/plugins/local/lavish-axi`                                                  |
+| GitHub Copilot CLI | `copilot plugin install <package-dir>` (or `copilot plugin install kunchenguid/lavish-axi` straight from the repo) |
+
+Codex and ChatGPT install plugins only from marketplace sources, so Codex users should use the session hook above instead.
+Lavish declares no MCP server - the CLI itself is the agent interface - so a plugin install brings the same `lavish` skill, and the skill and plugin are alternatives rather than a stack.
+
 ### From source
 
 ```sh
@@ -207,6 +231,7 @@ pnpm link
 | `lavish-axi playbook [id]`      | List focused artifact guidance or show one playbook; agents must open each matching playbook before writing HTML.                                                                                                                                                                                                                            |
 | `lavish-axi design`             | Show agent-facing design guidance, including optional CDN and Mermaid snippets.                                                                                                                                                                                                                                                              |
 | `lavish-axi setup hooks`        | Install or repair optional SessionStart hooks for Claude Code, Codex, OpenCode, and GitHub Copilot CLI; restart the agent session afterward.                                                                                                                                                                                                 |
+| `lavish-axi setup plugin`       | Register the installed package as an [Agent Plugin](https://agent-plugins.org) in VS Code, Cursor, and GitHub Copilot CLI; opt-in, idempotent, no marketplace involved. Reload each client afterward.                                                                                                                                        |
 | `lavish-axi server`             | Run the local Lavish Editor server.                                                                                                                                                                                                                                                                                                          |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.

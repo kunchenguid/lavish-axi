@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +49,7 @@ import {
   VERSION,
 } from "../src/cli.js";
 import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
+import { resolveVsCodeSettingsFile } from "../src/plugin.js";
 import { serve } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
 
@@ -195,6 +196,15 @@ test("home output warns agents that poll needs an observable wake path", () => {
   assert.match(pollHelp, /`Send & End` ends the session/);
   assert.match(pollHelp, /final feedback is still delivered once/);
   assert.doesNotMatch(pollHelp, /above 10 minutes/);
+});
+
+test("ambient and per-artifact output never nags about installing the plugin", () => {
+  // Home output loads on every session and open/poll run constantly; setup belongs in the
+  // setup surfaces only, so an install prompt here would be pure recurring token cost.
+  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
+
+  assert.doesNotMatch(JSON.stringify(home), /setup plugin/);
+  assert.doesNotMatch(JSON.stringify(home), /setup hooks/);
 });
 
 test("home output tailors poll guidance when invoked under Codex", () => {
@@ -1559,6 +1569,129 @@ test("setup hooks exits with an error when hook installation fails", async () =>
     assert.notEqual(result.status, 0, result.stdout);
     assert.match(output, /hook/i);
     assert.doesNotMatch(result.stdout, /status: installed/);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+// `copilot` is a real binary on developer machines; an empty PATH keeps `setup plugin`
+// from registering the plugin into the tester's own Copilot CLI.
+function setupPluginEnv(homeDir, stateDir, pathDir) {
+  return { ...setupHooksEnv(homeDir, stateDir), PATH: pathDir, Path: pathDir };
+}
+
+function runSetupPlugin(homeDir, stateDir, pathDir) {
+  return spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "plugin"],
+    {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      encoding: "utf8",
+      env: setupPluginEnv(homeDir, stateDir, pathDir),
+    },
+  );
+}
+
+test("setup plugin registers the installed package in the clients that are present", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-path-`);
+  try {
+    await mkdir(`${homeDir}/.cursor`, { recursive: true });
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /name: lavish-axi/);
+    assert.match(result.stdout, /cursor,registered/);
+    // No VS Code settings and no copilot binary in this environment.
+    assert.match(result.stdout, /vscode,absent/);
+    assert.match(result.stdout, /copilot,absent/);
+
+    // The registered slot points at the package root, which is where plugin.json lives.
+    const linked = await realpath(`${homeDir}/.cursor/plugins/local/lavish-axi`);
+    assert.equal(linked, await realpath(fileURLToPath(new URL("..", import.meta.url))));
+    assert.ok(existsSync(`${linked}/plugin.json`));
+    assert.ok(existsSync(`${linked}/skills/lavish/SKILL.md`));
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin registers VS Code without disturbing existing settings", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-path-`);
+  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
+  try {
+    await mkdir(path.dirname(settingsFile), { recursive: true });
+    await writeFile(settingsFile, JSON.stringify({ "editor.fontSize": 13 }), "utf8");
+
+    const first = runSetupPlugin(homeDir, stateDir, pathDir);
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    assert.match(first.stdout, /vscode,registered/);
+
+    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
+    assert.equal(settings["editor.fontSize"], 13, "unrelated settings survive");
+    const registered = Object.keys(settings["chat.pluginLocations"]);
+    assert.equal(registered.length, 1);
+    assert.ok(existsSync(`${registered[0]}/plugin.json`));
+
+    // Re-running is a no-op rather than a duplicate registration.
+    const second = runSetupPlugin(homeDir, stateDir, pathDir);
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    assert.match(second.stdout, /vscode,current/);
+    assert.deepEqual(JSON.parse(await readFile(settingsFile, "utf8")), settings);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin leaves unparseable VS Code settings alone", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-path-`);
+  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
+  const original = '{\n  // VS Code settings allow comments\n  "editor.fontSize": 13,\n}\n';
+  try {
+    await mkdir(path.dirname(settingsFile), { recursive: true });
+    await writeFile(settingsFile, original, "utf8");
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /vscode,manual/);
+    assert.equal(await readFile(settingsFile, "utf8"), original, "settings are not rewritten");
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup rejects an unknown action and names both supported ones", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-home-`);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "everything"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: setupHooksEnv(homeDir, stateDir),
+      },
+    );
+
+    assert.notEqual(result.status, 0);
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.match(output, /setup hooks/);
+    assert.match(output, /setup plugin/);
   } finally {
     await rm(stateDir, { force: true, recursive: true });
     await rm(homeDir, { force: true, recursive: true });

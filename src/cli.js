@@ -16,6 +16,14 @@ import {
 } from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
+import {
+  computeVsCodePluginLocationsUpdate,
+  linkCursorLocalPlugin,
+  readPluginManifest,
+  resolveCursorLocalPluginsDir,
+  resolvePluginRoot,
+  resolveVsCodeSettingsFile,
+} from "./plugin.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
@@ -623,9 +631,14 @@ async function designCommand() {
 }
 
 async function setupCommand(args) {
-  if (args.length !== 1 || args[0] !== "hooks") {
-    throw new AxiError("Unknown setup action", "VALIDATION_ERROR", ["Run `lavish-axi setup hooks`"]);
+  if (args.length !== 1 || (args[0] !== "hooks" && args[0] !== "plugin")) {
+    throw new AxiError("Unknown setup action", "VALIDATION_ERROR", [
+      "Run `lavish-axi setup hooks`",
+      "Run `lavish-axi setup plugin`",
+    ]);
   }
+
+  if (args[0] === "plugin") return setupPluginCommand();
 
   const errors = [];
   installSessionStartHooks({
@@ -646,8 +659,141 @@ async function setupCommand(args) {
 
   return {
     hooks: { status: "installed", integrations: "Claude Code, Codex, OpenCode, GitHub Copilot CLI" },
-    help: ["Restart your agent session to receive lavish-axi ambient context"],
+    help: [
+      "Restart your agent session to receive lavish-axi ambient context",
+      "Run `lavish-axi setup plugin` to also register the Agent Plugin in VS Code, Cursor, and GitHub Copilot CLI",
+    ],
   };
+}
+
+/**
+ * Register this installed package as an Agent Plugin in every supported client that is
+ * present. The package directory itself is the plugin root, so nothing is downloaded and
+ * no marketplace is involved - clients read the same files `npm install` already wrote.
+ *
+ * Like `setup hooks`, this only ever runs from an explicit user invocation.
+ *
+ * @returns {Promise<Record<string, unknown>>} structured per-client outcome
+ */
+async function setupPluginCommand() {
+  const pluginRoot = resolvePluginRoot();
+  const manifest = readPluginManifest(pluginRoot);
+  if (!manifest) {
+    throw new AxiError("No plugin.json found in the lavish-axi package", "SERVER_ERROR", [
+      `Expected a manifest at ${path.join(pluginRoot, "plugin.json")}`,
+      "Reinstall lavish-axi, or run `npm run build:plugin` when working from a source checkout",
+    ]);
+  }
+
+  const clients = [
+    registerVsCodePlugin(pluginRoot, manifest.name),
+    registerCursorPlugin(pluginRoot, manifest.name),
+    registerCopilotPlugin(pluginRoot, manifest.name),
+  ];
+
+  const help = ["Restart or reload each client so it discovers the plugin"];
+  if (clients.some((client) => client.status === "absent")) {
+    help.push("Absent clients are skipped; re-run `lavish-axi setup plugin` after installing one");
+  }
+  if (clients.some((client) => client.status === "manual")) {
+    help.push(`Register the plugin root manually where noted: ${pluginRoot}`);
+  }
+
+  return { plugin: { name: manifest.name, root: collapseHome(pluginRoot) }, clients, help };
+}
+
+/** @param {string} target absolute path @returns {string} path with $HOME collapsed to ~ */
+function collapseHome(target) {
+  const home = resolveHookHomeDir();
+  return home && target.startsWith(home) ? `~${target.slice(home.length)}` : target;
+}
+
+/**
+ * @param {string} pluginRoot absolute plugin root
+ * @param {string} pluginName manifest name
+ * @returns {{ client: string, status: string, detail: string }} outcome row
+ */
+function registerVsCodePlugin(pluginRoot, pluginName) {
+  const settingsFile = resolveVsCodeSettingsFile(process.env, resolveHookHomeDir());
+  if (!existsSync(settingsFile)) {
+    return { client: "vscode", status: "absent", detail: "no VS Code user settings found" };
+  }
+
+  let settings;
+  try {
+    settings = JSON.parse(readFileSync(settingsFile, "utf8"));
+  } catch {
+    // VS Code settings may legally contain comments or trailing commas. Rewriting a file
+    // we cannot faithfully parse would destroy the user's configuration, so we bail out
+    // and tell them the one line to add instead.
+    return {
+      client: "vscode",
+      status: "manual",
+      detail: `add "chat.pluginLocations": {"${pluginRoot}": true} to ${collapseHome(settingsFile)}`,
+    };
+  }
+
+  const [updated, changed] = computeVsCodePluginLocationsUpdate(settings, pluginRoot, pluginName);
+  if (!changed) return { client: "vscode", status: "current", detail: collapseHome(settingsFile) };
+
+  try {
+    writeFileSync(settingsFile, `${JSON.stringify(updated, null, 2)}\n`);
+  } catch (error) {
+    return { client: "vscode", status: "failed", detail: String(error instanceof Error ? error.message : error) };
+  }
+  return { client: "vscode", status: "registered", detail: collapseHome(settingsFile) };
+}
+
+/**
+ * @param {string} pluginRoot absolute plugin root
+ * @param {string} pluginName manifest name
+ * @returns {{ client: string, status: string, detail: string }} outcome row
+ */
+function registerCursorPlugin(pluginRoot, pluginName) {
+  const cursorDir = path.join(resolveHookHomeDir(), ".cursor");
+  if (!existsSync(cursorDir)) {
+    return { client: "cursor", status: "absent", detail: "no ~/.cursor directory found" };
+  }
+
+  try {
+    const { status, target } = linkCursorLocalPlugin(
+      resolveCursorLocalPluginsDir(resolveHookHomeDir()),
+      pluginRoot,
+      pluginName,
+    );
+    if (status === "occupied") {
+      return { client: "cursor", status: "manual", detail: `${collapseHome(target)} exists and is not a symlink` };
+    }
+    return {
+      client: "cursor",
+      status: status === "current" ? "current" : "registered",
+      detail: collapseHome(target),
+    };
+  } catch (error) {
+    return { client: "cursor", status: "failed", detail: String(error instanceof Error ? error.message : error) };
+  }
+}
+
+/**
+ * @param {string} pluginRoot absolute plugin root
+ * @param {string} pluginName manifest name
+ * @returns {{ client: string, status: string, detail: string }} outcome row
+ */
+function registerCopilotPlugin(pluginRoot, pluginName) {
+  const listed = spawnSync("copilot", ["plugin", "list"], { encoding: "utf8" });
+  if (listed.error) {
+    return { client: "copilot", status: "absent", detail: "copilot CLI not found on PATH" };
+  }
+  if (listed.status === 0 && String(listed.stdout).includes(pluginName)) {
+    return { client: "copilot", status: "current", detail: "already installed" };
+  }
+
+  const installed = spawnSync("copilot", ["plugin", "install", pluginRoot], { encoding: "utf8" });
+  if (installed.status !== 0) {
+    const detail = String(installed.stderr || installed.stdout || `exit ${installed.status}`).trim();
+    return { client: "copilot", status: "failed", detail: detail.split("\n")[0] };
+  }
+  return { client: "copilot", status: "registered", detail: "copilot plugin install" };
 }
 
 export function resolveHookHomeDir(env = process.env, fallback = os.homedir()) {
@@ -1074,7 +1220,7 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
@@ -1087,7 +1233,7 @@ function createCommandHelp({ agent = "generic" } = {}) {
     stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
     design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
-    setup: `Usage: lavish-axi setup hooks\n\nInstall or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context.\n`,
+    setup: `Usage: lavish-axi setup hooks\n       lavish-axi setup plugin\n\nhooks: install or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context. This is the primary integration - it carries live session state.\n\nplugin: register the installed lavish-axi package as an Agent Plugin (agent-plugins.org) in VS Code, Cursor, and GitHub Copilot CLI. The installed package directory is itself the plugin root, so nothing is downloaded and no marketplace is involved. Reload each client afterward. Codex users should use \`setup hooks\` instead.\n\nBoth actions are explicit opt-in, idempotent, and repair a stale path after a reinstall.\n`,
     server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n\nLAVISH_AXI_HOST sets the bind address (default 127.0.0.1; a wildcard 0.0.0.0 or :: binds every interface). Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. LAVISH_AXI_LINK_HOST sets the hostname written into generated session links (default: the bind address, or loopback when bound to a wildcard). See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
   };
 }
