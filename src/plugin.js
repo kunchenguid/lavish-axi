@@ -202,7 +202,9 @@ export function writeTextFileAtomically(file, content, operations = {}) {
   let mode;
   try {
     mode = stat(file).mode & 0o777;
-  } catch {}
+  } catch {
+    // A new file has no mode to preserve.
+  }
   try {
     write(temporary, content, mode === undefined ? "utf8" : { encoding: "utf8", mode });
     if (mode !== undefined) chmod(temporary, mode);
@@ -210,7 +212,9 @@ export function writeTextFileAtomically(file, content, operations = {}) {
   } catch (error) {
     try {
       remove(temporary, { force: true });
-    } catch {}
+    } catch {
+      // Preserve the original replacement error.
+    }
     throw error;
   }
 }
@@ -252,7 +256,9 @@ export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName, o
     } catch (error) {
       try {
         remove(replacement, { force: true });
-      } catch {}
+      } catch {
+        // Preserve the original replacement error.
+      }
       throw error;
     }
     return { status: "repaired", target };
