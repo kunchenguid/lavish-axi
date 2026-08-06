@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AxiError, installSessionStartHooks, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
+import { AxiError, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
 
 import { createDesignOutput, DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "./design-reference.js";
 import {
@@ -14,14 +14,18 @@ import {
   exportWarningSummaries,
   splitExportWarnings,
 } from "./export-bundle.js";
-import { publishToHtmlApp } from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
-import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+// dealernet: `share` e `setup` foram removidos desta build. `share` publicava o artefato num host
+// de terceiro (ht-ml.app), publico por padrao — inaceitavel para parecer de cliente. `setup hooks`
+// instalava hook SessionStart em Claude Code/Codex/OpenCode/Copilot, fora do escopo do plugin.
+const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "export"]);
+// dealernet: comandos reservados do SDK que baixam e instalam codigo de fora desta build.
+// `update` instalaria a versao publicada no npm por cima do fork, apagando estas alteracoes.
+const BLOCKED_RESERVED_COMMANDS = new Set(["update"]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -59,53 +63,51 @@ export function pollExecutionGuidance({ agent = "generic" } = {}) {
   return `${sharedGuidance}${agentGuidance}`;
 }
 
+// dealernet: esta build e distribuida vendorizada dentro do plugin dealernet-claude e nao
+// corresponde ao pacote publicado no npm. O self-updater do SDK instalaria a versao publica por
+// cima dela — sem aviso e sem as remocoes desta build —, entao ele para aqui.
+export function assertCommandAllowed(argv) {
+  const first = String(argv?.[0] || "");
+  if (BLOCKED_RESERVED_COMMANDS.has(first)) {
+    throw new AxiError(`\`${first}\` esta desabilitado nesta build`, "VALIDATION_ERROR", [
+      "Esta e a build Dealernet do editor, distribuida dentro do plugin dealernet-claude.",
+      "Atualizar por aqui instalaria a versao publica do npm por cima dela.",
+      "Para atualizar, use o fluxo do plugin (`/dev-preparar-ambiente`).",
+    ]);
+  }
+}
+
 export async function run(argv) {
   await ensureStateDir();
+  assertCommandAllowed(argv);
   const normalizedArgv = normalizeArgv(argv);
+  assertCommandAllowed(normalizedArgv);
   const agent = detectInvokingAgent(process.env);
   const isTopLevelHelp = argv.length === 1 && argv[0] === "--help";
-  const command = telemetryCommandName(argv);
-  const telemetry = initDefaultTelemetry({
-    app: "lavish-axi",
+  await runAxiCli({
+    description: DESCRIPTION,
     version: VERSION,
-    platform: process.platform,
-    arch: process.arch,
+    argv: isTopLevelHelp ? [] : normalizedArgv,
+    topLevelHelp: createTopLevelHelp({ agent }),
+    home: async () =>
+      createHomeOutput({
+        bin: process.argv[1] || "lavish-axi",
+        sessions: isTopLevelHelp ? [] : await visibleSessions(),
+        includeSessions: !isTopLevelHelp,
+        agent,
+      }),
+    commands: {
+      open: openCommand,
+      poll: pollCommand,
+      end: endCommand,
+      stop: stopCommand,
+      playbook: playbookCommand,
+      design: designCommand,
+      server: serverCommand,
+      export: exportCommand,
+    },
+    getCommandHelp: (command) => getCommandHelp(command, { agent }),
   });
-  telemetry.pageview(`/${command}`, { command });
-  try {
-    await runAxiCli({
-      description: DESCRIPTION,
-      version: VERSION,
-      argv: isTopLevelHelp ? [] : normalizedArgv,
-      topLevelHelp: createTopLevelHelp({ agent }),
-      home: async () =>
-        createHomeOutput({
-          bin: process.argv[1] || "lavish-axi",
-          sessions: isTopLevelHelp ? [] : await visibleSessions(),
-          includeSessions: !isTopLevelHelp,
-          agent,
-        }),
-      commands: {
-        open: openCommand,
-        poll: pollCommand,
-        end: endCommand,
-        stop: stopCommand,
-        playbook: playbookCommand,
-        design: designCommand,
-        setup: setupCommand,
-        server: serverCommand,
-        export: exportCommand,
-        share: shareCommand,
-      },
-      getCommandHelp: (command) => getCommandHelp(command, { agent }),
-    });
-    telemetry.track("command", { command, status: "success" });
-  } catch (error) {
-    telemetry.track("command", { command, status: "error" });
-    throw error;
-  } finally {
-    await telemetry.close(1_000);
-  }
 }
 
 export function collapseHomeDirectory(file, home) {
@@ -130,11 +132,6 @@ export function normalizeArgv(argv) {
     return argv.some((arg) => isHtmlPath(arg)) ? ["open", ...argv] : argv;
   }
   return ["open", ...argv];
-}
-
-export function telemetryCommandName(argv) {
-  const normalized = normalizeArgv(argv);
-  return normalized[0] && !normalized[0].startsWith("-") ? normalized[0] : "home";
 }
 
 export function createHomeOutput({ bin, sessions, includeSessions = true, agent = "generic" }) {
@@ -167,7 +164,6 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       'Rendered Mermaid diagrams in `.mermaid` containers become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; when a reload detects a changed Mermaid source, the reviewer explicitly chooses to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
-      "Run `lavish-axi share <html-file> [--password <pw>] [--token <t>]` to publish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and get back a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Local assets are inlined; remote refs load over the network. It returns the url plus a secret update_key for managing the page later. Use --token or LAVISH_AXI_HTML_APP_TOKEN only when you have an optional bearer token; it is never required. Users can also publish from the browser chrome's overflow menu",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
       DESIGN_SYSTEM_HINT,
@@ -489,82 +485,6 @@ export function createExportOutput({ source, output, html, warnings }) {
   return result;
 }
 
-function assetWarningSummaries(warnings) {
-  return exportWarningSummaries(warnings);
-}
-
-// Publish the artifact as a visitable page on third-party ht-ml.app. Builds the same local-inlined
-// HTML as `export` (remote refs left as links), then POSTs it to ht-ml.app's `/v1/sites` API,
-// sending the artifact to ht-ml.app's servers. The service is not part of Lavish, needs no
-// account or API key, and returns the share URL plus the secret update_key for
-// managing the page later. Server-independent.
-async function shareCommand(args) {
-  const file = firstPositionalArg(args, ["--password", "--token"]);
-  if (!file) {
-    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi share <html-file>`"]);
-  }
-  await assertHtmlFile(file);
-  const absolute = await canonicalFile(file);
-  const password = optionalFlagString(flagValue(args, "--password"));
-  const token = optionalFlagString(flagValue(args, "--token"));
-  const root = path.dirname(absolute);
-  const source = await readFile(absolute, "utf8");
-  const { html, warnings } = await buildSelfContainedHtml(source, {
-    baseDir: root,
-    confineDir: root,
-    resolveAbsolute: resolveDesignAssetPath,
-  });
-  const site = await publishToHtmlApp(html, { password, token });
-  return createShareOutput({ source: absolute, site, warnings, passwordProtected: Boolean(password) });
-}
-
-export function createShareOutput({ source, site, warnings, passwordProtected = false }) {
-  const allWarnings = Array.isArray(warnings) ? warnings : [];
-  const { unresolved, notices } = splitExportWarnings(allWarnings);
-  const isPasswordProtected = Boolean(passwordProtected);
-  const result = {
-    share: {
-      source,
-      url: site.url,
-      site_id: site.site_id,
-      update_key: site.update_key,
-      status: site.status || "active",
-      public: !isPasswordProtected,
-      visibility: isPasswordProtected ? "private" : "public",
-      password_protected: isPasswordProtected,
-      unresolved_local_assets: unresolved.length,
-      notices: notices.length,
-    },
-  };
-  const passwordNote = isPasswordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : "";
-  if (allWarnings.length) result.warnings = exportWarningSummaries(allWarnings);
-  if (unresolved.length) result.unresolved_local_assets = assetWarningSummaries(unresolved);
-  if (notices.length) result.notices = assetWarningSummaries(notices);
-  const noticeNote = notices.length ? " Export notices are available in notices." : "";
-  const hostNote =
-    "ht-ml.app (https://ht-ml.app), a third-party host not part of Lavish, hosts the page, so it needs no Lavish server.";
-  if (unresolved.length) {
-    result.next_step =
-      `Published ${isPasswordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote}${noticeNote} ` +
-      `Remote CDN/font references are intentionally left as links and render where there is network access. ` +
-      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
-      hostNote;
-  } else if (isPasswordProtected) {
-    result.next_step =
-      `Published a PASSWORD-PROTECTED page: ${site.url} - share this URL with the user and provide the password separately; viewers also need the password. ` +
-      `${noticeNote ? `${noticeNote} ` : ""}` +
-      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
-      hostNote;
-  } else {
-    result.next_step =
-      `Published a PUBLIC page that anyone with the link can view: ${site.url} - share this URL with the user. ` +
-      `${noticeNote ? `${noticeNote} ` : ""}` +
-      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
-      hostNote;
-  }
-  return result;
-}
-
 // Explicitly shut down the running Lavish Editor server. Unlike `end` (which closes a single
 // session), this stops the background process so it stops dangling between sessions.
 export async function stopCommand(args) {
@@ -607,136 +527,6 @@ async function playbookCommand(args) {
 
 async function designCommand() {
   return createDesignOutput();
-}
-
-async function setupCommand(args) {
-  if (args.length !== 1 || args[0] !== "hooks") {
-    throw new AxiError("Unknown setup action", "VALIDATION_ERROR", ["Run `lavish-axi setup hooks`"]);
-  }
-
-  const errors = [];
-  installSessionStartHooks({
-    marker: "lavish-axi",
-    binaryNames: ["lavish-axi"],
-    distEntrypoints: ["dist/cli.mjs", "bin/lavish-axi.js"],
-    homeDir: resolveHookHomeDir(),
-    onError: (message) => errors.push(message),
-  });
-  installCopilotCliSessionStartHook({
-    hookDir: resolveCopilotHookDir(process.env, resolveHookHomeDir()),
-    onError: (message) => errors.push(message),
-  });
-
-  if (errors.length > 0) {
-    throw new AxiError("Failed to install lavish-axi agent hooks", "SERVER_ERROR", errors);
-  }
-
-  return {
-    hooks: { status: "installed", integrations: "Claude Code, Codex, OpenCode, GitHub Copilot CLI" },
-    help: ["Restart your agent session to receive lavish-axi ambient context"],
-  };
-}
-
-export function resolveHookHomeDir(env = process.env, fallback = os.homedir()) {
-  return env.HOME || fallback;
-}
-
-export function resolveCopilotHookDir(env = process.env, homeDir = resolveHookHomeDir(env)) {
-  return path.join(env.COPILOT_HOME || path.join(homeDir, ".copilot"), "hooks");
-}
-
-export function createCopilotCliAmbientContextScript(command = "lavish-axi") {
-  return [
-    'const { spawnSync } = require("node:child_process");',
-    `const command = ${JSON.stringify(command)};`,
-    'const result = spawnSync(command, [], { encoding: "utf8", shell: true });',
-    'const detail = result.error ? result.error.message : (result.stderr || result.stdout || "exit " + (result.status ?? "unknown"));',
-    "const text = String(result.status === 0 ? result.stdout : detail).trim();",
-    'if (!text) { console.log("{}"); process.exit(0); }',
-    'const prefix = result.status === 0 ? "## AXI ambient context: lavish-axi\\n" : "## AXI ambient context: lavish-axi\\nerror: lavish-axi ambient context failed: ";',
-    "console.log(JSON.stringify({ additionalContext: prefix + text }));",
-  ].join(" ");
-}
-
-export function createCopilotCliSessionStartHook(command = "lavish-axi", timeoutSec = 10) {
-  const script = createCopilotCliAmbientContextScript(command);
-  return {
-    type: "command",
-    bash: `node -e ${quoteForPosixShell(script)}`,
-    powershell: `node -e ${quoteForPowerShell(script)}`,
-    timeoutSec,
-  };
-}
-
-export function computeCopilotCliHookUpdate(settings, hook = createCopilotCliSessionStartHook()) {
-  const updated = structuredClone(settings && typeof settings === "object" ? settings : {});
-  let changed = false;
-
-  if (updated.version !== 1) {
-    updated.version = 1;
-    changed = true;
-  }
-  if (!updated.hooks || typeof updated.hooks !== "object" || Array.isArray(updated.hooks)) {
-    updated.hooks = {};
-    changed = true;
-  }
-
-  const current = Array.isArray(updated.hooks.sessionStart) ? updated.hooks.sessionStart : [];
-  const unmanaged = current.filter((entry) => !isManagedCopilotCliHook(entry));
-  const next = [...unmanaged, hook];
-
-  if (!deepEqual(current, next)) {
-    updated.hooks.sessionStart = next;
-    changed = true;
-  }
-
-  return [changed ? updated : settings, changed];
-}
-
-export function installCopilotCliSessionStartHook({
-  hookDir = resolveCopilotHookDir(),
-  command = "lavish-axi",
-  timeoutSec = 10,
-  onError = undefined,
-} = {}) {
-  const target = path.join(hookDir, "lavish-axi.json");
-  try {
-    mkdirSync(path.dirname(target), { recursive: true });
-    const current = existsSync(target) ? JSON.parse(readFileSync(target, "utf8")) : {};
-    const [updated, changed] = computeCopilotCliHookUpdate(
-      current,
-      createCopilotCliSessionStartHook(command, timeoutSec),
-    );
-    if (changed) {
-      writeFileSync(target, `${JSON.stringify(updated, null, 2)}\n`, "utf8");
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    onError?.(`${target}: ${message}`);
-  }
-}
-
-function isManagedCopilotCliHook(entry) {
-  return (
-    entry &&
-    typeof entry === "object" &&
-    (typeof entry.bash === "string" || typeof entry.powershell === "string" || typeof entry.command === "string") &&
-    [entry.bash, entry.powershell, entry.command].some(
-      (value) => typeof value === "string" && value.includes("lavish-axi"),
-    )
-  );
-}
-
-function quoteForPosixShell(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function quoteForPowerShell(value) {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-function deepEqual(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 async function serverCommand(args) {
@@ -1040,11 +830,6 @@ function flagValue(args, flag) {
   return null;
 }
 
-function optionalFlagString(value) {
-  const trimmed = String(value ?? "").trim();
-  return trimmed || undefined;
-}
-
 function isValueFlagToken(arg, flags) {
   for (const flag of flags) {
     if (arg === flag || arg.startsWith(`${flag}=`)) return true;
@@ -1061,7 +846,7 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
@@ -1070,11 +855,9 @@ function createCommandHelp({ agent = "generic" } = {}) {
     poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again. ${POLL_SEND_AND_END_RULE}\n`,
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
-    share: `Usage: lavish-axi share <html-file> [--password <pw>] [--token <t>]\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for updating or deleting the page later. Set LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token; it is never required. The annotation SDK is never included.\n`,
     stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
     design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
-    setup: `Usage: lavish-axi setup hooks\n\nInstall or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context.\n`,
     server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n\nLAVISH_AXI_HOST sets the bind address (default 127.0.0.1; a wildcard 0.0.0.0 or :: binds every interface). Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. LAVISH_AXI_LINK_HOST sets the hostname written into generated session links (default: the bind address, or loopback when bound to a wildcard). See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
   };
 }

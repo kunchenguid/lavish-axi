@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -14,10 +13,8 @@ process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
 import {
+  assertCommandAllowed,
   collapseHomeDirectory,
-  computeCopilotCliHookUpdate,
-  createCopilotCliAmbientContextScript,
-  createCopilotCliSessionStartHook,
   createDesignOutput,
   createExportOutput,
   createHomeOutput,
@@ -25,7 +22,6 @@ import {
   createPollOutput,
   createPlaybookOutput,
   createServerSpawnOptions,
-  createShareOutput,
   createUserEndedOpenOutput,
   detectInvokingAgent,
   fetchJson,
@@ -34,8 +30,6 @@ import {
   pollInterruptedText,
   pollWaitBannerText,
   pollWaitTickText,
-  resolveCopilotHookDir,
-  resolveHookHomeDir,
   resolveServerEntry,
   shutdownServerOnPort,
   shouldForceRestartForLocalBuild,
@@ -45,7 +39,6 @@ import {
   shouldRestartServer,
   startPollWaitReporter,
   stopCommand,
-  telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
 import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
@@ -87,12 +80,6 @@ async function waitForPollListening(base, key, timeoutMs = 10_000) {
   } finally {
     controller.abort();
   }
-}
-
-function setupHooksEnv(homeDir, stateDir) {
-  // eslint-disable-next-line no-unused-vars
-  const { COPILOT_HOME, ...env } = process.env;
-  return { ...env, HOME: homeDir, LAVISH_AXI_STATE_DIR: stateDir };
 }
 
 function assertObservablePollWakePath(text) {
@@ -823,188 +810,6 @@ test("export command treats --out value as an option operand, not the source fil
   }
 });
 
-test("share output reports the public url and the secret update key", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [],
-  });
-
-  assert.equal(output.share.source, "/tmp/report.html");
-  assert.equal(output.share.url, "https://x.ht-ml.app/");
-  assert.equal(output.share.update_key, "uk_secret");
-  assert.equal(output.share.public, true);
-  assert.equal(output.share.visibility, "public");
-  assert.match(output.next_step, /PUBLIC/);
-  assert.match(output.next_step, /update_key/);
-  assert.match(output.next_step, /x\.ht-ml\.app/);
-  assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
-});
-
-test("password-protected share output tells viewers they also need the password", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [],
-    passwordProtected: true,
-  });
-
-  assert.equal(output.share.password_protected, true);
-  assert.equal(output.share.public, false);
-  assert.equal(output.share.visibility, "private");
-  assert.match(output.next_step, /PASSWORD-PROTECTED/);
-  assert.match(output.next_step, /viewers also need the password/);
-  assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
-  assert.doesNotMatch(output.next_step, /anyone with the link can view/);
-});
-
-test("share output surfaces local assets that could not be inlined", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [{ kind: "load-failed", ref: "./missing.png" }],
-  });
-
-  assert.equal(output.share.unresolved_local_assets, 1);
-  assert.deepEqual(output.unresolved_local_assets, [{ kind: "load-failed", ref: "./missing.png" }]);
-  assert.match(output.next_step, /LOCAL assets could not be inlined/);
-  assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
-  assert.doesNotMatch(output.next_step, /share this URL/);
-});
-
-test("share output separates unresolved assets from notices", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [
-      { kind: "module-external", ref: "./main.js" },
-      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
-      { kind: "csp-meta", ref: "script-src 'self'" },
-    ],
-  });
-
-  assert.equal(output.share.unresolved_local_assets, 1);
-  assert.equal(output.share.notices, 2);
-  assert.deepEqual(output.unresolved_local_assets, [{ kind: "module-external", ref: "./main.js" }]);
-  assert.deepEqual(output.notices, [
-    { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
-    { kind: "csp-meta", ref: "script-src 'self'" },
-  ]);
-  assert.equal(output.warnings.length, 3);
-  assert.match(output.next_step, /Export notices are available in notices/);
-});
-
-test("password-protected share output with unresolved assets still mentions the password", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [{ kind: "load-failed", ref: "./missing.png" }],
-    passwordProtected: true,
-  });
-
-  assert.equal(output.share.public, false);
-  assert.equal(output.share.visibility, "private");
-  assert.match(output.next_step, /PASSWORD-PROTECTED/);
-  assert.match(output.next_step, /viewers also need the password/);
-  assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
-  assert.doesNotMatch(output.next_step, /anyone with the link can view/);
-});
-
-test("share command publishes the artifact to ht-ml.app and returns the public url", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(`${dir}/theme.css`, ".btn{color:teal}", "utf8");
-  await writeFile(
-    artifact,
-    '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body><h1>Hi</h1></body></html>',
-    "utf8",
-  );
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  try {
-    // Use async spawn (not spawnSync): the child publishes to the fake ht-ml.app server hosted
-    // on this process's event loop, which spawnSync would block, deadlocking the request.
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", "--password", "pw", artifact],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: {
-          ...process.env,
-          LAVISH_AXI_STATE_DIR: dir,
-          LAVISH_AXI_TELEMETRY: "0",
-          LAVISH_AXI_HTML_APP_API_URL: `http://127.0.0.1:${htmlApp.port}`,
-        },
-      },
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    const code = await new Promise((resolve) => child.on("close", resolve));
-
-    assert.equal(code, 0, stderr);
-    assert.match(stdout, /abc123\.ht-ml\.app/);
-    assert.match(stdout, /PASSWORD-PROTECTED/);
-    assert.match(stdout, /viewers also need the password/);
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].url, "/v1/sites");
-    assert.match(requests[0].body.html_content, /<style>\.btn\{color:teal\}<\/style>/);
-    assert.equal(requests[0].body.password, "pw");
-  } finally {
-    await htmlApp.close();
-    await rm(dir, { force: true, recursive: true });
-  }
-});
-
-test("share command treats a whitespace-only password as public", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  try {
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", "--password", "   ", artifact],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: {
-          ...process.env,
-          LAVISH_AXI_STATE_DIR: dir,
-          LAVISH_AXI_TELEMETRY: "0",
-          LAVISH_AXI_HTML_APP_API_URL: `http://127.0.0.1:${htmlApp.port}`,
-        },
-      },
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    const code = await new Promise((resolve) => child.on("close", resolve));
-
-    assert.equal(code, 0, stderr);
-    assert.match(stdout, /PUBLIC/);
-    assert.match(stdout, /anyone with the link can view/);
-    assert.doesNotMatch(stdout, /PASSWORD-PROTECTED/);
-    assert.equal(requests.length, 1);
-    assert.equal("password" in requests[0].body, false);
-  } finally {
-    await htmlApp.close();
-    await rm(dir, { force: true, recursive: true });
-  }
-});
-
 test("poll help requires an observable wake path", () => {
   const help = getCommandHelp("poll");
 
@@ -1027,23 +832,6 @@ test("poll help is Codex-aware when requested", () => {
   assertObservablePollWakePath(help);
   assert.match(help, /Codex detected/);
   assert.match(help, /keep the poll attached to the active turn/);
-});
-
-test("share help distinguishes public default from password-protected shares", () => {
-  const help = getCommandHelp("share");
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
-  const homeShareHelp = home.help.find((item) => item.includes("lavish-axi share <html-file>"));
-
-  assert.match(help, /PUBLIC by default/);
-  assert.match(help, /Pass --password to publish a PRIVATE password-protected page/);
-  assert.match(help, /viewers must supply the password to view/);
-  assert.match(help, /not blocked by CSP on ht-ml\.app/);
-  assert.match(help, /load over the viewer's network/);
-  assert.doesNotMatch(help, /EVERYTHING PUBLISHED IS PUBLIC/);
-  assert.doesNotMatch(help, /load fine/);
-  assert.match(homeShareHelp, /PUBLIC by default/);
-  assert.match(homeShareHelp, /Pass --password to publish a PRIVATE password-protected page/);
-  assert.doesNotMatch(homeShareHelp, /Everything published is public/);
 });
 
 test("feedback next step keeps the next poll completion observable", () => {
@@ -1433,7 +1221,6 @@ test("html file arguments normalize to the hidden open command", () => {
   assert.deepEqual(normalizeArgv(["--no-open", "report.html"]), ["open", "--no-open", "report.html"]);
   assert.deepEqual(normalizeArgv(["--no-gate", "report.html"]), ["open", "--no-gate", "report.html"]);
   assert.deepEqual(normalizeArgv(["poll", "report.html"]), ["poll", "report.html"]);
-  assert.deepEqual(normalizeArgv(["setup", "hooks"]), ["setup", "hooks"]);
   assert.deepEqual(normalizeArgv(["playbook", "diagram"]), ["playbook", "diagram"]);
   assert.deepEqual(normalizeArgv(["design"]), ["design"]);
   assert.deepEqual(normalizeArgv(["--help"]), ["--help"]);
@@ -1445,133 +1232,33 @@ test("SDK reserved commands pass through instead of normalizing to open", () => 
   assert.deepEqual(normalizeArgv(["update", "--help"]), ["update", "--help"]);
 });
 
-test("setup hooks resolves HOME before platform-specific user profile variables", () => {
-  assert.equal(
-    resolveHookHomeDir({ HOME: "/tmp/lavish-home", USERPROFILE: "C:\\Users\\runneradmin" }, "/fallback"),
-    "/tmp/lavish-home",
-  );
+// dealernet: esta build e vendorizada dentro do plugin dealernet-claude. O self-updater do SDK
+// instalaria a versao publica do npm por cima dela, apagando as remocoes e a traducao.
+test("dealernet: o comando update e recusado nesta build", () => {
+  assert.throws(() => assertCommandAllowed(["update"]), /desabilitado nesta build/);
+  assert.throws(() => assertCommandAllowed(["update", "--check"]), /desabilitado nesta build/);
 });
 
-test("setup hooks resolves Copilot hook directory from COPILOT_HOME first", () => {
-  assert.equal(
-    resolveCopilotHookDir({ COPILOT_HOME: "/tmp/copilot-home", HOME: "/tmp/home" }),
-    path.join("/tmp/copilot-home", "hooks"),
-  );
-  assert.equal(resolveCopilotHookDir({ HOME: "/tmp/home" }), path.join("/tmp/home", ".copilot", "hooks"));
-});
-
-test("setup hooks creates a Copilot CLI hook that injects additional context", () => {
-  const hook = createCopilotCliSessionStartHook();
-  const [updated, changed] = computeCopilotCliHookUpdate(
-    {
-      version: 1,
-      hooks: {
-        sessionStart: [{ type: "command", bash: "echo keep-me" }],
-      },
-    },
-    hook,
-  );
-
-  assert.equal(changed, true);
-  assert.equal(updated.version, 1);
-  assert.equal(updated.hooks.sessionStart.length, 2);
-  assert.equal(updated.hooks.sessionStart[0].bash, "echo keep-me");
-  assert.match(updated.hooks.sessionStart[1].bash, /additionalContext/);
-  assert.match(updated.hooks.sessionStart[1].powershell, /additionalContext/);
-  assert.match(updated.hooks.sessionStart[1].bash, /lavish-axi/);
-  assert.equal(updated.hooks.sessionStart[1].timeoutSec, 10);
-
-  const [unchanged, unchangedFlag] = computeCopilotCliHookUpdate(updated, hook);
-  assert.equal(unchangedFlag, false);
-  assert.equal(unchanged, updated);
-});
-
-test("Copilot CLI ambient context script wraps lavish output as hook JSON", async () => {
-  const tempDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-copilot-hook-`);
-  try {
-    const fakeCli = path.join(tempDir, "fake-lavish.js");
-    await writeFile(fakeCli, 'console.log("sessions: []");\n', "utf8");
-    const command = `"${process.execPath}" "${fakeCli}"`;
-    const result = spawnSync(process.execPath, ["-e", createCopilotCliAmbientContextScript(command)], {
-      encoding: "utf8",
-    });
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const output = JSON.parse(result.stdout);
-    assert.match(output.additionalContext, /## AXI ambient context: lavish-axi/);
-    assert.match(output.additionalContext, /sessions: \[\]/);
-  } finally {
-    await rm(tempDir, { force: true, recursive: true });
+test("dealernet: comandos normais seguem permitidos", () => {
+  for (const argv of [[], ["open", "a.html"], ["poll", "a.html"], ["design"], ["export", "a.html"]]) {
+    assert.doesNotThrow(() => assertCommandAllowed(argv));
   }
 });
 
-test("setup hooks installs agent session hooks explicitly", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-home-`);
-  try {
-    const result = spawnSync(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "hooks"],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        encoding: "utf8",
-        env: setupHooksEnv(homeDir, stateDir),
-      },
-    );
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /hooks:/);
-    assert.match(result.stdout, /status: installed/);
-    assert.match(result.stdout, /GitHub Copilot CLI/);
-    assert.match(result.stdout, /Restart your agent session/);
-    assert.ok(existsSync(`${homeDir}/.claude/settings.json`));
-    assert.ok(existsSync(`${homeDir}/.copilot/hooks/lavish-axi.json`));
-
-    const copilotHook = JSON.parse(await readFile(`${homeDir}/.copilot/hooks/lavish-axi.json`, "utf8"));
-    assert.equal(copilotHook.version, 1);
-    assert.equal(copilotHook.hooks.sessionStart.length, 1);
-    assert.match(copilotHook.hooks.sessionStart[0].bash, /additionalContext/);
-    assert.match(copilotHook.hooks.sessionStart[0].powershell, /additionalContext/);
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-  }
+// dealernet: `share` publicava o artefato em ht-ml.app (host de terceiro, publico por padrao) e
+// `setup hooks` instalava hook SessionStart em quatro agentes. Ambos foram removidos.
+test("dealernet: share e setup nao sao mais comandos reconhecidos", () => {
+  assert.deepEqual(normalizeArgv(["share", "a.html"]), ["open", "share", "a.html"]);
+  assert.deepEqual(normalizeArgv(["setup", "hooks"]), ["open", "setup", "hooks"]);
+  assert.equal(getCommandHelp("share"), null);
+  assert.equal(getCommandHelp("setup"), null);
 });
 
-test("setup hooks exits with an error when hook installation fails", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-fail-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-fail-home-`);
-  try {
-    await mkdir(`${homeDir}/.claude`, { recursive: true });
-    await writeFile(`${homeDir}/.claude/settings.json`, "{ invalid json", "utf8");
-
-    const result = spawnSync(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "hooks"],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        encoding: "utf8",
-        env: setupHooksEnv(homeDir, stateDir),
-      },
-    );
-
-    const output = `${result.stdout}\n${result.stderr}`;
-    assert.notEqual(result.status, 0, result.stdout);
-    assert.match(output, /hook/i);
-    assert.doesNotMatch(result.stdout, /status: installed/);
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-  }
-});
-
-test("telemetry command names are anonymous and do not include file paths", () => {
-  assert.equal(telemetryCommandName(["report.html"]), "open");
-  assert.equal(telemetryCommandName(["poll", "/tmp/secret/report.html"]), "poll");
-  assert.equal(telemetryCommandName(["end", "/tmp/secret/report.html"]), "end");
-  assert.equal(telemetryCommandName(["playbook", "diagram"]), "playbook");
-  assert.equal(telemetryCommandName(["design"]), "design");
-  assert.equal(telemetryCommandName([]), "home");
+test("dealernet: a saida home nao cita publicacao em host de terceiro", () => {
+  const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false });
+  const texto = JSON.stringify(home);
+  assert.ok(!texto.includes("ht-ml"), "home nao deve citar ht-ml.app");
+  assert.ok(!/\bshare\b/.test(texto), "home nao deve citar o comando share");
 });
 
 test("server spawn options detach without inheriting invalid streams", () => {
@@ -1829,30 +1516,4 @@ test("stop command reports when no server is running", async () => {
   }
 });
 
-async function startFakeHtmlApp(requests) {
-  const server = createServer((req, res) => {
-    let raw = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      raw += chunk;
-    });
-    req.on("end", () => {
-      requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          site_id: "abc123",
-          url: "https://abc123.ht-ml.app/",
-          update_key: "uk_secret",
-          status: "active",
-        }),
-      );
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  const address = server.address();
-  return {
-    port: typeof address === "object" && address ? address.port : 0,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
-  };
-}
+// dealernet: startFakeHtmlApp servia aos testes de `share`, removidos junto com o comando.
