@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AxiError, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
+import { AxiError, RESERVED_COMMANDS, exitCodeForError, runAxiCli } from "axi-sdk-js";
 
 import { createDesignOutput, DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "./design-reference.js";
 import {
@@ -101,9 +101,23 @@ export function comSaidaJson(fn, env = process.env) {
 
 export async function run(argv) {
   await ensureStateDir();
-  assertCommandAllowed(argv);
+  // O bloqueio do self-updater acontece ANTES do `runAxiCli`, que e quem sabe renderizar AxiError.
+  // Sem tratar aqui, a mensagem — que existe justamente para EXPLICAR por que `update` nao roda nesta
+  // build — saia como stack trace de excecao nao capturada, e o exit code virava 1 generico em vez do
+  // 2 de erro de validacao. Medido em 2026-08-07.
+  try {
+    assertCommandAllowed(argv);
+    assertCommandAllowed(normalizeArgv(argv));
+  } catch (error) {
+    if (!(error instanceof AxiError)) throw error;
+    // Formatado aqui a mao: o `renderError` do SDK nao e exportado pelo pacote (o index reexporta
+    // cli/errors/hooks/update, nao output). Texto simples serve — o que importa e a pessoa entender
+    // por que o comando parou, e o exit code ser o de validacao.
+    process.stdout.write([`erro: ${error.message}`, ...error.suggestions.map((s) => `  - ${s}`), ""].join("\n"));
+    process.exitCode = exitCodeForError(error);
+    return;
+  }
   const normalizedArgv = normalizeArgv(argv);
-  assertCommandAllowed(normalizedArgv);
   const agent = detectInvokingAgent(process.env);
   const isTopLevelHelp = argv.length === 1 && argv[0] === "--help";
   await runAxiCli({
