@@ -77,6 +77,28 @@ export function assertCommandAllowed(argv) {
   }
 }
 
+// dealernet: saida em JSON para quem consome esta build por script.
+//
+// O SDK serializa a saida em TOON (`@toon-format/toon`), que e otimo para o agente ler e pessimo para
+// um script parsear: o plugin dealernet-claude e Node ESM com ZERO dependencia npm, entao ele nao pode
+// importar o decoder, e um regex sobre formato compacto quebra no primeiro campo novo do upstream.
+//
+// O gancho e o proprio contrato do SDK: `renderOutput` devolve a string como veio quando o comando
+// retorna string. Entao, com LAVISH_AXI_JSON=1, cada comando devolve JSON.stringify do que devolveria.
+// Variavel de ambiente, e nao flag, de proposito: os comandos leem posicionais com `firstPositionalArg`
+// e um `--json` solto viraria caminho de arquivo em alguma rota.
+export function saidaEmJson(env = process.env) {
+  return env.LAVISH_AXI_JSON === "1";
+}
+
+export function comSaidaJson(fn, env = process.env) {
+  return async (args) => {
+    const saida = await fn(args);
+    if (!saidaEmJson(env) || typeof saida === "string" || saida === undefined) return saida;
+    return JSON.stringify(saida, null, 2);
+  };
+}
+
 export async function run(argv) {
   await ensureStateDir();
   assertCommandAllowed(argv);
@@ -97,14 +119,14 @@ export async function run(argv) {
         agent,
       }),
     commands: {
-      open: openCommand,
-      poll: pollCommand,
-      end: endCommand,
-      stop: stopCommand,
+      open: comSaidaJson(openCommand),
+      poll: comSaidaJson(pollCommand),
+      end: comSaidaJson(endCommand),
+      stop: comSaidaJson(stopCommand),
       playbook: playbookCommand,
       design: designCommand,
-      server: serverCommand,
-      export: exportCommand,
+      server: comSaidaJson(serverCommand),
+      export: comSaidaJson(exportCommand),
     },
     getCommandHelp: (command) => getCommandHelp(command, { agent }),
   });
