@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -27,14 +26,6 @@ import {
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
 import * as mermaidNode from "./mermaid-node.js";
-import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
-import {
-  isValidDiagramIndex,
-  isValidWhiteboardKey,
-  loadWhiteboard,
-  saveWhiteboard,
-  writeWhiteboardFeedbackFiles,
-} from "./whiteboard-store.js";
 import { buildSelfContainedHtml, exportFileName, splitExportWarnings } from "./export-bundle.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
@@ -61,48 +52,12 @@ const designAssetUrls = {
 };
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
-const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
 
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
 // layout-warning batch is outstanding, the agent is applying several related edits, so widen the
 // window: the user asked for one group of fixes and should get one artifact refresh for it.
 export const RELOAD_DEBOUNCE_MS = 100;
 export const BATCH_RELOAD_DEBOUNCE_MS = 900;
-
-// The whiteboard frame bundle (Excalidraw + Mermaid converter + React) is
-// produced by `scripts/build.js` into dist/whiteboard. Packaged runs find it
-// next to the served bundle; source runs (node bin/lavish-axi.js) fall back to
-// the repo's dist output, so `pnpm run build` must have run at least once.
-export function defaultWhiteboardAssetsDir() {
-  const packaged = fileURLToPath(new URL("./whiteboard", import.meta.url));
-  if (existsSync(packaged)) return packaged;
-  return fileURLToPath(new URL("../dist/whiteboard", import.meta.url));
-}
-
-// Whiteboard scene saves carry full Excalidraw scenes (and, at queue time, a
-// PNG preview data URL), which outgrow the default 2 MB JSON cap. Only the
-// whiteboard write routes get the larger limit.
-export function isWhiteboardWriteApiPath(pathname) {
-  return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
-}
-
-export function createWhiteboardChannelToken(secret, now = Date.now()) {
-  const payload = `${now}.${crypto.randomBytes(24).toString("base64url")}`;
-  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
-}
-
-export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
-  const [issuedAtText, nonce, signature, extra] = String(token || "").split(".");
-  if (extra !== undefined || !/^\d{13}$/.test(issuedAtText) || !/^[A-Za-z0-9_-]{32}$/.test(nonce)) return false;
-  const issuedAt = Number(issuedAtText);
-  if (!Number.isSafeInteger(issuedAt) || issuedAt > now || now - issuedAt > WHITEBOARD_CHANNEL_TOKEN_TTL_MS)
-    return false;
-  const expected = crypto.createHmac("sha256", secret).update(`${issuedAtText}.${nonce}`).digest("base64url");
-  const actualBuffer = Buffer.from(signature || "", "utf8");
-  const expectedBuffer = Buffer.from(expected, "utf8");
-  return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
-}
 
 // A detached server should not live forever. When no browser chrome (SSE) and no agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
@@ -129,7 +84,6 @@ export async function serve({
   host = bindHost(),
   linkHost: linkHostName = linkHost(),
   allowedHosts = extraAllowedHosts(),
-  whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 }) {
   const app = express();
   const store = new SessionStore(stateFile);
@@ -138,7 +92,6 @@ export async function serve({
   const activePolls = new Map();
   const deliveredFeedback = new Set();
   const sseClients = new Set();
-  const whiteboardChannelSecret = crypto.randomBytes(32);
   // Sessions with at least one warning the user queued that has not been re-checked yet.
   const outstandingRepairBatches = new Set();
   const diagnosticViewportClasses = resolveDiagnosticViewportClasses();
@@ -147,11 +100,7 @@ export async function serve({
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   let publicPort = port;
 
-  // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
-  const whiteboardStateRoot = path.dirname(stateFile);
-
-  // DNS-rebinding guard. isSameOriginRequest (used on /share and the whiteboard
-  // write routes) stops classic cross-origin CSRF but NOT DNS rebinding: a page
+  // DNS-rebinding guard. isSameOriginRequest stops classic cross-origin CSRF but NOT DNS rebinding: a page
   // that rebinds its own domain to this loopback port sends that domain in both
   // Origin and Host, so the two still match. The robust defense is a Host-header
   // allowlist - a rebound browser carries the attacker's domain in Host, which is
@@ -180,11 +129,7 @@ export async function serve({
     });
   }
 
-  const defaultJsonParser = express.json({ limit: "2mb" });
-  const whiteboardJsonParser = express.json({ limit: "20mb" });
-  app.use((req, res, next) =>
-    isWhiteboardWriteApiPath(req.path) ? whiteboardJsonParser(req, res, next) : defaultJsonParser(req, res, next),
-  );
+  app.use(express.json({ limit: "2mb" }));
 
   app.get("/health", (req, res) => {
     res.json({ ok: true, app: "lavish-axi", version });
@@ -743,159 +688,10 @@ export async function serve({
     }
   });
 
-  // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
-  // iframe (allow-scripts allow-popups, no allow-same-origin) so untrusted
-  // Mermaid text renders - and the Excalidraw editor runs - inside an opaque
-  // origin, matching the artifact iframe's trust posture. The chrome passes
-  // the diagram source and saved scene over postMessage after the frame
-  // reports ready.
-  app.get("/whiteboard-frame", (req, res) => {
-    res.setHeader("cache-control", "no-store");
-    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret)));
-  });
-
-  // Whiteboard bundle, stylesheet, and vendored Excalidraw fonts. The frame
-  // runs in an opaque origin, and font fetches from an opaque origin are
-  // CORS-gated, so this static, public-content route must answer with
-  // Access-Control-Allow-Origin: * or every canvas font falls back.
-  app.get(/^\/whiteboard-assets\/(.+)$/, (req, res, next) => {
-    try {
-      const file = resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
-      if (!file) {
-        res.status(403).send("Forbidden");
-        return;
-      }
-      if (!existsSync(file)) {
-        res
-          .status(404)
-          .send(existsSync(whiteboardAssetsDir) ? "Not found" : "Whiteboard bundle missing - run `pnpm run build`");
-        return;
-      }
-      res.setHeader("access-control-allow-origin", "*");
-      // Revalidate on every use (304 via Last-Modified/ETag): the bundle URL
-      // is unversioned, and a memory-cached stale bundle after an upgrade or
-      // local rebuild is far worse than cheap loopback revalidations.
-      res.setHeader("cache-control", "no-cache");
-      // Traversal is already rejected by resolveArtifactAsset; "allow" keeps
-      // dot components in the assets dir's own absolute path (e.g. a checkout
-      // under a dot-directory) from 403ing every asset.
-      res.sendFile(file, { dotfiles: "allow" });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // Mermaid sources for a session's artifact, extracted from the HTML on disk
-  // in document order so `index` matches the browser's `.mermaid` element
-  // order. The hash feeds whiteboard staleness detection.
-  app.get("/api/:key/mermaid-sources", async (req, res, next) => {
-    try {
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
-        res.status(404).json({ error: "session not found" });
-        return;
-      }
-      const html = await readFile(session.file, "utf8").catch(() => "");
-      const sources = extractMermaidSources(html).map(({ index, source }) => ({
-        index,
-        source,
-        hash: mermaidSourceHash(source),
-      }));
-      res.json({ sources });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/:key/whiteboard/:index", async (req, res, next) => {
-    try {
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
-      const whiteboard = await loadWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index));
-      res.json({ whiteboard });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
-    try {
-      if (!isSameOriginRequest(req)) {
-        res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
-        res.status(404).json({ error: "session not found" });
-        return;
-      }
-      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret)) {
-        res.status(403).json({ error: "invalid whiteboard channel" });
-        return;
-      }
-      res.json({ status: "authenticated" });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // Writing to the local state directory is a state-changing action, so both
-  // whiteboard write routes are same-origin guarded like /share - a hostile
-  // cross-origin page must not be able to fill the state dir through the
-  // loopback server.
-  app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
-    try {
-      if (!isSameOriginRequest(req)) {
-        res.status(403).json({ error: "cross-origin whiteboard write rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidWhiteboardKey(req.params.key) || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
-      const body = req.body || {};
-      await saveWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index), {
-        sourceHash: String(body.source_hash || body.sourceHash || ""),
-        textMetricsVersion: Number(body.text_metrics_version || body.textMetricsVersion) || 0,
-        scene: body.scene ?? null,
-        baseline: body.baseline ?? null,
-      });
-      res.json({ status: "saved" });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // Publish the agent-facing feedback files (.excalidraw scene + PNG preview)
-  // for a diagram, returning their absolute paths for the queued prompt's
-  // target. Files stay on this machine; the prompt carries only the paths.
-  app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
-    try {
-      if (!isSameOriginRequest(req)) {
-        res.status(403).json({ error: "cross-origin whiteboard write rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidWhiteboardKey(req.params.key) || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
-      const body = req.body || {};
-      const { scenePath, previewPath } = await writeWhiteboardFeedbackFiles(
-        whiteboardStateRoot,
-        req.params.key,
-        Number(req.params.index),
-        { scene: body.scene ?? null, pngDataUrl: String(body.pngDataUrl || body.png_data_url || "") },
-      );
-      res.json({ scene_path: scenePath, preview_path: previewPath });
-    } catch (error) {
-      next(error);
-    }
-  });
+  // dealernet: as rotas do quadro branco foram REMOVIDAS junto com o recurso:
+  //   /whiteboard-frame, /whiteboard-assets/*, /api/:key/mermaid-sources,
+  //   /api/:key/whiteboard/:index (GET e PUT), /api/:key/whiteboard-channel e
+  //   /api/:key/whiteboard/:index/feedback-files.
 
   app.use((error, req, res, _next) => {
     // Body-parser errors carry a meaningful HTTP status (413 payload-too-large,
@@ -1451,25 +1247,8 @@ ${faviconTag}
 <div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe><div class="layout-issue-banner" id="layoutIssueBanner" hidden>Layout issues detected. Open <strong>Layout issues</strong> in the top bar to review and queue fixes.</div></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
-<div class="whiteboard-overlay" id="whiteboardOverlay" hidden><div class="whiteboard-shell"><div class="whiteboard-error" id="whiteboardError" hidden></div><button class="whiteboard-close" id="whiteboardClose" type="button" aria-label="Close whiteboard"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><iframe id="whiteboardFrame" title="Excalidraw whiteboard" sandbox="allow-scripts allow-popups"></iframe></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>
 <script src="/chrome-client.js"></script>
-</body>
-</html>`;
-}
-
-export function createWhiteboardFrameHtml(channelToken = "") {
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lavish Whiteboard</title>
-<link rel="stylesheet" href="/whiteboard-assets/whiteboard.css">
-</head>
-<body>
-<script>window.__lavishWhiteboardChannelToken=${JSON.stringify(channelToken)};</script>
-<script src="/whiteboard-assets/whiteboard.js"></script>
 </body>
 </html>`;
 }

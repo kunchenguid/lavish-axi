@@ -15,7 +15,8 @@ import {
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
-import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./whiteboard-core.js";
+// dealernet: o alvo `excalidraw-scene` saiu junto com o quadro branco. Prompts antigos que ainda
+// o carreguem caem no passe-adiante generico do fim de normalizeTarget, sem quebrar.
 
 export const LAYOUT_WARNINGS_TARGET_TYPE = "layout-warnings";
 const MAX_ARTIFACT_FAILURES = 20;
@@ -627,7 +628,6 @@ function normalizeArtifactFailures(failures) {
 function normalizeTarget(target) {
   if (!target || typeof target !== "object" || Array.isArray(target)) return null;
   if (target.type === "mermaid-node") return normalizeMermaidNodeTarget(target);
-  if (target.type === EXCALIDRAW_SCENE_TARGET_TYPE) return normalizeExcalidrawSceneTarget(target);
   if (target.type === LAYOUT_WARNINGS_TARGET_TYPE) return normalizeLayoutWarningsTarget(target);
   // text-range and any other/legacy target shapes pass through unchanged.
   return JSON.parse(JSON.stringify(target));
