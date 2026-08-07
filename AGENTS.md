@@ -195,6 +195,17 @@ No need to explicitly document the telemetry behaviors.
   - Excalidraw's theme must be passed only through the `<Excalidraw theme>` prop, and persisted `appState` must never carry `theme` or a dark-space `viewBackgroundColor`: dark mode renders through an invert filter, so a dark background value or a second theme application double-inverts into a washed-out canvas (`src/whiteboard-core.js` strips both at the persistence boundary).
   - `/whiteboard-assets/*` must keep `Access-Control-Allow-Origin: *` (the opaque-origin frame's font fetches are CORS-gated), `Cache-Control: no-cache` (an unversioned bundle URL plus memory cache serves stale editors after upgrades), and `dotfiles: "allow"` in sendFile (a checkout under a dot-directory otherwise 403s every asset).
 
+## dealernet fork
+
+This checkout is the Dealernet fork, not the upstream product. Branch `dealernet` carries every local
+change; `main` mirrors `upstream/main` untouched. **Read `MANUTENCAO-FORK.md` before merging the upstream
+or re-vendoring the bundle** — it holds the cadence, the exact merge sequence, where the conflicts land
+(`src/i18n-ptbr.js`, the `createChromeHtml` template string, `src/chrome-client.js`) and the test baseline
+that tells regression apart from this station's two environmental symlink failures.
+
+Surfaces removed on purpose and never to be restored by a merge: `share` (menu, dialog, route,
+subcommand), `setup hooks`, telemetry, the self-updater and the whiteboard.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
