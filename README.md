@@ -115,7 +115,7 @@ To register by hand instead, point any client at the package directory (`npm roo
 | Client             | Register with                                                                                                      |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------ |
 | VS Code            | `"chat.pluginLocations": { "<package-dir>": true }` in user settings                                               |
-| Cursor             | symlink the package dir into `~/.cursor/plugins/local/lavish-axi` (a junction on Windows)                          |
+| Cursor             | link the package dir at `~/.cursor/plugins/local/lavish-axi` (`setup plugin` handles Windows link compatibility)   |
 | GitHub Copilot CLI | `copilot plugin install <package-dir>` (or `copilot plugin install kunchenguid/lavish-axi` straight from the repo) |
 
 Codex and ChatGPT install plugins only from marketplace sources, so Codex users should use the session hook above instead.

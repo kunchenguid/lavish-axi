@@ -239,18 +239,6 @@ export function writeTextFileAtomically(file, content, operations = {}) {
 }
 
 /**
- * Point Cursor's local plugin slot at the installed package via symlink, which is what
- * Cursor's own docs recommend so an upgrade in place needs no re-registration.
- *
- * Never clobbers a real directory sitting in the slot - that is someone's own plugin.
- *
- * @param {string} localPluginsDir Cursor local plugins directory
- * @param {string} pluginRoot absolute plugin root
- * @param {string} pluginName manifest name
- * @param {AtomicFsOperations} [operations] filesystem operations
- * @returns {{ status: "linked" | "repaired" | "current" | "occupied", target: string }} outcome
- */
-/**
  * Create a directory link, preferring a junction on Windows.
  *
  * A Windows *directory symlink* needs SeCreateSymbolicLinkPrivilege - Developer Mode or
@@ -276,6 +264,19 @@ function createDirectoryLink(createSymlink, pluginRoot, linkPath, platform) {
   createSymlink(pluginRoot, linkPath);
 }
 
+/**
+ * Point Cursor's local plugin slot at the installed package via a directory link, so an
+ * upgrade in place needs no re-registration.
+ *
+ * Never clobbers a real directory sitting in the slot. Link failures are returned as an
+ * unsupported outcome so one client cannot abort registration of the others.
+ *
+ * @param {string} localPluginsDir Cursor local plugins directory
+ * @param {string} pluginRoot absolute plugin root
+ * @param {string} pluginName manifest name
+ * @param {AtomicFsOperations} [operations] filesystem operations
+ * @returns {{ status: "linked" | "repaired" | "current" | "occupied" | "unsupported", target: string, reason?: string }} outcome
+ */
 export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName, operations = {}) {
   const target = path.join(localPluginsDir, pluginName);
   const platform = operations.platform || process.platform;

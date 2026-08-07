@@ -24,13 +24,13 @@ plugin:
 clients[3]{client,status,detail}:
   vscode,absent,no VS Code user configuration found
   cursor,registered,~/.cursor/plugins/local/lavish-axi
-  copilot,manual,"could not verify installed plugins: The plugins command is not available."
+  copilot,absent,copilot CLI not found on PATH
 
 $ <installed-package>/dist/cli.mjs setup plugin
 clients[3]{client,status,detail}:
   vscode,absent,no VS Code user configuration found
   cursor,current,~/.cursor/plugins/local/lavish-axi
-  copilot,manual,"could not verify installed plugins: The plugins command is not available."
+  copilot,absent,copilot CLI not found on PATH
 ```
 
 The second invocation reported `current`, demonstrating idempotence. The registered Cursor symlink resolved to the installed npm package root:
@@ -41,7 +41,7 @@ skills/lavish/SKILL.md: present
 mcp.json: absent
 ```
 
-The host's `copilot` executable does not expose a usable plugins command, so the CLI correctly requested manual handling without changing registration. Focused automated tests separately exercised successful, current, repaired, failed, and invalid-record Copilot responses through its executable CLI boundary.
+The isolated `PATH` did not expose Copilot. Focused automated tests separately exercised successful, current, repaired, failed, and invalid-record Copilot responses through its executable CLI boundary.
 
 ## External standards validation
 
@@ -49,10 +49,30 @@ The host's `copilot` executable does not expose a usable plugins command, so the
 $ uvx --from skills-ref agentskills validate skills/lavish
 Valid skill: skills/lavish
 
+$ curl --fail --silent --show-error \
+    https://agent-plugins.org/schemas/1.0.0/plugin.schema.json \
+    --output <temporary-schema-file>
 $ npx -y ajv-cli@5 validate --spec=draft2020 \
-    -s https://agent-plugins.org/schemas/1.0.0/plugin.schema.json \
+    -s <temporary-schema-file> \
     -d plugin.json
 plugin.json valid
 ```
 
-The AJV command used a freshly downloaded copy of the canonical schema URL as its schema input.
+The temporary schema file was removed after validation.
+
+## Windows CI verdict
+
+The required Windows verdict is not yet available for this test phase. The latest PR run reports the Windows matrix job as cancelled, which `gh-axi pr checks 223` summarizes as skipped:
+
+```text
+$ gh-axi pr checks 223
+summary: "4 passed, 0 failed, 1 skipped, 5 total"
+checks[5]{name,conclusion}:
+  build-and-test (ubuntu-latest),pass
+  Generated files must not be hand-edited,pass
+  PR must be raised via no-mistakes,pass
+  build-and-test (macos-latest),pass
+  build-and-test (windows-latest),skip
+```
+
+The outer pipeline still needs to produce the explicitly required real `windows-latest` result.

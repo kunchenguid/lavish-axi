@@ -796,15 +796,7 @@ function registerCursorPlugin(pluginRoot, pluginName) {
  * @returns {{ client: string, status: string, detail: string }} outcome row
  */
 function registerCopilotPlugin(pluginRoot, pluginName) {
-  const listed = spawnPluginClientSync("copilot", [
-    "plugins",
-    "list",
-    "--scope",
-    "user",
-    "--kind",
-    "plugin",
-    "--json",
-  ]);
+  const listed = spawnPluginClientSync("copilot", ["plugins", "list", "--scope", "user", "--kind", "plugin", "--json"]);
   if (listed.error) {
     return { client: "copilot", status: "absent", detail: "copilot CLI not found on PATH" };
   }
