@@ -12,6 +12,8 @@ test("check script runs all verification commands", async () => {
     "npm run format:check",
     "npm run typecheck",
     "npm test",
+    // dealernet: guarda da localizacao pt-BR — falha se um termo de interface voltar ao ingles.
+    "node scripts/verificar-idioma.js",
     "node scripts/build-skill.js --check",
   ]);
 });

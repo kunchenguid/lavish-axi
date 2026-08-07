@@ -5,9 +5,19 @@ import vm from "node:vm";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number }} HarnessSessionData */
+import { UI_CLIENTE } from "../src/i18n-ptbr.js";
+
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, i18n?: Record<string, string> }} HarnessSessionData */
+// dealernet: o servidor sempre injeta os textos de interface no bootstrap da sessao, e o cliente
+// os le como `t`. O harness precisa injetar os MESMOS textos reais (nao um dublê), senao os testes
+// exercitam um cliente sem idioma — e uma chamada como `t.revelarNoArtefato.replace(...)` estoura.
 /** @type {HarnessSessionData} */
-const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
+const defaultSessionData = {
+  key: "abc",
+  file: "/tmp/artifact.html",
+  modeToggleHotkeyKey: "i",
+  i18n: UI_CLIENTE,
+};
 
 async function createChromeHarness({
   fetchImpl = /** @type {(url?: any, init?: any) => Promise<any>} */ (
@@ -180,7 +190,9 @@ async function createChromeHarness({
     return el;
   }
 
-  element("lavish-session").textContent = JSON.stringify(sessionData);
+  // dealernet: o servidor SEMPRE injeta os textos de interface; o harness faz o mesmo por baixo,
+  // para que um teste que sobrescreva sessionData nao perca o idioma sem querer.
+  element("lavish-session").textContent = JSON.stringify({ i18n: UI_CLIENTE, ...sessionData });
   const frame = element("artifact");
   frame.dataset.artifactSrc = artifactSrc;
   Object.defineProperty(frame, "src", {
@@ -549,15 +561,15 @@ function warningPayload(overrides = {}) {
     rule: "page-horizontal-overflow",
     severity: "error",
     status: "open",
-    status_label: "Open",
-    title: "Page scrolls sideways",
+    status_label: "Aberto",
+    title: "A pagina rola para o lado",
     explanation: "The page is 18px wider than the 720px viewport, so content sits off-screen.",
     selector: "html",
     component: "html",
     axis: "horizontal",
     overflow_px: 18,
     viewport_class: "compact",
-    viewport_label: "Tablet / compact",
+    viewport_label: "Tablet / compacto",
     viewport_width: 720,
     first_seen_at: new Date().toISOString(),
     last_seen_at: new Date().toISOString(),
@@ -658,7 +670,7 @@ test("the warning button hides at zero and shows a deduplicated unresolved count
 
   assert.equal(chrome.element("warningsWrap").hidden, false);
   assert.equal(chrome.element("warningsCount").textContent, "2");
-  assert.equal(chrome.element("warningsButton")["aria-label"], "2 unresolved layout issues");
+  assert.equal(chrome.element("warningsButton")["aria-label"], "2 problemas de layout em aberto");
   assert.equal(chrome.warningRows().length, 2);
 
   // The same warnings arriving again must not inflate anything.
@@ -690,7 +702,7 @@ test("nothing is selected by default and Select all is an explicit action", asyn
   });
 
   assert.equal(chrome.element("warningsSelectAll").checked, false);
-  assert.equal(chrome.element("warningsSelected").textContent, "None selected");
+  assert.equal(chrome.element("warningsSelected").textContent, "Nenhum selecionado");
   assert.equal(chrome.element("warningsQueueButton").disabled, true);
   for (const row of chrome.warningRows()) {
     assert.equal(row.children[0].checked, false);
@@ -698,14 +710,14 @@ test("nothing is selected by default and Select all is an explicit action", asyn
 
   chrome.element("warningsSelectAll").checked = true;
   chrome.element("warningsSelectAll").onchange();
-  assert.equal(chrome.element("warningsSelected").textContent, "2 selected");
+  assert.equal(chrome.element("warningsSelected").textContent, "2 selecionado(s)");
   assert.equal(chrome.element("warningsQueueButton").disabled, false);
 });
 
 test("queueing a selected subset produces exactly one ordinary prompt with only those warnings", async () => {
   const posts = [];
   const queuedWarnings = [
-    warningPayload({ status: "queued", status_label: "Queued for fix", selectable: false, outstanding: true }),
+    warningPayload({ status: "queued", status_label: "Correcao pedida", selectable: false, outstanding: true }),
     warningPayload({ id: "w2", selector: "p" }),
   ];
   const chrome = await createChromeHarness({
@@ -733,7 +745,7 @@ test("queueing a selected subset produces exactly one ordinary prompt with only 
   const [first] = chrome.warningRows();
   first.children[0].checked = true;
   first.children[0].dispatch("change");
-  assert.equal(chrome.element("warningsSelected").textContent, "1 selected");
+  assert.equal(chrome.element("warningsSelected").textContent, "1 selecionado(s)");
 
   await chrome.element("warningsQueueButton").onclick();
   await flushPromises();
@@ -751,8 +763,8 @@ test("queueing a selected subset produces exactly one ordinary prompt with only 
   assert.equal(chrome.element("warningsCount").textContent, "2");
   assert.equal(chrome.warningRows()[0].children[0].disabled, true);
   assert.equal(chrome.warningRows()[0].children[1].children.at(-1).children.at(-1).disabled, true);
-  assert.equal(chrome.warningRows()[0].children[1].children[2].children[1].textContent, "Queued for send");
-  assert.equal(chrome.element("warningsSelected").textContent, "None selected");
+  assert.equal(chrome.warningRows()[0].children[1].children[2].children[1].textContent, "Na fila para envio");
+  assert.equal(chrome.element("warningsSelected").textContent, "Nenhum selecionado");
 });
 
 test("a stale queued layout prompt remains available for user re-decision", async () => {
@@ -778,7 +790,7 @@ test("a stale queued layout prompt remains available for user re-decision", asyn
         return {
           ok: false,
           status: 409,
-          json: async () => ({ warnings: [warningPayload({ status: "recurring", status_label: "Still present" })] }),
+          json: async () => ({ warnings: [warningPayload({ status: "recurring", status_label: "Ainda presente" })] }),
         };
       }
       return { ok: true, json: async () => ({}) };
@@ -797,7 +809,7 @@ test("a stale queued layout prompt remains available for user re-decision", asyn
 
   assert.ok(posts.some((post) => post.url === "/api/abc/prompts"));
   assert.equal(chrome.queued().length, 1);
-  assert.equal(chrome.warningRows()[0].children[1].children[2].children[1].textContent, "Queued for send");
+  assert.equal(chrome.warningRows()[0].children[1].children[2].children[1].textContent, "Na fila para envio");
 });
 
 test("dismissing a warning asks the server and never clears it locally on failure", async () => {
@@ -874,7 +886,7 @@ test("warning state and selection survive a chrome reload of the same session", 
   const [row] = first.warningRows();
   row.children[0].checked = true;
   row.children[0].dispatch("change");
-  assert.equal(first.element("warningsSelected").textContent, "1 selected");
+  assert.equal(first.element("warningsSelected").textContent, "1 selecionado(s)");
 
   // A browser refresh re-bootstraps from the server, and the chrome's own selection is restored
   // from per-session storage.
@@ -888,7 +900,7 @@ test("warning state and selection survive a chrome reload of the same session", 
     },
   });
   assert.equal(reloaded.element("warningsCount").textContent, "2");
-  assert.equal(reloaded.element("warningsSelected").textContent, "1 selected");
+  assert.equal(reloaded.element("warningsSelected").textContent, "1 selecionado(s)");
 });
 
 test("warning state does not leak across review sessions", async () => {
@@ -905,7 +917,7 @@ test("warning state does not leak across review sessions", async () => {
     sessionData: { key: "zzz", file: "/tmp/other.html", modeToggleHotkeyKey: "i" },
   });
   assert.equal(other.element("warningsWrap").hidden, true);
-  assert.equal(other.element("warningsSelected").textContent, "None selected");
+  assert.equal(other.element("warningsSelected").textContent, "Nenhum selecionado");
 });
 
 test("chrome client surfaces export warnings from the server response", async () => {
@@ -925,7 +937,10 @@ test("chrome client surfaces export warnings from the server response", async ()
   await chrome.element("exportArtifact").onclick();
   await flushPromises();
 
-  assert.equal(chrome.element("exportArtifact").querySelector("span").textContent, "Exported with 1 unresolved asset");
+  assert.equal(
+    chrome.element("exportArtifact").querySelector("span").textContent,
+    "Exportado com 1 asset nao resolvido",
+  );
 });
 
 test("chrome client surfaces export notices from the server response", async () => {
@@ -946,7 +961,7 @@ test("chrome client surfaces export notices from the server response", async () 
   await chrome.element("exportArtifact").onclick();
   await flushPromises();
 
-  assert.equal(chrome.element("exportArtifact").querySelector("span").textContent, "Exported with 1 notice");
+  assert.equal(chrome.element("exportArtifact").querySelector("span").textContent, "Exportado com 1 aviso");
 });
 
 test("chrome client includes export notices alongside unresolved assets", async () => {
@@ -969,7 +984,7 @@ test("chrome client includes export notices alongside unresolved assets", async 
 
   assert.equal(
     chrome.element("exportArtifact").querySelector("span").textContent,
-    "Exported with 2 unresolved assets and 1 notice",
+    "Exportado com 2 assets nao resolvidos e 1 aviso",
   );
 });
 

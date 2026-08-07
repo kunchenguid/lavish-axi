@@ -2,6 +2,9 @@
 
 const sessionDataElement = document.getElementById("lavish-session");
 const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
+// dealernet: texto de interface vem do bootstrap da sessao (src/i18n-ptbr.js). O cliente e
+// servido cru e nao pode importar modulos, por isso o servidor injeta os textos aqui.
+const t = sessionData.i18n || {};
 const key = String(sessionData.key || "");
 const filePath = String(sessionData.file || "");
 const queueStorageKey = "lavish-axi:queued:" + key;
@@ -182,7 +185,9 @@ function render() {
       (prompt, index) =>
         '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
         escapeHtml(prompt.prompt) +
-        '</span><button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
+        '</span><button class="pill-close" type="button" aria-label="' +
+        escapeHtml(t.removerPromptDaFila) +
+        '" data-index="' +
         index +
         '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
         (prompt.selector
@@ -490,14 +495,14 @@ function setLayoutGateCard(state) {
   if (!layoutGateTitle || !layoutGateCopy) return;
 
   if (state === "held") {
-    layoutGateTitle.innerHTML = "Fixing a layout issue...";
+    layoutGateTitle.innerHTML = t.corrigindoProblemaLayout;
     layoutGateCopy.textContent =
       "The browser found inaccessible or unusable content. Your agent has been notified and this will reveal after the next clean reload.";
     return;
   }
 
-  layoutGateTitle.innerHTML = "Checking layout.<br>One moment.";
-  layoutGateCopy.textContent = "Lavish is waiting for fonts and final geometry before revealing this artifact.";
+  layoutGateTitle.innerHTML = t.verificandoLayout;
+  layoutGateCopy.textContent = t.verificandoLayoutDetalhe;
 }
 
 function setLayoutGateActive(active) {
@@ -693,8 +698,8 @@ function createWarningRow(warning) {
   row.dataset.warningId = warning.id;
   const pending = pendingLayoutWarningIds().has(warning.id);
   const selectable = warning.selectable && !pending;
-  const unavailableLabel = pending ? "is queued to send" : "is already queued for a fix";
-  const statusLabel = pending ? "Queued for send" : warning.status_label;
+  const unavailableLabel = pending ? "esta na fila para envio" : "ja tem correcao pedida";
+  const statusLabel = pending ? t.naFilaParaEnvio : warning.status_label;
 
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
@@ -704,8 +709,8 @@ function createWarningRow(warning) {
   checkbox.setAttribute(
     "aria-label",
     selectable
-      ? "Select " + warning.title + " on " + warning.viewport_label
-      : warning.title + " on " + warning.viewport_label + " " + unavailableLabel,
+      ? "Selecionar " + warning.title + " em " + warning.viewport_label
+      : warning.title + " em " + warning.viewport_label + " " + unavailableLabel,
   );
   checkbox.addEventListener("change", () => {
     if (checkbox.checked) selectedWarningIds.add(warning.id);
@@ -748,21 +753,23 @@ function createWarningRow(warning) {
     const reveal = document.createElement("button");
     reveal.type = "button";
     reveal.className = "warning-action";
-    reveal.textContent = "Reveal";
-    reveal.setAttribute("aria-label", "Reveal " + warning.title + " in the artifact");
+    reveal.textContent = t.revelar;
+    reveal.setAttribute("aria-label", t.revelarNoArtefato.replace("{titulo}", warning.title));
     reveal.addEventListener("click", () => revealWarning(warning));
     actions.appendChild(reveal);
   }
   const dismiss = document.createElement("button");
   dismiss.type = "button";
   dismiss.className = "warning-action";
-  dismiss.textContent = "Dismiss";
+  dismiss.textContent = t.descartar;
   dismiss.disabled = !selectable;
   dismiss.setAttribute(
     "aria-label",
     selectable
-      ? "Dismiss " + warning.title + " for this artifact revision"
-      : warning.title + " cannot be dismissed while " + (pending ? "queued to send" : "a fix is queued"),
+      ? "Descartar " + warning.title + " nesta revisao do artefato"
+      : warning.title +
+          " nao pode ser descartado enquanto " +
+          (pending ? "esta na fila para envio" : "ha correcao pedida"),
   );
   dismiss.addEventListener("click", () => dismissWarning(warning.id));
   actions.appendChild(dismiss);
@@ -791,19 +798,19 @@ function renderWarnings() {
   warningsCount.textContent = String(count);
   warningsButton.setAttribute(
     "aria-label",
-    count === 1 ? "1 unresolved layout issue" : count + " unresolved layout issues",
+    count === 1 ? "1 problema de layout em aberto" : count + " problemas de layout em aberto",
   );
 
   const outstanding = active.filter((warning) => warning.outstanding).length;
   warningsSummary.textContent =
-    (count === 1 ? "1 unresolved issue" : count + " unresolved issues") +
-    (outstanding > 0 ? " · " + outstanding + " already queued for a fix" : "");
+    (count === 1 ? "1 problema em aberto" : count + " problemas em aberto") +
+    (outstanding > 0 ? " · " + outstanding + " ja com correcao pedida" : "");
 
   warningsList.replaceChildren();
   if (count === 0) {
     const empty = document.createElement("p");
     empty.className = "warnings-empty";
-    empty.textContent = "No unresolved layout issues.";
+    empty.textContent = t.semProblemasLayout;
     warningsList.appendChild(empty);
   } else {
     for (const warning of active) warningsList.appendChild(createWarningRow(warning));
@@ -820,7 +827,7 @@ function updateWarningSelectionState() {
   // Default selection is never "everything": Select all is an explicit action.
   warningsSelectAll.checked = selectable.length > 0 && selectedCount === selectable.length;
   warningsSelectAll.indeterminate = selectedCount > 0 && selectedCount < selectable.length;
-  warningsSelected.textContent = selectedCount === 0 ? "None selected" : selectedCount + " selected";
+  warningsSelected.textContent = selectedCount === 0 ? t.nenhumSelecionado : selectedCount + " selecionado(s)";
   warningsQueueButton.disabled = selectedCount === 0 || ended || agentPresence === "working";
 }
 
@@ -951,11 +958,11 @@ function markSessionEnded() {
 function copyFilePath() {
   copyText(filePath);
   copyHint.classList.add("copied");
-  copyHintText.textContent = "Copied";
+  copyHintText.textContent = t.copiado;
   clearTimeout(copyHintTimer);
   copyHintTimer = setTimeout(() => {
     copyHint.classList.remove("copied");
-    copyHintText.textContent = "Copy";
+    copyHintText.textContent = t.copiar;
   }, 1600);
 }
 
@@ -975,16 +982,16 @@ function setExportLabel(text) {
 }
 
 function unresolvedAssetText(count) {
-  return count === 1 ? "1 unresolved asset" : `${count} unresolved assets`;
+  return count === 1 ? "1 asset nao resolvido" : `${count} assets nao resolvidos`;
 }
 
 function noticeText(count) {
-  return count === 1 ? "1 notice" : `${count} notices`;
+  return count === 1 ? "1 aviso" : `${count} avisos`;
 }
 
 function exportWarningText(unresolvedCount, noticeCount) {
   if (unresolvedCount > 0 && noticeCount > 0) {
-    return `${unresolvedAssetText(unresolvedCount)} and ${noticeText(noticeCount)}`;
+    return `${unresolvedAssetText(unresolvedCount)} e ${noticeText(noticeCount)}`;
   }
   if (unresolvedCount > 0) return unresolvedAssetText(unresolvedCount);
   return noticeText(noticeCount);
@@ -997,7 +1004,7 @@ async function exportArtifact() {
   setExportLabel("Exporting...");
   try {
     const response = await fetch("/api/" + key + "/export");
-    if (!response.ok) throw new Error("export failed");
+    if (!response.ok) throw new Error(t.falhaExportar);
     const warningCount = Number(response.headers.get("x-lavish-export-warning-count") || "0");
     const noticeCount = Number(response.headers.get("x-lavish-export-notice-count") || "0");
     const blob = await response.blob();
@@ -1010,13 +1017,13 @@ async function exportArtifact() {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     if (warningCount > 0 || noticeCount > 0) {
-      setExportLabel(`Exported with ${exportWarningText(warningCount, noticeCount)}`);
+      setExportLabel(`Exportado com ${exportWarningText(warningCount, noticeCount)}`);
     } else {
-      setExportLabel("Export standalone HTML");
+      setExportLabel(t.exportarHtml);
       closeMenus();
     }
   } catch {
-    setExportLabel("Export failed - retry");
+    setExportLabel(t.exportarFalhou);
   } finally {
     exportArtifactButton.disabled = false;
   }

@@ -295,7 +295,7 @@ test("the annotate switch exposes the mode toggle hotkey as a discoverable toolt
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /"modeToggleHotkeyKey":"i"/);
-  assert.match(html, /id="annotation"[^>]*title="Toggle annotate\/explore mode \(⌘I \/ Ctrl\+I\)"/);
+  assert.match(html, /id="annotation"[^>]*title="Alternar entre anotar e explorar \(⌘I \/ Ctrl\+I\)"/);
 });
 
 test("artifact SDK lets marked feedback controls handle their own clicks", () => {
@@ -371,7 +371,7 @@ test("chrome top bar uses an Annotate switch instead of a labeled toggle button"
 
   assert.match(html, /class="annotate-switch" id="annotation"[^>]*aria-pressed="false"/);
   assert.match(html, /class="switch-track"/);
-  assert.match(html, />Annotate</);
+  assert.match(html, />Anotar</);
   assert.doesNotMatch(html, /Annotation: On/);
   assert.doesNotMatch(html, /Inspect/);
 });
@@ -446,7 +446,7 @@ test("chrome top bar follows the design mock wordmark and overflow menu treatmen
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();
 
-  assert.match(html, /class="brand-mark">Lavish/);
+  assert.match(html, /class="brand-mark">Dealernet/);
   assert.match(html, /class="brand-support">Editor/);
   assert.match(css, /font-family:var\(--font-serif\)/);
   assert.match(css, /letter-spacing:\.18em/);
@@ -461,8 +461,8 @@ test("overflow menu shows the artifact path with a copy affordance", async () =>
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact/index.html" });
   const css = await chromeCssSource();
 
-  assert.match(html, /class="menu-label">Editing</);
-  assert.match(html, /class="menu-file" id="copyPath"[^>]*title="Copy path · \/tmp\/artifact\/index\.html"/);
+  assert.match(html, /class="menu-label">Edicao</);
+  assert.match(html, /class="menu-file" id="copyPath"[^>]*title="Copiar caminho · \/tmp\/artifact\/index\.html"/);
   assert.match(html, /class="copy-hint"/);
   assert.match(css, /\.menu-file\{[^}]*font-family:var\(--font-mono\)/);
   assert.match(css, /\.copy-hint\.copied\{color:var\(--accent-hover\)/);
@@ -488,7 +488,7 @@ test("overflow menu path shortens the home directory to a tilde", () => {
   assert.match(html, /class="path-head">~\/projects\/demo\/</);
   assert.match(html, /class="path-tail">artifact\.html</);
   // The copy affordance still carries the absolute path.
-  assert.ok(html.includes(`title="Copy path · ${file}"`));
+  assert.ok(html.includes(`title="Copiar caminho · ${file}"`));
 });
 
 test("overflow menu path display tolerates Windows separators", () => {
@@ -505,17 +505,17 @@ test("chrome can copy the full file path from the overflow menu", async () => {
   assert.match(html, /"file":"\/tmp\/artifact\.html"/);
   assert.match(js, /const filePath = String\(sessionData\.file \|\| ""\)/);
   assert.match(js, /copyText\(filePath\)/);
-  assert.match(js, /copyHintText\.textContent = "Copied"/);
-  assert.match(js, /copyHintText\.textContent = "Copy"/);
+  assert.match(js, /copyHintText\.textContent = t\.copiado/);
+  assert.match(js, /copyHintText\.textContent = t\.copiar/);
 });
 
 test("overflow menu offers reload, snapshot copy, and end session actions", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
 
-  assert.match(html, /id="reloadArtifact"[^<]*>.*Reload artifact/);
-  assert.match(html, /id="copySnapshot"[^<]*>.*Copy DOM snapshot/);
-  assert.match(html, /class="menu-item danger" id="end"[^<]*>.*End session/);
+  assert.match(html, /id="reloadArtifact"[^<]*>.*Recarregar artefato/);
+  assert.match(html, /id="copySnapshot"[^<]*>.*Copiar snapshot do DOM/);
+  assert.match(html, /class="menu-item danger" id="end"[^<]*>.*Encerrar sessao/);
   assert.doesNotMatch(html, /End Session</);
   assert.match(js, /event\.key === "Escape"/);
 });
@@ -524,7 +524,7 @@ test("overflow menu offers a standalone HTML export that downloads a portable fi
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
 
-  assert.match(html, /id="exportArtifact"[^<]*>.*Export standalone HTML/);
+  assert.match(html, /id="exportArtifact"[^<]*>.*Exportar HTML autonomo/);
   assert.match(js, /const exportArtifactButton/);
   assert.match(js, /async function exportArtifact/);
   assert.match(js, /fetch\("\/api\/" \+ key \+ "\/export"\)/);
@@ -636,7 +636,7 @@ test("sending with an empty composer nudges instead of blocking", async () => {
   const js = await chromeClientSource();
   const css = await chromeCssSource();
 
-  assert.match(html, /class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div>/);
+  assert.match(html, /class="send-hint" id="sendHint" hidden>Escreva uma mensagem ou anote um elemento antes\.<\/div>/);
   assert.match(js, /function showSendHint\(\)/);
   assert.match(js, /sendHint\.hidden = false/);
   assert.match(js, /chatInput\.focus\(\)/);
@@ -647,11 +647,11 @@ test("composer offers two always-visible top-level send actions", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();
 
-  assert.match(html, /class="button" id="send">Send to Agent</);
-  assert.match(html, /class="button button-danger" id="sendAndEnd"[^<]*>.*Send &amp; End</);
+  assert.match(html, /class="button" id="send">Enviar ao agente</);
+  assert.match(html, /class="button button-danger" id="sendAndEnd"[^<]*>.*Enviar e encerrar</);
   assert.match(
     html,
-    /<div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Send to Agent<\/button><\/div>/,
+    /<div class="send-hint" id="sendHint" hidden>Escreva uma mensagem ou anote um elemento antes\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Enviar ao agente<\/button><\/div>/,
   );
   assert.doesNotMatch(html, /id="sendCaret"/);
   assert.doesNotMatch(html, /id="sendMenu"/);
@@ -685,7 +685,7 @@ test("chrome shows a waiting banner when no agent has attached", async () => {
   const css = await chromeCssSource();
 
   assert.match(html, /id="presenceBanner"/);
-  assert.match(html, /Your agent is not listening/);
+  assert.match(html, /Seu agente nao esta escutando/);
   assert.match(js, /presenceBanner\.hidden = ended \|\| agentPresence !== "waiting"/);
   assert.match(css, /\.presence-banner\{/);
 });
@@ -2108,7 +2108,7 @@ test("the chrome bootstraps the inbox so it survives a browser refresh", async (
     const html = await fetch(`${base}/session/${key}`).then((res) => res.text());
     assert.match(html, /id="warningsButton"/);
     assert.match(html, /initialLayoutWarnings/);
-    assert.match(html, /Text cut off by its container/);
+    assert.match(html, /Texto cortado pelo container/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -2535,7 +2535,7 @@ test("a user-initiated end via the keyed route blocks a plain reopen but honors 
     });
     const { key, url: originalUrl } = await open.json();
 
-    // The browser chrome's plain "End session" hits this keyed route.
+    // The browser chrome's plain "Encerrar sessao" hits this keyed route.
     await fetch(`${base}/api/${key}/end`, { method: "POST" });
 
     const blocked = await fetch(`${base}/api/sessions`, {
@@ -3361,8 +3361,8 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
 
   assert.match(html, /class="ended-overlay" id="endedOverlay" hidden/);
   assert.match(html, /class="ended-card"/);
-  assert.match(html, /Session ended\./);
-  assert.match(html, /Return to your agent to continue\./);
+  assert.match(html, /Sessao encerrada\./);
+  assert.match(html, /Volte ao seu agente para continuar\./);
   assert.match(html, /class="ended-copy">\/tmp\/artifact\.html</);
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
@@ -3386,9 +3386,9 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   );
   assert.doesNotMatch(html, /<iframe id="artifact"[^>]* src=/);
   assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
-  assert.match(html, /<div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout/);
+  assert.match(html, /<div class="ended-card"><div class="ended-title" id="layoutGateTitle">Verificando o layout/);
   assert.match(html, /class="ended-copy" id="layoutGateCopy"/);
-  assert.match(html, /class="button ended-action" id="layoutGateAction" type="button">Show anyway/);
+  assert.match(html, /class="button ended-action" id="layoutGateAction" type="button">Mostrar assim mesmo/);
   assert.match(css, /body\.layout-gate-active iframe#artifact\{[^}]*opacity:0/);
   assert.match(css, /\.ended-action\{[^}]*margin-top:var\(--space-8\)/);
   assert.match(js, /layoutGateAction\.onclick = \(\) => forceRevealLayoutGate\("manual"\)/);
@@ -3470,7 +3470,7 @@ test("chrome falls back to a default favicon and title when none are provided", 
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,/);
-  assert.match(html, /<title>Lavish Editor<\/title>/);
+  assert.match(html, /<title>Dealernet Editor<\/title>/);
 });
 
 test("chrome adopts a favicon tag and tab title passed from the artifact", () => {
@@ -3478,11 +3478,11 @@ test("chrome adopts a favicon tag and tab title passed from the artifact", () =>
     '<link rel="icon" href="data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\'><text>🗂️</text></svg>">';
   const html = createChromeHtml(
     { key: "abc", file: "/tmp/artifact.html" },
-    { faviconTag, title: "Project Board · Lavish" },
+    { faviconTag, title: "Project Board · Dealernet Editor" },
   );
 
   assert.ok(html.includes(faviconTag), "artifact favicon tag is injected verbatim");
-  assert.match(html, /<title>Project Board · Lavish<\/title>/);
+  assert.match(html, /<title>Project Board · Dealernet Editor<\/title>/);
 });
 
 test("chrome tab title from the artifact is HTML-escaped", () => {

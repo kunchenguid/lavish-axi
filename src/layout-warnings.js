@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
 
+// dealernet: titulos e rotulos exibidos vem da fonte unica de texto de interface.
+import { ESTADOS_AVISO, REGRAS_LAYOUT, VIEWPORTS } from "./i18n-ptbr.js";
+
 // The passive layout-warning inbox. Detection is passive: a browser diagnostic pass never wakes
 // an agent and never triggers a repair. Findings land here as durable records the user triages
 // from the Lavish top bar, and only an explicit "Queue selected fixes" turns them into an
@@ -40,9 +43,9 @@ export function viewportClassFor(viewportWidth) {
 }
 
 export function viewportClassLabel(viewportClass) {
-  if (viewportClass === "mobile") return "Mobile";
-  if (viewportClass === "compact") return "Tablet / compact";
-  return "Desktop";
+  if (viewportClass === "mobile") return VIEWPORTS.mobile;
+  if (viewportClass === "compact") return VIEWPORTS.compact;
+  return VIEWPORTS.desktop;
 }
 
 // Stable identity: the diagnostic rule, the normalized target identity, and the viewport class.
@@ -66,35 +69,38 @@ export function componentIdentity(selector) {
   return tag ? tag[1] : "";
 }
 
+// dealernet: os titulos vem de src/i18n-ptbr.js; as explicacoes sao interpoladas com medidas e
+// ficam aqui. Este texto e exibido para a PESSOA no inbox, entao e computado no servidor — o
+// chrome renderiza o que recebe e nunca decide sozinho (invariante do upstream, mantido).
 const RULE_DESCRIPTIONS = {
   "page-horizontal-overflow": {
-    title: "Page scrolls sideways",
+    title: REGRAS_LAYOUT["page-horizontal-overflow"],
     explain: (warning) =>
-      `The page is ${pxText(warning.overflowPx)} wider than the ${pxText(warning.viewportWidth)} viewport, so content sits off-screen.`,
+      `A pagina esta ${pxText(warning.overflowPx)} mais larga que a area visivel de ${pxText(warning.viewportWidth)}, entao parte do conteudo fica fora da tela.`,
   },
   "clipped-text": {
-    title: "Text cut off by its container",
+    title: REGRAS_LAYOUT["clipped-text"],
     explain: (warning) =>
-      `Rendered text crosses its container's ${axisEdge(warning.axis)} edge by ${pxText(warning.overflowPx)} and is hidden.`,
+      `O texto renderizado ultrapassa a borda ${axisEdge(warning.axis)} do container em ${pxText(warning.overflowPx)} e fica escondido.`,
   },
   "clipped-control": {
-    title: "Control cut off by its container",
+    title: REGRAS_LAYOUT["clipped-control"],
     explain: (warning) =>
-      `A required control crosses its container's ${axisEdge(warning.axis)} edge by ${pxText(warning.overflowPx)}, so part of it cannot be used.`,
+      `Um controle necessario ultrapassa a borda ${axisEdge(warning.axis)} do container em ${pxText(warning.overflowPx)}, entao parte dele nao pode ser usada.`,
   },
   "viewport-unreachable-control": {
-    title: "Control outside the viewport",
+    title: REGRAS_LAYOUT["viewport-unreachable-control"],
     explain: (warning) =>
-      `A required control sits ${pxText(warning.overflowPx)} outside the ${axisEdge(warning.axis)} edge of the viewport and cannot be reached.`,
+      `Um controle necessario esta ${pxText(warning.overflowPx)} alem da borda ${axisEdge(warning.axis)} da area visivel e nao pode ser alcancado.`,
   },
   "viewport-unreachable-content": {
-    title: "Text outside the viewport",
+    title: REGRAS_LAYOUT["viewport-unreachable-content"],
     explain: (warning) =>
-      `Rendered text sits ${pxText(warning.overflowPx)} outside the ${axisEdge(warning.axis)} edge of the viewport and cannot be read.`,
+      `O texto renderizado esta ${pxText(warning.overflowPx)} alem da borda ${axisEdge(warning.axis)} da area visivel e nao pode ser lido.`,
   },
   "overlapping-text": {
-    title: "Text covered by another element",
-    explain: () => "An opaque sibling covers nearly all of this text, so it cannot be read.",
+    title: REGRAS_LAYOUT["overlapping-text"],
+    explain: () => "Um elemento opaco cobre quase todo este texto, entao ele nao pode ser lido.",
   },
 };
 
@@ -109,26 +115,18 @@ export function describeLayoutWarning(warning) {
   const description = RULE_DESCRIPTIONS[warning?.rule ?? warning?.kind];
   if (!description) {
     return {
-      title: "Layout failure",
-      explanation: `The browser proved a severe layout failure on this element${normalized.overflowPx ? ` (${pxText(normalized.overflowPx)})` : ""}.`,
+      title: "Falha de layout",
+      explanation: `O navegador comprovou uma falha grave de layout neste elemento${normalized.overflowPx ? ` (${pxText(normalized.overflowPx)})` : ""}.`,
     };
   }
   return { title: description.title, explanation: description.explain(normalized) };
 }
 
-const STATUS_LABELS = {
-  open: "Open",
-  queued: "Queued for fix",
-  recurring: "Still present",
-  unverified: "Unverified",
-  reopened: "Returned",
-  resolved: "Resolved",
-  dismissed: "Dismissed",
-  obsolete: "Obsolete",
-};
+// dealernet: rotulos de estado do inbox, tambem exibidos para a pessoa.
+const STATUS_LABELS = ESTADOS_AVISO;
 
 export function layoutWarningStatusLabel(status) {
-  return STATUS_LABELS[status] || "Open";
+  return STATUS_LABELS[status] || ESTADOS_AVISO.open;
 }
 
 export function isActiveLayoutWarning(warning) {
@@ -348,7 +346,7 @@ export function layoutWarningPromptPayload(warnings) {
   };
   return {
     prompt,
-    text: count === 1 ? "Layout issue: 1 selected" : `Layout issues: ${count} selected`,
+    text: count === 1 ? "Problema de layout: 1 selecionado" : `Problemas de layout: ${count} selecionados`,
     target,
   };
 }
@@ -560,5 +558,5 @@ function pxText(value) {
 }
 
 function axisEdge(axis) {
-  return axis === "vertical" ? "bottom" : "right";
+  return axis === "vertical" ? "inferior" : "direita";
 }

@@ -528,7 +528,7 @@ test("a queued layout-warnings prompt is normalized like ordinary feedback", asy
           prompt: "Fix these layout issues",
           selector: "",
           tag: "layout-warnings",
-          text: "Layout issues: 1 selected",
+          text: "Problema de layout: 1 selecionado",
           target: {
             type: "layout-warnings",
             warnings: [{ id: "abc", rule: "clipped-text", selector: "p", axis: "vertical", overflow_px: 27 }],
