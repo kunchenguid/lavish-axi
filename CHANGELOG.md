@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.46](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.45...lavish-axi-v0.1.46) (2026-08-07)
+
+
+### Features
+
+* add multiplexed event stream foundation ([#212](https://github.com/kunchenguid/lavish-axi/issues/212)) ([34ed7f3](https://github.com/kunchenguid/lavish-axi/commit/34ed7f39875e472546935237b0f545d08a54f828))
+* **cli:** add self-contained Agent Plugin support ([#223](https://github.com/kunchenguid/lavish-axi/issues/223)) ([8b43c21](https://github.com/kunchenguid/lavish-axi/commit/8b43c21f4a6d4d8096db63601dce4f31a48a68a4))
+
+
+### Bug Fixes
+
+* **cli:** make version checks near-instant ([#222](https://github.com/kunchenguid/lavish-axi/issues/222)) ([8ef64df](https://github.com/kunchenguid/lavish-axi/commit/8ef64dff4980a367a904aff7f24a0d7edcba191c))
+* restore long-poll-only feedback delivery ([#214](https://github.com/kunchenguid/lavish-axi/issues/214)) ([7c64184](https://github.com/kunchenguid/lavish-axi/commit/7c64184adce8b2b18c1cb072779305303b8079d9))
+
 ## [0.1.45](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.44...lavish-axi-v0.1.45) (2026-07-31)
 
 
