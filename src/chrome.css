@@ -1115,6 +1115,55 @@ body.lavish {
 .pill-wrap:focus-within .pill-tooltip {
   display: block;
 }
+.pill-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.pill-pin svg {
+  display: block;
+}
+.annotations-sent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 16px 12px;
+  flex: 0 0 auto;
+}
+.annotations-sent:empty {
+  display: none;
+}
+.annotation-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--fg-muted);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.annotation-entry-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.annotation-highlight {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .composer textarea {
   width: 100%;
   max-width: 100%;

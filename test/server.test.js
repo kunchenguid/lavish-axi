@@ -721,7 +721,7 @@ test("chrome puts queued annotations above the chat composer as preview pills", 
   assert.match(html, /id="annotationPills"/);
   assert.match(
     html,
-    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="annotation-pills" id="annotationPills"><\/div><\/div><div class="composer">/,
+    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="annotations-sent" id="annotationsSent"><\/div><div class="annotation-pills" id="annotationPills"><\/div><\/div><div class="composer">/,
   );
   assert.match(js, /class="pill/);
   assert.match(js, /pill-preview/);

@@ -520,6 +520,89 @@ test("chrome client replaces queued prompts with the same internal key", async (
   assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /Use plan A/);
 });
 
+test("sending a queued annotation moves it into the sent-annotations section without a server round-trip", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { id: "ann-1", prompt: "Make this warmer", selector: "h1", tag: "h1", text: "Hello" },
+  });
+  assert.equal(chrome.queued().length, 1);
+
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "" });
+  await flushPromises();
+
+  assert.equal(chrome.queued().length, 0);
+  const entry = chrome.element("annotationsSent").children[0];
+  assert.ok(entry, "a sent-annotation entry was appended");
+  assert.equal(entry.dataset.annotationId, "ann-1");
+});
+
+test("a sent annotation's pin button asks the artifact iframe to reveal its element", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { id: "ann-1", prompt: "Make this warmer", selector: "h1", tag: "h1", text: "Hello" },
+  });
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "" });
+  await flushPromises();
+
+  const entry = chrome.element("annotationsSent").children[0];
+  const pin = entry.children.find((child) => String(child.className).includes("pill-pin"));
+  pin.dispatch("click", { stopPropagation() {} });
+
+  const revealMessage = chrome.postedToFrame.at(-1);
+  assert.equal(revealMessage.type, "lavish:revealElement");
+  assert.equal(revealMessage.selector, "h1");
+});
+
+test("an openAnnotation message from the artifact scrolls the matching sent-annotation entry into view", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { id: "ann-1", prompt: "Make this warmer", selector: "h1", tag: "h1", text: "Hello" },
+  });
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "" });
+  await flushPromises();
+
+  chrome.sendFrameMessage({ type: "lavish:openAnnotation", id: "ann-1" });
+
+  const entry = chrome.element("annotationsSent").children[0];
+  assert.ok(entry.scrolledIntoView, "the entry was scrolled into view");
+});
+
+test("chrome client posts the current annotation targets to the iframe after queueing and after send", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { id: "ann-1", prompt: "Make this warmer", selector: "h1", tag: "h1", text: "Hello" },
+  });
+
+  const queuedTargets = chrome.postedToFrame.filter((message) => message.type === "lavish:setAnnotationTargets");
+  assert.ok(queuedTargets.length > 0, "targets were posted after queueing");
+  const beforeSend = queuedTargets.at(-1).targets;
+  assert.equal(beforeSend.length, 1);
+  assert.equal(beforeSend[0].id, "ann-1");
+  assert.equal(beforeSend[0].selector, "h1");
+
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "" });
+  await flushPromises();
+
+  const afterSend = chrome.postedToFrame
+    .filter((message) => message.type === "lavish:setAnnotationTargets")
+    .at(-1).targets;
+  assert.equal(afterSend.length, 1);
+  assert.equal(afterSend[0].id, "ann-1");
+  assert.equal(afterSend[0].selector, "h1");
+});
+
 test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {
   const chrome = await createChromeHarness();
   const panelScroll = chrome.element("panelScroll");
@@ -1641,12 +1724,15 @@ test("chrome send and end with an empty composer nudges instead of ending", asyn
     },
   });
   chrome.element("sendHint").hidden = true;
+  // Startup itself posts the current (empty) annotation-target list once; only the messages
+  // caused by the click below are under test.
+  const baselinePostCount = chrome.postedToFrame.length;
 
   chrome.element("sendAndEnd").onclick();
   await flushPromises();
 
   assert.equal(posts.length, 0);
-  assert.equal(chrome.postedToFrame.length, 0);
+  assert.equal(chrome.postedToFrame.length, baselinePostCount);
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.element("chatInput").disabled, false);
@@ -1814,6 +1900,9 @@ test("artifact relays cannot invoke whiteboard persistence", async () => {
       return whiteboardFetch(url);
     },
   });
+  // Startup itself posts the current (empty) annotation-target list once; only the messages
+  // caused by the forged relay below are under test.
+  const baselinePostCount = chrome.postedToFrame.length;
 
   chrome.sendFrameMessage({
     type: "lavish:whiteboardRelay",
@@ -1823,7 +1912,7 @@ test("artifact relays cannot invoke whiteboard persistence", async () => {
   await flushPromises();
 
   assert.equal(calls.length, 0);
-  assert.equal(chrome.postedToFrame.length, 0);
+  assert.equal(chrome.postedToFrame.length, baselinePostCount);
 });
 
 test("unverified whiteboard frames cannot invoke whiteboard persistence", async () => {
