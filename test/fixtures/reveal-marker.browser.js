@@ -12,7 +12,7 @@
 
   // Wait until scrolling stops changing, so the assertion runs against a settled viewport rather
   // than a guessed delay. Capped so a stuck scroll fails loudly instead of hanging the fixture.
-  async function settle(maxFrames = 90) {
+  async function settle(maxFrames = 240) {
     let previous = NaN;
     let stable = 0;
     for (let i = 0; i < maxFrames; i += 1) {
@@ -57,10 +57,20 @@
     // The original symptom: after a smooth scroll, is the box actually on the element?
     result.afterScroll = drift(target);
 
+    // The marker removes itself 2.4s after it is drawn, and the settling above is unbounded in
+    // wall-clock terms on a loaded runner. Re-arm it rather than measuring a marker that expired,
+    // so a slow machine reports a timing miss instead of a phantom regression.
+    if (!marker()) {
+      window.postMessage({ type: "lavish:revealElement", selector: "#target" }, "*");
+      await settle();
+      result.rearmedBeforeSecondScroll = true;
+    }
+
     // Deterministic proof of tracking, independent of how the browser implements smooth
     // scrolling: a one-shot rect read can never survive a scroll that happens after it.
     window.scrollBy(0, 240);
     await settle();
+    result.markerPresentAfterFurtherScroll = Boolean(marker());
     result.afterFurtherScroll = drift(target);
 
     result.pass = true;

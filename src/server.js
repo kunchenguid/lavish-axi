@@ -10,26 +10,8 @@ import { fileURLToPath } from "node:url";
 import chokidar from "chokidar";
 import express from "express";
 
-import {
-  classifySevereTextOverflow,
-  classifyMaterialRectEscape,
-  createArtifactSdk,
-  dedupeAnnotationTargets,
-  deriveAttachmentNoticeState,
-  deriveLavishQueueKey,
-  findStableLayoutFindings,
-  isMaterialPageOverflow,
-  isModeToggleHotkeyEvent,
-  isNativeInteractiveControl,
-  isNearTotalOcclusion,
-  isTrustedAttachmentResult,
-  attachmentSizeError,
-  acceptedImageTypes,
-  classifyAttachmentBatch,
-  partitionDroppedFiles,
-  planClipboardPaste,
-  MODE_TOGGLE_HOTKEY_KEY,
-} from "./artifact-sdk.js";
+import { createArtifactSdk, MODE_TOGGLE_HOTKEY_KEY } from "./artifact-sdk.js";
+import * as artifactSdk from "./artifact-sdk.js";
 import {
   activeLayoutWarningCount,
   resolveDiagnosticViewportClasses,
@@ -2188,6 +2170,16 @@ export function createSdkJs(
 ) {
   const mermaidHelperSource = serializeModuleHelpers(mermaidNode);
   const tableHelperSource = serializeModuleHelpers(tableCellHelpers);
+  // Same treatment for artifact-sdk.js's own helpers. A hand-kept list here is a silent
+  // ReferenceError waiting to happen: a helper called from inside createArtifactSdk but left out
+  // of the list passes build, lint, and typecheck and only fails in the browser, where it kills
+  // the feature with no error anywhere else.
+  const sdkHelperDecls = Object.entries(artifactSdk)
+    .filter(([name]) => name !== "createArtifactSdk")
+    .map(([name, value]) =>
+      typeof value === "function" ? `const ${name}=${value.toString()};` : `const ${name}=${JSON.stringify(value)};`,
+    )
+    .join("\n");
   const revisionNumber = Number(artifactRevision);
   const revision = Number.isFinite(revisionNumber) && revisionNumber >= 0 ? Math.trunc(revisionNumber) : 0;
   const loadToken = String(artifactLoadToken || "").slice(0, 200);
@@ -2204,23 +2196,8 @@ export function createSdkJs(
 const key=${JSON.stringify(key)};
 const artifactRevision=${revision};
 const artifactLoadToken=${JSON.stringify(loadToken)};
-const deriveQueueKey=${deriveLavishQueueKey.toString()};
-const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
-const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
-const isModeToggleHotkeyEvent=${isModeToggleHotkeyEvent.toString()};
-const classifySevereTextOverflow=${classifySevereTextOverflow.toString()};
-const classifyMaterialRectEscape=${classifyMaterialRectEscape.toString()};
-const isMaterialPageOverflow=${isMaterialPageOverflow.toString()};
-const findStableLayoutFindings=${findStableLayoutFindings.toString()};
-const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
-const attachmentSizeError=${attachmentSizeError.toString()};
-const classifyAttachmentBatch=${classifyAttachmentBatch.toString()};
-const partitionDroppedFiles=${partitionDroppedFiles.toString()};
-const planClipboardPaste=${planClipboardPaste.toString()};
-const acceptedImageTypes=${acceptedImageTypes.toString()};
-const isTrustedAttachmentResult=${isTrustedAttachmentResult.toString()};
-const deriveAttachmentNoticeState=${deriveAttachmentNoticeState.toString()};
-const dedupeAnnotationTargets=${dedupeAnnotationTargets.toString()};
+${sdkHelperDecls}
+const deriveQueueKey=deriveLavishQueueKey;
 ${mermaidHelperSource.declarations}
 const mermaidHelpers={ ${mermaidHelperSource.names.join(", ")} };
 ${tableHelperSource.declarations}

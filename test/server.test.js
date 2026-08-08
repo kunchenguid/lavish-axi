@@ -549,43 +549,24 @@ test("artifact SDK script is valid JavaScript", () => {
   assert.doesNotThrow(() => new Function(js));
 });
 
-// createSdkJs hand-declares the artifact-sdk.js helpers it inlines (unlike the mermaid-node.js
-// helpers, which are derived from the module's exports). A helper called from inside
-// createArtifactSdk but missing from that list is a silent runtime ReferenceError in the browser,
-// with no build, lint, or type error anywhere - it just makes the feature do nothing.
-test("every artifact-sdk helper the SDK calls is declared in the emitted script", () => {
+// createSdkJs derives its artifact-sdk.js declarations from the module's exports, so every helper
+// createArtifactSdk can reach is in scope by construction. Executing the emitted script proves the
+// generated bundle actually parses and resolves rather than that its text mentions a name.
+test("the emitted SDK resolves every artifact-sdk helper it references", () => {
   const js = createSdkJs("abc");
+  const referenced = Object.keys(artifactSdk).filter((name) => name !== "createArtifactSdk");
+  assert.ok(referenced.length > 0, "artifact-sdk.js exports helpers for the SDK bundle");
 
-  // Scan createArtifactSdk's own body for helper calls. Helpers reached through an injected
-  // parameter (deriveQueueKey, mermaidHelpers) are never named here, so aliasing stays invisible
-  // to this check - only direct same-scope references need a matching inlined declaration.
-  const body = artifactSdk.createArtifactSdk.toString();
+  // Run the bundle's declaration prologue - everything before it hands control to
+  // createArtifactSdk, which needs a live DOM - and ask for each helper by name.
+  const invocation = js.indexOf("\n(function createArtifactSdk");
+  assert.ok(invocation > 0, "the emitted bundle invokes createArtifactSdk");
+  const declarations = js.slice(js.indexOf("{") + 1, invocation);
+  const resolved = new Function(`${declarations}\nreturn { ${referenced.join(", ")} };`)();
 
-  for (const [name, value] of Object.entries(artifactSdk)) {
-    if (typeof value !== "function" || name === "createArtifactSdk") continue;
-    if (!new RegExp("\\b" + name + "\\s*\\(").test(body)) continue;
-    assert.ok(
-      js.includes(value.toString()),
-      `createArtifactSdk calls ${name} but createSdkJs never inlines it - add it to the const list in createSdkJs`,
-    );
+  for (const name of referenced) {
+    assert.notEqual(resolved[name], undefined, `${name} is not in scope in the emitted SDK bundle`);
   }
-});
-
-// scrollIntoView with `behavior: "smooth"` settles asynchronously, so a rect read in the same tick
-// is pre-scroll and strands the position:fixed marker over the wrong place - visible as a "ghost"
-// box that only landed correctly when the element already happened to be in view. The marker must
-// therefore re-read its rect on a frame loop rather than once at creation.
-test("reveal marker tracks its element across the smooth scroll instead of a one-shot rect read", () => {
-  const js = createSdkJs("abc");
-  const reveal = js.slice(js.indexOf("function revealElement"));
-  const body = reveal.slice(0, reveal.indexOf("\n  }") + 4);
-
-  assert.match(body, /requestAnimationFrame/);
-  assert.match(body, /getBoundingClientRect/);
-  assert.ok(
-    body.indexOf("requestAnimationFrame") > body.indexOf("scrollIntoView"),
-    "the marker must be repositioned after the scroll is requested, not before",
-  );
 });
 
 test("artifact SDK ignores Lavish-owned annotation UI", () => {

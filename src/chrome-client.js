@@ -414,11 +414,15 @@ function renderAnnotations() {
   postAnnotationTargets();
 }
 
+// A badge can stand for either a queued prompt or an already-sent one - both are in the badge
+// list - so the lookup spans both rows, otherwise clicking a queued annotation's badge is a
+// silent no-op until the queue is sent.
 function openAnnotationEntry(id) {
   const target = String(id || "");
   if (!target) return;
+  const rows = [...annotationPills.children, ...annotationsSent.children];
   const entry = /** @type {HTMLElement | undefined} */ (
-    [...annotationsSent.children].find((child) => /** @type {HTMLElement} */ (child).dataset?.annotationId === target)
+    rows.find((child) => /** @type {HTMLElement} */ (child).dataset?.annotationId === target)
   );
   if (!entry) return;
   scrollElementIntoView(entry);
@@ -432,7 +436,9 @@ function render() {
       const targetLabel = promptTargetLabel(prompt);
       const showLocator = targetLabel && prompt.selector && targetLabel !== prompt.selector;
       return (
-        '<div class="pill-wrap" data-selector="' +
+        '<div class="pill-wrap" data-annotation-id="' +
+        escapeHtml(prompt.id || "") +
+        '" data-selector="' +
         escapeHtml(prompt.selector || "") +
         '"><div class="pill"><span class="pill-preview">' +
         escapeHtml(

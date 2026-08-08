@@ -132,6 +132,16 @@ test("the reveal marker lands on its element and tracks it through scrolling", {
     assert.ok(result.scrolledBy > 0, "revealing the target scrolled the page");
     assert.equal(result.markerPresent, true, "a reveal marker was drawn");
 
+    // Without these, a marker that expired mid-fixture would surface as a null dereference rather
+    // than as the timing miss it is.
+    assert.ok(result.afterScroll, "the marker was gone before its position could be measured after the scroll settled");
+    assert.equal(
+      result.markerPresentAfterFurtherScroll,
+      true,
+      "the marker was gone before its position could be measured after the second scroll",
+    );
+    assert.ok(result.afterFurtherScroll, "no marker position was measured after the second scroll");
+
     // 1px of tolerance for subpixel layout; the pre-fix bug drifts by the whole scroll distance.
     assert.ok(
       result.afterScroll.dy <= 1 && result.afterScroll.dx <= 1,

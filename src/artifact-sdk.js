@@ -490,6 +490,11 @@ export function createArtifactSdk(
   /** @type {Array<{ id: string, el: Element, node: HTMLDivElement }>} */
   let annotationBadges = [];
   let annotationBadgeFrame = 0;
+  let annotationBadgeSettleFrames = 0;
+  let annotationBadgeObserver = null;
+  // A scroll or resize keeps arriving while a smooth scroll or a CSS transition is still running,
+  // so each trigger re-arms a short settle window rather than a single frame.
+  const ANNOTATION_BADGE_SETTLE_FRAMES = 20;
 
   function setAnnotationTargets(targets) {
     annotationTargets = Array.isArray(targets) ? targets : [];
@@ -509,10 +514,28 @@ export function createArtifactSdk(
       root.appendChild(node);
       return { id, el, node };
     });
+    observeAnnotationBadgeTargets();
+    syncAnnotationBadgeInteractivity();
     positionAnnotationBadges();
-    if (annotationBadges.length && !annotationBadgeFrame) {
-      annotationBadgeFrame = window.requestAnimationFrame(annotationBadgeLoop);
+  }
+
+  // Badges only hit-test while annotating: in explore mode a dot pinned to an element's top-right
+  // corner would otherwise swallow clicks meant for whatever the artifact draws there.
+  function syncAnnotationBadgeInteractivity() {
+    for (const badge of annotationBadges) badge.node.classList.toggle("is-idle", !annotationMode);
+  }
+
+  // Element-level geometry changes (an accordion opening, an image loading, a font swap) move a
+  // badge's anchor without firing scroll or resize, so the targets are observed directly.
+  function observeAnnotationBadgeTargets() {
+    if (typeof ResizeObserver !== "function") return;
+    if (!annotationBadgeObserver) {
+      annotationBadgeObserver = new ResizeObserver(() => scheduleAnnotationBadgeSync());
     }
+    annotationBadgeObserver.disconnect();
+    if (!annotationBadges.length) return;
+    annotationBadgeObserver.observe(document.documentElement);
+    for (const badge of annotationBadges) annotationBadgeObserver.observe(badge.el);
   }
 
   function positionAnnotationBadges() {
@@ -523,18 +546,29 @@ export function createArtifactSdk(
     }
   }
 
-  // Badges are persistent (unlike the one-shot reveal-marker pulse), so their position needs to
-  // track scroll/resize/layout changes. This loop self-terminates once there are no badges left
-  // rather than running unconditionally in the background.
-  function annotationBadgeLoop() {
-    annotationBadgeFrame = 0;
+  // Badges are persistent (unlike the one-shot reveal-marker pulse), so their position has to
+  // track scroll, resize, and layout changes. Repositioning is driven by those events and bounded
+  // to a short settle window instead of an always-on frame loop: a permanent loop reads layout
+  // every frame for the whole review, which never lets the artifact's renderer idle.
+  function scheduleAnnotationBadgeSync(frames = ANNOTATION_BADGE_SETTLE_FRAMES) {
     if (!annotationBadges.length) return;
-    positionAnnotationBadges();
-    annotationBadgeFrame = window.requestAnimationFrame(annotationBadgeLoop);
+    annotationBadgeSettleFrames = Math.max(annotationBadgeSettleFrames, frames);
+    if (!annotationBadgeFrame) annotationBadgeFrame = window.requestAnimationFrame(annotationBadgeLoop);
   }
 
-  window.addEventListener("scroll", positionAnnotationBadges, true);
-  window.addEventListener("resize", positionAnnotationBadges);
+  function annotationBadgeLoop() {
+    annotationBadgeFrame = 0;
+    if (!annotationBadges.length) {
+      annotationBadgeSettleFrames = 0;
+      return;
+    }
+    positionAnnotationBadges();
+    annotationBadgeSettleFrames -= 1;
+    if (annotationBadgeSettleFrames > 0) annotationBadgeFrame = window.requestAnimationFrame(annotationBadgeLoop);
+  }
+
+  window.addEventListener("scroll", () => scheduleAnnotationBadgeSync(), true);
+  window.addEventListener("resize", () => scheduleAnnotationBadgeSync());
   let counter = 0;
   const ids = new WeakMap();
 
@@ -1264,6 +1298,20 @@ export function createArtifactSdk(
     // Freeze Mermaid pan/zoom while annotating so nodes sit at stable screen
     // positions and a click resolves cleanly to one node instead of panning.
     setMermaidFrozen(annotationMode);
+    syncAnnotationBadgeInteractivity();
+  }
+
+  // crypto.randomUUID exists only in a secure context, and Lavish is documented to bind to a LAN
+  // address (LAVISH_AXI_HOST), where the artifact is plain http and it is undefined. getRandomValues
+  // is available everywhere, so identifying a prompt never depends on the origin being secure.
+  function promptId() {
+    const webCrypto = window.crypto;
+    if (typeof webCrypto?.randomUUID === "function") return webCrypto.randomUUID();
+    if (typeof webCrypto?.getRandomValues === "function") {
+      const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+      return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    return Date.now().toString(16) + "-" + Math.random().toString(16).slice(2);
   }
 
   function queuePrompt(prompt, options = {}) {
@@ -1271,7 +1319,7 @@ export function createArtifactSdk(
     /** @type {{ id: string, uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown, attachments?: Array<{ id: string, name?: string }>, _lavishQueueKey?: string }} */
     const item = {
       ...context(originElement),
-      id: crypto.randomUUID(),
+      id: promptId(),
       prompt: String(prompt || ""),
     };
     const queueKey = typeof deriveQueueKey === "function" ? deriveQueueKey(originElement, options) : "";
@@ -2275,7 +2323,7 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-hint-alert{color:#ff9d7a;font-weight:700}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:176px;overflow-y:auto}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}.lavish-annotation-badge{position:fixed;width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--ink-900);cursor:pointer;pointer-events:auto;z-index:2147483647}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-hint-alert{color:#ff9d7a;font-weight:700}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:176px;overflow-y:auto}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}.lavish-annotation-badge{position:fixed;width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--ink-900);cursor:pointer;pointer-events:auto;z-index:2147483647}.lavish-annotation-badge.is-idle{pointer-events:none;opacity:.65}`;
     shadow.appendChild(style);
     return shadow;
   }
