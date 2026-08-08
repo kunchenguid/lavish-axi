@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   classifyMaterialRectEscape,
   classifySevereTextOverflow,
+  dedupeAnnotationTargets,
   deriveLavishQueueKey,
   findStableLayoutFindings,
   isMaterialPageOverflow,
@@ -323,4 +324,41 @@ test("isModeToggleHotkeyEvent rejects extra shift or alt modifiers", () => {
 test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () => {
   assert.equal(isModeToggleHotkeyEvent({ key: "e", metaKey: true }), false);
   assert.equal(isModeToggleHotkeyEvent({ key: "Enter", metaKey: true }), false);
+});
+
+test("dedupeAnnotationTargets keeps the earliest id per resolved element", () => {
+  const elA = { name: "a" };
+  const elB = { name: "b" };
+  const resolve = (selector) => ({ "sel-a": elA, "sel-b": elB })[selector] || null;
+
+  const result = dedupeAnnotationTargets(
+    [
+      { id: "1", selector: "sel-a" },
+      { id: "2", selector: "sel-a" },
+      { id: "3", selector: "sel-b" },
+    ],
+    resolve,
+  );
+
+  assert.deepEqual(result, [
+    { id: "1", el: elA },
+    { id: "3", el: elB },
+  ]);
+});
+
+test("dedupeAnnotationTargets drops entries with no id, no selector, or an unresolved selector", () => {
+  const elA = { name: "a" };
+  const resolve = (selector) => (selector === "sel-a" ? elA : null);
+
+  const result = dedupeAnnotationTargets(
+    [
+      { id: "", selector: "sel-a" },
+      { id: "1", selector: "" },
+      { id: "2", selector: "sel-missing" },
+      { id: "3", selector: "sel-a" },
+    ],
+    resolve,
+  );
+
+  assert.deepEqual(result, [{ id: "3", el: elA }]);
 });

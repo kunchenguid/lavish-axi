@@ -113,6 +113,7 @@ export class SessionStore {
       delivered_attachments: Array.isArray(existing.delivered_attachments) ? existing.delivered_attachments : [],
       dom_snapshot: existing.dom_snapshot || "",
       chat: existing.chat || [],
+      annotations: existing.annotations || [],
       updated_at: new Date().toISOString(),
     };
     state.sessions[key] = session;
@@ -237,10 +238,29 @@ export class SessionStore {
       ? []
       : acceptedPrompts
           .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-          .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+          .map((prompt) => ({ role: "user", text: prompt.prompt, at }));
+    // Annotation-tagged prompts never reach session.chat (only tag === "message" does) and
+    // session.prompts is a write-only outbox drained by takeFeedback, so without this they
+    // leave no visible trace once sent. This is the durable, human-facing record of them. A
+    // restore replays a batch that was already accepted (and recorded) the first time it ran
+    // through this method, so it must not record the annotations a second time.
+    const newAnnotations = restoring
+      ? []
+      : acceptedPrompts
+          .filter((prompt) => prompt.tag !== "message" && prompt.selector)
+          .map((prompt) => ({
+            id: prompt.id || "",
+            selector: prompt.selector,
+            tag: prompt.tag,
+            text: prompt.text,
+            prompt: prompt.prompt,
+            at,
+            ...(prompt.target ? { target: prompt.target } : {}),
+          }));
     const existingPrompts = Array.isArray(session.prompts) ? session.prompts : [];
     session.prompts = restoring ? [...acceptedPrompts, ...existingPrompts] : [...existingPrompts, ...acceptedPrompts];
     session.chat = [...(session.chat || []), ...userMessages];
+    session.annotations = [...(session.annotations || []), ...newAnnotations];
     if (restoring) {
       const restoredFailures = Array.isArray(payload.artifact_failures)
         ? JSON.parse(JSON.stringify(payload.artifact_failures))
@@ -703,6 +723,8 @@ function normalizePrompt(prompt) {
     tag: String(prompt.tag || ""),
     text: String(prompt.text || ""),
   };
+  const id = String(prompt.id || "").trim();
+  if (id) normalized.id = id;
   const target = normalizeTarget(prompt.target);
   if (target) normalized.target = target;
   const { refs, malformed } = normalizeAttachmentRefs(prompt.attachments);
