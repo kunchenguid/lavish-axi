@@ -63,6 +63,75 @@ test("queued prompts are returned with DOM snapshot context and then cleared", a
   }
 });
 
+test("annotation-tagged prompts create a durable annotation record separate from chat and the outbox", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, {
+      prompts: [
+        { id: "ann-1", uid: "1", prompt: "Make this warmer", selector: "h1", tag: "h1", text: "Hello" },
+        { id: "", prompt: "Just a note", selector: "", tag: "message", text: "Freeform message" },
+      ],
+    });
+
+    const stored = await store.findByKey(session.key);
+    assert.deepEqual(stored.annotations, [
+      {
+        id: "ann-1",
+        selector: "h1",
+        tag: "h1",
+        text: "Hello",
+        prompt: "Make this warmer",
+        at: stored.annotations[0].at,
+      },
+    ]);
+    assert.deepEqual(stored.chat, [{ role: "user", text: "Just a note", at: stored.chat[0].at }]);
+
+    // Draining the outbox must not touch the durable annotation log.
+    await store.takeFeedback(session.key);
+    const afterDrain = await store.findByKey(session.key);
+    assert.equal(afterDrain.annotations.length, 1);
+    assert.equal(afterDrain.prompts.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("annotation records preserve the target payload for text-range and Mermaid-node annotations", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<p id='intro'>Hello bright world</p>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const target = {
+      type: "text-range",
+      text: "bright",
+      selector: "p#intro",
+      start: { selector: "p#intro", path: [0], offset: 6 },
+      end: { selector: "p#intro", path: [0], offset: 12 },
+    };
+    await store.queuePrompts(session.key, {
+      prompts: [
+        { id: "ann-2", uid: "", prompt: "Punch this up", selector: "p#intro", tag: "text", text: "bright", target },
+      ],
+    });
+
+    const stored = await store.findByKey(session.key);
+    assert.equal(stored.annotations.length, 1);
+    assert.deepEqual(stored.annotations[0].target, target);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("queued text selection prompts preserve range anchors", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

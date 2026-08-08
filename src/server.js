@@ -1474,6 +1474,7 @@ export function createChromeHtml(
     key: session.key,
     file: session.file,
     initialChat: session.chat || [],
+    initialAnnotations: session.annotations || [],
     // Bootstrapping the inbox from the server is what makes it survive a browser refresh or a
     // reconnect: the chrome never owns warning state, it only renders it.
     initialLayoutWarnings: serializeLayoutWarnings(session.layout_warnings),

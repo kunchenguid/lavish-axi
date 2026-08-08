@@ -73,6 +73,7 @@ export class SessionStore {
         artifact_failures: Array.isArray(existing.artifact_failures) ? existing.artifact_failures : [],
         dom_snapshot: existing.dom_snapshot || "",
         chat: existing.chat || [],
+        annotations: existing.annotations || [],
         updated_at: new Date().toISOString(),
       };
       state.sessions[key] = session;
@@ -135,9 +136,24 @@ export class SessionStore {
       session.layout_warnings = warnings;
       const userMessages = acceptedPrompts
         .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-        .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+        .map((prompt) => ({ role: "user", text: prompt.prompt, at }));
+      // Annotation-tagged prompts never reach session.chat (only tag === "message" does) and
+      // session.prompts is a write-only outbox drained by takeFeedback, so without this they
+      // leave no visible trace once sent. This is the durable, human-facing record of them.
+      const newAnnotations = acceptedPrompts
+        .filter((prompt) => prompt.tag !== "message" && prompt.selector)
+        .map((prompt) => ({
+          id: prompt.id || "",
+          selector: prompt.selector,
+          tag: prompt.tag,
+          text: prompt.text,
+          prompt: prompt.prompt,
+          at,
+          ...(prompt.target ? { target: prompt.target } : {}),
+        }));
       session.prompts = [...(session.prompts || []), ...acceptedPrompts];
       session.chat = [...(session.chat || []), ...userMessages];
+      session.annotations = [...(session.annotations || []), ...newAnnotations];
       session.pending_prompts = session.prompts.length;
       session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
       session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
@@ -544,6 +560,8 @@ function normalizePrompt(prompt) {
     tag: String(prompt.tag || ""),
     text: String(prompt.text || ""),
   };
+  const id = String(prompt.id || "").trim();
+  if (id) normalized.id = id;
   const target = normalizeTarget(prompt.target);
   if (target) normalized.target = target;
   return normalized;
