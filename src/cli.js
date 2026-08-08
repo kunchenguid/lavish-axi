@@ -100,7 +100,6 @@ export function comSaidaJson(fn, env = process.env) {
 }
 
 export async function run(argv) {
-  await ensureStateDir();
   // O bloqueio do self-updater acontece ANTES do `runAxiCli`, que e quem sabe renderizar AxiError.
   // Sem tratar aqui, a mensagem — que existe justamente para EXPLICAR por que `update` nao roda nesta
   // build — saia como stack trace de excecao nao capturada, e o exit code virava 1 generico em vez do
@@ -117,6 +116,9 @@ export async function run(argv) {
     process.exitCode = exitCodeForError(error);
     return;
   }
+  // Comandos proibidos falham antes daqui: nem o diretório de estado nasce para uma operação que esta
+  // build promete não executar (AC-15).
+  await ensureStateDir();
   const normalizedArgv = normalizeArgv(argv);
   const agent = detectInvokingAgent(process.env);
   const isTopLevelHelp = argv.length === 1 && argv[0] === "--help";

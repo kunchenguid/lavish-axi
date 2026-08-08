@@ -4,22 +4,30 @@
 // parser em silencio, num ponto onde "silencio" significa a trilha achar que a vista nao subiu.
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { comSaidaJson, saidaEmJson } from "../src/cli.js";
 
-test("`update` falha com mensagem RENDERIZADA e exit 2, nao com stack trace", async () => {
+test("`update` falha com mensagem RENDERIZADA e exit 2, nao com stack trace", async (t) => {
   const { spawnSync } = await import("node:child_process");
+  const raiz = await mkdtemp(join(tmpdir(), "lavish-teste-update-"));
+  t.after(() => rm(raiz, { recursive: true, force: true }));
+  const stateDir = join(raiz, "nao-deve-existir");
   const r = spawnSync(process.execPath, ["bin/lavish-axi.js", "update"], {
     cwd: new URL("..", import.meta.url).pathname.replace(/^\//, ""),
     encoding: "utf8",
-    env: { ...process.env, LAVISH_AXI_STATE_DIR: `${process.env.TEMP || "/tmp"}/lavish-teste-update` },
+    env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir },
   });
   const saida = `${r.stdout}${r.stderr}`;
   assert.equal(r.status, 2, saida);
   assert.match(saida, /esta desabilitado nesta build/);
   assert.match(saida, /build Dealernet/);
   assert.doesNotMatch(saida, /at assertCommandAllowed|AxiError: /, "stack trace no lugar da mensagem e o defeito");
+  assert.equal(existsSync(stateDir), false, "comando proibido precisa falhar antes de tocar no state dir");
 });
 
 test("saidaEmJson so liga com LAVISH_AXI_JSON=1 exato", () => {

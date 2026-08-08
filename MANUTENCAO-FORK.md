@@ -70,10 +70,10 @@ O `check` roda build, lint, format, typecheck, `node --test`, `scripts/verificar
 ingles reaparecer numa superficie que a pessoa le, se `<html lang="pt-BR">` ou a marca sairem, ou se a
 API do artefato (`window.lavish`, `data-lavish-*`, `queuePrompt`) for renomeada.
 
-**Baseline desta estacao: 580 passam / 2 falham.** As duas falhas sao ambientais e pre-existentes
+**Baseline desta estacao: 589 passam / 2 falham.** As duas falhas sao ambientais e pre-existentes
 (symlink em Windows sem Developer Mode): `CLAUDE.md ... symlink` (`EINVAL readlink`) e
 `refuses to inline a local symlink ...` (`EPERM symlink`). Regressao se mede pelos **dois** numeros:
-falha acima de 2 **ou** total abaixo de 580. Sem o piso, apagar um teste que falha viraria "verde".
+falha acima de 2 **ou** total abaixo de 589. Sem o piso, apagar um teste que falha viraria "verde".
 
 ## Revendorizar para o plugin
 
