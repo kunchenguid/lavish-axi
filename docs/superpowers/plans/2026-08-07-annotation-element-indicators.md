@@ -24,11 +24,13 @@
 ### Task 1: Server — durable annotation records
 
 **Files:**
+
 - Modify: `src/session-store.js:539-550` (`normalizePrompt`), `src/session-store.js:62-77` (`upsertSession`'s session object), `src/session-store.js:100-141` (`queuePrompts`)
 - Modify: `src/server.js:1476` (panel HTML template's session JSON blob)
 - Test: `test/session-store.test.js`
 
 **Interfaces:**
+
 - Produces: every session object now has `session.annotations: Array<{ id: string, selector: string, tag: string, text: string, prompt: string, at: string, target?: object }>`, durable (never cleared by `takeFeedback`, unlike `session.prompts`).
 - Produces: `normalizePrompt` now preserves an optional `id` string on the normalized prompt (only when the incoming prompt had one), the same convention already used for `target`.
 - Produces: the panel HTML template's embedded JSON (`#lavish-session` script tag, read by `chrome-client.js` as `sessionData`) now includes `initialAnnotations: session.annotations || []`, alongside the existing `initialChat`.
@@ -57,7 +59,14 @@ test("annotation-tagged prompts create a durable annotation record separate from
 
     const stored = await store.findByKey(session.key);
     assert.deepEqual(stored.annotations, [
-      { id: "ann-1", selector: "h1", tag: "h1", text: "Hello", prompt: "Make this warmer", at: stored.annotations[0].at },
+      {
+        id: "ann-1",
+        selector: "h1",
+        tag: "h1",
+        text: "Hello",
+        prompt: "Make this warmer",
+        at: stored.annotations[0].at,
+      },
     ]);
     assert.deepEqual(stored.chat, [{ role: "user", text: "Just a note", at: stored.chat[0].at }]);
 
@@ -88,7 +97,9 @@ test("annotation records preserve the target payload for text-range and Mermaid-
       end: { selector: "p#intro", path: [0], offset: 12 },
     };
     await store.queuePrompts(session.key, {
-      prompts: [{ id: "ann-2", uid: "", prompt: "Punch this up", selector: "p#intro", tag: "text", text: "bright", target }],
+      prompts: [
+        { id: "ann-2", uid: "", prompt: "Punch this up", selector: "p#intro", tag: "text", text: "bright", target },
+      ],
     });
 
     const stored = await store.findByKey(session.key);
@@ -167,37 +178,37 @@ to:
 In `src/session-store.js`'s `queuePrompts`, change:
 
 ```js
-      const userMessages = acceptedPrompts
-        .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-        .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
-      session.prompts = [...(session.prompts || []), ...acceptedPrompts];
-      session.chat = [...(session.chat || []), ...userMessages];
+const userMessages = acceptedPrompts
+  .filter((prompt) => prompt.tag === "message" && prompt.prompt)
+  .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+session.prompts = [...(session.prompts || []), ...acceptedPrompts];
+session.chat = [...(session.chat || []), ...userMessages];
 ```
 
 to:
 
 ```js
-      const at = new Date().toISOString();
-      const userMessages = acceptedPrompts
-        .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-        .map((prompt) => ({ role: "user", text: prompt.prompt, at }));
-      // Annotation-tagged prompts never reach session.chat (only tag === "message" does) and
-      // session.prompts is a write-only outbox drained by takeFeedback, so without this they
-      // leave no visible trace once sent. This is the durable, human-facing record of them.
-      const newAnnotations = acceptedPrompts
-        .filter((prompt) => prompt.tag !== "message" && prompt.selector)
-        .map((prompt) => ({
-          id: prompt.id || "",
-          selector: prompt.selector,
-          tag: prompt.tag,
-          text: prompt.text,
-          prompt: prompt.prompt,
-          at,
-          ...(prompt.target ? { target: prompt.target } : {}),
-        }));
-      session.prompts = [...(session.prompts || []), ...acceptedPrompts];
-      session.chat = [...(session.chat || []), ...userMessages];
-      session.annotations = [...(session.annotations || []), ...newAnnotations];
+const at = new Date().toISOString();
+const userMessages = acceptedPrompts
+  .filter((prompt) => prompt.tag === "message" && prompt.prompt)
+  .map((prompt) => ({ role: "user", text: prompt.prompt, at }));
+// Annotation-tagged prompts never reach session.chat (only tag === "message" does) and
+// session.prompts is a write-only outbox drained by takeFeedback, so without this they
+// leave no visible trace once sent. This is the durable, human-facing record of them.
+const newAnnotations = acceptedPrompts
+  .filter((prompt) => prompt.tag !== "message" && prompt.selector)
+  .map((prompt) => ({
+    id: prompt.id || "",
+    selector: prompt.selector,
+    tag: prompt.tag,
+    text: prompt.text,
+    prompt: prompt.prompt,
+    at,
+    ...(prompt.target ? { target: prompt.target } : {}),
+  }));
+session.prompts = [...(session.prompts || []), ...acceptedPrompts];
+session.chat = [...(session.chat || []), ...userMessages];
+session.annotations = [...(session.annotations || []), ...newAnnotations];
 ```
 
 Note: this block already has a local `const at = new Date().toISOString();` a few lines above at the top of `queuePrompts` (used for `queueWarningRecords`) — check for a naming collision before pasting; if one already exists in scope, reuse it instead of redeclaring.
@@ -242,10 +253,12 @@ git commit -m "feat: persist sent annotations as a durable session record"
 ### Task 2: Injected SDK — annotation id, badge overlay, and reveal wiring
 
 **Files:**
+
 - Modify: `src/artifact-sdk.js` (top `/* global */` comment; `queuePrompt` around line 687-705; new exported `dedupeAnnotationTargets`; new badge-overlay state/functions inside `createArtifactSdk`; shadow-root CSS around line 1649; message handler around line 1756-1764)
 - Test: `test/artifact-sdk.test.js`
 
 **Interfaces:**
+
 - Consumes: nothing from Task 1 directly (this task only needs to know the wire shape `{ id, selector, target }`, which the design doc already fixes).
 - Produces: `queuePrompt` now includes a stable `id` (`crypto.randomUUID()`) on every `lavish:queuePrompt` message's `prompt` payload.
 - Produces: a new exported pure function `dedupeAnnotationTargets(targets, resolve)` — `targets: Array<{id: string, selector: string}>`, `resolve: (selector: string) => object | null` — returns `Array<{id: string, el: object}>`, one entry per unique resolved element, keeping the first (earliest) `id` seen for that element and dropping entries with no `id`, no `selector`, or an unresolved `selector`.
@@ -276,7 +289,7 @@ import {
 test("dedupeAnnotationTargets keeps the earliest id per resolved element", () => {
   const elA = { name: "a" };
   const elB = { name: "b" };
-  const resolve = (selector) => ({ "sel-a": elA, "sel-b": elB }[selector] || null);
+  const resolve = (selector) => ({ "sel-a": elA, "sel-b": elB })[selector] || null;
 
   const result = dedupeAnnotationTargets(
     [
@@ -385,55 +398,55 @@ to:
 In `src/artifact-sdk.js`, inside `createArtifactSdk` (after the existing `let annotationMode = true;` block, around line 260-266), add:
 
 ```js
-  let annotationTargets = [];
-  /** @type {Array<{ id: string, el: Element, node: HTMLDivElement }>} */
-  let annotationBadges = [];
-  let annotationBadgeFrame = 0;
+let annotationTargets = [];
+/** @type {Array<{ id: string, el: Element, node: HTMLDivElement }>} */
+let annotationBadges = [];
+let annotationBadgeFrame = 0;
 
-  function setAnnotationTargets(targets) {
-    annotationTargets = Array.isArray(targets) ? targets : [];
-    renderAnnotationBadges();
-  }
+function setAnnotationTargets(targets) {
+  annotationTargets = Array.isArray(targets) ? targets : [];
+  renderAnnotationBadges();
+}
 
-  function renderAnnotationBadges() {
-    const root = ensureShadow();
-    for (const badge of annotationBadges) badge.node.remove();
-    annotationBadges = dedupeAnnotationTargets(annotationTargets, safeQuerySelector).map(({ id, el }) => {
-      const node = document.createElement("div");
-      node.className = "lavish-annotation-badge";
-      node.addEventListener("click", (event) => {
-        event.stopPropagation();
-        postArtifactMessage("lavish:openAnnotation", { id });
-      });
-      root.appendChild(node);
-      return { id, el, node };
+function renderAnnotationBadges() {
+  const root = ensureShadow();
+  for (const badge of annotationBadges) badge.node.remove();
+  annotationBadges = dedupeAnnotationTargets(annotationTargets, safeQuerySelector).map(({ id, el }) => {
+    const node = document.createElement("div");
+    node.className = "lavish-annotation-badge";
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+      postArtifactMessage("lavish:openAnnotation", { id });
     });
-    positionAnnotationBadges();
-    if (annotationBadges.length && !annotationBadgeFrame) {
-      annotationBadgeFrame = window.requestAnimationFrame(annotationBadgeLoop);
-    }
-  }
-
-  function positionAnnotationBadges() {
-    for (const badge of annotationBadges) {
-      const rect = badge.el.getBoundingClientRect();
-      badge.node.style.left = rect.right - 6 + "px";
-      badge.node.style.top = rect.top - 6 + "px";
-    }
-  }
-
-  // Badges are persistent (unlike the one-shot reveal-marker pulse), so their position needs to
-  // track scroll/resize/layout changes. This loop self-terminates once there are no badges left
-  // rather than running unconditionally in the background.
-  function annotationBadgeLoop() {
-    annotationBadgeFrame = 0;
-    if (!annotationBadges.length) return;
-    positionAnnotationBadges();
+    root.appendChild(node);
+    return { id, el, node };
+  });
+  positionAnnotationBadges();
+  if (annotationBadges.length && !annotationBadgeFrame) {
     annotationBadgeFrame = window.requestAnimationFrame(annotationBadgeLoop);
   }
+}
 
-  window.addEventListener("scroll", positionAnnotationBadges, true);
-  window.addEventListener("resize", positionAnnotationBadges);
+function positionAnnotationBadges() {
+  for (const badge of annotationBadges) {
+    const rect = badge.el.getBoundingClientRect();
+    badge.node.style.left = rect.right - 6 + "px";
+    badge.node.style.top = rect.top - 6 + "px";
+  }
+}
+
+// Badges are persistent (unlike the one-shot reveal-marker pulse), so their position needs to
+// track scroll/resize/layout changes. This loop self-terminates once there are no badges left
+// rather than running unconditionally in the background.
+function annotationBadgeLoop() {
+  annotationBadgeFrame = 0;
+  if (!annotationBadges.length) return;
+  positionAnnotationBadges();
+  annotationBadgeFrame = window.requestAnimationFrame(annotationBadgeLoop);
+}
+
+window.addEventListener("scroll", positionAnnotationBadges, true);
+window.addEventListener("resize", positionAnnotationBadges);
 ```
 
 Note: `dedupeAnnotationTargets` and `safeQuerySelector` must both be in scope here — `dedupeAnnotationTargets` is a top-level export in the same module (already in scope inside `createArtifactSdk`'s closure since it's a module-level function); `safeQuerySelector` is defined later in the file (around line 1540) but since this is all inside one function scope via `function` declarations (hoisted), forward reference is fine — confirm this matches the file's existing style (e.g. `ensureShadow`, `closeCard` are already called before their definitions elsewhere in the file).
@@ -451,7 +464,7 @@ In `src/artifact-sdk.js`, find the shadow root's `style.textContent = ...` block
 In `src/artifact-sdk.js`, in the `window.addEventListener("message", ...)` handler (around line 1756-1764), add alongside the existing `if (msg.type === "lavish:setAnnotationMode") ...` line:
 
 ```js
-    if (msg.type === "lavish:setAnnotationTargets") setAnnotationTargets(msg.targets);
+if (msg.type === "lavish:setAnnotationTargets") setAnnotationTargets(msg.targets);
 ```
 
 - [ ] **Step 9: Typecheck and lint**
@@ -478,12 +491,14 @@ Manual verification (no DOM test harness exercises `createArtifactSdk` today —
 ### Task 3: Chat panel — registry, Annotations section, send-flow wiring
 
 **Files:**
+
 - Modify: `src/chrome-client.js` (top consts around line 3-23; `render()` around line 191-217; `submitQueuedOnce` around line 446-477; `frame.addEventListener("load", ...)` around line 1852-1862; message handler around line 1709-1769; bottom init block around line 1880-1883)
 - Modify: `src/chrome.css` (near the existing `.pill*` rules, around line 1024-1117)
 - Modify: `src/server.js` (panel HTML template body, around line 1503 — add the new section's container div)
 - Test: `test/chrome-client-queue.test.js`
 
 **Interfaces:**
+
 - Consumes from Task 1: `sessionData.initialAnnotations` (array of `{ id, selector, tag, text, prompt, at, target? }`), and that a successful `POST /api/:key/prompts` durably records annotation-tagged prompts server-side (this task doesn't need the response to reflect that — see design doc's "no push channel" decision).
 - Consumes from Task 2: the message names `lavish:setAnnotationTargets` (this task sends it) and `lavish:openAnnotation` (this task receives it), and that every annotation-tagged prompt arriving via `lavish:queuePrompt` already has a non-empty `prompt.id`.
 - Produces: a new `#annotationsSent` panel section, built with `createElement`/`appendChild` (not `innerHTML`), one entry per sent annotation, each with a pin button.
@@ -779,36 +794,36 @@ function render() {
 In `src/chrome-client.js`'s `submitQueuedOnce` (around line 446-477), change:
 
 ```js
-  for (const prompt of prompts) {
-    const index = queued.indexOf(prompt);
-    if (index !== -1) queued.splice(index, 1);
-  }
-  persistQueuedPrompts();
-  render();
+for (const prompt of prompts) {
+  const index = queued.indexOf(prompt);
+  if (index !== -1) queued.splice(index, 1);
+}
+persistQueuedPrompts();
+render();
 ```
 
 to:
 
 ```js
-  const sentAt = new Date().toISOString();
-  for (const prompt of prompts) {
-    const index = queued.indexOf(prompt);
-    if (index !== -1) queued.splice(index, 1);
-    if (prompt.tag !== "message" && prompt.selector) {
-      sentAnnotations.push({
-        id: prompt.id || "",
-        selector: prompt.selector,
-        target: prompt.target,
-        tag: prompt.tag,
-        text: prompt.text,
-        prompt: prompt.prompt,
-        at: sentAt,
-      });
-    }
+const sentAt = new Date().toISOString();
+for (const prompt of prompts) {
+  const index = queued.indexOf(prompt);
+  if (index !== -1) queued.splice(index, 1);
+  if (prompt.tag !== "message" && prompt.selector) {
+    sentAnnotations.push({
+      id: prompt.id || "",
+      selector: prompt.selector,
+      target: prompt.target,
+      tag: prompt.tag,
+      text: prompt.text,
+      prompt: prompt.prompt,
+      at: sentAt,
+    });
   }
-  persistQueuedPrompts();
-  render();
-  renderAnnotations();
+}
+persistQueuedPrompts();
+render();
+renderAnnotations();
 ```
 
 - [ ] **Step 9: Handle the incoming `lavish:openAnnotation` message and send targets on iframe load**
@@ -816,13 +831,13 @@ to:
 In `src/chrome-client.js`'s `window.addEventListener("message", ...)` handler (around line 1709-1769), add alongside the other `if (msg.type === ...)` lines:
 
 ```js
-  if (msg.type === "lavish:openAnnotation") openAnnotationEntry(msg.id);
+if (msg.type === "lavish:openAnnotation") openAnnotationEntry(msg.id);
 ```
 
 In the `frame.addEventListener("load", ...)` handler (around line 1852-1862), add:
 
 ```js
-  postAnnotationTargets();
+postAnnotationTargets();
 ```
 
 right after the existing `postToFrame({ type: "lavish:setAnnotationMode", ... })` line inside that handler.

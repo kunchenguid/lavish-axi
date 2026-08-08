@@ -179,8 +179,8 @@ Two changes:
    `prompts`, persisted the same way and never cleared by `takeFeedback` —
    it's a durable log, not an outbox).
 2. `server.js`'s panel HTML template gains `initialAnnotations:
-   session.annotations || []` alongside the existing `initialChat: session.chat
-   || []` (`server.js:1476`), so a reload can seed the sent-annotations
+session.annotations || []` alongside the existing `initialChat: session.chat
+|| []` (`server.js:1476`), so a reload can seed the sent-annotations
    section without waiting on any live channel.
 
 ## Data flow
