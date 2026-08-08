@@ -152,9 +152,11 @@ test("the reveal marker lands on its element and tracks it through scrolling", {
       `the marker must keep tracking through later scrolling, drifted by ${JSON.stringify(result.afterFurtherScroll)}`,
     );
   } finally {
+    const exited = new Promise((resolve) => browser.once("exit", resolve));
     browser.kill("SIGKILL");
+    await exited;
     server.closeAllConnections();
     await new Promise((resolve) => server.close(() => resolve(undefined)));
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
