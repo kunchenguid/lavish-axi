@@ -344,9 +344,9 @@ export function normalizeRevisionEntry(entry, index) {
 }
 
 // Parses the artifact-authored revision registry. Returns [] for a missing
-// script tag, invalid JSON, a non-array payload, or (after normalization)
-// duplicate ids — every one of those cases is exactly "no revision metadata"
-// and must render identically to an artifact that never had this feature.
+// script tag, invalid JSON, or a non-array payload. Duplicate ids are ignored
+// after their first occurrence, so malformed entries cannot create ambiguous
+// element highlights.
 export function parseRevisionRegistry(doc) {
   if (!doc || typeof doc.querySelector !== "function") return [];
   const scriptEl = doc.querySelector("script[data-lavish-revisions]");

@@ -50,7 +50,13 @@ function runRevisionLegendSdk() {
       this.attributes = new Map(Object.entries(attributes));
       this.children = [];
       this.childNodes = [];
-      this.classList = { add() {}, remove() {}, contains() { return false; } };
+      this.classList = {
+        add() {},
+        remove() {},
+        contains() {
+          return false;
+        },
+      };
       this.style = {};
       this.nodeType = 1;
       this.tagName = "DIV";
@@ -86,7 +92,9 @@ function runRevisionLegendSdk() {
     }
   }
 
-  const revisionScript = { textContent: JSON.stringify([{ id: "1", label: "Draft", summary: "Initial layout", sections: ["Hero"] }]) };
+  const revisionScript = {
+    textContent: JSON.stringify([{ id: "1", label: "Draft", summary: "Initial layout", sections: ["Hero"] }]),
+  };
   const marked = new FakeElement({ "data-lavish-revision": "1" });
   const body = new FakeElement();
   const messages = [];
@@ -110,23 +118,39 @@ function runRevisionLegendSdk() {
       return selector === "[data-lavish-revision]" ? [marked] : [];
     },
   };
-  const parent = { postMessage(message) { messages.push(message); } };
+  const parent = {
+    postMessage(message) {
+      messages.push(message);
+    },
+  };
   const context = {
-    CSS: { escape(value) { return String(value); } },
+    CSS: {
+      escape(value) {
+        return String(value);
+      },
+    },
     Element: FakeElement,
-    MutationObserver: class { observe() {} },
-    ResizeObserver: class { observe() {} },
+    MutationObserver: class {
+      observe() {}
+    },
+    ResizeObserver: class {
+      observe() {}
+    },
     URLSearchParams,
     document,
     getComputedStyle() {
       return { backgroundImage: "none", backgroundSize: "auto" };
     },
     parent,
-    setTimeout() { return 0; },
+    setTimeout() {
+      return 0;
+    },
     window: {
       addEventListener() {},
       innerHeight: 800,
-      setTimeout() { return 0; },
+      setTimeout() {
+        return 0;
+      },
     },
   };
 
