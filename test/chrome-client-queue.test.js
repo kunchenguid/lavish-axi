@@ -1118,7 +1118,6 @@ test("the layout gate reveals after a completed pass with no findings", async ()
 
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
   assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
-  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
   assert.equal(posts[0].url, "/api/abc/layout-diagnostics");
   assert.deepEqual(posts[0].body.findings, []);
 });
@@ -1139,29 +1138,10 @@ test("the layout gate reveals on severe findings and points at the inbox instead
 
   assert.equal(chrome.element("layoutGateOverlay").hidden, true, "the user sees the artifact");
   assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
-  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
   assert.equal(chrome.element("warningsWrap").hidden, false);
 });
 
-test("opening the drawer acknowledges the issue banner", async () => {
-  const { fetchImpl } = diagnosticsHarness([[warningPayload()]]);
-  const chrome = await createChromeHarness({ fetchImpl });
-
-  chrome.sendFrameMessage({
-    type: "lavish:layoutDiagnostics",
-    complete: true,
-    viewport_width: 720,
-    findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 18, severity: "error" }],
-  });
-  await flushPromises();
-  assert.equal(chrome.element("layoutIssueBanner").hidden, false);
-
-  chrome.element("warningsButton").click();
-  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
-  assert.equal(chrome.element("warningsCount").textContent, "1", "the badge stays as the standing signal");
-});
-
-test("layout gate timeout fails open without an issue banner when no result arrives", async () => {
+test("layout gate timeout fails open when no result arrives", async () => {
   const chrome = await createChromeHarness({
     sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
   });
@@ -1170,7 +1150,6 @@ test("layout gate timeout fails open without an issue banner when no result arri
 
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
   assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
-  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
 });
 
 test("layout gate re-arms on reload and still reveals on the next completed pass", async () => {
@@ -1564,7 +1543,6 @@ test("a zero-warning review keeps the top bar unchanged", async () => {
   await flushPromises();
 
   assert.equal(chrome.element("warningsWrap").hidden, true);
-  assert.equal(chrome.element("layoutIssueBanner").hidden, true);
   assert.equal(
     posts.some((post) => post.url === "/api/abc/prompts"),
     false,

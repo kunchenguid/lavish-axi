@@ -8,7 +8,6 @@ const queueStorageKey = "lavish-axi:queued:" + key;
 // Review-chrome state that must survive a browser refresh. Keyed per session so one review's
 // triage can never leak into another artifact's.
 const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
-const warningAckStorageKey = "lavish-axi:warning-ack:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
@@ -57,7 +56,6 @@ const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
-const layoutIssueBanner = /** @type {HTMLDivElement} */ (document.getElementById("layoutIssueBanner"));
 const warningsWrap = /** @type {HTMLDivElement} */ (document.getElementById("warningsWrap"));
 const warningsButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsButton"));
 const warningsCount = /** @type {HTMLSpanElement} */ (document.getElementById("warningsCount"));
@@ -96,7 +94,6 @@ let layoutGateTimer;
 let layoutWarnings = Array.isArray(sessionData.initialLayoutWarnings) ? sessionData.initialLayoutWarnings : [];
 const selectedWarningIds = new Set(loadJsonState(warningSelectionStorageKey, []));
 let warningsDrawerOpen = false;
-let warningsAcknowledged = loadJsonState(warningAckStorageKey, false) === true;
 const snapshotRequests = [];
 let endAfterSubmit = false;
 let workingBubble = null;
@@ -482,17 +479,6 @@ function normalizeLayoutFindings(value) {
     : [];
 }
 
-function setLayoutIssueBanner(visible) {
-  if (!layoutIssueBanner) return;
-  layoutIssueBanner.hidden = !visible;
-}
-
-// The banner is a one-time "there is unresolved work" cue for the top-bar inbox. Once the user
-// has opened the drawer it stays out of the way; the badge remains the standing signal.
-function refreshLayoutIssueBanner() {
-  setLayoutIssueBanner(!ended && !warningsAcknowledged && !layoutGateVisible && activeWarnings().length > 0);
-}
-
 function clearLayoutGateTimer() {
   if (layoutGateTimer) clearTimeout(layoutGateTimer);
   layoutGateTimer = undefined;
@@ -522,7 +508,6 @@ function revealLayoutGate() {
   clearLayoutGateTimer();
   layoutGateArmed = false;
   setLayoutGateActive(false);
-  refreshLayoutIssueBanner();
 }
 
 function forceRevealLayoutGate(reason) {
@@ -536,7 +521,6 @@ function startLayoutGateCycle() {
 
   layoutGateCycle += 1;
   layoutGateArmed = true;
-  setLayoutIssueBanner(false);
   setLayoutGateCard("checking");
   setLayoutGateActive(true);
   clearLayoutGateTimer();
@@ -553,21 +537,14 @@ function startLayoutGateCycle() {
 // pending an agent repair: findings are the user's to triage, so a completed pass always reveals
 // and hands the result to the passive inbox.
 function handleLayoutGatePass() {
-  if (!layoutGateEnabled || layoutGateManuallyBypassed) {
-    refreshLayoutIssueBanner();
-    return;
-  }
-  if (!layoutGateArmed && !layoutGateVisible) {
-    refreshLayoutIssueBanner();
-    return;
-  }
+  if (!layoutGateEnabled || layoutGateManuallyBypassed) return;
+  if (!layoutGateArmed && !layoutGateVisible) return;
   revealLayoutGate();
 }
 
 function initializeLayoutGate() {
   if (!layoutGateEnabled) {
     setLayoutGateActive(false);
-    setLayoutIssueBanner(false);
     return;
   }
 
@@ -821,7 +798,6 @@ function renderWarnings() {
     for (const warning of active) warningsList.appendChild(createWarningRow(warning));
   }
   updateWarningSelectionState();
-  refreshLayoutIssueBanner();
 }
 
 function updateWarningSelectionState() {
@@ -854,9 +830,6 @@ function setWarningsDrawerOpen(open) {
   warningsButton.setAttribute("aria-expanded", String(warningsDrawerOpen));
   if (warningsDrawerOpen) {
     closeMenus();
-    warningsAcknowledged = true;
-    saveJsonState(warningAckStorageKey, true);
-    refreshLayoutIssueBanner();
     warningsSelectAll.focus();
   }
 }
