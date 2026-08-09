@@ -1,63 +1,35 @@
-# Third-party notices
+# Avisos de terceiros — build Dealernet
 
-The published `lavish-axi` package vendors the following third-party software into `dist/`.
-Each component remains under its own license; the notices below satisfy their attribution requirements.
-The whiteboard bundle (`dist/whiteboard/`) is built from these packages by `scripts/build.js`.
+Esta branch é a fonte do bundle interno do Lavish Editor distribuído pelo plugin `dealernet`. Ela não
+é publicada no npm. O build limpa `dist/` antes de gerar os artefatos e não inclui quadro branco,
+Excalidraw, React, Mermaid vendorizado nem fontes do recurso removido.
 
-## Bundled into `dist/whiteboard/whiteboard.js` and `whiteboard.css`
+## Bundle do plugin
 
-| Package                                              | License | Copyright                                         |
-| ---------------------------------------------------- | ------- | ------------------------------------------------- |
-| `@excalidraw/excalidraw`                             | MIT     | Copyright (c) 2020 Excalidraw                     |
-| `@excalidraw/mermaid-to-excalidraw`                  | MIT     | Copyright (c) 2023 Excalidraw                     |
-| `mermaid` (exact 11.12.1, bundled for the converter) | MIT     | Copyright (c) 2014 - 2022 Knut Sveidqvist         |
-| `react`, `react-dom`                                 | MIT     | Copyright (c) Meta Platforms, Inc. and affiliates |
+`dist/lavish-vendor.mjs` embute as dependências de runtime resolvidas pelo lockfile. Ele só é
+redistribuído depois que `dealernet-claude/plugins/dealernet/scripts/vendorizar-lavish.mjs` copia e
+pina o build. Os avisos que acompanham essa distribuição ficam em
+`dealernet-claude/THIRD-PARTY-NOTICES.md`, e o texto MIT do fork é copiado diretamente de `LICENSE`.
 
-The full MIT license text applies to each of the packages above:
+As dependências diretas de runtime do bundle são:
 
-```
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+| Pacote       | Licença | Papel                                 |
+| ------------ | ------- | ------------------------------------- |
+| `axi-sdk-js` | MIT     | roteamento e contrato de saída do CLI |
+| `chokidar`   | MIT     | observação do artefato para recarga   |
+| `express`    | MIT     | servidor HTTP local                   |
+| `open`       | MIT     | abertura do navegador                 |
+| `parse5`     | MIT     | parsing seguro do HTML                |
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+O inventário resolvido, incluindo transitivas e versões exatas, é verificável no checkout com
+`pnpm licenses list --prod` e `pnpm-lock.yaml`. Alterar dependências ou o lockfile exige repetir essa
+auditoria antes de revendorizar.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+## Assets em `dist/design/`
 
-## Fonts vendored into `dist/whiteboard/fonts/` (from `@excalidraw/excalidraw`)
+| Asset                               | Pacote                 | Licença |
+| ----------------------------------- | ---------------------- | ------- |
+| `daisyui.css`, `daisyui-themes.css` | `daisyui`              | MIT     |
+| `tailwindcss-browser.js`            | `@tailwindcss/browser` | MIT     |
 
-| Family          | License                                      |
-| --------------- | -------------------------------------------- |
-| Excalifont      | MIT (created for Excalidraw)                 |
-| Virgil          | MIT (created for Excalidraw by Ellinor Rapp) |
-| Nunito          | SIL Open Font License 1.1                    |
-| Assistant       | SIL Open Font License 1.1                    |
-| Cascadia Code   | SIL Open Font License 1.1                    |
-| Comic Shanns    | MIT                                          |
-| Liberation Sans | SIL Open Font License 1.1                    |
-| Lilita One      | SIL Open Font License 1.1                    |
-
-The Xiaolai family (CJK glyphs) is intentionally not vendored; Excalidraw falls back to its CDN or the system font for those glyphs.
-
-## Bundled into `dist/design/` (pre-existing)
-
-| Asset                                             | License |
-| ------------------------------------------------- | ------- |
-| `daisyui.css`, `daisyui-themes.css` (daisyUI)     | MIT     |
-| `tailwindcss-browser.js` (`@tailwindcss/browser`) | MIT     |
-
-## Pre-publication audit note
-
-Font license attributions above were compiled from each family's upstream project.
-Before any npm publication that changes the vendored font set, re-verify each family's license file upstream (the `@excalidraw/excalidraw` npm package does not ship per-font license files).
+Esses assets são copiados dos pacotes resolvidos pelo lockfile e entram no mesmo pin sha256 do bundle.

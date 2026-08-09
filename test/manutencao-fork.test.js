@@ -11,6 +11,7 @@ import test from "node:test";
 
 const rotina = new URL("../MANUTENCAO-FORK.md", import.meta.url);
 const readme = new URL("../README.md", import.meta.url);
+const avisos = new URL("../THIRD-PARTY-NOTICES.md", import.meta.url);
 
 test("a rotina de upstream esta registrada em arquivo, com cadencia explicita", async () => {
   const texto = await readFile(rotina, "utf8");
@@ -40,4 +41,13 @@ test("README descreve a build Dealernet sem recomendar superficies removidas", a
   assert.match(texto, /vendorizada no plugin `dealernet`/i);
   assert.doesNotMatch(texto, /`lavish-axi (?:share|setup hooks|update)(?:\s|`)/i);
   assert.doesNotMatch(texto, /editable Excalidraw whiteboard/i);
+});
+
+test("avisos de terceiros descrevem o bundle atual, sem o quadro branco removido", async () => {
+  const texto = await readFile(avisos, "utf8");
+
+  assert.match(texto, /dist\/lavish-vendor\.mjs/);
+  assert.match(texto, /dealernet-claude\/THIRD-PARTY-NOTICES\.md/);
+  assert.doesNotMatch(texto, /dist\/whiteboard/i);
+  assert.doesNotMatch(texto, /Bundled into[^\n]*whiteboard|Fonts vendored into/i);
 });
