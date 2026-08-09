@@ -38,6 +38,8 @@ const SENTINELAS = [
   "ht-ml",
   "Whiteboard",
   "Lavish Editor",
+  "Agent hasn't sent a message yet",
+  "Click an element in the artifact to annotate",
 ];
 
 const superficies = [];
@@ -59,7 +61,16 @@ const clienteSemComentarios = readFileSync(new URL("../src/chrome-client.js", im
   .join("\n");
 superficies.push(["src/chrome-client.js", clienteSemComentarios]);
 
-// 3) o texto do inbox, que e computado no servidor
+// 3) CSS também exibe texto: o estado vazio da conversa é um pseudo-elemento `::before`.
+// Sem incluir esta superfície, o checker aprovava uma frase inteira em inglês observada no browser.
+// Comentários são removidos pelo mesmo motivo dos comentários do cliente acima.
+const cssSemComentarios = readFileSync(new URL("../src/chrome.css", import.meta.url), "utf8").replace(
+  /\/\*[\s\S]*?\*\//g,
+  "",
+);
+superficies.push(["src/chrome.css", cssSemComentarios]);
+
+// 4) o texto do inbox, que e computado no servidor
 const regras = [
   "page-horizontal-overflow",
   "clipped-text",
@@ -93,12 +104,12 @@ for (const [nome, conteudo] of superficies) {
   }
 }
 
-// 4) o idioma declarado e a marca
+// 5) o idioma declarado e a marca
 const chrome = superficies[0][1];
 if (!chrome.includes('<html lang="pt-BR">')) falhas.push('createChromeHtml: falta <html lang="pt-BR">');
 if (!chrome.includes(">Dealernet<")) falhas.push("createChromeHtml: a marca nao exibe Dealernet");
 
-// 5) a API dos artefatos NAO pode ser renomeada — os playbooks instruem o agente a usar estes nomes
+// 6) a API dos artefatos NAO pode ser renomeada — os playbooks instruem o agente a usar estes nomes
 const sdk = createSdkJs("0123456789abcdef", 1, "token");
 for (const obrigatorio of [".lavish = {", "data-lavish-action", "queuePrompt", "data-lavish-question"]) {
   if (!sdk.includes(obrigatorio)) falhas.push(`SDK: perdeu "${obrigatorio}" — contrato com os playbooks`);

@@ -920,7 +920,7 @@ body.lavish {
 }
 
 .chat:empty::before {
-  content: "Agent hasn't sent a message yet. Click an element in the artifact to annotate, or type below to start.";
+  content: "O agente ainda não enviou mensagens. Clique em um elemento do artefato para anotar ou escreva abaixo para começar.";
   margin-top: 2px;
   color: var(--fg-muted);
   font-size: 13px;
