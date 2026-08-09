@@ -677,12 +677,12 @@ function warningRelativeTime(value) {
   const at = Date.parse(String(value || ""));
   if (!Number.isFinite(at)) return "";
   const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
-  if (seconds < 45) return "just now";
+  if (seconds < 45) return "agora";
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return minutes + "m ago";
+  if (minutes < 60) return "há " + minutes + " min";
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return hours + "h ago";
-  return Math.round(hours / 24) + "d ago";
+  if (hours < 24) return "há " + hours + " h";
+  return "há " + Math.round(hours / 24) + " d";
 }
 
 function createWarningChip(text, extraClass) {
@@ -735,11 +735,11 @@ function createWarningRow(warning) {
 
   const meta = document.createElement("div");
   meta.className = "warning-meta";
-  meta.appendChild(createWarningChip("Severe", "severity"));
+  meta.appendChild(createWarningChip("Grave", "severity"));
   meta.appendChild(createWarningChip(statusLabel, "status-" + warning.status));
   meta.appendChild(createWarningChip(warning.viewport_label + " · " + warning.viewport_width + "px"));
   const seen = warningRelativeTime(warning.last_seen_at);
-  if (seen) meta.appendChild(createWarningChip("Seen " + seen));
+  if (seen) meta.appendChild(createWarningChip("Visto " + seen));
   body.appendChild(meta);
 
   const target = document.createElement("code");

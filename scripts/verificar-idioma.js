@@ -40,6 +40,11 @@ const SENTINELAS = [
   "Lavish Editor",
   "Agent hasn't sent a message yet",
   "Click an element in the artifact to annotate",
+  "Severe",
+  "Seen just now",
+  "m ago",
+  "h ago",
+  "d ago",
 ];
 
 const superficies = [];

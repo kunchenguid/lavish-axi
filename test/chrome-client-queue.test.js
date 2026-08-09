@@ -714,6 +714,31 @@ test("nothing is selected by default and Select all is an explicit action", asyn
   assert.equal(chrome.element("warningsQueueButton").disabled, false);
 });
 
+test("layout warning metadata shown to the user is entirely in pt-BR", async () => {
+  const chrome = await createChromeHarness();
+  const now = Date.now();
+  chrome.eventSource().listeners.get("layout-warnings")({
+    data: JSON.stringify({
+      warnings: [
+        warningPayload(),
+        warningPayload({ id: "w2", last_seen_at: new Date(now - 2 * 60_000).toISOString() }),
+        warningPayload({ id: "w3", last_seen_at: new Date(now - 2 * 60 * 60_000).toISOString() }),
+        warningPayload({ id: "w4", last_seen_at: new Date(now - 2 * 24 * 60 * 60_000).toISOString() }),
+      ],
+    }),
+  });
+
+  assert.deepEqual(
+    chrome.warningRows().map((row) => row.children[1].children[2].children.map((chip) => chip.textContent)),
+    [
+      ["Grave", "Aberto", "Tablet / compacto · 720px", "Visto agora"],
+      ["Grave", "Aberto", "Tablet / compacto · 720px", "Visto há 2 min"],
+      ["Grave", "Aberto", "Tablet / compacto · 720px", "Visto há 2 h"],
+      ["Grave", "Aberto", "Tablet / compacto · 720px", "Visto há 2 d"],
+    ],
+  );
+});
+
 test("queueing a selected subset produces exactly one ordinary prompt with only those warnings", async () => {
   const posts = [];
   const queuedWarnings = [
