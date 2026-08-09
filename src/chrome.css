@@ -880,7 +880,6 @@ body.lavish {
   min-width: 0;
   min-height: 0;
   background: #fff;
-  position: relative;
   overflow: hidden;
 }
 .panel {
