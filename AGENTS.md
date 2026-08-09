@@ -92,7 +92,7 @@ The reviewer handoff is a server-issued single-reviewer capability. Begin reques
 `applyDiagnosticPass` is conservative by construction and each guard is load-bearing: a pass for one viewport class returns other classes untouched; an incomplete pass marks active warnings `unverified` instead of clearing them; absence at a revision the warning was already seen on is not resolution; and re-observing an identical finding on the same revision returns the record unchanged so repeat passes do not rewrite `state.json`.
 `queued` is a request, not a fix - it stays in the active count and only `recurring` (a newer revision still found it) makes a warning selectable again.
 Display strings are computed server-side (`serializeLayoutWarnings`) because `src/chrome-client.js` is served as a raw file and cannot import modules; the chrome renders what it is given and never decides that a warning went away.
-The chrome bootstraps the inbox from `initialLayoutWarnings` in the session JSON and re-syncs over SSE, so the inbox survives a browser refresh or reconnect; only per-chrome view state (drawer selection, banner acknowledgement) lives in `sessionStorage`, keyed per session so it cannot leak across artifacts.
+The chrome bootstraps the inbox from `initialLayoutWarnings` in the session JSON and re-syncs over SSE, so the inbox survives a browser refresh or reconnect; only per-chrome drawer selection lives in `sessionStorage`, keyed per session so it cannot leak across artifacts.
 
 ### Live reload
 
