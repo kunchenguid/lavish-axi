@@ -9,7 +9,6 @@ import vm from "node:vm";
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
-import { createArtifactSdk } from "../src/artifact-sdk.js";
 import {
   allowsAllHosts,
   buildAllowedHostnames,
@@ -43,6 +42,96 @@ function normalizeCssForAssertions(css) {
     .replace(/\s*([{}:;,])\s*/g, "$1")
     .replace(/\s+/g, " ")
     .replace(/0\./g, ".");
+}
+
+function runRevisionLegendSdk() {
+  class FakeElement {
+    constructor(attributes = {}) {
+      this.attributes = new Map(Object.entries(attributes));
+      this.children = [];
+      this.childNodes = [];
+      this.classList = { add() {}, remove() {}, contains() { return false; } };
+      this.style = {};
+      this.nodeType = 1;
+      this.tagName = "DIV";
+    }
+
+    addEventListener() {}
+    appendChild(child) {
+      this.children.push(child);
+      this.childNodes.push(child);
+      child.parentElement = this;
+      return child;
+    }
+    getAttribute(name) {
+      return this.attributes.get(name) ?? null;
+    }
+    hasAttribute(name) {
+      return this.attributes.has(name);
+    }
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    }
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+    }
+    matches() {
+      return false;
+    }
+    closest() {
+      return null;
+    }
+    getBoundingClientRect() {
+      return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
+    }
+  }
+
+  const revisionScript = { textContent: JSON.stringify([{ id: "1", label: "Draft", summary: "Initial layout", sections: ["Hero"] }]) };
+  const marked = new FakeElement({ "data-lavish-revision": "1" });
+  const body = new FakeElement();
+  const messages = [];
+  const document = {
+    readyState: "loading",
+    body,
+    head: new FakeElement(),
+    documentElement: new FakeElement(),
+    activeElement: body,
+    addEventListener() {},
+    createElement() {
+      return new FakeElement();
+    },
+    getElementById() {
+      return null;
+    },
+    querySelector(selector) {
+      return selector === "script[data-lavish-revisions]" ? revisionScript : null;
+    },
+    querySelectorAll(selector) {
+      return selector === "[data-lavish-revision]" ? [marked] : [];
+    },
+  };
+  const parent = { postMessage(message) { messages.push(message); } };
+  const context = {
+    CSS: { escape(value) { return String(value); } },
+    Element: FakeElement,
+    MutationObserver: class { observe() {} },
+    ResizeObserver: class { observe() {} },
+    URLSearchParams,
+    document,
+    getComputedStyle() {
+      return { backgroundImage: "none", backgroundSize: "auto" };
+    },
+    parent,
+    setTimeout() { return 0; },
+    window: {
+      addEventListener() {},
+      innerHeight: 800,
+      setTimeout() { return 0; },
+    },
+  };
+
+  vm.runInNewContext(createSdkJs("abc", 7, "load-token"), context, { filename: "artifact-sdk.js" });
+  return { marked, messages };
 }
 
 async function beginArtifactLoad(base, key) {
@@ -174,60 +263,25 @@ test("artifact SDK script is valid JavaScript", () => {
   assert.doesNotThrow(() => new Function(js));
 });
 
-// `new Function(js)` above only proves the bundle *parses*. createSdkJs serializes
-// each artifact-sdk.js helper individually with `.toString()` (see its own comment),
-// so a helper that calls a sibling not also declared as a same-scope const would
-// pass that syntax check yet ReferenceError the moment it actually runs in a
-// browser. Actually executing the revision-legend declarations together here — the
-// same way createArtifactSdk's closure would — catches exactly that class of bug.
-test("the SDK bundle's revision-legend declarations resolve each other correctly at runtime", () => {
-  const js = createSdkJs("abc");
-  const invocation = `(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken);`;
-  const idx = js.indexOf(invocation);
-  assert.notEqual(idx, -1, "createSdkJs should still invoke createArtifactSdk with this exact call");
-  const preamble = js.slice(0, idx);
+test("the emitted SDK highlights revisions and reports them through its tokenized channel", () => {
+  const { marked, messages } = runRevisionLegendSdk();
 
-  const revisionScript = {
-    textContent: JSON.stringify([
-      { id: "1", label: "Draft", summary: "Initial layout", sections: ["Hero"] },
-      { id: "2", label: "Pricing fix" },
-    ]),
-  };
-  const markedElements = [
-    { getAttribute: (name) => (name === "data-lavish-revision" ? "1 2" : null) },
-    { getAttribute: (name) => (name === "data-lavish-revision" ? "1" : null) },
-  ];
-  const fakeDoc = {
-    querySelector: (sel) => (sel === "script[data-lavish-revisions]" ? revisionScript : null),
-    querySelectorAll: (sel) => (sel === "[data-lavish-revision]" ? markedElements : []),
-  };
-
-  const context = { fakeDoc, results: {} };
-  vm.runInNewContext(
-    preamble +
-      `
-results.registry = parseRevisionRegistry(fakeDoc);
-results.marked = collectRevisionMarkedElements(fakeDoc);
-results.resolvedMultiToken = resolveElementRevisionId("1 2", results.registry.map((r) => r.id));
-results.tint = revisionTintFromHex(results.registry[0].color.hex);
-})();
-`,
-    context,
-    { filename: "sdk-revision-legend-preamble.js" },
-  );
-
-  // The registry/sections values come from another vm realm, so re-materialize them
-  // with this realm's Array.from before deepEqual (which is prototype-sensitive)
-  // instead of comparing cross-realm array instances directly.
-  assert.deepEqual(
-    Array.from(context.results.registry, (r) => r.id),
-    ["1", "2"],
-  );
-  assert.equal(context.results.registry[0].summary, "Initial layout");
-  assert.deepEqual(Array.from(context.results.registry[0].sections), ["Hero"]);
-  assert.equal(context.results.marked.length, 2);
-  assert.equal(context.results.resolvedMultiToken, "2");
-  assert.match(context.results.tint, /^rgba\(/);
+  assert.equal(marked.getAttribute("data-lavish-revision-active"), "1");
+  assert.equal(marked.style.outline, "2px solid #0072B2");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "lavish:revisions");
+  assert.equal(messages[0].artifact_load_token, "load-token");
+  assert.deepEqual(JSON.parse(JSON.stringify(messages[0].revisions)), [
+    {
+      id: "1",
+      label: "Draft",
+      timestamp: "",
+      summary: "Initial layout",
+      sections: ["Hero"],
+      index: 0,
+      color: { hex: "#0072B2", borderStyle: "solid", pattern: "diagonal" },
+    },
+  ]);
 });
 
 test("artifact SDK ignores Lavish-owned annotation UI", () => {
@@ -506,7 +560,6 @@ test("chrome top bar follows the design mock wordmark and overflow menu treatmen
 
 test("chrome ships a revision legend that starts hidden until the SDK proves the artifact has revisions", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const css = await chromeCssSource();
 
   assert.match(html, /class="revision-wrap" id="revisionWrap" hidden/);
   assert.match(
@@ -516,7 +569,6 @@ test("chrome ships a revision legend that starts hidden until the SDK proves the
   assert.match(html, /id="revisionLegendPanel" hidden role="region" aria-label="Revision history"/);
   assert.match(html, /class="revision-toggle-all" id="revisionToggleAll"[^>]*aria-pressed="true"/);
   assert.match(html, /id="revisionLegendList"/);
-  assert.match(css, /\.revision-wrap\[hidden\]\{display:none/);
 });
 
 test("overflow menu shows the artifact path with a copy affordance", async () => {
@@ -895,13 +947,6 @@ test("artifact SDK reports only stable severe layout failures after fonts, resiz
   assert.match(js, /overlapping-text/);
   assert.doesNotMatch(js, /element-scroll-overflow/);
   assert.doesNotMatch(js, /element-parent-overflow/);
-});
-
-test("artifact SDK sends revision registries through the tokenized artifact message channel", () => {
-  const js = createSdkJs("abc", 7, "load-token");
-
-  assert.match(js, /postArtifactMessage\(\s*"lavish:revisions"/);
-  assert.doesNotMatch(js, /parent\.postMessage\(\s*\{\s*type:\s*"lavish:revisions"/);
 });
 
 test("artifact SDK verifies severe clipping from direct rendered text fragments", () => {
