@@ -79,10 +79,11 @@ O `check` roda build, lint, format, typecheck, `node --test`, `scripts/verificar
 ingles reaparecer numa superficie que a pessoa le, se `<html lang="pt-BR">` ou a marca sairem, ou se a
 API do artefato (`window.lavish`, `data-lavish-*`, `queuePrompt`) for renomeada.
 
-**Baseline desta estacao: 589 passam / 2 falham.** As duas falhas sao ambientais e pre-existentes
-(symlink em Windows sem Developer Mode): `CLAUDE.md ... symlink` (`EINVAL readlink`) e
-`refuses to inline a local symlink ...` (`EPERM symlink`). Regressao se mede pelos **dois** numeros:
-falha acima de 2 **ou** total abaixo de 589. Sem o piso, apagar um teste que falha viraria "verde".
+**Baseline desta estacao: 602 testes — 598 passam / 1 falha / 3 pulados.** A unica falha e ambiental e
+pre-existente: o Git materializou `CLAUDE.md` como arquivo comum porque `core.symlinks=false`, entao o
+teste `CLAUDE.md ... symlink` recebe `EINVAL` ao chamar `readlink`. Sem esse arquivo, a suite mede 600
+testes — 597 passam / 0 falham / 3 pulados. Regressao se mede por todos os numeros: mais de 1 falha,
+menos de 598 passes ou menos de 602 testes. Sem os pisos, apagar um teste que falha viraria "verde".
 
 ## Revendorizar para o plugin
 
