@@ -31,6 +31,21 @@ test("published package includes the installable skill", async () => {
   assert.ok(packageJson.files.includes("skills/lavish"));
 });
 
+test("dealernet build restarts a server from the upstream base version", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const releaseManifest = JSON.parse(
+    await readFile(new URL("../.release-please-manifest.json", import.meta.url), "utf8"),
+  );
+  const { shouldRestartServer } = await import("../src/cli.js");
+  const upstreamBaseVersion = releaseManifest["."];
+
+  assert.notEqual(packageJson.version, upstreamBaseVersion, "the fork needs its own server-handshake version");
+  assert.equal(
+    shouldRestartServer(packageJson.version, { ok: true, app: "lavish-axi", version: upstreamBaseVersion }),
+    true,
+  );
+});
+
 test("lavish-design agent skill is marked internal for skills CLI discovery", async () => {
   const skillMd = await readFile(new URL("../.agents/skills/lavish-design/SKILL.md", import.meta.url), "utf8");
   const frontmatter = skillMd.slice(4, skillMd.indexOf("\n---\n", 4));

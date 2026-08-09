@@ -3398,6 +3398,14 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   assert.match(noGateHtml, /"layoutGateEnabled":false/);
 });
 
+test("layout issues stay in the top-bar inbox without overlaying the artifact", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /id="warningsButton"/);
+  assert.match(html, /id="warningsDrawer"/);
+  assert.doesNotMatch(html, /id="layoutIssueBanner"/);
+});
+
 test("annotation card queues prompt on Enter and inserts newline on Shift+Enter", () => {
   const js = createSdkJs("abc");
 

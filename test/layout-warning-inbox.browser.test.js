@@ -99,7 +99,6 @@ test(
           ' hidden: document.getElementById("warningsWrap").hidden,' +
           ' badge: document.getElementById("warningsCount").textContent,' +
           ' label: document.getElementById("warningsButton").getAttribute("aria-label"),' +
-          ' bannerHidden: document.getElementById("layoutIssueBanner").hidden,' +
           ' gate: document.body.classList.contains("layout-gate-active"),' +
           ' pills: document.querySelectorAll(".pill").length,' +
           " loads: window.__lavishArtifactLoads," +
@@ -397,7 +396,6 @@ test(
       openReview(openArtifact(clean));
       const cleanInbox = inbox();
       assert.equal(cleanInbox.hidden, true, "no button without unresolved work");
-      assert.equal(cleanInbox.bannerHidden, true);
       assert.equal(cleanInbox.gate, false);
       assert.match(poll(clean, 3000), /status:\s*waiting/);
 

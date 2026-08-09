@@ -44,8 +44,6 @@ export const UI_CHROME = Object.freeze({
   copiarSnapshotDom: "Copiar snapshot do DOM",
   exportarHtml: "Exportar HTML autonomo",
   encerrarSessao: "Encerrar sessao",
-  bannerProblemasLayout: (rotulo) =>
-    `Problemas de layout detectados. Abra <strong>${rotulo}</strong> na barra superior para revisar e enfileirar correcoes.`,
   conversa: "Conversa",
   revisaoEmOutraAba: "Esta revisao esta aberta em outra aba do editor.",
   assumirAqui: "Assumir aqui",

@@ -20,6 +20,14 @@ O caso concreto: em julho/2026 o upstream corrigiu tres falhas de validacao de `
 `git log main..dealernet` e, a qualquer momento, a superficie inteira do fork. Se aparecer um commit sem
 o prefixo `dealernet:`, ele entrou por engano.
 
+### Versao da build interna
+
+`package.json` na branch `dealernet` usa `<versao-base>-dealernet.<N>` e incrementa `N` em toda mudanca
+que sera vendorizada. A versao nao e cosmetica: ela viaja no `/health`, e o CLI so substitui um servidor
+persistente quando essa string muda. Sem o sufixo proprio, um plugin atualizado pode continuar servindo
+o chrome de uma build anterior. `.release-please-manifest.json` permanece na versao do upstream; este
+fork nao publica pacote npm nem se faz passar por uma release que nao incorporou integralmente.
+
 ## Cadencia
 
 Conferir o upstream **a cada release do plugin `dealernet`** e, independente de release, **no maximo a
@@ -61,6 +69,7 @@ commit para a `dealernet` antes de continuar.
 ### Depois do merge, nesta ordem
 
 ```sh
+# incremente o sufixo -dealernet.N de package.json antes do build
 pnpm install
 pnpm run check
 ```
