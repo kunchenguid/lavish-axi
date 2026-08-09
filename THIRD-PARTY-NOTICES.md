@@ -8,8 +8,8 @@ Excalidraw, React, Mermaid vendorizado nem fontes do recurso removido.
 
 `dist/lavish-vendor.mjs` embute as dependências de runtime resolvidas pelo lockfile. Ele só é
 redistribuído depois que `dealernet-claude/plugins/dealernet/scripts/vendorizar-lavish.mjs` copia e
-pina o build. Os avisos que acompanham essa distribuição ficam em
-`dealernet-claude/THIRD-PARTY-NOTICES.md`, e o texto MIT do fork é copiado diretamente de `LICENSE`.
+pina o build. Esse processo leva este arquivo e o texto MIT de `LICENSE` para dentro do diretório do
+plugin; a visão consolidada do marketplace fica em `dealernet-claude/THIRD-PARTY-NOTICES.md`.
 
 As dependências diretas de runtime do bundle são:
 
