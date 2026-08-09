@@ -40,11 +40,40 @@ const SENTINELAS = [
   "Lavish Editor",
   "Agent hasn't sent a message yet",
   "Click an element in the artifact to annotate",
+  ">Target<",
+  ">Prompt<",
+  '"Agent"',
+  '"You"',
+  "Working...",
+  "(whole page)",
+  "Exporting...",
+  "asset nao resolvido",
+  "assets nao resolvidos",
   "Severe",
   "Seen just now",
   "m ago",
   "h ago",
   "d ago",
+];
+
+// O SDK contem nomes internos em ingles (por exemplo `classifySevereTextOverflow`) que nao sao
+// exibidos. Esta lista menor usa apenas frases/markup que pertencem ao painel de anotacao.
+const SENTINELAS_ANOTACAO = [
+  "Annotate text",
+  "Annotate node",
+  "Tell the agent",
+  "Enter to queue",
+  "to send now",
+  ">Cancel<",
+  ">Queue<",
+];
+
+const SENTINELAS_SERVIDOR = [
+  "Session not found",
+  "Artifact load expired",
+  "This artifact load is no longer current",
+  "Forbidden",
+  "Not found",
 ];
 
 const superficies = [];
@@ -75,7 +104,13 @@ const cssSemComentarios = readFileSync(new URL("../src/chrome.css", import.meta.
 );
 superficies.push(["src/chrome.css", cssSemComentarios]);
 
-// 4) o texto do inbox, que e computado no servidor
+// 4) respostas HTML/texto do servidor tambem podem aparecer diretamente no chrome ou no iframe.
+const servidorSemComentarios = readFileSync(new URL("../src/server.js", import.meta.url), "utf8")
+  .split("\n")
+  .filter((linha) => !linha.trimStart().startsWith("//"))
+  .join("\n");
+
+// 5) o texto do inbox, que e computado no servidor
 const regras = [
   "page-horizontal-overflow",
   "clipped-text",
@@ -102,20 +137,31 @@ const textoInbox = [
 ].join("\n");
 superficies.push(["layout-warnings (texto exibido)", textoInbox]);
 
+// 6) o painel de anotacao vive no Shadow DOM do artefato e recebe seu proprio SDK. Ele nao passa
+// pelo HTML nem pelo cliente do chrome, portanto precisa ser auditado como superficie independente.
+const sdk = createSdkJs("0123456789abcdef", 1, "token");
+
 const falhas = [];
 for (const [nome, conteudo] of superficies) {
   for (const termo of SENTINELAS) {
     if (conteudo.includes(termo)) falhas.push(`${nome}: encontrou "${termo}"`);
   }
 }
+for (const termo of SENTINELAS_ANOTACAO) {
+  if (sdk.includes(termo)) falhas.push(`SDK do artefato (painel de anotacao): encontrou "${termo}"`);
+}
+for (const termo of SENTINELAS_SERVIDOR) {
+  if (servidorSemComentarios.includes(termo)) {
+    falhas.push(`src/server.js (respostas exibiveis): encontrou "${termo}"`);
+  }
+}
 
-// 5) o idioma declarado e a marca
+// 7) o idioma declarado e a marca
 const chrome = superficies[0][1];
 if (!chrome.includes('<html lang="pt-BR">')) falhas.push('createChromeHtml: falta <html lang="pt-BR">');
 if (!chrome.includes(">Dealernet<")) falhas.push("createChromeHtml: a marca nao exibe Dealernet");
 
-// 6) a API dos artefatos NAO pode ser renomeada — os playbooks instruem o agente a usar estes nomes
-const sdk = createSdkJs("0123456789abcdef", 1, "token");
+// 8) a API dos artefatos NAO pode ser renomeada — os playbooks instruem o agente a usar estes nomes
 for (const obrigatorio of [".lavish = {", "data-lavish-action", "queuePrompt", "data-lavish-question"]) {
   if (!sdk.includes(obrigatorio)) falhas.push(`SDK: perdeu "${obrigatorio}" — contrato com os playbooks`);
 }
@@ -125,4 +171,6 @@ if (falhas.length) {
   for (const f of falhas) console.error("  " + f);
   process.exit(1);
 }
-console.log(`verificar-idioma: ok (${superficies.length} superficies, ${SENTINELAS.length} sentinelas)`);
+console.log(
+  `verificar-idioma: ok (${superficies.length + 2} superficies, ${SENTINELAS.length + SENTINELAS_ANOTACAO.length + SENTINELAS_SERVIDOR.length} sentinelas)`,
+);

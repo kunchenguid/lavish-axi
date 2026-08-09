@@ -21,7 +21,7 @@ import {
   MODE_TOGGLE_HOTKEY_KEY,
 } from "./artifact-sdk.js";
 // dealernet: todo texto de interface vem daqui. Ver o cabecalho de src/i18n-ptbr.js.
-import { IDIOMA, MARCA, UI_CHROME, UI_CLIENTE } from "./i18n-ptbr.js";
+import { IDIOMA, MARCA, UI_ARTEFATO, UI_CHROME, UI_CLIENTE, UI_SERVIDOR } from "./i18n-ptbr.js";
 import {
   activeLayoutWarningCount,
   resolveDiagnosticViewportClasses,
@@ -54,6 +54,10 @@ const designAssetUrls = {
 };
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
+
+function artifactLoadExpiredHtml() {
+  return `<!doctype html><html lang="${IDIOMA}"><head><meta charset="utf-8"><title>${escapeHtml(UI_SERVIDOR.carregamentoExpiradoTitulo)}</title></head><body><p>${escapeHtml(UI_SERVIDOR.carregamentoExpiradoMensagem)}</p></body></html>`;
+}
 
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
 // layout-warning batch is outstanding, the agent is applying several related edits, so widen the
@@ -458,7 +462,7 @@ export async function serve({
     try {
       const chromeLoad = await store.issueReviewerHandoff(req.params.key);
       if (!chromeLoad) {
-        res.status(404).send("Session not found");
+        res.status(404).send(UI_SERVIDOR.sessaoNaoEncontrada);
         return;
       }
       const session = chromeLoad.session;
@@ -535,27 +539,17 @@ export async function serve({
       const revision = req.query.artifact_revision;
       const beforeRead = await store.verifyArtifactLoad(key, token, revision);
       if (!beforeRead) {
-        res.status(404).send("Session not found");
+        res.status(404).send(UI_SERVIDOR.sessaoNaoEncontrada);
         return;
       }
       if (!beforeRead.valid) {
-        res
-          .status(409)
-          .type("html")
-          .send(
-            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
-          );
+        res.status(409).type("html").send(artifactLoadExpiredHtml());
         return;
       }
       const html = await readFile(beforeRead.session.file, "utf8");
       const verified = await store.verifyArtifactLoad(key, token, revision);
       if (!verified?.valid) {
-        res
-          .status(409)
-          .type("html")
-          .send(
-            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
-          );
+        res.status(409).type("html").send(artifactLoadExpiredHtml());
         return;
       }
       res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
@@ -570,13 +564,13 @@ export async function serve({
       const assetPath = req.params[1];
       const session = await store.findByKey(key);
       if (!session) {
-        res.status(404).send("Session not found");
+        res.status(404).send(UI_SERVIDOR.sessaoNaoEncontrada);
         return;
       }
       const root = path.dirname(session.file);
       const file = resolveArtifactAsset(root, assetPath);
       if (!file) {
-        res.status(403).send("Forbidden");
+        res.status(403).send(UI_SERVIDOR.acessoNegado);
         return;
       }
       res.sendFile(file, { dotfiles: "allow" });
@@ -658,7 +652,7 @@ export async function serve({
     try {
       const asset = designAssetUrls[req.params.asset];
       if (!asset) {
-        res.status(404).send("Not found");
+        res.status(404).send(UI_SERVIDOR.naoEncontrado);
         return;
       }
       res.type(asset.type).send(await readDesignAsset(asset));
@@ -675,7 +669,7 @@ export async function serve({
         req.query.artifact_revision,
       );
       if (!verified) {
-        res.status(404).send("Session not found");
+        res.status(404).send(UI_SERVIDOR.sessaoNaoEncontrada);
         return;
       }
       if (!verified.valid) {
@@ -1274,6 +1268,7 @@ const key=${JSON.stringify(key)};
 void key;
 const artifactRevision=${revision};
 const artifactLoadToken=${JSON.stringify(loadToken)};
+const artifactUi=${JSON.stringify(UI_ARTEFATO)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
@@ -1285,7 +1280,7 @@ const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken);
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, artifactUi);
 })();`;
 }
 

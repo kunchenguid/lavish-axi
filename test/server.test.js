@@ -195,11 +195,48 @@ test("annotation card does not block its own Queue button", () => {
   assert.doesNotMatch(js, /card\.addEventListener\('click',event=>event\.stopPropagation\(\),true\)/);
 });
 
-test("annotation card labels its submit action as Queue", () => {
+test("annotation card presents every human-facing action and target variant in pt-BR", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, />Queue<\/button>/);
-  assert.doesNotMatch(js, /Queue Prompt/);
+  for (const text of [
+    "Anotar texto",
+    "Anotar nó",
+    '"tituloElemento":"Anotar"',
+    "Diga ao agente o que mudar neste texto...",
+    "Diga ao agente o que mudar neste nó do diagrama...",
+    "Diga ao agente o que mudar neste elemento...",
+    "Enter para enfileirar",
+    "+Enter para enviar agora",
+    '"cancelar":"Cancelar"',
+    '"enfileirar":"Enfileirar"',
+  ]) {
+    assert.match(js, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  for (const english of [
+    "Annotate text",
+    "Annotate node",
+    "Tell the agent",
+    "Enter to queue",
+    "to send now",
+    ">Cancel<",
+    ">Queue<",
+  ]) {
+    assert.doesNotMatch(js, new RegExp(english));
+  }
+  for (const key of [
+    "tituloTexto",
+    "tituloNo",
+    "tituloElemento",
+    "placeholderTexto",
+    "placeholderNo",
+    "placeholderElemento",
+    "dicaEnfileirar",
+    "dicaEnviarAgora",
+    "cancelar",
+    "enfileirar",
+  ]) {
+    assert.match(js, new RegExp(`ui\\.${key}`));
+  }
 });
 
 test("annotation card keeps the selected element highlighted while open", () => {
@@ -350,10 +387,10 @@ test("turning annotation mode off clears selection and floating card", () => {
   assert.match(js, /if \(!annotationMode\) closeCard\(\)/);
 });
 
-test("annotation card title renders selected tag as an html element name", () => {
+test("annotation card title renders the selected tag as an html element name in pt-BR", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /"Annotate &lt;" \+ c\.tag \+ "&gt;"/);
+  assert.match(js, /escapeAnnotationText\(ui\.tituloElemento\) \+ " &lt;" \+ c\.tag \+ "&gt;"/);
 });
 
 test("annotation card shadow styles use Lavish design-system variables", () => {
@@ -364,6 +401,14 @@ test("annotation card shadow styles use Lavish design-system variables", () => {
   assert.match(js, /--font-sans:/);
   assert.match(js, /font-family:var\(--font-sans\)/);
   assert.match(js, /:focus-visible\{outline:2px solid var\(--accent\);outline-offset:2px/);
+});
+
+test("annotation card stays reachable when taller than the artifact viewport", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /max-height:calc\(100vh - 24px\);overflow-y:auto/);
+  assert.match(js, /@media\(max-height:220px\)\{\.lavish-annotation-card\{padding:8px/);
+  assert.match(js, /const top = Math\.max\(12, Math\.min\(/);
 });
 
 test("chrome top bar uses an Annotate switch instead of a labeled toggle button", () => {
@@ -618,7 +663,8 @@ test("chrome shows agent working state when a previous poll has released", async
   const js = await chromeClientSource();
 
   assert.match(js, /agent-presence/);
-  assert.match(js, /Working\.\.\./);
+  assert.match(js, /t\.trabalhando/);
+  assert.doesNotMatch(js, /Working\.\.\./);
   assert.match(js, /spinner/);
 });
 
@@ -737,8 +783,10 @@ test("annotation pill tooltip separates target and prompt details", async () => 
   const css = await chromeCssSource();
 
   assert.match(js, /tooltip-label/);
-  assert.match(js, /Target/);
-  assert.match(js, /Prompt/);
+  assert.match(js, /t\.alvo/);
+  assert.match(js, /t\.instrucao/);
+  assert.doesNotMatch(js, />Target</);
+  assert.doesNotMatch(js, />Prompt</);
   assert.match(js, /pill-tooltip-target/);
   assert.match(js, /pill-tooltip-prompt/);
   assert.match(css, /\.pill-wrap\{[^}]*width:min\(320px,100%\)/);
@@ -1669,7 +1717,14 @@ test("begin-load requires the current chrome handoff before any first or direct 
     const directArtifact = await fetch(`${base}${directRedirect.headers.get("location")}`);
     assert.equal(directArtifact.status, 409);
     assert.match(directArtifact.headers.get("content-type") || "", /text\/html/);
-    assert.match(await directArtifact.text(), /Artifact load expired/);
+    const expiredHtml = await directArtifact.text();
+    assert.match(expiredHtml, /Carregamento do artefato expirado/);
+    assert.match(expiredHtml, /Recarregue o Dealernet Editor para continuar/);
+    assert.doesNotMatch(expiredHtml, /Artifact load expired|Reload Lavish/);
+
+    const missingSession = await fetch(`${base}/session/does-not-exist`);
+    assert.equal(missingSession.status, 404);
+    assert.equal(await missingSession.text(), "Sessão não encontrada");
     const revision = await fetch(`${base}/api/${key}/layout-warnings`).then((response) => response.json());
     assert.equal(revision.revision, firstLoad.artifact_revision);
   } finally {
@@ -3421,7 +3476,7 @@ test("annotation card queues and sends immediately on Ctrl+Enter or Cmd+Enter", 
   assert.match(js, /event\.ctrlKey \|\| event\.metaKey/);
   assert.match(js, /sendQueuedPrompts\(\)/);
   assert.match(js, /class="lavish-hint"/);
-  assert.match(js, /\+Enter to send now/);
+  assert.match(js, /\+Enter para enviar agora/);
   assert.match(js, /\.lavish-annotation-card \.lavish-hint\{/);
 });
 

@@ -7,7 +7,7 @@ const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
 import { UI_CLIENTE } from "../src/i18n-ptbr.js";
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, i18n?: Record<string, string> }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], initialChat?: Array<{ role: string, text: string }>, chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, i18n?: Record<string, string> }} HarnessSessionData */
 // dealernet: o servidor sempre injeta os textos de interface no bootstrap da sessao, e o cliente
 // os le como `t`. O harness precisa injetar os MESMOS textos reais (nao um dublê), senao os testes
 // exercitam um cliente sem idioma — e uma chamada como `t.revelarNoArtefato.replace(...)` estoura.
@@ -530,6 +530,9 @@ test("chrome client replaces queued prompts with the same internal key", async (
   );
   assert.match(chrome.element("annotationPills").innerHTML, /Use plan B/);
   assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /Use plan A/);
+  assert.match(chrome.element("annotationPills").innerHTML, />Alvo</);
+  assert.match(chrome.element("annotationPills").innerHTML, />Instrução</);
+  assert.doesNotMatch(chrome.element("annotationPills").innerHTML, />Target|>Prompt/);
 });
 
 test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {
@@ -549,9 +552,28 @@ test("chrome client scrolls new chat bubbles into view above queued prompts", as
   });
 
   const bubble = chrome.element("chatLog").lastAppendedChild;
+  assert.match(bubble.innerHTML, /<small>Agente<\/small>/);
+  assert.doesNotMatch(bubble.innerHTML, /<small>Agent<\/small>/);
   assert.equal(bubble.scrolledIntoView.block, "nearest");
   assert.equal(bubble.scrolledIntoView.inline, "nearest");
   assert.equal(panelScroll.scrollTop, 640);
+});
+
+test("chrome client renders chat roles and working state in pt-BR", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [
+        { role: "user", text: "Revise o título" },
+        { role: "agent", text: "Vou revisar" },
+      ],
+    },
+  });
+
+  assert.match(chrome.element("chatLog").children[0].innerHTML, /<small>Você<\/small>/);
+  assert.match(chrome.element("chatLog").children[1].innerHTML, /<small>Agente<\/small>/);
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
+  assert.match(chrome.element("chatLog").lastAppendedChild.innerHTML, /Trabalhando\.\.\./);
 });
 
 function warningPayload(overrides = {}) {
@@ -737,6 +759,16 @@ test("layout warning metadata shown to the user is entirely in pt-BR", async () 
       ["Grave", "Aberto", "Tablet / compacto · 720px", "Visto há 2 d"],
     ],
   );
+});
+
+test("layout warning target fallback is shown in pt-BR", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("layout-warnings")({
+    data: JSON.stringify({ warnings: [warningPayload({ selector: "" })] }),
+  });
+
+  const [row] = chrome.warningRows();
+  assert.equal(row.children[1].children[3].textContent, "(página inteira)");
 });
 
 test("queueing a selected subset produces exactly one ordinary prompt with only those warnings", async () => {
@@ -964,8 +996,27 @@ test("chrome client surfaces export warnings from the server response", async ()
 
   assert.equal(
     chrome.element("exportArtifact").querySelector("span").textContent,
-    "Exportado com 1 asset nao resolvido",
+    "Exportado com 1 recurso não resolvido",
   );
+});
+
+test("chrome client narrates export progress in pt-BR", async () => {
+  /** @type {(value: any) => void} */
+  let finishExport;
+  const response = new Promise((resolve) => {
+    finishExport = resolve;
+  });
+  const chrome = await createChromeHarness({ fetchImpl: async () => response });
+
+  const exporting = chrome.element("exportArtifact").onclick();
+  assert.equal(chrome.element("exportArtifact").querySelector("span").textContent, "Exportando...");
+
+  finishExport({
+    ok: true,
+    headers: { get: () => "0" },
+    blob: async () => ({}),
+  });
+  await exporting;
 });
 
 test("chrome client surfaces export notices from the server response", async () => {
@@ -1009,7 +1060,7 @@ test("chrome client includes export notices alongside unresolved assets", async 
 
   assert.equal(
     chrome.element("exportArtifact").querySelector("span").textContent,
-    "Exportado com 2 assets nao resolvidos e 1 aviso",
+    "Exportado com 2 recursos não resolvidos e 1 aviso",
   );
 });
 

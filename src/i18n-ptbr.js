@@ -9,9 +9,9 @@
 // — `next_step`, guidance de poll, saida de `playbook`/`design` — continua em ingles: e calibrado
 // nesse idioma, nao aparece na tela e traduzir so adicionaria risco.
 //
-// A traducao acontece em DOIS lugares por construcao, nao um: `chrome-client.js` e servido como
-// arquivo cru e nao pode importar modulo, entao os textos dele viajam no bootstrap da sessao
-// (`UI_CLIENTE`), e os do inbox de layout sao computados no servidor (`REGRAS_LAYOUT`).
+// A traducao acontece em QUATRO lugares por construcao: `chrome-client.js` recebe `UI_CLIENTE` no
+// bootstrap; o inbox e computado no servidor (`REGRAS_LAYOUT`); o painel do Shadow DOM recebe
+// `UI_ARTEFATO` no SDK; e as paginas de fallback do servidor usam `UI_SERVIDOR`.
 
 // Marca exibida. Apenas apresentacao: `window.lavish`, `data-lavish-*`, o binario `lavish-axi` e
 // as variaveis LAVISH_AXI_* NAO mudam — os playbooks instruem o agente a usar esses nomes.
@@ -66,6 +66,12 @@ export const UI_CHROME = Object.freeze({
 // `undefined` na tela. Onde precisa de interpolacao, use um marcador `{nome}` e `.replace()`.
 export const UI_CLIENTE = Object.freeze({
   removerPromptDaFila: "Remover prompt da fila",
+  alvo: "Alvo",
+  instrucao: "Instrução",
+  agente: "Agente",
+  voce: "Você",
+  trabalhando: "Trabalhando...",
+  paginaInteira: "(página inteira)",
   revelar: "Revelar",
   revelarNoArtefato: "Revelar {titulo} no artefato",
   descartar: "Descartar",
@@ -76,6 +82,9 @@ export const UI_CLIENTE = Object.freeze({
   naFilaParaEnvio: "Na fila para envio",
   corrigindoProblemaLayout: "Corrigindo um problema de layout...",
   exportarHtml: "Exportar HTML autonomo",
+  exportando: "Exportando...",
+  recursoNaoResolvido: "{quantidade} recurso não resolvido",
+  recursosNaoResolvidos: "{quantidade} recursos não resolvidos",
   exportarFalhou: "Falha ao exportar - tentar de novo",
   verificandoLayout: "Verificando o layout.<br>Um instante.",
   verificandoLayoutDetalhe: "O editor esta aguardando as fontes e a geometria final antes de revelar este artefato.",
@@ -87,6 +96,30 @@ export const UI_CLIENTE = Object.freeze({
   falhaExportar: "falha ao exportar",
   revisaoInutilizavel: "a revisao esta inutilizavel",
   revisaoComProblemas: "a revisao tem problemas de layout",
+});
+
+// Textos do painel de anotacao injetado no Shadow DOM do artefato. Assim como UI_CLIENTE, este
+// objeto cruza uma fronteira por JSON.stringify; todas as propriedades precisam continuar strings.
+export const UI_ARTEFATO = Object.freeze({
+  tituloTexto: "Anotar texto",
+  tituloNo: "Anotar nó",
+  tituloElemento: "Anotar",
+  placeholderTexto: "Diga ao agente o que mudar neste texto...",
+  placeholderNo: "Diga ao agente o que mudar neste nó do diagrama...",
+  placeholderElemento: "Diga ao agente o que mudar neste elemento...",
+  dicaEnfileirar: "Enter para enfileirar",
+  dicaEnviarAgora: "+Enter para enviar agora",
+  cancelar: "Cancelar",
+  enfileirar: "Enfileirar",
+});
+
+export const UI_SERVIDOR = Object.freeze({
+  sessaoNaoEncontrada: "Sessão não encontrada",
+  carregamentoExpiradoTitulo: "Carregamento do artefato expirado",
+  carregamentoExpiradoMensagem:
+    "Este carregamento do artefato não é mais o atual. Recarregue o Dealernet Editor para continuar.",
+  acessoNegado: "Acesso negado",
+  naoEncontrado: "Não encontrado",
 });
 
 // Titulos dos achados do inbox de layout. Ficam no servidor porque `serializeLayoutWarnings`

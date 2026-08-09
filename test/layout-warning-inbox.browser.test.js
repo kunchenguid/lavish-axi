@@ -483,10 +483,10 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     const after = snapshot();
     assert.match(after, /radio " Pro" checked/, "a Lavish-owned answer survives the reload");
     assert.match(after, /checkbox " Include beta cohort" checked/);
-    assert.match(after, /Annotate <p>/, "the open annotation card comes back");
+    assert.match(after, /Anotar <p>/, "the open annotation card comes back");
 
     // Queueing the restored card proves the unsent text itself survived, not just the card.
-    click(/button "Queue"/);
+    click(/button "Enfileirar"/);
     wait(800);
     const pills = run(
       "chrome-devtools-axi",

@@ -188,11 +188,15 @@ function render() {
         index +
         '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
         (prompt.selector
-          ? '<div class="tooltip-label">Target</div><div class="pill-tooltip-target">' +
+          ? '<div class="tooltip-label">' +
+            escapeHtml(t.alvo) +
+            '</div><div class="pill-tooltip-target">' +
             escapeHtml(prompt.selector) +
             "</div>"
           : "") +
-        '<div class="tooltip-label">Prompt</div><div class="pill-tooltip-prompt">' +
+        '<div class="tooltip-label">' +
+        escapeHtml(t.instrucao) +
+        '</div><div class="pill-tooltip-prompt">' +
         escapeHtml(prompt.prompt) +
         "</div></div></div>",
     )
@@ -266,7 +270,7 @@ function addChat(role, text, shouldScroll = true) {
 
   const el = document.createElement("div");
   el.className = "bubble " + role;
-  el.innerHTML = "<small>" + (role === "agent" ? "Agent" : "You") + "</small><div>" + escapeHtml(text) + "</div>";
+  el.innerHTML = "<small>" + (role === "agent" ? t.agente : t.voce) + "</small><div>" + escapeHtml(text) + "</div>";
   chatLog.appendChild(el);
   if (shouldScroll) scrollElementIntoView(el);
   return el;
@@ -301,7 +305,7 @@ function setAgentPresence(state) {
   if (!workingBubble) {
     workingBubble = document.createElement("div");
     workingBubble.className = "bubble agent agent-working";
-    workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
+    workingBubble.innerHTML = '<span class="spinner"></span><span>' + escapeHtml(t.trabalhando) + "</span>";
     chatLog.appendChild(workingBubble);
   }
   scrollElementIntoView(workingBubble);
@@ -721,7 +725,7 @@ function createWarningRow(warning) {
 
   const target = document.createElement("code");
   target.className = "warning-target";
-  target.textContent = warning.selector || "(whole page)";
+  target.textContent = warning.selector || t.paginaInteira;
   body.appendChild(target);
 
   const actions = document.createElement("div");
@@ -955,7 +959,8 @@ function setExportLabel(text) {
 }
 
 function unresolvedAssetText(count) {
-  return count === 1 ? "1 asset nao resolvido" : `${count} assets nao resolvidos`;
+  const template = count === 1 ? t.recursoNaoResolvido : t.recursosNaoResolvidos;
+  return template.replace("{quantidade}", String(count));
 }
 
 function noticeText(count) {
@@ -974,7 +979,7 @@ async function exportArtifact() {
   // The bundle inlines local assets server-side, so it can take a moment - keep the menu open
   // and narrate progress in place instead of closing it and leaving the user with no feedback.
   exportArtifactButton.disabled = true;
-  setExportLabel("Exporting...");
+  setExportLabel(t.exportando);
   try {
     const response = await fetch("/api/" + key + "/export");
     if (!response.ok) throw new Error(t.falhaExportar);
