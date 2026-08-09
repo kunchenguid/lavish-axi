@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.47](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.46...lavish-axi-v0.1.47) (2026-08-09)
+
+
+### Bug Fixes
+
+* **chrome:** remove persistent layout issue banner ([#226](https://github.com/kunchenguid/lavish-axi/issues/226)) ([fb9107e](https://github.com/kunchenguid/lavish-axi/commit/fb9107e2d1e8e1820d93ad977a121f34a66e13be))
+
 ## [0.1.46](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.45...lavish-axi-v0.1.46) (2026-08-07)
 
 
