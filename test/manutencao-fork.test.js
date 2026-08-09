@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const rotina = new URL("../MANUTENCAO-FORK.md", import.meta.url);
+const readme = new URL("../README.md", import.meta.url);
 
 test("a rotina de upstream esta registrada em arquivo, com cadencia explicita", async () => {
   const texto = await readFile(rotina, "utf8");
@@ -30,4 +31,13 @@ test("AGENTS.md aponta para a rotina do fork", async () => {
   const agents = await readFile(new URL("../AGENTS.md", import.meta.url), "utf8");
 
   assert.match(agents, /MANUTENCAO-FORK\.md/);
+});
+
+test("README descreve a build Dealernet sem recomendar superficies removidas", async () => {
+  const texto = await readFile(readme, "utf8");
+
+  assert.match(texto, /build Dealernet/i);
+  assert.match(texto, /vendorizada no plugin `dealernet`/i);
+  assert.doesNotMatch(texto, /`lavish-axi (?:share|setup hooks|update)(?:\s|`)/i);
+  assert.doesNotMatch(texto, /editable Excalidraw whiteboard/i);
 });
