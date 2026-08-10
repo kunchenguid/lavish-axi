@@ -2164,17 +2164,18 @@ test("long-poll sends heartbeat bytes before feedback arrives", async () => {
     const reader = res.body.getReader();
     try {
       const decoder = new TextDecoder();
-      const first = await Promise.race([
-        reader.read(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send initial heartbeat")), 500)),
-      ]);
-      const second = await Promise.race([
-        reader.read(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not repeat heartbeat")), 500)),
-      ]);
-
-      assert.equal(decoder.decode(first.value), " ");
-      assert.equal(decoder.decode(second.value), " ");
+      // Successive heartbeat writes can coalesce into one TCP chunk under load, so collect
+      // bytes until two heartbeats have streamed instead of assuming one byte per read.
+      let heartbeats = "";
+      while (heartbeats.length < 2) {
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not stream heartbeats")), 500)),
+        ]);
+        assert.equal(done, false, "poll stream ended before two heartbeats");
+        heartbeats += decoder.decode(value);
+      }
+      assert.match(heartbeats, /^\s+$/, "only whitespace heartbeats stream before the final JSON");
     } finally {
       controller.abort();
       await reader.cancel().catch(() => {});
