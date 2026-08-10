@@ -138,15 +138,6 @@ export const LAYOUT_SAFETY_CSS_SNIPPET = `<style>
   }
 </style>`;
 
-// Single source for the self-painting requirement. Lavish injects no design system and renders
-// artifacts over its own surface (and exports/shares render over arbitrary hosts), so an artifact
-// that never paints its own background inherits an unknown surface - the classic failure is light
-// text with no explicit background, invisible on a light host. This flows into the no-args home
-// output, top-level --help, and the generated skill via visual_guidance, plus the `lavish-axi
-// design` output and the design command help. Edit the rule here only; other surfaces embed it.
-export const SELF_PAINT_RULE =
-  "Every artifact must SELF-PAINT: set an explicit page background and a matching high-contrast text color together on `body` or `:root` - never one without the other, and never assume the page will sit on a dark or light host surface, because Lavish injects no design system and renders the artifact over its own surface, so light text with no explicit background is invisible. When you hand-write the palette, make it theme-aware: define the light-mode colors as the default and override both background and text under `@media (prefers-color-scheme: dark)`. A design system that paints the page surface, such as DaisyUI with `data-theme` on `<html>`, already satisfies this.";
-
 // Single source for how agents choose an artifact's design direction. It flows into the
 // no-args home output, top-level --help, the generated skill (all via DESIGN_SYSTEM_HINT),
 // the `lavish-axi design` summary, and the design command help. Edit the rule here only;
@@ -203,10 +194,9 @@ export function createDesignOutput() {
       instruction: PLAYBOOK_ROUTER_INSTRUCTION,
       playbooks: listPlaybooks(),
     },
-    self_paint_rule: SELF_PAINT_RULE,
     design: {
       summary:
-        "Use this Lavish CDN fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system; artifacts stay portable HTML. " +
+        "Use this Lavish CDN fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system; artifacts stay portable HTML. Paint an explicit page background and readable text. " +
         DESIGN_PRIORITY_RULE +
         " Paste the CDN snippet below into your `<head>`.",
       cdn_snippet: DESIGN_CDN_SNIPPET,

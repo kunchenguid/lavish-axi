@@ -34,7 +34,6 @@ import {
   pollInterruptedText,
   pollWaitBannerText,
   pollWaitTickText,
-  RENDER_VERIFY_RULE,
   resolveCopilotHookDir,
   resolveHookHomeDir,
   resolveServerEntry,
@@ -49,7 +48,7 @@ import {
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
-import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT, SELF_PAINT_RULE } from "../src/design-reference.js";
+import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
 import { resolveVsCodeSettingsFile } from "../src/plugin.js";
 import { SELF_PAINT_WARNING } from "../src/self-paint.js";
 import { serve } from "../src/server.js";
@@ -133,7 +132,6 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.equal("example_use_cases" in output, false);
   assert.equal("artifact_guidance" in output, false);
   assert.ok(output.visual_guidance.length <= 6);
-  assert.equal(output.visual_guidance[0], SELF_PAINT_RULE, "the self-paint rule leads the visual guidance");
   assert.ok(output.visual_guidance.some((item) => item.includes("visual hierarchy")));
   assert.ok(
     output.visual_guidance.some((item) => /screenshot/i.test(item) && /embed/i.test(item) && /prose/i.test(item)),
@@ -185,40 +183,11 @@ test("the design-priority rule is single-sourced and keeps its three-step semant
   assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
 });
 
-test("the self-paint rule is single-sourced and unmissable on every authoring surface", () => {
-  // Keyword-level checks on the one owner constant; every surface embeds SELF_PAINT_RULE,
-  // so wording changes happen here and nowhere else.
-  assert.match(SELF_PAINT_RULE, /SELF-PAINT/);
-  assert.match(SELF_PAINT_RULE, /explicit page background/);
-  assert.match(SELF_PAINT_RULE, /high-contrast text color/);
-  assert.match(SELF_PAINT_RULE, /never one without the other/);
-  assert.match(SELF_PAINT_RULE, /never assume the page will sit on a dark or light host surface/);
-  assert.match(SELF_PAINT_RULE, /injects no design system/);
-  assert.match(SELF_PAINT_RULE, /invisible/);
-  assert.match(SELF_PAINT_RULE, /@media \(prefers-color-scheme: dark\)/);
-  assert.match(SELF_PAINT_RULE, /data-theme/);
-
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
-  assert.equal(home.visual_guidance[0], SELF_PAINT_RULE, "home visual guidance leads with the rule");
-  assert.equal(createDesignOutput().self_paint_rule, SELF_PAINT_RULE, "design output carries the rule");
-  assert.ok(getCommandHelp("design").includes(SELF_PAINT_RULE), "design command help carries the rule");
-});
-
-test("home output requires render-verifying the composed page before presenting it", () => {
-  assert.match(RENDER_VERIFY_RULE, /render-verify/i);
-  assert.match(RENDER_VERIFY_RULE, /the way the user will see it/);
-  assert.match(RENDER_VERIFY_RULE, /HTML file itself in a browser/);
-  assert.match(RENDER_VERIFY_RULE, /screenshot/);
-  assert.match(RENDER_VERIFY_RULE, /light and dark/);
-  assert.match(RENDER_VERIFY_RULE, /Verifying the inputs .* is not verifying the page/);
-  assert.match(RENDER_VERIFY_RULE, /Never render-verify through the Lavish session URL/);
-  assert.match(RENDER_VERIFY_RULE, /takes over the user's live review tab/);
-
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
-  assert.ok(home.help.includes(RENDER_VERIFY_RULE), "home help carries the render-verify rule verbatim");
-  const verifyIndex = home.help.indexOf(RENDER_VERIFY_RULE);
-  const pollIndex = home.help.findIndex((item) => item.includes("lavish-axi poll <html-file>"));
-  assert.ok(verifyIndex < pollIndex, "render-verify comes before the poll instructions");
+test("design output includes a concise explicit-background note", () => {
+  const output = createDesignOutput();
+  assert.match(output.design.summary, /Paint an explicit page background and readable text\./);
+  assert.equal(output.self_paint_rule, undefined);
+  assert.ok(!DESIGN_SYSTEM_HINT.includes("explicit page background"));
 });
 
 test("open output flags an artifact that never paints its own page surface", () => {

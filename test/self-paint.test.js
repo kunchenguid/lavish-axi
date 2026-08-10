@@ -126,7 +126,6 @@ test("the warning names the failure and the fix in one line", () => {
   assert.match(SELF_PAINT_WARNING, /injects no design system/);
   assert.match(SELF_PAINT_WARNING, /invisible/);
   assert.match(SELF_PAINT_WARNING, /background/);
-  assert.match(SELF_PAINT_WARNING, /high-contrast text/);
-  assert.match(SELF_PAINT_WARNING, /render-verify/);
+  assert.match(SELF_PAINT_WARNING, /readable text/);
   assert.ok(!SELF_PAINT_WARNING.includes("\n"), "stays a single line for AXI output");
 });

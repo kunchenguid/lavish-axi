@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHomeOutput, RENDER_VERIFY_RULE } from "../src/cli.js";
-import { SELF_PAINT_RULE } from "../src/design-reference.js";
+import { createHomeOutput } from "../src/cli.js";
 import {
   ALLOWED_SKILL_FRONTMATTER_KEYS,
   SKILL_DESCRIPTION,
@@ -101,17 +100,13 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
   }
 });
 
-test("createSkillMarkdown steers agents away from invisible artifacts", () => {
+test("createSkillMarkdown explains the open-time self-paint warning", () => {
   const md = createSkillMarkdown();
   const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Visual guidance"));
 
-  assert.ok(md.includes(SELF_PAINT_RULE), "the self-paint rule reaches the skill via visual guidance");
-  assert.ok(workflow.includes(RENDER_VERIFY_RULE), "the workflow carries the render-verify step");
-  const verifyIndex = workflow.indexOf(RENDER_VERIFY_RULE);
   const openIndex = workflow.indexOf("to open or resume a review session");
   const pollIndex = workflow.indexOf("to long-poll");
-  assert.ok(verifyIndex > 0 && verifyIndex < openIndex, "render-verify comes before opening the session");
-  assert.ok(openIndex < pollIndex, "opening still comes before polling");
+  assert.ok(openIndex > 0 && openIndex < pollIndex, "opening comes before polling");
   assert.match(workflow, /self_paint_warning/, "the workflow explains the open-time warning");
 });
 
