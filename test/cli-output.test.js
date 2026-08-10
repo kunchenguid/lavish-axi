@@ -263,7 +263,9 @@ test("export and share outputs flag an unpainted page surface before it reaches 
   });
   assert.equal(shared.self_paint_warning, SELF_PAINT_WARNING);
   assert.match(shared.next_step, /^Fix the unpainted page surface flagged in self_paint_warning/);
-  assert.match(shared.next_step, /update_key/);
+  assert.match(shared.next_step, /re-run the share command/);
+  assert.match(shared.next_step, /replacement URL/);
+  assert.doesNotMatch(shared.next_step, /with the update_key/);
 
   const cleanExport = createExportOutput({
     source: "/tmp/report.html",

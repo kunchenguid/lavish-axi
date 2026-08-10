@@ -628,7 +628,7 @@ export function createShareOutput({ source, site, warnings, passwordProtected = 
   }
   if (selfPaintWarning) {
     result.self_paint_warning = selfPaintWarning;
-    result.next_step = `Fix the unpainted page surface flagged in self_paint_warning and publish again with the update_key before sharing the URL - the hosted page renders over ht-ml.app's own surface. ${result.next_step}`;
+    result.next_step = `Fix the unpainted page surface flagged in self_paint_warning, then re-run the share command and share only its replacement URL - the hosted page renders over ht-ml.app's own surface. ${result.next_step}`;
   }
   return result;
 }
