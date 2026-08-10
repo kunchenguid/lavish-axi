@@ -195,7 +195,7 @@ test("design output is the sole emitted concise explicit-background guidance", (
     getCommandHelp("design"),
     createSkillMarkdown(),
     ...["diagram", "table", "comparison", "plan", "code", "input", "slides"].map((id) =>
-      JSON.stringify(createPlaybookOutput(id)),
+      JSON.stringify(createPlaybookOutput([id])),
     ),
   ];
   for (const surface of otherAgentSurfaces) {
