@@ -50,6 +50,7 @@ import {
 } from "../src/cli.js";
 import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
 import { resolveVsCodeSettingsFile } from "../src/plugin.js";
+import { createSkillMarkdown } from "../src/skill.js";
 import { SELF_PAINT_WARNING } from "../src/self-paint.js";
 import { serve } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
@@ -183,11 +184,24 @@ test("the design-priority rule is single-sourced and keeps its three-step semant
   assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
 });
 
-test("design output includes a concise explicit-background note", () => {
+test("design output is the sole emitted concise explicit-background guidance", () => {
   const output = createDesignOutput();
-  assert.match(output.design.summary, /Paint an explicit page background and readable text\./);
+  const instruction = "Paint an explicit page background and readable text.";
+  assert.match(output.design.summary, new RegExp(instruction.replaceAll(".", "\\.")));
   assert.equal(output.self_paint_rule, undefined);
-  assert.ok(!DESIGN_SYSTEM_HINT.includes("explicit page background"));
+
+  const otherAgentSurfaces = [
+    JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
+    getCommandHelp("design"),
+    createSkillMarkdown(),
+    ...["diagram", "table", "comparison", "plan", "code", "input", "slides"].map((id) =>
+      JSON.stringify(createPlaybookOutput(id)),
+    ),
+  ];
+  for (const surface of otherAgentSurfaces) {
+    assert.ok(!surface.includes(instruction));
+    assert.doesNotMatch(surface, /render-verify/i);
+  }
 });
 
 test("open output flags an artifact that never paints its own page surface", () => {
