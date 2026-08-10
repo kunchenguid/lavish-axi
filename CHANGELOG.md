@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.48](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.47...lavish-axi-v0.1.48) (2026-08-10)
+
+
+### Features
+
+* **cli:** guard against invisible unpainted artifacts ([#230](https://github.com/kunchenguid/lavish-axi/issues/230)) ([b285c40](https://github.com/kunchenguid/lavish-axi/commit/b285c40a55a4d84fdb321923794eff13f6fb5543))
+
+
+### Bug Fixes
+
+* streamline invisible artifact guidance ([#232](https://github.com/kunchenguid/lavish-axi/issues/232)) ([232972b](https://github.com/kunchenguid/lavish-axi/commit/232972beba9e0e4e75682c98f2aeb2cf01532122))
+
 ## [0.1.47](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.46...lavish-axi-v0.1.47) (2026-08-09)
 
 
