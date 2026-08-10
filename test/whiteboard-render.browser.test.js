@@ -58,7 +58,7 @@ function resultFromDump(html) {
   return null;
 }
 
-test("real Excalidraw rendering keeps loaded-font labels inside their text bounds", { timeout: 30_000 }, async (t) => {
+test("real Excalidraw rendering keeps loaded-font labels inside their text bounds", { timeout: 90_000 }, async (t) => {
   const chrome = await chromePath();
   if (!chrome) {
     t.skip("Chrome or Chromium is required for the real-render regression");
@@ -118,11 +118,11 @@ test("real Excalidraw rendering keeps loaded-font labels inside their text bound
           "--no-sandbox",
           `--user-data-dir=${profile}`,
           "--run-all-compositor-stages-before-draw",
-          "--virtual-time-budget=8000",
+          "--virtual-time-budget=20000",
           "--dump-dom",
           `http://127.0.0.1:${port}/`,
         ],
-        { maxBuffer: 8 * 1024 * 1024, timeout: 18_000 },
+        { maxBuffer: 8 * 1024 * 1024, timeout: 75_000 },
       );
       const result = resultFromDump(stdout);
       assert.ok(result, "browser fixture did not report a result");

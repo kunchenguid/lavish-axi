@@ -35,3 +35,9 @@ test("appends the Lavish SDK when the artifact has no body tag", () => {
 
   assert.equal(result, '<h1>Hi</h1>\n<script src="/sdk.js?key=abc123"></script>');
 });
+
+test("carries the per-load token into the SDK request", () => {
+  const result = injectLavishSdk("<body></body>", "abc123", 7, "load token/7");
+
+  assert.match(result, /sdk\.js\?key=abc123&artifact_revision=7&artifact_load_token=load%20token%2F7/);
+});

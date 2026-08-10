@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.1.48](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.47...lavish-axi-v0.1.48) (2026-08-10)
+
+
+### Features
+
+* **cli:** guard against invisible unpainted artifacts ([#230](https://github.com/kunchenguid/lavish-axi/issues/230)) ([b285c40](https://github.com/kunchenguid/lavish-axi/commit/b285c40a55a4d84fdb321923794eff13f6fb5543))
+
+
+### Bug Fixes
+
+* streamline invisible artifact guidance ([#232](https://github.com/kunchenguid/lavish-axi/issues/232)) ([232972b](https://github.com/kunchenguid/lavish-axi/commit/232972beba9e0e4e75682c98f2aeb2cf01532122))
+
+## [0.1.47](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.46...lavish-axi-v0.1.47) (2026-08-09)
+
+
+### Bug Fixes
+
+* **chrome:** remove persistent layout issue banner ([#226](https://github.com/kunchenguid/lavish-axi/issues/226)) ([fb9107e](https://github.com/kunchenguid/lavish-axi/commit/fb9107e2d1e8e1820d93ad977a121f34a66e13be))
+
+## [0.1.46](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.45...lavish-axi-v0.1.46) (2026-08-07)
+
+
+### Features
+
+* add multiplexed event stream foundation ([#212](https://github.com/kunchenguid/lavish-axi/issues/212)) ([34ed7f3](https://github.com/kunchenguid/lavish-axi/commit/34ed7f39875e472546935237b0f545d08a54f828))
+* **cli:** add self-contained Agent Plugin support ([#223](https://github.com/kunchenguid/lavish-axi/issues/223)) ([8b43c21](https://github.com/kunchenguid/lavish-axi/commit/8b43c21f4a6d4d8096db63601dce4f31a48a68a4))
+
+
+### Bug Fixes
+
+* **cli:** make version checks near-instant ([#222](https://github.com/kunchenguid/lavish-axi/issues/222)) ([8ef64df](https://github.com/kunchenguid/lavish-axi/commit/8ef64dff4980a367a904aff7f24a0d7edcba191c))
+* restore long-poll-only feedback delivery ([#214](https://github.com/kunchenguid/lavish-axi/issues/214)) ([7c64184](https://github.com/kunchenguid/lavish-axi/commit/7c64184adce8b2b18c1cb072779305303b8079d9))
+
+## [0.1.45](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.44...lavish-axi-v0.1.45) (2026-07-31)
+
+
+### Features
+
+* add passive layout warning triage ([#210](https://github.com/kunchenguid/lavish-axi/issues/210)) ([3c75e1f](https://github.com/kunchenguid/lavish-axi/commit/3c75e1f86350a78bbad21b1779e559cd11738e52))
+
+## [0.1.44](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.43...lavish-axi-v0.1.44) (2026-07-23)
+
+
+### Bug Fixes
+
+* **cli:** suppress recurring poll wait ticks outside interactive terminals ([#179](https://github.com/kunchenguid/lavish-axi/issues/179)) ([50b0fac](https://github.com/kunchenguid/lavish-axi/commit/50b0facb61b5fc36cb1737e33b20d2894a64323b))
+* execute every PR body compliance event ([#197](https://github.com/kunchenguid/lavish-axi/issues/197)) ([f5a1ecb](https://github.com/kunchenguid/lavish-axi/commit/f5a1ecb8e32cfa7eb61bc7c713befd99b180e121))
+
 ## [0.1.43](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.42...lavish-axi-v0.1.43) (2026-07-22)
 
 

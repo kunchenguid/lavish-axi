@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Review context</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 32px;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        background: #eef2f5;
+        color: #16202b;
+      }
+      main {
+        max-width: 640px;
+        margin: 0 auto;
+        background: #fff;
+        border: 1px solid #cfd8e0;
+        border-radius: 12px;
+        padding: 24px;
+      }
+      fieldset {
+        border: 1px solid #cfd8e0;
+        border-radius: 8px;
+        margin: 0 0 24px;
+      }
+      label {
+        display: block;
+        padding: 4px 0;
+      }
+      /* A deliberate severe clipping failure so the inbox has something to hold. */
+      .clip {
+        height: 40px;
+        overflow: hidden;
+        line-height: 24px;
+        margin: 0;
+      }
+      #spacer {
+        height: 1600px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Rollout plan</h1>
+      <form data-lavish-question="plan">
+        <fieldset>
+          <legend>Which plan?</legend>
+          <label><input type="radio" name="plan" value="Starter" /> Starter</label>
+          <label><input type="radio" name="plan" value="Pro" id="plan-pro" /> Pro</label>
+          <label><input type="checkbox" name="beta" id="plan-beta" value="yes" /> Include beta cohort</label>
+        </fieldset>
+      </form>
+      <p class="clip" id="clipped-copy">
+        This paragraph is deliberately forced into a box that is too short, so its final rendered line leaves the box
+        entirely and the reader can never see it at any viewport width.
+      </p>
+      <p id="annotate-me">Annotate this paragraph to check that unsent text survives a reload.</p>
+      <div id="spacer"></div>
+      <p id="tail">End of plan.</p>
+    </main>
+  </body>
+</html>

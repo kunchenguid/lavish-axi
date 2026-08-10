@@ -37,7 +37,7 @@ async function freePort() {
 
 test(
   "real browser layout audit stays silent on acceptable pages and reports one severe root per broken case",
-  { skip: !runBrowserE2e, timeout: 300_000 },
+  { skip: !runBrowserE2e, timeout: 480_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-layout-browser-"));
     const port = await freePort();
@@ -61,46 +61,66 @@ test(
       return { file, url };
     }
 
-    function openFixture(name) {
-      return openArtifact(path.join(fixtures, `${name}.html`));
+    // Each audit gets its own copy of the fixture, so its warning inbox is a fresh session rather
+    // than an accumulation across the viewport classes this corpus sweeps.
+    let auditRun = 0;
+    async function openFixture(name) {
+      const file = path.join(temp, `${name}-${++auditRun}.html`);
+      await copyFile(path.join(fixtures, `${name}.html`), file);
+      return openArtifact(file);
     }
 
-    function audit(name, viewport, settleMs, expectedCount) {
-      const { file, url } = openFixture(name);
-      run("chrome-devtools-axi", ["emulate", "--viewport", viewport], chromeEnv);
-      run("chrome-devtools-axi", ["open", url], chromeEnv);
-      run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
-      const gate = run(
+    function readInbox() {
+      const output = run(
         "chrome-devtools-axi",
         [
           "eval",
-          '() => ({ gate: document.body.classList.contains("layout-gate-active"), bannerHidden: document.getElementById("layoutIssueBanner").hidden })',
+          'JSON.stringify({ gate: document.body.classList.contains("layout-gate-active"), wrapHidden: document.getElementById("warningsWrap").hidden, badge: document.getElementById("warningsCount").textContent })',
         ],
         chromeEnv,
       );
-      const pollTimeout = expectedCount === 0 ? "500" : "8000";
-      let poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", pollTimeout], lavishEnv);
-      const expectedWarnings = new RegExp(`layout_warnings\\[${expectedCount}\\]`);
-      if (expectedCount > 0 && !expectedWarnings.test(poll)) {
+      const raw = output.match(/result:\s*("(?:[^"\\]|\\.)*")/s)?.[1];
+      assert.ok(raw, output);
+      let value = JSON.parse(raw);
+      while (typeof value === "string") {
+        try {
+          value = JSON.parse(value);
+        } catch {
+          break;
+        }
+      }
+      return value;
+    }
+
+    // The audit's detection calibration is unchanged; what changed is where findings land. A
+    // severe result now fills the passive inbox and reveals the artifact, and it must never make
+    // the poll return - only the user queueing a fix does that.
+    async function audit(name, viewport, settleMs, expectedCount) {
+      const { file, url } = await openFixture(name);
+      run("chrome-devtools-axi", ["emulate", "--viewport", viewport], chromeEnv);
+      run("chrome-devtools-axi", ["open", url], chromeEnv);
+      run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
+      let inbox = readInbox();
+      // A busy browser can return from navigation before the refreshed chrome has painted its
+      // first diagnostic result. Re-open once when the gate is still checking (or a warning-count
+      // assertion is otherwise not ready), then keep the final gate assertion strict.
+      if (inbox.gate || (expectedCount > 0 && Number(inbox.badge) !== expectedCount)) {
         run("chrome-devtools-axi", ["open", url], chromeEnv);
         run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
-        poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", pollTimeout], lavishEnv);
+        inbox = readInbox();
       }
+      const poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", "600"], lavishEnv);
 
-      if (expectedCount === 0) {
-        assert.match(gate, /gate.*false/, name);
-        assert.match(gate, /bannerHidden.*true/, name);
-        assert.match(poll, /status:\s*waiting/, name);
-        assert.doesNotMatch(poll, /layout_warnings\[/, name);
-      } else {
-        assert.match(gate, /gate.*true/, name);
-        assert.match(poll, expectedWarnings, name);
-      }
-      return { gate, poll };
+      assert.equal(inbox.gate, false, `${name}: the artifact is always revealed after a completed pass`);
+      assert.equal(Number(inbox.badge), expectedCount, name);
+      assert.equal(inbox.wrapHidden, expectedCount === 0, name);
+      assert.match(poll, /status:\s*waiting/, `${name}: detection alone must never wake an agent`);
+      assert.doesNotMatch(poll, /layout_warnings\[/, name);
+      return { inbox, poll };
     }
 
     try {
-      audit("control-broken-occlusion", "1440x1000x1", 3200, 1);
+      await audit("control-broken-occlusion", "1440x1000x1", 3200, 1);
 
       const acceptable = [
         "real-plan-clean",
@@ -113,53 +133,48 @@ test(
       ];
       for (const name of acceptable) {
         const settleMs = name === "real-animated-entry" ? 5200 : 3200;
-        audit(name, "1440x1000x1", settleMs, 0);
-        audit(name, "390x844x1,mobile,touch", settleMs, 0);
+        await audit(name, "1440x1000x1", settleMs, 0);
+        await audit(name, "390x844x1,mobile,touch", settleMs, 0);
       }
 
-      audit("control-broken-overflow", "1440x1000x1", 3200, 0);
-      audit("control-broken-overflow", "390x844x1,mobile,touch", 3200, 1);
-      audit("control-broken-clipping", "1440x1000x1", 3200, 3);
-      audit("control-broken-clipping", "390x844x1,mobile,touch", 3200, 3);
-      audit("control-broken-reachability", "1440x1000x1", 3200, 3);
-      audit("control-broken-reachability", "390x844x1,mobile,touch", 3200, 3);
+      await audit("control-broken-overflow", "1440x1000x1", 3200, 0);
+      await audit("control-broken-overflow", "390x844x1,mobile,touch", 3200, 1);
+      await audit("control-broken-clipping", "1440x1000x1", 3200, 3);
+      await audit("control-broken-clipping", "390x844x1,mobile,touch", 3200, 3);
+      await audit("control-broken-reachability", "1440x1000x1", 3200, 3);
+      await audit("control-broken-reachability", "390x844x1,mobile,touch", 3200, 3);
 
-      audit("calibration-small-overflow", "390x844x1,mobile,touch", 3200, 0);
+      await audit("calibration-small-overflow", "390x844x1,mobile,touch", 3200, 0);
 
-      const timeoutResult = audit("real-heavy-clean", "1440x1000x1", 16_000, 0);
-      assert.match(timeoutResult.gate, /bannerHidden.*true/);
+      // A slow page whose audit outruns the gate hold still reveals: a delayed audit is
+      // uncertainty, never evidence of a defect.
+      await audit("real-heavy-clean", "1440x1000x1", 16_000, 0);
 
+      // A repair clears the inbox only through a newer artifact load plus a complete pass at the
+      // same viewport - and it does so without the agent ever having been woken.
       const revalidationFile = path.join(temp, "root-lock-revalidation.html");
       await copyFile(path.join(fixtures, "control-broken-reachability.html"), revalidationFile);
       const revalidation = openArtifact(revalidationFile);
       run("chrome-devtools-axi", ["emulate", "--viewport", "390x844x1,mobile,touch"], chromeEnv);
       run("chrome-devtools-axi", ["open", revalidation.url], chromeEnv);
       run("chrome-devtools-axi", ["wait", "3200"], chromeEnv);
-      const held = run(
-        "chrome-devtools-axi",
-        ["eval", '() => document.body.classList.contains("layout-gate-active")'],
-        chromeEnv,
-      );
-      assert.match(held, /true/);
+      const detected = readInbox();
+      assert.equal(Number(detected.badge), 3);
+      assert.equal(detected.gate, false);
       assert.match(
-        run(process.execPath, ["bin/lavish-axi.js", "poll", revalidationFile, "--timeout-ms", "8000"], lavishEnv),
-        /layout_warnings\[3\]/,
+        run(process.execPath, ["bin/lavish-axi.js", "poll", revalidationFile, "--timeout-ms", "600"], lavishEnv),
+        /status:\s*waiting/,
       );
+
       await writeFile(
         revalidationFile,
         '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Repaired controls</title></head><body><button>Continue</button></body></html>',
       );
-      run("chrome-devtools-axi", ["wait", "3200"], chromeEnv);
-      const repaired = run(
-        "chrome-devtools-axi",
-        [
-          "eval",
-          '() => ({ gate: document.body.classList.contains("layout-gate-active"), bannerHidden: document.getElementById("layoutIssueBanner").hidden })',
-        ],
-        chromeEnv,
-      );
-      assert.match(repaired, /gate.*false/);
-      assert.match(repaired, /bannerHidden.*true/);
+      run("chrome-devtools-axi", ["wait", "4500"], chromeEnv);
+      const repaired = readInbox();
+      assert.equal(Number(repaired.badge), 0);
+      assert.equal(repaired.wrapHidden, true);
+      assert.equal(repaired.gate, false);
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       run("chrome-devtools-axi", ["stop"], chromeEnv);

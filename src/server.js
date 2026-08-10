@@ -21,6 +21,11 @@ import {
   isNearTotalOcclusion,
   MODE_TOGGLE_HOTKEY_KEY,
 } from "./artifact-sdk.js";
+import {
+  activeLayoutWarningCount,
+  resolveDiagnosticViewportClasses,
+  serializeLayoutWarnings,
+} from "./layout-warnings.js";
 import * as mermaidNode from "./mermaid-node.js";
 import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
 import {
@@ -63,6 +68,12 @@ const designAssetUrls = {
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
+
+// Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
+// layout-warning batch is outstanding, the agent is applying several related edits, so widen the
+// window: the user asked for one group of fixes and should get one artifact refresh for it.
+export const RELOAD_DEBOUNCE_MS = 100;
+export const BATCH_RELOAD_DEBOUNCE_MS = 900;
 
 // The whiteboard frame bundle (Excalidraw + Mermaid converter + React) is
 // produced by `scripts/build.js` into dist/whiteboard. Packaged runs find it
@@ -134,6 +145,9 @@ export async function serve({
   const deliveredFeedback = new Set();
   const sseClients = new Set();
   const whiteboardChannelSecret = crypto.randomBytes(32);
+  // Sessions with at least one warning the user queued that has not been re-checked yet.
+  const outstandingRepairBatches = new Set();
+  const diagnosticViewportClasses = resolveDiagnosticViewportClasses();
   const verbose = debug || process.env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
@@ -216,7 +230,8 @@ export async function serve({
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       }
       logEvent?.(`session opened key=${key} file=${file}`);
-      await watchSession(session, watchers, events, logEvent);
+      await syncOutstandingRepairs(key);
+      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       res.json({ key, file, url, status: "opened" });
     } catch (error) {
       next(error);
@@ -300,12 +315,28 @@ export async function serve({
   app.post("/api/:key/prompts", async (req, res, next) => {
     try {
       const shouldEndSession = Boolean(req.body?.endSession || req.body?.end_session);
+      const hasLayoutWarningPrompt = Array.isArray(req.body?.prompts)
+        ? req.body.prompts.some((prompt) => prompt?.tag === "layout-warnings")
+        : false;
       const session = await store.queuePrompts(req.params.key, req.body || {});
       if (!session) {
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (session.conflict) {
+        res.status(409).json({
+          status: "conflict",
+          error: "a layout warning changed before it was sent; review the warning again",
+          warning_ids: session.warning_ids,
+          warnings: session.warnings,
+        });
+        return;
+      }
       if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      if (hasLayoutWarningPrompt) {
+        await syncOutstandingRepairs(req.params.key);
+        events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(session.layout_warnings));
+      }
       events.emit(shouldEndSession ? "ended" : "feedback", req.params.key);
       res.json({ status: "queued", pending_prompts: session.pending_prompts });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
@@ -314,17 +345,92 @@ export async function serve({
     }
   });
 
-  app.post("/api/:key/layout-warnings", async (req, res, next) => {
+  // Passive detection. A diagnostic pass updates the warning inbox and notifies open browser
+  // chromes - it never emits "feedback", so it can never make `lavish-axi poll` return and can
+  // never wake an agent. Only the user's explicit "Queue selected fixes" does that, through the
+  // ordinary prompt queue.
+  app.post("/api/:key/layout-diagnostics", async (req, res, next) => {
     try {
-      const result = await store.recordLayoutWarnings(req.params.key, req.body || {});
+      const result = await store.recordLayoutDiagnostics(req.params.key, req.body || {}, {
+        viewportClasses: diagnosticViewportClasses,
+      });
       if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
-      if (result.changed && result.hasWarnings) {
-        events.emit("feedback", req.params.key);
+      const activeCount = activeLayoutWarningCount(result.session.layout_warnings);
+      if (!result.stale) {
+        await syncOutstandingRepairs(req.params.key);
+        if (result.changed) events.emit("layout-warnings", req.params.key, result.warnings);
       }
-      res.json({ status: "recorded", layout_warnings: result.session.layout_warnings?.length || 0 });
+      res.json({ status: result.stale ? "stale" : "recorded", active_count: activeCount, warnings: result.warnings });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/:key/layout-warnings", async (req, res, next) => {
+    try {
+      const result = await store.listLayoutWarnings(req.params.key);
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.json({ warnings: result.warnings, revision: result.revision });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Prepare the user's selected warnings. The prompt commits the repair request through
+  // /api/:key/prompts with the rest of the ordinary feedback queue.
+  app.post("/api/:key/layout-warnings/queue", async (req, res, next) => {
+    try {
+      const result = await store.prepareLayoutWarningFixes(req.params.key, req.body?.ids);
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.json({
+        status: result.queued.length > 0 ? "prepared" : "unchanged",
+        queued_count: result.queued.length,
+        prompt: result.prompt,
+        warnings: result.warnings,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/layout-warnings/dismiss", async (req, res, next) => {
+    try {
+      const result = await store.dismissLayoutWarning(req.params.key, req.body?.id);
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.changed) events.emit("layout-warnings", req.params.key, result.warnings);
+      res.json({ status: result.changed ? "dismissed" : "unchanged", warnings: result.warnings });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The narrow fatal path: the artifact cannot be served, or one of its own local assets failed
+  // to load. There is no usable review to triage from, so this still reaches the agent directly.
+  app.post("/api/:key/artifact-failures", async (req, res, next) => {
+    try {
+      const result = await store.recordArtifactFailures(req.params.key, req.body || {});
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.stale) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      if (result.changed) events.emit("feedback", req.params.key);
+      res.json({ status: "recorded" });
     } catch (error) {
       next(error);
     }
@@ -450,12 +556,13 @@ export async function serve({
 
   app.get("/session/:key", async (req, res, next) => {
     try {
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
+      const chromeLoad = await store.issueReviewerHandoff(req.params.key);
+      if (!chromeLoad) {
         res.status(404).send("Session not found");
         return;
       }
-      await watchSession(session, watchers, events, logEvent);
+      const session = chromeLoad.session;
+      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
       res.type("html").send(
@@ -463,6 +570,10 @@ export async function serve({
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
           faviconTag,
           title: title ? `${title} · Lavish` : "Lavish Editor",
+          artifactRevision: chromeLoad.artifact_revision,
+          artifactLoadToken: chromeLoad.artifact_load_token,
+          artifactLoadSequence: chromeLoad.artifact_load_sequence,
+          chromeLoadToken: chromeLoad.chrome_load_token,
         }),
       );
     } catch (error) {
@@ -474,16 +585,80 @@ export async function serve({
     res.redirect(`/artifact/${req.params.key}/index.html`);
   });
 
+  app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin chrome handoff rejected" });
+        return;
+      }
+      const handoff = await store.issueReviewerHandoff(req.params.key);
+      if (!handoff) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.json({
+        chrome_load_token: handoff.chrome_load_token,
+        artifact_revision: handoff.artifact_revision,
+        artifact_load_token: handoff.artifact_load_token,
+        artifact_load_sequence: handoff.artifact_load_sequence,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/artifact-loads/begin", async (req, res, next) => {
+    try {
+      const result = await store.beginArtifactLoad(req.params.key, {
+        requestId: req.body?.request_id,
+        requestSequence: req.body?.request_sequence,
+        handoffToken: req.body?.chrome_load_token,
+      });
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.stale) {
+        res.status(409).json({ status: result.stale });
+        return;
+      }
+      res.json({ artifact_revision: result.artifact_revision, artifact_load_token: result.artifact_load_token });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get(/^\/artifact\/([^/]+)\/index\.html$/, async (req, res, next) => {
     try {
       const key = req.params[0];
-      const session = await store.findByKey(key);
-      if (!session) {
+      const token = String(req.query.artifact_load_token || "");
+      const revision = req.query.artifact_revision;
+      const beforeRead = await store.verifyArtifactLoad(key, token, revision);
+      if (!beforeRead) {
         res.status(404).send("Session not found");
         return;
       }
-      const html = await readFile(session.file, "utf8");
-      res.type("html").send(injectLavishSdk(html, key));
+      if (!beforeRead.valid) {
+        res
+          .status(409)
+          .type("html")
+          .send(
+            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
+          );
+        return;
+      }
+      const html = await readFile(beforeRead.session.file, "utf8");
+      const verified = await store.verifyArtifactLoad(key, token, revision);
+      if (!verified?.valid) {
+        res
+          .status(409)
+          .type("html")
+          .send(
+            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
+          );
+        return;
+      }
+      res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
     } catch (error) {
       next(error);
     }
@@ -535,6 +710,13 @@ export async function serve({
           res.write(`event: agent-presence\ndata: ${JSON.stringify({ state })}\n\n`);
         }
       };
+      // Warning-inbox state lives on the server, so every attached chrome - including one that
+      // just reconnected after a browser refresh - converges on the same list.
+      const sendLayoutWarnings = (key, warnings) => {
+        if (key === req.params.key) {
+          res.write(`event: layout-warnings\ndata: ${JSON.stringify({ warnings })}\n\n`);
+        }
+      };
       res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: session?.chat || [] })}\n\n`);
       res.write(
         `event: agent-presence\ndata: ${JSON.stringify({ state: computePresence(req.params.key, activePolls, deliveredFeedback) })}\n\n`,
@@ -542,11 +724,13 @@ export async function serve({
       events.on("reload", sendReload);
       events.on("agent-reply", sendAgentReply);
       events.on("agent-presence", sendPresence);
+      events.on("layout-warnings", sendLayoutWarnings);
       req.on("close", () => {
         sseClients.delete(res);
         events.off("reload", sendReload);
         events.off("agent-reply", sendAgentReply);
         events.off("agent-presence", sendPresence);
+        events.off("layout-warnings", sendLayoutWarnings);
         refreshIdleTimer();
       });
     } catch (error) {
@@ -583,8 +767,27 @@ export async function serve({
     }
   });
 
-  app.get("/sdk.js", (req, res) => {
-    res.type("application/javascript").send(createSdkJs(String(req.query.key || "")));
+  app.get("/sdk.js", async (req, res, next) => {
+    try {
+      const verified = await store.verifyArtifactLoad(
+        String(req.query.key || ""),
+        req.query.artifact_load_token,
+        req.query.artifact_revision,
+      );
+      if (!verified) {
+        res.status(404).send("Session not found");
+        return;
+      }
+      if (!verified.valid) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      res
+        .type("application/javascript")
+        .send(createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token));
+    } catch (error) {
+      next(error);
+    }
   });
 
   // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
@@ -825,6 +1028,24 @@ export async function serve({
     }
   }
 
+  // A queued repair batch is outstanding until a diagnostic pass re-checks it. While it is, the
+  // agent's related saves coalesce into one artifact refresh for that group.
+  async function syncOutstandingRepairs(key) {
+    try {
+      if (await store.hasOutstandingLayoutRepairs(key)) {
+        outstandingRepairBatches.add(key);
+      } else {
+        outstandingRepairBatches.delete(key);
+      }
+    } catch {
+      // Best effort - the normal debounce still applies.
+    }
+  }
+
+  function reloadDebounceMs(key) {
+    return outstandingRepairBatches.has(key) ? BATCH_RELOAD_DEBOUNCE_MS : RELOAD_DEBOUNCE_MS;
+  }
+
   // Arm the idle timer for a server that is spawned but never opens a session.
   refreshIdleTimer();
 
@@ -996,7 +1217,10 @@ export function resolveArtifactAsset(root, assetPath) {
   return file;
 }
 
-async function watchSession(session, watchers, events, logEvent) {
+/**
+ * @param {(key: string) => number} reloadDebounceMs
+ */
+async function watchSession(session, watchers, events, logEvent, reloadDebounceMs = () => RELOAD_DEBOUNCE_MS) {
   if (watchers.has(session.key)) {
     return;
   }
@@ -1010,7 +1234,7 @@ async function watchSession(session, watchers, events, logEvent) {
   watcher.on("all", (event, file) => {
     logEvent?.(`watch event=${event} session=${session.key} file=${file ?? ""}`);
     clearTimeout(timer);
-    timer = setTimeout(() => events.emit("reload", session.key), 100);
+    timer = setTimeout(() => events.emit("reload", session.key), reloadDebounceMs(session.key));
   });
   watcher.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -1130,6 +1354,12 @@ const chromeIcons = {
     '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
     15,
   ),
+  warning: chromeIcon(
+    '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    16,
+  ),
+  reveal: chromeIcon('<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/>', 13),
+  dismiss: chromeIcon('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>', 13),
 };
 
 // Display the path with the home directory shortened to "~", split so the directory part can
@@ -1230,12 +1460,27 @@ export function extractArtifactHead(html) {
 
 export function createChromeHtml(
   session,
-  { layoutGateEnabled = true, faviconTag = LAVISH_DEFAULT_FAVICON, title = "Lavish Editor" } = {},
+  {
+    layoutGateEnabled = true,
+    faviconTag = LAVISH_DEFAULT_FAVICON,
+    title = "Lavish Editor",
+    artifactRevision = 0,
+    artifactLoadToken = "",
+    artifactLoadSequence = 0,
+    chromeLoadToken = "",
+  } = {},
 ) {
   const sessionJson = jsonScript({
     key: session.key,
     file: session.file,
     initialChat: session.chat || [],
+    // Bootstrapping the inbox from the server is what makes it survive a browser refresh or a
+    // reconnect: the chrome never owns warning state, it only renders it.
+    initialLayoutWarnings: serializeLayoutWarnings(session.layout_warnings),
+    initialArtifactRevision: artifactRevision,
+    initialArtifactLoadToken: artifactLoadToken,
+    initialArtifactLoadSequence: artifactLoadSequence,
+    chromeLoadToken,
     layoutGateEnabled,
     modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
   });
@@ -1254,8 +1499,8 @@ ${faviconTag}
 <link rel="stylesheet" href="/chrome.css">
 </head>
 <body class="${bodyClass}">
-<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe><div class="layout-issue-banner" id="layoutIssueBanner" hidden>This surface has a severe layout failure. Your agent has been notified.</div></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
+<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label>Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label>Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note">Keep the update key private. ht-ml.app returns it once and it is the only way to update or delete this page later.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
@@ -1282,7 +1527,7 @@ export function createWhiteboardFrameHtml(channelToken = "") {
 </html>`;
 }
 
-export function createSdkJs(key) {
+export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "") {
   // Serialize every helper exported by mermaid-node.js as a same-scope const so
   // cross-helper calls (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the
   // browser. Deriving this from the module's exports — rather than a hand-kept
@@ -1290,9 +1535,14 @@ export function createSdkJs(key) {
   const mermaidHelperEntries = Object.entries(mermaidNode).filter(([, value]) => typeof value === "function");
   const mermaidHelperDecls = mermaidHelperEntries.map(([name, fn]) => `const ${name}=${fn.toString()};`).join("\n");
   const mermaidHelperKeys = mermaidHelperEntries.map(([name]) => name).join(", ");
+  const revisionNumber = Number(artifactRevision);
+  const revision = Number.isFinite(revisionNumber) && revisionNumber >= 0 ? Math.trunc(revisionNumber) : 0;
+  const loadToken = String(artifactLoadToken || "").slice(0, 200);
   return `(() => {
 const key=${JSON.stringify(key)};
 void key;
+const artifactRevision=${revision};
+const artifactLoadToken=${JSON.stringify(loadToken)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
@@ -1304,7 +1554,7 @@ const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers);
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken);
 })();`;
 }
 
