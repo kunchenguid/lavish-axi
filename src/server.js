@@ -1235,10 +1235,7 @@ function isSameOriginRequest(req, allowedHostnames) {
     .trim();
   if (
     forwardedHost &&
-    isAllowedRequestHost(
-      { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] },
-      allowedHostnames,
-    )
+    isAllowedRequestHost({ host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] }, allowedHostnames)
   ) {
     const forwardedProtocol = String(req.get("x-forwarded-proto") || req.protocol)
       .split(",")

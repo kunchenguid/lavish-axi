@@ -1259,9 +1259,9 @@ test("proxied same-origin prompt submissions use only an allowlisted forwarded o
       body,
     });
     assert.equal(spoofed.status, 403);
-    const pollAfterSpoof = await fetch(
-      `${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`,
-    ).then((res) => res.json());
+    const pollAfterSpoof = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+      (res) => res.json(),
+    );
     assert.equal(pollAfterSpoof.status, "waiting");
 
     const submitted = await fetch(`${base}/api/${key}/prompts`, {
