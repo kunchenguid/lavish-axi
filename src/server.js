@@ -1240,7 +1240,9 @@ export async function resolveArtifactAsset(root, assetPath) {
   if (relativeReal === ".." || relativeReal.startsWith(`..${path.sep}`) || path.isAbsolute(relativeReal)) {
     return null;
   }
-  return file;
+  // Hand back the resolved path, not the requested one: a real path contains no symlinks, so
+  // sendFile re-opening it cannot be redirected by a link swapped in after this check.
+  return real;
 }
 
 /**

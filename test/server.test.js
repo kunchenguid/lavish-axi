@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -165,6 +165,36 @@ test("artifact assets reject a symlink that escapes the artifact directory", asy
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("artifact assets reject a path that escapes through an intermediate directory symlink", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
+  try {
+    await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
+    // The escaping link is a *directory* component, so the leaf name looks ordinary.
+    await symlink(outside, path.join(dir, "vendor"));
+
+    assert.equal(await resolveArtifactAsset(dir, "vendor/secret.txt"), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("artifact assets still resolve a symlink that stays inside the artifact directory", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  try {
+    const real = path.join(dir, "real.css");
+    await writeFile(real, "body { color: rgb(1 2 3); }\n");
+    await symlink(real, path.join(dir, "alias.css"));
+
+    // Confinement must not over-block, and the resolved (symlink-free) path is what callers
+    // get, so nothing re-follows the link after the check.
+    assert.equal(await resolveArtifactAsset(dir, "alias.css"), await realpath(real));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -1402,6 +1432,99 @@ test("/artifact refuses to serve a symlink that escapes the artifact directory",
   } finally {
     await server.close();
     await rm(parent, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("/artifact refuses a path that escapes through an intermediate directory symlink", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
+  const dir = path.join(parent, ".lavish");
+  const artifact = path.join(dir, "artifact.html");
+  await mkdir(dir);
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
+  await symlink(outside, path.join(dir, "vendor"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+    const leak = await fetch(`${base}/artifact/${session.key}/vendor/secret.txt`);
+
+    assert.equal(leak.status, 403);
+    assert.doesNotMatch(await leak.text(), /outside-secret/);
+  } finally {
+    await server.close();
+    await rm(parent, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// The realpath hardening must not cost us the original lexical guard, and `fetch` collapses
+// `..` in a URL before it ever reaches the wire - only a raw request proves the server itself
+// still rejects the traversal.
+test("/artifact still rejects lexical .. traversal that reaches the server unnormalized", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const dir = path.join(parent, ".lavish");
+  const artifact = path.join(dir, "artifact.html");
+  await mkdir(dir);
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  await writeFile(path.join(parent, "secret.txt"), "outside-secret\n");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const sessionRes = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    for (const suffix of ["../secret.txt", "%2e%2e/secret.txt", "assets/../../secret.txt"]) {
+      const res = await rawRequest(server.port, `/artifact/${session.key}/${suffix}`);
+      assert.equal(res.status, 403, `expected 403 for ${suffix}`);
+      assert.doesNotMatch(res.body, /outside-secret/);
+    }
+  } finally {
+    await server.close();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("/whiteboard-assets refuses escaping symlinks and .. traversal but still serves its bundle", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
+  const assetsDir = path.join(dir, "whiteboard-assets");
+  await mkdir(assetsDir);
+  await writeFile(path.join(assetsDir, "whiteboard.js"), "// fake bundle\n");
+  await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
+  await symlink(path.join(outside, "secret.txt"), path.join(assetsDir, "leak.txt"));
+  await writeFile(path.join(dir, "sibling-secret.txt"), "outside-secret\n");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    whiteboardAssetsDir: assetsDir,
+  });
+  try {
+    const bundle = await fetch(`http://127.0.0.1:${server.port}/whiteboard-assets/whiteboard.js`);
+    assert.equal(bundle.status, 200);
+    assert.match(await bundle.text(), /fake bundle/);
+
+    const leak = await rawRequest(server.port, "/whiteboard-assets/leak.txt");
+    assert.equal(leak.status, 403);
+    assert.doesNotMatch(leak.body, /outside-secret/);
+
+    const traversal = await rawRequest(server.port, "/whiteboard-assets/../sibling-secret.txt");
+    assert.equal(traversal.status, 403);
+    assert.doesNotMatch(traversal.body, /outside-secret/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
   }
 });
