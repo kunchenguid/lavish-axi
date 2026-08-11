@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.50](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.49...lavish-axi-v0.1.50) (2026-08-11)
+
+
+### Bug Fixes
+
+* **server:** harden feedback submission boundaries ([#235](https://github.com/kunchenguid/lavish-axi/issues/235)) ([89412ca](https://github.com/kunchenguid/lavish-axi/commit/89412ca1c0c8490476edffa065317cd0e093afc8))
+
 ## [0.1.49](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.48...lavish-axi-v0.1.49) (2026-08-11)
 
 
