@@ -1293,7 +1293,8 @@ function showWhiteboardOverlay(index) {
   postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
   // A fresh document per open: the frame boots, posts ready, and receives its
   // init - no stale editor state can leak between opens.
-  whiteboardFrame.src = "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index));
+  whiteboardFrame.src =
+    "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index)) + "&key=" + encodeURIComponent(key);
 }
 
 function finishWhiteboardClose(index) {
@@ -1573,10 +1574,30 @@ function handleAuthenticatedWhiteboardMessage(index, message, mode) {
   if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(index, message, mode);
 }
 
+// Inline whiteboard frames are created by the SDK inside the artifact document,
+// so a genuine one is always a direct child of the *current* artifact window.
+// Descent - not the channel token - is what proves the sender is ours: the
+// frame page is framable by any origin, so a token is not a secret an attacker
+// cannot obtain. Without this, any window that could postMessage to this chrome
+// (a page that framed it, or one holding a window.open handle) could open a
+// channel and queue a fabricated prompt. Mirrors the artifact-message handler's
+// `event.source !== frame.contentWindow` guard.
+function isArtifactChildWindow(source) {
+  if (!source) return false;
+  try {
+    // Reading `parent` on a cross-origin WindowProxy is permitted; the frame's
+    // sandbox makes everything else about it opaque.
+    return source.parent === frame.contentWindow;
+  } catch {
+    return false;
+  }
+}
+
 function handleInlineWhiteboardMessage(event, message) {
   if (ended) return;
+  if (!isArtifactChildWindow(event.source)) return;
   const index = validWhiteboardIndex(message.diagramIndex);
-  if (index === null || !event.source) return;
+  if (index === null) return;
   if (message.type === "lavish-whiteboard:ready") {
     if (inlineWhiteboardChannels.has(index)) return;
     const channelId = String(message.channelToken || "");

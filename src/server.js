@@ -92,19 +92,35 @@ export function isWhiteboardWriteApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
 }
 
-export function createWhiteboardChannelToken(secret, now = Date.now()) {
-  const payload = `${now}.${crypto.randomBytes(24).toString("base64url")}`;
-  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
+// The signed payload carries the session key, so a token is a capability for
+// exactly one session. Without that binding any token - including one minted by
+// a request that named no session - authenticated an arbitrary session's
+// whiteboard channel. The wire format stays `${issuedAt}.${nonce}.${signature}`;
+// the key is signed over, never transmitted in the token.
+function whiteboardChannelPayload(issuedAt, nonce, sessionKey) {
+  return `${issuedAt}.${nonce}.${sessionKey}`;
 }
 
-export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
+export function createWhiteboardChannelToken(secret, sessionKey, now = Date.now()) {
+  const nonce = crypto.randomBytes(24).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(whiteboardChannelPayload(now, nonce, String(sessionKey || "")))
+    .digest("base64url");
+  return `${now}.${nonce}.${signature}`;
+}
+
+export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = Date.now()) {
+  if (!isValidWhiteboardKey(sessionKey)) return false;
   const [issuedAtText, nonce, signature, extra] = String(token || "").split(".");
   if (extra !== undefined || !/^\d{13}$/.test(issuedAtText) || !/^[A-Za-z0-9_-]{32}$/.test(nonce)) return false;
   const issuedAt = Number(issuedAtText);
   if (!Number.isSafeInteger(issuedAt) || issuedAt > now || now - issuedAt > WHITEBOARD_CHANNEL_TOKEN_TTL_MS)
     return false;
-  const expected = crypto.createHmac("sha256", secret).update(`${issuedAtText}.${nonce}`).digest("base64url");
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(whiteboardChannelPayload(issuedAtText, nonce, String(sessionKey)))
+    .digest("base64url");
   const actualBuffer = Buffer.from(signature || "", "utf8");
   const expectedBuffer = Buffer.from(expected, "utf8");
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
@@ -312,8 +328,16 @@ export async function serve({
     }
   });
 
+  // The one route that puts words in the reviewer's mouth: whatever lands here
+  // reaches the agent as the user's own instructions. The session key is derived
+  // from the artifact path, not a secret, so knowing it must not be enough -
+  // only this server's own chrome may queue prompts.
   app.post("/api/:key/prompts", async (req, res, next) => {
     try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin prompt submission rejected" });
+        return;
+      }
       const shouldEndSession = Boolean(req.body?.endSession || req.body?.end_session);
       const hasLayoutWarningPrompt = Array.isArray(req.body?.prompts)
         ? req.body.prompts.some((prompt) => prompt?.tag === "layout-warnings")
@@ -565,6 +589,15 @@ export async function serve({
       await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
+      // Nothing legitimately frames the review chrome - it is the top-level
+      // page, and shares/exports ship standalone HTML rather than embedding it.
+      // Refusing to be framed denies an attacker page both a window handle to
+      // this chrome and a clickjacking surface over Send. Scoped to this route:
+      // /artifact/* is framed by this page and /whiteboard-frame is framed by
+      // that artifact document, whose sandbox gives it an opaque origin no
+      // frame-ancestors expression can name.
+      res.setHeader("x-frame-options", "DENY");
+      res.setHeader("content-security-policy", "frame-ancestors 'none'");
       res.type("html").send(
         createChromeHtml(session, {
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
@@ -798,7 +831,16 @@ export async function serve({
   // reports ready.
   app.get("/whiteboard-frame", (req, res) => {
     res.setHeader("cache-control", "no-store");
-    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret)));
+    // The frame's channel token is minted for one session, so the caller must
+    // name it. Both call sites (the chrome overlay and the artifact SDK's
+    // inline embed) know their own key; a request without one could only
+    // produce a token that authenticates nothing, so reject it outright.
+    const sessionKey = String(req.query.key || "");
+    if (!isValidWhiteboardKey(sessionKey)) {
+      res.status(400).type("text/plain").send("Missing session key");
+      return;
+    }
+    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret, sessionKey)));
   });
 
   // Whiteboard bundle, stylesheet, and vendored Excalidraw fonts. The frame
@@ -879,7 +921,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret)) {
+      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret, req.params.key)) {
         res.status(403).json({ error: "invalid whiteboard channel" });
         return;
       }
@@ -1568,7 +1610,6 @@ export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "") {
   const loadToken = String(artifactLoadToken || "").slice(0, 200);
   return `(() => {
 const key=${JSON.stringify(key)};
-void key;
 const artifactRevision=${revision};
 const artifactLoadToken=${JSON.stringify(loadToken)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
@@ -1582,7 +1623,7 @@ const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken);
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key);
 })();`;
 }
 
