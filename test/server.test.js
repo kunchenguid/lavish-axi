@@ -1329,8 +1329,8 @@ test("wildcard hosts accept proxied prompts but still reject malformed authoriti
       body,
     });
     assert.equal(malformed.status, 403);
-    const pollAfterReject = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
-      res.json(),
+    const pollAfterReject = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+      (res) => res.json(),
     );
     assert.equal(pollAfterReject.status, "waiting");
 

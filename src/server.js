@@ -1179,7 +1179,7 @@ function parseHostAuthority(value) {
   if (!raw || /[@/\\?#\s]/.test(raw)) return null;
 
   let hostname;
-  let port = "";
+  let port;
   let bracketed = false;
   if (raw.startsWith("[")) {
     const match = /^\[([0-9A-Fa-f:.]+)\](?::(\d+))?$/.exec(raw);

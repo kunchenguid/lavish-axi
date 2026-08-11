@@ -1,0 +1,12 @@
+Browser: Google Chrome headless
+Attacker origin: distinct loopback port
+Victim frame network failures: [
+  {
+    "requestId": "FB5C52CDD5105F30406319CEE8D9AEAC",
+    "timestamp": 566176.755165,
+    "type": "Document",
+    "errorText": "net::ERR_BLOCKED_BY_RESPONSE",
+    "canceled": false,
+    "blockedReason": "other"
+  }
+]
