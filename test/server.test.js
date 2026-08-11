@@ -1248,21 +1248,30 @@ test("proxied same-origin prompt submissions use only an allowlisted forwarded o
     }).then((res) => res.json());
     const body = JSON.stringify({ prompts: [{ prompt: "proxied reviewer feedback", tag: "message" }] });
 
-    const spoofed = await fetch(`${base}/api/${key}/prompts`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        origin: "https://evil.example",
-        "x-forwarded-host": "evil.example",
-        "x-forwarded-proto": "https",
-      },
-      body,
-    });
-    assert.equal(spoofed.status, 403);
-    const pollAfterSpoof = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+    const rejectedAuthorities = [
+      { forwardedHost: "evil.example", origin: "https://evil.example" },
+      { forwardedHost: "review.example:443@evil.example", origin: "https://evil.example" },
+      { forwardedHost: "review.example:not-a-port", origin: "https://review.example" },
+      { forwardedHost: "review.example:65536", origin: "https://review.example" },
+      { forwardedHost: "review.example:443:evil.example", origin: "https://review.example" },
+    ];
+    for (const { forwardedHost, origin } of rejectedAuthorities) {
+      const rejected = await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin,
+          "x-forwarded-host": forwardedHost,
+          "x-forwarded-proto": "https",
+        },
+        body,
+      });
+      assert.equal(rejected.status, 403);
+    }
+    const pollAfterRejects = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
       (res) => res.json(),
     );
-    assert.equal(pollAfterSpoof.status, "waiting");
+    assert.equal(pollAfterRejects.status, "waiting");
 
     const submitted = await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
@@ -1391,6 +1400,27 @@ test("server validates X-Forwarded-Host so it works behind a reverse proxy", asy
       headers: { "x-forwarded-host": "evil.example" },
     });
     assert.equal(forgedForward.status, 403);
+    for (const forwardedHost of [
+      "proxy.example:443@evil.example",
+      "proxy.example:not-a-port",
+      "proxy.example:65536",
+      "proxy.example:443:evil.example",
+    ]) {
+      const malformedForward = await rawRequest(server.port, "/health", {
+        host: `127.0.0.1:${server.port}`,
+        headers: { "x-forwarded-host": forwardedHost },
+      });
+      assert.equal(malformedForward.status, 403);
+    }
+    for (const host of [
+      "proxy.example:443@evil.example",
+      "proxy.example:not-a-port",
+      "proxy.example:65536",
+      "proxy.example:443:evil.example",
+    ]) {
+      const malformedHost = await rawRequest(server.port, "/health", { host });
+      assert.equal(malformedHost.status, 403);
+    }
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1424,6 +1454,10 @@ test("isAllowedHostHeader enforces the loopback Host allowlist", () => {
   assert.equal(isAllowedHostHeader("HOST.EXAMPLE:4387", allowed), true);
   assert.equal(isAllowedHostHeader("evil.example:4387", allowed), false);
   assert.equal(isAllowedHostHeader("evil.example", allowed), false);
+  assert.equal(isAllowedHostHeader("host.example:443@evil.example", allowed), false);
+  assert.equal(isAllowedHostHeader("host.example:not-a-port", allowed), false);
+  assert.equal(isAllowedHostHeader("host.example:65536", allowed), false);
+  assert.equal(isAllowedHostHeader("host.example:443:evil.example", allowed), false);
   // Host is mandatory in HTTP/1.1 and every browser sends it, so missing or blank
   // is never legitimate and is rejected.
   assert.equal(isAllowedHostHeader(undefined, allowed), false);
@@ -1437,6 +1471,8 @@ test("hostnameFromHostHeader rejects trailing garbage after a bracketed IPv6 lit
   assert.equal(hostnameFromHostHeader("[::1]evil.com"), null);
   assert.equal(hostnameFromHostHeader("[::1]:4387"), "::1");
   assert.equal(hostnameFromHostHeader("[::1]"), "::1");
+  assert.equal(hostnameFromHostHeader("::1"), null);
+  assert.equal(hostnameFromHostHeader("[:::1]"), null);
 });
 
 test("isAllowedHostHeader rejects a bracketed IPv6 host with trailing garbage", () => {

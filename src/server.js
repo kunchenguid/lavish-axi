@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1172,25 +1173,37 @@ export function allowsAllHosts(allowedHosts = []) {
   return allowedHosts.some((value) => String(value).trim() === "*");
 }
 
+function parseHostAuthority(value) {
+  const raw = String(value).trim();
+  if (!raw || /[@/\\?#\s]/.test(raw)) return null;
+
+  let hostname;
+  let port = "";
+  let bracketed = false;
+  if (raw.startsWith("[")) {
+    const match = /^\[([0-9A-Fa-f:.]+)\](?::(\d+))?$/.exec(raw);
+    if (!match || isIP(match[1]) !== 6) return null;
+    [, hostname, port = ""] = match;
+    bracketed = true;
+  } else {
+    const match = /^([A-Za-z0-9._-]+)(?::(\d+))?$/.exec(raw);
+    if (!match) return null;
+    [, hostname, port = ""] = match;
+  }
+  if (port && Number(port) > 65535) return null;
+
+  hostname = hostname.toLowerCase();
+  return {
+    hostname,
+    port,
+    authority: `${bracketed ? `[${hostname}]` : hostname}${port ? `:${port}` : ""}`,
+  };
+}
+
 // Extract the hostname (without port) from a Host header value, honoring
 // bracketed IPv6 literals ("[::1]:4387"). Returns null for a malformed authority.
 export function hostnameFromHostHeader(value) {
-  const raw = String(value).trim();
-  if (raw.startsWith("[")) {
-    const end = raw.indexOf("]");
-    if (end === -1) return null;
-    // Anything after the closing bracket must be a `:port` suffix; reject trailing
-    // garbage (e.g. "[::1]evil.com") instead of reading it as the bracketed host.
-    const rest = raw.slice(end + 1);
-    if (rest.length > 0 && !rest.startsWith(":")) return null;
-    return raw.slice(1, end).toLowerCase();
-  }
-  const colon = raw.indexOf(":");
-  const hostname = colon === -1 ? raw : raw.slice(0, colon);
-  // A bare, unbracketed IPv6 literal is not a valid authority; reject it rather
-  // than mistaking a hextet for a port.
-  if (hostname.includes(":")) return null;
-  return hostname.toLowerCase();
+  return parseHostAuthority(value)?.hostname ?? null;
 }
 
 // DNS-rebinding defense: a loopback-bound server answers only to its own known
@@ -1200,11 +1213,8 @@ export function hostnameFromHostHeader(value) {
 // fail open.
 export function isAllowedHostHeader(hostHeader, allowedHostnames) {
   if (hostHeader === undefined || hostHeader === null) return false;
-  const raw = String(hostHeader).trim();
-  if (raw === "") return false;
-  const hostname = hostnameFromHostHeader(raw);
-  if (hostname === null) return false;
-  return allowedHostnames.has(hostname);
+  const authority = parseHostAuthority(hostHeader);
+  return authority !== null && allowedHostnames.has(authority.hostname);
 }
 
 // Validate a request's effective host for DNS-rebinding protection. The Host
@@ -1228,23 +1238,32 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
 // browser attaches an Origin/Referer that must match this server's own origin.
 function isSameOriginRequest(req, allowedHostnames) {
-  let expectedOrigin = `${req.protocol}://${req.get("host")}`;
+  const host = parseHostAuthority(req.headers.host);
+  if (!host) return false;
+
+  let protocol = req.protocol;
+  let authority = host;
   const forwardedHost = String(req.get("x-forwarded-host") || "")
     .split(",")
     .pop()
     .trim();
-  if (
-    forwardedHost &&
-    isAllowedRequestHost({ host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] }, allowedHostnames)
-  ) {
-    const forwardedProtocol = String(req.get("x-forwarded-proto") || req.protocol)
+  if (forwardedHost) {
+    const forwardedAuthority = parseHostAuthority(forwardedHost);
+    if (
+      !forwardedAuthority ||
+      !allowedHostnames.has(host.hostname) ||
+      !allowedHostnames.has(forwardedAuthority.hostname)
+    )
+      return false;
+    protocol = String(req.get("x-forwarded-proto") || req.protocol)
       .split(",")
       .pop()
       .trim()
       .toLowerCase();
-    if (forwardedProtocol !== "http" && forwardedProtocol !== "https") return false;
-    expectedOrigin = normalizeOrigin(`${forwardedProtocol}://${forwardedHost}`);
+    if (protocol !== "http" && protocol !== "https") return false;
+    authority = forwardedAuthority;
   }
+  const expectedOrigin = normalizeOrigin(`${protocol}://${authority.authority}`);
   const origin = req.get("origin");
   if (origin) {
     return normalizeOrigin(origin) === expectedOrigin;
