@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.49](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.48...lavish-axi-v0.1.49) (2026-08-11)
+
+
+### Bug Fixes
+
+* **server:** confine artifact asset route by realpath (symlink-escape hardening) ([#194](https://github.com/kunchenguid/lavish-axi/issues/194)) ([6215658](https://github.com/kunchenguid/lavish-axi/commit/62156587cd163f14e90c0e7014492d1961afa5f7))
+
 ## [0.1.48](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.47...lavish-axi-v0.1.48) (2026-08-10)
 
 
