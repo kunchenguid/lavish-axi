@@ -1229,6 +1229,66 @@ test("POST /api/:key/prompts rejects non-same-origin callers and queues nothing"
   }
 });
 
+test("proxied same-origin prompt submissions use only an allowlisted forwarded origin", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    allowedHosts: ["review.example"],
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    const body = JSON.stringify({ prompts: [{ prompt: "proxied reviewer feedback", tag: "message" }] });
+
+    const spoofed = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://evil.example",
+        "x-forwarded-host": "evil.example",
+        "x-forwarded-proto": "https",
+      },
+      body,
+    });
+    assert.equal(spoofed.status, 403);
+    const pollAfterSpoof = await fetch(
+      `${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`,
+    ).then((res) => res.json());
+    assert.equal(pollAfterSpoof.status, "waiting");
+
+    const submitted = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://review.example",
+        "x-forwarded-host": "evil.example, review.example",
+        "x-forwarded-proto": "http, https",
+      },
+      body,
+    });
+    assert.equal(submitted.status, 200);
+    const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+      res.json(),
+    );
+    assert.equal(delivered.status, "feedback");
+    assert.deepEqual(
+      delivered.prompts.map((prompt) => prompt.prompt),
+      ["proxied reviewer feedback"],
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // Regression: with no framing headers an attacker page could frame the chrome
 // to obtain a window handle to it (and a clickjacking surface over Send).
 test("the session chrome page refuses to be framed", async () => {

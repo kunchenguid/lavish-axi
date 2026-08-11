@@ -334,7 +334,7 @@ export async function serve({
   // only this server's own chrome may queue prompts.
   app.post("/api/:key/prompts", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames)) {
         res.status(403).json({ error: "cross-origin prompt submission rejected" });
         return;
       }
@@ -528,7 +528,7 @@ export async function serve({
   // loopback server.
   app.post("/api/:key/share", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames)) {
         res.status(403).json({ error: "cross-origin share request rejected" });
         return;
       }
@@ -620,7 +620,7 @@ export async function serve({
 
   app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames)) {
         res.status(403).json({ error: "cross-origin chrome handoff rejected" });
         return;
       }
@@ -912,7 +912,7 @@ export async function serve({
 
   app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames)) {
         res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
         return;
       }
@@ -937,7 +937,7 @@ export async function serve({
   // loopback server.
   app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -964,7 +964,7 @@ export async function serve({
   // target. Files stay on this machine; the prompt carries only the paths.
   app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -1227,8 +1227,27 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
 
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
 // browser attaches an Origin/Referer that must match this server's own origin.
-function isSameOriginRequest(req) {
-  const expectedOrigin = `${req.protocol}://${req.get("host")}`;
+function isSameOriginRequest(req, allowedHostnames) {
+  let expectedOrigin = `${req.protocol}://${req.get("host")}`;
+  const forwardedHost = String(req.get("x-forwarded-host") || "")
+    .split(",")
+    .pop()
+    .trim();
+  if (
+    forwardedHost &&
+    isAllowedRequestHost(
+      { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] },
+      allowedHostnames,
+    )
+  ) {
+    const forwardedProtocol = String(req.get("x-forwarded-proto") || req.protocol)
+      .split(",")
+      .pop()
+      .trim()
+      .toLowerCase();
+    if (forwardedProtocol !== "http" && forwardedProtocol !== "https") return false;
+    expectedOrigin = normalizeOrigin(`${forwardedProtocol}://${forwardedHost}`);
+  }
   const origin = req.get("origin");
   if (origin) {
     return normalizeOrigin(origin) === expectedOrigin;
