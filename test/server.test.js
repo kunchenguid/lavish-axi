@@ -248,6 +248,48 @@ test("artifact SDK isolates Lavish annotation UI in Shadow DOM", () => {
   assert.match(js, /lavish-annotation-root/);
 });
 
+test("artifact SDK renders queued feedback state on question scopes", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /msg\.type === "lavish:setQueuedQuestionKeys"/);
+  assert.match(js, /document\.querySelectorAll\("\[data-lavish-question\]"\)/);
+  assert.match(js, /lavish-queued-question/);
+  assert.match(js, /✓ Queued/);
+  assert.match(js, /aria-label", "Answer queued"/);
+  assert.match(js, /_lavishQuestionKey/);
+});
+
+// The marker is a position:fixed overlay carrying a role="status" live region, so it has two
+// standing obligations: it must follow its question scope through every kind of reflow, and it
+// must be the same node across passes. Rebuilding it per pass re-announces "Answer queued" on
+// every scroll frame, and a bubble-phase window scroll listener alone never sees nested scrollers.
+test("artifact SDK keeps queued-question markers stable and attached through reflows", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /queuedQuestionMarkers\.get\(scope\)/);
+  assert.doesNotMatch(js, /shadow\.querySelectorAll\("\.lavish-queued-question"\)/);
+  assert.match(js, /"scroll",\s*scheduleQueuedQuestionRender,\s*\{\s*capture: true/);
+  assert.match(js, /new ResizeObserver\(scheduleQueuedQuestionRender\)/);
+  assert.match(js, /queuedQuestionMutationObserver = new MutationObserver\(scheduleQueuedQuestionRender\)/);
+  assert.match(
+    js,
+    /queuedQuestionMutationObserver\?\.observe\(document\.documentElement, \{\s*attributes: true,\s*characterData: true,/,
+  );
+});
+
+// The overlay is clipped by nothing, so it must reconstruct the browser's clip chain itself or a
+// question inside a scrollable panel rings whatever follows the panel. Clamping to the viewport
+// alone is the regression this pins; the geometry itself is covered in test/artifact-sdk.test.js.
+test("artifact SDK clamps queued-question markers to their clipping ancestors", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /function intersectClipRects\(rect, clips\)/);
+  assert.match(js, /intersectClipRects\(rect, queuedQuestionClipRects\(scope\)\)/);
+  assert.match(js, /style\.overflowX !== "visible" \|\| style\.overflowY !== "visible"/);
+  assert.match(js, /clips\.push\(paddingBoxRect\(node\)\)/);
+  assert.doesNotMatch(js, /Math\.min\(rect\.right, window\.innerWidth\)/);
+});
+
 test("annotation card does not block its own Queue button", () => {
   const js = createSdkJs("abc");
 
