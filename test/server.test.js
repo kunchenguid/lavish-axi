@@ -1299,6 +1299,66 @@ test("proxied same-origin prompt submissions use only an allowlisted forwarded o
   }
 });
 
+test("wildcard hosts accept proxied prompts but still reject malformed authorities", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    allowedHosts: ["*"],
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    const body = JSON.stringify({ prompts: [{ prompt: "wildcard proxied feedback", tag: "message" }] });
+
+    const malformed = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://evil.example",
+        "x-forwarded-host": "review.example:443@evil.example",
+        "x-forwarded-proto": "https",
+      },
+      body,
+    });
+    assert.equal(malformed.status, 403);
+    const pollAfterReject = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+      res.json(),
+    );
+    assert.equal(pollAfterReject.status, "waiting");
+
+    const submitted = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://review.example",
+        "x-forwarded-host": "review.example",
+        "x-forwarded-proto": "https",
+      },
+      body,
+    });
+    assert.equal(submitted.status, 200);
+    const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+      res.json(),
+    );
+    assert.equal(delivered.status, "feedback");
+    assert.deepEqual(
+      delivered.prompts.map((prompt) => prompt.prompt),
+      ["wildcard proxied feedback"],
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // Regression: with no framing headers an attacker page could frame the chrome
 // to obtain a window handle to it (and a clickjacking surface over Send).
 test("the session chrome page refuses to be framed", async () => {
