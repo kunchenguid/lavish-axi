@@ -1193,11 +1193,14 @@ function parseHostAuthority(value) {
   if (port && Number(port) > 65535) return null;
 
   hostname = hostname.toLowerCase();
-  return {
-    hostname,
-    port,
-    authority: `${bracketed ? `[${hostname}]` : hostname}${port ? `:${port}` : ""}`,
-  };
+  const authority = `${bracketed ? `[${hostname}]` : hostname}${port ? `:${port}` : ""}`;
+  try {
+    const parsed = new URL(`http://${authority}`);
+    if (!parsed.origin || parsed.origin === "null") return null;
+  } catch {
+    return null;
+  }
+  return { hostname, port, authority };
 }
 
 // Extract the hostname (without port) from a Host header value, honoring
@@ -1264,6 +1267,7 @@ function isSameOriginRequest(req, allowedHostnames) {
     authority = forwardedAuthority;
   }
   const expectedOrigin = normalizeOrigin(`${protocol}://${authority.authority}`);
+  if (!expectedOrigin) return false;
   const origin = req.get("origin");
   if (origin) {
     return normalizeOrigin(origin) === expectedOrigin;

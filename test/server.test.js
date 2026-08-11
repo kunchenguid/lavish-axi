@@ -1237,7 +1237,7 @@ test("proxied same-origin prompt submissions use only an allowlisted forwarded o
     port: 0,
     stateFile: path.join(dir, "state.json"),
     version: "9.9.9-test",
-    allowedHosts: ["review.example"],
+    allowedHosts: ["review.example", "1.2.3.999"],
   });
   const base = `http://127.0.0.1:${server.port}`;
   try {
@@ -1254,6 +1254,7 @@ test("proxied same-origin prompt submissions use only an allowlisted forwarded o
       { forwardedHost: "review.example:not-a-port", origin: "https://review.example" },
       { forwardedHost: "review.example:65536", origin: "https://review.example" },
       { forwardedHost: "review.example:443:evil.example", origin: "https://review.example" },
+      { forwardedHost: "1.2.3.999", origin: "null" },
     ];
     for (const { forwardedHost, origin } of rejectedAuthorities) {
       const rejected = await fetch(`${base}/api/${key}/prompts`, {
@@ -1385,7 +1386,7 @@ test("server validates X-Forwarded-Host so it works behind a reverse proxy", asy
     version: "9.9.9-test",
     host: "127.0.0.1",
     linkHost: "127.0.0.1",
-    allowedHosts: ["proxy.example"],
+    allowedHosts: ["proxy.example", "1.2.3.999"],
   });
   try {
     // A proxy rewrites Host to the loopback upstream and forwards the public host.
@@ -1405,6 +1406,7 @@ test("server validates X-Forwarded-Host so it works behind a reverse proxy", asy
       "proxy.example:not-a-port",
       "proxy.example:65536",
       "proxy.example:443:evil.example",
+      "1.2.3.999",
     ]) {
       const malformedForward = await rawRequest(server.port, "/health", {
         host: `127.0.0.1:${server.port}`,
@@ -1417,6 +1419,7 @@ test("server validates X-Forwarded-Host so it works behind a reverse proxy", asy
       "proxy.example:not-a-port",
       "proxy.example:65536",
       "proxy.example:443:evil.example",
+      "1.2.3.999",
     ]) {
       const malformedHost = await rawRequest(server.port, "/health", { host });
       assert.equal(malformedHost.status, 403);
