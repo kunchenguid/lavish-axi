@@ -33,7 +33,7 @@ export const ALLOWED_SKILL_FRONTMATTER_KEYS = Object.freeze([
 ]);
 
 /**
- * Render the installable SKILL.md for the lavish skill. The body mirrors what
+ * Render the public installable SKILL.md for the lavish skill. The body mirrors what
  * `lavish-axi` prints with no arguments (minus live session state), while the
  * frontmatter adds discovery metadata for Agent Skills and Hermes Agent.
  *

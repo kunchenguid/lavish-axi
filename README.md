@@ -263,7 +263,7 @@ For flows, architecture, state, or sequence diagrams, open the diagram playbook 
 ```sh
 pnpm run check          # Run all verification commands
 pnpm run build          # Bundle the publishable CLI, chrome, and design assets
-pnpm run build:skill    # Regenerate the installable lavish skill
+pnpm run build:skill    # Regenerate the public installable lavish skill
 pnpm test               # Run node:test tests
 pnpm run lint           # Run ESLint
 pnpm run format:check   # Check Prettier formatting

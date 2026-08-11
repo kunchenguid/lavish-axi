@@ -1,5 +1,5 @@
-// Generates skills/lavish/SKILL.md from the shared no-args home output so the
-// installable skill never drifts from what `lavish-axi` (and the SessionStart hook) print.
+// Generates the public skills/lavish/SKILL.md from the shared no-args home output so the
+// public installable skill never drifts from what `lavish-axi` (and the SessionStart hook) print.
 //
 //   node scripts/build-skill.js          # write the file
 //   node scripts/build-skill.js --check  # fail (exit 1) if the committed file is stale

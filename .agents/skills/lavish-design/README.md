@@ -3,6 +3,7 @@
 > _For when a rich editor is not rich enough._
 
 This is the brand & design system for **Lavish** — an in-browser agentic editor that opens agent-generated HTML artifacts in a local browser, lets a human pinpoint elements or selected text, annotate them, and ship that feedback back to the agent.
+Repository maintainers keep this as an internal Agent Skill, hidden from default `npx skills add ... --list` and skills.sh discovery by the `metadata.internal: true` frontmatter in `SKILL.md`.
 
 The product feels like a quiet reading room with a brass lamp: dark ink walls, a single warm gold accent, generous type set in a literary serif beside a clean technical sans. Elegant. Minimal. Futuristic. _Lavish._
 
