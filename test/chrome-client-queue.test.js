@@ -28,6 +28,7 @@ async function createChromeHarness({
   storage = new Map(),
   beginLoadResponses = [],
   handoffResponses = [],
+  compactViewport = false,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   const postedToFrame = [];
@@ -211,6 +212,8 @@ async function createChromeHarness({
   };
   element("whiteboardOverlay").hidden = true;
   element("shareDialog").hidden = true;
+  element("actionPanel").hidden = true;
+  element("endedOverlay").hidden = true;
   element("moreMenu").hidden = true;
   element("warningsDrawer").hidden = true;
   const whiteboardFrame = element("whiteboardFrame");
@@ -304,6 +307,9 @@ async function createChromeHarness({
     window: {
       clearTimeout: fakeClearTimeout,
       setTimeout: fakeSetTimeout,
+      matchMedia() {
+        return { matches: compactViewport };
+      },
       addEventListener(type, handler) {
         if (!windowListeners.has(type)) windowListeners.set(type, []);
         windowListeners.get(type).push(handler);
@@ -401,6 +407,18 @@ async function createChromeHarness({
 
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+function descendants(root) {
+  const result = [];
+  const visit = (node) => {
+    for (const child of node.children || []) {
+      result.push(child);
+      visit(child);
+    }
+  };
+  visit(root);
+  return result;
 }
 
 test("chrome client re-handshakes once after a missing reviewer handoff", async () => {
@@ -1543,6 +1561,237 @@ test("chrome client strips the internal queue key before posting prompts", async
   assert.equal(chrome.queued().length, 0);
 });
 
+test("artifact action panel renders one safe sidebar surface and returns field values once", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "dealernet-gate1",
+      title: '<img src=x onerror="window.compromised=true">Decisão do Gate 1',
+      description: "Escolha o destino desta revisão.",
+      hideGenericSendAndEnd: true,
+      fields: [
+        {
+          id: "adjustment_text",
+          type: "textarea",
+          label: "Ajustes solicitados",
+          help: "Obrigatório para Solicitar ajustes.",
+          maxLength: 4000,
+        },
+      ],
+      actions: [
+        { id: "approve", label: "Aprovar", tone: "primary" },
+        { id: "adjust", label: "Solicitar ajustes", tone: "neutral", requires: ["adjustment_text"] },
+        { id: "abort", label: "Abortar demanda", tone: "danger" },
+      ],
+    },
+  });
+
+  const panel = chrome.element("actionPanel");
+  assert.equal(panel.hidden, false);
+  assert.equal(chrome.element("sendAndEnd").hidden, true);
+  const nodes = descendants(panel);
+  assert.equal(nodes.find((node) => node.tagName === "H2").textContent.includes("<img"), true);
+  assert.equal(
+    nodes.some((node) => node.innerHTML.includes("<img")),
+    false,
+    "artifact strings are never parsed as HTML",
+  );
+  assert.deepEqual(
+    nodes.filter((node) => node.tagName === "BUTTON").map((node) => node.textContent),
+    ["Aprovar", "Solicitar ajustes", "Abortar demanda"],
+  );
+  const textarea = nodes.find((node) => node.tagName === "TEXTAREA");
+  assert.ok(textarea);
+  assert.equal(textarea.maxLength, 4000);
+  assert.equal(textarea["aria-invalid"], "true");
+  const fieldError = nodes.find((node) => node.className === "action-panel-error");
+  assert.equal(fieldError.hidden, false);
+  assert.equal(fieldError.textContent, "Preencha o campo obrigatório.");
+  textarea.value = "Detalhar a concorrência";
+  textarea.dispatch("input");
+  assert.equal(textarea["aria-invalid"], "false");
+  assert.equal(fieldError.hidden, true);
+
+  const approve = nodes.find((node) => node.dataset.actionPanelAction === "approve");
+  approve.click();
+  approve.click();
+
+  const invocations = chrome.postedToFrame.filter((message) => message.type === "lavish:actionPanelInvoke");
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0].panelId, "dealernet-gate1");
+  assert.equal(invocations[0].actionId, "approve");
+  assert.deepEqual(JSON.parse(JSON.stringify(invocations[0].values)), {
+    adjustment_text: "Detalhar a concorrência",
+  });
+  assert.equal(
+    nodes.filter((node) => node.tagName === "BUTTON").every((node) => node.disabled),
+    true,
+  );
+});
+
+test("compact Gate keeps the same sidebar DOM and starts conversation collapsed", async () => {
+  const chrome = await createChromeHarness({ compactViewport: true });
+  chrome.element("conversationSection").open = true;
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "dealernet-gate1",
+      title: "Decisão do Gate 1",
+      actions: [{ id: "approve", label: "Aprovar", tone: "primary" }],
+    },
+  });
+
+  assert.equal(chrome.element("conversationSection").open, false);
+  assert.equal(chrome.element("actionPanel").hidden, false);
+
+  chrome.element("conversationSection").open = true;
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "dealernet-gate1",
+      title: "Decisão do Gate 1 atualizada",
+      actions: [{ id: "approve", label: "Aprovar", tone: "primary" }],
+    },
+  });
+  assert.equal(chrome.element("conversationSection").open, true, "hot reload preserves the user's section choice");
+});
+
+test("accepted hot reload removes stale Gate actions and restores its fields only after re-registration", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", compactViewport: true });
+  const panel = {
+    schema: "lavish-action-panel-v1",
+    id: "dealernet-gate1",
+    title: "Decisão do Gate 1",
+    hideGenericSendAndEnd: true,
+    fields: [{ id: "adjustment_text", type: "textarea", label: "Ajustes", maxLength: 4000 }],
+    actions: [{ id: "adjust", label: "Solicitar ajustes", tone: "neutral", requires: ["adjustment_text"] }],
+  };
+  chrome.sendFrameMessage({ type: "lavish:registerActionPanel", panel });
+  const firstTextarea = descendants(chrome.element("actionPanel")).find((node) => node.tagName === "TEXTAREA");
+  firstTextarea.value = "Preservar entre versões válidas.";
+  firstTextarea.dispatch("input");
+  chrome.element("conversationSection").open = true;
+
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("actionPanel").hidden, true);
+  assert.equal(descendants(chrome.element("actionPanel")).length, 0);
+  assert.equal(chrome.element("sendAndEnd").hidden, false);
+
+  chrome.sendFrameMessage({ type: "lavish:registerActionPanel", panel });
+  const restored = descendants(chrome.element("actionPanel")).find((node) => node.tagName === "TEXTAREA");
+  assert.equal(restored.value, "Preservar entre versões válidas.");
+  assert.equal(chrome.element("conversationSection").open, true, "reload does not override the user's section choice");
+});
+
+test("malformed persisted action-panel values cannot break registration", async () => {
+  const storage = new Map([["lavish-axi:action-panel:abc:dealernet-gate1", "null"]]);
+  const chrome = await createChromeHarness({ storage });
+
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "dealernet-gate1",
+      title: "Decisão do Gate 1",
+      fields: [{ id: "adjustment_text", type: "textarea", label: "Ajustes", maxLength: 4000 }],
+      actions: [{ id: "approve", label: "Aprovar", tone: "primary" }],
+    },
+  });
+
+  const textarea = descendants(chrome.element("actionPanel")).find((node) => node.tagName === "TEXTAREA");
+  assert.equal(textarea.value, "");
+  assert.equal(chrome.element("actionPanel").hidden, false);
+});
+
+test("artifact action panel applies declarative state and recovers only the matching invocation", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "dealernet-gate1",
+      title: "Decisão do Gate 1",
+      hideGenericSendAndEnd: true,
+      fields: [{ id: "adjustment_text", type: "textarea", label: "Ajustes", maxLength: 4000 }],
+      actions: [
+        { id: "approve", label: "Aprovar", tone: "primary" },
+        { id: "adjust", label: "Solicitar ajustes", tone: "neutral", requires: ["adjustment_text"] },
+        { id: "abort", label: "Abortar demanda", tone: "danger" },
+      ],
+    },
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:updateActionPanel",
+    panelId: "dealernet-gate1",
+    state: {
+      summary: "Falta responder: D2.",
+      status: "Revise as escolhas antes de enviar.",
+      actions: { approve: { disabled: true, reason: "Responda D2." } },
+    },
+  });
+
+  const nodes = descendants(chrome.element("actionPanel"));
+  const summary = nodes.find((node) => node.className === "action-panel-summary");
+  const status = nodes.find((node) => node.className === "action-panel-status");
+  const approve = nodes.find((node) => node.dataset.actionPanelAction === "approve");
+  const adjust = nodes.find((node) => node.dataset.actionPanelAction === "adjust");
+  const abort = nodes.find((node) => node.dataset.actionPanelAction === "abort");
+  const textarea = nodes.find((node) => node.tagName === "TEXTAREA");
+  assert.equal(summary.textContent, "Falta responder: D2.");
+  assert.equal(status.textContent, "Revise as escolhas antes de enviar.");
+  assert.equal(approve.disabled, true);
+  assert.equal(approve.title, "Responda D2.");
+  assert.equal(adjust.disabled, true);
+  assert.equal(abort.disabled, false);
+
+  textarea.value = "Acrescentar evidência concorrente.";
+  textarea.dispatch("input");
+  assert.equal(adjust.disabled, false);
+
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
+  assert.equal(
+    [approve, adjust, abort].every((button) => button.disabled),
+    true,
+  );
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  assert.equal(approve.disabled, true, "the artifact-owned disable remains after the agent becomes available");
+  assert.equal(adjust.disabled, false);
+  assert.equal(abort.disabled, false);
+
+  abort.click();
+  const invocation = chrome.postedToFrame.find((message) => message.type === "lavish:actionPanelInvoke");
+  assert.ok(invocation);
+  chrome.sendFrameMessage({
+    type: "lavish:actionPanelResult",
+    panelId: "dealernet-gate1",
+    invocationId: "stale-invocation",
+    ok: false,
+    error: "Resposta antiga.",
+  });
+  assert.equal(abort.disabled, true, "a stale result cannot unlock a newer action");
+
+  chrome.sendFrameMessage({
+    type: "lavish:actionPanelResult",
+    panelId: "dealernet-gate1",
+    invocationId: invocation.invocationId,
+    ok: false,
+    error: "Falha de rede; tente novamente.",
+  });
+  assert.equal(status.textContent, "Falha de rede; tente novamente.");
+  assert.equal(approve.disabled, true);
+  assert.equal(adjust.disabled, false);
+  assert.equal(abort.disabled, false);
+  assert.equal(textarea.value, "Acrescentar evidência concorrente.");
+});
+
 test("chrome send and end carries the end intent with queued prompts", async () => {
   const posts = [];
   const chrome = await createChromeHarness({
@@ -1574,6 +1823,125 @@ test("chrome send and end carries the end intent with queued prompts", async () 
   });
   assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("chatInput").disabled, true);
+});
+
+test("artifact terminal send ends atomically instead of leaving the chrome working", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "dealernet-gate1",
+      title: "Decisão do Gate 1",
+      fields: [{ id: "adjustment_text", type: "textarea", label: "Ajustes", maxLength: 4000 }],
+      actions: [
+        {
+          id: "approve",
+          label: "Aprovar",
+          tone: "primary",
+          successMessage: "Decisão de aprovação enviada. A revisão foi encerrada.",
+        },
+      ],
+    },
+  });
+  const panelNodes = descendants(chrome.element("actionPanel"));
+  const textarea = panelNodes.find((node) => node.tagName === "TEXTAREA");
+  textarea.value = "Texto transitório";
+  textarea.dispatch("input");
+  panelNodes.find((node) => node.dataset.actionPanelAction === "approve").click();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Approve this contract", selector: "", tag: "dealernet-gate1", text: "Gate 1" },
+  });
+  chrome.sendFrameMessage({ type: "lavish:sendQueuedPrompts", endSession: true, requestId: "gate-1" });
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:requestSnapshot");
+
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(posts, [
+    {
+      url: "/api/abc/prompts",
+      body: {
+        prompts: [{ prompt: "Approve this contract", selector: "", tag: "dealernet-gate1", text: "Gate 1" }],
+        domSnapshot: "uid=1 body",
+        endSession: true,
+      },
+    },
+  ]);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+  assert.equal(chrome.element("endedTitle").textContent, "Decisão de aprovação enviada. A revisão foi encerrada.");
+  assert.equal(chrome.element("workingBubble").parentElement, undefined);
+  assert.equal(chrome.storage.has("lavish-axi:action-panel:abc:dealernet-gate1"), false);
+  assert.deepEqual(JSON.parse(JSON.stringify(chrome.postedToFrame.at(-1))), {
+    type: "lavish:sendQueuedPromptsResult",
+    requestId: "gate-1",
+    ok: true,
+  });
+});
+
+test("failed terminal send preserves Gate input and re-enables actions after the SDK reports the error", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => {
+      throw new Error("network unavailable");
+    },
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "dealernet-gate1",
+      title: "Decisão do Gate 1",
+      fields: [{ id: "adjustment_text", type: "textarea", label: "Ajustes", maxLength: 4000 }],
+      actions: [{ id: "adjust", label: "Solicitar ajustes", tone: "neutral", requires: ["adjustment_text"] }],
+    },
+  });
+  const nodes = descendants(chrome.element("actionPanel"));
+  const textarea = nodes.find((node) => node.tagName === "TEXTAREA");
+  const adjust = nodes.find((node) => node.dataset.actionPanelAction === "adjust");
+  textarea.value = "Preservar esta justificativa.";
+  textarea.dispatch("input");
+  adjust.click();
+  const invocation = chrome.postedToFrame.find((message) => message.type === "lavish:actionPanelInvoke");
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "typed payload", selector: "", tag: "dealernet-gate1", text: "Gate 1" },
+  });
+  chrome.sendFrameMessage({ type: "lavish:sendQueuedPrompts", endSession: true, requestId: "gate-error" });
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("endedOverlay").hidden, true);
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(textarea.value, "Preservar esta justificativa.");
+  assert.equal(chrome.storage.has("lavish-axi:action-panel:abc:dealernet-gate1"), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(chrome.postedToFrame.at(-1))), {
+    type: "lavish:sendQueuedPromptsResult",
+    requestId: "gate-error",
+    ok: false,
+    error: "submit-failed",
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:actionPanelResult",
+    panelId: "dealernet-gate1",
+    invocationId: invocation.invocationId,
+    ok: false,
+    error: "Falha de rede; tente novamente.",
+  });
+  assert.equal(adjust.disabled, false);
+  assert.equal(textarea.value, "Preservar esta justificativa.");
 });
 
 test("chrome send and end with an empty composer nudges instead of ending", async () => {
@@ -1639,6 +2007,96 @@ test("chrome send and end during an in-flight submit still ends after the submit
   assert.equal(posts[1].body, null);
   assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("chatInput").disabled, true);
+});
+
+test("artifact terminal acknowledgement stays attached to its own queued batch during an in-flight submit", async () => {
+  const posts = [];
+  let resolveFirstPost = () => {};
+  let resolveSecondPost = () => {};
+  const firstPost = new Promise((resolve) => {
+    resolveFirstPost = () => resolve();
+  });
+  const secondPost = new Promise((resolve) => {
+    resolveSecondPost = () => resolve();
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (posts.length === 1) await firstPost;
+      if (posts.length === 2) await secondPost;
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Mensagem comum", selector: "", tag: "message", text: "Mensagem" },
+  });
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  assert.equal(posts.length, 1);
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Payload terminal", selector: "", tag: "dealernet-gate1", text: "Gate 1" },
+  });
+  chrome.sendFrameMessage({ type: "lavish:sendQueuedPrompts", endSession: true, requestId: "gate-overlap" });
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  assert.equal(
+    chrome.postedToFrame.some(
+      (message) => message.type === "lavish:sendQueuedPromptsResult" && message.requestId === "gate-overlap",
+    ),
+    false,
+    "the terminal handler cannot complete from the earlier ordinary POST",
+  );
+
+  resolveFirstPost();
+  await flushPromises();
+  await flushPromises();
+  assert.equal(posts.length, 2);
+  assert.equal(
+    chrome.postedToFrame.some(
+      (message) => message.type === "lavish:sendQueuedPromptsResult" && message.requestId === "gate-overlap",
+    ),
+    false,
+    "the acknowledgement waits for the terminal POST itself",
+  );
+  assert.equal(chrome.element("endedOverlay").hidden, true);
+
+  resolveSecondPost();
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(posts, [
+    {
+      url: "/api/abc/prompts",
+      body: {
+        prompts: [{ prompt: "Mensagem comum", selector: "", tag: "message", text: "Mensagem" }],
+        domSnapshot: "uid=1 body",
+      },
+    },
+    {
+      url: "/api/abc/prompts",
+      body: {
+        prompts: [{ prompt: "Payload terminal", selector: "", tag: "dealernet-gate1", text: "Gate 1" }],
+        domSnapshot: "uid=1 body",
+        endSession: true,
+      },
+    },
+  ]);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        chrome.postedToFrame.find(
+          (message) => message.type === "lavish:sendQueuedPromptsResult" && message.requestId === "gate-overlap",
+        ),
+      ),
+    ),
+    { type: "lavish:sendQueuedPromptsResult", requestId: "gate-overlap", ok: true },
+  );
+  assert.equal(chrome.element("endedOverlay").hidden, false);
 });
 
 test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of focus", async () => {

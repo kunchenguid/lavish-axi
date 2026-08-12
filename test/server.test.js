@@ -172,6 +172,20 @@ test("artifact SDK script is valid JavaScript", () => {
   assert.doesNotThrow(() => new Function(js));
 });
 
+test("artifact SDK exposes declarative action panels and acknowledged terminal sends", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /function registerActionPanel\(config, handler\)/);
+  assert.match(js, /function updateActionPanel\(id, state\)/);
+  assert.match(js, /function sendQueuedPrompts\(options = \{\}\)/);
+  assert.match(js, /endSession:[^\n]*options[^\n]*endSession === true/);
+  assert.match(js, /lavish:sendQueuedPromptsResult/);
+  assert.match(js, /lavish:actionPanelInvoke/);
+  assert.match(js, /lavish:actionPanelResult/);
+  assert.match(js, /registerActionPanel,/);
+  assert.match(js, /updateActionPanel,/);
+});
+
 test("artifact SDK ignores Lavish-owned annotation UI", () => {
   const js = createSdkJs("abc");
 
@@ -635,6 +649,25 @@ test("chrome includes a chat-like prompt composer and agent reply listener", asy
   assert.match(js, /agent-reply/);
 });
 
+test("chrome reserves one lateral surface for artifact actions and expandable conversation", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const css = await chromeCssSource();
+
+  assert.match(html, /<section class="action-panel" id="actionPanel" hidden><\/section>/);
+  assert.match(
+    html,
+    /<details class="conversation-section" id="conversationSection" open><summary>Conversa<\/summary>/,
+  );
+  assert.ok(html.indexOf('id="actionPanel"') < html.indexOf('id="conversationSection"'));
+  assert.match(css, /\.action-panel-button\{[^}]*min-height:44px/);
+  assert.match(css, /@media \(max-width:860px\)[\s\S]*\.action-panel\{max-height:calc\(100% - 44px\)/);
+  assert.match(
+    css,
+    /@media \(max-width:860px\)[\s\S]*\.panel:has\(\.conversation-section\[open\]\) \.action-panel\{display:none/,
+  );
+  assert.match(css, /@media \(max-width:860px\)[\s\S]*\.conversation-section/);
+});
+
 test("chrome bootstraps persisted chat history so missed replies still appear", () => {
   const html = createChromeHtml({
     key: "abc",
@@ -704,6 +737,7 @@ test("composer offers two always-visible top-level send actions", async () => {
   assert.doesNotMatch(html, /id="sendMenu"/);
   assert.doesNotMatch(html, /id="sendFromMenu"/);
   assert.match(css, /\.button-danger\{[^}]*color:var\(--danger\)/);
+  assert.match(css, /\.button\[hidden\]\{display:none !important;?\}/);
   assert.match(css, /\.actions\{[^}]*min-width:0/);
 });
 
@@ -713,7 +747,8 @@ test("send and end submits queued prompts before ending the session", async () =
   assert.match(js, /let endAfterSubmit = false/);
   assert.match(js, /sendQueued\(true\)/);
   assert.match(js, /if \(shouldEndSession\) body\.endSession = true/);
-  assert.match(js, /if \(shouldEndSession\) \{\n {4}endAfterSubmit = false;\n {4}markSessionEnded\(\)/);
+  assert.match(js, /const shouldEndSession = endAfterSubmit;[\s\S]*if \(shouldEndSession\) endAfterSubmit = false/);
+  assert.match(js, /if \(shouldEndSession\) \{\n {4}clearActionPanelValues\(\);\n {4}markSessionEnded\(\)/);
   assert.match(js, /if \(!succeeded\) \{\n {6}endAfterSubmit = false/);
   assert.doesNotMatch(js, /await endSession\(\)/);
 });
@@ -3486,7 +3521,7 @@ test("chrome client chat input sends on Enter and inserts newline on Shift+Enter
   assert.match(js, /chatInput\.addEventListener\(["']keydown["']/);
   assert.match(js, /event\.key === ["']Enter["'] && !event\.shiftKey/);
   assert.match(js, /event\.preventDefault\(\)/);
-  assert.match(js, /sendQueued\(\)/);
+  assert.match(js, /sendQueued\(false\)/);
 });
 
 // dealernet: startFakeHtmlApp e restoreEnv serviam aos testes de `share`, removidos junto com a

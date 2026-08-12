@@ -27,6 +27,8 @@ const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
+const actionPanel = /** @type {HTMLElement} */ (document.getElementById("actionPanel"));
+const conversationSection = /** @type {HTMLDetailsElement} */ (document.getElementById("conversationSection"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
 const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("moreButton"));
@@ -44,6 +46,7 @@ const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("p
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
 const endedOverlay = /** @type {HTMLDivElement} */ (document.getElementById("endedOverlay"));
+const endedTitle = /** @type {HTMLDivElement} */ (document.getElementById("endedTitle"));
 const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateOverlay"));
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
@@ -87,9 +90,22 @@ const selectedWarningIds = new Set(loadJsonState(warningSelectionStorageKey, [])
 let warningsDrawerOpen = false;
 const snapshotRequests = [];
 let endAfterSubmit = false;
+let submitRequestId = "";
+let activeSubmitRequestId = "";
 let workingBubble = null;
 let submitQueuedPromise = null;
 let submitQueuedAgain = false;
+let activeActionPanel = null;
+let hasRegisteredActionPanel = false;
+let actionPanelBusy = false;
+let activeActionPanelInvocationId = "";
+let pendingActionPanelSuccessMessage = "";
+let actionPanelInvocationSequence = 0;
+const actionPanelFields = new Map();
+const actionPanelFieldErrors = new Map();
+const actionPanelButtons = new Map();
+let actionPanelSummary = null;
+let actionPanelStatus = null;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
@@ -213,7 +229,279 @@ function render() {
 function updateSendState() {
   sendButton.disabled = ended || agentPresence === "working";
   sendAndEndButton.disabled = sendButton.disabled;
+  updateActionPanelButtons();
   if (warningsQueueButton) updateWarningSelectionState();
+}
+
+function boundedText(value, maxLength) {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function normalizeActionPanel(value) {
+  if (!value || typeof value !== "object" || value.schema !== "lavish-action-panel-v1") return null;
+  const id = boundedText(value.id, 80);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id)) return null;
+  const fields = Array.isArray(value.fields)
+    ? value.fields.slice(0, 4).flatMap((field) => {
+        if (!field || typeof field !== "object" || field.type !== "textarea") return [];
+        const fieldId = boundedText(field.id, 80);
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(fieldId)) return [];
+        return [
+          {
+            id: fieldId,
+            type: "textarea",
+            label: boundedText(field.label, 160),
+            help: boundedText(field.help, 300),
+            placeholder: boundedText(field.placeholder, 200),
+            maxLength: Math.max(1, Math.min(Number(field.maxLength) || 4000, 10_000)),
+          },
+        ];
+      })
+    : [];
+  if (new Set(fields.map((field) => field.id)).size !== fields.length) return null;
+  const fieldIds = new Set(fields.map((field) => field.id));
+  const actions = Array.isArray(value.actions)
+    ? value.actions.slice(0, 5).flatMap((action) => {
+        if (!action || typeof action !== "object") return [];
+        const actionId = boundedText(action.id, 80);
+        const label = boundedText(action.label, 120);
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(actionId) || !label) return [];
+        const tone = ["primary", "neutral", "danger"].includes(action.tone) ? action.tone : "neutral";
+        const requires = Array.isArray(action.requires)
+          ? action.requires.map((item) => boundedText(item, 80)).filter((item) => fieldIds.has(item))
+          : [];
+        return [
+          {
+            id: actionId,
+            label,
+            tone,
+            requires,
+            disabled: action.disabled === true,
+            reason: "",
+            successMessage: boundedText(action.successMessage, 300),
+          },
+        ];
+      })
+    : [];
+  if (!actions.length) return null;
+  if (new Set(actions.map((action) => action.id)).size !== actions.length) return null;
+  return {
+    id,
+    title: boundedText(value.title, 160),
+    description: boundedText(value.description, 400),
+    hideGenericSendAndEnd: value.hideGenericSendAndEnd === true,
+    fields,
+    actions,
+  };
+}
+
+function actionPanelStorageKey(id) {
+  return "lavish-axi:action-panel:" + key + ":" + id;
+}
+
+function actionPanelValues() {
+  return Object.fromEntries([...actionPanelFields].map(([id, field]) => [id, String(field.value || "")]));
+}
+
+function persistActionPanelValues() {
+  if (!activeActionPanel) return;
+  try {
+    sessionStorage.setItem(actionPanelStorageKey(activeActionPanel.id), JSON.stringify(actionPanelValues()));
+  } catch {
+    // Storage is a convenience for reload recovery; a browser privacy policy must not break the Gate.
+  }
+}
+
+function clearActionPanelValues() {
+  if (!activeActionPanel) return;
+  try {
+    sessionStorage.removeItem(actionPanelStorageKey(activeActionPanel.id));
+  } catch {
+    // The session is already terminal; unavailable storage does not change the server result.
+  }
+}
+
+function clearActionPanelForReload() {
+  activeActionPanel = null;
+  actionPanelBusy = false;
+  activeActionPanelInvocationId = "";
+  pendingActionPanelSuccessMessage = "";
+  actionPanelFields.clear();
+  actionPanelFieldErrors.clear();
+  actionPanelButtons.clear();
+  actionPanelSummary = null;
+  actionPanelStatus = null;
+  actionPanel.replaceChildren();
+  actionPanel.hidden = true;
+  sendAndEndButton.hidden = false;
+}
+
+function updateActionPanelButtons() {
+  if (!activeActionPanel) return;
+  const values = actionPanelValues();
+  const missingFields = new Set();
+  for (const action of activeActionPanel.actions) {
+    const button = actionPanelButtons.get(action.id);
+    if (!button) continue;
+    const missingRequired = action.requires.some((fieldId) => !String(values[fieldId] || "").trim());
+    if (missingRequired) {
+      for (const fieldId of action.requires) {
+        if (!String(values[fieldId] || "").trim()) missingFields.add(fieldId);
+      }
+    }
+    button.disabled = ended || agentPresence === "working" || actionPanelBusy || action.disabled || missingRequired;
+    const reason = action.reason || (missingRequired ? t.actionPanelRequired || "Preencha o campo obrigatório." : "");
+    if (reason) button.title = reason;
+    else button.removeAttribute?.("title");
+  }
+  for (const [fieldId, input] of actionPanelFields) {
+    const missing = missingFields.has(fieldId);
+    input.setAttribute("aria-invalid", String(missing));
+    const error = actionPanelFieldErrors.get(fieldId);
+    if (error) {
+      error.textContent = missing ? t.actionPanelRequired || "Preencha o campo obrigatório." : "";
+      error.hidden = !missing;
+    }
+  }
+}
+
+function renderActionPanel(value) {
+  const normalized = normalizeActionPanel(value);
+  if (!normalized) return;
+  const firstRegistration = !hasRegisteredActionPanel;
+  hasRegisteredActionPanel = true;
+  activeActionPanel = normalized;
+  actionPanelBusy = false;
+  activeActionPanelInvocationId = "";
+  pendingActionPanelSuccessMessage = "";
+  actionPanelFields.clear();
+  actionPanelFieldErrors.clear();
+  actionPanelButtons.clear();
+  actionPanel.replaceChildren();
+  actionPanel.className = "action-panel";
+
+  const title = document.createElement("h2");
+  title.className = "action-panel-title";
+  title.textContent = normalized.title;
+  actionPanel.appendChild(title);
+  if (normalized.description) {
+    const description = document.createElement("p");
+    description.className = "action-panel-description";
+    description.textContent = normalized.description;
+    actionPanel.appendChild(description);
+  }
+
+  let saved;
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(actionPanelStorageKey(normalized.id)) || "{}");
+    saved = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    saved = {};
+  }
+  for (const field of normalized.fields) {
+    const group = document.createElement("div");
+    group.className = "action-panel-field";
+    const label = document.createElement("label");
+    label.textContent = field.label;
+    const input = document.createElement("textarea");
+    input.dataset.actionPanelField = field.id;
+    input.maxLength = field.maxLength;
+    input.placeholder = field.placeholder;
+    input.value = typeof saved[field.id] === "string" ? saved[field.id].slice(0, field.maxLength) : "";
+    label.htmlFor = "action-panel-" + field.id;
+    input.id = label.htmlFor;
+    input.addEventListener("input", () => {
+      persistActionPanelValues();
+      updateActionPanelButtons();
+    });
+    group.appendChild(label);
+    group.appendChild(input);
+    if (field.help) {
+      const help = document.createElement("p");
+      help.id = input.id + "-help";
+      help.className = "action-panel-help";
+      help.textContent = field.help;
+      group.appendChild(help);
+      input.setAttribute("aria-describedby", help.id + " " + input.id + "-error");
+    } else {
+      input.setAttribute("aria-describedby", input.id + "-error");
+    }
+    const error = document.createElement("p");
+    error.id = input.id + "-error";
+    error.className = "action-panel-error";
+    error.setAttribute("role", "alert");
+    error.hidden = true;
+    group.appendChild(error);
+    actionPanelFields.set(field.id, input);
+    actionPanelFieldErrors.set(field.id, error);
+    actionPanel.appendChild(group);
+  }
+
+  actionPanelSummary = document.createElement("p");
+  actionPanelSummary.className = "action-panel-summary";
+  actionPanelSummary.setAttribute("role", "status");
+  actionPanelSummary.setAttribute("aria-live", "polite");
+  actionPanel.appendChild(actionPanelSummary);
+
+  actionPanelStatus = document.createElement("p");
+  actionPanelStatus.className = "action-panel-status";
+  actionPanelStatus.setAttribute("role", "status");
+  actionPanelStatus.setAttribute("aria-live", "polite");
+  actionPanel.appendChild(actionPanelStatus);
+
+  const actions = document.createElement("div");
+  actions.className = "action-panel-actions";
+  for (const action of normalized.actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button action-panel-button action-panel-button-" + action.tone;
+    button.dataset.actionPanelAction = action.id;
+    button.textContent = action.label;
+    button.onclick = () => {
+      if (button.disabled || actionPanelBusy) return;
+      actionPanelBusy = true;
+      updateActionPanelButtons();
+      const invocationId = normalized.id + ":" + ++actionPanelInvocationSequence;
+      activeActionPanelInvocationId = invocationId;
+      pendingActionPanelSuccessMessage = action.successMessage;
+      postToFrame({
+        type: "lavish:actionPanelInvoke",
+        panelId: normalized.id,
+        actionId: action.id,
+        invocationId,
+        values: actionPanelValues(),
+      });
+    };
+    actionPanelButtons.set(action.id, button);
+    actions.appendChild(button);
+  }
+  actionPanel.appendChild(actions);
+  actionPanel.hidden = false;
+  sendAndEndButton.hidden = normalized.hideGenericSendAndEnd;
+  if (firstRegistration && window.matchMedia?.("(max-width: 860px)").matches && conversationSection) {
+    conversationSection.open = false;
+  }
+  updateActionPanelButtons();
+}
+
+function updateActionPanelState(panelId, value) {
+  if (!activeActionPanel || panelId !== activeActionPanel.id || !value || typeof value !== "object") return;
+  if (Object.hasOwn(value, "summary") && actionPanelSummary) {
+    actionPanelSummary.textContent = boundedText(value.summary, 500);
+  }
+  if (Object.hasOwn(value, "status") && actionPanelStatus) {
+    actionPanelStatus.textContent = boundedText(value.status, 500);
+  }
+  if (value.actions && typeof value.actions === "object" && !Array.isArray(value.actions)) {
+    for (const action of activeActionPanel.actions) {
+      if (!Object.hasOwn(value.actions, action.id)) continue;
+      const next = value.actions[action.id];
+      if (!next || typeof next !== "object") continue;
+      if (Object.hasOwn(next, "disabled")) action.disabled = next.disabled === true;
+      if (Object.hasOwn(next, "reason")) action.reason = boundedText(next.reason, 300);
+    }
+  }
+  updateActionPanelButtons();
 }
 
 function showSendHint() {
@@ -386,8 +674,16 @@ function requestSnapshot(action) {
   postToFrame({ type: "lavish:requestSnapshot" });
 }
 
-function sendQueued(endAfter) {
-  if (ended || agentPresence === "working") return;
+function replyToArtifactSend(requestId, ok, error = "") {
+  if (!requestId) return;
+  postToFrame({ type: "lavish:sendQueuedPromptsResult", requestId, ok, ...(error ? { error } : {}) });
+}
+
+function sendQueued(endAfter, requestId = "") {
+  if (ended || agentPresence === "working") {
+    replyToArtifactSend(requestId, false, ended ? "session-ended" : "agent-working");
+    return;
+  }
   closeMenus();
 
   const text = chatInput.value.trim();
@@ -400,11 +696,15 @@ function sendQueued(endAfter) {
   }
   if (!queued.length) {
     showSendHint();
+    replyToArtifactSend(requestId, false, "empty-queue");
     return;
   }
   hideSendHint();
 
-  if (endAfter) endAfterSubmit = true;
+  if (requestId) submitRequestId = requestId;
+  if (endAfter) {
+    endAfterSubmit = true;
+  }
   requestSnapshot("submit");
 }
 
@@ -419,13 +719,19 @@ async function submitQueued() {
   try {
     const result = await submitQueuedPromise;
     succeeded = result !== false;
+    if (result === false) replyToArtifactSend(activeSubmitRequestId || submitRequestId, false, "submit-rejected");
     return result;
+  } catch {
+    replyToArtifactSend(activeSubmitRequestId || submitRequestId, false, "submit-failed");
+    return false;
   } finally {
     submitQueuedPromise = null;
+    activeSubmitRequestId = "";
     const shouldSubmitAgain = submitQueuedAgain;
     submitQueuedAgain = false;
     if (!succeeded) {
       endAfterSubmit = false;
+      submitRequestId = "";
     } else if (!ended && shouldSubmitAgain) {
       if (queued.length) {
         submitQueued();
@@ -440,6 +746,10 @@ async function submitQueued() {
 async function submitQueuedOnce() {
   const prompts = queued.slice();
   const shouldEndSession = endAfterSubmit;
+  const requestId = submitRequestId;
+  activeSubmitRequestId = requestId;
+  submitRequestId = "";
+  if (shouldEndSession) endAfterSubmit = false;
   const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
   if (shouldEndSession) body.endSession = true;
   const response = await fetch("/api/" + key + "/prompts", {
@@ -451,7 +761,6 @@ async function submitQueuedOnce() {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
-      endAfterSubmit = false;
       return false;
     }
     throw new Error("failed to submit queued prompts");
@@ -463,10 +772,12 @@ async function submitQueuedOnce() {
   persistQueuedPrompts();
   render();
   if (shouldEndSession) {
-    endAfterSubmit = false;
+    clearActionPanelValues();
     markSessionEnded();
+    replyToArtifactSend(requestId, true);
     return;
   }
+  replyToArtifactSend(requestId, true);
   if (agentPresence === "listening") setAgentPresence("working");
 }
 
@@ -924,11 +1235,13 @@ function markSessionEnded() {
   moreButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
+  updateActionPanelButtons();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
   layoutGateManuallyBypassed = true;
   revealLayoutGate();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
+  if (pendingActionPanelSuccessMessage && endedTitle) endedTitle.textContent = pendingActionPanelSuccessMessage;
   endedOverlay.hidden = false;
 }
 
@@ -1012,6 +1325,7 @@ async function replaceArtifactFrame() {
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
     startLayoutGateCycle();
+    clearActionPanelForReload();
     const currentSrc = frame.src || "about:blank";
     frame.src = currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now();
     return true;
@@ -1088,6 +1402,7 @@ async function replaceArtifactFrame() {
   artifactSpokeToken = "";
   setHandoffSuperseded(false);
   startLayoutGateCycle();
+  clearActionPanelForReload();
   frame.src = artifactFrameSrcForLoad({ revision, token });
   return true;
 }
@@ -1183,6 +1498,23 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
   }
+  if (msg.type === "lavish:registerActionPanel") {
+    renderActionPanel(msg.panel);
+  }
+  if (msg.type === "lavish:updateActionPanel") {
+    updateActionPanelState(String(msg.panelId || ""), msg.state);
+  }
+  if (msg.type === "lavish:actionPanelResult" && activeActionPanel && msg.panelId === activeActionPanel.id) {
+    if (!actionPanelBusy || msg.invocationId !== activeActionPanelInvocationId) return;
+    actionPanelBusy = false;
+    activeActionPanelInvocationId = "";
+    if (!ended) pendingActionPanelSuccessMessage = "";
+    if (msg.ok !== true && actionPanelStatus) {
+      actionPanelStatus.textContent =
+        boundedText(msg.error, 300) || t.actionPanelSubmitFailed || "Não foi possível enviar; tente novamente.";
+    }
+    updateActionPanelButtons();
+  }
   if (msg.type === "lavish:snapshot") {
     const snapshotAction = snapshotRequests.shift() || "submit";
     if (snapshotAction === "copy") {
@@ -1204,7 +1536,7 @@ window.addEventListener("message", (event) => {
       messageToken,
     ).catch(() => {});
   }
-  if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
+  if (msg.type === "lavish:sendQueuedPrompts") sendQueued(msg.endSession === true, String(msg.requestId || ""));
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
 });
