@@ -202,7 +202,7 @@ pnpm link
   A plain `lavish-axi <html-file>` after a user-initiated end refuses to reopen the browser and returns guidance instead; pass `--reopen` only when the user asks for further review or something important needs their visual attention.
   Agent-initiated ends keep reopening normally, same as before.
   `lavish-axi poll`'s `ended` response and the `feedback` response for the final batch before an end both carry `next_step` guidance telling the agent to stop polling and deliver remaining updates in chat instead of reopening.
-- **Precise targets** - Text annotations include selected text plus range anchors. Table-cell annotations use row and column labels while retaining the exact CSS locator, so filtered rows do not make feedback look misdirected.
+- **Precise targets** - Text annotations include selected text plus range anchors. Annotations inside a table also carry the cell's visible row and column names alongside the exact CSS locator, so filtered or sorted rows do not make feedback look misdirected; a column name is omitted when merged header or body cells make it ambiguous.
 - **Mermaid diagrams** - In the Lavish browser, every rendered Mermaid diagram in a `.mermaid` container becomes an embedded editable Excalidraw whiteboard.
   Click a diagram to unlock editing, and use its Fullscreen action to edit it over the whole viewport.
   Whiteboard scenes autosave locally.

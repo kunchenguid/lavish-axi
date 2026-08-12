@@ -1,0 +1,229 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1786551359669,
+  "projectRoot": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=22",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "express",
+        "version": "5.2.1",
+        "category": "backend"
+      },
+      {
+        "name": "esbuild",
+        "version": "0.28.0",
+        "category": "build"
+      },
+      {
+        "name": "react",
+        "version": "18.3.1",
+        "category": "frontend"
+      },
+      {
+        "name": "react-dom",
+        "version": "18.3.1",
+        "category": "frontend"
+      }
+    ],
+    "packageManager": "pnpm",
+    "runtime": "Node.js 22"
+  },
+  "build": {
+    "buildCommand": "pnpm build",
+    "testCommand": "pnpm test",
+    "lintCommand": "pnpm lint",
+    "devCommand": "pnpm start",
+    "scripts": {
+      "build": "node scripts/build.js",
+      "build:skill": "node scripts/build-skill.js",
+      "build:plugin": "node scripts/build-plugin.js",
+      "check": "npm run build && npm run lint && npm run format:check && npm run typecheck && npm test && node scripts/build-skill.js --check && node scripts/build-plugin.js --check",
+      "start": "node dist/cli.mjs",
+      "lint": "eslint bin src test scripts",
+      "format": "prettier --write .",
+      "format:check": "prettier --check .",
+      "prepack": "npm run build",
+      "prepare": "npm run build",
+      "test": "node --test",
+      "typecheck": "tsc --noEmit"
+    }
+  },
+  "conventions": {
+    "namingStyle": "camelCase",
+    "importStyle": "ES modules",
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": true,
+    "workspaces": [],
+    "mainDirectories": [
+      "bin",
+      "scripts",
+      "src",
+      "test"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bin": {
+      "path": "bin",
+      "purpose": "Executable scripts",
+      "fileCount": 1,
+      "lastAccessed": 1786551359424,
+      "keyFiles": [
+        "lavish-axi.js"
+      ]
+    },
+    "lavish-editor-marketing": {
+      "path": "lavish-editor-marketing",
+      "purpose": null,
+      "fileCount": 7,
+      "lastAccessed": 1786551359452,
+      "keyFiles": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "DESIGN.md",
+        "hyperframes.json",
+        "index.html"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 3,
+      "lastAccessed": 1786551359521,
+      "keyFiles": [
+        "build-plugin.js",
+        "build-skill.js",
+        "build.js"
+      ]
+    },
+    "skills": {
+      "path": "skills",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1786551359548,
+      "keyFiles": []
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 23,
+      "lastAccessed": 1786551359565,
+      "keyFiles": [
+        "artifact-sdk.js",
+        "chrome-client.js",
+        "chrome.css",
+        "cli.js",
+        "design-reference.js"
+      ]
+    },
+    "task-evidence": {
+      "path": "task-evidence",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1786551359580,
+      "keyFiles": []
+    },
+    "test": {
+      "path": "test",
+      "purpose": "Test files",
+      "fileCount": 27,
+      "lastAccessed": 1786551359601,
+      "keyFiles": [
+        "agents-md.test.js",
+        "artifact-sdk.test.js",
+        "chrome-client-queue.test.js",
+        "cli-output.test.js",
+        "cli-version.test.js"
+      ]
+    },
+    "test/fixtures": {
+      "path": "test/fixtures",
+      "purpose": "Test fixtures",
+      "fileCount": 2,
+      "lastAccessed": 1786551359638,
+      "keyFiles": [
+        "excalidraw-label-clipping.browser.jsx",
+        "excalidraw-label-clipping.json"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/artifact-sdk.js",
+      "accessCount": 8,
+      "lastAccessed": 1786552121381,
+      "type": "file"
+    },
+    {
+      "path": "test/artifact-sdk-bundle.test.js",
+      "accessCount": 8,
+      "lastAccessed": 1786552379627,
+      "type": "file"
+    },
+    {
+      "path": "src/server.js",
+      "accessCount": 6,
+      "lastAccessed": 1786552163433,
+      "type": "file"
+    },
+    {
+      "path": "src/table-cell.js",
+      "accessCount": 3,
+      "lastAccessed": 1786552083262,
+      "type": "file"
+    },
+    {
+      "path": "test/artifact-sdk.test.js",
+      "accessCount": 3,
+      "lastAccessed": 1786552214813,
+      "type": "file"
+    },
+    {
+      "path": "test/chrome-client-queue.test.js",
+      "accessCount": 3,
+      "lastAccessed": 1786552426929,
+      "type": "file"
+    },
+    {
+      "path": "test/table-cell.test.js",
+      "accessCount": 1,
+      "lastAccessed": 1786552198401,
+      "type": "file"
+    },
+    {
+      "path": "AGENTS.md",
+      "accessCount": 1,
+      "lastAccessed": 1786552453309,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 1,
+      "lastAccessed": 1786552458734,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

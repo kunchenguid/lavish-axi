@@ -544,19 +544,40 @@ test("chrome client shows semantic table coordinates before positional selector"
     type: "lavish:queuePrompt",
     prompt: {
       prompt: "Check this permission",
-      selector: "table > tbody > tr:nth-of-type(7) > td:nth-of-type(3)",
-      tag: "table-cell",
-      text: "Drive, Neovide, Cursor, Alacritty",
+      selector: "table > tbody > tr:nth-of-type(7) > td:nth-of-type(3) > code",
+      tag: "code",
+      text: "Drive",
       target: {
         type: "table-cell",
+        selector: "table > tbody > tr:nth-of-type(7) > td:nth-of-type(3)",
         rowLabel: "Media & Apple Music",
         columnLabel: "Database evidence",
+        text: "Drive, Neovide, Cursor, Alacritty",
       },
     },
   });
 
   assert.match(chrome.element("annotationPills").innerHTML, /Media &amp; Apple Music → Database evidence/);
   assert.match(chrome.element("annotationPills").innerHTML, /tr:nth-of-type\(7\)/);
+});
+
+test("chrome client falls back to the locator when a table cell has no row or column name", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Check this permission",
+      selector: "table > tbody > tr:nth-of-type(7) > td:nth-of-type(3)",
+      tag: "td",
+      text: "Drive",
+      target: { type: "table-cell", rowLabel: "", columnLabel: "", text: "Drive" },
+    },
+  });
+
+  const html = chrome.element("annotationPills").innerHTML;
+  assert.match(html, /tr:nth-of-type\(7\)/);
+  assert.doesNotMatch(html, /Locator/);
 });
 
 test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {

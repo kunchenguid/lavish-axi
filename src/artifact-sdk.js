@@ -1,6 +1,7 @@
 /* global CSS, Element, MutationObserver, ResizeObserver, document, getComputedStyle, parent, window */
 
 import * as mermaidHelpers from "./mermaid-node.js";
+import { tableCellTarget } from "./table-cell.js";
 
 export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 
@@ -246,65 +247,6 @@ export function isNearTotalOcclusion({ occludedSamples, totalSamples, minSamples
   return Number.isFinite(occluded) && Number.isFinite(total) && total >= minSamples && occluded / total >= minRatio;
 }
 
-function elementTagName(element) {
-  return String(element?.tagName || element?.nodeName || "").toLowerCase();
-}
-
-function elementText(element) {
-  return String(element?.innerText || element?.textContent || "")
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-function closestTag(element, names) {
-  let current = element;
-  while (current && current.nodeType === 1) {
-    if (names.has(elementTagName(current))) return current;
-    current = current.parentElement;
-  }
-  return null;
-}
-
-function descendantRows(element) {
-  const rows = [];
-  for (const child of Array.from(element?.children || [])) {
-    if (elementTagName(child) === "tr") rows.push(child);
-    rows.push(...descendantRows(child));
-  }
-  return rows;
-}
-
-// Positional selectors remain useful locators, but filtered tables make their row numbers look
-// wrong to reviewers. Preserve the locator while attaching the visible row and column names.
-export function tableCellTarget(element, selectorFor = (_element) => "") {
-  const cell = closestTag(element, new Set(["td", "th"]));
-  const row = closestTag(cell?.parentElement, new Set(["tr"]));
-  const table = closestTag(row?.parentElement, new Set(["table"]));
-  if (!cell || !row || !table) return null;
-
-  const cellTags = new Set(["td", "th"]);
-  const cells = Array.from(row.children || []).filter((candidate) => cellTags.has(elementTagName(candidate)));
-  const columnIndex = cells.indexOf(cell);
-  if (columnIndex < 0) return null;
-
-  const rowHeading =
-    cells.find(
-      (candidate) =>
-        elementTagName(candidate) === "th" && String(candidate.getAttribute?.("scope") || "").toLowerCase() === "row",
-    ) || cells[0];
-  const head = Array.from(table.children || []).find((candidate) => elementTagName(candidate) === "thead");
-  const headerRow = descendantRows(head).at(-1);
-  const headers = Array.from(headerRow?.children || []).filter((candidate) => cellTags.has(elementTagName(candidate)));
-
-  return {
-    type: "table-cell",
-    selector: String(selectorFor(cell) || ""),
-    rowLabel: elementText(rowHeading),
-    columnLabel: elementText(headers[columnIndex]),
-    text: elementText(cell),
-  };
-}
-
 export function createArtifactSdk(
   deriveQueueKey,
   isNativeInteractive = isNativeInteractiveControl,
@@ -370,13 +312,11 @@ export function createArtifactSdk(
       text: (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
     };
 
+    // Semantic table coordinates are extra context, never a replacement identity: the highlight
+    // outlines the element the reviewer clicked, so its selector, tag, and text must keep
+    // describing that exact element rather than being coarsened up to the enclosing cell.
     const tableTarget = tableCellTarget(el, selector);
-    if (tableTarget) {
-      base.selector = tableTarget.selector || base.selector;
-      base.tag = "table-cell";
-      base.text = tableTarget.text.slice(0, 240);
-      base.target = tableTarget;
-    }
+    if (tableTarget) base.target = tableTarget;
 
     const mermaidNode = mermaidNodeFrom(el, selector);
     if (mermaidNode) {
@@ -1754,19 +1694,22 @@ export function createArtifactSdk(
     const card = document.createElement("div");
     card.className = "lavish-annotation-card";
     const nodeLabel = c.tag === "mermaid-node" ? c.target?.label || c.text || "" : "";
+    const isTableCell = c.target?.type === "table-cell";
+    // An unlabelled table names nothing, so fall back to the plain element heading rather than
+    // showing a dangling "Annotate cell: ".
+    const tableLabel = isTableCell ? [c.target?.rowLabel, c.target?.columnLabel].filter(Boolean).join(" → ") : "";
     const heading =
       c.tag === "text"
         ? "Annotate text"
-        : c.tag === "table-cell"
-          ? "Annotate cell: " +
-            escapeAnnotationText([c.target?.rowLabel, c.target?.columnLabel].filter(Boolean).join(" → "))
+        : tableLabel
+          ? "Annotate cell: " + escapeAnnotationText(tableLabel)
           : c.tag === "mermaid-node"
             ? "Annotate node" + (nodeLabel ? ": " + escapeAnnotationText(nodeLabel) : "")
             : "Annotate &lt;" + c.tag + "&gt;";
     const placeholder =
       c.tag === "text"
         ? "Tell the agent what to change about this text..."
-        : c.tag === "table-cell"
+        : isTableCell
           ? "Tell the agent what to change about this table cell..."
           : c.tag === "mermaid-node"
             ? "Tell the agent what to change about this diagram node..."

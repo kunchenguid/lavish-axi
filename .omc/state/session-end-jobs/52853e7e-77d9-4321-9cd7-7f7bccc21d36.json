@@ -1,0 +1,296 @@
+{
+  "version": 1,
+  "jobId": "075f008c-71f8-4eaf-abf7-5f846fe5916d",
+  "sessionId": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+  "scopeKey": "c3ed3dedb405647ad0d8c28c06cf090d315189d59ea58411a4ee5235285d8666",
+  "revision": 12,
+  "createdAt": "2026-08-12T16:36:25.540Z",
+  "updatedAt": "2026-08-12T16:36:25.781Z",
+  "producerGraceExpiresAt": "2026-08-12T16:36:55.541Z",
+  "bestEffortDeadlineAt": "2026-08-12T16:37:46.541Z",
+  "producers": {
+    "core": {
+      "state": "sealed",
+      "intentKey": "231cba1cb763876d157984841c680e2b77ab1b78be52cea6165567dd1a3e6e94",
+      "payloadDigest": "231cba1cb763876d157984841c680e2b77ab1b78be52cea6165567dd1a3e6e94",
+      "sealedAt": "2026-08-12T16:36:25.582Z",
+      "sealedBy": "foreground"
+    },
+    "wiki": {
+      "state": "no-op",
+      "sealedAt": "2026-08-12T16:36:25.540Z",
+      "sealedBy": "wiki-producer"
+    }
+  },
+  "actions": {
+    "foreground-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 0,
+      "idempotencyKey": "febf6dba2f2536433960a07f7cedce72e946b43ced0896570df80f017b8914d2",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+        "reason": "other",
+        "input": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+          "prompt_id": "c1166cca-dda5-4184-8f6f-eab10d5e8f9e",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "ended_at": "2026-08-12T16:36:25.539Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {},
+        "foregroundResult": {
+          "removedTransientFiles": 1,
+          "completedAt": "2026-08-12T16:36:25.582Z"
+        }
+      },
+      "budgetMs": 9000,
+      "completedAt": "2026-08-12T16:36:25.582Z",
+      "lastOutcomeCode": "completed"
+    },
+    "wiki-capture": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 0,
+      "idempotencyKey": "1719cd1ef5b51e0269b78c4cb8c9308c9c1f7b82fd1c067fc034c060f23863f5",
+      "payload": {},
+      "budgetMs": 9000,
+      "completedAt": "2026-08-12T16:36:25.540Z"
+    },
+    "team-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "cee6ac31df545408e1e822247ac249b3f8182a98a5fe8e448ae3b251e55bdee1",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+        "reason": "other",
+        "input": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+          "prompt_id": "c1166cca-dda5-4184-8f6f-eab10d5e8f9e",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "ended_at": "2026-08-12T16:36:25.539Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-08-12T16:36:25.631Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "f8042933-b4d0-4ff8-a71c-9c2fbdb60cf8",
+        "phase": "terminal",
+        "deadlineAt": "2026-08-12T16:36:35.596Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-08-12T16:36:25.744Z"
+    },
+    "python-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "claimed",
+      "attempts": 1,
+      "idempotencyKey": "1f1370c4ac056606059d517e2f106b602d8cbcb04587b3fcc5f3b9f89e649cd0",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+        "reason": "other",
+        "input": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+          "prompt_id": "c1166cca-dda5-4184-8f6f-eab10d5e8f9e",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "ended_at": "2026-08-12T16:36:25.539Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000,
+      "claimantNonce": "7b21ee5e-ef06-4fec-b3c7-5028ff1e2778",
+      "claimedAt": "2026-08-12T16:36:25.762Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "8dc9b4b5-b678-4943-b257-7b2cf6d8b48d",
+        "phase": "started",
+        "deadlineAt": "2026-08-12T16:36:35.596Z"
+      }
+    },
+    "reply-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "0b3a8b47c28b26d56aca004d4f572b96c118f16819c0d35162418816f9a5420a",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+        "reason": "other",
+        "input": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+          "prompt_id": "c1166cca-dda5-4184-8f6f-eab10d5e8f9e",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "ended_at": "2026-08-12T16:36:25.539Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000
+    },
+    "callback": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "d068ede2655bf89e0c0950e087d0603d7dcf45538e94f20a654d08c6f4841895",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+        "reason": "other",
+        "input": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+          "prompt_id": "c1166cca-dda5-4184-8f6f-eab10d5e8f9e",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "ended_at": "2026-08-12T16:36:25.539Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 2000
+    },
+    "notification": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "89c0438ff63097ce04beb60efb87292ff68a7af350a0ee331f3de9dbf42d62fc",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+        "reason": "other",
+        "input": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+          "prompt_id": "c1166cca-dda5-4184-8f6f-eab10d5e8f9e",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "ended_at": "2026-08-12T16:36:25.539Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 2000
+    },
+    "openclaw": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "31fe8f6e1cf204e27006de511df257326fdd98655122ca437013e8779ffc735b",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+        "reason": "other",
+        "input": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-62b96d38fecd-01KZVC4DT437PKG48QY3S63BBG/52853e7e-77d9-4321-9cd7-7f7bccc21d36.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/62b96d38fecd/01KZVC4DT437PKG48QY3S63BBG",
+          "prompt_id": "c1166cca-dda5-4184-8f6f-eab10d5e8f9e",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "52853e7e-77d9-4321-9cd7-7f7bccc21d36",
+          "ended_at": "2026-08-12T16:36:25.539Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 2000
+    }
+  },
+  "owner": {
+    "nonce": "7b21ee5e-ef06-4fec-b3c7-5028ff1e2778",
+    "pid": 14392,
+    "processStartIdentity": "1786552585000",
+    "claimedAt": "2026-08-12T16:36:25.618Z",
+    "heartbeatAt": "2026-08-12T16:36:25.772Z",
+    "leaseExpiresAt": "2026-08-12T16:36:26.522Z",
+    "runDeadlineAt": "2026-08-12T16:36:35.596Z",
+    "leaseGeneration": 4,
+    "claimedFromRevision": 2
+  },
+  "phase": "processing"
+}
