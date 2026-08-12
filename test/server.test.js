@@ -731,6 +731,9 @@ test("chrome reserves one lateral surface for artifact actions and expandable co
   );
   assert.ok(html.indexOf('id="actionPanel"') < html.indexOf('id="conversationSection"'));
   assert.match(css, /\.action-panel-button\{[^}]*min-height:44px/);
+  assert.match(css, /\.action-panel\{[^}]*max-height:66%/);
+  assert.match(css, /\.action-panel\{[^}]*padding:16px 16px 24px/);
+  assert.match(css, /\.action-panel-field textarea\{[^}]*min-height:120px/);
   assert.match(css, /@media \(max-width:860px\)[\s\S]*\.action-panel\{max-height:none;overflow:visible/);
   assert.doesNotMatch(css, /\.panel:has\(\.conversation-section\[open\]\) \.action-panel\{display:none/);
   assert.match(css, /@media \(max-width:860px\)[\s\S]*\.conversation-section/);

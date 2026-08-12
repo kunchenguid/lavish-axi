@@ -948,9 +948,9 @@ body.lavish {
 }
 .action-panel {
   flex: 0 0 auto;
-  max-height: 56%;
+  max-height: 66%;
   overflow-y: auto;
-  padding: 16px;
+  padding: 16px 16px 24px;
   border-bottom: var(--hairline-subtle);
   background: var(--bg-panel);
 }
@@ -993,7 +993,7 @@ body.lavish {
 }
 .action-panel-field textarea {
   width: 100%;
-  min-height: 76px;
+  min-height: 120px;
   resize: vertical;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);

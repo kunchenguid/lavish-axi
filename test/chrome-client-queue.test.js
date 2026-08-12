@@ -1637,12 +1637,16 @@ test("artifact action panel renders one safe sidebar surface and returns field v
   assert.ok(textarea);
   assert.equal(textarea.maxLength, 4000);
   assert.equal(textarea.placeholder, "Descreva os ajustes necessários");
-  assert.equal(textarea["aria-invalid"], "true");
+  const adjust = nodes.find((node) => node.dataset.actionPanelAction === "adjust");
+  assert.equal(adjust.disabled, true);
+  assert.equal(adjust.title || "", "");
+  assert.equal(textarea["aria-invalid"], "false");
   const fieldError = nodes.find((node) => node.className === "action-panel-error");
-  assert.equal(fieldError.hidden, false);
-  assert.equal(fieldError.textContent, "Preencha o campo obrigatório.");
+  assert.equal(fieldError.hidden, true);
+  assert.equal(fieldError.textContent, "");
   textarea.value = "Detalhar a concorrência";
   textarea.dispatch("input");
+  assert.equal(adjust.disabled, false);
   assert.equal(textarea["aria-invalid"], "false");
   assert.equal(fieldError.hidden, true);
 
