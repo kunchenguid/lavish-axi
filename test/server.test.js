@@ -578,6 +578,13 @@ test("chrome top bar follows the design mock wordmark and overflow menu treatmen
   assert.match(html, /class="brand-mark">Dealernet/);
   assert.match(html, /class="brand-support">Editor/);
   assert.match(html, /class="ticket-context">WF-92564<\/span>/);
+  assert.match(
+    html,
+    /<div class="brand">[\s\S]*class="brand-mark"[\s\S]*class="brand-support"[\s\S]*class="ticket-context"[\s\S]*<\/div><div class="spacer"/,
+  );
+  assert.match(css, /\.brand\{[^}]*background:#f2f5fa;[^}]*border:1px solid var\(--border-subtle\)/);
+  assert.match(css, /\.ticket-context\{[^}]*border-left:1px solid var\(--border-strong\)/);
+  assert.doesNotMatch(css, /@media \(max-width:640px\)[\s\S]*\.brand-support\{display:none/);
   assert.match(css, /font-family:var\(--font-sans\)/);
   assert.match(css, /letter-spacing:\.18em/);
   assert.match(html, /class="more-button" id="moreButton"/);
@@ -681,12 +688,12 @@ test("clipboard copy falls back when navigator clipboard rejects", async () => {
   assert.doesNotMatch(js, /navigator\.clipboard\.writeText\(text\)\.catch/);
 });
 
-test("chrome centers the top bar row while bottom-aligning the identity cluster", async () => {
+test("chrome centers the top bar row and its unified identity badge", async () => {
   const css = await chromeCssSource();
 
   assert.match(css, /\.bar\{[^}]*align-items:center/);
-  assert.match(css, /\.brand\{[^}]*height:22px/);
-  assert.match(css, /\.brand\{[^}]*align-items:flex-end/);
+  assert.match(css, /\.brand\{[^}]*min-height:36px/);
+  assert.match(css, /\.brand\{[^}]*align-items:center/);
 });
 
 test("chrome chat bubbles follow the preview mock shades", async () => {
@@ -731,6 +738,10 @@ test("chrome reserves one lateral surface for artifact actions and expandable co
   );
   assert.ok(html.indexOf('id="actionPanel"') < html.indexOf('id="conversationSection"'));
   assert.match(css, /\.action-panel-button\{[^}]*min-height:44px/);
+  assert.match(
+    css,
+    /\.action-panel-button-neutral\{[^}]*border:1px solid var\(--border-strong\);[^}]*background:#e7edf7;[^}]*color:var\(--dealernet-navy\)/,
+  );
   assert.match(css, /\.action-panel\{[^}]*max-height:66%/);
   assert.match(css, /\.action-panel\{[^}]*padding:16px 16px 24px/);
   assert.match(css, /\.action-panel-field textarea\{[^}]*min-height:120px/);

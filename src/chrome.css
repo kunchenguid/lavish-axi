@@ -151,9 +151,14 @@ body.lavish {
 }
 .brand {
   display: flex;
-  align-items: flex-end;
-  height: 22px;
-  gap: 8px;
+  align-items: center;
+  min-height: 36px;
+  gap: 6px;
+  padding: 0 10px;
+  background: #f2f5fa;
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--dealernet-red);
+  border-radius: 6px;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -167,12 +172,11 @@ body.lavish {
 }
 .ticket-context {
   display: inline-flex;
-  min-height: 28px;
+  min-height: 22px;
   align-items: center;
-  padding: 0 10px;
-  border-left: 3px solid var(--dealernet-red);
-  border-radius: 4px;
-  background: #f2f5fa;
+  margin-left: 4px;
+  padding-left: 9px;
+  border-left: 1px solid var(--border-strong);
   color: var(--dealernet-navy);
   font-size: var(--text-sm);
   font-weight: 700;
@@ -184,9 +188,7 @@ body.lavish {
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--fg-muted);
-  position: relative;
-  top: 1px;
+  color: var(--fg);
 }
 .spacer {
   flex: 1;
@@ -1019,6 +1021,15 @@ body.lavish {
 .action-panel-button-primary:hover:not(:disabled) {
   background: var(--accent-hover);
 }
+.action-panel-button-neutral {
+  border: 1px solid var(--border-strong);
+  background: #e7edf7;
+  color: var(--dealernet-navy);
+}
+.action-panel-button-neutral:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--steel-700);
+}
 .action-panel-button-danger {
   border: 1px solid var(--danger);
   background: transparent;
@@ -1349,9 +1360,6 @@ body.layout-gate-active iframe#artifact {
     gap: 10px;
     padding: 0 var(--space-6);
   }
-  .brand-support {
-    display: none;
-  }
   .warnings-drawer {
     position: fixed;
     top: calc(var(--bar-h) + 6px);
@@ -1367,11 +1375,20 @@ body.layout-gate-active iframe#artifact {
     padding: 0 8px;
   }
   .brand-mark {
-    font-size: 19px;
+    font-size: 18px;
+  }
+  .brand {
+    gap: 4px;
+    padding: 0 7px;
+  }
+  .brand-support {
+    font-size: 9px;
+    letter-spacing: 0.12em;
   }
   .ticket-context {
-    padding: 0 6px;
-    font-size: 12px;
+    margin-left: 2px;
+    padding-left: 6px;
+    font-size: 11px;
   }
   .annotate-switch {
     padding: 0 2px;
