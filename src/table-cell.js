@@ -16,15 +16,6 @@ export function tableText(element) {
     .slice(0, 240);
 }
 
-export function closestTableAncestor(element, names) {
-  let current = element;
-  while (current && current.nodeType === 1) {
-    if (names.has(tableTagName(current))) return current;
-    current = current.parentElement;
-  }
-  return null;
-}
-
 // Rows of one table only. Descending into a cell would both walk the whole document subtree and
 // collect a nested table's rows, which would then be read as this table's header or spans.
 export function tableRowsIn(element) {
@@ -95,9 +86,9 @@ export function tableColumnLabel(table, headerRow, cells, index) {
 }
 
 export function tableCellTarget(element, selectorFor = (_element) => "") {
-  const cell = closestTableAncestor(element, new Set(["td", "th"]));
-  const row = closestTableAncestor(cell?.parentElement, new Set(["tr"]));
-  const table = closestTableAncestor(row?.parentElement, new Set(["table"]));
+  const cell = element?.closest?.("td,th");
+  const row = cell?.closest?.("tr");
+  const table = row?.closest?.("table");
   if (!cell || !row || !table) return null;
 
   const cells = tableRowCells(row);

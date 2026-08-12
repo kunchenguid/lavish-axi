@@ -13,6 +13,15 @@ function node(tag, attrs = {}, children = []) {
     getAttribute(name) {
       return Object.hasOwn(attrs, name) ? String(attrs[name]) : null;
     },
+    closest(selectorList) {
+      const tags = selectorList.split(",").map((part) => part.trim());
+      let current = el;
+      while (current) {
+        if (tags.includes(current.tagName.toLowerCase())) return current;
+        current = current.parentElement;
+      }
+      return null;
+    },
   };
   if (attrs.textContent) el.textContent = attrs.textContent;
   for (const child of children) {
@@ -28,6 +37,11 @@ function row(cells, tag = "td") {
     {},
     cells.map((cell) => (typeof cell === "string" ? node(tag, { textContent: cell }) : cell)),
   );
+}
+
+function labels(element) {
+  const target = tableCellTarget(element);
+  return { rowLabel: target?.rowLabel, columnLabel: target?.columnLabel };
 }
 
 test("tableCellTarget names a filtered table cell by row and column instead of visible position", () => {
@@ -55,20 +69,14 @@ test("tableCellTarget reads header cells from the first row when the table has n
     node("tbody", {}, [row(["Permission", "Visible state"], "th"), row(["Media & Apple Music", target])]),
   ]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), {
-    rowLabel: "Media & Apple Music",
-    columnLabel: "Visible state",
-  });
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "Visible state" });
 });
 
 test("tableCellTarget does not treat a leading data row as column headers", () => {
   const target = node("td", { textContent: "4 apps" });
   node("table", {}, [node("tbody", {}, [row(["Contacts", "None"]), row(["Media & Apple Music", target])])]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), {
-    rowLabel: "Media & Apple Music",
-    columnLabel: "",
-  });
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "" });
 });
 
 test("tableCellTarget stays silent about the column when a grouped header spans it", () => {
@@ -80,10 +88,7 @@ test("tableCellTarget stays silent about the column when a grouped header spans 
     node("tbody", {}, [row(["Media & Apple Music", target, node("td", { textContent: "Drive" })])]),
   ]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), {
-    rowLabel: "Media & Apple Music",
-    columnLabel: "",
-  });
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "" });
 });
 
 test("tableCellTarget names the column from the leaf header row under a grouped header", () => {
@@ -96,20 +101,22 @@ test("tableCellTarget names the column from the leaf header row under a grouped 
     node("tbody", {}, [row(["Media & Apple Music", target, node("td", { textContent: "Drive" })])]),
   ]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), { columnLabel: "Visible state" });
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "Visible state" });
 });
 
-test("tableCellTarget stays silent about the column when a rowspan shifts the grid", () => {
+// The row's own spans still sum to the header width, so only the rowspan above it reveals that
+// this cell renders one column to the right. Positional matching alone would name "Permission".
+test("tableCellTarget stays silent about the column when a rowspan above shifts the row right", () => {
   const target = node("td", { textContent: "4 apps" });
   node("table", {}, [
     node("thead", {}, [row(["Permission", "Visible state"], "th")]),
     node("tbody", {}, [
       node("tr", {}, [node("td", { rowspan: "2", textContent: "Media" }), node("td", { textContent: "None" })]),
-      node("tr", {}, [target]),
+      node("tr", {}, [target, node("td", { textContent: "extra" })]),
     ]),
   ]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), { columnLabel: "" });
+  assert.deepEqual(labels(target), { rowLabel: "4 apps", columnLabel: "" });
 });
 
 test("tableCellTarget stays silent about the column when the row does not span the header width", () => {
@@ -119,7 +126,7 @@ test("tableCellTarget stays silent about the column when the row does not span t
     node("tbody", {}, [row(["Media & Apple Music", target])]),
   ]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), { columnLabel: "" });
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "" });
 });
 
 test("tableCellTarget prefers an explicit scope=row heading over the first cell", () => {
@@ -135,10 +142,7 @@ test("tableCellTarget prefers an explicit scope=row heading over the first cell"
     ]),
   ]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), {
-    rowLabel: "Media & Apple Music",
-    columnLabel: "Visible state",
-  });
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "Visible state" });
 });
 
 test("tableCellTarget does not label a header-row click with a data row heading", () => {
@@ -148,10 +152,7 @@ test("tableCellTarget does not label a header-row click with a data row heading"
     node("tbody", {}, [row(["Media & Apple Music", "4 apps"])]),
   ]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), {
-    rowLabel: "",
-    columnLabel: "Visible state",
-  });
+  assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "Visible state" });
 });
 
 test("tableCellTarget bounds every derived string it puts on the wire", () => {
@@ -180,10 +181,7 @@ test("tableCellTarget reads only its own table when a cell holds a nested table"
     node("tbody", {}, [row([node("td", { textContent: "Media & Apple Music" }, [nested]), target])]),
   ]);
 
-  assert.partialDeepStrictEqual(tableCellTarget(target), {
-    rowLabel: "Media & Apple Music",
-    columnLabel: "Visible state",
-  });
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "Visible state" });
 });
 
 test("tableCellTarget ignores elements outside a table", () => {
