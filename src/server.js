@@ -145,6 +145,7 @@ export async function serve({
   port,
   stateFile,
   version = "",
+  benchmarkRunId = "",
   debug = false,
   log = null,
   pollHeartbeatMs = 15_000,
@@ -211,7 +212,7 @@ export async function serve({
   );
 
   app.get("/health", (req, res) => {
-    res.json({ ok: true, app: "lavish-axi", version });
+    res.json({ ok: true, app: "lavish-axi", version, ...(benchmarkRunId ? { benchmarkRunId } : {}) });
   });
 
   let shutdownResolve;
@@ -220,6 +221,10 @@ export async function serve({
   });
 
   app.post("/shutdown", (req, res) => {
+    if (benchmarkRunId && req.get("x-lavish-benchmark-run-id") !== benchmarkRunId) {
+      res.status(409).json({ error: "benchmark server identity mismatch" });
+      return;
+    }
     res.json({ status: "shutting-down" });
     // Defer until after the response flushes so the client gets confirmation.
     setImmediate(shutdown);

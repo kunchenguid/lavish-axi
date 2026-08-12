@@ -34,13 +34,16 @@ importers:
     devDependencies:
       "@eslint/js":
         specifier: ^10.0.1
-        version: 10.0.1(eslint@10.3.0)
+        version: 10.0.1(eslint@10.3.0(jiti@2.7.0))
       "@excalidraw/excalidraw":
         specifier: 0.18.1
         version: 0.18.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       "@excalidraw/mermaid-to-excalidraw":
         specifier: 2.2.2
         version: 2.2.2
+      "@size-limit/file":
+        specifier: 11.2.0
+        version: 11.2.0(size-limit@11.2.0)
       "@types/node":
         specifier: ^25.6.2
         version: 25.7.0
@@ -49,10 +52,10 @@ importers:
         version: 0.28.0
       eslint:
         specifier: ^10.3.0
-        version: 10.3.0
+        version: 10.3.0(jiti@2.7.0)
       eslint-config-prettier:
         specifier: ^10.1.8
-        version: 10.1.8(eslint@10.3.0)
+        version: 10.1.8(eslint@10.3.0(jiti@2.7.0))
       globals:
         specifier: ^17.6.0
         version: 17.6.0
@@ -68,6 +71,9 @@ importers:
       react-dom:
         specifier: 18.3.1
         version: 18.3.1(react@18.3.1)
+      size-limit:
+        specifier: 11.2.0
+        version: 11.2.0
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -736,6 +742,13 @@ packages:
     resolution:
       { integrity: sha512-A9+lCBZoaMJlVKcRBz2YByCG+Cp2t6nAnMnNba+XiWxnj6r4JUFqfsgwocMBZU9LPtdxC6wB56ySYpc7LQIoJg== }
 
+  "@size-limit/file@11.2.0":
+    resolution:
+      { integrity: sha512-OZHE3putEkQ/fgzz3Tp/0hSmfVo3wyTpOJSRNm6AmcwX4Nm9YtTfbQQ/hZRwbBFR23S7x2Sd9EbqYzngKwbRoA== }
+    engines: { node: ^18.0.0 || >=20.0.0 }
+    peerDependencies:
+      size-limit: 11.2.0
+
   "@tailwindcss/browser@4.2.4":
     resolution:
       { integrity: sha512-yd+3CxxuF1KDt9Q+405JR3/vyotvS5eMIsZPEynEak/JybvFVn8mVmLjVUxgNmrFB6EGCc89lXBECzIZA+YeXQ== }
@@ -961,6 +974,11 @@ packages:
     resolution:
       { integrity: sha512-tjwM5exMg6BGRI+kNmTntNsvdZS1X8BFYS6tnJ2hdH0kVxM6/eVZ2xy+FqStSWvYmtfFMDLIxurorHwDKfDz5Q== }
     engines: { node: ">=18" }
+
+  bytes-iec@3.1.1:
+    resolution:
+      { integrity: sha512-fey6+4jDK7TFtFg/klGSvNKJctyU7n2aQdnM+CO0ruLPbqqMOM8Tio0Pc+deqUeVKX1tL5DQep1zQ7+37aTAsA== }
+    engines: { node: ">= 0.8" }
 
   bytes@3.1.2:
     resolution:
@@ -1443,6 +1461,16 @@ packages:
     resolution:
       { integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw== }
 
+  fdir@6.5.0:
+    resolution:
+      { integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg== }
+    engines: { node: ">=12.0.0" }
+    peerDependencies:
+      picomatch: ^3 || ^4
+    peerDependenciesMeta:
+      picomatch:
+        optional: true
+
   file-entry-cache@8.0.0:
     resolution:
       { integrity: sha512-XXTUwCvisa5oacNGRP9SfNtYBNAMi+RPwBFmblZEF7N7swHYQS6/Zfk7SRwx4D5j3CH211YNRco1DEMNVfZCnQ== }
@@ -1655,6 +1683,11 @@ packages:
     resolution:
       { integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw== }
 
+  jiti@2.7.0:
+    resolution:
+      { integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ== }
+    hasBin: true
+
   jotai-scope@0.7.2:
     resolution:
       { integrity: sha512-Gwed97f3dDObrO43++2lRcgOqw4O2sdr4JCjP/7eHK1oPACDJ7xKHGScpJX9XaflU+KBHXF+VhwECnzcaQiShg== }
@@ -1721,6 +1754,11 @@ packages:
     resolution:
       { integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ== }
     engines: { node: ">= 0.8.0" }
+
+  lilconfig@3.1.3:
+    resolution:
+      { integrity: sha512-/vlFKAoH5Cgt3Ie+JLhRbwOsCQePABiU3tJ1egGvyQ+33R/vcwM2Zl2QR/LzjsBeItPt3oSVXapn+m4nQDvpzw== }
+    engines: { node: ">=14" }
 
   locate-path@6.0.0:
     resolution:
@@ -1807,6 +1845,10 @@ packages:
       { integrity: sha512-7ZtY5KTCNheRGfEFxnedV5zFiORN1+Y1N6zvPTnHQd8ENUvfaDBeuJDZb2bN/oXwXxu3qkTXDzy57W5vAmDTBw== }
     engines: { node: ^14 || ^16 || >=18 }
     hasBin: true
+
+  nanospinner@1.2.2:
+    resolution:
+      { integrity: sha512-Zt/AmG6qRU3e+WnzGGLuMCEAO/dAu45stNbHY223tUxldaDAeE+FxSPsd9Q+j+paejmm0ZbrNVs5Sraqy3dRxA== }
 
   natural-compare@1.4.0:
     resolution:
@@ -1908,10 +1950,19 @@ packages:
     resolution:
       { integrity: sha512-WY73tMvNzXWEld2LicT9Y260L43isrZ85tPuqRyvtkljSDLmnNFQmZICt4xUJMVulmcc6L9O7jbBrtx3DOz/YQ== }
 
+  picocolors@1.1.1:
+    resolution:
+      { integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA== }
+
   picomatch@2.3.2:
     resolution:
       { integrity: sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA== }
     engines: { node: ">=8.6" }
+
+  picomatch@4.0.5:
+    resolution:
+      { integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A== }
+    engines: { node: ">=12" }
 
   png-chunk-text@1.0.0:
     resolution:
@@ -2115,6 +2166,12 @@ packages:
       { integrity: sha512-ZX99e6tRweoUXqR+VBrslhda51Nh5MTQwou5tnUDgbtyM0dBgmhEDtWGP/xbKn6hqfPRHujUNwz5fy/wbbhnpw== }
     engines: { node: ">= 0.4" }
 
+  size-limit@11.2.0:
+    resolution:
+      { integrity: sha512-2kpQq2DD/pRpx3Tal/qRW1SYwcIeQ0iq8li5CJHQgOC+FtPn2BVmuDtzUCgNnpCrbgtfEHqh+iWzxK+Tq6C+RQ== }
+    engines: { node: ^18.0.0 || >=20.0.0 }
+    hasBin: true
+
   sliced@1.0.1:
     resolution:
       { integrity: sha512-VZBmZP8WU3sMOZm1bdgTadsQbcscK0UM8oKxKVBs4XAhUo2Xxzm/OFMGBkPusxw9xL3Uy8LrzEqGqJhclsr0yA== }
@@ -2138,6 +2195,11 @@ packages:
     resolution:
       { integrity: sha512-SHf/r48b7vOrjve9PxJo3MN5v5yuyjHvdUcrQffT3WXMUfnGmHDVbC4k3sHJaJTgZCwpUplIaAo5ANtMyp3YHg== }
     engines: { node: ">=18" }
+
+  tinyglobby@0.2.17:
+    resolution:
+      { integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g== }
+    engines: { node: ">=12.0.0" }
 
   to-regex-range@5.0.1:
     resolution:
@@ -2407,9 +2469,9 @@ snapshots:
   "@esbuild/win32-x64@0.28.0":
     optional: true
 
-  "@eslint-community/eslint-utils@4.9.1(eslint@10.3.0)":
+  "@eslint-community/eslint-utils@4.9.1(eslint@10.3.0(jiti@2.7.0))":
     dependencies:
-      eslint: 10.3.0
+      eslint: 10.3.0(jiti@2.7.0)
       eslint-visitor-keys: 3.4.3
 
   "@eslint-community/regexpp@4.12.2": {}
@@ -2430,9 +2492,9 @@ snapshots:
     dependencies:
       "@types/json-schema": 7.0.15
 
-  "@eslint/js@10.0.1(eslint@10.3.0)":
+  "@eslint/js@10.0.1(eslint@10.3.0(jiti@2.7.0))":
     optionalDependencies:
-      eslint: 10.3.0
+      eslint: 10.3.0(jiti@2.7.0)
 
   "@eslint/object-schema@3.0.5": {}
 
@@ -2773,6 +2835,10 @@ snapshots:
 
   "@radix-ui/rect@1.1.0": {}
 
+  "@size-limit/file@11.2.0(size-limit@11.2.0)":
+    dependencies:
+      size-limit: 11.2.0
+
   "@tailwindcss/browser@4.2.4": {}
 
   "@toon-format/toon@2.1.0": {}
@@ -2971,6 +3037,8 @@ snapshots:
   bundle-name@4.1.0:
     dependencies:
       run-applescript: 7.1.0
+
+  bytes-iec@3.1.1: {}
 
   bytes@3.1.2: {}
 
@@ -3320,9 +3388,9 @@ snapshots:
 
   escape-string-regexp@4.0.0: {}
 
-  eslint-config-prettier@10.1.8(eslint@10.3.0):
+  eslint-config-prettier@10.1.8(eslint@10.3.0(jiti@2.7.0)):
     dependencies:
-      eslint: 10.3.0
+      eslint: 10.3.0(jiti@2.7.0)
 
   eslint-scope@9.1.2:
     dependencies:
@@ -3335,9 +3403,9 @@ snapshots:
 
   eslint-visitor-keys@5.0.1: {}
 
-  eslint@10.3.0:
+  eslint@10.3.0(jiti@2.7.0):
     dependencies:
-      "@eslint-community/eslint-utils": 4.9.1(eslint@10.3.0)
+      "@eslint-community/eslint-utils": 4.9.1(eslint@10.3.0(jiti@2.7.0))
       "@eslint-community/regexpp": 4.12.2
       "@eslint/config-array": 0.23.5
       "@eslint/config-helpers": 0.5.5
@@ -3367,6 +3435,8 @@ snapshots:
       minimatch: 10.2.5
       natural-compare: 1.4.0
       optionator: 0.9.4
+    optionalDependencies:
+      jiti: 2.7.0
     transitivePeerDependencies:
       - supports-color
 
@@ -3428,6 +3498,10 @@ snapshots:
   fast-json-stable-stringify@2.1.0: {}
 
   fast-levenshtein@2.0.6: {}
+
+  fdir@6.5.0(picomatch@4.0.5):
+    optionalDependencies:
+      picomatch: 4.0.5
 
   file-entry-cache@8.0.0:
     dependencies:
@@ -3577,6 +3651,8 @@ snapshots:
 
   isexe@2.0.0: {}
 
+  jiti@2.7.0: {}
+
   jotai-scope@0.7.2(jotai@2.11.0(react@18.3.1))(react@18.3.1):
     dependencies:
       jotai: 2.11.0(react@18.3.1)
@@ -3620,6 +3696,8 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  lilconfig@3.1.3: {}
 
   locate-path@6.0.0:
     dependencies:
@@ -3688,6 +3766,10 @@ snapshots:
   nanoid@3.3.3: {}
 
   nanoid@4.0.2: {}
+
+  nanospinner@1.2.2:
+    dependencies:
+      picocolors: 1.1.1
 
   natural-compare@1.4.0: {}
 
@@ -3761,7 +3843,11 @@ snapshots:
       object-assign: 4.1.1
       webworkify: 1.5.0
 
+  picocolors@1.1.1: {}
+
   picomatch@2.3.2: {}
+
+  picomatch@4.0.5: {}
 
   png-chunk-text@1.0.0: {}
 
@@ -3949,6 +4035,16 @@ snapshots:
       side-channel-map: 1.0.1
       side-channel-weakmap: 1.0.2
 
+  size-limit@11.2.0:
+    dependencies:
+      bytes-iec: 3.1.1
+      chokidar: 4.0.3
+      jiti: 2.7.0
+      lilconfig: 3.1.3
+      nanospinner: 1.2.2
+      picocolors: 1.1.1
+      tinyglobby: 0.2.17
+
   sliced@1.0.1: {}
 
   source-map-js@1.2.1: {}
@@ -3958,6 +4054,11 @@ snapshots:
   stylis@4.4.0: {}
 
   tinyexec@1.2.4: {}
+
+  tinyglobby@0.2.17:
+    dependencies:
+      fdir: 6.5.0(picomatch@4.0.5)
+      picomatch: 4.0.5
 
   to-regex-range@5.0.1:
     dependencies:

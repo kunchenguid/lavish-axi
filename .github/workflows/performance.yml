@@ -1,0 +1,26 @@
+name: Performance evidence
+
+on:
+  workflow_dispatch:
+
+jobs:
+  process-benchmarks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine@1.20.0
+          fallback: none
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run bench:process
+      - uses: actions/upload-artifact@v6
+        with:
+          name: lavish-performance-evidence
+          path: .lavish-performance/runs/
+          if-no-files-found: error

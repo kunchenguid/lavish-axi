@@ -1033,8 +1033,17 @@ function deepEqual(a, b) {
 async function serverCommand(args) {
   const port = Number(flagValue(args, "--port") || defaultPort());
   const debug = args.includes("--verbose") || process.env.LAVISH_AXI_DEBUG === "1";
-  const server = await serve({ port, stateFile: stateFile(), version: VERSION, debug });
+  const benchmarkRunId = process.env.LAVISH_AXI_BENCH_RUN_ID || "";
+  const benchmarkExitFile = process.env.LAVISH_AXI_BENCH_EXIT_FILE || "";
+  const server = await serve({ port, stateFile: stateFile(), version: VERSION, debug, benchmarkRunId });
   await server.done;
+  if (benchmarkRunId && benchmarkExitFile) {
+    await writeFile(
+      benchmarkExitFile,
+      `${JSON.stringify({ benchmarkRunId, pid: process.pid, stoppedAt: new Date().toISOString() })}\n`,
+      "utf8",
+    );
+  }
   return "";
 }
 

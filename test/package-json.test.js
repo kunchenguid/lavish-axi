@@ -8,6 +8,7 @@ test("check script runs all verification commands", async () => {
 
   assert.deepEqual(checkCommands, [
     "npm run build",
+    "npm run size:check",
     "npm run lint",
     "npm run format:check",
     "npm run typecheck",

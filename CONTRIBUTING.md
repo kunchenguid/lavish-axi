@@ -39,6 +39,27 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json`.
 - User-facing telemetry docs should stay minimal: anonymous usage telemetry, no sensitive content, and `LAVISH_AXI_TELEMETRY=0` opt-out.
 
+## Performance evidence
+
+`pnpm run check` builds the package and applies deterministic raw-byte budgets with
+[Size Limit](https://github.com/ai/size-limit). Run `pnpm run size:why` to inspect
+esbuild's input contribution report after a budget failure.
+
+Process benchmarks use [Hyperfine 1.20.0](https://github.com/sharkdp/hyperfine/releases/tag/v1.20.0).
+Install that exact version and make sure that `hyperfine --version` reports `1.20.0`.
+Then run:
+
+```sh
+pnpm run bench:process
+```
+
+The command records separate CLI-startup, cold-server, and warm-session results under
+`.lavish-performance/runs/`. It does not update a baseline or fail on a timing change.
+Use the manual `Performance evidence` GitHub Actions workflow for a Linux reference run.
+
+Do not add repeated timing or browser measurements to `pnpm run check`. Add a browser
+benchmark only after its proposal names a browser-owned readiness boundary and tool.
+
 ## Questions
 
 Open an issue, or talk to me on [Discord](https://discord.gg/Wsy2NpnZDu).
