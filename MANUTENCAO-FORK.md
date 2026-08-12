@@ -10,15 +10,15 @@ O caso concreto: em julho/2026 o upstream corrigiu tres falhas de validacao de `
 
 ## Topologia
 
-| item        | valor                                                                                              |
-| ----------- | -------------------------------------------------------------------------------------------------- |
-| `upstream`  | `https://github.com/kunchenguid/lavish-axi.git`                                                    |
-| `origin`    | **nao existe** — o fork mora numa estacao e chega ao time vendorizado em `tools/lavish/` do plugin |
-| `main`      | espelho do upstream, **intocado**                                                                  |
-| `dealernet` | onde vivem todas as alteracoes nossas, uma por commit prefixado `dealernet:`                       |
+| item       | valor                                                                                  |
+| ---------- | -------------------------------------------------------------------------------------- |
+| `upstream` | `https://github.com/kunchenguid/lavish-axi.git` — produto publico, somente leitura     |
+| `origin`   | `https://github.com/rodrigoreisdealernet/lavish-axi.git` — fork interno versionado     |
+| `main`     | unica branch persistente; contem o upstream mais todas as alteracoes Dealernet aceitas |
 
-`git log main..dealernet` e, a qualquer momento, a superficie inteira do fork. Se aparecer um commit sem
-o prefixo `dealernet:`, ele entrou por engano.
+Mudancas e sincronizacoes nascem em `agent/*`, entram por PR em `main` e têm a branch removida depois do
+merge. Assim, `origin/main` e a fonte exata do bundle vendorizado e nao existe uma segunda linha local
+permanente que possa divergir em silencio.
 
 ### Versao da build interna
 
@@ -45,13 +45,16 @@ Mesclar de verdade quando qualquer uma valer:
 ```sh
 cd C:/Dev/Projects/Dealernet/lavish-axi
 git fetch upstream
+git switch main && git pull --ff-only origin main
+git switch -c agent/sincronizar-upstream
 git log --oneline main..upstream/main          # o que vem
-git switch main && git merge --ff-only upstream/main
-git switch dealernet && git merge main
+git merge upstream/main
+pnpm run check
+git push -u origin agent/sincronizar-upstream  # abrir PR para main e remover a branch apos o merge
 ```
 
-`main` **sempre** avanca por fast-forward. Se `--ff-only` recusar, alguem commitou na `main`: mova esse
-commit para a `dealernet` antes de continuar.
+Nunca envie diretamente para `upstream`. Se o merge conflitar, resolva somente na branch temporaria e
+mantenha `main` igual a `origin/main` ate o PR ser aceito.
 
 ### Onde o conflito cai, e por que ali
 
@@ -79,11 +82,9 @@ O `check` roda build, lint, format, typecheck, `node --test`, `scripts/verificar
 ingles reaparecer numa superficie que a pessoa le, se `<html lang="pt-BR">` ou a marca sairem, ou se a
 API do artefato (`window.lavish`, `data-lavish-*`, `queuePrompt`) for renomeada.
 
-**Baseline desta estacao: 602 testes — 598 passam / 1 falha / 3 pulados.** A unica falha e ambiental e
-pre-existente: o Git materializou `CLAUDE.md` como arquivo comum porque `core.symlinks=false`, entao o
-teste `CLAUDE.md ... symlink` recebe `EINVAL` ao chamar `readlink`. Sem esse arquivo, a suite mede 600
-testes — 597 passam / 0 falham / 3 pulados. Regressao se mede por todos os numeros: mais de 1 falha,
-menos de 598 passes ou menos de 602 testes. Sem os pisos, apagar um teste que falha viraria "verde".
+**Baseline desta estacao: 612 testes — 609 passam / 0 falham / 3 pulados.** Regressao se mede por todos
+os numeros: qualquer falha, menos de 609 passes ou menos de 612 testes. Sem os pisos, apagar um teste
+que falha viraria "verde".
 
 ## Revendorizar para o plugin
 
@@ -96,5 +97,5 @@ node "<repo do plugin>/plugins/dealernet/scripts/vendorizar-lavish.mjs" --fork C
 Ele roda o build, copia a arvore para `tools/lavish/` e regrava `lavish.pin.json` com versao, sha do
 commit do fork e sha256 de cada arquivo. O `/dev-doctor` reprova se o que esta em disco divergir do pin.
 
-Sem `origin`, **o `tools/lavish/` vendorizado e o unico backup real deste trabalho.** Enquanto for uma
-pessoa mexendo no editor, e aceitavel; na segunda, deixa de ser e o fork precisa de um remoto.
+O commit registrado em `lavish.pin.json` precisa existir em `origin/main`; nao vendorize commit apenas
+local nem uma branch temporaria.

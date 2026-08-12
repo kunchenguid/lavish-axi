@@ -197,9 +197,10 @@ No need to explicitly document the telemetry behaviors.
 
 ## dealernet fork
 
-This checkout is the Dealernet fork, not the upstream product. Branch `dealernet` carries every local
-change; `main` mirrors `upstream/main` untouched. **Read `MANUTENCAO-FORK.md` before merging the upstream
-or re-vendoring the bundle** — it holds the cadence, the exact merge sequence, where the conflicts land
+This checkout is the Dealernet fork, not the upstream product. `main` is the only persistent branch and
+carries every local change; short-lived `agent/*` branches exist only for pull requests and are removed
+after merge. **Read `MANUTENCAO-FORK.md` before merging the upstream or re-vendoring the bundle** — it
+holds the cadence, the exact merge sequence, where the conflicts land
 (`src/i18n-ptbr.js`, the `createChromeHtml` template string, `src/chrome-client.js`) and the test baseline
 that tells regression apart from this station's two environmental symlink failures.
 
