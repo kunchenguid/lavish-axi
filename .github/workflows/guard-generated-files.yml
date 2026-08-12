@@ -12,7 +12,6 @@ on:
       - .release-please-manifest.json
       - CHANGELOG.md
       - package.json
-      - plugin.json
 
 permissions:
   contents: read

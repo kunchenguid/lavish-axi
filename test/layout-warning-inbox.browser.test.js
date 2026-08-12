@@ -150,7 +150,7 @@ test(
       const detected = inbox();
       assert.equal(detected.hidden, false, "the warning button appears once there is unresolved work");
       assert.equal(detected.badge, "3");
-      assert.equal(detected.label, "3 unresolved layout issues");
+      assert.equal(detected.label, "3 problema de layout em abertos");
       assert.equal(detected.gate, false, "the artifact is revealed, not held hostage pending a repair");
       assert.equal(detected.loads, 0, "detection alone never refreshes the artifact");
       assert.equal(detected.pills, 0, "detection alone never queues feedback");
@@ -272,7 +272,7 @@ test(
       const afterQueue = inbox();
       assert.equal(afterQueue.badge, beforeQueue.badge, "queueing never removes a warning from the active count");
       assert.equal(afterQueue.pills, 1, "the selected group becomes exactly one queued prompt");
-      const queuedRows = afterQueue.rows.filter((row) => row.status === "Queued for send");
+      const queuedRows = afterQueue.rows.filter((row) => row.status === "Na fila para envio");
       assert.equal(queuedRows.length, 2);
       assert.deepEqual(
         queuedRows.map((row) => row.target).sort(),
@@ -298,7 +298,7 @@ test(
 
       const feedback = poll(artifact, 8000);
       assert.match(feedback, /tag:\s*layout-warnings/);
-      assert.match(feedback, /Layout issues: 2 selected/);
+      assert.match(feedback, /Problemas de layout: 2 selecionados/);
       assert.doesNotMatch(feedback, /^layout_warnings\[/m, "no parallel agent protocol at the CLI boundary");
       assert.doesNotMatch(feedback, /artifact_failures/);
       for (const target of selected.targets) {
@@ -345,12 +345,12 @@ test(
         desktopAfter.length < desktopRows.length,
         "a complete matching-viewport pass resolved the repaired issue",
       );
-      const recurring = desktopAfter.find((row) => row.status === "Still present");
+      const recurring = desktopAfter.find((row) => row.status === "Ainda presente");
       if (recurring) {
         assert.equal(recurring.selectable, true, "a recurring warning can be queued again");
       }
       assert.ok(
-        desktopAfter.every((row) => row.status !== "Queued for fix"),
+        desktopAfter.every((row) => row.status !== "Correcao pedida"),
         "a newer revision re-checks every outstanding request",
       );
 
@@ -369,7 +369,7 @@ test(
           ' const row = [...document.querySelectorAll(".warning-row")].find((candidate) => [...candidate.querySelectorAll(".warning-chip")][2].textContent.startsWith("Desktop"));' +
           ' const target = row.querySelector(".warning-target").textContent;' +
           ' const viewport = [...row.querySelectorAll(".warning-chip")][2].textContent;' +
-          ' [...row.querySelectorAll(".warning-action")].find((button) => button.textContent === "Dismiss").click();' +
+          ' [...row.querySelectorAll(".warning-action")].find((button) => button.textContent === "Descartar").click();' +
           " return JSON.stringify({ target, viewport }); })()",
       );
       wait(1200);
@@ -483,10 +483,10 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     const after = snapshot();
     assert.match(after, /radio " Pro" checked/, "a Lavish-owned answer survives the reload");
     assert.match(after, /checkbox " Include beta cohort" checked/);
-    assert.match(after, /Annotate <p>/, "the open annotation card comes back");
+    assert.match(after, /Anotar <p>/, "the open annotation card comes back");
 
     // Queueing the restored card proves the unsent text itself survived, not just the card.
-    click(/button "Queue"/);
+    click(/button "Enfileirar"/);
     wait(800);
     const pills = run(
       "chrome-devtools-axi",

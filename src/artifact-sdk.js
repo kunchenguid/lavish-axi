@@ -252,7 +252,7 @@ export function createArtifactSdk(
   mermaid = mermaidHelpers,
   artifactRevision = 0,
   artifactLoadToken = "",
-  sessionKey = "",
+  ui,
 ) {
   const { isMermaidSvg, mermaidNodeFrom, mermaidNodeElement } = mermaid;
   function postArtifactMessage(type, payload = {}) {
@@ -265,6 +265,11 @@ export function createArtifactSdk(
   let shadow = null;
   let counter = 0;
   const ids = new WeakMap();
+  /** @type {Map<string, (input: { actionId: string, values: Record<string, string> }) => unknown>} */
+  const actionPanelHandlers = new Map();
+  /** @type {Map<string, (result: { ok: boolean, error?: string }) => void>} */
+  const pendingSendRequests = new Map();
+  let sendRequestSequence = 0;
 
   function uid(el) {
     if (!ids.has(el)) ids.set(el, String(++counter));
@@ -444,101 +449,12 @@ export function createArtifactSdk(
     return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
   }
 
-  // Inline whiteboard embedding. Each rendered diagram inside a `.mermaid`
-  // container is replaced, at view time only, by a nested sandboxed iframe
-  // hosting the Excalidraw whiteboard frame - the artifact file keeps its
-  // Mermaid source and still renders plain diagrams when opened standalone or
-  // exported. The index of the container among `.mermaid` elements in document
-  // order is the diagram's identity; the server recovers the matching source
-  // from the artifact file. This SDK owns their lifecycle during fullscreen
-  // transitions.
-  const whiteboardEmbeds = new Map(); // container -> { iframe, index }
-
-  function mermaidContainerIndex(container) {
-    return [...document.querySelectorAll(".mermaid")].indexOf(container);
-  }
-
-  function whiteboardEmbedHeightPx(svgRect) {
-    const headerPx = 96;
-    const min = 360;
-    const max = Math.max(min, Math.round((window.innerHeight || 800) * 0.8));
-    return Math.max(min, Math.min(Math.round(svgRect.height) + headerPx, max));
-  }
-
-  function embedWhiteboard(svg) {
-    const container = svg.closest(".mermaid");
-    if (!container) return;
-    const existing = whiteboardEmbeds.get(container);
-    if (existing && existing.iframe.isConnected) {
-      existing.index = mermaidContainerIndex(container);
-      return;
-    }
-    const index = mermaidContainerIndex(container);
-    if (index < 0) return;
-    const rect = svg.getBoundingClientRect();
-    // Mermaid renders asynchronously; a zero-ish rect means this svg has not
-    // been laid out yet. Skip it and retry shortly - layout completion does
-    // not necessarily mutate the DOM again, so the observer alone is not a
-    // guaranteed wake-up.
-    if (rect.height < 40) {
-      window.setTimeout(scheduleMermaidEnhance, 150);
-      return;
-    }
-    const iframe = document.createElement("iframe");
-    iframe.setAttribute("data-lavish-ui", "whiteboard-inline");
-    iframe.setAttribute("title", "Excalidraw whiteboard");
-    // Stricter than (and independent of) this artifact frame's own sandbox.
-    iframe.setAttribute("sandbox", "allow-scripts allow-popups");
-    iframe.src = whiteboardFrameSrc({ index, diagramId: svg.id || "" });
-    iframe.style.cssText =
-      `display:block;width:100%;height:${whiteboardEmbedHeightPx(rect)}px;border:1px solid rgba(128,128,128,.35);` +
-      "border-radius:12px;background:transparent";
-    // The design snippet re-renders Mermaid inside the container on theme
-    // changes, so the frame lives as a sibling: re-renders stay harmless
-    // inside the hidden container instead of destroying the editor.
-    container.style.display = "none";
-    container.insertAdjacentElement("afterend", iframe);
-    whiteboardEmbeds.set(container, { iframe, index, diagramId: svg.id || "" });
-  }
-
-  function whiteboardEmbedEntries() {
-    return [...whiteboardEmbeds.values()].filter((entry) => entry.iframe.isConnected);
-  }
-
-  function whiteboardEntryByIndex(index) {
-    return whiteboardEmbedEntries().find((entry) => entry.index === Number(index)) || null;
-  }
-
-  function whiteboardFrameSrc(entry) {
-    const params = new URLSearchParams({
-      diagramIndex: String(entry.index),
-      diagramId: String(entry.diagramId || ""),
-      // The frame's channel token is bound to this session, so the frame page
-      // must be told which session it belongs to.
-      key: String(sessionKey || ""),
-    });
-    return `/whiteboard-frame?${params}`;
-  }
-
-  window.addEventListener("message", (event) => {
-    if (event.source !== parent) return;
-    const msg = event.data || {};
-    // While the chrome overlay edits a diagram fullscreen, its inline frame is
-    // parked on about:blank so two editors never autosave the same sidecar;
-    // resume reboots the frame, which re-inits from the latest saved scene.
-    if (msg.type === "lavish:suspendWhiteboard") {
-      const target = whiteboardEntryByIndex(msg.diagramIndex);
-      if (target) target.iframe.src = "about:blank";
-    }
-    if (msg.type === "lavish:resumeWhiteboard") {
-      const target = whiteboardEntryByIndex(msg.diagramIndex);
-      if (target) target.iframe.src = whiteboardFrameSrc(target);
-    }
-  });
+  // dealernet: o embutimento de quadro branco (Excalidraw) foi REMOVIDO. O SDK trocava cada
+  // diagrama Mermaid renderizado dentro de um container `.mermaid` por um iframe de edicao. Sem
+  // isso o Mermaid do artefato renderiza normalmente — exatamente como quando o SDK esta ausente.
 
   function enhanceMermaid() {
     for (const svg of findMermaidSvgs()) {
-      embedWhiteboard(svg);
       if (mermaidViewports.has(svg)) continue;
       const viewport = createViewport(svg);
       if (viewport) {
@@ -708,8 +624,35 @@ export function createArtifactSdk(
     postArtifactMessage("lavish:queuePrompt", { prompt: item });
   }
 
-  function sendQueuedPrompts() {
-    postArtifactMessage("lavish:sendQueuedPrompts");
+  function registerActionPanel(config, handler) {
+    const id = String(config?.id || "").trim();
+    if (!id || typeof handler !== "function") {
+      throw new TypeError("registerActionPanel requires a panel id and handler");
+    }
+    actionPanelHandlers.set(id, handler);
+    postArtifactMessage("lavish:registerActionPanel", { panel: config });
+    return id;
+  }
+
+  function updateActionPanel(id, state) {
+    const panelId = String(id || "").trim();
+    if (!panelId) throw new TypeError("updateActionPanel requires a panel id");
+    postArtifactMessage("lavish:updateActionPanel", {
+      panelId,
+      state: state && typeof state === "object" ? state : {},
+    });
+  }
+
+  /** @param {{ endSession?: boolean }} [options] */
+  function sendQueuedPrompts(options = {}) {
+    const requestId = "artifact-send:" + ++sendRequestSequence;
+    return new Promise((resolve) => {
+      pendingSendRequests.set(requestId, resolve);
+      postArtifactMessage("lavish:sendQueuedPrompts", {
+        requestId,
+        endSession: options.endSession === true,
+      });
+    });
   }
 
   function endSession() {
@@ -1650,7 +1593,7 @@ export function createArtifactSdk(
 
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow-y:auto;padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}@media(max-height:220px){.lavish-annotation-card{padding:8px}.lavish-heading{margin-bottom:4px}.lavish-annotation-card textarea{min-height:42px;resize:none;padding:7px}.lavish-annotation-card .lavish-hint{margin-top:4px;font-size:10px}.lavish-annotation-card .lavish-row{margin-top:4px}.lavish-annotation-card button{padding:5px 8px}}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
     shadow.appendChild(style);
     return shadow;
   }
@@ -1689,28 +1632,31 @@ export function createArtifactSdk(
     const nodeLabel = c.tag === "mermaid-node" ? c.target?.label || c.text || "" : "";
     const heading =
       c.tag === "text"
-        ? "Annotate text"
+        ? escapeAnnotationText(ui.tituloTexto)
         : c.tag === "mermaid-node"
-          ? "Annotate node" + (nodeLabel ? ": " + escapeAnnotationText(nodeLabel) : "")
-          : "Annotate &lt;" + c.tag + "&gt;";
+          ? escapeAnnotationText(ui.tituloNo) + (nodeLabel ? ": " + escapeAnnotationText(nodeLabel) : "")
+          : escapeAnnotationText(ui.tituloElemento) + " &lt;" + c.tag + "&gt;";
     const placeholder =
-      c.tag === "text"
-        ? "Tell the agent what to change about this text..."
-        : c.tag === "mermaid-node"
-          ? "Tell the agent what to change about this diagram node..."
-          : "Tell the agent what to change about this element...";
+      c.tag === "text" ? ui.placeholderTexto : c.tag === "mermaid-node" ? ui.placeholderNo : ui.placeholderElemento;
     card.innerHTML =
       '<div class="lavish-heading">' +
       heading +
       '</div><textarea placeholder="' +
-      placeholder +
-      '"></textarea><div class="lavish-hint">Enter to queue &middot; ' +
+      escapeAnnotationText(placeholder) +
+      '"></textarea><div class="lavish-hint">' +
+      escapeAnnotationText(ui.dicaEnfileirar) +
+      " &middot; " +
       (/Mac|iP(hone|ad|od)/.test(navigator.platform) ? "⌘" : "Ctrl") +
-      '+Enter to send now</div><div class="lavish-row"><button class="lavish-cancel" type="button">Cancel</button><button class="lavish-send" type="button">Queue</button></div>';
+      escapeAnnotationText(ui.dicaEnviarAgora) +
+      '</div><div class="lavish-row"><button class="lavish-cancel" type="button">' +
+      escapeAnnotationText(ui.cancelar) +
+      '</button><button class="lavish-send" type="button">' +
+      escapeAnnotationText(ui.enfileirar) +
+      "</button></div>";
     root.appendChild(card);
 
     const left = Math.min(Math.max(12, rect.left), window.innerWidth - card.offsetWidth - 12);
-    const top = Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - card.offsetHeight - 12);
+    const top = Math.max(12, Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - card.offsetHeight - 12));
     card.style.left = left + "px";
     card.style.top = top + "px";
 
@@ -1748,6 +1694,8 @@ export function createArtifactSdk(
 
   /** @type {Window & { lavish?: unknown }} */ (window).lavish = {
     queuePrompt,
+    registerActionPanel,
+    updateActionPanel,
     sendQueuedPrompts,
     endSession,
     getQueuedPrompts: () => [],
@@ -1756,7 +1704,38 @@ export function createArtifactSdk(
   };
 
   window.addEventListener("message", (event) => {
+    if (event.source !== parent) return;
     const msg = event.data || {};
+    if (msg.type === "lavish:sendQueuedPromptsResult") {
+      const resolve = pendingSendRequests.get(String(msg.requestId || ""));
+      if (resolve) {
+        pendingSendRequests.delete(String(msg.requestId || ""));
+        resolve({ ok: msg.ok === true, ...(msg.error ? { error: String(msg.error) } : {}) });
+      }
+    }
+    if (msg.type === "lavish:actionPanelInvoke") {
+      const panelId = String(msg.panelId || "");
+      const invocationId = String(msg.invocationId || "");
+      const handler = actionPanelHandlers.get(panelId);
+      const reply = (ok, error = "") =>
+        postArtifactMessage("lavish:actionPanelResult", {
+          panelId,
+          invocationId,
+          ok,
+          ...(error ? { error } : {}),
+        });
+      if (!handler) {
+        reply(false, "Painel de ação indisponível.");
+      } else {
+        const values = msg.values && typeof msg.values === "object" && !Array.isArray(msg.values) ? msg.values : {};
+        Promise.resolve(handler({ actionId: String(msg.actionId || ""), values }))
+          .then(() => reply(true))
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : "A ação não pôde ser concluída.";
+            reply(false, String(message).slice(0, 300));
+          });
+      }
+    }
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
     if (msg.type === "lavish:requestSnapshot") {
       postArtifactMessage("lavish:snapshot", { snapshot: snapshot() });

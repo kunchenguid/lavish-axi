@@ -2,6 +2,9 @@
 
 const sessionDataElement = document.getElementById("lavish-session");
 const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
+// dealernet: texto de interface vem do bootstrap da sessao (src/i18n-ptbr.js). O cliente e
+// servido cru e nao pode importar modulos, por isso o servidor injeta os textos aqui.
+const t = sessionData.i18n || {};
 const key = String(sessionData.key || "");
 const filePath = String(sessionData.file || "");
 const queueStorageKey = "lavish-axi:queued:" + key;
@@ -24,6 +27,8 @@ const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
+const actionPanel = /** @type {HTMLElement} */ (document.getElementById("actionPanel"));
+const conversationSection = /** @type {HTMLDetailsElement} */ (document.getElementById("conversationSection"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
 const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("moreButton"));
@@ -31,19 +36,8 @@ const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMen
 const reloadArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("reloadArtifact"));
 const copySnapshotButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySnapshot"));
 const exportArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportArtifact"));
-const shareArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareArtifact"));
-const shareDialog = /** @type {HTMLDivElement} */ (document.getElementById("shareDialog"));
-const shareForm = /** @type {HTMLFormElement} */ (document.getElementById("shareForm"));
-const shareCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareClose"));
-const shareCancelButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareCancel"));
-const sharePublishButton = /** @type {HTMLButtonElement} */ (document.getElementById("sharePublish"));
-const sharePasswordInput = /** @type {HTMLInputElement} */ (document.getElementById("sharePassword"));
-const shareStatus = /** @type {HTMLDivElement} */ (document.getElementById("shareStatus"));
-const shareResult = /** @type {HTMLDivElement} */ (document.getElementById("shareResult"));
-const shareUrlInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUrl"));
-const shareUpdateKeyInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUpdateKey"));
-const copyShareUrlButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareUrl"));
-const copyUpdateKeyButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyUpdateKey"));
+// dealernet: os elementos do fluxo de publicacao (share*) foram removidos junto com o item de menu,
+// o dialogo e a rota do servidor. Publicar mandava o artefato para ht-ml.app, host de terceiro.
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
@@ -52,6 +46,7 @@ const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("p
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
 const endedOverlay = /** @type {HTMLDivElement} */ (document.getElementById("endedOverlay"));
+const endedTitle = /** @type {HTMLDivElement} */ (document.getElementById("endedTitle"));
 const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateOverlay"));
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
@@ -66,14 +61,13 @@ const warningsSelected = /** @type {HTMLSpanElement} */ (document.getElementById
 const warningsList = /** @type {HTMLDivElement} */ (document.getElementById("warningsList"));
 const warningsQueueButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsQueueButton"));
 const sendHint = /** @type {HTMLDivElement} */ (document.getElementById("sendHint"));
-const whiteboardOverlay = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardOverlay"));
-const whiteboardFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("whiteboardFrame"));
-const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("whiteboardClose"));
-const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
-let annotation = true;
+// dealernet: a sessao abre em modo EXPLORAR, nao anotar. O artefato de fase e primeiro um
+// documento para ler — abrir anotando faz o primeiro clique virar anotacao acidental em vez de
+// rolagem/interacao. Cmd/Ctrl+I (e o switch da barra) continuam alternando normalmente.
+let annotation = false;
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
@@ -96,9 +90,22 @@ const selectedWarningIds = new Set(loadJsonState(warningSelectionStorageKey, [])
 let warningsDrawerOpen = false;
 const snapshotRequests = [];
 let endAfterSubmit = false;
+let submitRequestId = "";
+let activeSubmitRequestId = "";
 let workingBubble = null;
 let submitQueuedPromise = null;
 let submitQueuedAgain = false;
+let activeActionPanel = null;
+let hasRegisteredActionPanel = false;
+let actionPanelBusy = false;
+let activeActionPanelInvocationId = "";
+let pendingActionPanelSuccessMessage = "";
+let actionPanelInvocationSequence = 0;
+const actionPanelFields = new Map();
+const actionPanelFieldErrors = new Map();
+const actionPanelButtons = new Map();
+let actionPanelSummary = null;
+let actionPanelStatus = null;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
@@ -191,15 +198,21 @@ function render() {
       (prompt, index) =>
         '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
         escapeHtml(prompt.prompt) +
-        '</span><button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
+        '</span><button class="pill-close" type="button" aria-label="' +
+        escapeHtml(t.removerPromptDaFila) +
+        '" data-index="' +
         index +
         '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
         (prompt.selector
-          ? '<div class="tooltip-label">Target</div><div class="pill-tooltip-target">' +
+          ? '<div class="tooltip-label">' +
+            escapeHtml(t.alvo) +
+            '</div><div class="pill-tooltip-target">' +
             escapeHtml(prompt.selector) +
             "</div>"
           : "") +
-        '<div class="tooltip-label">Prompt</div><div class="pill-tooltip-prompt">' +
+        '<div class="tooltip-label">' +
+        escapeHtml(t.instrucao) +
+        '</div><div class="pill-tooltip-prompt">' +
         escapeHtml(prompt.prompt) +
         "</div></div></div>",
     )
@@ -216,7 +229,279 @@ function render() {
 function updateSendState() {
   sendButton.disabled = ended || agentPresence === "working";
   sendAndEndButton.disabled = sendButton.disabled;
+  updateActionPanelButtons();
   if (warningsQueueButton) updateWarningSelectionState();
+}
+
+function boundedText(value, maxLength) {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function normalizeActionPanel(value) {
+  if (!value || typeof value !== "object" || value.schema !== "lavish-action-panel-v1") return null;
+  const id = boundedText(value.id, 80);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id)) return null;
+  const fields = Array.isArray(value.fields)
+    ? value.fields.slice(0, 4).flatMap((field) => {
+        if (!field || typeof field !== "object" || field.type !== "textarea") return [];
+        const fieldId = boundedText(field.id, 80);
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(fieldId)) return [];
+        return [
+          {
+            id: fieldId,
+            type: "textarea",
+            label: boundedText(field.label, 160),
+            help: boundedText(field.help, 300),
+            placeholder: boundedText(field.placeholder, 200),
+            maxLength: Math.max(1, Math.min(Number(field.maxLength) || 4000, 10_000)),
+          },
+        ];
+      })
+    : [];
+  if (new Set(fields.map((field) => field.id)).size !== fields.length) return null;
+  const fieldIds = new Set(fields.map((field) => field.id));
+  const actions = Array.isArray(value.actions)
+    ? value.actions.slice(0, 5).flatMap((action) => {
+        if (!action || typeof action !== "object") return [];
+        const actionId = boundedText(action.id, 80);
+        const label = boundedText(action.label, 120);
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(actionId) || !label) return [];
+        const tone = ["primary", "neutral", "danger"].includes(action.tone) ? action.tone : "neutral";
+        const requires = Array.isArray(action.requires)
+          ? action.requires.map((item) => boundedText(item, 80)).filter((item) => fieldIds.has(item))
+          : [];
+        return [
+          {
+            id: actionId,
+            label,
+            tone,
+            requires,
+            disabled: action.disabled === true,
+            reason: "",
+            successMessage: boundedText(action.successMessage, 300),
+          },
+        ];
+      })
+    : [];
+  if (!actions.length) return null;
+  if (new Set(actions.map((action) => action.id)).size !== actions.length) return null;
+  return {
+    id,
+    title: boundedText(value.title, 160),
+    description: boundedText(value.description, 400),
+    hideGenericSendAndEnd: value.hideGenericSendAndEnd === true,
+    fields,
+    actions,
+  };
+}
+
+function actionPanelStorageKey(id) {
+  return "lavish-axi:action-panel:" + key + ":" + id;
+}
+
+function actionPanelValues() {
+  return Object.fromEntries([...actionPanelFields].map(([id, field]) => [id, String(field.value || "")]));
+}
+
+function persistActionPanelValues() {
+  if (!activeActionPanel) return;
+  try {
+    sessionStorage.setItem(actionPanelStorageKey(activeActionPanel.id), JSON.stringify(actionPanelValues()));
+  } catch {
+    // Storage is a convenience for reload recovery; a browser privacy policy must not break the Gate.
+  }
+}
+
+function clearActionPanelValues() {
+  if (!activeActionPanel) return;
+  try {
+    sessionStorage.removeItem(actionPanelStorageKey(activeActionPanel.id));
+  } catch {
+    // The session is already terminal; unavailable storage does not change the server result.
+  }
+}
+
+function clearActionPanelForReload() {
+  activeActionPanel = null;
+  actionPanelBusy = false;
+  activeActionPanelInvocationId = "";
+  pendingActionPanelSuccessMessage = "";
+  actionPanelFields.clear();
+  actionPanelFieldErrors.clear();
+  actionPanelButtons.clear();
+  actionPanelSummary = null;
+  actionPanelStatus = null;
+  actionPanel.replaceChildren();
+  actionPanel.hidden = true;
+  sendAndEndButton.hidden = false;
+}
+
+function updateActionPanelButtons() {
+  if (!activeActionPanel) return;
+  const values = actionPanelValues();
+  const missingFields = new Set();
+  for (const action of activeActionPanel.actions) {
+    const button = actionPanelButtons.get(action.id);
+    if (!button) continue;
+    const missingRequired = action.requires.some((fieldId) => !String(values[fieldId] || "").trim());
+    if (missingRequired) {
+      for (const fieldId of action.requires) {
+        if (!String(values[fieldId] || "").trim()) missingFields.add(fieldId);
+      }
+    }
+    button.disabled = ended || agentPresence === "working" || actionPanelBusy || action.disabled || missingRequired;
+    const reason = action.reason || (missingRequired ? t.actionPanelRequired || "Preencha o campo obrigatório." : "");
+    if (reason) button.title = reason;
+    else button.removeAttribute?.("title");
+  }
+  for (const [fieldId, input] of actionPanelFields) {
+    const missing = missingFields.has(fieldId);
+    input.setAttribute("aria-invalid", String(missing));
+    const error = actionPanelFieldErrors.get(fieldId);
+    if (error) {
+      error.textContent = missing ? t.actionPanelRequired || "Preencha o campo obrigatório." : "";
+      error.hidden = !missing;
+    }
+  }
+}
+
+function renderActionPanel(value) {
+  const normalized = normalizeActionPanel(value);
+  if (!normalized) return;
+  const firstRegistration = !hasRegisteredActionPanel;
+  hasRegisteredActionPanel = true;
+  activeActionPanel = normalized;
+  actionPanelBusy = false;
+  activeActionPanelInvocationId = "";
+  pendingActionPanelSuccessMessage = "";
+  actionPanelFields.clear();
+  actionPanelFieldErrors.clear();
+  actionPanelButtons.clear();
+  actionPanel.replaceChildren();
+  actionPanel.className = "action-panel";
+
+  const title = document.createElement("h2");
+  title.className = "action-panel-title";
+  title.textContent = normalized.title;
+  actionPanel.appendChild(title);
+  if (normalized.description) {
+    const description = document.createElement("p");
+    description.className = "action-panel-description";
+    description.textContent = normalized.description;
+    actionPanel.appendChild(description);
+  }
+
+  let saved;
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(actionPanelStorageKey(normalized.id)) || "{}");
+    saved = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    saved = {};
+  }
+  for (const field of normalized.fields) {
+    const group = document.createElement("div");
+    group.className = "action-panel-field";
+    const label = document.createElement("label");
+    label.textContent = field.label;
+    const input = document.createElement("textarea");
+    input.dataset.actionPanelField = field.id;
+    input.maxLength = field.maxLength;
+    input.placeholder = field.placeholder;
+    input.value = typeof saved[field.id] === "string" ? saved[field.id].slice(0, field.maxLength) : "";
+    label.htmlFor = "action-panel-" + field.id;
+    input.id = label.htmlFor;
+    input.addEventListener("input", () => {
+      persistActionPanelValues();
+      updateActionPanelButtons();
+    });
+    group.appendChild(label);
+    group.appendChild(input);
+    if (field.help) {
+      const help = document.createElement("p");
+      help.id = input.id + "-help";
+      help.className = "action-panel-help";
+      help.textContent = field.help;
+      group.appendChild(help);
+      input.setAttribute("aria-describedby", help.id + " " + input.id + "-error");
+    } else {
+      input.setAttribute("aria-describedby", input.id + "-error");
+    }
+    const error = document.createElement("p");
+    error.id = input.id + "-error";
+    error.className = "action-panel-error";
+    error.setAttribute("role", "alert");
+    error.hidden = true;
+    group.appendChild(error);
+    actionPanelFields.set(field.id, input);
+    actionPanelFieldErrors.set(field.id, error);
+    actionPanel.appendChild(group);
+  }
+
+  actionPanelSummary = document.createElement("p");
+  actionPanelSummary.className = "action-panel-summary";
+  actionPanelSummary.setAttribute("role", "status");
+  actionPanelSummary.setAttribute("aria-live", "polite");
+  actionPanel.appendChild(actionPanelSummary);
+
+  actionPanelStatus = document.createElement("p");
+  actionPanelStatus.className = "action-panel-status";
+  actionPanelStatus.setAttribute("role", "status");
+  actionPanelStatus.setAttribute("aria-live", "polite");
+  actionPanel.appendChild(actionPanelStatus);
+
+  const actions = document.createElement("div");
+  actions.className = "action-panel-actions";
+  for (const action of normalized.actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button action-panel-button action-panel-button-" + action.tone;
+    button.dataset.actionPanelAction = action.id;
+    button.textContent = action.label;
+    button.onclick = () => {
+      if (button.disabled || actionPanelBusy) return;
+      actionPanelBusy = true;
+      updateActionPanelButtons();
+      const invocationId = normalized.id + ":" + ++actionPanelInvocationSequence;
+      activeActionPanelInvocationId = invocationId;
+      pendingActionPanelSuccessMessage = action.successMessage;
+      postToFrame({
+        type: "lavish:actionPanelInvoke",
+        panelId: normalized.id,
+        actionId: action.id,
+        invocationId,
+        values: actionPanelValues(),
+      });
+    };
+    actionPanelButtons.set(action.id, button);
+    actions.appendChild(button);
+  }
+  actionPanel.appendChild(actions);
+  actionPanel.hidden = false;
+  sendAndEndButton.hidden = normalized.hideGenericSendAndEnd;
+  if (firstRegistration && window.matchMedia?.("(max-width: 860px)").matches && conversationSection) {
+    conversationSection.open = false;
+  }
+  updateActionPanelButtons();
+}
+
+function updateActionPanelState(panelId, value) {
+  if (!activeActionPanel || panelId !== activeActionPanel.id || !value || typeof value !== "object") return;
+  if (Object.hasOwn(value, "summary") && actionPanelSummary) {
+    actionPanelSummary.textContent = boundedText(value.summary, 500);
+  }
+  if (Object.hasOwn(value, "status") && actionPanelStatus) {
+    actionPanelStatus.textContent = boundedText(value.status, 500);
+  }
+  if (value.actions && typeof value.actions === "object" && !Array.isArray(value.actions)) {
+    for (const action of activeActionPanel.actions) {
+      if (!Object.hasOwn(value.actions, action.id)) continue;
+      const next = value.actions[action.id];
+      if (!next || typeof next !== "object") continue;
+      if (Object.hasOwn(next, "disabled")) action.disabled = next.disabled === true;
+      if (Object.hasOwn(next, "reason")) action.reason = boundedText(next.reason, 300);
+    }
+  }
+  updateActionPanelButtons();
 }
 
 function showSendHint() {
@@ -273,7 +558,7 @@ function addChat(role, text, shouldScroll = true) {
 
   const el = document.createElement("div");
   el.className = "bubble " + role;
-  el.innerHTML = "<small>" + (role === "agent" ? "Agent" : "You") + "</small><div>" + escapeHtml(text) + "</div>";
+  el.innerHTML = "<small>" + (role === "agent" ? t.agente : t.voce) + "</small><div>" + escapeHtml(text) + "</div>";
   chatLog.appendChild(el);
   if (shouldScroll) scrollElementIntoView(el);
   return el;
@@ -308,7 +593,7 @@ function setAgentPresence(state) {
   if (!workingBubble) {
     workingBubble = document.createElement("div");
     workingBubble.className = "bubble agent agent-working";
-    workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
+    workingBubble.innerHTML = '<span class="spinner"></span><span>' + escapeHtml(t.trabalhando) + "</span>";
     chatLog.appendChild(workingBubble);
   }
   scrollElementIntoView(workingBubble);
@@ -389,8 +674,16 @@ function requestSnapshot(action) {
   postToFrame({ type: "lavish:requestSnapshot" });
 }
 
-function sendQueued(endAfter) {
-  if (ended || agentPresence === "working") return;
+function replyToArtifactSend(requestId, ok, error = "") {
+  if (!requestId) return;
+  postToFrame({ type: "lavish:sendQueuedPromptsResult", requestId, ok, ...(error ? { error } : {}) });
+}
+
+function sendQueued(endAfter, requestId = "") {
+  if (ended || agentPresence === "working") {
+    replyToArtifactSend(requestId, false, ended ? "session-ended" : "agent-working");
+    return;
+  }
   closeMenus();
 
   const text = chatInput.value.trim();
@@ -403,11 +696,15 @@ function sendQueued(endAfter) {
   }
   if (!queued.length) {
     showSendHint();
+    replyToArtifactSend(requestId, false, "empty-queue");
     return;
   }
   hideSendHint();
 
-  if (endAfter) endAfterSubmit = true;
+  if (requestId) submitRequestId = requestId;
+  if (endAfter) {
+    endAfterSubmit = true;
+  }
   requestSnapshot("submit");
 }
 
@@ -422,13 +719,19 @@ async function submitQueued() {
   try {
     const result = await submitQueuedPromise;
     succeeded = result !== false;
+    if (result === false) replyToArtifactSend(activeSubmitRequestId || submitRequestId, false, "submit-rejected");
     return result;
+  } catch {
+    replyToArtifactSend(activeSubmitRequestId || submitRequestId, false, "submit-failed");
+    return false;
   } finally {
     submitQueuedPromise = null;
+    activeSubmitRequestId = "";
     const shouldSubmitAgain = submitQueuedAgain;
     submitQueuedAgain = false;
     if (!succeeded) {
       endAfterSubmit = false;
+      submitRequestId = "";
     } else if (!ended && shouldSubmitAgain) {
       if (queued.length) {
         submitQueued();
@@ -443,6 +746,10 @@ async function submitQueued() {
 async function submitQueuedOnce() {
   const prompts = queued.slice();
   const shouldEndSession = endAfterSubmit;
+  const requestId = submitRequestId;
+  activeSubmitRequestId = requestId;
+  submitRequestId = "";
+  if (shouldEndSession) endAfterSubmit = false;
   const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
   if (shouldEndSession) body.endSession = true;
   const response = await fetch("/api/" + key + "/prompts", {
@@ -454,7 +761,6 @@ async function submitQueuedOnce() {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
-      endAfterSubmit = false;
       return false;
     }
     throw new Error("failed to submit queued prompts");
@@ -466,10 +772,12 @@ async function submitQueuedOnce() {
   persistQueuedPrompts();
   render();
   if (shouldEndSession) {
-    endAfterSubmit = false;
+    clearActionPanelValues();
     markSessionEnded();
+    replyToArtifactSend(requestId, true);
     return;
   }
+  replyToArtifactSend(requestId, true);
   if (agentPresence === "listening") setAgentPresence("working");
 }
 
@@ -488,14 +796,14 @@ function setLayoutGateCard(state) {
   if (!layoutGateTitle || !layoutGateCopy) return;
 
   if (state === "held") {
-    layoutGateTitle.innerHTML = "Fixing a layout issue...";
+    layoutGateTitle.innerHTML = t.corrigindoProblemaLayout;
     layoutGateCopy.textContent =
       "The browser found inaccessible or unusable content. Your agent has been notified and this will reveal after the next clean reload.";
     return;
   }
 
-  layoutGateTitle.innerHTML = "Checking layout.<br>One moment.";
-  layoutGateCopy.textContent = "Lavish is waiting for fonts and final geometry before revealing this artifact.";
+  layoutGateTitle.innerHTML = t.verificandoLayout;
+  layoutGateCopy.textContent = t.verificandoLayoutDetalhe;
 }
 
 function setLayoutGateActive(active) {
@@ -661,12 +969,12 @@ function warningRelativeTime(value) {
   const at = Date.parse(String(value || ""));
   if (!Number.isFinite(at)) return "";
   const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
-  if (seconds < 45) return "just now";
+  if (seconds < 45) return "agora";
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return minutes + "m ago";
+  if (minutes < 60) return "há " + minutes + " min";
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return hours + "h ago";
-  return Math.round(hours / 24) + "d ago";
+  if (hours < 24) return "há " + hours + " h";
+  return "há " + Math.round(hours / 24) + " d";
 }
 
 function createWarningChip(text, extraClass) {
@@ -682,8 +990,8 @@ function createWarningRow(warning) {
   row.dataset.warningId = warning.id;
   const pending = pendingLayoutWarningIds().has(warning.id);
   const selectable = warning.selectable && !pending;
-  const unavailableLabel = pending ? "is queued to send" : "is already queued for a fix";
-  const statusLabel = pending ? "Queued for send" : warning.status_label;
+  const unavailableLabel = pending ? "esta na fila para envio" : "ja tem correcao pedida";
+  const statusLabel = pending ? t.naFilaParaEnvio : warning.status_label;
 
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
@@ -693,8 +1001,8 @@ function createWarningRow(warning) {
   checkbox.setAttribute(
     "aria-label",
     selectable
-      ? "Select " + warning.title + " on " + warning.viewport_label
-      : warning.title + " on " + warning.viewport_label + " " + unavailableLabel,
+      ? "Selecionar " + warning.title + " em " + warning.viewport_label
+      : warning.title + " em " + warning.viewport_label + " " + unavailableLabel,
   );
   checkbox.addEventListener("change", () => {
     if (checkbox.checked) selectedWarningIds.add(warning.id);
@@ -719,16 +1027,16 @@ function createWarningRow(warning) {
 
   const meta = document.createElement("div");
   meta.className = "warning-meta";
-  meta.appendChild(createWarningChip("Severe", "severity"));
+  meta.appendChild(createWarningChip("Grave", "severity"));
   meta.appendChild(createWarningChip(statusLabel, "status-" + warning.status));
   meta.appendChild(createWarningChip(warning.viewport_label + " · " + warning.viewport_width + "px"));
   const seen = warningRelativeTime(warning.last_seen_at);
-  if (seen) meta.appendChild(createWarningChip("Seen " + seen));
+  if (seen) meta.appendChild(createWarningChip("Visto " + seen));
   body.appendChild(meta);
 
   const target = document.createElement("code");
   target.className = "warning-target";
-  target.textContent = warning.selector || "(whole page)";
+  target.textContent = warning.selector || t.paginaInteira;
   body.appendChild(target);
 
   const actions = document.createElement("div");
@@ -737,21 +1045,23 @@ function createWarningRow(warning) {
     const reveal = document.createElement("button");
     reveal.type = "button";
     reveal.className = "warning-action";
-    reveal.textContent = "Reveal";
-    reveal.setAttribute("aria-label", "Reveal " + warning.title + " in the artifact");
+    reveal.textContent = t.revelar;
+    reveal.setAttribute("aria-label", t.revelarNoArtefato.replace("{titulo}", warning.title));
     reveal.addEventListener("click", () => revealWarning(warning));
     actions.appendChild(reveal);
   }
   const dismiss = document.createElement("button");
   dismiss.type = "button";
   dismiss.className = "warning-action";
-  dismiss.textContent = "Dismiss";
+  dismiss.textContent = t.descartar;
   dismiss.disabled = !selectable;
   dismiss.setAttribute(
     "aria-label",
     selectable
-      ? "Dismiss " + warning.title + " for this artifact revision"
-      : warning.title + " cannot be dismissed while " + (pending ? "queued to send" : "a fix is queued"),
+      ? "Descartar " + warning.title + " nesta revisao do artefato"
+      : warning.title +
+          " nao pode ser descartado enquanto " +
+          (pending ? "esta na fila para envio" : "ha correcao pedida"),
   );
   dismiss.addEventListener("click", () => dismissWarning(warning.id));
   actions.appendChild(dismiss);
@@ -780,19 +1090,19 @@ function renderWarnings() {
   warningsCount.textContent = String(count);
   warningsButton.setAttribute(
     "aria-label",
-    count === 1 ? "1 unresolved layout issue" : count + " unresolved layout issues",
+    count === 1 ? "1 problema de layout em aberto" : count + " problemas de layout em aberto",
   );
 
   const outstanding = active.filter((warning) => warning.outstanding).length;
   warningsSummary.textContent =
-    (count === 1 ? "1 unresolved issue" : count + " unresolved issues") +
-    (outstanding > 0 ? " · " + outstanding + " already queued for a fix" : "");
+    (count === 1 ? "1 problema em aberto" : count + " problemas em aberto") +
+    (outstanding > 0 ? " · " + outstanding + " ja com correcao pedida" : "");
 
   warningsList.replaceChildren();
   if (count === 0) {
     const empty = document.createElement("p");
     empty.className = "warnings-empty";
-    empty.textContent = "No unresolved layout issues.";
+    empty.textContent = t.semProblemasLayout;
     warningsList.appendChild(empty);
   } else {
     for (const warning of active) warningsList.appendChild(createWarningRow(warning));
@@ -808,7 +1118,7 @@ function updateWarningSelectionState() {
   // Default selection is never "everything": Select all is an explicit action.
   warningsSelectAll.checked = selectable.length > 0 && selectedCount === selectable.length;
   warningsSelectAll.indeterminate = selectedCount > 0 && selectedCount < selectable.length;
-  warningsSelected.textContent = selectedCount === 0 ? "None selected" : selectedCount + " selected";
+  warningsSelected.textContent = selectedCount === 0 ? t.nenhumSelecionado : selectedCount + " selecionado(s)";
   warningsQueueButton.disabled = selectedCount === 0 || ended || agentPresence === "working";
 }
 
@@ -921,27 +1231,28 @@ function markSessionEnded() {
   closeMenus();
   closeWarningsDrawer();
   renderWarnings();
-  closeWhiteboard();
   annotationSwitch.disabled = true;
   moreButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
+  updateActionPanelButtons();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
   layoutGateManuallyBypassed = true;
   revealLayoutGate();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
+  if (pendingActionPanelSuccessMessage && endedTitle) endedTitle.textContent = pendingActionPanelSuccessMessage;
   endedOverlay.hidden = false;
 }
 
 function copyFilePath() {
   copyText(filePath);
   copyHint.classList.add("copied");
-  copyHintText.textContent = "Copied";
+  copyHintText.textContent = t.copiado;
   clearTimeout(copyHintTimer);
   copyHintTimer = setTimeout(() => {
     copyHint.classList.remove("copied");
-    copyHintText.textContent = "Copy";
+    copyHintText.textContent = t.copiar;
   }, 1600);
 }
 
@@ -961,16 +1272,17 @@ function setExportLabel(text) {
 }
 
 function unresolvedAssetText(count) {
-  return count === 1 ? "1 unresolved asset" : `${count} unresolved assets`;
+  const template = count === 1 ? t.recursoNaoResolvido : t.recursosNaoResolvidos;
+  return template.replace("{quantidade}", String(count));
 }
 
 function noticeText(count) {
-  return count === 1 ? "1 notice" : `${count} notices`;
+  return count === 1 ? "1 aviso" : `${count} avisos`;
 }
 
 function exportWarningText(unresolvedCount, noticeCount) {
   if (unresolvedCount > 0 && noticeCount > 0) {
-    return `${unresolvedAssetText(unresolvedCount)} and ${noticeText(noticeCount)}`;
+    return `${unresolvedAssetText(unresolvedCount)} e ${noticeText(noticeCount)}`;
   }
   if (unresolvedCount > 0) return unresolvedAssetText(unresolvedCount);
   return noticeText(noticeCount);
@@ -980,10 +1292,10 @@ async function exportArtifact() {
   // The bundle inlines local assets server-side, so it can take a moment - keep the menu open
   // and narrate progress in place instead of closing it and leaving the user with no feedback.
   exportArtifactButton.disabled = true;
-  setExportLabel("Exporting...");
+  setExportLabel(t.exportando);
   try {
     const response = await fetch("/api/" + key + "/export");
-    if (!response.ok) throw new Error("export failed");
+    if (!response.ok) throw new Error(t.falhaExportar);
     const warningCount = Number(response.headers.get("x-lavish-export-warning-count") || "0");
     const noticeCount = Number(response.headers.get("x-lavish-export-notice-count") || "0");
     const blob = await response.blob();
@@ -996,79 +1308,15 @@ async function exportArtifact() {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     if (warningCount > 0 || noticeCount > 0) {
-      setExportLabel(`Exported with ${exportWarningText(warningCount, noticeCount)}`);
+      setExportLabel(`Exportado com ${exportWarningText(warningCount, noticeCount)}`);
     } else {
-      setExportLabel("Export standalone HTML");
+      setExportLabel(t.exportarHtml);
       closeMenus();
     }
   } catch {
-    setExportLabel("Export failed - retry");
+    setExportLabel(t.exportarFalhou);
   } finally {
     exportArtifactButton.disabled = false;
-  }
-}
-
-function openShareDialog() {
-  closeMenus();
-  shareDialog.hidden = false;
-  shareStatus.textContent = "";
-  shareStatus.classList.remove("error");
-  shareResult.hidden = true;
-  sharePasswordInput.value = "";
-  sharePasswordInput.focus();
-}
-
-function closeShareDialog() {
-  shareDialog.hidden = true;
-}
-
-async function copyToButton(value, button, label) {
-  await copyText(value);
-  button.textContent = "Copied";
-  setTimeout(() => {
-    button.textContent = label;
-  }, 1200);
-}
-
-async function publishShare(event) {
-  event.preventDefault();
-  sharePublishButton.disabled = true;
-  shareStatus.classList.remove("error");
-  shareStatus.textContent = "Publishing to ht-ml.app...";
-  shareResult.hidden = true;
-  const password = sharePasswordInput.value.trim();
-  const passwordProtected = Boolean(password);
-  try {
-    const response = await fetch("/api/" + key + "/share", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(password ? { password } : {}),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "publish failed");
-    shareUrlInput.value = data.url || "";
-    shareUpdateKeyInput.value = data.update_key || "";
-    const unresolvedAssets = Array.isArray(data.unresolved_local_assets) ? data.unresolved_local_assets : [];
-    const notices = Array.isArray(data.notices) ? data.notices : [];
-    const warningCount = unresolvedAssets.length;
-    const noticeCount = notices.length;
-    const noticeSummary = noticeCount ? noticeText(noticeCount) : "";
-    shareStatus.textContent =
-      warningCount > 0
-        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}${noticeSummary ? ` and ${noticeSummary}` : ""}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
-        : noticeCount > 0
-          ? `Published with ${noticeSummary}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
-          : passwordProtected
-            ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
-            : "Published. Anyone with the link can view this page.";
-    shareResult.hidden = false;
-    shareUrlInput.focus();
-    shareUrlInput.select();
-  } catch (error) {
-    shareStatus.classList.add("error");
-    shareStatus.textContent = error instanceof Error ? error.message : String(error);
-  } finally {
-    sharePublishButton.disabled = false;
   }
 }
 
@@ -1077,6 +1325,7 @@ async function replaceArtifactFrame() {
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
     startLayoutGateCycle();
+    clearActionPanelForReload();
     const currentSrc = frame.src || "about:blank";
     frame.src = currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now();
     return true;
@@ -1151,509 +1400,22 @@ async function replaceArtifactFrame() {
   artifactLoadRevision = revision;
   artifactLoadToken = token;
   artifactSpokeToken = "";
-  inlineWhiteboardChannels.clear();
   setHandoffSuperseded(false);
   startLayoutGateCycle();
+  clearActionPanelForReload();
   frame.src = artifactFrameSrcForLoad({ revision, token });
   return true;
 }
 
+// dealernet: sem quadro branco nao ha cena pendente para descarregar antes de trocar a frame.
 function resetFrame() {
-  if (artifactResetPromise) return artifactResetPromise;
-  const hasLiveInlineWhiteboard = [...inlineWhiteboardChannels].some(
-    ([index, channel]) => channel.initialized && index !== overlayIndex,
-  );
-  if (!hasLiveInlineWhiteboard) {
-    return replaceArtifactFrame();
-  }
-  artifactResetPromise = flushInlineWhiteboards()
-    .then((flushed) => {
-      if (!flushed) return false;
-      return replaceArtifactFrame();
-    })
-    .finally(() => {
-      artifactResetPromise = null;
-    });
-  return artifactResetPromise;
+  return replaceArtifactFrame();
 }
 
-// ---------------------------------------------------------------------------
-// Whiteboards. The artifact SDK embeds one sandboxed whiteboard frame in place
-// of each rendered Mermaid diagram. The chrome owns every server round trip
-// and serves all frames concurrently. The overlay hosts the same frame page
-// fullscreen when an inline frame asks to maximize - the inline frame is
-// suspended while the overlay owns that diagram so two editors never autosave
-// one sidecar.
-// ---------------------------------------------------------------------------
-
-/** @type {Map<number, { diagramId: string, source: string, sourceHash: string }>} */
-const whiteboards = new Map();
-/** @type {number | null} */
-let overlayIndex = null;
-let overlayFrameReady = false;
-let overlayChannelId = "";
-let overlayOpeningIndex = null;
-let nextWhiteboardFlushId = 0;
-let artifactResetPromise = null;
-let chromeRestartReloadPromise = null;
-const whiteboardTeardowns = new Map();
-const whiteboardFlushes = new Map();
-const whiteboardSaveChains = new Map();
-const inlineWhiteboardChannels = new Map();
-
-function whiteboardTheme() {
-  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function postToWhiteboardOverlay(message) {
-  if (whiteboardFrame.contentWindow && overlayChannelId) {
-    whiteboardFrame.contentWindow.postMessage({ ...message, channelId: overlayChannelId }, "*");
-  }
-}
-
-function postToInlineWhiteboard(index, message) {
-  const channel = inlineWhiteboardChannels.get(index);
-  if (channel?.window) channel.window.postMessage({ ...message, channelId: channel.channelId }, "*");
-}
-
-function postToWhiteboard(index, placement, message) {
-  if (placement === "overlay") postToWhiteboardOverlay(message);
-  else postToInlineWhiteboard(index, message);
-}
-
-async function fetchMermaidSources() {
-  const response = await fetch("/api/" + key + "/mermaid-sources");
-  if (!response.ok) throw new Error("could not read the artifact's Mermaid sources");
-  const data = await response.json();
-  return Array.isArray(data.sources) ? data.sources : [];
-}
-
-async function authenticateWhiteboardChannel(token) {
-  const response = await fetch("/api/" + key + "/whiteboard-channel", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-  return response.ok;
-}
-
-function showWhiteboardError(text) {
-  whiteboardError.textContent = text;
-  whiteboardError.hidden = false;
-  whiteboardOverlay.hidden = false;
-}
-
-function whiteboardRecord(index) {
-  let record = whiteboards.get(index);
-  if (!record) {
-    record = { diagramId: "", source: "", sourceHash: "" };
-    whiteboards.set(index, record);
-  }
-  return record;
-}
-
-async function handleWhiteboardReady(index, mode, isCurrent) {
-  try {
-    const sources = await fetchMermaidSources();
-    const source = sources.find((item) => item.index === index);
-    if (!source) throw new Error("this diagram's Mermaid source was not found in the artifact file");
-    const savedResponse = await fetch("/api/" + key + "/whiteboard/" + index);
-    const saved = savedResponse.ok ? (await savedResponse.json()).whiteboard : null;
-    const record = whiteboardRecord(index);
-    record.source = String(source.source || "");
-    record.sourceHash = String(source.hash || "");
-    if (!isCurrent()) return false;
-    postToWhiteboard(index, mode, {
-      type: "lavish-whiteboard:init",
-      mode,
-      diagramIndex: index,
-      diagramId: record.diagramId,
-      source: record.source,
-      sourceHash: record.sourceHash,
-      saved,
-      theme: whiteboardTheme(),
-    });
-    return true;
-  } catch (error) {
-    if (mode === "overlay") {
-      showWhiteboardError("Could not open the whiteboard: " + (error instanceof Error ? error.message : String(error)));
-    }
-    return false;
-  }
-}
-
-function showWhiteboardOverlay(index) {
-  if (ended) return;
-  overlayIndex = index;
-  overlayFrameReady = false;
-  overlayChannelId = "";
-  inlineWhiteboardChannels.delete(index);
-  whiteboardError.hidden = true;
-  whiteboardOverlay.hidden = false;
-  postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
-  // A fresh document per open: the frame boots, posts ready, and receives its
-  // init - no stale editor state can leak between opens.
-  whiteboardFrame.src =
-    "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index)) + "&key=" + encodeURIComponent(key);
-}
-
-function finishWhiteboardClose(index) {
-  whiteboardOverlay.hidden = true;
-  whiteboardError.hidden = true;
-  whiteboardFrame.src = "about:blank";
-  overlayIndex = null;
-  overlayFrameReady = false;
-  overlayChannelId = "";
-  inlineWhiteboardChannels.delete(index);
-  if (!ended) postToFrame({ type: "lavish:resumeWhiteboard", diagramIndex: index });
-}
-
-function whiteboardTeardownKey(index, placement) {
-  return placement + ":" + index;
-}
-
-function beginWhiteboardTeardown(index, placement, onComplete) {
-  const key = whiteboardTeardownKey(index, placement);
-  const pending = whiteboardTeardowns.get(key);
-  if (pending) {
-    if (onComplete) pending.promise.then(onComplete);
-    return pending.promise;
-  }
-  const flushId = `whiteboard-${++nextWhiteboardFlushId}`;
-  let resolve;
-  const promise = new Promise((complete) => {
-    resolve = complete;
-  });
-  const teardown = { index, placement, flushId, promise, resolve, onComplete };
-  whiteboardTeardowns.set(key, teardown);
-  const message = { type: "lavish-whiteboard:prepareTeardown", flushId };
-  postToWhiteboard(index, placement, message);
-  return promise;
-}
-
-function finishWhiteboardTeardown(index, message, placement) {
-  const flushId = String(message.flushId || "");
-  const key = whiteboardTeardownKey(index, placement);
-  const teardown = whiteboardTeardowns.get(key);
-  if (!teardown || teardown.index !== index || teardown.placement !== placement || teardown.flushId !== flushId) return;
-  whiteboardTeardowns.delete(key);
-  teardown.onComplete?.(true);
-  teardown.resolve(true);
-}
-
-function failWhiteboardTeardown(index, message, placement) {
-  const flushId = String(message.flushId || "");
-  const key = whiteboardTeardownKey(index, placement);
-  const teardown = whiteboardTeardowns.get(key);
-  if (!teardown || teardown.index !== index || teardown.placement !== placement || teardown.flushId !== flushId) return;
-  whiteboardTeardowns.delete(key);
-  teardown.onComplete?.(false);
-  teardown.resolve(false);
-}
-
-function whiteboardFlushKey(index, placement) {
-  return placement + ":" + index;
-}
-
-function beginWhiteboardFlush(index, placement) {
-  const flushKey = whiteboardFlushKey(index, placement);
-  const pending = whiteboardFlushes.get(flushKey);
-  if (pending) return pending.promise;
-  const flushId = `whiteboard-flush-${++nextWhiteboardFlushId}`;
-  let resolve;
-  const promise = new Promise((complete) => {
-    resolve = complete;
-  });
-  whiteboardFlushes.set(flushKey, { index, placement, flushId, promise, resolve });
-  postToWhiteboard(index, placement, { type: "lavish-whiteboard:flush", flushId });
-  return promise;
-}
-
-function finishWhiteboardFlush(index, message, placement) {
-  const flushId = String(message.flushId || "");
-  const flushKey = whiteboardFlushKey(index, placement);
-  const flush = whiteboardFlushes.get(flushKey);
-  if (!flush || flush.index !== index || flush.placement !== placement || flush.flushId !== flushId) return;
-  whiteboardFlushes.delete(flushKey);
-  flush.resolve(Boolean(message.ok));
-}
-
-async function flushWhiteboardsBeforeChromeReload() {
-  const flushes = [];
-  for (const [index, channel] of inlineWhiteboardChannels) {
-    if (channel.initialized && index !== overlayIndex) flushes.push(beginWhiteboardFlush(index, "inline"));
-  }
-  if (overlayIndex !== null && overlayFrameReady) flushes.push(beginWhiteboardFlush(overlayIndex, "overlay"));
-  if (flushes.length === 0) return;
-  let timeout;
-  await Promise.race([
-    Promise.all(flushes),
-    new Promise((resolve) => {
-      timeout = setTimeout(resolve, 1500);
-    }),
-  ]);
-  clearTimeout(timeout);
-}
-
-async function flushInlineWhiteboards() {
-  for (const [index, channel] of [...inlineWhiteboardChannels]) {
-    if (!channel.initialized || index === overlayIndex) continue;
-    if (!(await beginWhiteboardTeardown(index, "inline"))) return false;
-  }
-  return true;
-}
-
-function openWhiteboardOverlay(index) {
-  if (ended || overlayIndex !== null || overlayOpeningIndex !== null) return;
-  overlayOpeningIndex = index;
-  beginWhiteboardTeardown(index, "inline", (flushed) => {
-    if (overlayOpeningIndex !== index) return;
-    overlayOpeningIndex = null;
-    if (flushed && !ended && overlayIndex === null) showWhiteboardOverlay(index);
-  });
-}
-
-function closeWhiteboard() {
-  const index = overlayIndex;
-  if (index === null) return;
-  if (!overlayFrameReady) {
-    finishWhiteboardClose(index);
-    return;
-  }
-  beginWhiteboardTeardown(index, "overlay", (flushed) => {
-    if (flushed && overlayIndex === index) finishWhiteboardClose(index);
-  });
-}
-
-async function persistWhiteboardScene(index, message) {
-  const response = await fetch("/api/" + key + "/whiteboard/" + index, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      source_hash: String(message.sourceHash || ""),
-      text_metrics_version: Number(message.textMetricsVersion) || 0,
-      scene: message.scene || null,
-      baseline: message.baseline || null,
-    }),
-  });
-  if (!response.ok) throw new Error("failed to save whiteboard scene");
-}
-
-function saveWhiteboardScene(index, message) {
-  const previous = whiteboardSaveChains.get(index) || Promise.resolve();
-  const result = previous.catch(() => {}).then(() => persistWhiteboardScene(index, message));
-  const tail = result.catch(() => {});
-  whiteboardSaveChains.set(index, tail);
-  tail.finally(() => {
-    if (whiteboardSaveChains.get(index) === tail) whiteboardSaveChains.delete(index);
-  });
-  return result;
-}
-
-function handleWhiteboardSave(index, message, mode) {
-  const flushId = String(message.flushId || "");
-  saveWhiteboardScene(index, message).then(
-    () => {
-      if (flushId) postToWhiteboard(index, mode, { type: "lavish-whiteboard:saveResult", flushId, ok: true });
-    },
-    (error) => {
-      if (flushId) {
-        postToWhiteboard(index, mode, {
-          type: "lavish-whiteboard:saveResult",
-          flushId,
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-  );
-}
-
-function whiteboardSummaryText(summaryLines) {
-  return (Array.isArray(summaryLines) ? summaryLines : [])
-    .filter((line) => typeof line === "string")
-    .slice(0, 50)
-    .map((line) => line.slice(0, 300))
-    .join("\n");
-}
-
-async function queueWhiteboardFeedback(index, message, mode) {
-  const diagramId = whiteboardRecord(index).diagramId;
-  try {
-    // Persist the exact reviewed state before queueing, so the paths in the
-    // prompt point at what the user actually saw.
-    await saveWhiteboardScene(index, message);
-    const response = await fetch("/api/" + key + "/whiteboard/" + index + "/feedback-files", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ scene: message.scene || null, pngDataUrl: String(message.pngDataUrl || "") }),
-    });
-    if (!response.ok) throw new Error("failed to write whiteboard feedback files");
-    const files = await response.json();
-    const note = String(message.note || "").slice(0, 4000);
-    const summary = whiteboardSummaryText(message.summaryLines);
-    const promptText =
-      (note ? note + "\n\n" : "") +
-      "Whiteboard edits to diagram " +
-      (index + 1) +
-      (diagramId ? " (" + diagramId + ")" : "") +
-      ":\n" +
-      (summary || "(no summary)") +
-      "\n\nEdited scene JSON: " +
-      String(files.scene_path || "") +
-      (files.preview_path ? "\nPNG preview: " + String(files.preview_path) : "");
-    enqueuePrompt({
-      uid: "",
-      prompt: promptText,
-      selector: "",
-      tag: "whiteboard",
-      text: "Whiteboard: diagram " + (index + 1),
-      target: {
-        type: "excalidraw-scene",
-        diagramIndex: index,
-        diagramId,
-        sourceHash: String(message.sourceHash || ""),
-        scenePath: String(files.scene_path || ""),
-        previewPath: String(files.preview_path || ""),
-        imageFallback: Boolean(message.imageFallback),
-        stats: message.stats && typeof message.stats === "object" ? message.stats : {},
-      },
-      // Re-queueing the same diagram's whiteboard before sending replaces the
-      // earlier unsent prompt instead of stacking duplicates.
-      [internalQueueKeyField]: "whiteboard:" + index,
-    });
-    postToWhiteboard(index, mode, { type: "lavish-whiteboard:queueResult", ok: true });
-    if (mode === "overlay") closeWhiteboard();
-  } catch (error) {
-    postToWhiteboard(index, mode, {
-      type: "lavish-whiteboard:queueResult",
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-// Inline frames live inside the artifact iframe, so a live reload replaces
-// them wholesale and they re-init against fresh sources on their own. Only an
-// open overlay outlives the reload; tell it when its diagram's source changed
-// underneath it so the frame can surface staleness (never silently merge).
-async function refreshWhiteboardSource() {
-  if (overlayIndex === null) return;
-  const index = overlayIndex;
-  try {
-    const sources = await fetchMermaidSources();
-    const source = sources.find((item) => item.index === index);
-    const nextHash = source ? String(source.hash || "") : "";
-    const record = whiteboardRecord(index);
-    if (nextHash !== record.sourceHash) {
-      record.source = source ? String(source.source || "") : "";
-      record.sourceHash = nextHash;
-      postToWhiteboardOverlay({
-        type: "lavish-whiteboard:sourceChanged",
-        source: record.source,
-        sourceHash: record.sourceHash,
-      });
-    }
-  } catch {
-    // Best effort - the staleness banner also re-arms on the next open.
-  }
-}
-
-function validWhiteboardIndex(value) {
-  const index = Number(value);
-  return Number.isInteger(index) && index >= 0 && index <= 999 ? index : null;
-}
-
-function handleAuthenticatedWhiteboardMessage(index, message, mode) {
-  if (message.type === "lavish-whiteboard:save") handleWhiteboardSave(index, message, mode);
-  if (message.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(index, message, mode);
-  if (message.type === "lavish-whiteboard:maximize" && mode === "inline") openWhiteboardOverlay(index);
-  if (message.type === "lavish-whiteboard:close" && mode === "overlay") closeWhiteboard();
-  if (message.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(index, message, mode);
-  if (message.type === "lavish-whiteboard:teardownFailed") failWhiteboardTeardown(index, message, mode);
-  if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(index, message, mode);
-}
-
-// Inline whiteboard frames are created by the SDK inside the artifact document,
-// so a genuine one is always a direct child of the *current* artifact window.
-// Descent - not the channel token - is what proves the sender is ours: the
-// frame page is framable by any origin, so a token is not a secret an attacker
-// cannot obtain. Without this, any window that could postMessage to this chrome
-// (a page that framed it, or one holding a window.open handle) could open a
-// channel and queue a fabricated prompt. Mirrors the artifact-message handler's
-// `event.source !== frame.contentWindow` guard.
-function isArtifactChildWindow(source) {
-  if (!source) return false;
-  try {
-    // Reading `parent` on a cross-origin WindowProxy is permitted; the frame's
-    // sandbox makes everything else about it opaque.
-    return source.parent === frame.contentWindow;
-  } catch {
-    return false;
-  }
-}
-
-function handleInlineWhiteboardMessage(event, message) {
-  if (ended) return;
-  if (!isArtifactChildWindow(event.source)) return;
-  const index = validWhiteboardIndex(message.diagramIndex);
-  if (index === null) return;
-  if (message.type === "lavish-whiteboard:ready") {
-    if (inlineWhiteboardChannels.has(index)) return;
-    const channelId = String(message.channelToken || "");
-    if (!channelId) return;
-    authenticateWhiteboardChannel(channelId).then((authenticated) => {
-      if (!authenticated || ended || inlineWhiteboardChannels.has(index)) return;
-      const channel = { window: event.source, channelId, initialized: false };
-      inlineWhiteboardChannels.set(index, channel);
-      whiteboardRecord(index).diagramId = String(message.diagramId || "");
-      handleWhiteboardReady(index, "inline", () => inlineWhiteboardChannels.get(index) === channel).then(
-        (initialized) => {
-          if (inlineWhiteboardChannels.get(index) === channel) channel.initialized = initialized;
-        },
-      );
-    });
-    return;
-  }
-  const channel = inlineWhiteboardChannels.get(index);
-  if (!channel || channel.window !== event.source || channel.channelId !== message.channelId) return;
-  handleAuthenticatedWhiteboardMessage(index, message, "inline");
-}
-
-function handleOverlayWhiteboardMessage(event, message) {
-  if (event.source !== whiteboardFrame.contentWindow || overlayIndex === null) return;
-  const index = validWhiteboardIndex(message.diagramIndex);
-  if (index === null || index !== overlayIndex) return;
-  if (message.type === "lavish-whiteboard:ready") {
-    if (overlayFrameReady || overlayChannelId) return;
-    const channelId = String(message.channelToken || "");
-    if (!channelId) return;
-    overlayChannelId = channelId;
-    authenticateWhiteboardChannel(channelId).then(async (authenticated) => {
-      const isCurrent = () =>
-        overlayIndex === index && overlayChannelId === channelId && event.source === whiteboardFrame.contentWindow;
-      if (!authenticated) {
-        if (isCurrent()) overlayChannelId = "";
-        return;
-      }
-      if (!isCurrent()) return;
-      const initialized = await handleWhiteboardReady(index, "overlay", isCurrent);
-      if (initialized && isCurrent()) overlayFrameReady = true;
-    });
-    return;
-  }
-  if (!overlayFrameReady || message.channelId !== overlayChannelId) return;
-  handleAuthenticatedWhiteboardMessage(index, message, "overlay");
-}
-
-window.addEventListener("message", (event) => {
-  const message = event.data || {};
-  if (event.source === whiteboardFrame.contentWindow) {
-    handleOverlayWhiteboardMessage(event, message);
-  } else if (event.source !== frame.contentWindow) {
-    handleInlineWhiteboardMessage(event, message);
-  }
-});
+// dealernet: todo o bloco de quadro branco (Excalidraw) foi REMOVIDO junto com o recurso:
+// canais das frames embutidas, overlay em tela cheia, autosave de cena, deteccao de fonte
+// Mermaid desatualizada e o envio de feedback com cena e preview. O Mermaid do artefato
+// renderiza normalmente, como quando o SDK esta ausente.
 
 function loadFrame() {
   if (artifactSrc) {
@@ -1666,10 +1428,12 @@ function loadFrame() {
 
 function reloadArtifact() {
   closeMenus();
-  resetFrame().then((reloaded) => {
-    if (reloaded) refreshWhiteboardSource();
-  });
+  void resetFrame();
 }
+
+// dealernet: declarado aqui porque vivia no bloco de quadro branco removido. Serializa o reload
+// do chrome apos o servidor reiniciar, para nao disparar varios ao mesmo tempo.
+let chromeRestartReloadPromise = null;
 
 async function reloadAfterServerRestart() {
   if (chromeRestartReloadPromise) return chromeRestartReloadPromise;
@@ -1685,7 +1449,6 @@ async function reloadChromeAfterServerRestart() {
     try {
       const res = await fetch("/health", { cache: "no-store" });
       if (sawOutage && res.ok) {
-        await flushWhiteboardsBeforeChromeReload();
         location.reload();
         return;
       }
@@ -1696,7 +1459,6 @@ async function reloadChromeAfterServerRestart() {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
-  await flushWhiteboardsBeforeChromeReload();
   location.reload();
 }
 
@@ -1736,6 +1498,23 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
   }
+  if (msg.type === "lavish:registerActionPanel") {
+    renderActionPanel(msg.panel);
+  }
+  if (msg.type === "lavish:updateActionPanel") {
+    updateActionPanelState(String(msg.panelId || ""), msg.state);
+  }
+  if (msg.type === "lavish:actionPanelResult" && activeActionPanel && msg.panelId === activeActionPanel.id) {
+    if (!actionPanelBusy || msg.invocationId !== activeActionPanelInvocationId) return;
+    actionPanelBusy = false;
+    activeActionPanelInvocationId = "";
+    if (!ended) pendingActionPanelSuccessMessage = "";
+    if (msg.ok !== true && actionPanelStatus) {
+      actionPanelStatus.textContent =
+        boundedText(msg.error, 300) || t.actionPanelSubmitFailed || "Não foi possível enviar; tente novamente.";
+    }
+    updateActionPanelButtons();
+  }
   if (msg.type === "lavish:snapshot") {
     const snapshotAction = snapshotRequests.shift() || "submit";
     if (snapshotAction === "copy") {
@@ -1757,7 +1536,7 @@ window.addEventListener("message", (event) => {
       messageToken,
     ).catch(() => {});
   }
-  if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
+  if (msg.type === "lavish:sendQueuedPrompts") sendQueued(msg.endSession === true, String(msg.requestId || ""));
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
 });
@@ -1793,15 +1572,6 @@ copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
 exportArtifactButton.onclick = exportArtifact;
-shareArtifactButton.onclick = openShareDialog;
-shareCloseButton.onclick = closeShareDialog;
-shareCancelButton.onclick = closeShareDialog;
-shareForm.addEventListener("submit", publishShare);
-shareDialog.addEventListener("click", (event) => {
-  if (event.target === shareDialog) closeShareDialog();
-});
-copyShareUrlButton.onclick = () => copyToButton(shareUrlInput.value, copyShareUrlButton, "Copy URL");
-copyUpdateKeyButton.onclick = () => copyToButton(shareUpdateKeyInput.value, copyUpdateKeyButton, "Copy key");
 endButton.onclick = () => {
   closeMenus();
   endSession();
@@ -1818,14 +1588,9 @@ warningsWrap.addEventListener("focusout", (event) => {
   const next = /** @type {Node | null} */ (event.relatedTarget);
   if (warningsDrawerOpen && next && !warningsWrap.contains(next)) closeWarningsDrawer();
 });
-whiteboardCloseButton.onclick = closeWhiteboard;
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    if (!whiteboardOverlay.hidden) {
-      closeWhiteboard();
-    } else if (!shareDialog.hidden) {
-      closeShareDialog();
-    } else if (warningsDrawerOpen) {
+    if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
     } else {
       closeMenus();
@@ -1849,19 +1614,13 @@ frame.addEventListener("load", () => {
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });
-  if (overlayIndex !== null) {
-    inlineWhiteboardChannels.delete(overlayIndex);
-    postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: overlayIndex });
-  }
 });
 
 initializeLayoutGate();
 
 const events = new EventSource("/events/" + key);
 events.addEventListener("reload", () => {
-  resetFrame().then((reloaded) => {
-    if (reloaded) refreshWhiteboardSource();
-  });
+  void resetFrame();
 });
 events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));

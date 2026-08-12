@@ -12,8 +12,9 @@ test("check script runs all verification commands", async () => {
     "npm run format:check",
     "npm run typecheck",
     "npm test",
+    // dealernet: guarda da localizacao pt-BR — falha se um termo de interface voltar ao ingles.
+    "node scripts/verificar-idioma.js",
     "node scripts/build-skill.js --check",
-    "node scripts/build-plugin.js --check",
   ]);
 });
 
@@ -30,19 +31,19 @@ test("published package includes the installable skill", async () => {
   assert.ok(packageJson.files.includes("skills/lavish"));
 });
 
-test("published package root is a complete Agent Plugin", async () => {
-  // The tarball root doubles as the plugin root, so both the manifest and the skills it
-  // discovers have to ship; without either, an installed copy is not installable as a plugin.
+test("dealernet build restarts a server from the upstream base version", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const releaseManifest = JSON.parse(
+    await readFile(new URL("../.release-please-manifest.json", import.meta.url), "utf8"),
+  );
+  const { shouldRestartServer } = await import("../src/cli.js");
+  const upstreamBaseVersion = releaseManifest["."];
 
-  assert.ok(packageJson.files.includes("plugin.json"));
-  assert.ok(packageJson.files.includes("skills/lavish"));
-});
-
-test("release-please keeps the plugin manifest version in step with the package", async () => {
-  const config = JSON.parse(await readFile(new URL("../release-please-config.json", import.meta.url), "utf8"));
-
-  assert.deepEqual(config.packages["."]["extra-files"], [{ type: "json", path: "plugin.json", jsonpath: "$.version" }]);
+  assert.notEqual(packageJson.version, upstreamBaseVersion, "the fork needs its own server-handshake version");
+  assert.equal(
+    shouldRestartServer(packageJson.version, { ok: true, app: "lavish-axi", version: upstreamBaseVersion }),
+    true,
+  );
 });
 
 test("lavish-design agent skill is marked internal for skills CLI discovery", async () => {

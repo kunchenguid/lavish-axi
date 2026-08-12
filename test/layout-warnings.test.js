@@ -91,7 +91,7 @@ test("every audit rule has human-readable context", () => {
     assert.ok(described.title.length > 0, rule);
     assert.ok(described.explanation.length > 0, rule);
   }
-  assert.equal(describeLayoutWarning({ rule: "something-new" }).title, "Layout failure");
+  assert.equal(describeLayoutWarning({ rule: "something-new" }).title, "Falha de layout");
 });
 
 test("a repeated observation of the same fingerprint updates one record", () => {
@@ -277,7 +277,7 @@ test("the queued prompt payload carries bounded structured warning detail", () =
   assert.match(payload.prompt, new RegExp(detected[0].id));
   assert.match(payload.prompt, /one pass before saving so the review refreshes once/);
   assert.match(payload.prompt, /not a resolved issue/);
-  assert.equal(payload.text, "Layout issues: 2 selected");
+  assert.equal(payload.text, "Problemas de layout: 2 selecionados");
   assert.equal(payload.target.type, "layout-warnings");
   assert.equal(payload.target.warnings.length, 2);
   assert.equal(payload.target.warnings[1].rule, "clipped-text");
@@ -333,15 +333,15 @@ test("a queued prompt target is normalized and bounded", () => {
 test("stored records describe their real magnitude, not a zero", () => {
   const [warning] = serializeLayoutWarnings(detect([CLIPPED], { revision: 1, viewportWidth: 1080 }));
   assert.match(warning.explanation, /27px/);
-  assert.match(warning.explanation, /bottom edge/);
+  assert.match(warning.explanation, /borda inferior/);
 });
 
 test("serialized warnings carry everything the drawer renders", () => {
   const detected = detect([CLIPPED], { revision: 1, viewportWidth: 390 });
   const [warning] = serializeLayoutWarnings(detected);
 
-  assert.equal(warning.status_label, "Open");
-  assert.equal(warning.viewport_label, "Mobile");
+  assert.equal(warning.status_label, "Aberto");
+  assert.equal(warning.viewport_label, "Celular");
   assert.equal(warning.viewport_width, 390);
   assert.equal(warning.component, "#copy");
   assert.ok(warning.title);

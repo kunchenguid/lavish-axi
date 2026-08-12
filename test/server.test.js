@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { createServer, request as httpRequest } from "node:http";
+import { request as httpRequest } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -232,6 +232,20 @@ test("artifact SDK script is valid JavaScript", () => {
   assert.doesNotThrow(() => new Function(js));
 });
 
+test("artifact SDK exposes declarative action panels and acknowledged terminal sends", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /function registerActionPanel\(config, handler\)/);
+  assert.match(js, /function updateActionPanel\(id, state\)/);
+  assert.match(js, /function sendQueuedPrompts\(options = \{\}\)/);
+  assert.match(js, /endSession:[^\n]*options[^\n]*endSession === true/);
+  assert.match(js, /lavish:sendQueuedPromptsResult/);
+  assert.match(js, /lavish:actionPanelInvoke/);
+  assert.match(js, /lavish:actionPanelResult/);
+  assert.match(js, /registerActionPanel,/);
+  assert.match(js, /updateActionPanel,/);
+});
+
 test("artifact SDK ignores Lavish-owned annotation UI", () => {
   const js = createSdkJs("abc");
 
@@ -255,11 +269,48 @@ test("annotation card does not block its own Queue button", () => {
   assert.doesNotMatch(js, /card\.addEventListener\('click',event=>event\.stopPropagation\(\),true\)/);
 });
 
-test("annotation card labels its submit action as Queue", () => {
+test("annotation card presents every human-facing action and target variant in pt-BR", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, />Queue<\/button>/);
-  assert.doesNotMatch(js, /Queue Prompt/);
+  for (const text of [
+    "Anotar texto",
+    "Anotar nó",
+    '"tituloElemento":"Anotar"',
+    "Diga ao agente o que mudar neste texto...",
+    "Diga ao agente o que mudar neste nó do diagrama...",
+    "Diga ao agente o que mudar neste elemento...",
+    "Enter para enfileirar",
+    "+Enter para enviar agora",
+    '"cancelar":"Cancelar"',
+    '"enfileirar":"Enfileirar"',
+  ]) {
+    assert.match(js, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  for (const english of [
+    "Annotate text",
+    "Annotate node",
+    "Tell the agent",
+    "Enter to queue",
+    "to send now",
+    ">Cancel<",
+    ">Queue<",
+  ]) {
+    assert.doesNotMatch(js, new RegExp(english));
+  }
+  for (const key of [
+    "tituloTexto",
+    "tituloNo",
+    "tituloElemento",
+    "placeholderTexto",
+    "placeholderNo",
+    "placeholderElemento",
+    "dicaEnfileirar",
+    "dicaEnviarAgora",
+    "cancelar",
+    "enfileirar",
+  ]) {
+    assert.match(js, new RegExp(`ui\\.${key}`));
+  }
 });
 
 test("annotation card keeps the selected element highlighted while open", () => {
@@ -355,7 +406,7 @@ test("the annotate switch exposes the mode toggle hotkey as a discoverable toolt
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /"modeToggleHotkeyKey":"i"/);
-  assert.match(html, /id="annotation"[^>]*title="Toggle annotate\/explore mode \(⌘I \/ Ctrl\+I\)"/);
+  assert.match(html, /id="annotation"[^>]*title="Alternar entre anotar e explorar \(⌘I \/ Ctrl\+I\)"/);
 });
 
 test("artifact SDK lets marked feedback controls handle their own clicks", () => {
@@ -410,10 +461,10 @@ test("turning annotation mode off clears selection and floating card", () => {
   assert.match(js, /if \(!annotationMode\) closeCard\(\)/);
 });
 
-test("annotation card title renders selected tag as an html element name", () => {
+test("annotation card title renders the selected tag as an html element name in pt-BR", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /"Annotate &lt;" \+ c\.tag \+ "&gt;"/);
+  assert.match(js, /escapeAnnotationText\(ui\.tituloElemento\) \+ " &lt;" \+ c\.tag \+ "&gt;"/);
 });
 
 test("annotation card shadow styles use Lavish design-system variables", () => {
@@ -426,14 +477,33 @@ test("annotation card shadow styles use Lavish design-system variables", () => {
   assert.match(js, /:focus-visible\{outline:2px solid var\(--accent\);outline-offset:2px/);
 });
 
+test("annotation card stays reachable when taller than the artifact viewport", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /max-height:calc\(100vh - 24px\);overflow-y:auto/);
+  assert.match(js, /@media\(max-height:220px\)\{\.lavish-annotation-card\{padding:8px/);
+  assert.match(js, /const top = Math\.max\(12, Math\.min\(/);
+});
+
 test("chrome top bar uses an Annotate switch instead of a labeled toggle button", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
-  assert.match(html, /class="annotate-switch" id="annotation"[^>]*aria-pressed="true"/);
+  assert.match(html, /class="annotate-switch" id="annotation"[^>]*aria-pressed="false"/);
   assert.match(html, /class="switch-track"/);
-  assert.match(html, />Annotate</);
+  assert.match(html, />Anotar</);
   assert.doesNotMatch(html, /Annotation: On/);
   assert.doesNotMatch(html, /Inspect/);
+});
+
+// dealernet: a sessao abre em modo EXPLORAR. O artefato de fase e primeiro um documento para ler;
+// abrir anotando faz o primeiro clique virar anotacao acidental. O atalho continua alternando.
+test("dealernet: a sessao abre com anotacao desligada", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+
+  assert.match(html, /id="annotation"[^>]*aria-pressed="false"/);
+  assert.match(js, /let annotation = false;/);
+  assert.match(js, /annotationSwitch\.onclick = toggleAnnotationMode/);
 });
 
 test("annotate switch shows a brass track and ink knob when enabled", async () => {
@@ -495,7 +565,7 @@ test("chrome top bar follows the design mock wordmark and overflow menu treatmen
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();
 
-  assert.match(html, /class="brand-mark">Lavish/);
+  assert.match(html, /class="brand-mark">Dealernet/);
   assert.match(html, /class="brand-support">Editor/);
   assert.match(css, /font-family:var\(--font-serif\)/);
   assert.match(css, /letter-spacing:\.18em/);
@@ -510,8 +580,8 @@ test("overflow menu shows the artifact path with a copy affordance", async () =>
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact/index.html" });
   const css = await chromeCssSource();
 
-  assert.match(html, /class="menu-label">Editing</);
-  assert.match(html, /class="menu-file" id="copyPath"[^>]*title="Copy path · \/tmp\/artifact\/index\.html"/);
+  assert.match(html, /class="menu-label">Edicao</);
+  assert.match(html, /class="menu-file" id="copyPath"[^>]*title="Copiar caminho · \/tmp\/artifact\/index\.html"/);
   assert.match(html, /class="copy-hint"/);
   assert.match(css, /\.menu-file\{[^}]*font-family:var\(--font-mono\)/);
   assert.match(css, /\.copy-hint\.copied\{color:var\(--accent-hover\)/);
@@ -537,7 +607,7 @@ test("overflow menu path shortens the home directory to a tilde", () => {
   assert.match(html, /class="path-head">~\/projects\/demo\/</);
   assert.match(html, /class="path-tail">artifact\.html</);
   // The copy affordance still carries the absolute path.
-  assert.ok(html.includes(`title="Copy path · ${file}"`));
+  assert.ok(html.includes(`title="Copiar caminho · ${file}"`));
 });
 
 test("overflow menu path display tolerates Windows separators", () => {
@@ -554,17 +624,17 @@ test("chrome can copy the full file path from the overflow menu", async () => {
   assert.match(html, /"file":"\/tmp\/artifact\.html"/);
   assert.match(js, /const filePath = String\(sessionData\.file \|\| ""\)/);
   assert.match(js, /copyText\(filePath\)/);
-  assert.match(js, /copyHintText\.textContent = "Copied"/);
-  assert.match(js, /copyHintText\.textContent = "Copy"/);
+  assert.match(js, /copyHintText\.textContent = t\.copiado/);
+  assert.match(js, /copyHintText\.textContent = t\.copiar/);
 });
 
 test("overflow menu offers reload, snapshot copy, and end session actions", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
 
-  assert.match(html, /id="reloadArtifact"[^<]*>.*Reload artifact/);
-  assert.match(html, /id="copySnapshot"[^<]*>.*Copy DOM snapshot/);
-  assert.match(html, /class="menu-item danger" id="end"[^<]*>.*End session/);
+  assert.match(html, /id="reloadArtifact"[^<]*>.*Recarregar artefato/);
+  assert.match(html, /id="copySnapshot"[^<]*>.*Copiar snapshot do DOM/);
+  assert.match(html, /class="menu-item danger" id="end"[^<]*>.*Encerrar sessao/);
   assert.doesNotMatch(html, /End Session</);
   assert.match(js, /event\.key === "Escape"/);
 });
@@ -573,46 +643,12 @@ test("overflow menu offers a standalone HTML export that downloads a portable fi
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
 
-  assert.match(html, /id="exportArtifact"[^<]*>.*Export standalone HTML/);
+  assert.match(html, /id="exportArtifact"[^<]*>.*Exportar HTML autonomo/);
   assert.match(js, /const exportArtifactButton/);
   assert.match(js, /async function exportArtifact/);
   assert.match(js, /fetch\("\/api\/" \+ key \+ "\/export"\)/);
   assert.match(js, /link\.download = exportFileName\(\)/);
   assert.match(js, /exportArtifactButton\.onclick = exportArtifact/);
-});
-
-test("overflow menu offers publishing an ht-ml.app link via a share dialog", async () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
-
-  assert.match(html, /id="shareArtifact"[^<]*>.*Publish link/);
-  assert.match(html, /id="shareDialog"/);
-  assert.match(
-    html,
-    /Publish to <a class="share-link" href="https:\/\/ht-ml\.app" target="_blank" rel="noopener noreferrer">ht-ml\.app<\/a>/,
-  );
-  assert.match(html, /third-party hosting service, not part of Lavish/);
-  assert.match(html, /id="sharePassword"/);
-  assert.match(html, /id="shareUpdateKey"/);
-  assert.match(html, /Without a password, the page is PUBLIC/);
-  assert.match(html, /With a password, the page is PRIVATE/);
-  assert.doesNotMatch(html, /Everything published is public/);
-  assert.doesNotMatch(html, /Get a public link/);
-  assert.match(css, /\.share-overlay/);
-  assert.match(css, /\.share-overlay\{[^}]*z-index:80;/);
-  assert.match(css, /\.share-card/);
-  assert.match(css, /\.share-link/);
-  assert.match(css, /box-shadow:var\(--shadow-floating\)/);
-  // The codebase has no global [hidden] rule, so display-setting overlays need explicit
-  // [hidden] rules or they show through before they should (e.g. the result block).
-  assert.match(css, /\.share-overlay\[hidden\]\{display:none;?\}/);
-  assert.match(css, /\.share-result\[hidden\]\{display:none;?\}/);
-  assert.match(js, /const shareArtifactButton/);
-  assert.match(js, /async function publishShare/);
-  assert.match(js, /fetch\("\/api\/" \+ key \+ "\/share"/);
-  assert.match(js, /shareUrlInput\.value = data\.url/);
-  assert.match(js, /shareUpdateKeyInput\.value = data\.update_key/);
 });
 
 test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
@@ -667,9 +703,29 @@ test("chrome includes a chat-like prompt composer and agent reply listener", asy
   assert.match(html, /id="chatLog"/);
   const css = await chromeCssSource();
   assert.match(css, /\.chat:empty::before\{/);
-  assert.match(css, /Agent hasn't sent a message yet/);
+  assert.match(css, /O agente ainda não enviou mensagens/);
+  assert.doesNotMatch(css, /Agent hasn't sent a message yet/);
   assert.match(html, /id="chatInput"/);
   assert.match(js, /agent-reply/);
+});
+
+test("chrome reserves one lateral surface for artifact actions and expandable conversation", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const css = await chromeCssSource();
+
+  assert.match(html, /<section class="action-panel" id="actionPanel" hidden><\/section>/);
+  assert.match(
+    html,
+    /<details class="conversation-section" id="conversationSection" open><summary>Conversa<\/summary>/,
+  );
+  assert.ok(html.indexOf('id="actionPanel"') < html.indexOf('id="conversationSection"'));
+  assert.match(css, /\.action-panel-button\{[^}]*min-height:44px/);
+  assert.match(css, /@media \(max-width:860px\)[\s\S]*\.action-panel\{max-height:calc\(100% - 44px\)/);
+  assert.match(
+    css,
+    /@media \(max-width:860px\)[\s\S]*\.panel:has\(\.conversation-section\[open\]\) \.action-panel\{display:none/,
+  );
+  assert.match(css, /@media \(max-width:860px\)[\s\S]*\.conversation-section/);
 });
 
 test("chrome bootstraps persisted chat history so missed replies still appear", () => {
@@ -700,7 +756,8 @@ test("chrome shows agent working state when a previous poll has released", async
   const js = await chromeClientSource();
 
   assert.match(js, /agent-presence/);
-  assert.match(js, /Working\.\.\./);
+  assert.match(js, /t\.trabalhando/);
+  assert.doesNotMatch(js, /Working\.\.\./);
   assert.match(js, /spinner/);
 });
 
@@ -719,7 +776,7 @@ test("sending with an empty composer nudges instead of blocking", async () => {
   const js = await chromeClientSource();
   const css = await chromeCssSource();
 
-  assert.match(html, /class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div>/);
+  assert.match(html, /class="send-hint" id="sendHint" hidden>Escreva uma mensagem ou anote um elemento antes\.<\/div>/);
   assert.match(js, /function showSendHint\(\)/);
   assert.match(js, /sendHint\.hidden = false/);
   assert.match(js, /chatInput\.focus\(\)/);
@@ -730,16 +787,17 @@ test("composer offers two always-visible top-level send actions", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();
 
-  assert.match(html, /class="button" id="send">Send to Agent</);
-  assert.match(html, /class="button button-danger" id="sendAndEnd"[^<]*>.*Send &amp; End</);
+  assert.match(html, /class="button" id="send">Enviar ao agente</);
+  assert.match(html, /class="button button-danger" id="sendAndEnd"[^<]*>.*Enviar e encerrar</);
   assert.match(
     html,
-    /<div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Send to Agent<\/button><\/div>/,
+    /<div class="send-hint" id="sendHint" hidden>Escreva uma mensagem ou anote um elemento antes\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Enviar ao agente<\/button><\/div>/,
   );
   assert.doesNotMatch(html, /id="sendCaret"/);
   assert.doesNotMatch(html, /id="sendMenu"/);
   assert.doesNotMatch(html, /id="sendFromMenu"/);
   assert.match(css, /\.button-danger\{[^}]*color:var\(--danger\)/);
+  assert.match(css, /\.button\[hidden\]\{display:none !important;?\}/);
   assert.match(css, /\.actions\{[^}]*min-width:0/);
 });
 
@@ -749,7 +807,8 @@ test("send and end submits queued prompts before ending the session", async () =
   assert.match(js, /let endAfterSubmit = false/);
   assert.match(js, /sendQueued\(true\)/);
   assert.match(js, /if \(shouldEndSession\) body\.endSession = true/);
-  assert.match(js, /if \(shouldEndSession\) \{\n {4}endAfterSubmit = false;\n {4}markSessionEnded\(\)/);
+  assert.match(js, /const shouldEndSession = endAfterSubmit;[\s\S]*if \(shouldEndSession\) endAfterSubmit = false/);
+  assert.match(js, /if \(shouldEndSession\) \{\n {4}clearActionPanelValues\(\);\n {4}markSessionEnded\(\)/);
   assert.match(js, /if \(!succeeded\) \{\n {6}endAfterSubmit = false/);
   assert.doesNotMatch(js, /await endSession\(\)/);
 });
@@ -768,7 +827,7 @@ test("chrome shows a waiting banner when no agent has attached", async () => {
   const css = await chromeCssSource();
 
   assert.match(html, /id="presenceBanner"/);
-  assert.match(html, /Your agent is not listening/);
+  assert.match(html, /Seu agente nao esta escutando/);
   assert.match(js, /presenceBanner\.hidden = ended \|\| agentPresence !== "waiting"/);
   assert.match(css, /\.presence-banner\{/);
 });
@@ -819,8 +878,10 @@ test("annotation pill tooltip separates target and prompt details", async () => 
   const css = await chromeCssSource();
 
   assert.match(js, /tooltip-label/);
-  assert.match(js, /Target/);
-  assert.match(js, /Prompt/);
+  assert.match(js, /t\.alvo/);
+  assert.match(js, /t\.instrucao/);
+  assert.doesNotMatch(js, />Target</);
+  assert.doesNotMatch(js, />Prompt</);
   assert.match(js, /pill-tooltip-target/);
   assert.match(js, /pill-tooltip-prompt/);
   assert.match(css, /\.pill-wrap\{[^}]*width:min\(320px,100%\)/);
@@ -1746,40 +1807,6 @@ test("/artifact still rejects lexical .. traversal that reaches the server unnor
   }
 });
 
-test("/whiteboard-assets refuses escaping symlinks and .. traversal but still serves its bundle", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
-  const assetsDir = path.join(dir, "whiteboard-assets");
-  await mkdir(assetsDir);
-  await writeFile(path.join(assetsDir, "whiteboard.js"), "// fake bundle\n");
-  await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
-  await symlink(path.join(outside, "secret.txt"), path.join(assetsDir, "leak.txt"));
-  await writeFile(path.join(dir, "sibling-secret.txt"), "outside-secret\n");
-  const server = await serve({
-    port: 0,
-    stateFile: path.join(dir, "state.json"),
-    version: "9.9.9-test",
-    whiteboardAssetsDir: assetsDir,
-  });
-  try {
-    const bundle = await fetch(`http://127.0.0.1:${server.port}/whiteboard-assets/whiteboard.js`);
-    assert.equal(bundle.status, 200);
-    assert.match(await bundle.text(), /fake bundle/);
-
-    const leak = await rawRequest(server.port, "/whiteboard-assets/leak.txt");
-    assert.equal(leak.status, 403);
-    assert.doesNotMatch(leak.body, /outside-secret/);
-
-    const traversal = await rawRequest(server.port, "/whiteboard-assets/../sibling-secret.txt");
-    assert.equal(traversal.status, 403);
-    assert.doesNotMatch(traversal.body, /outside-secret/);
-  } finally {
-    await server.close();
-    await rm(dir, { recursive: true, force: true });
-    await rm(outside, { recursive: true, force: true });
-  }
-});
-
 test("detected layout warnings leave the long-poll pending and never wake an agent", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
@@ -2125,7 +2152,14 @@ test("begin-load requires the current chrome handoff before any first or direct 
     const directArtifact = await fetch(`${base}${directRedirect.headers.get("location")}`);
     assert.equal(directArtifact.status, 409);
     assert.match(directArtifact.headers.get("content-type") || "", /text\/html/);
-    assert.match(await directArtifact.text(), /Artifact load expired/);
+    const expiredHtml = await directArtifact.text();
+    assert.match(expiredHtml, /Carregamento do artefato expirado/);
+    assert.match(expiredHtml, /Recarregue o Dealernet Editor para continuar/);
+    assert.doesNotMatch(expiredHtml, /Artifact load expired|Reload Lavish/);
+
+    const missingSession = await fetch(`${base}/session/does-not-exist`);
+    assert.equal(missingSession.status, 404);
+    assert.equal(await missingSession.text(), "Sessão não encontrada");
     const revision = await fetch(`${base}/api/${key}/layout-warnings`).then((response) => response.json());
     assert.equal(revision.revision, firstLoad.artifact_revision);
   } finally {
@@ -2565,7 +2599,7 @@ test("the chrome bootstraps the inbox so it survives a browser refresh", async (
     const html = await fetch(`${base}/session/${key}`).then((res) => res.text());
     assert.match(html, /id="warningsButton"/);
     assert.match(html, /initialLayoutWarnings/);
-    assert.match(html, /Text cut off by its container/);
+    assert.match(html, /Texto cortado pelo container/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -2825,183 +2859,6 @@ test("GET /api/:key/export returns 404 for an unknown session", async () => {
   }
 });
 
-test("POST /api/:key/share publishes the local-inlined artifact to ht-ml.app", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(
-    artifact,
-    '<!doctype html><html><head><link rel="stylesheet" href="local.css">' +
-      '<link rel="stylesheet" href="https://cdn.example/app.css"></head>' +
-      '<body><h1>Ship</h1><script src="/sdk.js?key=x"></script></body></html>',
-  );
-  await writeFile(path.join(dir, "local.css"), ".btn{color:red}");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const sessionRes = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const session = await sessionRes.json();
-
-    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: base },
-      body: JSON.stringify({ password: "pw" }),
-    });
-    const body = await shareRes.json();
-
-    assert.equal(shareRes.status, 200);
-    assert.deepEqual(body, {
-      url: "https://abc123.ht-ml.app/",
-      site_id: "abc123",
-      update_key: "uk_secret",
-      status: "active",
-    });
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].method, "POST");
-    assert.equal(requests[0].url, "/v1/sites");
-    // local stylesheet inlined, SDK stripped, remote stylesheet left intact (never fetched)
-    assert.match(requests[0].body.html_content, /<style>\.btn\{color:red\}<\/style>/);
-    assert.doesNotMatch(requests[0].body.html_content, /sdk\.js/);
-    assert.match(requests[0].body.html_content, /<link rel="stylesheet" href="https:\/\/cdn\.example\/app\.css">/);
-    assert.equal(requests[0].body.password, "pw");
-  } finally {
-    await server.close();
-    await htmlApp.close();
-    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("POST /api/:key/share returns unresolved local asset warnings", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, '<!doctype html><html><body><img src="missing.png"><h1>Ship</h1></body></html>');
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const sessionRes = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const session = await sessionRes.json();
-
-    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: base },
-      body: JSON.stringify({}),
-    });
-    const body = await shareRes.json();
-
-    assert.equal(shareRes.status, 200);
-    assert.equal(body.url, "https://abc123.ht-ml.app/");
-    assert.equal(body.warnings.length, 1);
-    assert.equal(body.unresolved_local_assets.length, 1);
-    assert.equal("notices" in body, false);
-    assert.equal(body.warnings[0].kind, "load-failed");
-    assert.equal(body.warnings[0].ref, "missing.png");
-    assert.match(body.warnings[0].reason || "", /ENOENT/);
-    assert.equal(requests.length, 1);
-    assert.match(requests[0].body.html_content, /<img src="missing\.png">/);
-  } finally {
-    await server.close();
-    await htmlApp.close();
-    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("POST /api/:key/share rejects cross-origin browser requests", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, "<!doctype html><title>x</title><h1>Private</h1>\n");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const sessionRes = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const session = await sessionRes.json();
-
-    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "https://attacker.example" },
-      body: JSON.stringify({}),
-    });
-    const body = await shareRes.json();
-
-    assert.equal(shareRes.status, 403);
-    assert.deepEqual(body, { error: "cross-origin share request rejected" });
-    assert.equal(requests.length, 0);
-  } finally {
-    await server.close();
-    await htmlApp.close();
-    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("POST /api/:key/share rejects requests without provenance headers", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, "<!doctype html><title>x</title><h1>Private</h1>\n");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const sessionRes = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const session = await sessionRes.json();
-
-    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    const body = await shareRes.json();
-
-    assert.equal(shareRes.status, 403);
-    assert.deepEqual(body, { error: "cross-origin share request rejected" });
-    assert.equal(requests.length, 0);
-  } finally {
-    await server.close();
-    await htmlApp.close();
-    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("POST /shutdown stops the listener so the client can spawn a fresh server", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
@@ -3170,7 +3027,7 @@ test("a user-initiated end via the keyed route blocks a plain reopen but honors 
     });
     const { key, url: originalUrl } = await open.json();
 
-    // The browser chrome's plain "End session" hits this keyed route.
+    // The browser chrome's plain "Encerrar sessao" hits this keyed route.
     await fetch(`${base}/api/${key}/end`, { method: "POST" });
 
     const blocked = await fetch(`${base}/api/sessions`, {
@@ -3996,8 +3853,8 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
 
   assert.match(html, /class="ended-overlay" id="endedOverlay" hidden/);
   assert.match(html, /class="ended-card"/);
-  assert.match(html, /Session ended\./);
-  assert.match(html, /Return to your agent to continue\./);
+  assert.match(html, /Sessao encerrada\./);
+  assert.match(html, /Volte ao seu agente para continuar\./);
   assert.match(html, /class="ended-copy">\/tmp\/artifact\.html</);
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
@@ -4021,15 +3878,23 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   );
   assert.doesNotMatch(html, /<iframe id="artifact"[^>]* src=/);
   assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
-  assert.match(html, /<div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout/);
+  assert.match(html, /<div class="ended-card"><div class="ended-title" id="layoutGateTitle">Verificando o layout/);
   assert.match(html, /class="ended-copy" id="layoutGateCopy"/);
-  assert.match(html, /class="button ended-action" id="layoutGateAction" type="button">Show anyway/);
+  assert.match(html, /class="button ended-action" id="layoutGateAction" type="button">Mostrar assim mesmo/);
   assert.match(css, /body\.layout-gate-active iframe#artifact\{[^}]*opacity:0/);
   assert.match(css, /\.ended-action\{[^}]*margin-top:var\(--space-8\)/);
   assert.match(js, /layoutGateAction\.onclick = \(\) => forceRevealLayoutGate\("manual"\)/);
   assert.match(noGateHtml, /<body class="lavish">/);
   assert.match(noGateHtml, /id="layoutGateOverlay" hidden/);
   assert.match(noGateHtml, /"layoutGateEnabled":false/);
+});
+
+test("layout issues stay in the top-bar inbox without overlaying the artifact", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /id="warningsButton"/);
+  assert.match(html, /id="warningsDrawer"/);
+  assert.doesNotMatch(html, /id="layoutIssueBanner"/);
 });
 
 test("annotation card queues prompt on Enter and inserts newline on Shift+Enter", () => {
@@ -4047,7 +3912,7 @@ test("annotation card queues and sends immediately on Ctrl+Enter or Cmd+Enter", 
   assert.match(js, /event\.ctrlKey \|\| event\.metaKey/);
   assert.match(js, /sendQueuedPrompts\(\)/);
   assert.match(js, /class="lavish-hint"/);
-  assert.match(js, /\+Enter to send now/);
+  assert.match(js, /\+Enter para enviar agora/);
   assert.match(js, /\.lavish-annotation-card \.lavish-hint\{/);
 });
 
@@ -4057,54 +3922,55 @@ test("chrome client chat input sends on Enter and inserts newline on Shift+Enter
   assert.match(js, /chatInput\.addEventListener\(["']keydown["']/);
   assert.match(js, /event\.key === ["']Enter["'] && !event\.shiftKey/);
   assert.match(js, /event\.preventDefault\(\)/);
-  assert.match(js, /sendQueued\(\)/);
+  assert.match(js, /sendQueued\(false\)/);
 });
 
-async function startFakeHtmlApp(requests, responseBody = null) {
-  const body = responseBody ?? {
-    site_id: "abc123",
-    url: "https://abc123.ht-ml.app/",
-    update_key: "uk_secret",
-    status: "active",
-  };
-  const server = createServer((req, res) => {
-    let raw = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      raw += chunk;
-    });
-    req.on("end", () => {
-      requests.push({
-        method: req.method,
-        url: req.url,
-        headers: req.headers,
-        body: raw ? JSON.parse(raw) : null,
-      });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(body));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  const address = server.address();
-  return {
-    port: typeof address === "object" && address ? address.port : 0,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
-  };
-}
+// dealernet: startFakeHtmlApp e restoreEnv serviam aos testes de `share`, removidos junto com a
+// rota, o dialogo e o subcomando.
 
-function restoreEnv(name, value) {
-  if (value === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = value;
+// dealernet: o menu nao pode voltar a oferecer publicacao em host de terceiro, nem a rota pode
+// ressuscitar sem que este teste falhe.
+test("dealernet: o chrome nao oferece publicar o artefato", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.ok(!html.includes("shareArtifact"), "o item de menu de publicar deve ter sumido");
+  assert.ok(!html.includes("shareDialog"), "o dialogo de publicacao deve ter sumido");
+  assert.ok(!html.includes("ht-ml"), "nenhuma referencia ao host de terceiro");
+  assert.ok(html.includes("exportArtifact"), "exportar HTML local continua disponivel");
+});
+
+test("dealernet: a rota de publicacao nao existe mais", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>ok</body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const created = await (
+      await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      })
+    ).json();
+    const response = await fetch(`${base}/api/${created.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({}),
+    });
+
+    assert.equal(response.status, 404);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
   }
-}
+});
 
 test("chrome falls back to a default favicon and title when none are provided", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,/);
-  assert.match(html, /<title>Lavish Editor<\/title>/);
+  assert.match(html, /<title>Dealernet Editor<\/title>/);
 });
 
 test("chrome adopts a favicon tag and tab title passed from the artifact", () => {
@@ -4112,11 +3978,11 @@ test("chrome adopts a favicon tag and tab title passed from the artifact", () =>
     '<link rel="icon" href="data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\'><text>🗂️</text></svg>">';
   const html = createChromeHtml(
     { key: "abc", file: "/tmp/artifact.html" },
-    { faviconTag, title: "Project Board · Lavish" },
+    { faviconTag, title: "Project Board · Dealernet Editor" },
   );
 
   assert.ok(html.includes(faviconTag), "artifact favicon tag is injected verbatim");
-  assert.match(html, /<title>Project Board · Lavish<\/title>/);
+  assert.match(html, /<title>Project Board · Dealernet Editor<\/title>/);
 });
 
 test("chrome tab title from the artifact is HTML-escaped", () => {

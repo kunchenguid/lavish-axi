@@ -5,14 +5,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "lavish-axi",
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "plugin.json",
-          "jsonpath": "$.version"
-        }
-      ]
+      "package-name": "lavish-axi"
     }
   }
 }

@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
@@ -22,27 +21,15 @@ import {
   isNearTotalOcclusion,
   MODE_TOGGLE_HOTKEY_KEY,
 } from "./artifact-sdk.js";
+// dealernet: todo texto de interface vem daqui. Ver o cabecalho de src/i18n-ptbr.js.
+import { IDIOMA, MARCA, UI_ARTEFATO, UI_CHROME, UI_CLIENTE, UI_SERVIDOR } from "./i18n-ptbr.js";
 import {
   activeLayoutWarningCount,
   resolveDiagnosticViewportClasses,
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
 import * as mermaidNode from "./mermaid-node.js";
-import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
-import {
-  isValidDiagramIndex,
-  isValidWhiteboardKey,
-  loadWhiteboard,
-  saveWhiteboard,
-  writeWhiteboardFeedbackFiles,
-} from "./whiteboard-store.js";
-import {
-  buildSelfContainedHtml,
-  exportFileName,
-  exportWarningSummaries,
-  splitExportWarnings,
-} from "./export-bundle.js";
-import { publishToHtmlApp } from "./html-app.js";
+import { buildSelfContainedHtml, exportFileName, splitExportWarnings } from "./export-bundle.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
@@ -68,64 +55,16 @@ const designAssetUrls = {
 };
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
-const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
+
+function artifactLoadExpiredHtml() {
+  return `<!doctype html><html lang="${IDIOMA}"><head><meta charset="utf-8"><title>${escapeHtml(UI_SERVIDOR.carregamentoExpiradoTitulo)}</title></head><body><p>${escapeHtml(UI_SERVIDOR.carregamentoExpiradoMensagem)}</p></body></html>`;
+}
 
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
 // layout-warning batch is outstanding, the agent is applying several related edits, so widen the
 // window: the user asked for one group of fixes and should get one artifact refresh for it.
 export const RELOAD_DEBOUNCE_MS = 100;
 export const BATCH_RELOAD_DEBOUNCE_MS = 900;
-
-// The whiteboard frame bundle (Excalidraw + Mermaid converter + React) is
-// produced by `scripts/build.js` into dist/whiteboard. Packaged runs find it
-// next to the served bundle; source runs (node bin/lavish-axi.js) fall back to
-// the repo's dist output, so `pnpm run build` must have run at least once.
-export function defaultWhiteboardAssetsDir() {
-  const packaged = fileURLToPath(new URL("./whiteboard", import.meta.url));
-  if (existsSync(packaged)) return packaged;
-  return fileURLToPath(new URL("../dist/whiteboard", import.meta.url));
-}
-
-// Whiteboard scene saves carry full Excalidraw scenes (and, at queue time, a
-// PNG preview data URL), which outgrow the default 2 MB JSON cap. Only the
-// whiteboard write routes get the larger limit.
-export function isWhiteboardWriteApiPath(pathname) {
-  return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
-}
-
-// The signed payload carries the session key, so a token is a capability for
-// exactly one session. Without that binding any token - including one minted by
-// a request that named no session - authenticated an arbitrary session's
-// whiteboard channel. The wire format stays `${issuedAt}.${nonce}.${signature}`;
-// the key is signed over, never transmitted in the token.
-function whiteboardChannelPayload(issuedAt, nonce, sessionKey) {
-  return `${issuedAt}.${nonce}.${sessionKey}`;
-}
-
-export function createWhiteboardChannelToken(secret, sessionKey, now = Date.now()) {
-  const nonce = crypto.randomBytes(24).toString("base64url");
-  const signature = crypto
-    .createHmac("sha256", secret)
-    .update(whiteboardChannelPayload(now, nonce, String(sessionKey || "")))
-    .digest("base64url");
-  return `${now}.${nonce}.${signature}`;
-}
-
-export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = Date.now()) {
-  if (!isValidWhiteboardKey(sessionKey)) return false;
-  const [issuedAtText, nonce, signature, extra] = String(token || "").split(".");
-  if (extra !== undefined || !/^\d{13}$/.test(issuedAtText) || !/^[A-Za-z0-9_-]{32}$/.test(nonce)) return false;
-  const issuedAt = Number(issuedAtText);
-  if (!Number.isSafeInteger(issuedAt) || issuedAt > now || now - issuedAt > WHITEBOARD_CHANNEL_TOKEN_TTL_MS)
-    return false;
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(whiteboardChannelPayload(issuedAtText, nonce, String(sessionKey)))
-    .digest("base64url");
-  const actualBuffer = Buffer.from(signature || "", "utf8");
-  const expectedBuffer = Buffer.from(expected, "utf8");
-  return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
-}
 
 // A detached server should not live forever. When no browser chrome (SSE) and no agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
@@ -152,7 +91,6 @@ export async function serve({
   host = bindHost(),
   linkHost: linkHostName = linkHost(),
   allowedHosts = extraAllowedHosts(),
-  whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 }) {
   const app = express();
   const store = new SessionStore(stateFile);
@@ -161,7 +99,6 @@ export async function serve({
   const activePolls = new Map();
   const deliveredFeedback = new Set();
   const sseClients = new Set();
-  const whiteboardChannelSecret = crypto.randomBytes(32);
   // Sessions with at least one warning the user queued that has not been re-checked yet.
   const outstandingRepairBatches = new Set();
   const diagnosticViewportClasses = resolveDiagnosticViewportClasses();
@@ -170,11 +107,7 @@ export async function serve({
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   let publicPort = port;
 
-  // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
-  const whiteboardStateRoot = path.dirname(stateFile);
-
-  // DNS-rebinding guard. isSameOriginRequest (used on /share and the whiteboard
-  // write routes) stops classic cross-origin CSRF but NOT DNS rebinding: a page
+  // DNS-rebinding guard. isSameOriginRequest stops classic cross-origin CSRF but NOT DNS rebinding: a page
   // that rebinds its own domain to this loopback port sends that domain in both
   // Origin and Host, so the two still match. The robust defense is a Host-header
   // allowlist - a rebound browser carries the attacker's domain in Host, which is
@@ -204,11 +137,7 @@ export async function serve({
     });
   }
 
-  const defaultJsonParser = express.json({ limit: "2mb" });
-  const whiteboardJsonParser = express.json({ limit: "20mb" });
-  app.use((req, res, next) =>
-    isWhiteboardWriteApiPath(req.path) ? whiteboardJsonParser(req, res, next) : defaultJsonParser(req, res, next),
-  );
+  app.use(express.json({ limit: "2mb" }));
 
   app.get("/health", (req, res) => {
     res.json({ ok: true, app: "lavish-axi", version });
@@ -521,50 +450,9 @@ export async function serve({
     }
   });
 
-  // Hosted share: build the local-inlined artifact and publish it to ht-ml.app, a third-party
-  // hosting service not part of Lavish, returning the share URL. Publishing sends the artifact
-  // to ht-ml.app's servers. Remote CDN/font references are left intact for the viewer's browser
-  // to load.
-  // Publishing creates a public third-party page unless a password is supplied, so this is gated
-  // behind a same-origin check - a cross-origin page must not be able to drive a publish via the
-  // loopback server.
-  app.post("/api/:key/share", async (req, res, next) => {
-    try {
-      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
-        res.status(403).json({ error: "cross-origin share request rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
-        res.status(404).json({ error: "session not found" });
-        return;
-      }
-      const body = req.body || {};
-      const source = await readFile(session.file, "utf8");
-      const root = path.dirname(session.file);
-      const { html, warnings } = await buildSelfContainedHtml(source, {
-        baseDir: root,
-        confineDir: root,
-        resolveAbsolute: resolveDesignAssetPath,
-      });
-      let site;
-      try {
-        site = await publishToHtmlApp(html, { password: optionalBodyString(body.password) });
-      } catch (error) {
-        res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
-        return;
-      }
-      const { unresolved, notices } = splitExportWarnings(warnings);
-      res.json({
-        ...site,
-        ...(warnings.length ? { warnings: exportWarningSummaries(warnings) } : {}),
-        ...(unresolved.length ? { unresolved_local_assets: exportWarningSummaries(unresolved) } : {}),
-        ...(notices.length ? { notices: exportWarningSummaries(notices) } : {}),
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
+  // dealernet: a rota POST /api/:key/share foi REMOVIDA. Ela publicava o artefato em ht-ml.app
+  // (host de terceiro, pagina publica por padrao). Remover so o botao do menu deixaria a rota viva
+  // e alcancavel por qualquer pagina de mesma origem.
 
   app.post("/api/end", async (req, res, next) => {
     try {
@@ -584,7 +472,7 @@ export async function serve({
     try {
       const chromeLoad = await store.issueReviewerHandoff(req.params.key);
       if (!chromeLoad) {
-        res.status(404).send("Session not found");
+        res.status(404).send(UI_SERVIDOR.sessaoNaoEncontrada);
         return;
       }
       const session = chromeLoad.session;
@@ -604,7 +492,7 @@ export async function serve({
         createChromeHtml(session, {
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
           faviconTag,
-          title: title ? `${title} · Lavish` : "Lavish Editor",
+          title: title ? `${title} · ${MARCA.sufixoTitulo}` : MARCA.tituloJanela,
           artifactRevision: chromeLoad.artifact_revision,
           artifactLoadToken: chromeLoad.artifact_load_token,
           artifactLoadSequence: chromeLoad.artifact_load_sequence,
@@ -670,27 +558,17 @@ export async function serve({
       const revision = req.query.artifact_revision;
       const beforeRead = await store.verifyArtifactLoad(key, token, revision);
       if (!beforeRead) {
-        res.status(404).send("Session not found");
+        res.status(404).send(UI_SERVIDOR.sessaoNaoEncontrada);
         return;
       }
       if (!beforeRead.valid) {
-        res
-          .status(409)
-          .type("html")
-          .send(
-            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
-          );
+        res.status(409).type("html").send(artifactLoadExpiredHtml());
         return;
       }
       const html = await readFile(beforeRead.session.file, "utf8");
       const verified = await store.verifyArtifactLoad(key, token, revision);
       if (!verified?.valid) {
-        res
-          .status(409)
-          .type("html")
-          .send(
-            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
-          );
+        res.status(409).type("html").send(artifactLoadExpiredHtml());
         return;
       }
       res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
@@ -705,13 +583,13 @@ export async function serve({
       const assetPath = req.params[1];
       const session = await store.findByKey(key);
       if (!session) {
-        res.status(404).send("Session not found");
+        res.status(404).send(UI_SERVIDOR.sessaoNaoEncontrada);
         return;
       }
       const root = path.dirname(session.file);
       const file = await resolveArtifactAsset(root, assetPath);
       if (!file) {
-        res.status(403).send("Forbidden");
+        res.status(403).send(UI_SERVIDOR.acessoNegado);
         return;
       }
       res.sendFile(file, { dotfiles: "allow" });
@@ -793,7 +671,7 @@ export async function serve({
     try {
       const asset = designAssetUrls[req.params.asset];
       if (!asset) {
-        res.status(404).send("Not found");
+        res.status(404).send(UI_SERVIDOR.naoEncontrado);
         return;
       }
       res.type(asset.type).send(await readDesignAsset(asset));
@@ -810,7 +688,7 @@ export async function serve({
         req.query.artifact_revision,
       );
       if (!verified) {
-        res.status(404).send("Session not found");
+        res.status(404).send(UI_SERVIDOR.sessaoNaoEncontrada);
         return;
       }
       if (!verified.valid) {
@@ -825,168 +703,10 @@ export async function serve({
     }
   });
 
-  // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
-  // iframe (allow-scripts allow-popups, no allow-same-origin) so untrusted
-  // Mermaid text renders - and the Excalidraw editor runs - inside an opaque
-  // origin, matching the artifact iframe's trust posture. The chrome passes
-  // the diagram source and saved scene over postMessage after the frame
-  // reports ready.
-  app.get("/whiteboard-frame", (req, res) => {
-    res.setHeader("cache-control", "no-store");
-    // The frame's channel token is minted for one session, so the caller must
-    // name it. Both call sites (the chrome overlay and the artifact SDK's
-    // inline embed) know their own key; a request without one could only
-    // produce a token that authenticates nothing, so reject it outright.
-    const sessionKey = String(req.query.key || "");
-    if (!isValidWhiteboardKey(sessionKey)) {
-      res.status(400).type("text/plain").send("Missing session key");
-      return;
-    }
-    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret, sessionKey)));
-  });
-
-  // Whiteboard bundle, stylesheet, and vendored Excalidraw fonts. The frame
-  // runs in an opaque origin, and font fetches from an opaque origin are
-  // CORS-gated, so this static, public-content route must answer with
-  // Access-Control-Allow-Origin: * or every canvas font falls back.
-  app.get(/^\/whiteboard-assets\/(.+)$/, async (req, res, next) => {
-    try {
-      const file = await resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
-      if (!file) {
-        res.status(403).send("Forbidden");
-        return;
-      }
-      if (!existsSync(file)) {
-        res
-          .status(404)
-          .send(existsSync(whiteboardAssetsDir) ? "Not found" : "Whiteboard bundle missing - run `pnpm run build`");
-        return;
-      }
-      res.setHeader("access-control-allow-origin", "*");
-      // Revalidate on every use (304 via Last-Modified/ETag): the bundle URL
-      // is unversioned, and a memory-cached stale bundle after an upgrade or
-      // local rebuild is far worse than cheap loopback revalidations.
-      res.setHeader("cache-control", "no-cache");
-      // Traversal is already rejected by resolveArtifactAsset; "allow" keeps
-      // dot components in the assets dir's own absolute path (e.g. a checkout
-      // under a dot-directory) from 403ing every asset.
-      res.sendFile(file, { dotfiles: "allow" });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // Mermaid sources for a session's artifact, extracted from the HTML on disk
-  // in document order so `index` matches the browser's `.mermaid` element
-  // order. The hash feeds whiteboard staleness detection.
-  app.get("/api/:key/mermaid-sources", async (req, res, next) => {
-    try {
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
-        res.status(404).json({ error: "session not found" });
-        return;
-      }
-      const html = await readFile(session.file, "utf8").catch(() => "");
-      const sources = extractMermaidSources(html).map(({ index, source }) => ({
-        index,
-        source,
-        hash: mermaidSourceHash(source),
-      }));
-      res.json({ sources });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/:key/whiteboard/:index", async (req, res, next) => {
-    try {
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
-      const whiteboard = await loadWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index));
-      res.json({ whiteboard });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
-    try {
-      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
-        res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
-        res.status(404).json({ error: "session not found" });
-        return;
-      }
-      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret, req.params.key)) {
-        res.status(403).json({ error: "invalid whiteboard channel" });
-        return;
-      }
-      res.json({ status: "authenticated" });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // Writing to the local state directory is a state-changing action, so both
-  // whiteboard write routes are same-origin guarded like /share - a hostile
-  // cross-origin page must not be able to fill the state dir through the
-  // loopback server.
-  app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
-    try {
-      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
-        res.status(403).json({ error: "cross-origin whiteboard write rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidWhiteboardKey(req.params.key) || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
-      const body = req.body || {};
-      await saveWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index), {
-        sourceHash: String(body.source_hash || body.sourceHash || ""),
-        textMetricsVersion: Number(body.text_metrics_version || body.textMetricsVersion) || 0,
-        scene: body.scene ?? null,
-        baseline: body.baseline ?? null,
-      });
-      res.json({ status: "saved" });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // Publish the agent-facing feedback files (.excalidraw scene + PNG preview)
-  // for a diagram, returning their absolute paths for the queued prompt's
-  // target. Files stay on this machine; the prompt carries only the paths.
-  app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
-    try {
-      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
-        res.status(403).json({ error: "cross-origin whiteboard write rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidWhiteboardKey(req.params.key) || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
-      const body = req.body || {};
-      const { scenePath, previewPath } = await writeWhiteboardFeedbackFiles(
-        whiteboardStateRoot,
-        req.params.key,
-        Number(req.params.index),
-        { scene: body.scene ?? null, pngDataUrl: String(body.pngDataUrl || body.png_data_url || "") },
-      );
-      res.json({ scene_path: scenePath, preview_path: previewPath });
-    } catch (error) {
-      next(error);
-    }
-  });
+  // dealernet: as rotas do quadro branco foram REMOVIDAS junto com o recurso:
+  //   /whiteboard-frame, /whiteboard-assets/*, /api/:key/mermaid-sources,
+  //   /api/:key/whiteboard/:index (GET e PUT), /api/:key/whiteboard-channel e
+  //   /api/:key/whiteboard/:index/feedback-files.
 
   app.use((error, req, res, _next) => {
     // Body-parser errors carry a meaningful HTTP status (413 payload-too-large,
@@ -1285,15 +1005,6 @@ function normalizeOrigin(value) {
   }
 }
 
-function optionalBodyString(value) {
-  const trimmed = String(value ?? "").trim();
-  return trimmed || undefined;
-}
-
-// Confines an asset request lexically first, then - like export-bundle.js's guardedRead -
-// resolves the real (symlink-followed) path and refuses anything that escapes the artifact
-// directory, so a symlink placed beside the artifact can't make this route serve an outside
-// file (e.g. ~/.ssh/id_rsa).
 export async function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
@@ -1573,7 +1284,7 @@ export function createChromeHtml(
   {
     layoutGateEnabled = true,
     faviconTag = LAVISH_DEFAULT_FAVICON,
-    title = "Lavish Editor",
+    title = MARCA.tituloJanela,
     artifactRevision = 0,
     artifactLoadToken = "",
     artifactLoadSequence = 0,
@@ -1593,14 +1304,17 @@ export function createChromeHtml(
     chromeLoadToken,
     layoutGateEnabled,
     modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
+    // dealernet: chrome-client.js e servido cru e nao pode importar modulos, entao o texto de
+    // interface dele viaja aqui no bootstrap em vez de ficar duplicado literalmente no cliente.
+    i18n: UI_CLIENTE,
   });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
   const bodyClass = layoutGateEnabled ? "lavish layout-gate-active" : "lavish";
   const layoutGateHidden = layoutGateEnabled ? "" : " hidden";
   const modeHotkeyUpper = MODE_TOGGLE_HOTKEY_KEY.toUpperCase();
-  const modeToggleHint = `Toggle annotate/explore mode (⌘${modeHotkeyUpper} / Ctrl+${modeHotkeyUpper})`;
+  const modeToggleHint = UI_CHROME.dicaModo(modeHotkeyUpper);
   return `<!doctype html>
-<html>
+<html lang="${IDIOMA}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1609,30 +1323,12 @@ ${faviconTag}
 <link rel="stylesheet" href="/chrome.css">
 </head>
 <body class="${bodyClass}">
-<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
-<div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label>Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label>Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note">Keep the update key private. ht-ml.app returns it once and it is the only way to update or delete this page later.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
-<div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button></div></div>
-<div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
-<div class="whiteboard-overlay" id="whiteboardOverlay" hidden><div class="whiteboard-shell"><div class="whiteboard-error" id="whiteboardError" hidden></div><button class="whiteboard-close" id="whiteboardClose" type="button" aria-label="Close whiteboard"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><iframe id="whiteboardFrame" title="Excalidraw whiteboard" sandbox="allow-scripts allow-popups"></iframe></div></div>
+<div class="bar"><div class="brand"><span class="brand-mark">${MARCA.nome}</span><span class="brand-support">${MARCA.complemento}</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">${UI_CHROME.problemasLayout}</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>${UI_CHROME.selecionarTodos}</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">${UI_CHROME.notaFila}</p><button class="button" id="warningsQueueButton" type="button" disabled>${UI_CHROME.enfileirarCorrecoes}</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="false" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>${UI_CHROME.anotar}</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="${UI_CHROME.mais}" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">${UI_CHROME.edicao}</div><button class="menu-file" id="copyPath" type="button" title="${UI_CHROME.copiarCaminho} · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">${UI_CHROME.copiar}</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>${UI_CHROME.recarregarArtefato}</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>${UI_CHROME.copiarSnapshotDom}</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>${UI_CHROME.exportarHtml}</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>${UI_CHROME.encerrarSessao}</span></button></div></div></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><section class="action-panel" id="actionPanel" hidden></section><details class="conversation-section" id="conversationSection" open><summary>${UI_CHROME.conversa}</summary><div class="conversation-body"><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>${UI_CHROME.revisaoEmOutraAba}</span><button class="handoff-takeover" id="handoffTakeover" type="button">${UI_CHROME.assumirAqui}</button></div><div class="presence-banner" id="presenceBanner" hidden>${UI_CHROME.agenteNaoEscuta}</div><textarea id="chatInput" placeholder="${escapeHtml(UI_CHROME.placeholderMensagem)}"></textarea><div class="send-hint" id="sendHint" hidden>${UI_CHROME.dicaEnvio}</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>${UI_CHROME.enviarEEncerrar}</span></button><button class="button" id="send">${UI_CHROME.enviarAoAgente}</button></div></div></div></details></aside></div>
+<div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">${UI_CHROME.verificandoLayout}</div><p class="ended-copy" id="layoutGateCopy">${UI_CHROME.verificandoLayoutDetalhe}</p><button class="button ended-action" id="layoutGateAction" type="button">${UI_CHROME.mostrarAssimMesmo}</button></div></div>
+<div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title" id="endedTitle">${UI_CHROME.sessaoEncerrada}</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>
 <script src="/chrome-client.js"></script>
-</body>
-</html>`;
-}
-
-export function createWhiteboardFrameHtml(channelToken = "") {
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lavish Whiteboard</title>
-<link rel="stylesheet" href="/whiteboard-assets/whiteboard.css">
-</head>
-<body>
-<script>window.__lavishWhiteboardChannelToken=${JSON.stringify(channelToken)};</script>
-<script src="/whiteboard-assets/whiteboard.js"></script>
 </body>
 </html>`;
 }
@@ -1652,6 +1348,7 @@ export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "") {
 const key=${JSON.stringify(key)};
 const artifactRevision=${revision};
 const artifactLoadToken=${JSON.stringify(loadToken)};
+const artifactUi=${JSON.stringify(UI_ARTEFATO)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
@@ -1663,7 +1360,7 @@ const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key);
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, artifactUi);
 })();`;
 }
 
