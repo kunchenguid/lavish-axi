@@ -43,6 +43,10 @@ function elementHasMermaidClass(node) {
 
 function textContent(node) {
   if (node.nodeName === "#text") return String(node.value || "");
+  // Mermaid treats <br/> inside a quoted label as a meaningful line break.
+  // parse5 represents it as an empty element, so a plain text-content walk
+  // would silently join the text on either side ("OBJECTIVE:do the thing").
+  if (node.tagName === "br") return "<br/>";
   return Array.isArray(node.childNodes) ? node.childNodes.map(textContent).join("") : "";
 }
 
