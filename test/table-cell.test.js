@@ -105,18 +105,42 @@ test("tableCellTarget names the column from the leaf header row under a grouped 
 });
 
 // The row's own spans still sum to the header width, so only the rowspan above it reveals that
-// this cell renders one column to the right. Positional matching alone would name "Permission".
-test("tableCellTarget stays silent about the column when a rowspan above shifts the row right", () => {
+// this cell renders one column to the right. Positional matching alone would name the column
+// "Permission" and the row "4 apps" - the clicked cell's own value passed off as the row's name.
+function shiftedByRowSpan(target, rowspan = "2") {
+  node("table", {}, [
+    node("thead", {}, [row(["Permission", "Visible state"], "th")]),
+    node("tbody", {}, [
+      node("tr", {}, [node("td", { rowspan, textContent: "Media" }), node("td", { textContent: "None" })]),
+      node("tr", {}, [target, node("td", { textContent: "extra" })]),
+    ]),
+  ]);
+  return target;
+}
+
+test("tableCellTarget names neither coordinate when a rowspan above shifts the row right", () => {
+  const target = shiftedByRowSpan(node("td", { textContent: "4 apps" }));
+
+  assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "" });
+});
+
+test("tableCellTarget treats rowspan=0 as spanning to the end of the row group", () => {
+  const target = shiftedByRowSpan(node("td", { textContent: "4 apps" }), "0");
+
+  assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "" });
+});
+
+test("tableCellTarget keeps a declared scope=row heading even when a rowspan shifts the grid", () => {
   const target = node("td", { textContent: "4 apps" });
   node("table", {}, [
     node("thead", {}, [row(["Permission", "Visible state"], "th")]),
     node("tbody", {}, [
       node("tr", {}, [node("td", { rowspan: "2", textContent: "Media" }), node("td", { textContent: "None" })]),
-      node("tr", {}, [target, node("td", { textContent: "extra" })]),
+      node("tr", {}, [node("th", { scope: "row", textContent: "Media & Apple Music" }), target]),
     ]),
   ]);
 
-  assert.deepEqual(labels(target), { rowLabel: "4 apps", columnLabel: "" });
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "" });
 });
 
 test("tableCellTarget stays silent about the column when the row does not span the header width", () => {

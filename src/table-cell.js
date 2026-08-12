@@ -36,10 +36,29 @@ export function tableRowCells(row) {
   });
 }
 
-export function tableCellSpan(cell, name) {
-  const attribute = cell?.getAttribute ? cell.getAttribute(name) : null;
-  const raw = Number(attribute ?? (name === "colspan" ? cell?.colSpan : cell?.rowSpan));
+export function tableColumnSpan(cell) {
+  const attribute = cell?.getAttribute ? cell.getAttribute("colspan") : null;
+  const raw = Number(attribute ?? cell?.colSpan);
   return Number.isFinite(raw) && raw >= 1 ? Math.trunc(raw) : 1;
+}
+
+// `rowspan="0"` is valid HTML - it spans to the end of the row group - and browsers report
+// `cell.rowSpan === 0` for it, so anything but a plain 1 pushes later rows sideways.
+export function tableCellSpansRows(cell) {
+  const attribute = cell?.getAttribute ? cell.getAttribute("rowspan") : null;
+  const raw = Number(attribute ?? cell?.rowSpan);
+  return Number.isFinite(raw) && raw !== 1;
+}
+
+// A rowspan anywhere means a row's DOM order is no longer its rendered column order, and a
+// per-row walk cannot model that. Both coordinates are then unprovable, not just the column.
+export function tableHasRowSpan(table) {
+  for (const row of tableRowsIn(table)) {
+    for (const cell of tableRowCells(row)) {
+      if (tableCellSpansRows(cell)) return true;
+    }
+  }
+  return false;
 }
 
 // Browsers auto-insert <tbody> but never <thead>, so a hand-written table commonly keeps its
@@ -54,19 +73,13 @@ export function tableHeaderRow(table) {
 }
 
 // A confidently wrong column name reads as authoritative and is worse than none, so this returns
-// a label only when the clicked cell's grid range provably matches exactly one header cell:
-// rowspan anywhere shifts the grid in ways a per-row walk cannot model, a row whose spans do not
-// sum to the header's is not the same grid, and a cell straddling a grouped header names nothing.
-export function tableColumnLabel(table, headerRow, cells, index) {
+// a label only when the clicked cell's grid range provably matches exactly one header cell: a row
+// whose spans do not sum to the header's is not the same grid, and a cell straddling a grouped
+// header names nothing. The caller rules out rowspan-shifted grids before calling.
+export function tableColumnLabel(headerRow, cells, index) {
   if (!headerRow) return "";
-  for (const row of tableRowsIn(table)) {
-    for (const cell of tableRowCells(row)) {
-      if (tableCellSpan(cell, "rowspan") > 1) return "";
-    }
-  }
-
   const headerCells = tableRowCells(headerRow);
-  const width = (cell) => tableCellSpan(cell, "colspan");
+  const width = (cell) => tableColumnSpan(cell);
   const headerWidth = headerCells.reduce((sum, cell) => sum + width(cell), 0);
   const rowWidth = cells.reduce((sum, cell) => sum + width(cell), 0);
   if (headerWidth === 0 || headerWidth !== rowWidth) return "";
@@ -96,21 +109,22 @@ export function tableCellTarget(element, selectorFor = (_element) => "") {
   if (index < 0) return null;
 
   const headerRow = tableHeaderRow(table);
+  const shifted = tableHasRowSpan(table);
+  const declaredHeading = cells.find(
+    (candidate) =>
+      tableTagName(candidate) === "th" && String(candidate.getAttribute?.("scope") || "").toLowerCase() === "row",
+  );
   // A click in the header row itself has no data row to name; labelling it with the first
-  // column's header would present a header as if it were a record.
-  const rowHeading =
-    headerRow === row
-      ? null
-      : cells.find(
-          (candidate) =>
-            tableTagName(candidate) === "th" && String(candidate.getAttribute?.("scope") || "").toLowerCase() === "row",
-        ) || cells[0];
+  // column's header would present a header as if it were a record. `scope="row"` is an author
+  // declaration and survives a shifted grid, but taking the first DOM cell is a positional guess
+  // that a rowspan above this row invalidates - it can even name the clicked cell after itself.
+  const rowHeading = headerRow === row ? null : declaredHeading || (shifted ? null : cells[0]);
 
   return {
     type: "table-cell",
     selector: String(selectorFor(cell) || "").slice(0, 240),
     rowLabel: tableText(rowHeading),
-    columnLabel: tableColumnLabel(table, headerRow, cells, index),
+    columnLabel: shifted ? "" : tableColumnLabel(headerRow, cells, index),
     text: tableText(cell),
   };
 }

@@ -1697,21 +1697,26 @@ export function createArtifactSdk(
     card.className = "lavish-annotation-card";
     const nodeLabel = c.tag === "mermaid-node" ? c.target?.label || c.text || "" : "";
     const isTableCell = c.target?.type === "table-cell";
-    // An unlabelled table names nothing, so fall back to the plain element heading rather than
-    // showing a dangling "Annotate cell: ".
+    // The annotation targets the element that was clicked, which inside a table cell is often a
+    // nested badge or code span. Say "cell" only when the cell itself was clicked; otherwise name
+    // the clicked element and place it at the cell's coordinates. An unlabelled table names
+    // nothing, so it falls back to the plain element heading rather than a dangling "cell: ".
+    const isCellItself = isTableCell && (c.tag === "td" || c.tag === "th");
     const tableLabel = isTableCell ? [c.target?.rowLabel, c.target?.columnLabel].filter(Boolean).join(" → ") : "";
     const heading =
       c.tag === "text"
         ? "Annotate text"
         : tableLabel
-          ? "Annotate cell: " + escapeAnnotationText(tableLabel)
+          ? isCellItself
+            ? "Annotate cell: " + escapeAnnotationText(tableLabel)
+            : "Annotate &lt;" + c.tag + "&gt; in " + escapeAnnotationText(tableLabel)
           : c.tag === "mermaid-node"
             ? "Annotate node" + (nodeLabel ? ": " + escapeAnnotationText(nodeLabel) : "")
             : "Annotate &lt;" + c.tag + "&gt;";
     const placeholder =
       c.tag === "text"
         ? "Tell the agent what to change about this text..."
-        : isTableCell
+        : isCellItself
           ? "Tell the agent what to change about this table cell..."
           : c.tag === "mermaid-node"
             ? "Tell the agent what to change about this diagram node..."

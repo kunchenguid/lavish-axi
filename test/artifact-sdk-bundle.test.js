@@ -161,11 +161,15 @@ function bootSdk() {
       assert.ok(listener, "the SDK registers a document click listener");
       listener.handler({ target, preventDefault() {}, stopPropagation() {} });
     },
-    queue(text) {
+    card() {
       const card = documentElement.children
         .flatMap((child) => child.shadowRoot?.children || [])
         .findLast((child) => child.className === "lavish-annotation-card");
       assert.ok(card, "clicking an element opens an annotation card");
+      return card;
+    },
+    queue(text) {
+      const card = this.card();
       card.querySelector("textarea").value = text;
       card.querySelector(".lavish-send").onclick();
       return posted.at(-1);
@@ -222,6 +226,26 @@ test("the served SDK bundle keeps the clicked element's own identity inside a ta
   assert.equal(message.prompt.text, "Drive");
   assert.equal(message.prompt.target.selector, "body > table > tbody > tr > td:nth-of-type(3)");
   assert.equal(message.prompt.target.columnLabel, "Database evidence");
+});
+
+test("the annotation card names the cell it annotates when the cell itself is clicked", () => {
+  const sdk = bootSdk();
+  const { evidence } = buildTable(sdk);
+
+  sdk.click(evidence);
+
+  assert.match(sdk.card().innerHTML, /Annotate cell: Media &amp; Apple Music → Database evidence/);
+  assert.match(sdk.card().innerHTML, /about this table cell/);
+});
+
+test("the annotation card names the clicked element, not the cell, for a nested click", () => {
+  const sdk = bootSdk();
+  const { badge } = buildTable(sdk);
+
+  sdk.click(badge);
+
+  assert.match(sdk.card().innerHTML, /Annotate &lt;code&gt; in Media &amp; Apple Music → Database evidence/);
+  assert.doesNotMatch(sdk.card().innerHTML, /about this table cell/);
 });
 
 test("the served SDK bundle resolves table coordinates only for annotation clicks", () => {
