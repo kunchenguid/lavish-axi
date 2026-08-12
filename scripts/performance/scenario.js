@@ -1,5 +1,6 @@
 // @ts-check
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -33,11 +34,15 @@ async function startServer() {
   }
   await rm(pidFile, { force: true });
 
+  const benchmarkRunId = randomUUID();
+  const exitFile = exitFileFor(benchmarkRunId);
   const child = spawn(process.execPath, ["dist/cli.mjs", "server", "--port", String(port)], {
     cwd: root,
     detached: true,
     env: {
       ...process.env,
+      LAVISH_AXI_BENCH_EXIT_FILE: exitFile,
+      LAVISH_AXI_BENCH_RUN_ID: benchmarkRunId,
       LAVISH_AXI_HOST: "127.0.0.1",
       LAVISH_AXI_NO_OPEN: "1",
       LAVISH_AXI_STATE_DIR: stateDir,
@@ -51,13 +56,13 @@ async function startServer() {
     throw new Error("The benchmark server did not return a process ID");
   }
 
-  const record = { pid: child.pid, port, stateDir, startedAt: new Date().toISOString() };
+  const record = { pid: child.pid, port, stateDir, benchmarkRunId, startedAt: new Date().toISOString() };
   await writeFile(pidFile, `${JSON.stringify(record, null, 2)}\n`, "utf8");
 
   try {
-    await waitForHealth(child.pid, 10_000);
+    await waitForHealth(child.pid, benchmarkRunId, 10_000);
   } catch (error) {
-    await terminateProcess(child.pid);
+    await terminateChild(child);
     await rm(pidFile, { force: true });
     throw error;
   }
@@ -69,26 +74,35 @@ async function stopServer() {
   if (record.port !== port || record.stateDir !== stateDir) {
     throw new Error("The benchmark server record does not match this benchmark run");
   }
-
-  try {
-    const health = await fetchJson(`${baseUrl}/health`);
-    if (health?.app === "lavish-axi") {
-      await fetch(`${baseUrl}/shutdown`, { method: "POST" });
-    }
-  } catch {
-    // The exact recorded process remains the cleanup authority when HTTP is unavailable.
+  const exitFile = exitFileFor(record.benchmarkRunId);
+  if (await hasExitReceipt(exitFile, record)) {
+    await finishCleanup(record.pid);
+    return;
   }
 
-  await waitForExit(record.pid, 2_000);
-  if (processExists(record.pid)) await terminateProcess(record.pid);
-  await rm(pidFile, { force: true });
-  await rm(stateDir, { force: true, recursive: true });
+  const health = await fetchJson(`${baseUrl}/health`);
+  if (health?.benchmarkRunId !== record.benchmarkRunId) {
+    throw new Error("The process on the benchmark port does not match the recorded server identity");
+  }
+  const response = await fetch(`${baseUrl}/shutdown`, {
+    method: "POST",
+    headers: { "x-lavish-benchmark-run-id": record.benchmarkRunId },
+  });
+  if (!response.ok) throw new Error(`Benchmark shutdown returned HTTP ${response.status}`);
+  await waitForExitReceipt(exitFile, record, 4_000);
+  await finishCleanup(record.pid);
 }
 
 async function runWarmSessionBatch() {
   const iterations = positiveInteger(process.env.LAVISH_AXI_BENCH_SESSION_ITERATIONS || "25", "iterations");
   const health = await fetchJson(`${baseUrl}/health`);
-  if (health?.ok !== true || health?.app !== "lavish-axi") {
+  const record = await readPidRecord();
+  if (
+    !record ||
+    health?.ok !== true ||
+    health?.app !== "lavish-axi" ||
+    health?.benchmarkRunId !== record.benchmarkRunId
+  ) {
     throw new Error("The warm benchmark server is not ready");
   }
 
@@ -108,13 +122,13 @@ async function runWarmSessionBatch() {
   }
 }
 
-async function waitForHealth(pid, timeoutMs) {
+async function waitForHealth(pid, benchmarkRunId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!processExists(pid)) throw new Error("The benchmark server exited before it became ready");
     try {
       const health = await fetchJson(`${baseUrl}/health`);
-      if (health?.ok === true && health?.app === "lavish-axi") return;
+      if (health?.ok === true && health?.app === "lavish-axi" && health?.benchmarkRunId === benchmarkRunId) return;
     } catch {
       // Startup is still in progress.
     }
@@ -132,7 +146,13 @@ async function fetchJson(url) {
 async function readPidRecord() {
   try {
     const value = JSON.parse(await readFile(pidFile, "utf8"));
-    if (!Number.isInteger(value.pid) || !Number.isInteger(value.port) || typeof value.stateDir !== "string") {
+    if (
+      !Number.isInteger(value.pid) ||
+      !Number.isInteger(value.port) ||
+      typeof value.stateDir !== "string" ||
+      typeof value.benchmarkRunId !== "string" ||
+      !/^[0-9a-f-]{36}$/.test(value.benchmarkRunId)
+    ) {
       throw new Error("The benchmark server record is invalid");
     }
     return value;
@@ -151,17 +171,58 @@ function processExists(pid) {
   }
 }
 
-async function terminateProcess(pid) {
-  if (!processExists(pid)) return;
-  process.kill(pid, "SIGTERM");
-  await waitForExit(pid, 2_000);
-  if (processExists(pid)) process.kill(pid, "SIGKILL");
-  await waitForExit(pid, 2_000);
+async function terminateChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  await waitForChildExit(child, 2_000);
+  if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  await waitForChildExit(child, 2_000);
+  if (child.exitCode === null && child.signalCode === null) {
+    throw new Error("The benchmark server child remained alive after bounded cleanup");
+  }
 }
 
-async function waitForExit(pid, timeoutMs) {
+async function waitForProcessExit(pid, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (processExists(pid) && Date.now() < deadline) await delay(25);
+}
+
+async function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await Promise.race([
+    new Promise((resolve) => child.once("exit", resolve)),
+    delay(timeoutMs),
+  ]);
+}
+
+async function waitForExitReceipt(exitFile, record, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await hasExitReceipt(exitFile, record)) return;
+    await delay(25);
+  }
+  throw new Error("The benchmark server did not confirm exit within the cleanup deadline");
+}
+
+async function hasExitReceipt(exitFile, record) {
+  try {
+    const receipt = JSON.parse(await readFile(exitFile, "utf8"));
+    return receipt.benchmarkRunId === record.benchmarkRunId && receipt.pid === record.pid;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function finishCleanup(pid) {
+  await waitForProcessExit(pid, 2_000);
+  if (processExists(pid)) throw new Error(`Benchmark server PID ${pid} remained alive after shutdown`);
+  await rm(pidFile, { force: true });
+  await rm(stateDir, { force: true, recursive: true });
+}
+
+function exitFileFor(benchmarkRunId) {
+  return path.join(runtimeDir, `server-exited-${benchmarkRunId}.json`);
 }
 
 function delay(milliseconds) {

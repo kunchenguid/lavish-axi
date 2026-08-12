@@ -33,6 +33,7 @@ if (hyperfineVersion !== `hyperfine ${HYPERFINE_VERSION}`) {
 }
 
 const common = smoke ? ["--runs", "2"] : ["--warmup", "3", "--min-runs", "10"];
+let runError;
 try {
   runHyperfine([...common, "--export-json", path.join(outputDir, "cli-version.json"), "node dist/cli.mjs --version"]);
 
@@ -54,9 +55,19 @@ try {
     path.join(outputDir, "warm-session.json"),
     "node scripts/performance/scenario.js warm-session",
   ]);
-} finally {
-  runScenario("stop-server", false);
+} catch (error) {
+  runError = error;
 }
+
+try {
+  runScenario("stop-server");
+} catch (cleanupError) {
+  if (!runError) throw cleanupError;
+  if (runError instanceof Error) {
+    runError.message = `${runError.message}; cleanup also failed: ${errorMessage(cleanupError)}`;
+  }
+}
+if (runError) throw runError;
 
 const metadata = {
   schemaVersion: 1,
@@ -79,14 +90,18 @@ function runHyperfine(args) {
   if (result.status !== 0) throw new Error(`hyperfine exited with status ${String(result.status)}`);
 }
 
-function runScenario(command, required = true) {
+function runScenario(command) {
   const result = spawnSync(process.execPath, ["scripts/performance/scenario.js", command], {
     cwd: root,
     env,
     encoding: "utf8",
   });
-  if (result.error && required) throw result.error;
-  if (result.status !== 0 && required) throw new Error(result.stderr.trim() || `${command} failed`);
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(result.stderr.trim() || `${command} failed`);
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function commandOutput(command, args) {

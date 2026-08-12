@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -45,7 +45,11 @@ test("the process scenarios start, exercise, and stop their exact benchmark serv
     LAVISH_AXI_BENCH_SESSION_ITERATIONS: "3",
   };
 
-  t.after(() => {
+  let pidRecord;
+  t.after(async () => {
+    if (pidRecord) {
+      await writeFile(path.join(runtimeDir, "server.json"), `${JSON.stringify(pidRecord)}\n`).catch(() => {});
+    }
     runScenario("stop-server", env);
   });
 
@@ -55,10 +59,21 @@ test("the process scenarios start, exercise, and stop their exact benchmark serv
   const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
   assert.deepEqual({ ok: health.ok, app: health.app }, { ok: true, app: "lavish-axi" });
 
-  const pidRecord = JSON.parse(await readFile(path.join(runtimeDir, "server.json"), "utf8"));
+  pidRecord = JSON.parse(await readFile(path.join(runtimeDir, "server.json"), "utf8"));
   assert.equal(pidRecord.port, port);
   assert.equal(pidRecord.stateDir, stateDir);
   assert.ok(Number.isInteger(pidRecord.pid));
+  assert.equal(health.benchmarkRunId, pidRecord.benchmarkRunId);
+
+  await writeFile(
+    path.join(runtimeDir, "server.json"),
+    `${JSON.stringify({ ...pidRecord, benchmarkRunId: "00000000-0000-0000-0000-000000000000" })}\n`,
+  );
+  const rejectedStop = runScenario("stop-server", env);
+  assert.notEqual(rejectedStop.status, 0);
+  const stillRunning = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+  assert.equal(stillRunning.benchmarkRunId, pidRecord.benchmarkRunId);
+  await writeFile(path.join(runtimeDir, "server.json"), `${JSON.stringify(pidRecord)}\n`);
 
   const warmed = runScenario("warm-session", env);
   assert.equal(warmed.status, 0, warmed.stderr);
