@@ -922,6 +922,8 @@ body.lavish {
   min-height: 0;
 }
 .conversation-section > summary {
+  box-sizing: border-box;
+  height: 44px;
   font-size: 15px;
   line-height: 1.3;
   padding: 16px 16px 8px;
@@ -937,9 +939,14 @@ body.lavish {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  position: relative;
 }
 .conversation-section:not([open]) {
   flex: 0 0 auto;
+}
+.conversation-section[open] > .conversation-body {
+  position: absolute;
+  inset: 44px 0 0;
 }
 .conversation-body {
   display: flex;
@@ -1426,11 +1433,11 @@ body.layout-gate-active iframe#artifact {
     max-height: none;
     overflow: visible;
   }
-  .conversation-section,
-  .conversation-body,
-  .panel-scroll {
+  .conversation-section {
     flex: none;
-    overflow: visible;
+  }
+  .conversation-section[open] {
+    height: clamp(360px, calc(100dvh - var(--bar-h)), 620px);
   }
   .conversation-section > summary {
     min-height: 44px;

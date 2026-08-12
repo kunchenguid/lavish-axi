@@ -750,6 +750,25 @@ test("chrome reserves one lateral surface for artifact actions and expandable co
   assert.match(css, /@media \(max-width:860px\)[\s\S]*\.conversation-section/);
 });
 
+test("conversation scrolls messages above a footer anchored to the panel bottom", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const css = await chromeCssSource();
+
+  assert.match(
+    html,
+    /<div class="panel-scroll" id="panelScroll">[\s\S]*<\/div><footer class="composer">[\s\S]*<\/footer>/,
+  );
+  assert.match(css, /\.conversation-section\{[^}]*position:relative/);
+  assert.match(css, /\.conversation-section\[open\] > \.conversation-body\{[^}]*position:absolute;[^}]*inset:44px 0 0/);
+  assert.match(css, /\.panel-scroll\{[^}]*overflow-y:auto/);
+  assert.match(css, /\.composer\{[^}]*flex-shrink:0/);
+  assert.match(
+    css,
+    /@media \(max-width:860px\)[\s\S]*\.conversation-section\[open\]\{[^}]*height:clamp\(360px,calc\(100dvh - var\(--bar-h\)\),620px\)/,
+  );
+  assert.doesNotMatch(css, /@media \(max-width:860px\)[\s\S]*\.panel-scroll\{[^}]*overflow:visible/);
+});
+
 test("chrome bootstraps persisted chat history so missed replies still appear", () => {
   const html = createChromeHtml({
     key: "abc",
@@ -862,7 +881,7 @@ test("chrome puts queued annotations above the chat composer as preview pills", 
   assert.match(html, /id="annotationPills"/);
   assert.match(
     html,
-    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="annotation-pills" id="annotationPills"><\/div><\/div><div class="composer">/,
+    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="annotation-pills" id="annotationPills"><\/div><\/div><footer class="composer">/,
   );
   assert.match(js, /class="pill/);
   assert.match(js, /pill-preview/);
