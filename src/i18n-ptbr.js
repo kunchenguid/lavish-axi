@@ -71,6 +71,8 @@ export const UI_CLIENTE = Object.freeze({
   agente: "Agente",
   voce: "Você",
   trabalhando: "Trabalhando...",
+  actionPanelRequired: "Preencha o campo obrigatório.",
+  actionPanelSubmitFailed: "Não foi possível enviar; tente novamente.",
   paginaInteira: "(página inteira)",
   revelar: "Revelar",
   revelarNoArtefato: "Revelar {titulo} no artefato",

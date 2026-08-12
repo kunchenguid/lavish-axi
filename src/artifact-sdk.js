@@ -265,6 +265,11 @@ export function createArtifactSdk(
   let shadow = null;
   let counter = 0;
   const ids = new WeakMap();
+  /** @type {Map<string, (input: { actionId: string, values: Record<string, string> }) => unknown>} */
+  const actionPanelHandlers = new Map();
+  /** @type {Map<string, (result: { ok: boolean, error?: string }) => void>} */
+  const pendingSendRequests = new Map();
+  let sendRequestSequence = 0;
 
   function uid(el) {
     if (!ids.has(el)) ids.set(el, String(++counter));
@@ -619,8 +624,35 @@ export function createArtifactSdk(
     postArtifactMessage("lavish:queuePrompt", { prompt: item });
   }
 
-  function sendQueuedPrompts() {
-    postArtifactMessage("lavish:sendQueuedPrompts");
+  function registerActionPanel(config, handler) {
+    const id = String(config?.id || "").trim();
+    if (!id || typeof handler !== "function") {
+      throw new TypeError("registerActionPanel requires a panel id and handler");
+    }
+    actionPanelHandlers.set(id, handler);
+    postArtifactMessage("lavish:registerActionPanel", { panel: config });
+    return id;
+  }
+
+  function updateActionPanel(id, state) {
+    const panelId = String(id || "").trim();
+    if (!panelId) throw new TypeError("updateActionPanel requires a panel id");
+    postArtifactMessage("lavish:updateActionPanel", {
+      panelId,
+      state: state && typeof state === "object" ? state : {},
+    });
+  }
+
+  /** @param {{ endSession?: boolean }} [options] */
+  function sendQueuedPrompts(options = {}) {
+    const requestId = "artifact-send:" + ++sendRequestSequence;
+    return new Promise((resolve) => {
+      pendingSendRequests.set(requestId, resolve);
+      postArtifactMessage("lavish:sendQueuedPrompts", {
+        requestId,
+        endSession: options.endSession === true,
+      });
+    });
   }
 
   function endSession() {
@@ -1662,6 +1694,8 @@ export function createArtifactSdk(
 
   /** @type {Window & { lavish?: unknown }} */ (window).lavish = {
     queuePrompt,
+    registerActionPanel,
+    updateActionPanel,
     sendQueuedPrompts,
     endSession,
     getQueuedPrompts: () => [],
@@ -1670,7 +1704,38 @@ export function createArtifactSdk(
   };
 
   window.addEventListener("message", (event) => {
+    if (event.source !== parent) return;
     const msg = event.data || {};
+    if (msg.type === "lavish:sendQueuedPromptsResult") {
+      const resolve = pendingSendRequests.get(String(msg.requestId || ""));
+      if (resolve) {
+        pendingSendRequests.delete(String(msg.requestId || ""));
+        resolve({ ok: msg.ok === true, ...(msg.error ? { error: String(msg.error) } : {}) });
+      }
+    }
+    if (msg.type === "lavish:actionPanelInvoke") {
+      const panelId = String(msg.panelId || "");
+      const invocationId = String(msg.invocationId || "");
+      const handler = actionPanelHandlers.get(panelId);
+      const reply = (ok, error = "") =>
+        postArtifactMessage("lavish:actionPanelResult", {
+          panelId,
+          invocationId,
+          ok,
+          ...(error ? { error } : {}),
+        });
+      if (!handler) {
+        reply(false, "Painel de ação indisponível.");
+      } else {
+        const values = msg.values && typeof msg.values === "object" && !Array.isArray(msg.values) ? msg.values : {};
+        Promise.resolve(handler({ actionId: String(msg.actionId || ""), values }))
+          .then(() => reply(true))
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : "A ação não pôde ser concluída.";
+            reply(false, String(message).slice(0, 300));
+          });
+      }
+    }
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
     if (msg.type === "lavish:requestSnapshot") {
       postArtifactMessage("lavish:snapshot", { snapshot: snapshot() });
