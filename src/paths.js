@@ -33,6 +33,14 @@ export function linkHost(env = process.env) {
   return env.LAVISH_AXI_LINK_HOST?.trim() || clientHost(env);
 }
 
+// Extra Host header values the server's DNS-rebinding guard accepts beyond the
+// loopback names and the resolved bind/link host, set via LAVISH_AXI_ALLOWED_HOSTS
+// (whitespace-separated). A lone "*" disables the guard entirely - an explicit
+// opt-out for operators fronting the server with their own auth/proxy.
+export function extraAllowedHosts(env = process.env) {
+  return (env.LAVISH_AXI_ALLOWED_HOSTS || "").split(/\s+/).filter(Boolean);
+}
+
 // Brackets an IPv6 literal so it can be safely interpolated into a URL authority.
 // IPv4 addresses and hostnames pass through unchanged.
 export function hostForUrl(host) {

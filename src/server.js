@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +22,11 @@ import {
   isNearTotalOcclusion,
   MODE_TOGGLE_HOTKEY_KEY,
 } from "./artifact-sdk.js";
+import {
+  activeLayoutWarningCount,
+  resolveDiagnosticViewportClasses,
+  serializeLayoutWarnings,
+} from "./layout-warnings.js";
 import * as mermaidNode from "./mermaid-node.js";
 import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
 import {
@@ -38,7 +44,7 @@ import {
 } from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
-import { bindHost, hostForUrl, linkHost } from "./paths.js";
+import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
@@ -64,6 +70,12 @@ const designAssetUrls = {
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
 
+// Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
+// layout-warning batch is outstanding, the agent is applying several related edits, so widen the
+// window: the user asked for one group of fixes and should get one artifact refresh for it.
+export const RELOAD_DEBOUNCE_MS = 100;
+export const BATCH_RELOAD_DEBOUNCE_MS = 900;
+
 // The whiteboard frame bundle (Excalidraw + Mermaid converter + React) is
 // produced by `scripts/build.js` into dist/whiteboard. Packaged runs find it
 // next to the served bundle; source runs (node bin/lavish-axi.js) fall back to
@@ -81,19 +93,35 @@ export function isWhiteboardWriteApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
 }
 
-export function createWhiteboardChannelToken(secret, now = Date.now()) {
-  const payload = `${now}.${crypto.randomBytes(24).toString("base64url")}`;
-  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
+// The signed payload carries the session key, so a token is a capability for
+// exactly one session. Without that binding any token - including one minted by
+// a request that named no session - authenticated an arbitrary session's
+// whiteboard channel. The wire format stays `${issuedAt}.${nonce}.${signature}`;
+// the key is signed over, never transmitted in the token.
+function whiteboardChannelPayload(issuedAt, nonce, sessionKey) {
+  return `${issuedAt}.${nonce}.${sessionKey}`;
 }
 
-export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
+export function createWhiteboardChannelToken(secret, sessionKey, now = Date.now()) {
+  const nonce = crypto.randomBytes(24).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(whiteboardChannelPayload(now, nonce, String(sessionKey || "")))
+    .digest("base64url");
+  return `${now}.${nonce}.${signature}`;
+}
+
+export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = Date.now()) {
+  if (!isValidWhiteboardKey(sessionKey)) return false;
   const [issuedAtText, nonce, signature, extra] = String(token || "").split(".");
   if (extra !== undefined || !/^\d{13}$/.test(issuedAtText) || !/^[A-Za-z0-9_-]{32}$/.test(nonce)) return false;
   const issuedAt = Number(issuedAtText);
   if (!Number.isSafeInteger(issuedAt) || issuedAt > now || now - issuedAt > WHITEBOARD_CHANNEL_TOKEN_TTL_MS)
     return false;
-  const expected = crypto.createHmac("sha256", secret).update(`${issuedAtText}.${nonce}`).digest("base64url");
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(whiteboardChannelPayload(issuedAtText, nonce, String(sessionKey)))
+    .digest("base64url");
   const actualBuffer = Buffer.from(signature || "", "utf8");
   const expectedBuffer = Buffer.from(expected, "utf8");
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
@@ -123,6 +151,7 @@ export async function serve({
   idleTimeoutMs = resolveIdleTimeoutMs(),
   host = bindHost(),
   linkHost: linkHostName = linkHost(),
+  allowedHosts = extraAllowedHosts(),
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 }) {
   const app = express();
@@ -133,6 +162,9 @@ export async function serve({
   const deliveredFeedback = new Set();
   const sseClients = new Set();
   const whiteboardChannelSecret = crypto.randomBytes(32);
+  // Sessions with at least one warning the user queued that has not been re-checked yet.
+  const outstandingRepairBatches = new Set();
+  const diagnosticViewportClasses = resolveDiagnosticViewportClasses();
   const verbose = debug || process.env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
@@ -140,6 +172,37 @@ export async function serve({
 
   // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
   const whiteboardStateRoot = path.dirname(stateFile);
+
+  // DNS-rebinding guard. isSameOriginRequest (used on /share and the whiteboard
+  // write routes) stops classic cross-origin CSRF but NOT DNS rebinding: a page
+  // that rebinds its own domain to this loopback port sends that domain in both
+  // Origin and Host, so the two still match. The robust defense is a Host-header
+  // allowlist - a rebound browser carries the attacker's domain in Host, which is
+  // never one of the hostnames this server answers to.
+  //
+  // Loopback names are always accepted. Binding to a concrete interface
+  // (LAVISH_AXI_HOST) or naming a link host (LAVISH_AXI_LINK_HOST) adds that host,
+  // so an operator who intentionally exposes the server on a specific interface
+  // keeps rebinding protection while their chosen hostname works. Additional
+  // names (a reverse-proxy hostname, extra interfaces) are an explicit opt-in via
+  // LAVISH_AXI_ALLOWED_HOSTS; a lone "*" there disables the guard for operators
+  // who front the server with their own authentication. When a reverse proxy sits
+  // in front, X-Forwarded-Host is validated too (see isAllowedRequestHost).
+  const allowedHostnames = buildAllowedHostnames({ host, linkHost: linkHostName, allowedHosts });
+  const allowAnyHostname = allowsAllHosts(allowedHosts);
+  if (!allowAnyHostname) {
+    app.use((req, res, next) => {
+      const requestHost = { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] };
+      if (isAllowedRequestHost(requestHost, allowedHostnames)) {
+        next();
+        return;
+      }
+      logEvent?.(
+        `rejected request with disallowed host host=${req.headers.host ?? ""} x-forwarded-host=${req.headers["x-forwarded-host"] ?? ""} path=${req.path}`,
+      );
+      res.status(403).json({ error: "forbidden host" });
+    });
+  }
 
   const defaultJsonParser = express.json({ limit: "2mb" });
   const whiteboardJsonParser = express.json({ limit: "20mb" });
@@ -185,7 +248,8 @@ export async function serve({
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       }
       logEvent?.(`session opened key=${key} file=${file}`);
-      await watchSession(session, watchers, events, logEvent);
+      await syncOutstandingRepairs(key);
+      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       res.json({ key, file, url, status: "opened" });
     } catch (error) {
       next(error);
@@ -266,15 +330,39 @@ export async function serve({
     }
   });
 
+  // The one route that puts words in the reviewer's mouth: whatever lands here
+  // reaches the agent as the user's own instructions. The session key is derived
+  // from the artifact path, not a secret, so knowing it must not be enough -
+  // only this server's own chrome may queue prompts.
   app.post("/api/:key/prompts", async (req, res, next) => {
     try {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+        res.status(403).json({ error: "cross-origin prompt submission rejected" });
+        return;
+      }
       const shouldEndSession = Boolean(req.body?.endSession || req.body?.end_session);
+      const hasLayoutWarningPrompt = Array.isArray(req.body?.prompts)
+        ? req.body.prompts.some((prompt) => prompt?.tag === "layout-warnings")
+        : false;
       const session = await store.queuePrompts(req.params.key, req.body || {});
       if (!session) {
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (session.conflict) {
+        res.status(409).json({
+          status: "conflict",
+          error: "a layout warning changed before it was sent; review the warning again",
+          warning_ids: session.warning_ids,
+          warnings: session.warnings,
+        });
+        return;
+      }
       if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      if (hasLayoutWarningPrompt) {
+        await syncOutstandingRepairs(req.params.key);
+        events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(session.layout_warnings));
+      }
       events.emit(shouldEndSession ? "ended" : "feedback", req.params.key);
       res.json({ status: "queued", pending_prompts: session.pending_prompts });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
@@ -283,17 +371,92 @@ export async function serve({
     }
   });
 
-  app.post("/api/:key/layout-warnings", async (req, res, next) => {
+  // Passive detection. A diagnostic pass updates the warning inbox and notifies open browser
+  // chromes - it never emits "feedback", so it can never make `lavish-axi poll` return and can
+  // never wake an agent. Only the user's explicit "Queue selected fixes" does that, through the
+  // ordinary prompt queue.
+  app.post("/api/:key/layout-diagnostics", async (req, res, next) => {
     try {
-      const result = await store.recordLayoutWarnings(req.params.key, req.body || {});
+      const result = await store.recordLayoutDiagnostics(req.params.key, req.body || {}, {
+        viewportClasses: diagnosticViewportClasses,
+      });
       if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
-      if (result.changed && result.hasWarnings) {
-        events.emit("feedback", req.params.key);
+      const activeCount = activeLayoutWarningCount(result.session.layout_warnings);
+      if (!result.stale) {
+        await syncOutstandingRepairs(req.params.key);
+        if (result.changed) events.emit("layout-warnings", req.params.key, result.warnings);
       }
-      res.json({ status: "recorded", layout_warnings: result.session.layout_warnings?.length || 0 });
+      res.json({ status: result.stale ? "stale" : "recorded", active_count: activeCount, warnings: result.warnings });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/:key/layout-warnings", async (req, res, next) => {
+    try {
+      const result = await store.listLayoutWarnings(req.params.key);
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.json({ warnings: result.warnings, revision: result.revision });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Prepare the user's selected warnings. The prompt commits the repair request through
+  // /api/:key/prompts with the rest of the ordinary feedback queue.
+  app.post("/api/:key/layout-warnings/queue", async (req, res, next) => {
+    try {
+      const result = await store.prepareLayoutWarningFixes(req.params.key, req.body?.ids);
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.json({
+        status: result.queued.length > 0 ? "prepared" : "unchanged",
+        queued_count: result.queued.length,
+        prompt: result.prompt,
+        warnings: result.warnings,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/layout-warnings/dismiss", async (req, res, next) => {
+    try {
+      const result = await store.dismissLayoutWarning(req.params.key, req.body?.id);
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.changed) events.emit("layout-warnings", req.params.key, result.warnings);
+      res.json({ status: result.changed ? "dismissed" : "unchanged", warnings: result.warnings });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The narrow fatal path: the artifact cannot be served, or one of its own local assets failed
+  // to load. There is no usable review to triage from, so this still reaches the agent directly.
+  app.post("/api/:key/artifact-failures", async (req, res, next) => {
+    try {
+      const result = await store.recordArtifactFailures(req.params.key, req.body || {});
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.stale) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      if (result.changed) events.emit("feedback", req.params.key);
+      res.json({ status: "recorded" });
     } catch (error) {
       next(error);
     }
@@ -320,6 +483,11 @@ export async function serve({
         return;
       }
       events.emit("agent-reply", req.params.key, text);
+      // The reply concludes the delivered-feedback "working" state. Without this, a poll that
+      // drains feedback and then releases leaves presence stuck on "working" — the chrome keeps
+      // Send disabled — until some future poll happens to attach, even though the agent already
+      // answered. See "SSE agent-presence returns to waiting after an agent reply".
+      clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       res.json({ status: "sent" });
     } catch (error) {
       next(error);
@@ -362,7 +530,7 @@ export async function serve({
   // loopback server.
   app.post("/api/:key/share", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin share request rejected" });
         return;
       }
@@ -414,19 +582,33 @@ export async function serve({
 
   app.get("/session/:key", async (req, res, next) => {
     try {
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
+      const chromeLoad = await store.issueReviewerHandoff(req.params.key);
+      if (!chromeLoad) {
         res.status(404).send("Session not found");
         return;
       }
-      await watchSession(session, watchers, events, logEvent);
+      const session = chromeLoad.session;
+      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
+      // Nothing legitimately frames the review chrome - it is the top-level
+      // page, and shares/exports ship standalone HTML rather than embedding it.
+      // Refusing to be framed denies an attacker page both a window handle to
+      // this chrome and a clickjacking surface over Send. Scoped to this route:
+      // /artifact/* is framed by this page and /whiteboard-frame is framed by
+      // that artifact document, whose sandbox gives it an opaque origin no
+      // frame-ancestors expression can name.
+      res.setHeader("x-frame-options", "DENY");
+      res.setHeader("content-security-policy", "frame-ancestors 'none'");
       res.type("html").send(
         createChromeHtml(session, {
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
           faviconTag,
           title: title ? `${title} · Lavish` : "Lavish Editor",
+          artifactRevision: chromeLoad.artifact_revision,
+          artifactLoadToken: chromeLoad.artifact_load_token,
+          artifactLoadSequence: chromeLoad.artifact_load_sequence,
+          chromeLoadToken: chromeLoad.chrome_load_token,
         }),
       );
     } catch (error) {
@@ -438,16 +620,80 @@ export async function serve({
     res.redirect(`/artifact/${req.params.key}/index.html`);
   });
 
+  app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+        res.status(403).json({ error: "cross-origin chrome handoff rejected" });
+        return;
+      }
+      const handoff = await store.issueReviewerHandoff(req.params.key);
+      if (!handoff) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      res.json({
+        chrome_load_token: handoff.chrome_load_token,
+        artifact_revision: handoff.artifact_revision,
+        artifact_load_token: handoff.artifact_load_token,
+        artifact_load_sequence: handoff.artifact_load_sequence,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/artifact-loads/begin", async (req, res, next) => {
+    try {
+      const result = await store.beginArtifactLoad(req.params.key, {
+        requestId: req.body?.request_id,
+        requestSequence: req.body?.request_sequence,
+        handoffToken: req.body?.chrome_load_token,
+      });
+      if (!result) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.stale) {
+        res.status(409).json({ status: result.stale });
+        return;
+      }
+      res.json({ artifact_revision: result.artifact_revision, artifact_load_token: result.artifact_load_token });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get(/^\/artifact\/([^/]+)\/index\.html$/, async (req, res, next) => {
     try {
       const key = req.params[0];
-      const session = await store.findByKey(key);
-      if (!session) {
+      const token = String(req.query.artifact_load_token || "");
+      const revision = req.query.artifact_revision;
+      const beforeRead = await store.verifyArtifactLoad(key, token, revision);
+      if (!beforeRead) {
         res.status(404).send("Session not found");
         return;
       }
-      const html = await readFile(session.file, "utf8");
-      res.type("html").send(injectLavishSdk(html, key));
+      if (!beforeRead.valid) {
+        res
+          .status(409)
+          .type("html")
+          .send(
+            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
+          );
+        return;
+      }
+      const html = await readFile(beforeRead.session.file, "utf8");
+      const verified = await store.verifyArtifactLoad(key, token, revision);
+      if (!verified?.valid) {
+        res
+          .status(409)
+          .type("html")
+          .send(
+            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
+          );
+        return;
+      }
+      res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
     } catch (error) {
       next(error);
     }
@@ -463,7 +709,7 @@ export async function serve({
         return;
       }
       const root = path.dirname(session.file);
-      const file = resolveArtifactAsset(root, assetPath);
+      const file = await resolveArtifactAsset(root, assetPath);
       if (!file) {
         res.status(403).send("Forbidden");
         return;
@@ -499,6 +745,13 @@ export async function serve({
           res.write(`event: agent-presence\ndata: ${JSON.stringify({ state })}\n\n`);
         }
       };
+      // Warning-inbox state lives on the server, so every attached chrome - including one that
+      // just reconnected after a browser refresh - converges on the same list.
+      const sendLayoutWarnings = (key, warnings) => {
+        if (key === req.params.key) {
+          res.write(`event: layout-warnings\ndata: ${JSON.stringify({ warnings })}\n\n`);
+        }
+      };
       res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: session?.chat || [] })}\n\n`);
       res.write(
         `event: agent-presence\ndata: ${JSON.stringify({ state: computePresence(req.params.key, activePolls, deliveredFeedback) })}\n\n`,
@@ -506,11 +759,13 @@ export async function serve({
       events.on("reload", sendReload);
       events.on("agent-reply", sendAgentReply);
       events.on("agent-presence", sendPresence);
+      events.on("layout-warnings", sendLayoutWarnings);
       req.on("close", () => {
         sseClients.delete(res);
         events.off("reload", sendReload);
         events.off("agent-reply", sendAgentReply);
         events.off("agent-presence", sendPresence);
+        events.off("layout-warnings", sendLayoutWarnings);
         refreshIdleTimer();
       });
     } catch (error) {
@@ -547,8 +802,27 @@ export async function serve({
     }
   });
 
-  app.get("/sdk.js", (req, res) => {
-    res.type("application/javascript").send(createSdkJs(String(req.query.key || "")));
+  app.get("/sdk.js", async (req, res, next) => {
+    try {
+      const verified = await store.verifyArtifactLoad(
+        String(req.query.key || ""),
+        req.query.artifact_load_token,
+        req.query.artifact_revision,
+      );
+      if (!verified) {
+        res.status(404).send("Session not found");
+        return;
+      }
+      if (!verified.valid) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      res
+        .type("application/javascript")
+        .send(createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token));
+    } catch (error) {
+      next(error);
+    }
   });
 
   // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
@@ -559,16 +833,25 @@ export async function serve({
   // reports ready.
   app.get("/whiteboard-frame", (req, res) => {
     res.setHeader("cache-control", "no-store");
-    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret)));
+    // The frame's channel token is minted for one session, so the caller must
+    // name it. Both call sites (the chrome overlay and the artifact SDK's
+    // inline embed) know their own key; a request without one could only
+    // produce a token that authenticates nothing, so reject it outright.
+    const sessionKey = String(req.query.key || "");
+    if (!isValidWhiteboardKey(sessionKey)) {
+      res.status(400).type("text/plain").send("Missing session key");
+      return;
+    }
+    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret, sessionKey)));
   });
 
   // Whiteboard bundle, stylesheet, and vendored Excalidraw fonts. The frame
   // runs in an opaque origin, and font fetches from an opaque origin are
   // CORS-gated, so this static, public-content route must answer with
   // Access-Control-Allow-Origin: * or every canvas font falls back.
-  app.get(/^\/whiteboard-assets\/(.+)$/, (req, res, next) => {
+  app.get(/^\/whiteboard-assets\/(.+)$/, async (req, res, next) => {
     try {
-      const file = resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
+      const file = await resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
       if (!file) {
         res.status(403).send("Forbidden");
         return;
@@ -631,7 +914,7 @@ export async function serve({
 
   app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
         return;
       }
@@ -640,7 +923,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret)) {
+      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret, req.params.key)) {
         res.status(403).json({ error: "invalid whiteboard channel" });
         return;
       }
@@ -656,7 +939,7 @@ export async function serve({
   // loopback server.
   app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -683,7 +966,7 @@ export async function serve({
   // target. Files stay on this machine; the prompt carries only the paths.
   app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -789,6 +1072,24 @@ export async function serve({
     }
   }
 
+  // A queued repair batch is outstanding until a diagnostic pass re-checks it. While it is, the
+  // agent's related saves coalesce into one artifact refresh for that group.
+  async function syncOutstandingRepairs(key) {
+    try {
+      if (await store.hasOutstandingLayoutRepairs(key)) {
+        outstandingRepairBatches.add(key);
+      } else {
+        outstandingRepairBatches.delete(key);
+      }
+    } catch {
+      // Best effort - the normal debounce still applies.
+    }
+  }
+
+  function reloadDebounceMs(key) {
+    return outstandingRepairBatches.has(key) ? BATCH_RELOAD_DEBOUNCE_MS : RELOAD_DEBOUNCE_MS;
+  }
+
   // Arm the idle timer for a server that is spawned but never opens a session.
   refreshIdleTimer();
 
@@ -846,10 +1147,128 @@ function encodeRfc5987Value(value) {
   );
 }
 
+// Wildcard bind addresses ("all interfaces") are not connectable hostnames, so
+// they never belong in the Host allowlist - and "0.0.0.0" as a Host is a known
+// loopback-reach trick, so it must stay rejected.
+const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::"]);
+
+// The set of Host header hostnames this server answers to: loopback names plus
+// the resolved bind and link host and any explicit LAVISH_AXI_ALLOWED_HOSTS
+// extras, minus wildcard binds and the "*" sentinel. Lowercased for
+// case-insensitive comparison against the incoming Host.
+export function buildAllowedHostnames({ host, linkHost: linkHostName, allowedHosts = [] }) {
+  return new Set(
+    [LOOPBACK_HOST, IPV6_LOOPBACK_HOST, "localhost", host, linkHostName, ...allowedHosts]
+      .map((value) =>
+        String(value || "")
+          .trim()
+          .toLowerCase(),
+      )
+      .filter((value) => value && value !== "*" && !WILDCARD_BIND_HOSTS.has(value)),
+  );
+}
+
+// A lone "*" in LAVISH_AXI_ALLOWED_HOSTS is an explicit opt-out of the Host
+// allowlist, for operators who front the server with their own auth/proxy.
+export function allowsAllHosts(allowedHosts = []) {
+  return allowedHosts.some((value) => String(value).trim() === "*");
+}
+
+function parseHostAuthority(value) {
+  const raw = String(value).trim();
+  if (!raw || /[@/\\?#\s]/.test(raw)) return null;
+
+  let hostname;
+  let port;
+  let bracketed = false;
+  if (raw.startsWith("[")) {
+    const match = /^\[([0-9A-Fa-f:.]+)\](?::(\d+))?$/.exec(raw);
+    if (!match || isIP(match[1]) !== 6) return null;
+    [, hostname, port = ""] = match;
+    bracketed = true;
+  } else {
+    const match = /^([A-Za-z0-9._-]+)(?::(\d+))?$/.exec(raw);
+    if (!match) return null;
+    [, hostname, port = ""] = match;
+  }
+  if (port && Number(port) > 65535) return null;
+
+  hostname = hostname.toLowerCase();
+  const authority = `${bracketed ? `[${hostname}]` : hostname}${port ? `:${port}` : ""}`;
+  try {
+    const parsed = new URL(`http://${authority}`);
+    if (!parsed.origin || parsed.origin === "null") return null;
+  } catch {
+    return null;
+  }
+  return { hostname, port, authority };
+}
+
+// Extract the hostname (without port) from a Host header value, honoring
+// bracketed IPv6 literals ("[::1]:4387"). Returns null for a malformed authority.
+export function hostnameFromHostHeader(value) {
+  return parseHostAuthority(value)?.hostname ?? null;
+}
+
+// DNS-rebinding defense: a loopback-bound server answers only to its own known
+// hostnames. A rebound browser carries the attacker's domain in Host and is
+// rejected. Host is mandatory in HTTP/1.1 and every browser sends it, so a
+// missing or blank value is never a legitimate client - reject it rather than
+// fail open.
+export function isAllowedHostHeader(hostHeader, allowedHostnames) {
+  if (hostHeader === undefined || hostHeader === null) return false;
+  const authority = parseHostAuthority(hostHeader);
+  return authority !== null && allowedHostnames.has(authority.hostname);
+}
+
+// Validate a request's effective host for DNS-rebinding protection. The Host
+// header is required and must be allowlisted. When an X-Forwarded-Host is present
+// - a reverse proxy in front of the loopback server - its outermost (last) value
+// must ALSO be allowlisted, so a proxy works once its public hostname is added to
+// LAVISH_AXI_ALLOWED_HOSTS. This is an AND check: a client-spoofed forwarded host
+// can only narrow access (Host is still checked), never widen it into a bypass. A
+// blank forwarded host is treated as absent, matching how proxies omit it.
+/**
+ * @param {{ host?: string|undefined|null, forwardedHost?: string|undefined|null }} headers
+ * @param {Set<string>} allowedHostnames
+ */
+export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) {
+  if (!isAllowedHostHeader(host, allowedHostnames)) return false;
+  const forwarded = forwardedHost === undefined || forwardedHost === null ? "" : String(forwardedHost).trim();
+  if (forwarded === "") return true;
+  return isAllowedHostHeader(forwarded.split(",").pop(), allowedHostnames);
+}
+
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
 // browser attaches an Origin/Referer that must match this server's own origin.
-function isSameOriginRequest(req) {
-  const expectedOrigin = `${req.protocol}://${req.get("host")}`;
+function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
+  const host = parseHostAuthority(req.headers.host);
+  if (!host) return false;
+
+  let protocol = req.protocol;
+  let authority = host;
+  const forwardedHost = String(req.get("x-forwarded-host") || "")
+    .split(",")
+    .pop()
+    .trim();
+  if (forwardedHost) {
+    const forwardedAuthority = parseHostAuthority(forwardedHost);
+    if (
+      !forwardedAuthority ||
+      (!allowAnyHostname &&
+        (!allowedHostnames.has(host.hostname) || !allowedHostnames.has(forwardedAuthority.hostname)))
+    )
+      return false;
+    protocol = String(req.get("x-forwarded-proto") || req.protocol)
+      .split(",")
+      .pop()
+      .trim()
+      .toLowerCase();
+    if (protocol !== "http" && protocol !== "https") return false;
+    authority = forwardedAuthority;
+  }
+  const expectedOrigin = normalizeOrigin(`${protocol}://${authority.authority}`);
+  if (!expectedOrigin) return false;
   const origin = req.get("origin");
   if (origin) {
     return normalizeOrigin(origin) === expectedOrigin;
@@ -871,16 +1290,47 @@ function optionalBodyString(value) {
   return trimmed || undefined;
 }
 
-export function resolveArtifactAsset(root, assetPath) {
+// Confines an asset request lexically first, then - like export-bundle.js's guardedRead -
+// resolves the real (symlink-followed) path and refuses anything that escapes the artifact
+// directory, so a symlink placed beside the artifact can't make this route serve an outside
+// file (e.g. ~/.ssh/id_rsa).
+export async function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return null;
   }
-  return file;
+  let real;
+  try {
+    real = await realpath(file);
+  } catch (error) {
+    // Nonexistent path (e.g. an asset that hasn't been built yet): nothing to read, so the
+    // lexical confinement above is enough - the caller's existsSync/sendFile handles the 404.
+    // Every other realpath failure fails closed, like guardedRead.
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return file;
+    }
+    throw error;
+  }
+  let realRoot;
+  try {
+    realRoot = await realpath(root);
+  } catch {
+    realRoot = path.resolve(root);
+  }
+  const relativeReal = path.relative(realRoot, real);
+  if (relativeReal === ".." || relativeReal.startsWith(`..${path.sep}`) || path.isAbsolute(relativeReal)) {
+    return null;
+  }
+  // Hand back the resolved path, not the requested one: a real path contains no symlinks, so
+  // sendFile re-opening it cannot be redirected by a link swapped in after this check.
+  return real;
 }
 
-async function watchSession(session, watchers, events, logEvent) {
+/**
+ * @param {(key: string) => number} reloadDebounceMs
+ */
+async function watchSession(session, watchers, events, logEvent, reloadDebounceMs = () => RELOAD_DEBOUNCE_MS) {
   if (watchers.has(session.key)) {
     return;
   }
@@ -894,7 +1344,7 @@ async function watchSession(session, watchers, events, logEvent) {
   watcher.on("all", (event, file) => {
     logEvent?.(`watch event=${event} session=${session.key} file=${file ?? ""}`);
     clearTimeout(timer);
-    timer = setTimeout(() => events.emit("reload", session.key), 100);
+    timer = setTimeout(() => events.emit("reload", session.key), reloadDebounceMs(session.key));
   });
   watcher.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -1014,6 +1464,12 @@ const chromeIcons = {
     '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
     15,
   ),
+  warning: chromeIcon(
+    '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    16,
+  ),
+  reveal: chromeIcon('<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/>', 13),
+  dismiss: chromeIcon('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>', 13),
 };
 
 // Display the path with the home directory shortened to "~", split so the directory part can
@@ -1114,12 +1570,27 @@ export function extractArtifactHead(html) {
 
 export function createChromeHtml(
   session,
-  { layoutGateEnabled = true, faviconTag = LAVISH_DEFAULT_FAVICON, title = "Lavish Editor" } = {},
+  {
+    layoutGateEnabled = true,
+    faviconTag = LAVISH_DEFAULT_FAVICON,
+    title = "Lavish Editor",
+    artifactRevision = 0,
+    artifactLoadToken = "",
+    artifactLoadSequence = 0,
+    chromeLoadToken = "",
+  } = {},
 ) {
   const sessionJson = jsonScript({
     key: session.key,
     file: session.file,
     initialChat: session.chat || [],
+    // Bootstrapping the inbox from the server is what makes it survive a browser refresh or a
+    // reconnect: the chrome never owns warning state, it only renders it.
+    initialLayoutWarnings: serializeLayoutWarnings(session.layout_warnings),
+    initialArtifactRevision: artifactRevision,
+    initialArtifactLoadToken: artifactLoadToken,
+    initialArtifactLoadSequence: artifactLoadSequence,
+    chromeLoadToken,
     layoutGateEnabled,
     modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
   });
@@ -1138,8 +1609,8 @@ ${faviconTag}
 <link rel="stylesheet" href="/chrome.css">
 </head>
 <body class="${bodyClass}">
-<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe><div class="layout-issue-banner" id="layoutIssueBanner" hidden>This surface has a severe layout failure. Your agent has been notified.</div></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
+<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label>Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label>Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note">Keep the update key private. ht-ml.app returns it once and it is the only way to update or delete this page later.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
@@ -1166,7 +1637,7 @@ export function createWhiteboardFrameHtml(channelToken = "") {
 </html>`;
 }
 
-export function createSdkJs(key) {
+export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "") {
   // Serialize every helper exported by mermaid-node.js as a same-scope const so
   // cross-helper calls (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the
   // browser. Deriving this from the module's exports — rather than a hand-kept
@@ -1174,9 +1645,13 @@ export function createSdkJs(key) {
   const mermaidHelperEntries = Object.entries(mermaidNode).filter(([, value]) => typeof value === "function");
   const mermaidHelperDecls = mermaidHelperEntries.map(([name, fn]) => `const ${name}=${fn.toString()};`).join("\n");
   const mermaidHelperKeys = mermaidHelperEntries.map(([name]) => name).join(", ");
+  const revisionNumber = Number(artifactRevision);
+  const revision = Number.isFinite(revisionNumber) && revisionNumber >= 0 ? Math.trunc(revisionNumber) : 0;
+  const loadToken = String(artifactLoadToken || "").slice(0, 200);
   return `(() => {
 const key=${JSON.stringify(key)};
-void key;
+const artifactRevision=${revision};
+const artifactLoadToken=${JSON.stringify(loadToken)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
@@ -1188,7 +1663,7 @@ const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers);
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key);
 })();`;
 }
 

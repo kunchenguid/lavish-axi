@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +40,7 @@ import {
   shutdownServerOnPort,
   shouldForceRestartForLocalBuild,
   shouldKillProcessOnPort,
+  shouldNarratePollWaitTicks,
   shouldOpenBrowser,
   shouldRestartServer,
   startPollWaitReporter,
@@ -47,15 +48,51 @@ import {
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
-import {
-  DAISYUI_THEMES,
-  DEFAULT_THEME,
-  DESIGN_PRIORITY_RULE,
-  DESIGN_SYSTEM_HINT,
-  resolveDefaultTheme,
-} from "../src/design-reference.js";
+import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT, DAISYUI_THEMES, DEFAULT_THEME, resolveDefaultTheme} from "../src/design-reference.js";
+import { resolveVsCodeSettingsFile } from "../src/plugin.js";
+import { createSkillMarkdown } from "../src/skill.js";
+import { SELF_PAINT_WARNING } from "../src/self-paint.js";
 import { serve } from "../src/server.js";
+import { canonicalFile, sessionKey } from "../src/session-store.js";
 
+async function waitForPollListening(base, key, timeoutMs = 10_000) {
+  const controller = new AbortController();
+  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (true) {
+      const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
+      if (match) {
+        buffer = buffer.replace(match[0], "");
+        if (JSON.parse(match[1]).state === "listening") return;
+        continue;
+      }
+      const remaining = Math.max(1, deadline - Date.now());
+      let timer;
+      let value;
+      let done;
+      try {
+        ({ value, done } = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("timed out waiting for listening presence")), remaining);
+          }),
+        ]));
+      } finally {
+        clearTimeout(timer);
+      }
+      if (done) throw new Error("presence stream closed before listening");
+      buffer += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    controller.abort();
+  }
+}
+
+/** @returns {NodeJS.ProcessEnv} */
 function setupHooksEnv(homeDir, stateDir) {
   // eslint-disable-next-line no-unused-vars
   const { COPILOT_HOME, ...env } = process.env;
@@ -95,7 +132,7 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.equal("use_cases" in output, false);
   assert.equal("example_use_cases" in output, false);
   assert.equal("artifact_guidance" in output, false);
-  assert.ok(output.visual_guidance.length <= 5);
+  assert.ok(output.visual_guidance.length <= 6);
   assert.ok(output.visual_guidance.some((item) => item.includes("visual hierarchy")));
   assert.ok(
     output.visual_guidance.some((item) => /screenshot/i.test(item) && /embed/i.test(item) && /prose/i.test(item)),
@@ -147,6 +184,81 @@ test("the design-priority rule is single-sourced and keeps its three-step semant
   assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
 });
 
+test("design output is the sole emitted concise explicit-background guidance", () => {
+  const output = createDesignOutput();
+  const instruction = "Paint an explicit page background and readable text.";
+  assert.match(output.design.summary, new RegExp(instruction.replaceAll(".", "\\.")));
+  assert.equal(output.self_paint_rule, undefined);
+
+  const otherAgentSurfaces = [
+    JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
+    getCommandHelp("design"),
+    createSkillMarkdown(),
+    ...["diagram", "table", "comparison", "plan", "code", "input", "slides"].map((id) =>
+      JSON.stringify(createPlaybookOutput([id])),
+    ),
+  ];
+  for (const surface of otherAgentSurfaces) {
+    assert.ok(!surface.includes(instruction));
+    assert.doesNotMatch(surface, /render-verify/i);
+  }
+});
+
+test("open output flags an artifact that never paints its own page surface", () => {
+  const warned = createOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://localhost:4387/session/abc123",
+    status: "opened",
+    selfPaintWarning: SELF_PAINT_WARNING,
+  });
+
+  assert.equal(warned.self_paint_warning, SELF_PAINT_WARNING);
+  assert.match(warned.next_step, /^First fix the unpainted page surface flagged in self_paint_warning/);
+  assert.match(warned.next_step, /live-reloads the artifact automatically/);
+  assert.match(warned.next_step, /lavish-axi poll \/tmp\/artifact\.html/, "the poll contract stays intact");
+
+  const clean = createOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://localhost:4387/session/abc123",
+    status: "opened",
+  });
+  assert.equal("self_paint_warning" in clean, false);
+  assert.match(clean.next_step, /^Do not respond to the user just yet\./);
+});
+
+test("export and share outputs flag an unpainted page surface before it reaches a host", () => {
+  const exported = createExportOutput({
+    source: "/tmp/report.html",
+    output: "/tmp/report.export.html",
+    html: "<html></html>",
+    warnings: [],
+    selfPaintWarning: SELF_PAINT_WARNING,
+  });
+  assert.equal(exported.self_paint_warning, SELF_PAINT_WARNING);
+  assert.match(exported.next_step, /^Fix the unpainted page surface flagged in self_paint_warning/);
+  assert.match(exported.next_step, /no Lavish server/, "the export contract stays intact");
+
+  const shared = createShareOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://ht-ml.app/s/x", site_id: "x", update_key: "k" },
+    warnings: [],
+    selfPaintWarning: SELF_PAINT_WARNING,
+  });
+  assert.equal(shared.self_paint_warning, SELF_PAINT_WARNING);
+  assert.match(shared.next_step, /^Fix the unpainted page surface flagged in self_paint_warning/);
+  assert.match(shared.next_step, /re-run the share command/);
+  assert.match(shared.next_step, /replacement URL/);
+  assert.doesNotMatch(shared.next_step, /with the update_key/);
+
+  const cleanExport = createExportOutput({
+    source: "/tmp/report.html",
+    output: "/tmp/report.export.html",
+    html: "<html></html>",
+    warnings: [],
+  });
+  assert.equal("self_paint_warning" in cleanExport, false);
+});
+
 test("home output warns agents that poll needs an observable wake path", () => {
   const output = createHomeOutput({ bin: "lavish-axi", sessions: [] });
   const pollHelp = output.help.find((item) => item.includes("lavish-axi poll <html-file>"));
@@ -162,6 +274,15 @@ test("home output warns agents that poll needs an observable wake path", () => {
   assert.match(pollHelp, /`Send & End` ends the session/);
   assert.match(pollHelp, /final feedback is still delivered once/);
   assert.doesNotMatch(pollHelp, /above 10 minutes/);
+});
+
+test("ambient and per-artifact output never nags about installing the plugin", () => {
+  // Home output loads on every session and open/poll run constantly; setup belongs in the
+  // setup surfaces only, so an install prompt here would be pure recurring token cost.
+  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
+
+  assert.doesNotMatch(JSON.stringify(home), /setup plugin/);
+  assert.doesNotMatch(JSON.stringify(home), /setup hooks/);
 });
 
 test("home output tailors poll guidance when invoked under Codex", () => {
@@ -687,7 +808,8 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
-  assert.match(output.next_step, /layout_warnings/);
+  assert.match(output.next_step, /Layout issues inbox/);
+  assert.doesNotMatch(output.next_step, /layout_warnings/);
   assert.match(output.next_step, /never kill it/);
   assertObservablePollWakePath(output.next_step);
   assert.doesNotMatch(output.next_step, /Codex/);
@@ -1073,6 +1195,7 @@ test("feedback next step keeps the next poll completion observable", () => {
     response: { status: "feedback", dom_snapshot: "", prompts: [] },
   });
 
+  assert.equal("artifact_failures" in output, false);
   assert.equal("layout_warnings" in output, false);
   assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /without --timeout-ms/);
@@ -1080,7 +1203,6 @@ test("feedback next step keeps the next poll completion observable", () => {
   assert.doesNotMatch(output.next_step, /Codex/);
   assert.match(output.next_step, /queued feedback is never lost/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
-  assert.match(output.next_step, /fresh layout_warnings/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
 });
 
@@ -1096,31 +1218,66 @@ test("feedback next step is Codex-aware when requested", () => {
   assert.match(output.next_step, /keep the poll attached to the active turn/);
 });
 
-test("layout warning feedback tells agents to fix layout before involving the human", () => {
+test("detected layout warnings never appear in poll output", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [{ uid: "", prompt: "Tighten the header", selector: "h1", tag: "annotation", text: "Header" }],
+    },
+  });
+
+  assert.equal("layout_warnings" in output, false);
+  assert.equal("artifact_failures" in output, false);
+  assert.match(output.next_step, /Apply the requested changes/);
+});
+
+test("a queued layout-warnings batch reads as ordinary feedback with lifecycle guidance", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [
+        {
+          uid: "",
+          prompt: "Fix these 2 layout issues the browser detected in this artifact:\\n1. [w1] ...",
+          selector: "",
+          tag: "layout-warnings",
+          text: "Layout issues: 2 selected",
+          target: { type: "layout-warnings", warnings: [{ id: "w1" }, { id: "w2" }] },
+        },
+      ],
+    },
+  });
+
+  assert.equal("layout_warnings" in output, false, "no parallel protocol - it is just a prompt");
+  assert.equal(output.prompts[0].tag, "layout-warnings");
+  assert.match(output.next_step, /Layout issues inbox/);
+  assert.match(output.next_step, /in one pass before saving so the user's review refreshes once/);
+  assert.match(output.next_step, /Queueing is a repair request, not a resolution/);
+  assert.match(output.next_step, /newer artifact load and a complete check at the same viewport/);
+});
+
+test("a fatal artifact failure is the only thing that reaches the agent without user action", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
     response: {
       status: "feedback",
       dom_snapshot: "",
       prompts: [],
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 16,
-          viewportWidth: 720,
-          severity: "error",
-        },
+      artifact_failures: [
+        { kind: "artifact-asset-unavailable", detail: "<img> could not load /artifact/x/logo.png", severity: "fatal" },
       ],
     },
   });
 
-  assert.ok("layout_warnings" in output);
-  assert.equal(output.layout_warnings.length, 1);
-  assert.match(output.next_step, /1 proven severe layout failure detected/);
-  assert.match(output.next_step, /repair the inaccessible or unusable content/);
-  assert.match(output.next_step, /before involving the human/);
-  assert.doesNotMatch(output.next_step, /reload or re-open/);
+  assert.ok("artifact_failures" in output);
+  assert.equal(output.artifact_failures.length, 1);
+  assert.match(output.next_step, /1 fatal artifact failure detected/);
+  assert.match(output.next_step, /the review surface could not be used/);
+  assert.match(output.next_step, /artifact-asset-unavailable/);
 });
 
 test("whiteboard feedback tells agents to read the summary, inspect files when needed, and update the Mermaid source", () => {
@@ -1239,126 +1396,37 @@ test("the final feedback batch before an agent end preserves ended_by and allows
   assert.doesNotMatch(output.next_step, /user ended this Lavish Editor session/);
 });
 
-test("final user-ended feedback still requires severe layout repair without reopening", () => {
+test("final user-ended feedback still reports a fatal artifact failure without reopening", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
     response: {
       status: "feedback",
       prompts: [],
-      layout_warnings: [{ selector: "button", kind: "clipped-control", severity: "error" }],
+      artifact_failures: [{ kind: "artifact-unavailable", detail: "HTTP 404", severity: "fatal" }],
       session_ended: true,
       ended_by: "user",
     },
   });
 
-  assert.match(output.next_step, /Repair the inaccessible or unusable content/);
-  assert.match(output.next_step, /open it directly at the affected viewport/);
-  assert.match(output.next_step, /without reopening this ended Lavish session/);
+  assert.match(output.next_step, /fatal artifact failure/);
+  assert.match(output.next_step, /confirm it renders without reopening this ended Lavish session/);
   assert.doesNotMatch(output.next_step, /--reopen/);
 });
 
-test("final agent-ended feedback requires repair in a fresh audit session", () => {
+test("final agent-ended feedback points a fatal artifact failure at a fresh session", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
     response: {
       status: "feedback",
       prompts: [],
-      layout_warnings: [{ selector: "button", kind: "clipped-control", severity: "error" }],
+      artifact_failures: [{ kind: "artifact-unavailable", detail: "HTTP 404", severity: "fatal" }],
       session_ended: true,
       ended_by: "agent",
     },
   });
 
-  assert.match(output.next_step, /Repair the inaccessible or unusable content/);
-  assert.match(output.next_step, /open a fresh session and re-check the real-browser audit/);
-});
-
-test("persistent severe layout failures still require repair before review", () => {
-  const output = createPollOutput({
-    file: "/tmp/report.html",
-    response: {
-      status: "feedback",
-      dom_snapshot: "",
-      prompts: [],
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 120,
-          viewportWidth: 390,
-          severity: "error",
-          persistent: true,
-        },
-      ],
-    },
-  });
-
-  assert.match(output.next_step, /proven severe layout failure/);
-  assert.match(output.next_step, /before involving the human/);
-  assert.doesNotMatch(output.next_step, /fine to proceed/);
-});
-
-test("warning-only layout observations are omitted from poll output", () => {
-  const output = createPollOutput({
-    file: "/tmp/report.html",
-    response: {
-      status: "feedback",
-      dom_snapshot: "",
-      prompts: [],
-      layout_warnings: [
-        {
-          selector: ".accent",
-          kind: "element-parent-overflow",
-          overflowPx: 20,
-          viewportWidth: 720,
-          severity: "warning",
-          persistent: false,
-        },
-        {
-          selector: ".unproven",
-          kind: "clipped-text",
-          overflowPx: 200,
-          viewportWidth: 720,
-          persistent: false,
-        },
-      ],
-    },
-  });
-
-  assert.equal("layout_warnings" in output, false);
-  assert.doesNotMatch(output.next_step, /layout warning/);
-});
-
-test("a mix of fresh and persistent severe failures still mandates a fix pass", () => {
-  const output = createPollOutput({
-    file: "/tmp/report.html",
-    response: {
-      status: "feedback",
-      dom_snapshot: "",
-      prompts: [],
-      layout_warnings: [
-        {
-          selector: "html",
-          kind: "page-horizontal-overflow",
-          overflowPx: 16,
-          viewportWidth: 720,
-          severity: "error",
-          persistent: false,
-        },
-        {
-          selector: ".badge",
-          kind: "clipped-text",
-          overflowPx: 12,
-          viewportWidth: 720,
-          severity: "error",
-          persistent: true,
-        },
-      ],
-    },
-  });
-
-  assert.match(output.next_step, /2 proven severe layout failures detected/);
-  assert.match(output.next_step, /before involving the human/);
+  assert.match(output.next_step, /fatal artifact failure/);
+  assert.match(output.next_step, /to open a fresh session/);
 });
 
 test("poll wait messages tell watching agents the silence is normal", () => {
@@ -1408,18 +1476,49 @@ test("poll wait reporter writes a banner immediately and heartbeats on an interv
   assert.equal(lines.length, countAfterStop, "stops heartbeating after stop()");
 });
 
-test("spawned poll announces the wait on stderr and leaves re-run guidance when killed", async () => {
+test("poll wait reporter still banners without ticks when narration is off", async () => {
+  const lines = [];
+  const reporter = startPollWaitReporter({
+    file: "/tmp/report.html",
+    write: (line) => {
+      lines.push(line);
+    },
+    intervalMs: 5,
+    narrateTicks: false,
+  });
+
+  try {
+    assert.equal(lines.length, 1, "the one-shot not-hung banner is unconditional");
+    assert.match(lines[0], /Long-polling for user feedback/);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(lines.length, 1, "suppresses the recurring heartbeat lines");
+  } finally {
+    reporter.stop();
+  }
+});
+
+test("shouldNarratePollWaitTicks heartbeats only in an interactive terminal", () => {
+  assert.equal(shouldNarratePollWaitTicks({ isTTY: true }), true);
+  assert.equal(shouldNarratePollWaitTicks({ isTTY: undefined }), false);
+  assert.equal(shouldNarratePollWaitTicks({ isTTY: false }), false);
+});
+
+test("spawned poll with piped stderr banners once and leaves re-run guidance when killed", async () => {
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-poll-wait-test-`);
   const artifact = `${stateDir}/artifact.html`;
   await writeFile(artifact, "<html><body>hello</body></html>", "utf8");
   const server = await serve({ port: 0, stateFile: `${stateDir}/state.json`, version: VERSION });
+  const base = `http://127.0.0.1:${server.port}`;
   try {
-    const sessionResponse = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+    const sessionResponse = await fetch(`${base}/api/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ file: artifact }),
     });
     assert.ok(sessionResponse.ok, "session opens");
+
+    const key = sessionKey(await canonicalFile(artifact));
 
     const child = spawn(
       process.execPath,
@@ -1431,15 +1530,17 @@ test("spawned poll announces the wait on stderr and leaves re-run guidance when 
     );
 
     let stderr = "";
-    const sawBanner = new Promise((resolve, reject) => {
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString();
-        if (stderr.includes("Long-polling for user feedback")) resolve();
-      });
-      child.on("error", reject);
-      setTimeout(() => reject(new Error(`no banner on stderr, got: ${stderr}`)), 15_000).unref();
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
     });
-    await sawBanner;
+
+    await waitForPollListening(base, key);
+    assert.equal(
+      stderr.match(/Long-polling for user feedback/g)?.length,
+      1,
+      "piped stderr still gets the one-shot not-hung banner",
+    );
+    assert.doesNotMatch(stderr, /Still waiting for user feedback/, "the banner carries no immediate wait tick");
 
     // Wait for "close" rather than "exit": "exit" can fire while the final stderr chunk is
     // still in flight, so asserting on stderr at "exit" races the guidance message.
@@ -1601,6 +1702,320 @@ test("setup hooks exits with an error when hook installation fails", async () =>
     assert.notEqual(result.status, 0, result.stdout);
     assert.match(output, /hook/i);
     assert.doesNotMatch(result.stdout, /status: installed/);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+// `copilot` is a real binary on developer machines; an empty PATH keeps `setup plugin`
+// from registering the plugin into the tester's own Copilot CLI.
+function setupPluginEnv(homeDir, stateDir, pathDir) {
+  const env = setupHooksEnv(homeDir, stateDir);
+  delete env.APPDATA;
+  delete env.XDG_CONFIG_HOME;
+  return { ...env, PATH: pathDir, Path: pathDir };
+}
+
+function runSetupPlugin(homeDir, stateDir, pathDir) {
+  return spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "plugin"],
+    {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      encoding: "utf8",
+      env: setupPluginEnv(homeDir, stateDir, pathDir),
+    },
+  );
+}
+
+async function writeCopilotCommandStub(pathDir, options) {
+  const source = `
+const fs = require("node:fs");
+const options = ${JSON.stringify(options)};
+const args = process.argv.slice(2);
+const command = args.slice(0, 2).join(" ");
+if (command === "plugins list") {
+  if (options.invalidList) {
+    process.stdout.write("not json\\n");
+  } else {
+    const records = [{ kind: "plugin", name: "lavish-axi-tools", source: "direct" }];
+    if (options.installedSource && fs.existsSync(options.installedSource)) {
+      records.push(options.listSourcePath
+        ? { kind: "plugin", name: "lavish-axi", sourcePath: fs.readFileSync(options.installedSource, "utf8") }
+        : { kind: "plugin", name: "lavish-axi", source: "direct" });
+    }
+    process.stdout.write(JSON.stringify(records));
+  }
+  process.exit(0);
+}
+if (command === "plugin install") {
+  if (options.installFails) {
+    process.stderr.write("replacement failed\\n");
+    process.exit(1);
+  }
+  const pluginRoot = args[2];
+  if (options.installedSource) fs.writeFileSync(options.installedSource, pluginRoot);
+  if (options.copilotConfig) {
+    fs.writeFileSync(options.copilotConfig, JSON.stringify({
+      installedPlugins: [{ name: "lavish-axi", source: { source: "local", path: pluginRoot } }],
+    }));
+  }
+  if (options.installLog) fs.appendFileSync(options.installLog, "install\\n");
+  process.exit(0);
+}
+process.exit(1);
+`;
+  if (process.platform === "win32") {
+    const script = path.join(pathDir, "copilot-stub.cjs");
+    await writeFile(script, source, "utf8");
+    await writeFile(path.join(pathDir, "copilot.cmd"), `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`, "utf8");
+    return;
+  }
+  await writeFile(path.join(pathDir, "copilot"), `#!${process.execPath}\n${source}`, {
+    encoding: "utf8",
+    mode: 0o755,
+  });
+}
+
+test("setup plugin registers the installed package in the clients that are present", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-path-`);
+  try {
+    await mkdir(`${homeDir}/.cursor`, { recursive: true });
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /name: lavish-axi/);
+    assert.match(result.stdout, /cursor,registered/);
+    // No VS Code settings and no copilot binary in this environment.
+    assert.match(result.stdout, /vscode,absent/);
+    assert.match(result.stdout, /copilot,absent/);
+
+    // The registered slot points at the package root, which is where plugin.json lives.
+    const linked = await realpath(`${homeDir}/.cursor/plugins/local/lavish-axi`);
+    assert.equal(linked, await realpath(fileURLToPath(new URL("..", import.meta.url))));
+    assert.ok(existsSync(`${linked}/plugin.json`));
+    assert.ok(existsSync(`${linked}/skills/lavish/SKILL.md`));
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin registers VS Code without disturbing existing settings", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-path-`);
+  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
+  try {
+    await mkdir(path.dirname(settingsFile), { recursive: true });
+    await writeFile(settingsFile, JSON.stringify({ "editor.fontSize": 13 }), "utf8");
+
+    const first = runSetupPlugin(homeDir, stateDir, pathDir);
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    assert.match(first.stdout, /vscode,registered/);
+
+    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
+    assert.equal(settings["editor.fontSize"], 13, "unrelated settings survive");
+    const registered = Object.keys(settings["chat.pluginLocations"]);
+    assert.equal(registered.length, 1);
+    assert.ok(existsSync(`${registered[0]}/plugin.json`));
+
+    // Re-running is a no-op rather than a duplicate registration.
+    const second = runSetupPlugin(homeDir, stateDir, pathDir);
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    assert.match(second.stdout, /vscode,current/);
+    assert.deepEqual(JSON.parse(await readFile(settingsFile, "utf8")), settings);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin creates VS Code settings for a fresh installation", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-path-`);
+  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
+  try {
+    await mkdir(path.dirname(settingsFile), { recursive: true });
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /vscode,registered/);
+    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
+    const registered = Object.keys(settings["chat.pluginLocations"]);
+    assert.equal(registered.length, 1);
+    assert.ok(existsSync(`${registered[0]}/plugin.json`));
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin leaves unparseable VS Code settings alone", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-path-`);
+  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
+  const original = '{\n  // VS Code settings allow comments\n  "editor.fontSize": 13,\n}\n';
+  try {
+    await mkdir(path.dirname(settingsFile), { recursive: true });
+    await writeFile(settingsFile, original, "utf8");
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /vscode,manual/);
+    assert.equal(await readFile(settingsFile, "utf8"), original, "settings are not rewritten");
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin repairs Copilot registration without trusting list text", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-path-`);
+  const installedSource = path.join(homeDir, "copilot-installed-source");
+  const installLog = path.join(homeDir, "copilot-install-log");
+  const copilotConfig = path.join(homeDir, ".copilot", "config.json");
+  try {
+    await mkdir(path.dirname(copilotConfig), { recursive: true });
+    await writeFile(copilotConfig, '{"installedPlugins":[]}');
+    await writeCopilotCommandStub(pathDir, { installedSource, installLog, copilotConfig });
+
+    const first = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    assert.match(first.stdout, /copilot,registered/);
+    const pluginRoot = await realpath(fileURLToPath(new URL("..", import.meta.url)));
+    assert.equal(await realpath(await readFile(installedSource, "utf8")), pluginRoot);
+
+    const second = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    assert.match(second.stdout, /copilot,current/);
+    assert.equal(await realpath(await readFile(installedSource, "utf8")), pluginRoot);
+    assert.equal(await readFile(installLog, "utf8"), "install\n");
+
+    await writeFile(installedSource, "/stale/lavish-axi");
+    await writeFile(
+      copilotConfig,
+      '{"installedPlugins":[{"name":"lavish-axi","source":{"source":"local","path":"/stale/lavish-axi"}}]}',
+    );
+    const repaired = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(repaired.status, 0, repaired.stderr || repaired.stdout);
+    assert.match(repaired.stdout, /copilot,registered/);
+    assert.equal(await realpath(await readFile(installedSource, "utf8")), pluginRoot);
+    assert.equal(await readFile(installLog, "utf8"), "install\ninstall\n");
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin preserves Copilot registration when replacement fails", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-path-`);
+  const installedSource = path.join(homeDir, "copilot-installed-source");
+  const originalSource = "/working/lavish-axi";
+  try {
+    await writeFile(installedSource, originalSource);
+    await writeCopilotCommandStub(pathDir, { installedSource, listSourcePath: true, installFails: true });
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /copilot,failed/);
+    assert.equal(await readFile(installedSource, "utf8"), originalSource);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin does not install when Copilot records are invalid", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-invalid-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-invalid-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-invalid-path-`);
+  const installLog = path.join(homeDir, "copilot-install-log");
+  try {
+    await writeCopilotCommandStub(pathDir, { invalidList: true, installLog });
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /copilot,manual/);
+    assert.equal(existsSync(installLog), false);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup plugin isolates a client it cannot register from the ones it can", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-home-`);
+  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-path-`);
+  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
+  try {
+    // A real directory in Cursor's slot is unregisterable - the same reported (not thrown)
+    // path a Windows box without Developer Mode takes when link creation is refused.
+    const occupied = `${homeDir}/.cursor/plugins/local/lavish-axi`;
+    await mkdir(occupied, { recursive: true });
+    await writeFile(`${occupied}/keep.txt`, "user content", "utf8");
+    await mkdir(path.dirname(settingsFile), { recursive: true });
+    await writeFile(settingsFile, JSON.stringify({ "editor.fontSize": 13 }), "utf8");
+
+    const result = runSetupPlugin(homeDir, stateDir, pathDir);
+
+    assert.equal(result.status, 0, "an unregisterable client never fails the command");
+    assert.match(result.stdout, /cursor,manual/);
+    assert.match(result.stdout, /vscode,registered/, "the other client is still registered");
+
+    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
+    assert.equal(Object.keys(settings["chat.pluginLocations"]).length, 1);
+    assert.equal(await readFile(`${occupied}/keep.txt`, "utf8"), "user content", "user content survives");
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+    await rm(homeDir, { force: true, recursive: true });
+    await rm(pathDir, { force: true, recursive: true });
+  }
+});
+
+test("setup rejects an unknown action and names both supported ones", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-state-`);
+  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-home-`);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "everything"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: setupHooksEnv(homeDir, stateDir),
+      },
+    );
+
+    assert.notEqual(result.status, 0);
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.match(output, /setup hooks/);
+    assert.match(output, /setup plugin/);
   } finally {
     await rm(stateDir, { force: true, recursive: true });
     await rm(homeDir, { force: true, recursive: true });

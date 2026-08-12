@@ -13,6 +13,7 @@ test("check script runs all verification commands", async () => {
     "npm run typecheck",
     "npm test",
     "node scripts/build-skill.js --check",
+    "node scripts/build-plugin.js --check",
   ]);
 });
 
@@ -27,6 +28,21 @@ test("published package includes the installable skill", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
   assert.ok(packageJson.files.includes("skills/lavish"));
+});
+
+test("published package root is a complete Agent Plugin", async () => {
+  // The tarball root doubles as the plugin root, so both the manifest and the skills it
+  // discovers have to ship; without either, an installed copy is not installable as a plugin.
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+  assert.ok(packageJson.files.includes("plugin.json"));
+  assert.ok(packageJson.files.includes("skills/lavish"));
+});
+
+test("release-please keeps the plugin manifest version in step with the package", async () => {
+  const config = JSON.parse(await readFile(new URL("../release-please-config.json", import.meta.url), "utf8"));
+
+  assert.deepEqual(config.packages["."]["extra-files"], [{ type: "json", path: "plugin.json", jsonpath: "$.version" }]);
 });
 
 test("lavish-design agent skill is marked internal for skills CLI discovery", async () => {
