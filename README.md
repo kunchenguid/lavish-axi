@@ -163,7 +163,7 @@ pnpm link
 - **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, feedback controls, and render-time layout checks.
   Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser.
   Run `lavish-axi design` for the single source of agent-facing design guidance and optional CDN or Mermaid snippets.
-- **Agent-operated component registry** - Run `lavish-axi registry search <need>` before you write repeated markup. A component owns one Mustache template, one example, and optional CSS or JavaScript. A recipe owns the page shell, named slots, allowed components, required components, and design tokens. `lavish-axi compose` accepts TOON or JSON component calls and writes normal portable HTML with local assets. Project sources live under `lavish/components/` and `lavish/recipes/`. Agents change these sources through the CLI and register them. Do not edit `lavish/registry.json` or `lavish/shadcn/registry.json`; Lavish generates both files. `registry add` uses the official shadcn registry client only for an explicit import. Routine discovery and composition do not use the network.
+- **Agent-operated component registry** - Run `lavish-axi registry search <need>` before you write repeated markup. A component owns one Mustache template, one example, and optional CSS or JavaScript. A recipe owns the page shell, named slots, allowed components, required components, and design tokens. `lavish-axi compose` accepts TOON or JSON component calls. It writes portable HTML and sibling local assets. Project sources live under `lavish/components/` and `lavish/recipes/`. Agents edit these sources and use the CLI to update the generated indexes. Do not edit `lavish/registry.json` or `lavish/shadcn/registry.json`; Lavish generates both files. `registry add` uses the official shadcn registry client only for an explicit import. Routine discovery and composition do not use the network.
 - **Self-paint warning** - `lavish-axi <html-file>`, `export`, and `share` run a render-free check for artifacts missing an explicit page background and return a one-line `self_paint_warning`.
   The check fails open - any stylesheet link, `@import`, Tailwind runtime script, `color-scheme`, or `html`/`body`/`:root` background signal suppresses it - and it never blocks the open.
 - **Open-time layout gate** - The browser chrome masks an artifact only while the real in-iframe audit waits for fonts and final geometry.
@@ -243,31 +243,49 @@ pnpm link
 | `lavish-axi setup plugin`       | Register the installed package as an [Agent Plugin](https://agent-plugins.org) in VS Code, Cursor, and GitHub Copilot CLI; opt-in, idempotent, no marketplace involved. Reload each client afterward.                                                                                                                                        |
 | `lavish-axi server`             | Run the local Lavish Editor server.                                                                                                                                                                                                                                                                                                          |
 
+`compose` input has a `components` array. Each call names a registered component and recipe slot. Give the component data as an `inputs` object or a `data` path relative to the composition file. Run `registry inspect` to find required inputs. Run `recipe inspect` to find allowed slots and components.
+
+```toon
+title: Incident review
+components[1]{component,slot,data}:
+  page-section,body,section.toon
+```
+
+JSON input uses the same fields. These paths must stay inside the nearest Git worktree. Without a worktree, they must stay inside the current directory.
+
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.
 One artifact often combines several playbooks, such as a plan that includes a comparison and a diagram, so agents must match against each `use_when` trigger and open every matching playbook before writing HTML.
 For flows, architecture, state, or sequence diagrams, open the diagram playbook for the recommended tooling and SVG guidance.
 
 ### Flags
 
-| Command                  | Flag                  | Description                                                                                                                                                                                                                         |
-| ------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lavish-axi <html-file>` | `--no-open`           | Ensure the server/session exists without opening another browser window.                                                                                                                                                            |
-| `lavish-axi <html-file>` | `--no-gate`           | Skip the open-time layout curtain for this browser open.                                                                                                                                                                            |
-| `lavish-axi <html-file>` | `--reopen`            | Reopen a session the user explicitly ended from the browser; without it, a plain open refuses and explains why instead of reopening uninvited.                                                                                      |
-| `lavish-axi update`      | `--check`             | Report current vs latest npm version without installing an update.                                                                                                                                                                  |
-| `lavish-axi export`      | `--out <path>`        | Write the export to a specific path instead of `<name>.export.html` next to the source.                                                                                                                                             |
-| `lavish-axi share`       | `--password <pw>`     | Make the third-party ht-ml.app page private; viewers must supply the password.                                                                                                                                                      |
-| `lavish-axi share`       | `--token <t>`         | Attach an optional bearer token (`LAVISH_AXI_HTML_APP_TOKEN`); never required to publish.                                                                                                                                           |
-| `lavish-axi poll`        | `--agent-reply "..."` | Show the agent's reply in the existing browser chat and re-enable human sends before polling again.                                                                                                                                 |
-| `lavish-axi poll`        | `--timeout-ms <ms>`   | Test/debug escape hatch only; agents should normally omit it and leave the long poll running.                                                                                                                                       |
-| `lavish-axi stop`        | `--port <port>`       | Shut down a server running on a non-default port.                                                                                                                                                                                   |
-| `lavish-axi server`      | `--verbose`           | Log session and watcher events to stderr; can also be enabled with `LAVISH_AXI_DEBUG=1`. Detached server output is appended to `~/.lavish-axi/server.log` (or `LAVISH_AXI_STATE_DIR/server.log`) for startup and crash diagnostics. |
+| Command                       | Flag                  | Description                                                                                                                                                                                                                         |
+| ----------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lavish-axi <html-file>`      | `--no-open`           | Ensure the server/session exists without opening another browser window.                                                                                                                                                            |
+| `lavish-axi <html-file>`      | `--no-gate`           | Skip the open-time layout curtain for this browser open.                                                                                                                                                                            |
+| `lavish-axi <html-file>`      | `--reopen`            | Reopen a session the user explicitly ended from the browser; without it, a plain open refuses and explains why instead of reopening uninvited.                                                                                      |
+| `lavish-axi update`           | `--check`             | Report current vs latest npm version without installing an update.                                                                                                                                                                  |
+| `lavish-axi export`           | `--out <path>`        | Write the export to a specific path instead of `<name>.export.html` next to the source.                                                                                                                                             |
+| `lavish-axi share`            | `--password <pw>`     | Make the third-party ht-ml.app page private; viewers must supply the password.                                                                                                                                                      |
+| `lavish-axi share`            | `--token <t>`         | Attach an optional bearer token (`LAVISH_AXI_HTML_APP_TOKEN`); never required to publish.                                                                                                                                           |
+| `lavish-axi poll`             | `--agent-reply "..."` | Show the agent's reply in the existing browser chat and re-enable human sends before polling again.                                                                                                                                 |
+| `lavish-axi poll`             | `--timeout-ms <ms>`   | Test/debug escape hatch only; agents should normally omit it and leave the long poll running.                                                                                                                                       |
+| `lavish-axi registry inspect` | `--source`            | Include the component source directory in the result.                                                                                                                                                                               |
+| `lavish-axi registry create`  | `--summary <text>`    | Set the component summary.                                                                                                                                                                                                          |
+| `lavish-axi registry create`  | `--use-when <text>`   | Set the component discovery condition.                                                                                                                                                                                              |
+| `lavish-axi registry add`     | `--dry-run`           | Resolve a remote shadcn item and list its planned local paths without installing it.                                                                                                                                                |
+| `lavish-axi recipe inspect`   | `--source`            | Include the recipe source directory in the result.                                                                                                                                                                                  |
+| `lavish-axi recipe create`    | `--summary <text>`    | Set the recipe summary.                                                                                                                                                                                                             |
+| `lavish-axi compose`          | `--input <path>`      | Read the TOON or JSON composition from this project-local path.                                                                                                                                                                     |
+| `lavish-axi compose`          | `--out <path>`        | Write the HTML and its sibling asset directory to this project-local path.                                                                                                                                                          |
+| `lavish-axi stop`             | `--port <port>`       | Shut down a server running on a non-default port.                                                                                                                                                                                   |
+| `lavish-axi server`           | `--verbose`           | Log session and watcher events to stderr; can also be enabled with `LAVISH_AXI_DEBUG=1`. Detached server output is appended to `~/.lavish-axi/server.log` (or `LAVISH_AXI_STATE_DIR/server.log`) for startup and crash diagnostics. |
 
 ## Development
 
 ```sh
 pnpm run check          # Run all verification commands
-pnpm run build          # Bundle the publishable CLI, chrome, and design assets
+pnpm run build          # Build the publishable CLI and runtime assets
 pnpm run build:skill    # Regenerate the installable lavish skill
 pnpm test               # Run node:test tests
 pnpm run lint           # Run ESLint

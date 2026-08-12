@@ -57,7 +57,7 @@ async function resolveConfinedWrite(file, projectRoot, { directory = false } = {
         if (error?.code !== "ENOENT") throw error;
         try {
           await lstat(output);
-          throw new Error("Composition output must stay inside the project");
+          throw new Error("Composition output must stay inside the project", { cause: error });
         } catch (leafError) {
           if (leafError?.code !== "ENOENT") throw leafError;
         }
@@ -176,7 +176,10 @@ export async function composeArtifact(recipeName, inputFile, outputFile, { proje
   const stylesheet = css.length ? `${assetsName}/styles.css` : "";
   const script = scripts.length ? `${assetsName}/components.js` : "";
   if (css.length)
-    await writeFile(await resolveConfinedWrite(path.join(assetsDir, "styles.css"), context.root), `${css.join("\n")}\n`);
+    await writeFile(
+      await resolveConfinedWrite(path.join(assetsDir, "styles.css"), context.root),
+      `${css.join("\n")}\n`,
+    );
   if (scripts.length)
     await writeFile(
       await resolveConfinedWrite(path.join(assetsDir, "components.js"), context.root),

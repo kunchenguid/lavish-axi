@@ -478,8 +478,7 @@ export async function updateRecipeComponents(name, component, action, { projectR
       throw new Error(`Component ${component} is required by recipe ${name}; unrequire it before removing it`);
     }
     components.delete(component);
-  }
-  else throw new Error(`Unknown recipe component action: ${action}`);
+  } else throw new Error(`Unknown recipe component action: ${action}`);
   record.components = [...components].sort();
   const changed = await persistRecipe(root, project, record);
   return { recipe: name, components: record.components, changed_paths: changed };

@@ -6,7 +6,7 @@ This file provides guidance to coding agents when working with code in this repo
 
 ```sh
 pnpm run check          # Run build, size budgets, lint, format check, typecheck, tests, and generated-file checks
-pnpm run build          # Bundle dist/cli.mjs and copy chrome/design assets into dist
+pnpm run build          # Build the publishable CLI and runtime assets
 pnpm run build:skill    # Regenerate skills/lavish/SKILL.md from shared CLI guidance
 pnpm test               # node:test runner (test/*.test.js)
 pnpm run lint           # ESLint over bin src test scripts
