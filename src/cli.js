@@ -16,6 +16,7 @@ import {
 } from "./export-bundle.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
+import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 
@@ -228,10 +229,14 @@ export function createPlaybookOutput(args) {
   return { playbook };
 }
 
-export function createOpenOutput({ file, url, status, agent = "generic" }) {
+export function createOpenOutput({ file, url, status, agent = "generic", selfPaintWarning = undefined }) {
+  const selfPaintPrefix = selfPaintWarning
+    ? `First fix the unpainted page surface flagged in self_paint_warning and save - Lavish live-reloads the artifact automatically, so you do not need to re-run \`lavish-axi ${file}\`. `
+    : "";
   return {
     session: { file, url, status },
-    next_step: `Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Layout issues the browser detects do not return this poll; they wait in the user's Layout issues inbox until the user queues them, then arrive as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use. ${pollExecutionGuidance({ agent })} After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback. If the user ends the session, stop polling and do not reopen it by re-running \`lavish-axi ${file}\` unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-axi ${file} --reopen\`.`,
+    ...(selfPaintWarning ? { self_paint_warning: selfPaintWarning } : {}),
+    next_step: `${selfPaintPrefix}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Layout issues the browser detects do not return this poll; they wait in the user's Layout issues inbox until the user queues them, then arrive as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use. ${pollExecutionGuidance({ agent })} After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback. If the user ends the session, stop polling and do not reopen it by re-running \`lavish-axi ${file}\` unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-axi ${file} --reopen\`.`,
   };
 }
 
@@ -253,6 +258,7 @@ async function openCommand(args) {
   }
   await assertHtmlFile(file);
   const absolute = await canonicalFile(file);
+  const selfPaintWarning = await selfPaintWarningForFile(absolute);
   const noGate = args.includes("--no-gate");
   const reopen = args.includes("--reopen");
   const baseUrl = await ensureServer({ forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || "") });
@@ -273,7 +279,18 @@ async function openCommand(args) {
     url: response.url,
     status: response.status || "opened",
     agent: detectInvokingAgent(process.env),
+    selfPaintWarning,
   });
+}
+
+// A read failure here must not break the open - the server reports unreadable artifacts
+// through its own fatal path, and the self-paint check always fails open.
+async function selfPaintWarningForFile(absolute) {
+  try {
+    return analyzeSelfPaint(await readFile(absolute, "utf8")).painted ? undefined : SELF_PAINT_WARNING;
+  } catch {
+    return undefined;
+  }
 }
 
 export function shouldOpenBrowser(args, env) {
@@ -490,10 +507,16 @@ async function exportCommand(args) {
     resolveAbsolute: resolveDesignAssetPath,
   });
   await writeFile(output, html);
-  return createExportOutput({ source: absolute, output, html, warnings });
+  return createExportOutput({
+    source: absolute,
+    output,
+    html,
+    warnings,
+    selfPaintWarning: analyzeSelfPaint(source).painted ? undefined : SELF_PAINT_WARNING,
+  });
 }
 
-export function createExportOutput({ source, output, html, warnings }) {
+export function createExportOutput({ source, output, html, warnings, selfPaintWarning = undefined }) {
   const allWarnings = Array.isArray(warnings) ? warnings : [];
   const { unresolved, notices } = splitExportWarnings(allWarnings);
   const result = {
@@ -515,6 +538,10 @@ export function createExportOutput({ source, output, html, warnings }) {
     result.next_step = `Wrote ${output} with export notices (see notices). Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
   } else {
     result.next_step = `Wrote ${output}. Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
+  }
+  if (selfPaintWarning) {
+    result.self_paint_warning = selfPaintWarning;
+    result.next_step = `Fix the unpainted page surface flagged in self_paint_warning and re-run the export before sharing the file - an exported page renders over whatever surface hosts it. ${result.next_step}`;
   }
   return result;
 }

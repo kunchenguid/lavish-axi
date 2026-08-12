@@ -25,7 +25,7 @@ test("a rotina de upstream esta registrada em arquivo, com cadencia explicita", 
   assert.match(texto, /pnpm run check/);
 
   // O baseline, senao "regressao" volta a ser opiniao.
-  assert.match(texto, /609 passam \/ 0 falham/);
+  assert.match(texto, /643 passam \/ 0 falham/);
 });
 
 test("AGENTS.md aponta para a rotina do fork", async () => {

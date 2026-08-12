@@ -1,0 +1,24 @@
+$ lavish-axi design  # emitted design summary
+  summary: "Use this Lavish CDN fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system; artifacts stay portable HTML. Paint an explicit page background and readable text. Decide the design direction in this strict priority order, and only move to the next step when the current one truly yields nothing: (1) if the user asked for a specific look or named design system, use that; (2) otherwise you must first inspect the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and match that project's design system: Tailwind or theme config, shared CSS variables or design tokens, component library, brand assets, or existing styled pages. If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo; (3) only when both steps come up empty, use the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, available via CDN, and prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user. Paste the CDN snippet below into your `<head>`."
+
+$ lavish-axi export invisible.html --out invisible.export.html
+export:
+  source: /private/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/tmp.eGlsbIf1Dk/invisible.html
+  output: /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/tmp.eGlsbIf1Dk/invisible.export.html
+  bytes: 167
+  unresolved_local_assets: 0
+  notices: 0
+next_step: "Fix the unpainted page surface flagged in self_paint_warning and re-run the export before sharing the file - an exported page renders over whatever surface hosts it. Wrote /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/tmp.eGlsbIf1Dk/invisible.export.html. Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those."
+self_paint_warning: "This artifact never paints its own page surface: no background on html/body/:root, no bg-* class or data-theme on html/body, and no stylesheet that could set one. Lavish injects no design system, so text that assumes a dark or light host surface can render invisible. Set an explicit background and readable text."
+
+$ lavish-axi export painted.html --out painted.export.html
+export:
+  source: /private/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/tmp.eGlsbIf1Dk/painted.html
+  output: /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/tmp.eGlsbIf1Dk/painted.export.html
+  bytes: 169
+  unresolved_local_assets: 0
+  notices: 0
+next_step: "Wrote /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/tmp.eGlsbIf1Dk/painted.export.html. Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those."
+
+$ Public guidance surface verification
+render-verify occurrences across CLI help, design output, all playbooks, and generated skill: 0

@@ -58,6 +58,16 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
   }
 });
 
+test("createSkillMarkdown explains the open-time self-paint warning", () => {
+  const md = createSkillMarkdown();
+  const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Visual guidance"));
+
+  const openIndex = workflow.indexOf("to open or resume a review session");
+  const pollIndex = workflow.indexOf("to long-poll");
+  assert.ok(openIndex > 0 && openIndex < pollIndex, "opening comes before polling");
+  assert.match(workflow, /self_paint_warning/, "the workflow explains the open-time warning");
+});
+
 test("createSkillMarkdown requires an observable wake path for every poll", () => {
   const md = createSkillMarkdown();
   const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Visual guidance"));

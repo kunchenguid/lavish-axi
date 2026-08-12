@@ -42,8 +42,10 @@ import {
   VERSION,
 } from "../src/cli.js";
 import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
+import { SELF_PAINT_WARNING } from "../src/self-paint.js";
 import { serve } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
+import { createSkillMarkdown } from "../src/skill.js";
 
 async function waitForPollListening(base, key, timeoutMs = 10_000) {
   const controller = new AbortController();
@@ -115,7 +117,7 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.equal("use_cases" in output, false);
   assert.equal("example_use_cases" in output, false);
   assert.equal("artifact_guidance" in output, false);
-  assert.ok(output.visual_guidance.length <= 5);
+  assert.ok(output.visual_guidance.length <= 6);
   assert.ok(output.visual_guidance.some((item) => item.includes("visual hierarchy")));
   assert.ok(
     output.visual_guidance.some((item) => /screenshot/i.test(item) && /embed/i.test(item) && /prose/i.test(item)),
@@ -165,6 +167,69 @@ test("the design-priority rule is single-sourced and keeps its three-step semant
   assert.match(DESIGN_SYSTEM_HINT, /portable/);
   assert.match(DESIGN_SYSTEM_HINT, /lavish-axi design/);
   assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
+});
+
+test("design output is the sole emitted concise explicit-background guidance", () => {
+  const output = createDesignOutput();
+  const instruction = "Paint an explicit page background and readable text.";
+  assert.match(output.design.summary, new RegExp(instruction.replaceAll(".", "\\.")));
+  assert.equal(output.self_paint_rule, undefined);
+
+  const otherAgentSurfaces = [
+    JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
+    getCommandHelp("design"),
+    createSkillMarkdown(),
+    ...["diagram", "table", "comparison", "plan", "code", "input", "slides"].map((id) =>
+      JSON.stringify(createPlaybookOutput([id])),
+    ),
+  ];
+  for (const surface of otherAgentSurfaces) {
+    assert.ok(!surface.includes(instruction));
+    assert.doesNotMatch(surface, /render-verify/i);
+  }
+});
+
+test("open output flags an artifact that never paints its own page surface", () => {
+  const warned = createOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://localhost:4387/session/abc123",
+    status: "opened",
+    selfPaintWarning: SELF_PAINT_WARNING,
+  });
+
+  assert.equal(warned.self_paint_warning, SELF_PAINT_WARNING);
+  assert.match(warned.next_step, /^First fix the unpainted page surface flagged in self_paint_warning/);
+  assert.match(warned.next_step, /live-reloads the artifact automatically/);
+  assert.match(warned.next_step, /lavish-axi poll \/tmp\/artifact\.html/, "the poll contract stays intact");
+
+  const clean = createOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://localhost:4387/session/abc123",
+    status: "opened",
+  });
+  assert.equal("self_paint_warning" in clean, false);
+  assert.match(clean.next_step, /^Do not respond to the user just yet\./);
+});
+
+test("export output flags an unpainted page surface before it reaches a host", () => {
+  const exported = createExportOutput({
+    source: "/tmp/report.html",
+    output: "/tmp/report.export.html",
+    html: "<html></html>",
+    warnings: [],
+    selfPaintWarning: SELF_PAINT_WARNING,
+  });
+  assert.equal(exported.self_paint_warning, SELF_PAINT_WARNING);
+  assert.match(exported.next_step, /^Fix the unpainted page surface flagged in self_paint_warning/);
+  assert.match(exported.next_step, /no Lavish server/, "the export contract stays intact");
+
+  const cleanExport = createExportOutput({
+    source: "/tmp/report.html",
+    output: "/tmp/report.export.html",
+    html: "<html></html>",
+    warnings: [],
+  });
+  assert.equal("self_paint_warning" in cleanExport, false);
 });
 
 test("home output warns agents that poll needs an observable wake path", () => {

@@ -333,7 +333,10 @@ async function createChromeHarness({
     postedToWhiteboard,
     createInlineWhiteboard() {
       const posted = [];
+      // A real inline whiteboard frame is created by the SDK inside the
+      // artifact document, so its window's parent is the artifact window.
       const source = {
+        parent: frame.contentWindow,
         postMessage(message) {
           posted.push(message);
         },
@@ -341,6 +344,20 @@ async function createChromeHarness({
       const whiteboard = { source, posted };
       inlineWhiteboards.push(whiteboard);
       return whiteboard;
+    },
+    // A window that is not a child of the artifact frame: an attacker page that
+    // framed this chrome, or one holding a window.open handle to it. Such a
+    // window is top-level, so its `parent` is itself.
+    createForeignWindow() {
+      const posted = [];
+      /** @type {any} */
+      const source = {
+        postMessage(message) {
+          posted.push(message);
+        },
+      };
+      source.parent = source;
+      return { source, posted };
     },
     eventSource() {
       assert.equal(eventSources.length, 1);

@@ -82,8 +82,8 @@ O `check` roda build, lint, format, typecheck, `node --test`, `scripts/verificar
 ingles reaparecer numa superficie que a pessoa le, se `<html lang="pt-BR">` ou a marca sairem, ou se a
 API do artefato (`window.lavish`, `data-lavish-*`, `queuePrompt`) for renomeada.
 
-**Baseline desta estacao: 612 testes — 609 passam / 0 falham / 3 pulados.** Regressao se mede por todos
-os numeros: qualquer falha, menos de 609 passes ou menos de 612 testes. Sem os pisos, apagar um teste
+**Baseline desta estacao: 646 testes — 643 passam / 0 falham / 3 pulados.** Regressao se mede por todos
+os numeros: qualquer falha, menos de 643 passes ou menos de 646 testes. Sem os pisos, apagar um teste
 que falha viraria "verde".
 
 ## Revendorizar para o plugin
