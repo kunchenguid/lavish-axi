@@ -20,13 +20,16 @@
     "build": "node scripts/build.js",
     "build:skill": "node scripts/build-skill.js",
     "build:plugin": "node scripts/build-plugin.js",
-    "check": "npm run build && npm run lint && npm run format:check && npm run typecheck && npm test && node scripts/build-skill.js --check && node scripts/build-plugin.js --check",
+    "check": "npm run build && npm run size:check && npm run lint && npm run format:check && npm run typecheck && npm test && node scripts/build-skill.js --check && node scripts/build-plugin.js --check",
     "start": "node dist/cli.mjs",
     "lint": "eslint bin src test scripts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepack": "npm run build",
     "prepare": "npm run build",
+    "size:check": "size-limit",
+    "size:why": "npm run build && node scripts/performance/analyze-bundles.js",
+    "bench:process": "npm run build && node scripts/performance/run.js",
     "test": "node --test",
     "typecheck": "tsc --noEmit"
   },
@@ -44,6 +47,7 @@
     "@eslint/js": "^10.0.1",
     "@excalidraw/excalidraw": "0.18.1",
     "@excalidraw/mermaid-to-excalidraw": "2.2.2",
+    "@size-limit/file": "13.0.3",
     "@types/node": "^25.6.2",
     "esbuild": "^0.28.0",
     "eslint": "^10.3.0",
@@ -53,6 +57,7 @@
     "prettier": "^3.8.3",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "size-limit": "13.0.3",
     "typescript": "^5.9.3"
   },
   "engines": {

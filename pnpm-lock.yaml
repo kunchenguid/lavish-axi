@@ -41,6 +41,9 @@ importers:
       "@excalidraw/mermaid-to-excalidraw":
         specifier: 2.2.2
         version: 2.2.2
+      "@size-limit/file":
+        specifier: 13.0.3
+        version: 13.0.3(size-limit@13.0.3)
       "@types/node":
         specifier: ^25.6.2
         version: 25.7.0
@@ -68,6 +71,9 @@ importers:
       react-dom:
         specifier: 18.3.1
         version: 18.3.1(react@18.3.1)
+      size-limit:
+        specifier: 13.0.3
+        version: 13.0.3
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -736,6 +742,13 @@ packages:
     resolution:
       { integrity: sha512-A9+lCBZoaMJlVKcRBz2YByCG+Cp2t6nAnMnNba+XiWxnj6r4JUFqfsgwocMBZU9LPtdxC6wB56ySYpc7LQIoJg== }
 
+  "@size-limit/file@13.0.3":
+    resolution:
+      { integrity: sha512-PWTITIXH5p9aGIf6qq2Fruihn/b9nBQyfkyoAyb6DzFJgS1Ek9MSPJYKxKFLO8jdo0aqSgBPd3sevbS6PyBiJw== }
+    engines: { node: ^20.0.0 || ^22.0.0 || >=24.0.0 }
+    peerDependencies:
+      size-limit: 13.0.3
+
   "@tailwindcss/browser@4.2.4":
     resolution:
       { integrity: sha512-yd+3CxxuF1KDt9Q+405JR3/vyotvS5eMIsZPEynEak/JybvFVn8mVmLjVUxgNmrFB6EGCc89lXBECzIZA+YeXQ== }
@@ -961,6 +974,11 @@ packages:
     resolution:
       { integrity: sha512-tjwM5exMg6BGRI+kNmTntNsvdZS1X8BFYS6tnJ2hdH0kVxM6/eVZ2xy+FqStSWvYmtfFMDLIxurorHwDKfDz5Q== }
     engines: { node: ">=18" }
+
+  bytes-iec@3.1.1:
+    resolution:
+      { integrity: sha512-fey6+4jDK7TFtFg/klGSvNKJctyU7n2aQdnM+CO0ruLPbqqMOM8Tio0Pc+deqUeVKX1tL5DQep1zQ7+37aTAsA== }
+    engines: { node: ">= 0.8" }
 
   bytes@3.1.2:
     resolution:
@@ -1722,6 +1740,11 @@ packages:
       { integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ== }
     engines: { node: ">= 0.8.0" }
 
+  lilconfig@3.1.3:
+    resolution:
+      { integrity: sha512-/vlFKAoH5Cgt3Ie+JLhRbwOsCQePABiU3tJ1egGvyQ+33R/vcwM2Zl2QR/LzjsBeItPt3oSVXapn+m4nQDvpzw== }
+    engines: { node: ">=14" }
+
   locate-path@6.0.0:
     resolution:
       { integrity: sha512-iPZK6eYjbxRu3uB4/WZ3EsEIMJFMqAoopl3R+zuq0UjcAm/MO6KCweDgPfP3elTztoKP3KtnVHxTn2NHBSDVUw== }
@@ -1807,6 +1830,10 @@ packages:
       { integrity: sha512-7ZtY5KTCNheRGfEFxnedV5zFiORN1+Y1N6zvPTnHQd8ENUvfaDBeuJDZb2bN/oXwXxu3qkTXDzy57W5vAmDTBw== }
     engines: { node: ^14 || ^16 || >=18 }
     hasBin: true
+
+  nanospinner@1.2.2:
+    resolution:
+      { integrity: sha512-Zt/AmG6qRU3e+WnzGGLuMCEAO/dAu45stNbHY223tUxldaDAeE+FxSPsd9Q+j+paejmm0ZbrNVs5Sraqy3dRxA== }
 
   natural-compare@1.4.0:
     resolution:
@@ -1907,6 +1934,10 @@ packages:
   pica@7.1.1:
     resolution:
       { integrity: sha512-WY73tMvNzXWEld2LicT9Y260L43isrZ85tPuqRyvtkljSDLmnNFQmZICt4xUJMVulmcc6L9O7jbBrtx3DOz/YQ== }
+
+  picocolors@1.1.1:
+    resolution:
+      { integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA== }
 
   picomatch@2.3.2:
     resolution:
@@ -2114,6 +2145,12 @@ packages:
     resolution:
       { integrity: sha512-ZX99e6tRweoUXqR+VBrslhda51Nh5MTQwou5tnUDgbtyM0dBgmhEDtWGP/xbKn6hqfPRHujUNwz5fy/wbbhnpw== }
     engines: { node: ">= 0.4" }
+
+  size-limit@13.0.3:
+    resolution:
+      { integrity: sha512-KVb2aNEU49BwTR21SVjD+2QHP9gBV/nWsTHzNB/heRwXtHyA7lLQiDZDQ1TiNh/B/TZXKAZrHYyTt+cvBUrzYw== }
+    engines: { node: ^22.18.0 || ^24.0.0 || >=26.0.0 }
+    hasBin: true
 
   sliced@1.0.1:
     resolution:
@@ -2773,6 +2810,10 @@ snapshots:
 
   "@radix-ui/rect@1.1.0": {}
 
+  "@size-limit/file@13.0.3(size-limit@13.0.3)":
+    dependencies:
+      size-limit: 13.0.3
+
   "@tailwindcss/browser@4.2.4": {}
 
   "@toon-format/toon@2.1.0": {}
@@ -2971,6 +3012,8 @@ snapshots:
   bundle-name@4.1.0:
     dependencies:
       run-applescript: 7.1.0
+
+  bytes-iec@3.1.1: {}
 
   bytes@3.1.2: {}
 
@@ -3621,6 +3664,8 @@ snapshots:
       prelude-ls: 1.2.1
       type-check: 0.4.0
 
+  lilconfig@3.1.3: {}
+
   locate-path@6.0.0:
     dependencies:
       p-locate: 5.0.0
@@ -3688,6 +3733,10 @@ snapshots:
   nanoid@3.3.3: {}
 
   nanoid@4.0.2: {}
+
+  nanospinner@1.2.2:
+    dependencies:
+      picocolors: 1.1.1
 
   natural-compare@1.4.0: {}
 
@@ -3760,6 +3809,8 @@ snapshots:
       multimath: 2.0.0
       object-assign: 4.1.1
       webworkify: 1.5.0
+
+  picocolors@1.1.1: {}
 
   picomatch@2.3.2: {}
 
@@ -3948,6 +3999,12 @@ snapshots:
       side-channel-list: 1.0.1
       side-channel-map: 1.0.1
       side-channel-weakmap: 1.0.2
+
+  size-limit@13.0.3:
+    dependencies:
+      bytes-iec: 3.1.1
+      lilconfig: 3.1.3
+      nanospinner: 1.2.2
 
   sliced@1.0.1: {}
 

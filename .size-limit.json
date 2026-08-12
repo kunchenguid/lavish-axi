@@ -1,0 +1,47 @@
+[
+  {
+    "name": "CLI bundle",
+    "path": "dist/cli.mjs",
+    "limit": "450 kB",
+    "brotli": false
+  },
+  {
+    "name": "Chrome runtime",
+    "path": ["dist/chrome-client.js", "dist/chrome.css"],
+    "limit": "105 kB",
+    "brotli": false
+  },
+  {
+    "name": "Design runtime",
+    "path": "dist/design/**",
+    "limit": "1.35 MB",
+    "brotli": false
+  },
+  {
+    "name": "Whiteboard JavaScript",
+    "path": "dist/whiteboard/whiteboard.js",
+    "limit": "8 MB",
+    "brotli": false
+  },
+  {
+    "name": "Whiteboard styles and fonts",
+    "path": ["dist/whiteboard/**", "!dist/whiteboard/whiteboard.js"],
+    "limit": "720 kB",
+    "brotli": false
+  },
+  {
+    "name": "Published package payload",
+    "path": [
+      "dist/**",
+      "plugin.json",
+      "skills/lavish/**",
+      "lavish-editor-marketing/renders/lavish-editor-marketing.gif",
+      "LICENSE",
+      "THIRD-PARTY-NOTICES.md",
+      "README.md",
+      "package.json"
+    ],
+    "limit": "15.8 MB",
+    "brotli": false
+  }
+]
