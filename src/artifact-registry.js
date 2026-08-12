@@ -205,10 +205,6 @@ async function componentRecord(source, projectRoot) {
   const template = await readFile(templateFile, "utf8");
   const facts = templateFacts(template);
   const example = await readToon(exampleFile);
-  const missing = facts.inputs.filter((input) => !Object.hasOwn(example, input));
-  if (missing.length) throw new Error(`Component example is missing inputs: ${missing.join(", ")}`);
-  const extra = Object.keys(example).filter((input) => !facts.inputs.includes(input));
-  if (extra.length) throw new Error(`Component example has unknown inputs: ${extra.join(", ")}`);
 
   const optionalFile = async (filename) => {
     const file = path.join(source, filename);
@@ -224,17 +220,21 @@ async function componentRecord(source, projectRoot) {
   };
 
   return {
-    name,
-    summary: String(metadata.summary || "").trim(),
-    use_when: String(metadata.use_when || "").trim(),
-    origin: "project",
-    source: relativePath(projectRoot, source),
-    template: "template.mustache",
-    example: "example.toon",
-    inputs: facts.inputs,
-    partials: facts.partials,
-    style: await optionalFile("style.css"),
-    behavior: await optionalFile("behavior.js"),
+    record: {
+      name,
+      summary: String(metadata.summary || "").trim(),
+      use_when: String(metadata.use_when || "").trim(),
+      origin: "project",
+      source: relativePath(projectRoot, source),
+      template: "template.mustache",
+      example: "example.toon",
+      own_inputs: facts.inputs,
+      inputs: facts.inputs,
+      partials: facts.partials,
+      style: await optionalFile("style.css"),
+      behavior: await optionalFile("behavior.js"),
+    },
+    example,
   };
 }
 
@@ -253,6 +253,29 @@ function assertComponentGraph(components) {
     visited.add(name);
   };
   for (const name of Object.keys(components)) visit(name, 0);
+}
+
+function resolveComponentInputs(components) {
+  const resolved = {};
+  const visit = (name) => {
+    if (resolved[name]) return resolved[name];
+    const component = components[name];
+    const inputs = new Set(component.own_inputs || component.inputs || []);
+    for (const partial of component.partials || []) {
+      for (const input of visit(partial).inputs || []) inputs.add(input);
+    }
+    resolved[name] = { ...component, inputs: [...inputs].sort() };
+    return resolved[name];
+  };
+  for (const name of Object.keys(components)) visit(name);
+  return resolved;
+}
+
+function assertExampleContract(record, example) {
+  const missing = record.inputs.filter((input) => !Object.hasOwn(example, input));
+  if (missing.length) throw new Error(`Component example is missing inputs: ${missing.join(", ")}`);
+  const extra = Object.keys(example).filter((input) => !record.inputs.includes(input));
+  if (extra.length) throw new Error(`Component example has unknown inputs: ${extra.join(", ")}`);
 }
 
 async function writeToon(file, value) {
@@ -325,14 +348,23 @@ export async function registerComponent(componentDirectory, { projectRoot = proc
   const source = await confinedExisting(root, componentDirectory, "Component source");
   const project = await projectCatalog(root);
   const builtIn = await builtInCatalog();
-  const record = await componentRecord(source, root);
+  const { record, example } = await componentRecord(source, root);
   const components = { ...builtIn.components, ...project.components, [record.name]: record };
   assertComponentGraph(components);
-  project.components[record.name] = record;
+  const resolved = resolveComponentInputs(components);
+  const projectComponents = { ...project.components, [record.name]: record };
+  for (const name of Object.keys(projectComponents)) {
+    const componentExample =
+      name === record.name
+        ? example
+        : await readToon(path.join(sourceRoot(resolved[name], root), resolved[name].example || "example.toon"));
+    assertExampleContract(resolved[name], componentExample);
+  }
+  project.components = Object.fromEntries(Object.keys(projectComponents).map((name) => [name, resolved[name]]));
   const catalogPaths = await writeProjectCatalog(root, project);
   return {
-    component: componentSummary(record),
-    required_inputs: record.inputs,
+    component: componentSummary(resolved[record.name]),
+    required_inputs: resolved[record.name].inputs,
     changed_paths: [...catalogPaths],
     next_step: `Run \`lavish-axi registry inspect ${record.name}\` or invoke it through \`lavish-axi compose\``,
   };
@@ -343,8 +375,8 @@ export async function removeComponent(name, { projectRoot = process.cwd() } = {}
   const project = await projectCatalog(root);
   const record = project.components[name];
   if (!record) throw new Error(`Unknown project component: ${name}`);
-  const dependents = Object.values({ ...project.components, ...project.recipes }).filter(
-    (item) => item.name !== name && [...(item.partials || []), ...(item.components || [])].includes(name),
+  const dependents = Object.values({ ...project.components, ...project.recipes }).filter((item) =>
+    [...(item.partials || []), ...(item.components || []), ...(item.required_components || [])].includes(name),
   );
   if (dependents.length)
     throw new Error(`Component ${name} is used by: ${dependents.map((item) => item.name).join(", ")}`);
@@ -406,6 +438,7 @@ export async function createRecipe(name, { projectRoot = process.cwd(), summary 
     path.join(source, "shell.mustache"),
     '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}}</title>{{#lavish_stylesheet}}<link rel="stylesheet" href="{{{lavish_stylesheet}}}">{{/lavish_stylesheet}}</head><body>{{{lavish_slot_body}}}{{#lavish_script}}<script src="{{{lavish_script}}}" defer></script>{{/lavish_script}}</body></html>\n',
   );
+  await writeFile(path.join(source, "tokens.css"), ":root {\n  color-scheme: light dark;\n}\n");
   const record = {
     kind: "recipe",
     name,
@@ -416,13 +449,14 @@ export async function createRecipe(name, { projectRoot = process.cwd(), summary 
     slots: ["body"],
     components: [],
     required_components: [],
-    tokens: null,
+    tokens: "tokens.css",
   };
   const changed = await persistRecipe(root, project, record);
   return {
     recipe: name,
     changed_paths: [
       relativePath(root, path.join(source, "shell.mustache")),
+      relativePath(root, path.join(source, "tokens.css")),
       relativePath(root, path.join(source, "recipe.toon")),
       ...changed,
     ],
@@ -439,7 +473,12 @@ export async function updateRecipeComponents(name, component, action, { projectR
   if (!resolved.components[component]) throw new Error(`Unknown component: ${component}`);
   const components = new Set(record.components || []);
   if (action === "add") components.add(component);
-  else if (action === "remove") components.delete(component);
+  else if (action === "remove") {
+    if ((record.required_components || []).includes(component)) {
+      throw new Error(`Component ${component} is required by recipe ${name}; unrequire it before removing it`);
+    }
+    components.delete(component);
+  }
   else throw new Error(`Unknown recipe component action: ${action}`);
   record.components = [...components].sort();
   const changed = await persistRecipe(root, project, record);
@@ -540,10 +579,15 @@ export async function addRegistryComponent(
   const planned = [...required.keys()].sort().map((filename) => relativePath(root, path.join(destination, filename)));
   if (dryRun) return { address, component: item.name, planned_paths: planned, installed: false };
   if (existsSync(destination)) throw new Error(`Component source already exists: ${relativePath(root, destination)}`);
-  await mkdir(destination, { recursive: true });
-  for (const [filename, content] of required) await writeFile(path.join(destination, filename), content);
-  const registered = await registerComponent(destination, { projectRoot: root });
-  return { address, component: item.name, planned_paths: planned, installed: true, ...registered };
+  try {
+    await mkdir(destination, { recursive: true });
+    for (const [filename, content] of required) await writeFile(path.join(destination, filename), content);
+    const registered = await registerComponent(destination, { projectRoot: root });
+    return { address, component: item.name, planned_paths: planned, installed: true, ...registered };
+  } catch (error) {
+    await rm(destination, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export async function registryContext(projectRoot = process.cwd()) {

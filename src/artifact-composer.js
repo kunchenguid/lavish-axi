@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { decode } from "@toon-format/toon";
@@ -34,7 +34,7 @@ async function readStructured(file, projectRoot, onRead = () => {}) {
   return decode(source);
 }
 
-async function resolveConfinedOutput(file, projectRoot) {
+async function resolveConfinedWrite(file, projectRoot, { directory = false } = {}) {
   const requested = path.resolve(file);
   let ancestor = path.dirname(requested);
   while (true) {
@@ -42,8 +42,26 @@ async function resolveConfinedOutput(file, projectRoot) {
       const canonicalAncestor = await realpath(ancestor);
       const resolved = path.resolve(canonicalAncestor, path.relative(ancestor, requested));
       if (!isInside(projectRoot, resolved)) throw new Error("Composition output must stay inside the project");
+      if (directory) {
+        await mkdir(resolved, { recursive: true });
+        const output = await realpath(resolved);
+        if (!isInside(projectRoot, output)) throw new Error("Composition output must stay inside the project");
+        return output;
+      }
       await mkdir(path.dirname(resolved), { recursive: true });
-      const output = path.join(await realpath(path.dirname(resolved)), path.basename(resolved));
+      const parent = await realpath(path.dirname(resolved));
+      let output = path.join(parent, path.basename(resolved));
+      try {
+        output = await realpath(output);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        try {
+          await lstat(output);
+          throw new Error("Composition output must stay inside the project");
+        } catch (leafError) {
+          if (leafError?.code !== "ENOENT") throw leafError;
+        }
+      }
       if (!isInside(projectRoot, output)) throw new Error("Composition output must stay inside the project");
       return output;
     } catch (error) {
@@ -142,24 +160,28 @@ export async function composeArtifact(recipeName, inputFile, outputFile, { proje
 
   const missing = (recipe.required_components || []).filter((name) => !used.has(name));
   if (missing.length) throw new Error(`Recipe ${recipeName} requires components: ${missing.join(", ")}`);
+  if (!recipe.tokens) throw new Error(`Recipe ${recipeName} must configure a project token stylesheet`);
 
-  const css = [];
+  const css = [await readSourceFile(recipe, recipeSource, recipe.tokens, context)];
   const scripts = [];
-  if (recipe.tokens) css.push(await readSourceFile(recipe, recipeSource, recipe.tokens, context));
   for (const { record, source } of used.values()) {
     if (record.style) css.push(await readSourceFile(record, source, record.style, context));
     if (record.behavior) scripts.push(await readSourceFile(record, source, record.behavior, context));
   }
 
-  const output = await resolveConfinedOutput(outputFile, context.root);
+  const output = await resolveConfinedWrite(outputFile, context.root);
   const parsed = path.parse(output);
   const assetsName = `${parsed.name}.assets`;
-  const assetsDir = path.join(parsed.dir, assetsName);
-  if (css.length || scripts.length) await mkdir(assetsDir, { recursive: true });
+  const assetsDir = await resolveConfinedWrite(path.join(parsed.dir, assetsName), context.root, { directory: true });
   const stylesheet = css.length ? `${assetsName}/styles.css` : "";
   const script = scripts.length ? `${assetsName}/components.js` : "";
-  if (css.length) await writeFile(path.join(assetsDir, "styles.css"), `${css.join("\n")}\n`);
-  if (scripts.length) await writeFile(path.join(assetsDir, "components.js"), `${scripts.join("\n")}\n`);
+  if (css.length)
+    await writeFile(await resolveConfinedWrite(path.join(assetsDir, "styles.css"), context.root), `${css.join("\n")}\n`);
+  if (scripts.length)
+    await writeFile(
+      await resolveConfinedWrite(path.join(assetsDir, "components.js"), context.root),
+      `${scripts.join("\n")}\n`,
+    );
 
   const shell = await readSourceFile(recipe, recipeSource, recipe.shell, context);
   templateFacts(shell, { allowSlots: true });

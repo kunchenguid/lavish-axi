@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rename, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -218,4 +218,101 @@ test("composition rejects a project source swapped to an outside symlink", async
     }),
     /must stay inside/i,
   );
+});
+
+test("composition refuses output and asset symlinks that escape the project", async () => {
+  const root = await project();
+  const outside = await project();
+  await createRecipe("safe-review", { projectRoot: root });
+  await writeFile(path.join(root, "input.toon"), "components[0]{component,slot}:\n");
+  const outsideOutput = path.join(outside, "outside.html");
+  await writeFile(outsideOutput, "unchanged\n");
+  await symlink(outsideOutput, path.join(root, "output.html"));
+
+  await assert.rejects(
+    composeArtifact("safe-review", path.join(root, "input.toon"), path.join(root, "output.html"), {
+      projectRoot: root,
+    }),
+    /must stay inside/i,
+  );
+  assert.equal(await readFile(outsideOutput, "utf8"), "unchanged\n");
+
+  await mkdir(path.join(outside, "assets"));
+  await symlink(path.join(outside, "assets"), path.join(root, "safe.assets"));
+  await assert.rejects(
+    composeArtifact("safe-review", path.join(root, "input.toon"), path.join(root, "safe.html"), {
+      projectRoot: root,
+    }),
+    /must stay inside/i,
+  );
+});
+
+test("new recipes enforce a token stylesheet by default", async () => {
+  const root = await project();
+  await createRecipe("project-review", { projectRoot: root });
+  const recipe = await inspectRecipe("project-review", { projectRoot: root });
+  await writeFile(path.join(root, "input.toon"), "components[0]{component,slot}:\n");
+  const output = path.join(root, "output.html");
+
+  await composeArtifact("project-review", path.join(root, "input.toon"), output, { projectRoot: root });
+
+  assert.equal(recipe.tokens, "tokens.css");
+  assert.match(await readFile(path.join(root, "output.assets", "styles.css"), "utf8"), /color-scheme/);
+});
+
+test("partial inputs become part of the parent component contract", async () => {
+  const root = await project();
+  await createComponent("status-pill", { projectRoot: root });
+  const partial = path.join(root, "lavish", "components", "status-pill");
+  await writeFile(path.join(partial, "template.mustache"), "<strong>{{label}}</strong>\n");
+  await writeFile(path.join(partial, "example.toon"), "label: Ready\n");
+  await registerComponent(partial, { projectRoot: root });
+  await createComponent("status-card", { projectRoot: root });
+  const parent = path.join(root, "lavish", "components", "status-card");
+  await writeFile(path.join(parent, "template.mustache"), "<article>{{> status-pill}}</article>\n");
+  await writeFile(path.join(parent, "example.toon"), "label: Ready\n");
+  await registerComponent(parent, { projectRoot: root });
+  await createRecipe("status-review", { projectRoot: root });
+  await updateRecipeComponents("status-review", "status-card", "add", { projectRoot: root });
+  await writeFile(path.join(root, "status.toon"), "label: Ready\n");
+  await writeFile(
+    path.join(root, "input.toon"),
+    "components[1]{component,slot,data}:\n  status-card,body,status.toon\n",
+  );
+  const output = path.join(root, "status.html");
+  await composeArtifact("status-review", path.join(root, "input.toon"), output, { projectRoot: root });
+
+  assert.deepEqual((await inspectComponent("status-card", { projectRoot: root })).required_inputs, ["label"]);
+  assert.match(await readFile(output, "utf8"), /<strong>Ready<\/strong>/);
+});
+
+test("required components must be unrequired before recipe removal", async () => {
+  const root = await project();
+  await createRecipe("required-review", { projectRoot: root });
+  await updateRecipeRequiredComponents("required-review", "data-table", "add", { projectRoot: root });
+
+  await assert.rejects(
+    updateRecipeComponents("required-review", "data-table", "remove", { projectRoot: root }),
+    /unrequire it before removing/i,
+  );
+  assert.deepEqual((await inspectRecipe("required-review", { projectRoot: root })).components, ["data-table"]);
+});
+
+test("failed registry imports leave no destination and can be retried", async () => {
+  const root = await project();
+  const item = {
+    name: "retry-card",
+    files: [
+      { path: "component.toon", content: "name: retry-card\n" },
+      { path: "template.mustache", content: "<p>{{label}}</p>\n" },
+      { path: "example.toon", content: "wrong: value\n" },
+    ],
+  };
+  const getItems = async () => [item];
+
+  await assert.rejects(addRegistryComponent("retry-card", { projectRoot: root, getItems }), /example/i);
+  item.files[2].content = "label: Ready\n";
+  const installed = await addRegistryComponent("retry-card", { projectRoot: root, getItems });
+
+  assert.equal(installed.installed, true);
 });
