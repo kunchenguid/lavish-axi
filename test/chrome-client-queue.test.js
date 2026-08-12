@@ -1667,6 +1667,31 @@ test("artifact action panel renders one safe sidebar surface and returns field v
   );
 });
 
+test("non-Gate action panels keep required-field guidance", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "generic-review",
+      title: "Generic review",
+      fields: [{ id: "reason", type: "textarea", label: "Reason", maxLength: 100 }],
+      actions: [{ id: "submit", label: "Submit", tone: "primary", requires: ["reason"] }],
+    },
+  });
+
+  const nodes = descendants(chrome.element("actionPanel"));
+  const submit = nodes.find((node) => node.dataset.actionPanelAction === "submit");
+  const textarea = nodes.find((node) => node.tagName === "TEXTAREA");
+  const fieldError = nodes.find((node) => node.className === "action-panel-error");
+  assert.equal(submit.disabled, true);
+  assert.equal(submit.title, "Preencha o campo obrigatório.");
+  assert.equal(textarea["aria-invalid"], "true");
+  assert.equal(fieldError.hidden, false);
+  assert.equal(fieldError.textContent, "Preencha o campo obrigatório.");
+});
+
 test("compact Gate keeps the same sidebar DOM with Gate and conversation open", async () => {
   const chrome = await createChromeHarness({ compactViewport: true });
   chrome.element("conversationSection").open = true;
