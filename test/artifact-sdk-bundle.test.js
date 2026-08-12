@@ -155,6 +155,7 @@ function bootSdk() {
   return {
     posted,
     body,
+    api: sandbox.window.lavish,
     click(target) {
       const listener = documentListeners.find((entry) => entry.type === "click");
       assert.ok(listener, "the SDK registers a document click listener");
@@ -221,6 +222,15 @@ test("the served SDK bundle keeps the clicked element's own identity inside a ta
   assert.equal(message.prompt.text, "Drive");
   assert.equal(message.prompt.target.selector, "body > table > tbody > tr > td:nth-of-type(3)");
   assert.equal(message.prompt.target.columnLabel, "Database evidence");
+});
+
+test("the served SDK bundle resolves table coordinates only for annotation clicks", () => {
+  const sdk = bootSdk();
+  const { evidence } = buildTable(sdk);
+
+  sdk.api.queuePrompt("Programmatic note", { element: evidence });
+
+  assert.equal(sdk.posted.at(-1).prompt.target, undefined);
 });
 
 test("the served SDK bundle annotates elements outside tables with no table target", () => {

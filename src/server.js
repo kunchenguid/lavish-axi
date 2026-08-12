@@ -1642,15 +1642,20 @@ export function createWhiteboardFrameHtml(channelToken = "") {
 // (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the browser. Deriving these from the
 // module's exports — rather than a hand-kept list — means adding a helper can never silently
 // ReferenceError at runtime.
+// Only functions survive `toString()` round-tripping: a Set, Map, or RegExp would serialize to a
+// valid-looking `{}` and reach the browser semantically empty, which is far harder to find than
+// this throw. A shared module must therefore export nothing but helpers.
 function serializeModuleHelpers(module) {
   const entries = Object.entries(module);
+  const unsupported = entries.filter(([, value]) => typeof value !== "function").map(([name]) => name);
+  if (unsupported.length > 0) {
+    throw new TypeError(
+      `Cannot serialize non-function SDK helper export(s) into the artifact bundle: ${unsupported.join(", ")}`,
+    );
+  }
   return {
-    declarations: entries
-      .map(
-        ([name, value]) => `const ${name}=${typeof value === "function" ? value.toString() : JSON.stringify(value)};`,
-      )
-      .join("\n"),
-    names: entries.filter(([, value]) => typeof value === "function").map(([name]) => name),
+    declarations: entries.map(([name, fn]) => `const ${name}=${fn.toString()};`).join("\n"),
+    names: entries.map(([name]) => name),
   };
 }
 

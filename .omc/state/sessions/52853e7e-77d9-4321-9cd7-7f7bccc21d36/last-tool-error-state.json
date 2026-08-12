@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"rtk ls -l src/table-cell.js test/table-cell.test.js test/artifact-sdk-bundle.test.js 2>&1; echo \\\"=== gitignore check ===\\\"; git check-ignore -v src/table-cell.js test/table-cell.test.js t...",
-  "error": "Exit code 1\n644  src/table-cell.js  4.6K\n644  test/artifact-sdk-bundle.test.js  7.4K\n644  test/table-cell.test.js  6.1K\n=== gitignore check ===",
-  "timestamp": "2026-08-12T16:35:29.337Z",
-  "retry_count": 1
-}

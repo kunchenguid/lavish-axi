@@ -25,17 +25,24 @@ export function closestTableAncestor(element, names) {
   return null;
 }
 
+// Rows of one table only. Descending into a cell would both walk the whole document subtree and
+// collect a nested table's rows, which would then be read as this table's header or spans.
 export function tableRowsIn(element) {
   const rows = [];
   for (const child of Array.from(element?.children || [])) {
-    if (tableTagName(child) === "tr") rows.push(child);
-    rows.push(...tableRowsIn(child));
+    const tag = tableTagName(child);
+    if (tag === "td" || tag === "th" || tag === "table") continue;
+    if (tag === "tr") rows.push(child);
+    else rows.push(...tableRowsIn(child));
   }
   return rows;
 }
 
 export function tableRowCells(row) {
-  return Array.from(row?.children || []).filter((cell) => new Set(["td", "th"]).has(tableTagName(cell)));
+  return Array.from(row?.children || []).filter((cell) => {
+    const tag = tableTagName(cell);
+    return tag === "td" || tag === "th";
+  });
 }
 
 export function tableCellSpan(cell, name) {

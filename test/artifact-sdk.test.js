@@ -46,8 +46,6 @@ function node(tag, attrs = {}, children = []) {
   if (attrs.name) el.name = attrs.name;
   if (attrs.type) el.type = attrs.type;
   if (attrs.value) el.value = attrs.value;
-  if (attrs.textContent) el.textContent = attrs.textContent;
-  if (attrs.hidden) el.hidden = true;
   for (const child of children) append(el, child);
   return el;
 }

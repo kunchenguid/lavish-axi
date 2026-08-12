@@ -7,3 +7,6 @@ coverage/
 *.log
 package-lock.json
 .no-mistakes/evidence/
+# Local agent runtime state. `.omc/skills/` is the one intentionally committable part.
+/.omc/*
+!/.omc/skills/

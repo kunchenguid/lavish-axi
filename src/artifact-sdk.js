@@ -304,7 +304,9 @@ export function createArtifactSdk(
     return parts.join(" > ");
   }
 
-  function context(el) {
+  // `table` is opt-in because resolving a cell's row and column walks the whole table, while
+  // `snapshot()` calls this for every element in the document and reads only uid/tag/text.
+  function context(el, { table = false } = {}) {
     const base = {
       uid: uid(el),
       selector: selector(el),
@@ -315,7 +317,7 @@ export function createArtifactSdk(
     // Semantic table coordinates are extra context, never a replacement identity: the highlight
     // outlines the element the reviewer clicked, so its selector, tag, and text must keep
     // describing that exact element rather than being coarsened up to the enclosing cell.
-    const tableTarget = tableCellTarget(el, selector);
+    const tableTarget = table ? tableCellTarget(el, selector) : null;
     if (tableTarget) base.target = tableTarget;
 
     const mermaidNode = mermaidNodeFrom(el, selector);
@@ -1679,7 +1681,7 @@ export function createArtifactSdk(
     const root = ensureShadow();
     closeCard();
 
-    const c = options.context || context(target);
+    const c = options.context || context(target, { table: true });
     activeCardContext = c;
     let anchor = target;
     if (options.range) {

@@ -167,6 +167,25 @@ test("tableCellTarget bounds every derived string it puts on the wire", () => {
   assert.equal(result.selector.length, 240);
 });
 
+test("tableCellTarget reads only its own table when a cell holds a nested table", () => {
+  const target = node("td", { textContent: "4 apps" });
+  const nested = node("table", {}, [
+    node("tbody", {}, [
+      node("tr", {}, [node("td", { rowspan: "2", textContent: "nested span" }), node("td", { textContent: "a" })]),
+      node("tr", {}, [node("td", { textContent: "b" })]),
+    ]),
+  ]);
+  node("table", {}, [
+    node("thead", {}, [row(["Permission", "Visible state"], "th")]),
+    node("tbody", {}, [row([node("td", { textContent: "Media & Apple Music" }, [nested]), target])]),
+  ]);
+
+  assert.partialDeepStrictEqual(tableCellTarget(target), {
+    rowLabel: "Media & Apple Music",
+    columnLabel: "Visible state",
+  });
+});
+
 test("tableCellTarget ignores elements outside a table", () => {
   const target = node("p", { textContent: "not a cell" });
   node("div", {}, [target]);
