@@ -337,21 +337,31 @@ function clearActionPanelForReload() {
 function updateActionPanelButtons() {
   if (!activeActionPanel) return;
   const values = actionPanelValues();
+  const showRequiredFeedback = activeActionPanel.id !== "dealernet-gate1";
+  const missingFields = new Set();
   for (const action of activeActionPanel.actions) {
     const button = actionPanelButtons.get(action.id);
     if (!button) continue;
     const missingRequired = action.requires.some((fieldId) => !String(values[fieldId] || "").trim());
+    if (showRequiredFeedback && missingRequired) {
+      for (const fieldId of action.requires) {
+        if (!String(values[fieldId] || "").trim()) missingFields.add(fieldId);
+      }
+    }
     button.disabled = ended || agentPresence === "working" || actionPanelBusy || action.disabled || missingRequired;
-    const reason = action.reason || "";
+    const reason =
+      action.reason ||
+      (showRequiredFeedback && missingRequired ? t.actionPanelRequired || "Preencha o campo obrigatório." : "");
     if (reason) button.title = reason;
     else button.removeAttribute?.("title");
   }
   for (const [fieldId, input] of actionPanelFields) {
-    input.setAttribute("aria-invalid", "false");
+    const missing = missingFields.has(fieldId);
+    input.setAttribute("aria-invalid", String(missing));
     const error = actionPanelFieldErrors.get(fieldId);
     if (error) {
-      error.textContent = "";
-      error.hidden = true;
+      error.textContent = missing ? t.actionPanelRequired || "Preencha o campo obrigatório." : "";
+      error.hidden = !missing;
     }
   }
 }
