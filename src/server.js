@@ -33,6 +33,7 @@ import { buildSelfContainedHtml, exportFileName, splitExportWarnings } from "./e
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import { normalizeSessionTicket } from "./session-ticket.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -156,6 +157,12 @@ export async function serve({
 
   app.post("/api/sessions", async (req, res, next) => {
     try {
+      const requestedTicket = req.body?.ticket;
+      const ticket = normalizeSessionTicket(requestedTicket);
+      if (requestedTicket != null && String(requestedTicket).trim() && !ticket) {
+        res.status(400).json({ error: "invalid ticket" });
+        return;
+      }
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
       const reopen = Boolean(req.body.reopen);
@@ -172,7 +179,7 @@ export async function serve({
       }
       const sessionUrl = `http://${hostForUrl(linkHostName)}:${publicPort}/session/${key}`;
       const url = shouldDisableLayoutGateOpen(req.body || {}) ? appendNoGateParam(sessionUrl) : sessionUrl;
-      const session = await store.upsertSession(file, sessionUrl);
+      const session = await store.upsertSession(file, sessionUrl, { ticket });
       if (existing?.status === "ended") {
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       }
@@ -1294,6 +1301,7 @@ export function createChromeHtml(
   const sessionJson = jsonScript({
     key: session.key,
     file: session.file,
+    ticket: normalizeSessionTicket(session.ticket),
     initialChat: session.chat || [],
     // Bootstrapping the inbox from the server is what makes it survive a browser refresh or a
     // reconnect: the chrome never owns warning state, it only renders it.
@@ -1313,7 +1321,8 @@ export function createChromeHtml(
   const layoutGateHidden = layoutGateEnabled ? "" : " hidden";
   const modeHotkeyUpper = MODE_TOGGLE_HOTKEY_KEY.toUpperCase();
   const modeToggleHint = UI_CHROME.dicaModo(modeHotkeyUpper);
-  return `<!doctype html>
+  const ticket = normalizeSessionTicket(session.ticket);
+  const chromeHtml = `<!doctype html>
 <html lang="${IDIOMA}">
 <head>
 <meta charset="utf-8">
@@ -1331,6 +1340,11 @@ ${faviconTag}
 <script src="/chrome-client.js"></script>
 </body>
 </html>`;
+  if (!ticket) return chromeHtml;
+  return chromeHtml.replace(
+    '<div class="spacer" aria-hidden="true"></div>',
+    `<span class="ticket-context">${escapeHtml(ticket)}</span><div class="spacer" aria-hidden="true"></div>`,
+  );
 }
 
 export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "") {

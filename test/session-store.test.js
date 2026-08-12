@@ -63,6 +63,24 @@ test("queued prompts are returned with DOM snapshot context and then cleared", a
   }
 });
 
+test("session ticket survives opens that omit the optional context", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+    const store = new SessionStore(stateFile);
+
+    const opened = await store.upsertSession(artifact, "http://localhost:4387/session/test", { ticket: "wf-92564" });
+    assert.equal(opened.ticket, "WF-92564");
+
+    const resumed = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    assert.equal(resumed.ticket, "WF-92564");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("queued text selection prompts preserve range anchors", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

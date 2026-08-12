@@ -112,7 +112,14 @@ async function createChromeHarness({
           return [...classes].join(" ");
         },
       },
-      style: {},
+      style: {
+        setProperty(name, value) {
+          this[name] = String(value);
+        },
+        getPropertyValue(name) {
+          return this[name] || "";
+        },
+      },
       setAttribute(name, value) {
         this[name] = String(value);
       },
@@ -371,6 +378,11 @@ async function createChromeHarness({
           ? { ...data, artifact_load_token: frameLoadToken() }
           : data;
       for (const handler of handlers) handler({ source: frame.contentWindow, data: message });
+    },
+    sendForeignMessage(source, data) {
+      const handlers = windowListeners.get("message") || [];
+      assert.ok(handlers.length > 0, "chrome-client registered a message handler");
+      for (const handler of handlers) handler({ source, data });
     },
     sendWhiteboardMessage(data) {
       const handlers = windowListeners.get("message") || [];
@@ -1595,6 +1607,7 @@ test("artifact action panel renders one safe sidebar surface and returns field v
           type: "textarea",
           label: "Ajustes solicitados",
           help: "Obrigatório para Solicitar ajustes.",
+          placeholder: "Descreva os ajustes necessários",
           maxLength: 4000,
         },
       ],
@@ -1623,6 +1636,7 @@ test("artifact action panel renders one safe sidebar surface and returns field v
   const textarea = nodes.find((node) => node.tagName === "TEXTAREA");
   assert.ok(textarea);
   assert.equal(textarea.maxLength, 4000);
+  assert.equal(textarea.placeholder, "Descreva os ajustes necessários");
   assert.equal(textarea["aria-invalid"], "true");
   const fieldError = nodes.find((node) => node.className === "action-panel-error");
   assert.equal(fieldError.hidden, false);
@@ -1649,7 +1663,7 @@ test("artifact action panel renders one safe sidebar surface and returns field v
   );
 });
 
-test("compact Gate keeps the same sidebar DOM and starts conversation collapsed", async () => {
+test("compact Gate keeps the same sidebar DOM with Gate and conversation open", async () => {
   const chrome = await createChromeHarness({ compactViewport: true });
   chrome.element("conversationSection").open = true;
   chrome.sendFrameMessage({
@@ -1662,7 +1676,7 @@ test("compact Gate keeps the same sidebar DOM and starts conversation collapsed"
     },
   });
 
-  assert.equal(chrome.element("conversationSection").open, false);
+  assert.equal(chrome.element("conversationSection").open, true);
   assert.equal(chrome.element("actionPanel").hidden, false);
 
   chrome.element("conversationSection").open = true;
@@ -1676,6 +1690,28 @@ test("compact Gate keeps the same sidebar DOM and starts conversation collapsed"
     },
   });
   assert.equal(chrome.element("conversationSection").open, true, "hot reload preserves the user's section choice");
+});
+
+test("only current artifact metrics can size the compact document frame", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", compactViewport: true });
+  const token = chrome.artifactLoadToken();
+
+  chrome.sendFrameMessage({ type: "lavish:artifactMetrics", height: 2468 });
+  assert.equal(chrome.frame.style.getPropertyValue("--lavish-artifact-height"), "2468px");
+
+  const foreign = chrome.createForeignWindow();
+  chrome.sendForeignMessage(foreign.source, {
+    type: "lavish:artifactMetrics",
+    height: 9999,
+    artifact_load_token: token,
+  });
+  assert.equal(chrome.frame.style.getPropertyValue("--lavish-artifact-height"), "2468px");
+
+  chrome.sendFrameMessage({ type: "lavish:artifactMetrics", height: Number.POSITIVE_INFINITY });
+  assert.equal(chrome.frame.style.getPropertyValue("--lavish-artifact-height"), "2468px");
+
+  chrome.sendFrameMessage({ type: "lavish:artifactMetrics", height: 2_000_000 });
+  assert.equal(chrome.frame.style.getPropertyValue("--lavish-artifact-height"), "1000000px");
 });
 
 test("accepted hot reload removes stale Gate actions and restores its fields only after re-registration", async () => {

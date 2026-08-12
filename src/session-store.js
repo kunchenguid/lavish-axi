@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { normalizeSessionTicket } from "./session-ticket.js";
+
 import {
   applyDiagnosticPass,
   dismissLayoutWarning as dismissWarningRecord,
@@ -52,7 +54,7 @@ export class SessionStore {
     });
   }
 
-  async upsertSession(file, url) {
+  async upsertSession(file, url, { ticket = null } = {}) {
     const absolute = await canonicalFile(file);
     const key = sessionKey(absolute);
     return this.runExclusive(async () => {
@@ -64,6 +66,7 @@ export class SessionStore {
         key,
         file: absolute,
         url,
+        ticket: normalizeSessionTicket(ticket) || normalizeSessionTicket(existing.ticket),
         status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
         pending_prompts: existing.pending_prompts || 0,
         prompts: existingPrompts,
