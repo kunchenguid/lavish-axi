@@ -19,7 +19,7 @@ import { mermaidSourceHash } from "../src/mermaid-source.js";
 const ARTIFACT_HTML = `<!doctype html><html><body>
 <h1>Demo</h1>
 <pre class="mermaid">flowchart TD
-  A[Start] --&gt; B{Ready?}</pre>
+  A["OBJECTIVE:<br/>do the thing"] --&gt; B{Ready?}</pre>
 <pre class="mermaid">sequenceDiagram
   CLI-&gt;&gt;Server: poll</pre>
 </body></html>`;
@@ -107,14 +107,15 @@ test("whiteboard channel tokens are signed, session bound, and short lived", () 
   assert.equal(isValidWhiteboardChannelToken(createWhiteboardChannelToken(secret, "", now), secret, "", now), false);
 });
 
-test("GET /api/:key/mermaid-sources extracts ordered, entity-decoded sources with hashes", async () => {
+test("GET /api/:key/mermaid-sources preserves label breaks and returns ordered sources with hashes", async () => {
   const ctx = await startWhiteboardServer();
   try {
     const data = await fetch(`${ctx.base}/api/${ctx.key}/mermaid-sources`).then((res) => res.json());
     assert.equal(data.sources.length, 2);
     assert.equal(data.sources[0].index, 0);
-    assert.equal(data.sources[0].source, "flowchart TD\n  A[Start] --> B{Ready?}");
-    assert.equal(data.sources[0].hash, mermaidSourceHash("flowchart TD\n  A[Start] --> B{Ready?}"));
+    const expectedFlowchart = 'flowchart TD\n  A["OBJECTIVE:<br/>do the thing"] --> B{Ready?}';
+    assert.equal(data.sources[0].source, expectedFlowchart);
+    assert.equal(data.sources[0].hash, mermaidSourceHash(expectedFlowchart));
     assert.equal(data.sources[1].source, "sequenceDiagram\n  CLI->>Server: poll");
   } finally {
     await ctx.close();
