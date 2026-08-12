@@ -498,6 +498,7 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   let nextRenderError;
   let activeRenders = 0;
   let maxActiveRenders = 0;
+  const renderedSources = [];
   let bodyColor = "white";
   let rootColor = "white";
   let rootColorScheme = "normal";
@@ -518,8 +519,20 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
       return { data: colors[this.color] };
     },
   };
+  let diagramMarkup = 'flowchart TD\\n  A["OBJECTIVE:<br/>do the thing"]';
   const diagram = {
-    textContent: "flowchart TD\\n  A --> B",
+    get innerHTML() {
+      return diagramMarkup;
+    },
+    set innerHTML(value) {
+      diagramMarkup = value;
+    },
+    get textContent() {
+      return diagramMarkup.replace(/<br\s*\/?\s*>/gi, "");
+    },
+    set textContent(value) {
+      diagramMarkup = value;
+    },
     removeAttribute() {},
   };
   const document = {
@@ -567,6 +580,7 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
       initializedThemes.push(theme);
     },
     run() {
+      renderedSources.push(diagram.innerHTML);
       activeRenders += 1;
       maxActiveRenders = Math.max(maxActiveRenders, activeRenders);
       if (nextRenderError) {
@@ -611,6 +625,7 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   assert.equal(typeof transitionListener?.callback, "function");
   assert.equal(transitionListener?.capture, true);
   assert.deepEqual(initializedThemes, ["default"]);
+  assert.deepEqual(renderedSources, ['flowchart TD\\n  A["OBJECTIVE:<br/>do the thing"]']);
   bodyColor = "white-40";
   rootColor = "black";
   transitionListener.callback({ propertyName: "color" });
