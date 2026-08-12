@@ -537,6 +537,28 @@ test("chrome client replaces queued prompts with the same internal key", async (
   assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /Use plan A/);
 });
 
+test("chrome client shows semantic table coordinates before positional selector", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Check this permission",
+      selector: "table > tbody > tr:nth-of-type(7) > td:nth-of-type(3)",
+      tag: "table-cell",
+      text: "Drive, Neovide, Cursor, Alacritty",
+      target: {
+        type: "table-cell",
+        rowLabel: "Media & Apple Music",
+        columnLabel: "Database evidence",
+      },
+    },
+  });
+
+  assert.match(chrome.element("annotationPills").innerHTML, /Media &amp; Apple Music → Database evidence/);
+  assert.match(chrome.element("annotationPills").innerHTML, /tr:nth-of-type\(7\)/);
+});
+
 test("chrome client scrolls new chat bubbles into view above queued prompts", async () => {
   const chrome = await createChromeHarness();
   const panelScroll = chrome.element("panelScroll");

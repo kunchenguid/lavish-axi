@@ -10,6 +10,7 @@ import {
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
+  tableCellTarget,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -46,9 +47,47 @@ function node(tag, attrs = {}, children = []) {
   if (attrs.name) el.name = attrs.name;
   if (attrs.type) el.type = attrs.type;
   if (attrs.value) el.value = attrs.value;
+  if (attrs.textContent) el.textContent = attrs.textContent;
+  if (attrs.hidden) el.hidden = true;
   for (const child of children) append(el, child);
   return el;
 }
+
+test("tableCellTarget names a filtered table cell by row and column instead of visible position", () => {
+  const target = node("td", { textContent: "Drive, Neovide, Cursor, Alacritty" });
+  node("table", {}, [
+    node("thead", {}, [
+      node("tr", {}, [
+        node("th", { textContent: "Permission / setting" }),
+        node("th", { textContent: "Visible state" }),
+        node("th", { textContent: "Database evidence" }),
+      ]),
+    ]),
+    node("tbody", {}, [
+      node("tr", { hidden: true }, [
+        node("td", { textContent: "Contacts" }),
+        node("td", { textContent: "None" }),
+        node("td", { textContent: "No grants" }),
+      ]),
+      node("tr", {}, [
+        node("td", { textContent: "Media & Apple Music" }),
+        node("td", { textContent: "4 apps" }),
+        target,
+      ]),
+    ]),
+  ]);
+
+  assert.deepEqual(
+    tableCellTarget(target, () => "table > tbody > tr:nth-of-type(2) > td:nth-of-type(3)"),
+    {
+      type: "table-cell",
+      selector: "table > tbody > tr:nth-of-type(2) > td:nth-of-type(3)",
+      rowLabel: "Media & Apple Music",
+      columnLabel: "Database evidence",
+      text: "Drive, Neovide, Cursor, Alacritty",
+    },
+  );
+});
 
 function append(parent, child) {
   child.parentElement = parent;
