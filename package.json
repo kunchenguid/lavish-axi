@@ -35,19 +35,23 @@
   },
   "dependencies": {
     "@tailwindcss/browser": "4.2.4",
+    "@toon-format/toon": "4.1.1",
     "axi-sdk-js": "^0.1.8",
     "chokidar": "^4.0.3",
     "cross-spawn": "7.0.6",
     "daisyui": "^5.5.19",
     "express": "^5.2.1",
+    "mustache": "4.2.0",
     "open": "^10.2.0",
-    "parse5": "^8.0.1"
+    "parse5": "^8.0.1",
+    "shadcn": "4.16.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@excalidraw/excalidraw": "0.18.1",
     "@excalidraw/mermaid-to-excalidraw": "2.2.2",
     "@size-limit/file": "11.2.0",
+    "@types/mustache": "4.2.6",
     "@types/node": "^25.6.2",
     "esbuild": "^0.28.0",
     "eslint": "^10.3.0",

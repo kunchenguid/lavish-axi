@@ -20,8 +20,19 @@ if (command === "start-server") {
   await stopServer();
 } else if (command === "warm-session") {
   await runWarmSessionBatch();
+} else if (command === "compose-artifact") {
+  await composeArtifact();
 } else {
-  throw new Error("Usage: node scripts/performance/scenario.js <start-server|stop-server|warm-session>");
+  throw new Error(
+    "Usage: node scripts/performance/scenario.js <start-server|stop-server|warm-session|compose-artifact>",
+  );
+}
+
+async function composeArtifact() {
+  const input = requiredAbsolutePath("LAVISH_AXI_BENCH_COMPOSE_INPUT");
+  const output = requiredAbsolutePath("LAVISH_AXI_BENCH_COMPOSE_OUTPUT");
+  const { composeArtifact: compose } = await import("../../dist/artifact-composer.js");
+  await compose("openspec-review", input, output, { projectRoot: root });
 }
 
 async function startServer() {

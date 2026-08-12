@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "components": {
+    "data-table": {
+      "name": "data-table",
+      "summary": "Render uniform records as a scan-friendly table",
+      "use_when": "The artifact contains comparable rows with the same fields",
+      "origin": "builtin",
+      "source": "components/data-table",
+      "template": "template.mustache",
+      "example": "example.toon",
+      "inputs": ["headers", "rows", "title"],
+      "partials": [],
+      "style": "style.css",
+      "behavior": null
+    },
+    "markdown-code": {
+      "name": "markdown-code",
+      "summary": "Render Markdown or OpenSpec source as escaped code",
+      "use_when": "The artifact must show Markdown or OpenSpec source without interpreting it as HTML",
+      "origin": "builtin",
+      "source": "components/markdown-code",
+      "template": "template.mustache",
+      "example": "example.toon",
+      "inputs": ["content", "title"],
+      "partials": [],
+      "style": "style.css",
+      "behavior": null
+    },
+    "page-section": {
+      "name": "page-section",
+      "summary": "Render a titled content section",
+      "use_when": "The artifact needs a clear section with a heading and prose",
+      "origin": "builtin",
+      "source": "components/page-section",
+      "template": "template.mustache",
+      "example": "example.toon",
+      "inputs": ["content", "title"],
+      "partials": [],
+      "style": "style.css",
+      "behavior": null
+    }
+  },
+  "recipes": {
+    "openspec-review": {
+      "kind": "recipe",
+      "name": "openspec-review",
+      "summary": "Review an OpenSpec proposal, design, tasks, or normative specification",
+      "origin": "builtin",
+      "source": "recipes/openspec-review",
+      "shell": "shell.mustache",
+      "slots": ["body"],
+      "components": ["data-table", "markdown-code", "page-section"],
+      "required_components": ["markdown-code"],
+      "tokens": "tokens.css"
+    }
+  }
+}

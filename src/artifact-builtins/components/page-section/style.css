@@ -1,0 +1,14 @@
+.lavish-page-section {
+  padding: 1.5rem;
+  border: 1px solid var(--lavish-border);
+  border-radius: 1rem;
+  background: var(--lavish-surface);
+}
+.lavish-page-section h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.25rem;
+}
+.lavish-page-section p {
+  margin: 0;
+  line-height: 1.6;
+}

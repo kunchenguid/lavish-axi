@@ -1,0 +1,4 @@
+title: Status
+headers[2]: Name,State
+rows[1]:
+  - cells[2]: Registry,Ready

@@ -1,0 +1,48 @@
+:root {
+  color-scheme: dark;
+  --lavish-bg: #11100e;
+  --lavish-surface: #1b1916;
+  --lavish-code: #0b0a09;
+  --lavish-ink: #f1eadf;
+  --lavish-muted: #b9ac99;
+  --lavish-border: #3b352d;
+  --lavish-accent: #c49a5a;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--lavish-bg);
+  color: var(--lavish-ink);
+}
+body {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+.lavish-openspec-shell {
+  width: min(72rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 3rem 0 6rem;
+  display: grid;
+  gap: 1.25rem;
+}
+.lavish-openspec-shell > header {
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--lavish-border);
+}
+.lavish-openspec-shell h1 {
+  margin: 0;
+  max-width: 22ch;
+  font-size: clamp(2rem, 6vw, 4.5rem);
+  line-height: 0.95;
+}
+.lavish-eyebrow {
+  margin: 0 0 1rem;
+  color: var(--lavish-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}

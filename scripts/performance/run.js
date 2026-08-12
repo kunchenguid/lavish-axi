@@ -1,6 +1,6 @@
 // @ts-check
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +13,10 @@ const outputRoot = path.resolve(process.env.LAVISH_AXI_BENCH_OUTPUT_DIR || ".lav
 const runName = new Date().toISOString().replaceAll(":", "-");
 const outputDir = path.join(outputRoot, runName);
 const runtimeDir = path.join(outputDir, "runtime");
+const composeDir = path.join(root, ".lavish-performance", "compose", runName);
+const composeInput = path.join(composeDir, "review.toon");
+const composeData = path.join(composeDir, "source.toon");
+const composeOutput = path.join(composeDir, "review.html");
 const stateDir = await mkdtemp(path.join(os.tmpdir(), "lavish-performance-"));
 const fixture = path.join(root, "test/fixtures/performance/minimal.html");
 const port = await unusedPort();
@@ -20,6 +24,8 @@ const sessionIterations = smoke ? 3 : 25;
 const env = {
   ...process.env,
   LAVISH_AXI_BENCH_FIXTURE: fixture,
+  LAVISH_AXI_BENCH_COMPOSE_INPUT: composeInput,
+  LAVISH_AXI_BENCH_COMPOSE_OUTPUT: composeOutput,
   LAVISH_AXI_BENCH_PORT: String(port),
   LAVISH_AXI_BENCH_RUNTIME_DIR: runtimeDir,
   LAVISH_AXI_BENCH_SESSION_ITERATIONS: String(sessionIterations),
@@ -27,6 +33,12 @@ const env = {
 };
 
 await mkdir(outputDir, { recursive: true });
+await mkdir(composeDir, { recursive: true });
+await writeFile(composeData, 'title: Proposal\ncontent: "# Reusable artifact\\n\\nMeasured composition."\n');
+await writeFile(
+  composeInput,
+  "title: Registry benchmark\ncomponents[1]{component,slot,data}:\n  markdown-code,body,source.toon\n",
+);
 const hyperfineVersion = commandOutput("hyperfine", ["--version"]);
 if (hyperfineVersion !== `hyperfine ${HYPERFINE_VERSION}`) {
   throw new Error(`bench:process requires hyperfine ${HYPERFINE_VERSION}; found ${hyperfineVersion || "nothing"}`);
@@ -55,6 +67,13 @@ try {
     path.join(outputDir, "warm-session.json"),
     "node scripts/performance/scenario.js warm-session",
   ]);
+
+  runHyperfine([
+    ...common,
+    "--export-json",
+    path.join(outputDir, "compose-artifact.json"),
+    "node scripts/performance/scenario.js compose-artifact",
+  ]);
 } catch (error) {
   runError = error;
 }
@@ -67,6 +86,7 @@ try {
     runError.message = `${runError.message}; cleanup also failed: ${errorMessage(cleanupError)}`;
   }
 }
+await rm(composeDir, { recursive: true, force: true });
 if (runError) throw runError;
 
 const metadata = {
@@ -79,7 +99,7 @@ const metadata = {
   hyperfine: HYPERFINE_VERSION,
   smoke,
   sessionIterations,
-  scenarios: ["cli-version", "cold-server", "warm-session"],
+  scenarios: ["cli-version", "cold-server", "warm-session", "compose-artifact"],
 };
 await writeFile(path.join(outputDir, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
 console.log(`Performance evidence: ${outputDir}`);

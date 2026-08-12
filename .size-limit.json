@@ -12,6 +12,17 @@
     "brotli": false
   },
   {
+    "name": "Artifact composition runtime",
+    "path": [
+      "dist/artifact-commands.js",
+      "dist/artifact-composer.js",
+      "dist/artifact-registry.js",
+      "dist/artifact-builtins/**"
+    ],
+    "limit": "75 kB",
+    "brotli": false
+  },
+  {
     "name": "Design runtime",
     "path": "dist/design/**",
     "limit": "1.35 MB",

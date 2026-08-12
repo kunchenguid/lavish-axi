@@ -32,7 +32,21 @@ import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+const COMMANDS = new Set([
+  "open",
+  "poll",
+  "end",
+  "stop",
+  "server",
+  "playbook",
+  "design",
+  "setup",
+  "export",
+  "share",
+  "registry",
+  "recipe",
+  "compose",
+]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -120,6 +134,9 @@ export async function run(argv) {
         server: serverCommand,
         export: exportCommand,
         share: shareCommand,
+        registry: registryCommand,
+        recipe: recipeCommand,
+        compose: composeCommand,
       },
       getCommandHelp: (command) => getCommandHelp(command, { agent }),
     });
@@ -194,6 +211,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       "Run `lavish-axi share <html-file> [--password <pw>] [--token <t>]` to publish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and get back a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Local assets are inlined; remote refs load over the network. It returns the url plus a secret update_key for managing the page later. Use --token or LAVISH_AXI_HTML_APP_TOKEN only when you have an optional bearer token; it is never required. Users can also publish from the browser chrome's overflow menu",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
+      "Before writing repeated artifact markup, run `lavish-axi registry search <need>`. Registered components own reusable HTML once. Run `lavish-axi recipe list` to find named compositions, then pass TOON content and component calls to `lavish-axi compose` instead of reproducing component HTML.",
       DESIGN_SYSTEM_HINT,
       "Use lavish-axi when the user asks for a visual artifact, HTML explainer, interactive prototype, review surface, product or technical plan, comparison, report, or browser-based feedback loop",
     ],
@@ -217,6 +235,18 @@ export function createPlaybookOutput(args) {
   }
 
   return { playbook };
+}
+
+async function registryCommand(args) {
+  return (await import("./artifact-commands.js")).registryCommand(args);
+}
+
+async function recipeCommand(args) {
+  return (await import("./artifact-commands.js")).recipeCommand(args);
+}
+
+async function composeCommand(args) {
+  return (await import("./artifact-commands.js")).composeCommand(args);
 }
 
 export function createOpenOutput({ file, url, status, agent = "generic", selfPaintWarning = undefined }) {
@@ -1361,7 +1391,7 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi registry <list|search|inspect|create|register|add|remove>\n  lavish-axi recipe <list|inspect|create|add-component|remove-component|require-component|unrequire-component|add-slot|remove-slot|set-tokens|remove>\n  lavish-axi compose <recipe> --input <file.toon> --out <file.html>\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
@@ -1374,6 +1404,9 @@ function createCommandHelp({ agent = "generic" } = {}) {
     stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
     design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
+    registry: `Usage: lavish-axi registry list\n       lavish-axi registry search <query>\n       lavish-axi registry inspect <component> [--source]\n       lavish-axi registry create <name> [--summary <text>] [--use-when <text>]\n       lavish-axi registry register <component-directory>\n       lavish-axi registry add <shadcn-item-address> [--dry-run]\n       lavish-axi registry remove <component>\n\nDiscover and operate reusable artifact components. Components own their Mustache HTML once. Search and inspect return compact TOON. Mutation commands write reviewable source under lavish/ and update generated shadcn-compatible catalog data. Use --dry-run before a remote registry import to display its planned paths.\n`,
+    recipe: `Usage: lavish-axi recipe list\n       lavish-axi recipe inspect <recipe> [--source]\n       lavish-axi recipe create <name> [--summary <text>]\n       lavish-axi recipe add-component <recipe> <component>\n       lavish-axi recipe remove-component <recipe> <component>\n       lavish-axi recipe require-component <recipe> <component>\n       lavish-axi recipe unrequire-component <recipe> <component>\n       lavish-axi recipe add-slot <recipe> <slot>\n       lavish-axi recipe remove-slot <recipe> <slot>\n       lavish-axi recipe set-tokens <recipe> <stylesheet>\n       lavish-axi recipe remove <recipe>\n\nOperate named artifact compositions. Recipes own a page shell, slots, permitted components, and required design tokens. Use commands instead of editing generated registry JSON.\n`,
+    compose: `Usage: lavish-axi compose <recipe> --input <file.toon|file.json> --out <file.html>\n\nRender a complete portable HTML artifact from registered Mustache components and compact structured content. TOON is the primary agent input. The composer injects required recipe tokens and deduplicated component assets, so the input does not repeat component HTML, CSS, or JavaScript.\n`,
     setup: `Usage: lavish-axi setup hooks\n       lavish-axi setup plugin\n\nhooks: install or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context. This is the primary integration - it carries live session state.\n\nplugin: register the installed lavish-axi package as an Agent Plugin (agent-plugins.org) in VS Code, Cursor, and GitHub Copilot CLI. The installed package directory is itself the plugin root, so nothing is downloaded and no marketplace is involved. Reload each client afterward. Codex users should use \`setup hooks\` instead.\n\nBoth actions are explicit opt-in, idempotent, and repair a stale path after a reinstall.\n`,
     server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n\nLAVISH_AXI_HOST sets the bind address (default 127.0.0.1; a wildcard 0.0.0.0 or :: binds every interface). Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. LAVISH_AXI_LINK_HOST sets the hostname written into generated session links (default: the bind address, or loopback when bound to a wildcard). See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
   };
