@@ -179,6 +179,37 @@ test("tableCellTarget does not label a header-row click with a data row heading"
   assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "Visible state" });
 });
 
+// The clicked cell sits in the upper row of a grouped header, which `tableHeaderRow` does not
+// pick as the header row. Its first sibling is another column header, never this "row" 's name.
+test("tableCellTarget does not name an upper grouped-header row after its first cell", () => {
+  const target = node("th", { colspan: "2", textContent: "State" });
+  node("table", {}, [
+    node("thead", {}, [
+      node("tr", {}, [node("th", { textContent: "Permission" }), target]),
+      row(["Permission", "Visible state", "Database evidence"], "th"),
+    ]),
+    node("tbody", {}, [row(["Media & Apple Music", "4 apps", "Drive"])]),
+  ]);
+
+  assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "" });
+});
+
+test("tableCellTarget reads an empty rowspan attribute the way a browser does, as 1", () => {
+  const target = node("td", { textContent: "Drive" });
+  node("table", {}, [
+    node("thead", {}, [row(["Permission", "Visible state", "Database evidence"], "th")]),
+    node("tbody", {}, [
+      node("tr", {}, [
+        node("td", { textContent: "Media & Apple Music" }),
+        node("td", { rowspan: "", textContent: "4 apps" }),
+        target,
+      ]),
+    ]),
+  ]);
+
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "Database evidence" });
+});
+
 test("tableCellTarget bounds every derived string it puts on the wire", () => {
   const long = "x".repeat(1000);
   const target = node("td", { textContent: long });

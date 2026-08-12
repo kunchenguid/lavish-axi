@@ -43,10 +43,12 @@ export function tableColumnSpan(cell) {
 }
 
 // `rowspan="0"` is valid HTML - it spans to the end of the row group - and browsers report
-// `cell.rowSpan === 0` for it, so anything but a plain 1 pushes later rows sideways.
+// `cell.rowSpan === 0` for it, so anything but a plain 1 pushes later rows sideways. An empty or
+// blank attribute is not a zero: browsers parse it as 1, so defer to the parsed DOM property.
 export function tableCellSpansRows(cell) {
   const attribute = cell?.getAttribute ? cell.getAttribute("rowspan") : null;
-  const raw = Number(attribute ?? cell?.rowSpan);
+  const declared = attribute === null || String(attribute).trim() === "" ? cell?.rowSpan : attribute;
+  const raw = Number(declared);
   return Number.isFinite(raw) && raw !== 1;
 }
 
@@ -114,11 +116,14 @@ export function tableCellTarget(element, selectorFor = (_element) => "") {
     (candidate) =>
       tableTagName(candidate) === "th" && String(candidate.getAttribute?.("scope") || "").toLowerCase() === "row",
   );
-  // A click in the header row itself has no data row to name; labelling it with the first
-  // column's header would present a header as if it were a record. `scope="row"` is an author
-  // declaration and survives a shifted grid, but taking the first DOM cell is a positional guess
-  // that a rowspan above this row invalidates - it can even name the clicked cell after itself.
-  const rowHeading = headerRow === row ? null : declaredHeading || (shifted ? null : cells[0]);
+  // No row inside the header section names a record, so none of them gets a row label - not just
+  // the leaf row `tableHeaderRow` picks. In a grouped header the first cell of an upper row is a
+  // sibling column header, and naming the click after it reads as a row name that does not exist.
+  // Below the header, `scope="row"` is an author declaration and survives a shifted grid, but
+  // taking the first DOM cell is a positional guess that a rowspan above this row invalidates -
+  // it can even name the clicked cell after itself.
+  const inHeaderSection = headerRow === row || Boolean(cell.closest?.("thead"));
+  const rowHeading = inHeaderSection ? null : declaredHeading || (shifted ? null : cells[0]);
 
   return {
     type: "table-cell",
