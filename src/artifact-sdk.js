@@ -558,7 +558,7 @@ export function createArtifactSdk(
 
   function highlightElement(el) {
     if (!el) return;
-    el.style.outline = "var(--lavish-annotate-outline,2px solid #f4c95d)";
+    el.style.outline = "var(--lavish-annotate-outline,2px solid #183c78)";
     el.style.outlineOffset = "var(--lavish-annotate-offset,2px)";
   }
 
@@ -593,7 +593,7 @@ export function createArtifactSdk(
       style = document.createElement("style");
       style.id = "lavish-cursor-style";
       style.textContent =
-        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
+        ":root{--lavish-accent:#183c78;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
       document.head.appendChild(style);
     }
     if (!annotationMode && style) style.remove();
@@ -1594,6 +1594,7 @@ export function createArtifactSdk(
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow-y:auto;padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}@media(max-height:220px){.lavish-annotation-card{padding:8px}.lavish-heading{margin-bottom:4px}.lavish-annotation-card textarea{min-height:42px;resize:none;padding:7px}.lavish-annotation-card .lavish-hint{margin-top:4px;font-size:10px}.lavish-annotation-card .lavish-row{margin-top:4px}.lavish-annotation-card button{padding:5px 8px}}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
+    style.textContent += `:host{color-scheme:light;--dealernet-navy:#183c78;--dealernet-red:#d82424;--bg:#eef2f7;--bg-panel:#fff;--bg-elevated:#f6f8fb;--fg:#172238;--fg-faint:#6f7b8f;--border:#cbd4e1;--accent:var(--dealernet-navy);--accent-hover:#214f94;--brass-ink:#fff;--steel-700:#dce3ed;--shadow-floating:0 20px 70px rgba(24,60,120,.18);--font-sans:"Segoe UI",Arial,sans-serif}.lavish-text-highlight{background:rgba(24,60,120,.18);box-shadow:0 0 0 1px rgba(24,60,120,.38)}.lavish-reveal-marker{box-shadow:0 0 0 4px rgba(24,60,120,.18)}`;
     shadow.appendChild(style);
     return shadow;
   }
@@ -1794,6 +1795,39 @@ export function createArtifactSdk(
     },
     { passive: true },
   );
+
+  // On compact layouts the chrome places the panel after the complete artifact. Since the
+  // sandbox intentionally has no same-origin permission, the artifact reports only its measured
+  // document height and the chrome remains responsible for validating and applying it.
+  let artifactMetricsFrame = 0;
+  let lastArtifactHeight = 0;
+  function measuredArtifactHeight() {
+    const root = document.documentElement;
+    const body = document.body;
+    return Math.max(
+      Number(root?.scrollHeight) || 0,
+      Number(root?.offsetHeight) || 0,
+      Number(body?.scrollHeight) || 0,
+      Number(body?.offsetHeight) || 0,
+    );
+  }
+  function scheduleArtifactMetrics() {
+    if (artifactMetricsFrame) return;
+    artifactMetricsFrame = window.requestAnimationFrame(() => {
+      artifactMetricsFrame = 0;
+      const height = Math.ceil(measuredArtifactHeight());
+      if (height <= 0 || height === lastArtifactHeight) return;
+      lastArtifactHeight = height;
+      postArtifactMessage("lavish:artifactMetrics", { height });
+    });
+  }
+  scheduleArtifactMetrics();
+  window.addEventListener("load", scheduleArtifactMetrics, { once: true });
+  if (typeof ResizeObserver !== "undefined") {
+    const artifactMetricsObserver = new ResizeObserver(scheduleArtifactMetrics);
+    if (document.documentElement) artifactMetricsObserver.observe(document.documentElement);
+    if (document.body) artifactMetricsObserver.observe(document.body);
+  }
 
   document.addEventListener(
     "mouseover",

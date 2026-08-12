@@ -1,45 +1,53 @@
 :root {
-  --ink-900: #0f1115;
-  --ink-800: #11141a;
-  --ink-700: #171a21;
-  --ink-600: #1c212b;
-  --steel-700: #2a2f3a;
-  --steel-600: #303745;
-  --steel-500: #3c4557;
-  --steel-400: #8c96aa;
-  --steel-300: #aeb6c6;
-  --steel-200: #b9c0cf;
-  --steel-100: #d8deea;
-  --cream-50: #fffbf3;
-  --cream-100: #f7f3ea;
-  --cream-200: #e8e1cf;
-  --brass-500: #f4c95d;
-  --brass-400: #ffd877;
-  --brass-ink: #17130a;
-  --sage-900: #172419;
-  --sage-700: #315f3a;
-  --sage-300: #8fe39e;
-  --amber-900: #25230f;
-  --amber-700: #5d4d1b;
-  --rust-500: #f06464;
-  --bg: var(--ink-900);
-  --bg-panel: var(--ink-800);
-  --bg-bar: var(--ink-700);
-  --bg-elevated: var(--ink-600);
-  --fg: var(--cream-100);
-  --fg-muted: var(--steel-100);
-  --fg-dim: var(--steel-200);
-  --fg-faint: var(--steel-300);
-  --fg-label: var(--steel-400);
-  --border: var(--steel-600);
-  --border-subtle: var(--steel-700);
-  --border-strong: var(--steel-500);
-  --accent: var(--brass-500);
-  --accent-hover: var(--brass-400);
-  --accent-ink: var(--brass-ink);
-  --danger: var(--rust-500);
-  --font-serif: "EB Garamond", "Iowan Old Style", Georgia, serif;
-  --font-sans: Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --dealernet-navy: #183c78;
+  --dealernet-navy-deep: #0e2244;
+  --dealernet-navy-hover: #214f94;
+  --dealernet-red: #d82424;
+  --dealernet-bg: #eef2f7;
+  --dealernet-panel: #ffffff;
+  --dealernet-fg: #172238;
+  --dealernet-muted: #4c5b70;
+  --ink-900: var(--dealernet-bg);
+  --ink-800: var(--dealernet-panel);
+  --ink-700: #f7f9fc;
+  --ink-600: #f3f6fa;
+  --steel-700: #dce3ed;
+  --steel-600: #cbd4e1;
+  --steel-500: #aeb9c9;
+  --steel-400: #647389;
+  --steel-300: #5a687c;
+  --steel-200: #4c5b70;
+  --steel-100: #33435b;
+  --cream-50: #101b2d;
+  --cream-100: var(--dealernet-fg);
+  --cream-200: #263650;
+  --brass-500: var(--dealernet-navy);
+  --brass-400: var(--dealernet-navy-hover);
+  --brass-ink: #ffffff;
+  --sage-900: #eaf6ed;
+  --sage-700: #28703d;
+  --sage-300: #28703d;
+  --amber-900: #fff1f1;
+  --amber-700: #9d2020;
+  --rust-500: var(--dealernet-red);
+  --bg: #eef2f7;
+  --bg-panel: #fff;
+  --bg-bar: var(--dealernet-panel);
+  --bg-elevated: #f6f8fb;
+  --fg: #172238;
+  --fg-muted: var(--dealernet-muted);
+  --fg-dim: #5a687c;
+  --fg-faint: #647389;
+  --fg-label: #4c5b70;
+  --border: #cbd4e1;
+  --border-subtle: #dce3ed;
+  --border-strong: #aeb9c9;
+  --accent: var(--dealernet-navy);
+  --accent-hover: var(--dealernet-navy-hover);
+  --accent-ink: #ffffff;
+  --danger: var(--dealernet-red);
+  --font-serif: "Segoe UI", Arial, sans-serif;
+  --font-sans: "Segoe UI", Arial, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --text-xs: 12px;
   --lh-xs: 1.35;
@@ -93,10 +101,10 @@
   --radius-pill: 999px;
   --hairline: 1px solid var(--border);
   --hairline-subtle: 1px solid var(--border-subtle);
-  --shadow-tooltip: 0 16px 44px rgba(0, 0, 0, 0.35);
-  --shadow-floating: 0 20px 70px rgba(0, 0, 0, 0.35);
-  --bar-h: 56px;
-  --panel-w: 360px;
+  --shadow-tooltip: 0 16px 44px rgba(24, 60, 120, 0.16);
+  --shadow-floating: 0 20px 70px rgba(24, 60, 120, 0.18);
+  --bar-h: 58px;
+  --panel-w: 258px;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
   --dur-fast: 120ms;
   --dur: 180ms;
@@ -124,7 +132,7 @@ body {
   text-rendering: optimizeLegibility;
 }
 body.lavish {
-  color-scheme: dark;
+  color-scheme: light;
 }
 :focus-visible {
   outline: var(--annotate-outline);
@@ -138,6 +146,7 @@ body.lavish {
   padding: 0 var(--space-8);
   background: var(--bg-bar);
   border-bottom: var(--hairline-subtle);
+  border-top: 3px solid var(--dealernet-navy);
   box-sizing: border-box;
 }
 .brand {
@@ -150,10 +159,24 @@ body.lavish {
 }
 .brand-mark {
   font-family: var(--font-serif);
-  font-style: italic;
+  font-style: normal;
+  font-weight: 700;
   font-size: 22px;
   line-height: 1;
   color: var(--fg);
+}
+.ticket-context {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border-left: 3px solid var(--dealernet-red);
+  border-radius: 4px;
+  background: #f2f5fa;
+  color: var(--dealernet-navy);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  white-space: nowrap;
 }
 .brand-support {
   font-family: var(--font-sans);
@@ -180,7 +203,8 @@ body.lavish {
   user-select: none;
   background: none;
   border: 0;
-  padding: 0;
+  min-height: 44px;
+  padding: 0 6px;
   flex-shrink: 0;
 }
 .annotate-switch:disabled {
@@ -241,12 +265,12 @@ body.lavish {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 34px;
+  min-height: 44px;
   padding: 0 10px;
-  border: 1px solid rgba(244, 201, 93, 0.35);
+  border: 1px solid rgba(24, 60, 120, 0.25);
   border-radius: 9px;
-  background: rgba(37, 35, 15, 0.72);
-  color: var(--brass-400);
+  background: #f2f5fa;
+  color: var(--dealernet-navy);
   font-family: inherit;
   font-size: var(--text-sm);
   font-weight: var(--w-bold);
@@ -255,8 +279,8 @@ body.lavish {
 }
 .warnings-button:hover:not(:disabled),
 .warnings-button[aria-expanded="true"] {
-  border-color: rgba(244, 201, 93, 0.6);
-  background: rgba(93, 77, 27, 0.5);
+  border-color: rgba(24, 60, 120, 0.45);
+  background: #e7edf7;
   color: var(--accent-hover);
 }
 .warnings-button:disabled {
@@ -412,17 +436,17 @@ body.lavish {
   white-space: nowrap;
 }
 .warning-chip.severity {
-  border-color: rgba(240, 100, 100, 0.4);
+  border-color: rgba(216, 36, 36, 0.35);
   color: var(--danger);
 }
 .warning-chip.status-queued,
 .warning-chip.status-unverified {
-  border-color: rgba(244, 201, 93, 0.4);
+  border-color: rgba(24, 60, 120, 0.35);
   color: var(--accent);
 }
 .warning-chip.status-recurring,
 .warning-chip.status-reopened {
-  border-color: rgba(240, 100, 100, 0.4);
+  border-color: rgba(216, 36, 36, 0.35);
   color: var(--danger);
 }
 .warning-target {
@@ -465,7 +489,7 @@ body.lavish {
   border-top: var(--hairline-subtle);
   /* The list scrolls under this footer, so lift it with a soft shadow - otherwise a row clipped
      mid-content at the boundary reads as broken rather than scrollable. */
-  box-shadow: 0 -10px 14px -10px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 -10px 14px -10px rgba(24, 60, 120, 0.16);
   padding: 10px var(--space-8) 12px;
   display: flex;
   flex-direction: column;
@@ -486,8 +510,8 @@ body.lavish {
   flex-shrink: 0;
 }
 .more-button {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   border: 1px solid var(--border-subtle);
@@ -641,12 +665,13 @@ body.lavish {
   opacity: 1;
 }
 .menu-item.danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: rgba(216, 36, 36, 0.08);
 }
 .button {
   border: 0;
   border-radius: var(--radius-md);
   padding: 9px 14px;
+  min-height: 44px;
   background: var(--accent);
   color: var(--accent-ink);
   font-family: inherit;
@@ -681,7 +706,7 @@ body.lavish {
   color: var(--danger);
 }
 .button-danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: rgba(216, 36, 36, 0.08);
 }
 .button-danger > svg {
   flex-shrink: 0;
@@ -693,7 +718,7 @@ body.lavish {
   display: grid;
   place-items: center;
   padding: var(--space-16);
-  background: rgba(15, 17, 21, 0.72);
+  background: rgba(24, 60, 120, 0.18);
 }
 .share-overlay[hidden] {
   display: none;
@@ -1260,7 +1285,7 @@ body.lavish {
 .ended-overlay {
   position: fixed;
   inset: var(--bar-h) 0 0 0;
-  background: rgba(15, 17, 21, 0.86);
+  background: rgba(238, 242, 247, 0.94);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1304,6 +1329,16 @@ iframe {
   opacity: 1;
   transition: opacity var(--dur-fast) var(--ease);
 }
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 body.layout-gate-active iframe#artifact {
   opacity: 0;
 }
@@ -1326,27 +1361,67 @@ body.layout-gate-active iframe#artifact {
     max-height: min(70vh, 460px);
   }
 }
+@media (max-width: 480px) {
+  .bar {
+    gap: 6px;
+    padding: 0 8px;
+  }
+  .brand-mark {
+    font-size: 19px;
+  }
+  .ticket-context {
+    padding: 0 6px;
+    font-size: 12px;
+  }
+  .annotate-switch {
+    padding: 0 2px;
+  }
+  .annotate-switch > span:last-child {
+    display: none;
+  }
+}
 @media (max-width: 860px) {
+  html,
   body {
-    overflow: auto;
+    height: auto;
+    min-height: 100%;
+  }
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;
   }
   .layout {
-    height: calc(100vh - var(--bar-h));
+    height: auto;
+    min-height: calc(100vh - var(--bar-h));
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) min(42vh, 360px);
+    grid-template-rows: auto auto;
+  }
+  .frame {
+    height: var(--lavish-artifact-height, min(100dvh, 1000px));
   }
   .panel {
     width: 100%;
     border-left: 0;
     border-top: var(--hairline-subtle);
+    overflow: visible;
   }
   .action-panel {
-    max-height: calc(100% - 44px);
+    max-height: none;
+    overflow: visible;
   }
-  .panel:has(.conversation-section[open]) .action-panel {
-    display: none;
+  .conversation-section,
+  .conversation-body,
+  .panel-scroll {
+    flex: none;
+    overflow: visible;
   }
   .conversation-section > summary {
+    min-height: 44px;
+  }
+  button,
+  textarea,
+  summary,
+  .annotate-switch {
     min-height: 44px;
   }
   .chat {
@@ -1371,7 +1446,7 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 17, 21, 0.92);
+  background: rgba(238, 242, 247, 0.96);
   z-index: 80;
   display: flex;
 }

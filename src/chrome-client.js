@@ -28,7 +28,6 @@ const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("c
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const actionPanel = /** @type {HTMLElement} */ (document.getElementById("actionPanel"));
-const conversationSection = /** @type {HTMLDetailsElement} */ (document.getElementById("conversationSection"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
 const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("moreButton"));
@@ -96,7 +95,6 @@ let workingBubble = null;
 let submitQueuedPromise = null;
 let submitQueuedAgain = false;
 let activeActionPanel = null;
-let hasRegisteredActionPanel = false;
 let actionPanelBusy = false;
 let activeActionPanelInvocationId = "";
 let pendingActionPanelSuccessMessage = "";
@@ -368,8 +366,6 @@ function updateActionPanelButtons() {
 function renderActionPanel(value) {
   const normalized = normalizeActionPanel(value);
   if (!normalized) return;
-  const firstRegistration = !hasRegisteredActionPanel;
-  hasRegisteredActionPanel = true;
   activeActionPanel = normalized;
   actionPanelBusy = false;
   activeActionPanelInvocationId = "";
@@ -478,9 +474,6 @@ function renderActionPanel(value) {
   actionPanel.appendChild(actions);
   actionPanel.hidden = false;
   sendAndEndButton.hidden = normalized.hideGenericSendAndEnd;
-  if (firstRegistration && window.matchMedia?.("(max-width: 860px)").matches && conversationSection) {
-    conversationSection.open = false;
-  }
   updateActionPanelButtons();
 }
 
@@ -1471,6 +1464,15 @@ window.addEventListener("message", (event) => {
   const messageSequence = ++artifactMessageSequence;
   artifactSpokeToken = messageToken;
   clearTimeout(artifactSilenceTimer);
+  if (msg.type === "lavish:artifactMetrics") {
+    const height = Number(msg.height);
+    if (Number.isFinite(height) && height > 0) {
+      const boundedHeight = Math.min(1_000_000, Math.ceil(height));
+      frame.style.setProperty("--lavish-artifact-height", `${boundedHeight}px`);
+      document.documentElement?.style?.setProperty("--lavish-artifact-height", `${boundedHeight}px`);
+    }
+    return;
+  }
   if (msg.type === "lavish:layoutDiagnostics") {
     const diagnosticSequence = ++layoutDiagnosticSequence;
     submitLayoutDiagnostics({

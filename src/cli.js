@@ -19,6 +19,7 @@ import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
+import { normalizeSessionTicket } from "./session-ticket.js";
 
 // dealernet: `share` e `setup` foram removidos desta build. `share` publicava o artefato num host
 // de terceiro (ht-ml.app), publico por padrao — inaceitavel para parecer de cliente. `setup hooks`
@@ -127,7 +128,10 @@ export async function run(argv) {
     description: DESCRIPTION,
     version: VERSION,
     argv: isTopLevelHelp ? [] : normalizedArgv,
-    topLevelHelp: createTopLevelHelp({ agent }),
+    topLevelHelp: createTopLevelHelp({ agent }).replace(
+      "lavish-axi <html-file> [--no-open]",
+      "lavish-axi <html-file> [--ticket <ISSUE>] [--no-open]",
+    ),
     home: async () =>
       createHomeOutput({
         bin: process.argv[1] || "lavish-axi",
@@ -252,9 +256,16 @@ export function createUserEndedOpenOutput({ file, url }) {
 }
 
 async function openCommand(args) {
-  const file = firstPositionalArg(args);
+  const file = firstPositionalArg(args, ["--ticket"]);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi <html-file>`"]);
+  }
+  const hasTicketFlag = args.some((arg) => arg === "--ticket" || arg.startsWith("--ticket="));
+  const ticket = normalizeSessionTicket(flagValue(args, "--ticket"));
+  if (hasTicketFlag && !ticket) {
+    throw new AxiError("A valid ticket is required after --ticket", "VALIDATION_ERROR", [
+      "Use a ticket such as `WF-92564`.",
+    ]);
   }
   await assertHtmlFile(file);
   const absolute = await canonicalFile(file);
@@ -262,7 +273,7 @@ async function openCommand(args) {
   const noGate = args.includes("--no-gate");
   const reopen = args.includes("--reopen");
   const baseUrl = await ensureServer({ forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || "") });
-  const response = await postJson(`${baseUrl}/api/sessions`, { file: absolute, noGate, reopen });
+  const response = await postJson(`${baseUrl}/api/sessions`, { file: absolute, noGate, reopen, ticket });
   if (response.status === "user-ended") {
     return createUserEndedOpenOutput({ file: absolute, url: response.url });
   }
@@ -903,7 +914,10 @@ function delay(ms) {
 }
 
 export function getCommandHelp(command, { agent = "generic" } = {}) {
-  return createCommandHelp({ agent })[command] || null;
+  const help = createCommandHelp({ agent })[command] || null;
+  return command === "open" && help
+    ? `${help}\nOption: --ticket <ISSUE> shows the demand identifier in the top bar.\n`
+    : help;
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {

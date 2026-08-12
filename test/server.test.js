@@ -467,11 +467,13 @@ test("annotation card title renders the selected tag as an html element name in 
   assert.match(js, /escapeAnnotationText\(ui\.tituloElemento\) \+ " &lt;" \+ c\.tag \+ "&gt;"/);
 });
 
-test("annotation card shadow styles use Lavish design-system variables", () => {
+test("annotation card uses the Dealernet light design-system variables", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /--ink-900:#0f1115/);
-  assert.match(js, /--accent:#f4c95d/);
+  assert.match(js, /color-scheme:light/);
+  assert.match(js, /--dealernet-navy:#183c78/);
+  assert.match(js, /--dealernet-red:#d82424/);
+  assert.match(js, /--accent:var\(--dealernet-navy\)/);
   assert.match(js, /--font-sans:/);
   assert.match(js, /font-family:var\(--font-sans\)/);
   assert.match(js, /:focus-visible\{outline:2px solid var\(--accent\);outline-offset:2px/);
@@ -506,7 +508,7 @@ test("dealernet: a sessao abre com anotacao desligada", async () => {
   assert.match(js, /annotationSwitch\.onclick = toggleAnnotationMode/);
 });
 
-test("annotate switch shows a brass track and ink knob when enabled", async () => {
+test("annotate switch shows the Dealernet navy track and white knob when enabled", async () => {
   const js = await chromeClientSource();
   const css = await chromeCssSource();
 
@@ -515,32 +517,34 @@ test("annotate switch shows a brass track and ink knob when enabled", async () =
   assert.match(js, /annotationSwitch\.setAttribute\("aria-pressed", String\(annotation\)\)/);
 });
 
-test("chrome declares the Lavish design-system tokens", async () => {
+test("chrome declares the Dealernet light design-system tokens", async () => {
   const css = await chromeCssSource();
 
-  assert.match(css, /--ink-900:#0f1115/);
-  assert.match(css, /--cream-100:#f7f3ea/);
-  assert.match(css, /--brass-500:#f4c95d/);
-  assert.match(css, /--font-serif:/);
+  assert.match(css, /--dealernet-navy:#183c78/);
+  assert.match(css, /--dealernet-navy-deep:#0e2244/);
+  assert.match(css, /--dealernet-red:#d82424/);
+  assert.match(css, /--bg:#eef2f7/);
+  assert.match(css, /--bg-panel:#fff/);
+  assert.match(css, /--fg:#172238/);
   assert.match(css, /--font-sans:/);
   assert.match(css, /--text-display:92px/);
   assert.match(css, /--lh-display:1/);
   assert.match(css, /--space-32:64px/);
-  assert.match(css, /--shadow-floating:0 20px 70px rgba\(0,0,0,.35\)/);
+  assert.match(css, /--shadow-floating:0 20px 70px rgba\(24,60,120,.18\)/);
   assert.match(css, /--ease:cubic-bezier\(.2,.6,.2,1\)/);
   assert.match(css, /--dur-slow:320ms/);
-  assert.match(css, /--bar-h:56px/);
-  assert.match(css, /--panel-w:360px/);
+  assert.match(css, /--bar-h:58px/);
+  assert.match(css, /--panel-w:258px/);
 });
 
 test("artifact SDK uses design-token aliases for annotation highlight and shadow UI", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /--lavish-accent:#f4c95d/);
+  assert.match(js, /--lavish-accent:#183c78/);
   assert.match(js, /--lavish-annotate-outline:2px solid var\(--lavish-accent\)/);
-  assert.match(js, /el\.style\.outline\s*=\s*["']var\(--lavish-annotate-outline,2px solid #f4c95d\)["']/);
+  assert.match(js, /el\.style\.outline\s*=\s*["']var\(--lavish-annotate-outline,2px solid #183c78\)["']/);
   assert.match(js, /el\.style\.outlineOffset\s*=\s*["']var\(--lavish-annotate-offset,2px\)["']/);
-  assert.match(js, /--fg-faint:var\(--steel-300\)/);
+  assert.match(js, /--fg-faint:#6f7b8f/);
   assert.match(js, /textarea::placeholder\{color:var\(--fg-faint\)\}/);
   assert.doesNotMatch(js, /placeholder\{color:#aeb6c6\}/);
 });
@@ -558,16 +562,23 @@ test("chrome keeps the editor usable on narrow screens", async () => {
 
   assert.match(css, /@media \(max-width:860px\)/);
   assert.match(css, /grid-template-columns:1fr/);
-  assert.match(css, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
+  assert.match(css, /grid-template-rows:auto auto/);
+  assert.match(css, /height:var\(--lavish-artifact-height,min\(100dvh,1000px\)\)/);
+  assert.match(css, /\.annotate-switch\{[^}]*min-height:44px/);
+  assert.match(css, /\.more-button\{[^}]*width:44px;[^}]*height:44px/);
+  assert.match(css, /@media \(max-width:480px\)\{[^}]*\.bar\{[^}]*gap:6px/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)/);
+  assert.doesNotMatch(css, /min\(42vh,360px\)/);
 });
 
 test("chrome top bar follows the design mock wordmark and overflow menu treatment", async () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html", ticket: "WF-92564" });
   const css = await chromeCssSource();
 
   assert.match(html, /class="brand-mark">Dealernet/);
   assert.match(html, /class="brand-support">Editor/);
-  assert.match(css, /font-family:var\(--font-serif\)/);
+  assert.match(html, /class="ticket-context">WF-92564<\/span>/);
+  assert.match(css, /font-family:var\(--font-sans\)/);
   assert.match(css, /letter-spacing:\.18em/);
   assert.match(html, /class="more-button" id="moreButton"/);
   assert.match(html, /class="menu more-menu" id="moreMenu" hidden/);
@@ -720,11 +731,8 @@ test("chrome reserves one lateral surface for artifact actions and expandable co
   );
   assert.ok(html.indexOf('id="actionPanel"') < html.indexOf('id="conversationSection"'));
   assert.match(css, /\.action-panel-button\{[^}]*min-height:44px/);
-  assert.match(css, /@media \(max-width:860px\)[\s\S]*\.action-panel\{max-height:calc\(100% - 44px\)/);
-  assert.match(
-    css,
-    /@media \(max-width:860px\)[\s\S]*\.panel:has\(\.conversation-section\[open\]\) \.action-panel\{display:none/,
-  );
+  assert.match(css, /@media \(max-width:860px\)[\s\S]*\.action-panel\{max-height:none;overflow:visible/);
+  assert.doesNotMatch(css, /\.panel:has\(\.conversation-section\[open\]\) \.action-panel\{display:none/);
   assert.match(css, /@media \(max-width:860px\)[\s\S]*\.conversation-section/);
 });
 
@@ -1081,6 +1089,36 @@ test("session URLs use the same IPv4 loopback host the server binds", async () =
 
     assert.match(body.url, /^http:\/\/127\.0\.0\.1:/);
     assert.doesNotMatch(body.url, /localhost/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("session ticket is validated, persisted, and rendered in the top bar", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact, ticket: "wf-92564" }),
+    });
+    assert.equal(opened.status, 200);
+    const session = await opened.json();
+    const html = await fetch(session.url).then((response) => response.text());
+    assert.match(html, /class="ticket-context">WF-92564<\/span>/);
+    assert.equal(chromeSessionData(html).ticket, "WF-92564");
+
+    const invalid = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact, ticket: "<script>alert(1)</script>" }),
+    });
+    assert.equal(invalid.status, 400);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -2680,7 +2718,7 @@ test("/chrome.css serves the extracted chrome stylesheet", async () => {
 
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") || "", /text\/css/);
-    assert.match(normalizeCssForAssertions(body), /--ink-900:#0f1115/);
+    assert.match(normalizeCssForAssertions(body), /--dealernet-navy:#183c78/);
     assert.match(
       normalizeCssForAssertions(body),
       /\.layout\{[^}]*grid-template-columns:minmax\(0,1fr\) ?var\(--panel-w\)/,
@@ -3858,7 +3896,7 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.match(html, /class="ended-copy">\/tmp\/artifact\.html</);
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
-  assert.match(css, /\.ended-overlay\{[^}]*background:rgba\(15,17,21,.86\)/);
+  assert.match(css, /\.ended-overlay\{[^}]*background:rgba\(238,242,247,.94\)/);
   assert.match(css, /\.ended-title\{[^}]*font-family:var\(--font-serif\)/);
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);
