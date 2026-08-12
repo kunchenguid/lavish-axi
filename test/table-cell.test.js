@@ -209,6 +209,61 @@ test("tableCellTarget does not name an upper grouped-header row after its first 
   assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "" });
 });
 
+// The grouped-header idiom puts a rowspan in <thead>, where it is clipped at the row group
+// boundary and cannot reach a body row. Only the leaf header row it shifts loses its names.
+test("tableCellTarget still names a body row under a rowspan confined to the header", () => {
+  const target = node("td", { textContent: "ok" });
+  node("table", {}, [
+    node("thead", {}, [
+      node("tr", {}, [
+        node("th", { rowspan: "2", textContent: "Feature" }),
+        node("th", { textContent: "Result" }),
+        node("th", { textContent: "Notes" }),
+      ]),
+      row(["A", "B", "C"], "th"),
+    ]),
+    node("tbody", {}, [row([node("td", { textContent: "Login" }), target, node("td", { textContent: "fine" })])]),
+  ]);
+
+  assert.deepEqual(labels(target), { rowLabel: "Login", columnLabel: "" });
+});
+
+test("tableCellTarget ignores a rowspan in a row group the clicked row is not in", () => {
+  const target = node("td", { textContent: "4 apps" });
+  node("table", {}, [
+    node("thead", {}, [row(["Permission", "Visible state"], "th")]),
+    node("tbody", {}, [row(["Media & Apple Music", target])]),
+    node("tfoot", {}, [
+      node("tr", {}, [node("td", { rowspan: "2", textContent: "Total" }), node("td", { textContent: "4" })]),
+      node("tr", {}, [node("td", { textContent: "5" })]),
+    ]),
+  ]);
+
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "Visible state" });
+});
+
+// HTML's non-negative-integer rules ignore trailing garbage, so this cell really spans two rows.
+test("tableCellTarget reads a rowspan attribute the way HTML does, stopping at the first non-digit", () => {
+  const target = shiftedByRowSpan(node("td", { textContent: "4 apps" }), "2x");
+
+  assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "" });
+});
+
+test("tableCellTarget trusts the span the browser parsed over the raw attribute", () => {
+  const target = node("td", { textContent: "4 apps" });
+  const spanning = node("td", { rowspan: "junk", textContent: "Media" });
+  spanning.rowSpan = 2;
+  node("table", {}, [
+    node("thead", {}, [row(["Permission", "Visible state"], "th")]),
+    node("tbody", {}, [
+      node("tr", {}, [spanning, node("td", { textContent: "None" })]),
+      node("tr", {}, [target, node("td", { textContent: "extra" })]),
+    ]),
+  ]);
+
+  assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "" });
+});
+
 test("tableCellTarget reads an empty rowspan attribute the way a browser does, as 1", () => {
   const target = node("td", { textContent: "Drive" });
   node("table", {}, [

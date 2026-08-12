@@ -36,27 +36,54 @@ export function tableRowCells(row) {
   });
 }
 
+// The attribute string is not the rendered span. HTML's rules for parsing a non-negative integer
+// stop at the first non-digit, so `rowspan="2x"` really does span two rows even though `Number`
+// reads it as `NaN` - reporting no span there would emit labels for a grid that is actually
+// shifted. Take the span the browser already parsed whenever there is one, parse the attribute the
+// same way when there is not, and let a value that parses to nothing fall back to the attribute's
+// default, exactly as a browser does.
+export function tableSpanValue(cell, name, parsed) {
+  if (typeof parsed === "number" && Number.isInteger(parsed) && parsed >= 0) return parsed;
+  const digits = /^[\t\n\f\r ]*(\d+)/.exec(String(cell?.getAttribute?.(name) ?? ""));
+  return digits ? Number(digits[1]) : null;
+}
+
 export function tableColumnSpan(cell) {
-  const attribute = cell?.getAttribute ? cell.getAttribute("colspan") : null;
-  const raw = Number(attribute ?? cell?.colSpan);
-  return Number.isFinite(raw) && raw >= 1 ? Math.trunc(raw) : 1;
+  const span = tableSpanValue(cell, "colspan", cell?.colSpan);
+  return span !== null && span >= 1 ? span : 1;
 }
 
 // `rowspan="0"` is valid HTML - it spans to the end of the row group - and browsers report
-// `cell.rowSpan === 0` for it, so anything but a plain 1 pushes later rows sideways. An empty or
-// blank attribute is not a zero: browsers parse it as 1, so defer to the parsed DOM property.
+// `cell.rowSpan === 0` for it, so anything but a plain 1 pushes later rows sideways.
 export function tableCellSpansRows(cell) {
-  const attribute = cell?.getAttribute ? cell.getAttribute("rowspan") : null;
-  const declared = attribute === null || String(attribute).trim() === "" ? cell?.rowSpan : attribute;
-  const raw = Number(declared);
-  return Number.isFinite(raw) && raw !== 1;
+  const span = tableSpanValue(cell, "rowspan", cell?.rowSpan);
+  return span !== null && span !== 1;
 }
 
-// A rowspan anywhere means a row's DOM order is no longer its rendered column order, and a
-// per-row walk cannot model that. Both coordinates are then unprovable, not just the column.
-export function tableHasRowSpan(table) {
-  for (const row of tableRowsIn(table)) {
-    for (const cell of tableRowCells(row)) {
+// A rowspan is clipped to its own row group, so the group is the widest span of rows one can
+// shift. Rows outside it - a `<th rowspan="2">` grouped header in `<thead>`, say - leave this row
+// laid out from column 0.
+export function tableRowGroup(table, row) {
+  let ancestor = row?.parentElement || null;
+  while (ancestor && ancestor !== table) {
+    const tag = tableTagName(ancestor);
+    if (tag === "thead" || tag === "tbody" || tag === "tfoot") return ancestor;
+    ancestor = ancestor.parentElement;
+  }
+  return table;
+}
+
+// A span starting in an earlier row of this row's own group means its DOM order is no longer its
+// rendered column order, and a per-row walk cannot model that. Which columns such a span still
+// covers here needs a full grid walk, so any earlier span in the group counts as shifting this
+// row; a row that cannot be placed in its own group at all is unprovable the same way.
+export function tableRowIsShifted(table, row) {
+  if (!table || !row) return true;
+  const rows = tableRowsIn(tableRowGroup(table, row));
+  const index = rows.indexOf(row);
+  if (index < 0) return true;
+  for (let i = 0; i < index; i += 1) {
+    for (const cell of tableRowCells(rows[i])) {
       if (tableCellSpansRows(cell)) return true;
     }
   }
@@ -111,7 +138,10 @@ export function tableCellTarget(element, selectorFor = (_element) => "") {
   if (index < 0) return null;
 
   const headerRow = tableHeaderRow(table);
-  const shifted = tableHasRowSpan(table);
+  const shifted = tableRowIsShifted(table, row);
+  // A shifted header row cannot name columns either, even when the clicked row is laid out
+  // straight: its own cells are no longer in column order, so nothing can be matched against them.
+  const gridShifted = shifted || (headerRow ? tableRowIsShifted(table, headerRow) : false);
   const declaredHeading = cells.find(
     (candidate) =>
       tableTagName(candidate) === "th" && String(candidate.getAttribute?.("scope") || "").toLowerCase() === "row",
@@ -120,9 +150,9 @@ export function tableCellTarget(element, selectorFor = (_element) => "") {
   // `tableHeaderRow` picks. In a grouped header the first cell of any other header row is a
   // sibling column header, and naming the click after it reads as a row name that does not exist.
   // A row of nothing but `th` is that signal without a `<thead>`, which browsers never insert.
-  // `scope="row"` is an author declaration and outranks both this and a shifted grid, but taking
-  // the first DOM cell is a positional guess that a rowspan above this row invalidates - it can
-  // even name the clicked cell after itself.
+  // `scope="row"` is an author declaration and outranks both this and a shifted row, but taking
+  // the first DOM cell is a positional guess that a rowspan reaching into this row invalidates -
+  // it can even name the clicked cell after itself.
   const allHeaderCells = cells.every((candidate) => tableTagName(candidate) === "th");
   const inHeaderSection = headerRow === row || Boolean(cell.closest?.("thead"));
   const rowHeading = inHeaderSection ? null : declaredHeading || (allHeaderCells || shifted ? null : cells[0]);
@@ -131,7 +161,7 @@ export function tableCellTarget(element, selectorFor = (_element) => "") {
     type: "table-cell",
     selector: String(selectorFor(cell) || "").slice(0, 240),
     rowLabel: tableText(rowHeading),
-    columnLabel: shifted ? "" : tableColumnLabel(headerRow, cells, index),
+    columnLabel: gridShifted ? "" : tableColumnLabel(headerRow, cells, index),
     text: tableText(cell),
   };
 }

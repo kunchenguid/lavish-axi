@@ -204,7 +204,8 @@ pnpm link
   `lavish-axi poll`'s `ended` response and the `feedback` response for the final batch before an end both carry `next_step` guidance telling the agent to stop polling and deliver remaining updates in chat instead of reopening.
 - **Precise targets** - Text annotations include selected text plus range anchors, and text selections carry those anchors only.
   Clicking an element inside a table also carries the cell's visible row and column names alongside the exact CSS locator, so filtered or sorted rows do not make feedback look misdirected.
-  A name a merged cell makes unprovable is left out rather than guessed: merged header or body cells drop the column name, and a `rowspan` anywhere in the table drops the row name unless that row declares a `<th scope="row">` heading.
+  A name a merged cell makes unprovable is left out rather than guessed: merged header or body cells drop the column name, and a row reached by a `rowspan` from earlier in its own `<thead>`/`<tbody>`/`<tfoot>` section drops its row name unless it declares a `<th scope="row">` heading.
+  A merge cannot cross a section boundary, so a grouped header's merged cells leave every body row named.
   A dropped name is simply absent - the CSS locator still points at the exact element you clicked, so the annotation is never mislabelled, only less descriptive.
 - **Mermaid diagrams** - In the Lavish browser, every rendered Mermaid diagram in a `.mermaid` container becomes an embedded editable Excalidraw whiteboard.
   Click a diagram to unlock editing, and use its Fullscreen action to edit it over the whole viewport.
