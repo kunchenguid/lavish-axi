@@ -116,14 +116,16 @@ export function tableCellTarget(element, selectorFor = (_element) => "") {
     (candidate) =>
       tableTagName(candidate) === "th" && String(candidate.getAttribute?.("scope") || "").toLowerCase() === "row",
   );
-  // No row inside the header section names a record, so none of them gets a row label - not just
-  // the leaf row `tableHeaderRow` picks. In a grouped header the first cell of an upper row is a
+  // No header row names a record, so none of them gets a row label - not just the one row
+  // `tableHeaderRow` picks. In a grouped header the first cell of any other header row is a
   // sibling column header, and naming the click after it reads as a row name that does not exist.
-  // Below the header, `scope="row"` is an author declaration and survives a shifted grid, but
-  // taking the first DOM cell is a positional guess that a rowspan above this row invalidates -
-  // it can even name the clicked cell after itself.
+  // A row of nothing but `th` is that signal without a `<thead>`, which browsers never insert.
+  // `scope="row"` is an author declaration and outranks both this and a shifted grid, but taking
+  // the first DOM cell is a positional guess that a rowspan above this row invalidates - it can
+  // even name the clicked cell after itself.
+  const allHeaderCells = cells.every((candidate) => tableTagName(candidate) === "th");
   const inHeaderSection = headerRow === row || Boolean(cell.closest?.("thead"));
-  const rowHeading = inHeaderSection ? null : declaredHeading || (shifted ? null : cells[0]);
+  const rowHeading = inHeaderSection ? null : declaredHeading || (allHeaderCells || shifted ? null : cells[0]);
 
   return {
     type: "table-cell",

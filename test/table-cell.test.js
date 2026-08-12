@@ -72,6 +72,21 @@ test("tableCellTarget reads header cells from the first row when the table has n
   assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "Visible state" });
 });
 
+// Without a <thead> only the first all-th row is the header row, so a second one would otherwise
+// fall through to the positional guess and be named after its own sibling column header.
+test("tableCellTarget names no row for any all-th header row when the table has no thead", () => {
+  const target = node("th", { textContent: "Visible state" });
+  node("table", {}, [
+    node("tbody", {}, [
+      node("tr", {}, [node("th", { textContent: "Permission" }), node("th", { colspan: "2", textContent: "State" })]),
+      node("tr", {}, [node("th", { textContent: "Permission" }), target, node("th", { textContent: "Database" })]),
+      row(["Media & Apple Music", "4 apps", "Drive"]),
+    ]),
+  ]);
+
+  assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "" });
+});
+
 test("tableCellTarget does not treat a leading data row as column headers", () => {
   const target = node("td", { textContent: "4 apps" });
   node("table", {}, [node("tbody", {}, [row(["Contacts", "None"]), row(["Media & Apple Music", target])])]);
