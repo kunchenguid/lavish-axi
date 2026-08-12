@@ -189,10 +189,7 @@ async function waitForProcessExit(pid, timeoutMs) {
 
 async function waitForChildExit(child, timeoutMs) {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(timeoutMs),
-  ]);
+  await Promise.race([new Promise((resolve) => child.once("exit", resolve)), delay(timeoutMs)]);
 }
 
 async function waitForExitReceipt(exitFile, record, timeoutMs) {

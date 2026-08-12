@@ -5,7 +5,7 @@ This file provides guidance to coding agents when working with code in this repo
 ## Commands
 
 ```sh
-pnpm run check          # Run build, lint, format check, typecheck, tests, and skill freshness check
+pnpm run check          # Run build, size budgets, lint, format check, typecheck, tests, and generated-file checks
 pnpm run build          # Bundle dist/cli.mjs and copy chrome/design assets into dist
 pnpm run build:skill    # Regenerate skills/lavish/SKILL.md from shared CLI guidance
 pnpm test               # node:test runner (test/*.test.js)
@@ -48,6 +48,7 @@ Lavish Editor is a CLI + local HTTP server that opens agent-generated HTML artif
 ### Process model
 
 The CLI (`bin/lavish-axi.js` -> `src/cli.js`) spawns `lavish-axi server` as a **detached** background process (`src/cli.js:startServer`) and waits for `/health`, which returns `{ ok, app, version }`.
+Benchmark servers also return `benchmarkRunId`. The process benchmark uses this ID for bounded readiness, identity-checked shutdown, and exit-receipt cleanup. It refuses to stop a different server.
 Later CLI invocations reuse the running server only when its health version matches the current CLI version; stale servers are asked to `POST /shutdown`, and pre-handshake servers may be SIGTERM'd by port PID before the upgraded server is spawned.
 Host, port, and link-host resolution lives in `src/paths.js` (`bindHost`/`clientHost`/`linkHost`); the CLI's own control-channel requests dial the bind host, falling back to loopback when it is a wildcard.
 A Host-header allowlist middleware (`buildAllowedHostnames`/`isAllowedRequestHost`) rejects any request whose `Host` is missing or not one this server answers to - the DNS-rebinding defense, since `isSameOriginRequest` alone does not stop rebinding (a rebound page sends its hostile domain in _both_ `Origin` and `Host`, so they still match). The allowlist is loopback names + the resolved bind/link host + explicit `LAVISH_AXI_ALLOWED_HOSTS` extras (`src/paths.js:extraAllowedHosts`), minus wildcard binds; a lone `*` (`allowsAllHosts`) disables the guard for operators fronting it with their own auth. When a reverse proxy sits in front, `X-Forwarded-Host`'s outermost value is validated as a complete authority against the same allowlist (an AND check, so a spoofed or malformed forwarded host only narrows access, never bypasses `Host`); the `*` opt-out skips hostname membership but still rejects malformed authorities. README's Allowed hosts bullet owns the user-facing contract. So a specific-interface bind stays rebinding-protected while its own hostname works, rather than the guard switching off outside loopback.
