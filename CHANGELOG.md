@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.51](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.50...lavish-axi-v0.1.51) (2026-08-14)
+
+
+### Features
+
+* **attachments:** attach reference images to annotations and deliver them to the agent ([#188](https://github.com/kunchenguid/lavish-axi/issues/188)) ([3b25cbd](https://github.com/kunchenguid/lavish-axi/commit/3b25cbd00ae3406c79c681ca24d751a5bc84e761))
+
 ## [0.1.50](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.49...lavish-axi-v0.1.50) (2026-08-11)
 
 
