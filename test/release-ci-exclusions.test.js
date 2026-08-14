@@ -190,7 +190,8 @@ function isCovered(filter, releasePath) {
 const expected = expectedReleaseOutputs();
 
 test("derives the node release-output set for this repository", () => {
-  assert.deepEqual(expected, ["CHANGELOG.md", "package.json", ".release-please-manifest.json"]);
+  // plugin.json is an extra-file: release-please bumps its version alongside package.json.
+  assert.deepEqual(expected, ["CHANGELOG.md", "package.json", "plugin.json", ".release-please-manifest.json"]);
 });
 
 test("every pull_request workflow ignores the full release-output set", () => {
@@ -226,7 +227,12 @@ test("does not attach path filters to non-pull_request triggers on ci.yml", () =
   assert.ok(on);
   assert.deepEqual(on.push, { branches: ["main"] });
   assert.deepEqual(on.pull_request.branches, ["main"]);
-  assert.deepEqual(on.pull_request["paths-ignore"], [".release-please-manifest.json", "CHANGELOG.md", "package.json"]);
+  assert.deepEqual(on.pull_request["paths-ignore"], [
+    ".release-please-manifest.json",
+    "CHANGELOG.md",
+    "package.json",
+    "plugin.json",
+  ]);
   assert.equal(on.release, undefined);
   assert.equal(on.workflow_dispatch, undefined);
 });

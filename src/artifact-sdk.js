@@ -388,6 +388,7 @@ export function deriveAttachmentNoticeState(state = {}) {
  * @param {*} [mermaid]
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
+ * @param {string} [sessionKey]
  * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number }} [options]
  */
 export function createArtifactSdk(
@@ -396,6 +397,7 @@ export function createArtifactSdk(
   mermaid = mermaidHelpers,
   artifactRevision = 0,
   artifactLoadToken = "",
+  sessionKey = "",
   options = {},
 ) {
   const { isMermaidSvg, mermaidNodeFrom, mermaidNodeElement } = mermaid;
@@ -955,6 +957,9 @@ export function createArtifactSdk(
     const params = new URLSearchParams({
       diagramIndex: String(entry.index),
       diagramId: String(entry.diagramId || ""),
+      // The frame's channel token is bound to this session, so the frame page
+      // must be told which session it belongs to.
+      key: String(sessionKey || ""),
     });
     return `/whiteboard-frame?${params}`;
   }

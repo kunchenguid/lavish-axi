@@ -8,7 +8,6 @@ const queueStorageKey = "lavish-axi:queued:" + key;
 // Review-chrome state that must survive a browser refresh. Keyed per session so one review's
 // triage can never leak into another artifact's.
 const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
-const warningAckStorageKey = "lavish-axi:warning-ack:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
@@ -110,7 +109,6 @@ const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
-const layoutIssueBanner = /** @type {HTMLDivElement} */ (document.getElementById("layoutIssueBanner"));
 const warningsWrap = /** @type {HTMLDivElement} */ (document.getElementById("warningsWrap"));
 const warningsButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsButton"));
 const warningsCount = /** @type {HTMLSpanElement} */ (document.getElementById("warningsCount"));
@@ -149,7 +147,6 @@ let layoutGateTimer;
 let layoutWarnings = Array.isArray(sessionData.initialLayoutWarnings) ? sessionData.initialLayoutWarnings : [];
 const selectedWarningIds = new Set(loadJsonState(warningSelectionStorageKey, []));
 let warningsDrawerOpen = false;
-let warningsAcknowledged = loadJsonState(warningAckStorageKey, false) === true;
 const snapshotRequests = [];
 let endAfterSubmit = false;
 let workingBubble = null;
@@ -639,17 +636,6 @@ function normalizeLayoutFindings(value) {
     : [];
 }
 
-function setLayoutIssueBanner(visible) {
-  if (!layoutIssueBanner) return;
-  layoutIssueBanner.hidden = !visible;
-}
-
-// The banner is a one-time "there is unresolved work" cue for the top-bar inbox. Once the user
-// has opened the drawer it stays out of the way; the badge remains the standing signal.
-function refreshLayoutIssueBanner() {
-  setLayoutIssueBanner(!ended && !warningsAcknowledged && !layoutGateVisible && activeWarnings().length > 0);
-}
-
 function clearLayoutGateTimer() {
   if (layoutGateTimer) clearTimeout(layoutGateTimer);
   layoutGateTimer = undefined;
@@ -679,7 +665,6 @@ function revealLayoutGate() {
   clearLayoutGateTimer();
   layoutGateArmed = false;
   setLayoutGateActive(false);
-  refreshLayoutIssueBanner();
 }
 
 function forceRevealLayoutGate(reason) {
@@ -693,7 +678,6 @@ function startLayoutGateCycle() {
 
   layoutGateCycle += 1;
   layoutGateArmed = true;
-  setLayoutIssueBanner(false);
   setLayoutGateCard("checking");
   setLayoutGateActive(true);
   clearLayoutGateTimer();
@@ -710,21 +694,14 @@ function startLayoutGateCycle() {
 // pending an agent repair: findings are the user's to triage, so a completed pass always reveals
 // and hands the result to the passive inbox.
 function handleLayoutGatePass() {
-  if (!layoutGateEnabled || layoutGateManuallyBypassed) {
-    refreshLayoutIssueBanner();
-    return;
-  }
-  if (!layoutGateArmed && !layoutGateVisible) {
-    refreshLayoutIssueBanner();
-    return;
-  }
+  if (!layoutGateEnabled || layoutGateManuallyBypassed) return;
+  if (!layoutGateArmed && !layoutGateVisible) return;
   revealLayoutGate();
 }
 
 function initializeLayoutGate() {
   if (!layoutGateEnabled) {
     setLayoutGateActive(false);
-    setLayoutIssueBanner(false);
     return;
   }
 
@@ -978,7 +955,6 @@ function renderWarnings() {
     for (const warning of active) warningsList.appendChild(createWarningRow(warning));
   }
   updateWarningSelectionState();
-  refreshLayoutIssueBanner();
 }
 
 function updateWarningSelectionState() {
@@ -1011,9 +987,6 @@ function setWarningsDrawerOpen(open) {
   warningsButton.setAttribute("aria-expanded", String(warningsDrawerOpen));
   if (warningsDrawerOpen) {
     closeMenus();
-    warningsAcknowledged = true;
-    saveJsonState(warningAckStorageKey, true);
-    refreshLayoutIssueBanner();
     warningsSelectAll.focus();
   }
 }
@@ -1477,7 +1450,8 @@ function showWhiteboardOverlay(index) {
   postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
   // A fresh document per open: the frame boots, posts ready, and receives its
   // init - no stale editor state can leak between opens.
-  whiteboardFrame.src = "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index));
+  whiteboardFrame.src =
+    "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index)) + "&key=" + encodeURIComponent(key);
 }
 
 function finishWhiteboardClose(index) {
@@ -1757,10 +1731,30 @@ function handleAuthenticatedWhiteboardMessage(index, message, mode) {
   if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(index, message, mode);
 }
 
+// Inline whiteboard frames are created by the SDK inside the artifact document,
+// so a genuine one is always a direct child of the *current* artifact window.
+// Descent - not the channel token - is what proves the sender is ours: the
+// frame page is framable by any origin, so a token is not a secret an attacker
+// cannot obtain. Without this, any window that could postMessage to this chrome
+// (a page that framed it, or one holding a window.open handle) could open a
+// channel and queue a fabricated prompt. Mirrors the artifact-message handler's
+// `event.source !== frame.contentWindow` guard.
+function isArtifactChildWindow(source) {
+  if (!source) return false;
+  try {
+    // Reading `parent` on a cross-origin WindowProxy is permitted; the frame's
+    // sandbox makes everything else about it opaque.
+    return source.parent === frame.contentWindow;
+  } catch {
+    return false;
+  }
+}
+
 function handleInlineWhiteboardMessage(event, message) {
   if (ended) return;
+  if (!isArtifactChildWindow(event.source)) return;
   const index = validWhiteboardIndex(message.diagramIndex);
-  if (index === null || !event.source) return;
+  if (index === null) return;
   if (message.type === "lavish-whiteboard:ready") {
     if (inlineWhiteboardChannels.has(index)) return;
     const channelId = String(message.channelToken || "");

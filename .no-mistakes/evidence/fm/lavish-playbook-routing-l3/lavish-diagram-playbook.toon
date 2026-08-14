@@ -1,8 +1,0 @@
-playbook:
-  id: diagram
-  use_when: "Map relationships, flows, state, and architecture"
-  choose[3]: Use Mermaid when automatic node placement and edge routing matter more than rich card content.,"Use CSS grid, SVG, or positioned HTML when each item needs prose, code, controls, or detailed annotations.","Use a hybrid shape for large systems: a small overview diagram followed by detailed module cards."
-  structure[3]: "Lead with the question the diagram answers, not with the implementation detail that produced it.","Keep the first visual to the core relationship, then put dense evidence or file references below it.","For complex systems, separate topology from detail so the overview stays readable."
-  design_rules[3]: Use page-scoped class names and avoid generic names like .node that can collide with diagram libraries.,Prefer top-down flow for multi-step diagrams unless the flow is genuinely linear and short.,"Quote labels that contain punctuation or code-like names, and use explicit line breaks where the renderer supports them."
-  pitfalls[4]: Do not cram every file or function into one diagram when a layered explanation would be clearer.,"Do not hand-build boxes-and-arrows from div/flexbox for a flow: it does not auto-route edges and reads worse than Mermaid; reach for Mermaid or SVG for richly annotated nodes.",Do not let default diagram colors clash with the page palette or dark mode.,Do not present unverified architecture claims as facts. Cite the files or commands that support them.
-  lavish_notes[2]: "A Lavish diagram should invite precise annotation: make modules, edges, and captions easy to click and discuss.","When a relationship is uncertain, label it as a question so the user can resolve it in the review loop."

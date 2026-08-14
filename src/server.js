@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -170,19 +171,35 @@ export function readAttachmentUploadBody(req, maxBytes) {
   });
 }
 
-export function createWhiteboardChannelToken(secret, now = Date.now()) {
-  const payload = `${now}.${crypto.randomBytes(24).toString("base64url")}`;
-  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
+// The signed payload carries the session key, so a token is a capability for
+// exactly one session. Without that binding any token - including one minted by
+// a request that named no session - authenticated an arbitrary session's
+// whiteboard channel. The wire format stays `${issuedAt}.${nonce}.${signature}`;
+// the key is signed over, never transmitted in the token.
+function whiteboardChannelPayload(issuedAt, nonce, sessionKey) {
+  return `${issuedAt}.${nonce}.${sessionKey}`;
 }
 
-export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
+export function createWhiteboardChannelToken(secret, sessionKey, now = Date.now()) {
+  const nonce = crypto.randomBytes(24).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(whiteboardChannelPayload(now, nonce, String(sessionKey || "")))
+    .digest("base64url");
+  return `${now}.${nonce}.${signature}`;
+}
+
+export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = Date.now()) {
+  if (!isValidWhiteboardKey(sessionKey)) return false;
   const [issuedAtText, nonce, signature, extra] = String(token || "").split(".");
   if (extra !== undefined || !/^\d{13}$/.test(issuedAtText) || !/^[A-Za-z0-9_-]{32}$/.test(nonce)) return false;
   const issuedAt = Number(issuedAtText);
   if (!Number.isSafeInteger(issuedAt) || issuedAt > now || now - issuedAt > WHITEBOARD_CHANNEL_TOKEN_TTL_MS)
     return false;
-  const expected = crypto.createHmac("sha256", secret).update(`${issuedAtText}.${nonce}`).digest("base64url");
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(whiteboardChannelPayload(issuedAtText, nonce, String(sessionKey)))
+    .digest("base64url");
   const actualBuffer = Buffer.from(signature || "", "utf8");
   const expectedBuffer = Buffer.from(expected, "utf8");
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
@@ -253,7 +270,8 @@ export async function serve({
   // This guard is installed as the first middleware so every route - including the
   // attachment upload/fetch/remove endpoints below - is behind the Host allowlist.
   const allowedHostnames = buildAllowedHostnames({ host, linkHost: linkHostName, allowedHosts });
-  if (!allowsAllHosts(allowedHosts)) {
+  const allowAnyHostname = allowsAllHosts(allowedHosts);
+  if (!allowAnyHostname) {
     app.use((req, res, next) => {
       const requestHost = { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] };
       if (isAllowedRequestHost(requestHost, allowedHostnames)) {
@@ -410,8 +428,16 @@ export async function serve({
     }
   });
 
+  // The one route that puts words in the reviewer's mouth: whatever lands here
+  // reaches the agent as the user's own instructions. The session key is derived
+  // from the artifact path, not a secret, so knowing it must not be enough -
+  // only this server's own chrome may queue prompts.
   app.post("/api/:key/prompts", async (req, res, next) => {
     try {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+        res.status(403).json({ error: "cross-origin prompt submission rejected" });
+        return;
+      }
       const shouldEndSession = Boolean(req.body?.endSession || req.body?.end_session);
       const hasLayoutWarningPrompt = Array.isArray(req.body?.prompts)
         ? req.body.prompts.some((prompt) => prompt?.tag === "layout-warnings")
@@ -619,7 +645,7 @@ export async function serve({
   // loopback server.
   app.post("/api/:key/share", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin share request rejected" });
         return;
       }
@@ -680,6 +706,15 @@ export async function serve({
       await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
+      // Nothing legitimately frames the review chrome - it is the top-level
+      // page, and shares/exports ship standalone HTML rather than embedding it.
+      // Refusing to be framed denies an attacker page both a window handle to
+      // this chrome and a clickjacking surface over Send. Scoped to this route:
+      // /artifact/* is framed by this page and /whiteboard-frame is framed by
+      // that artifact document, whose sandbox gives it an opaque origin no
+      // frame-ancestors expression can name.
+      res.setHeader("x-frame-options", "DENY");
+      res.setHeader("content-security-policy", "frame-ancestors 'none'");
       res.type("html").send(
         createChromeHtml(session, {
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
@@ -703,7 +738,7 @@ export async function serve({
 
   app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin chrome handoff rejected" });
         return;
       }
@@ -790,7 +825,7 @@ export async function serve({
         return;
       }
       const root = path.dirname(session.file);
-      const file = resolveArtifactAsset(root, assetPath);
+      const file = await resolveArtifactAsset(root, assetPath);
       if (!file) {
         res.status(403).send("Forbidden");
         return;
@@ -917,16 +952,25 @@ export async function serve({
   // reports ready.
   app.get("/whiteboard-frame", (req, res) => {
     res.setHeader("cache-control", "no-store");
-    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret)));
+    // The frame's channel token is minted for one session, so the caller must
+    // name it. Both call sites (the chrome overlay and the artifact SDK's
+    // inline embed) know their own key; a request without one could only
+    // produce a token that authenticates nothing, so reject it outright.
+    const sessionKey = String(req.query.key || "");
+    if (!isValidWhiteboardKey(sessionKey)) {
+      res.status(400).type("text/plain").send("Missing session key");
+      return;
+    }
+    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret, sessionKey)));
   });
 
   // Whiteboard bundle, stylesheet, and vendored Excalidraw fonts. The frame
   // runs in an opaque origin, and font fetches from an opaque origin are
   // CORS-gated, so this static, public-content route must answer with
   // Access-Control-Allow-Origin: * or every canvas font falls back.
-  app.get(/^\/whiteboard-assets\/(.+)$/, (req, res, next) => {
+  app.get(/^\/whiteboard-assets\/(.+)$/, async (req, res, next) => {
     try {
-      const file = resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
+      const file = await resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
       if (!file) {
         res.status(403).send("Forbidden");
         return;
@@ -989,7 +1033,7 @@ export async function serve({
 
   app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
         return;
       }
@@ -998,7 +1042,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret)) {
+      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret, req.params.key)) {
         res.status(403).json({ error: "invalid whiteboard channel" });
         return;
       }
@@ -1014,7 +1058,7 @@ export async function serve({
   // loopback server.
   app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -1041,7 +1085,7 @@ export async function serve({
   // target. Files stay on this machine; the prompt carries only the paths.
   app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -1380,25 +1424,40 @@ export function allowsAllHosts(allowedHosts = []) {
   return allowedHosts.some((value) => String(value).trim() === "*");
 }
 
+function parseHostAuthority(value) {
+  const raw = String(value).trim();
+  if (!raw || /[@/\\?#\s]/.test(raw)) return null;
+
+  let hostname;
+  let port;
+  let bracketed = false;
+  if (raw.startsWith("[")) {
+    const match = /^\[([0-9A-Fa-f:.]+)\](?::(\d+))?$/.exec(raw);
+    if (!match || isIP(match[1]) !== 6) return null;
+    [, hostname, port = ""] = match;
+    bracketed = true;
+  } else {
+    const match = /^([A-Za-z0-9._-]+)(?::(\d+))?$/.exec(raw);
+    if (!match) return null;
+    [, hostname, port = ""] = match;
+  }
+  if (port && Number(port) > 65535) return null;
+
+  hostname = hostname.toLowerCase();
+  const authority = `${bracketed ? `[${hostname}]` : hostname}${port ? `:${port}` : ""}`;
+  try {
+    const parsed = new URL(`http://${authority}`);
+    if (!parsed.origin || parsed.origin === "null") return null;
+  } catch {
+    return null;
+  }
+  return { hostname, port, authority };
+}
+
 // Extract the hostname (without port) from a Host header value, honoring
 // bracketed IPv6 literals ("[::1]:4387"). Returns null for a malformed authority.
 export function hostnameFromHostHeader(value) {
-  const raw = String(value).trim();
-  if (raw.startsWith("[")) {
-    const end = raw.indexOf("]");
-    if (end === -1) return null;
-    // Anything after the closing bracket must be a `:port` suffix; reject trailing
-    // garbage (e.g. "[::1]evil.com") instead of reading it as the bracketed host.
-    const rest = raw.slice(end + 1);
-    if (rest.length > 0 && !rest.startsWith(":")) return null;
-    return raw.slice(1, end).toLowerCase();
-  }
-  const colon = raw.indexOf(":");
-  const hostname = colon === -1 ? raw : raw.slice(0, colon);
-  // A bare, unbracketed IPv6 literal is not a valid authority; reject it rather
-  // than mistaking a hextet for a port.
-  if (hostname.includes(":")) return null;
-  return hostname.toLowerCase();
+  return parseHostAuthority(value)?.hostname ?? null;
 }
 
 // DNS-rebinding defense: a loopback-bound server answers only to its own known
@@ -1408,11 +1467,8 @@ export function hostnameFromHostHeader(value) {
 // fail open.
 export function isAllowedHostHeader(hostHeader, allowedHostnames) {
   if (hostHeader === undefined || hostHeader === null) return false;
-  const raw = String(hostHeader).trim();
-  if (raw === "") return false;
-  const hostname = hostnameFromHostHeader(raw);
-  if (hostname === null) return false;
-  return allowedHostnames.has(hostname);
+  const authority = parseHostAuthority(hostHeader);
+  return authority !== null && allowedHostnames.has(authority.hostname);
 }
 
 // Validate a request's effective host for DNS-rebinding protection. The Host
@@ -1435,8 +1491,34 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
 
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
 // browser attaches an Origin/Referer that must match this server's own origin.
-function isSameOriginRequest(req) {
-  const expectedOrigin = `${req.protocol}://${req.get("host")}`;
+function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
+  const host = parseHostAuthority(req.headers.host);
+  if (!host) return false;
+
+  let protocol = req.protocol;
+  let authority = host;
+  const forwardedHost = String(req.get("x-forwarded-host") || "")
+    .split(",")
+    .pop()
+    .trim();
+  if (forwardedHost) {
+    const forwardedAuthority = parseHostAuthority(forwardedHost);
+    if (
+      !forwardedAuthority ||
+      (!allowAnyHostname &&
+        (!allowedHostnames.has(host.hostname) || !allowedHostnames.has(forwardedAuthority.hostname)))
+    )
+      return false;
+    protocol = String(req.get("x-forwarded-proto") || req.protocol)
+      .split(",")
+      .pop()
+      .trim()
+      .toLowerCase();
+    if (protocol !== "http" && protocol !== "https") return false;
+    authority = forwardedAuthority;
+  }
+  const expectedOrigin = normalizeOrigin(`${protocol}://${authority.authority}`);
+  if (!expectedOrigin) return false;
   const origin = req.get("origin");
   if (origin) {
     return normalizeOrigin(origin) === expectedOrigin;
@@ -1458,13 +1540,41 @@ function optionalBodyString(value) {
   return trimmed || undefined;
 }
 
-export function resolveArtifactAsset(root, assetPath) {
+// Confines an asset request lexically first, then - like export-bundle.js's guardedRead -
+// resolves the real (symlink-followed) path and refuses anything that escapes the artifact
+// directory, so a symlink placed beside the artifact can't make this route serve an outside
+// file (e.g. ~/.ssh/id_rsa).
+export async function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return null;
   }
-  return file;
+  let real;
+  try {
+    real = await realpath(file);
+  } catch (error) {
+    // Nonexistent path (e.g. an asset that hasn't been built yet): nothing to read, so the
+    // lexical confinement above is enough - the caller's existsSync/sendFile handles the 404.
+    // Every other realpath failure fails closed, like guardedRead.
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return file;
+    }
+    throw error;
+  }
+  let realRoot;
+  try {
+    realRoot = await realpath(root);
+  } catch {
+    realRoot = path.resolve(root);
+  }
+  const relativeReal = path.relative(realRoot, real);
+  if (relativeReal === ".." || relativeReal.startsWith(`..${path.sep}`) || path.isAbsolute(relativeReal)) {
+    return null;
+  }
+  // Hand back the resolved path, not the requested one: a real path contains no symlinks, so
+  // sendFile re-opening it cannot be redirected by a link swapped in after this check.
+  return real;
 }
 
 /**
@@ -1752,7 +1862,7 @@ ${faviconTag}
 </head>
 <body class="${bodyClass}">
 <div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe><div class="layout-issue-banner" id="layoutIssueBanner" hidden>Layout issues detected. Open <strong>Layout issues</strong> in the top bar to review and queue fixes.</div></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label>Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label>Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note">Keep the update key private. ht-ml.app returns it once and it is the only way to update or delete this page later.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
@@ -1811,7 +1921,6 @@ export function createSdkJs(
   };
   return `(() => {
 const key=${JSON.stringify(key)};
-void key;
 const artifactRevision=${revision};
 const artifactLoadToken=${JSON.stringify(loadToken)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
@@ -1830,7 +1939,7 @@ const isTrustedAttachmentResult=${isTrustedAttachmentResult.toString()};
 const deriveAttachmentNoticeState=${deriveAttachmentNoticeState.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, ${JSON.stringify(sdkOptions)});
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key, ${JSON.stringify(sdkOptions)});
 })();`;
 }
 

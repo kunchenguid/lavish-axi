@@ -1,6 +1,6 @@
 {
   "name": "lavish-axi",
-  "version": "0.1.45",
+  "version": "0.1.50",
   "packageManager": "pnpm@11.1.1",
   "description": "HTML is the new markdown. Lavish is the new editor for your HTML artifacts.",
   "type": "module",
@@ -9,6 +9,7 @@
   },
   "files": [
     "dist",
+    "plugin.json",
     "skills/lavish",
     "lavish-editor-marketing/renders/lavish-editor-marketing.gif",
     "LICENSE",
@@ -18,7 +19,8 @@
   "scripts": {
     "build": "node scripts/build.js",
     "build:skill": "node scripts/build-skill.js",
-    "check": "npm run build && npm run lint && npm run format:check && npm run typecheck && npm test && node scripts/build-skill.js --check",
+    "build:plugin": "node scripts/build-plugin.js",
+    "check": "npm run build && npm run lint && npm run format:check && npm run typecheck && npm test && node scripts/build-skill.js --check && node scripts/build-plugin.js --check",
     "start": "node dist/cli.mjs",
     "lint": "eslint bin src test scripts",
     "format": "prettier --write .",
@@ -32,6 +34,7 @@
     "@tailwindcss/browser": "4.2.4",
     "axi-sdk-js": "^0.1.8",
     "chokidar": "^4.0.3",
+    "cross-spawn": "7.0.6",
     "daisyui": "^5.5.19",
     "express": "^5.2.1",
     "open": "^10.2.0",

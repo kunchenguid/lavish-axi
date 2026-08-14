@@ -2,31 +2,73 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createHomeOutput } from "../src/cli.js";
-import { SKILL_DESCRIPTION, createSkillMarkdown } from "../src/skill.js";
+import {
+  ALLOWED_SKILL_FRONTMATTER_KEYS,
+  SKILL_DESCRIPTION,
+  createSkillMarkdown,
+  parseSkillFrontmatter,
+  validateSkillMarkdown,
+} from "../src/skill.js";
 
 function skillCommandText(text) {
   return text.replaceAll("`lavish-axi", "`npx -y lavish-axi");
 }
 
 test("createSkillMarkdown emits valid frontmatter naming the lavish skill", () => {
-  const md = createSkillMarkdown();
-  assert.ok(md.startsWith("---\n"), "starts with frontmatter fence");
-  const end = md.indexOf("\n---\n", 4);
-  assert.ok(end > 0, "frontmatter is closed");
-  const frontmatter = md.slice(4, end);
-  assert.match(frontmatter, /^name: lavish$/m);
-  assert.match(frontmatter, /^description: /m);
-  assert.match(frontmatter, /^argument-hint: /m);
-  assert.ok(frontmatter.includes(SKILL_DESCRIPTION), "frontmatter carries the skill description");
+  const { frontmatter, errors } = parseSkillFrontmatter(createSkillMarkdown());
+
+  assert.deepEqual(errors, [], "frontmatter parses as plain block-style YAML");
+  assert.equal(frontmatter.name, "lavish");
+  assert.equal(frontmatter.description, SKILL_DESCRIPTION);
 });
 
-test("createSkillMarkdown emits Hermes Agent metadata in frontmatter", () => {
-  const md = createSkillMarkdown();
-  const frontmatter = md.slice(4, md.indexOf("\n---\n", 4));
+test("createSkillMarkdown emits Hermes Agent metadata as string-valued frontmatter", () => {
+  const { frontmatter } = parseSkillFrontmatter(createSkillMarkdown());
 
-  assert.match(frontmatter, /^author: Kun Chen \(kunchenguid\)$/m);
-  assert.match(frontmatter, /^metadata:\n {2}hermes:\n {4}tags: \[[^\]]+\]\n {4}category: \S+$/m);
-  assert.doesNotMatch(frontmatter, /^version:/m, "version is omitted to avoid release churn");
+  assert.deepEqual(frontmatter.metadata, {
+    author: "Kun Chen (kunchenguid)",
+    "argument-hint": "<what the artifact should show>",
+    "hermes-tags": "html, review, artifacts, visualization",
+    "hermes-category": "productivity",
+  });
+  assert.equal(frontmatter.version, undefined, "version is omitted to avoid release churn");
+});
+
+test("createSkillMarkdown conforms to the Agent Skills frontmatter contract", () => {
+  // Agent Plugins delegates skill validity to Agent Skills and silently skips any skill
+  // that fails it, so a regression here would quietly remove the skill from the plugin.
+  const { valid, errors } = validateSkillMarkdown(createSkillMarkdown(), { directoryName: "lavish" });
+
+  assert.deepEqual(errors, []);
+  assert.ok(valid);
+});
+
+test("createSkillMarkdown keeps every frontmatter field in the allowed set", () => {
+  const { frontmatter } = parseSkillFrontmatter(createSkillMarkdown());
+
+  for (const key of Object.keys(frontmatter)) {
+    assert.ok(ALLOWED_SKILL_FRONTMATTER_KEYS.includes(key), `\`${key}\` is an allowed Agent Skills field`);
+  }
+});
+
+test("validateSkillMarkdown rejects the shapes the reference validator rejects", () => {
+  const flowCollection = "---\nname: lavish\ndescription: d\nmetadata:\n  tags: [a, b]\n---\nbody";
+  assert.match(validateSkillMarkdown(flowCollection).errors.join("\n"), /flow collection/);
+
+  const unknownField = "---\nname: lavish\ndescription: d\nargument-hint: x\n---\nbody";
+  assert.match(validateSkillMarkdown(unknownField).errors.join("\n"), /unexpected frontmatter field `argument-hint`/);
+
+  const nested = "---\nname: lavish\ndescription: d\nmetadata:\n  hermes:\n    category: p\n---\nbody";
+  assert.match(validateSkillMarkdown(nested).errors.join("\n"), /nests deeper than one level/);
+
+  const mismatched = "---\nname: lavish\ndescription: d\n---\nbody";
+  assert.match(
+    validateSkillMarkdown(mismatched, { directoryName: "other" }).errors.join("\n"),
+    /must match skill name/,
+  );
+
+  const missing = "---\nname: lavish\n---\nbody";
+  assert.match(validateSkillMarkdown(missing).errors.join("\n"), /`description` is required/);
 });
 
 test("createSkillMarkdown handles explicit /lavish invocation arguments", () => {
@@ -56,6 +98,16 @@ test("createSkillMarkdown mirrors the no-args home output", () => {
     const skillItem = skillCommandText(item);
     assert.ok(md.includes(skillItem), `includes help: ${skillItem.slice(0, 32)}...`);
   }
+});
+
+test("createSkillMarkdown explains the open-time self-paint warning", () => {
+  const md = createSkillMarkdown();
+  const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Visual guidance"));
+
+  const openIndex = workflow.indexOf("to open or resume a review session");
+  const pollIndex = workflow.indexOf("to long-poll");
+  assert.ok(openIndex > 0 && openIndex < pollIndex, "opening comes before polling");
+  assert.match(workflow, /self_paint_warning/, "the workflow explains the open-time warning");
 });
 
 test("createSkillMarkdown requires an observable wake path for every poll", () => {
@@ -105,9 +157,11 @@ test("createSkillMarkdown does not leak live session state", () => {
   assert.ok(!/\/session\/[0-9a-f]{8}/.test(md), "no live session URLs");
 });
 
-test("createSkillMarkdown omits setup hooks guidance", () => {
+test("createSkillMarkdown omits setup guidance", () => {
+  // Installation is the user's business; the skill is agent-facing guidance only.
   const md = createSkillMarkdown();
   assert.doesNotMatch(md, /setup hooks/);
+  assert.doesNotMatch(md, /setup plugin/);
 });
 
 test("createSkillMarkdown uses non-interactive npx commands", () => {

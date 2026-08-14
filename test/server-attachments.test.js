@@ -124,7 +124,7 @@ test("DELETE keeps a content-addressed file still referenced by a queued prompt 
     // needs the file, so the delete must be refused and the bytes must survive.
     await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({
         prompts: [
           { uid: "1", prompt: "look", selector: "body", tag: "body", text: "", attachments: [{ id: attachment.id }] },
@@ -248,7 +248,7 @@ test("a queued prompt carries the server-vetted attachment path, not the client'
     const { attachment } = await (await uploadImage(base, key, PNG_2x1)).json();
     const queued = await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({
         prompts: [
           {
@@ -281,7 +281,7 @@ test("prompts POST rejects the batch atomically (400) when an attachment can't b
     const unknown = "f".repeat(64) + ".png";
     const queued = await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({
         prompts: [
           {
@@ -327,7 +327,7 @@ test("export still works and leaks no attachment data when a prompt references a
     const { attachment } = await (await uploadImage(base, key, PNG_2x1)).json();
     await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({
         prompts: [
           { uid: "1", prompt: "match", selector: "body", tag: "body", text: "", attachments: [{ id: attachment.id }] },

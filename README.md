@@ -95,6 +95,32 @@ This installs a `SessionStart` hook for **Claude Code**, **Codex**, **OpenCode**
 Unlike the skill, the hook also shows your live open sessions, so a fresh agent session can resume an in-flight review.
 **Restart your agent session after running this** so the new hook takes effect.
 
+### Agent Plugin
+
+Lavish also ships as an [Agent Plugin](https://agent-plugins.org) - the vendor-neutral packaging standard for skills and MCP servers - so clients that speak that format can load it directly.
+
+**No marketplace is involved.** The installed npm package _is_ the plugin: `plugin.json` sits at the package root next to the `skills/` directory, so whatever `npm install` already put on disk is a complete, conformant plugin. Install the CLI, then register it:
+
+```sh
+npm install -g lavish-axi
+lavish-axi setup plugin
+```
+
+That registers the installed package with every supported client it finds - **VS Code**, **Cursor**, and **GitHub Copilot CLI** - and reports which ones were absent. It is opt-in and idempotent, and it repairs the registered path after a reinstall or relocation. Reload each client afterward.
+
+Each client is registered independently: one that cannot be registered is reported with what to do about it, and never blocks the others or fails the command.
+
+To register by hand instead, point any client at the package directory (`npm root -g`/`lavish-axi`):
+
+| Client             | Register with                                                                                                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| VS Code            | `"chat.pluginLocations": { "<package-dir>": true }` in user settings                                               |
+| Cursor             | link the package dir at `~/.cursor/plugins/local/lavish-axi` (`setup plugin` handles Windows link compatibility)   |
+| GitHub Copilot CLI | `copilot plugin install <package-dir>` (or `copilot plugin install kunchenguid/lavish-axi` straight from the repo) |
+
+Codex and ChatGPT install plugins only from marketplace sources, so Codex users should use the session hook above instead.
+Lavish declares no MCP server - the CLI itself is the agent interface - so a plugin install brings the same `lavish` skill, and the skill and plugin are alternatives rather than a stack.
+
 ### From source
 
 ```sh
@@ -136,6 +162,8 @@ pnpm link
 - **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, feedback controls, and render-time layout checks.
   Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser.
   Run `lavish-axi design` for the single source of agent-facing design guidance and optional CDN or Mermaid snippets.
+- **Self-paint warning** - `lavish-axi <html-file>`, `export`, and `share` run a render-free check for artifacts missing an explicit page background and return a one-line `self_paint_warning`.
+  The check fails open - any stylesheet link, `@import`, Tailwind runtime script, `color-scheme`, or `html`/`body`/`:root` background signal suppresses it - and it never blocks the open.
 - **Open-time layout gate** - The browser chrome masks an artifact only while the real in-iframe audit waits for fonts and final geometry.
   The first completed check always reveals the artifact, whatever it found; the gate never holds the review hostage waiting for a repair.
   The user can click **Show anyway**, and a bounded safety timeout fails open when no check has completed.
@@ -195,7 +223,7 @@ pnpm link
 - **Diagnostic viewports** - `LAVISH_AXI_DIAGNOSTIC_VIEWPORTS` sets which viewport classes the layout-issue inbox tracks (`mobile`, `compact`, `desktop`; comma-separated, default all). Warnings whose class leaves the set are marked obsolete with an explicit reason instead of silently reading as fixed.
 - **Server port** - Set `LAVISH_AXI_PORT` to choose the server port; it defaults to `4387`.
 - **Network binding** - The server binds to loopback (`127.0.0.1`) by default. Set `LAVISH_AXI_HOST` to bind elsewhere; a wildcard (`0.0.0.0` or `::`) binds every interface. Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. Set `LAVISH_AXI_LINK_HOST` to control the hostname written into generated session links (defaults to the bind address, or loopback when bound to a wildcard).
-- **Allowed hosts** - To defend against DNS rebinding, the server rejects (`403`) any request whose `Host` header is missing or not one it answers to: the loopback names (`127.0.0.1`, `::1`, `localhost`) plus the configured bind and link host. If you reach the server under another name - a wildcard bind accessed by LAN IP, a reverse-proxy hostname, or an extra interface - list those names in `LAVISH_AXI_ALLOWED_HOSTS` (whitespace-separated) to allow them. Behind a reverse proxy, the forwarded `X-Forwarded-Host` is validated against the same list, so add your public hostname there and have the proxy send it. Set `LAVISH_AXI_ALLOWED_HOSTS` to `*` to disable the check entirely (only when the server sits behind your own authentication or proxy).
+- **Allowed hosts** - To defend against DNS rebinding, the server rejects (`403`) any request whose `Host` header is missing or not one it answers to: the loopback names (`127.0.0.1`, `::1`, `localhost`) plus the configured bind and link host. If you reach the server under another name - a wildcard bind accessed by LAN IP, a reverse-proxy hostname, or an extra interface - list those names in `LAVISH_AXI_ALLOWED_HOSTS` (whitespace-separated) to allow them. Behind a reverse proxy, the forwarded `X-Forwarded-Host` is validated against the same list, so add your public hostname there and have the proxy send it together with `X-Forwarded-Proto`. Set `LAVISH_AXI_ALLOWED_HOSTS` to `*` to disable the check entirely (only when the server sits behind your own authentication or proxy).
 - **Browser opening** - Set `LAVISH_AXI_NO_OPEN=1`, equivalent to `--no-open`, to create or resume a session without launching a browser window.
 
 ## CLI Reference
@@ -213,6 +241,7 @@ pnpm link
 | `lavish-axi playbook [id]`      | List focused artifact guidance or show one playbook; agents must open each matching playbook before writing HTML.                                                                                                                                                                                                                            |
 | `lavish-axi design`             | Show agent-facing design guidance, including optional CDN and Mermaid snippets.                                                                                                                                                                                                                                                              |
 | `lavish-axi setup hooks`        | Install or repair optional SessionStart hooks for Claude Code, Codex, OpenCode, and GitHub Copilot CLI; restart the agent session afterward.                                                                                                                                                                                                 |
+| `lavish-axi setup plugin`       | Register the installed package as an [Agent Plugin](https://agent-plugins.org) in VS Code, Cursor, and GitHub Copilot CLI; opt-in, idempotent, no marketplace involved. Reload each client afterward.                                                                                                                                        |
 | `lavish-axi server`             | Run the local Lavish Editor server.                                                                                                                                                                                                                                                                                                          |
 
 Known playbook IDs: `diagram`, `table`, `comparison`, `plan`, `code`, `input`, `slides`.

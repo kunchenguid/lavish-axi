@@ -75,7 +75,7 @@ test(
         "chrome-devtools-axi",
         [
           "eval",
-          'JSON.stringify({ gate: document.body.classList.contains("layout-gate-active"), bannerHidden: document.getElementById("layoutIssueBanner").hidden, wrapHidden: document.getElementById("warningsWrap").hidden, badge: document.getElementById("warningsCount").textContent })',
+          'JSON.stringify({ gate: document.body.classList.contains("layout-gate-active"), wrapHidden: document.getElementById("warningsWrap").hidden, badge: document.getElementById("warningsCount").textContent })',
         ],
         chromeEnv,
       );
@@ -114,7 +114,6 @@ test(
       assert.equal(inbox.gate, false, `${name}: the artifact is always revealed after a completed pass`);
       assert.equal(Number(inbox.badge), expectedCount, name);
       assert.equal(inbox.wrapHidden, expectedCount === 0, name);
-      assert.equal(inbox.bannerHidden, expectedCount === 0, name);
       assert.match(poll, /status:\s*waiting/, `${name}: detection alone must never wake an agent`);
       assert.doesNotMatch(poll, /layout_warnings\[/, name);
       return { inbox, poll };
@@ -147,10 +146,9 @@ test(
 
       await audit("calibration-small-overflow", "390x844x1,mobile,touch", 3200, 0);
 
-      // A slow page whose audit outruns the gate hold still reveals with no issue banner: a
-      // delayed audit is uncertainty, never evidence of a defect.
-      const timeoutResult = await audit("real-heavy-clean", "1440x1000x1", 16_000, 0);
-      assert.equal(timeoutResult.inbox.bannerHidden, true);
+      // A slow page whose audit outruns the gate hold still reveals: a delayed audit is
+      // uncertainty, never evidence of a defect.
+      await audit("real-heavy-clean", "1440x1000x1", 16_000, 0);
 
       // A repair clears the inbox only through a newer artifact load plus a complete pass at the
       // same viewport - and it does so without the agent ever having been woken.
@@ -176,7 +174,6 @@ test(
       const repaired = readInbox();
       assert.equal(Number(repaired.badge), 0);
       assert.equal(repaired.wrapHidden, true);
-      assert.equal(repaired.bannerHidden, true);
       assert.equal(repaired.gate, false);
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);

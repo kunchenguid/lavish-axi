@@ -880,7 +880,6 @@ body.lavish {
   min-width: 0;
   min-height: 0;
   background: #fff;
-  position: relative;
   overflow: hidden;
 }
 .panel {
@@ -1223,24 +1222,6 @@ body.lavish {
 }
 .ended-action {
   margin-top: var(--space-8);
-}
-.layout-issue-banner {
-  position: absolute;
-  top: var(--space-8);
-  left: var(--space-8);
-  right: var(--space-8);
-  z-index: 20;
-  border: 1px solid rgba(244, 201, 93, 0.35);
-  border-radius: var(--radius-lg);
-  background: rgba(37, 35, 15, 0.92);
-  color: var(--brass-400);
-  padding: var(--space-6) var(--space-8);
-  font-size: var(--text-sm);
-  line-height: var(--lh-sm);
-  box-shadow: var(--shadow-tooltip);
-}
-.layout-issue-banner[hidden] {
-  display: none;
 }
 iframe {
   width: 100%;
