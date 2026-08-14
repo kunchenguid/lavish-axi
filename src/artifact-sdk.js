@@ -538,17 +538,16 @@ export function createArtifactSdk(
         .arrayBuffer()
         .then((bytes) => {
           if (!items.includes(item)) return;
-          parent.postMessage(
-            {
-              type: "lavish:uploadAttachment",
-              nonce: ATTACHMENT_NONCE,
-              localId: item.localId,
-              name: item.name,
-              mime: item.mime,
-              bytes,
-            },
-            "*",
-          );
+          // Route through postArtifactMessage so the message carries the current
+          // artifact_load_token - the chrome drops any artifact message without it
+          // before the upload handler ever runs.
+          postArtifactMessage("lavish:uploadAttachment", {
+            nonce: ATTACHMENT_NONCE,
+            localId: item.localId,
+            name: item.name,
+            mime: item.mime,
+            bytes,
+          });
         })
         .catch(() => {
           if (!items.includes(item)) return;

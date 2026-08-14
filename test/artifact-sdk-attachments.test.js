@@ -17,7 +17,13 @@ import { createSdkJs } from "../src/server.js";
 const sdk = createSdkJs("0123456789abcdef");
 
 test("the SDK bundle uploads captured images through the chrome", () => {
-  assert.match(sdk, /type: "lavish:uploadAttachment"/);
+  // The send must go through postArtifactMessage: that helper stamps the current
+  // artifact_load_token, and the chrome drops EVERY artifact message without it
+  // before the upload handler runs - so a raw parent.postMessage here (which this
+  // regression once shipped as) silently kills every real upload while mocked
+  // harnesses stay green.
+  assert.match(sdk, /postArtifactMessage\("lavish:uploadAttachment", \{/);
+  assert.doesNotMatch(sdk, /parent\.postMessage\(\s*\{\s*type: "lavish:uploadAttachment"/);
   assert.match(sdk, /localId: item\.localId/);
   assert.match(sdk, /item\.file\s*\n?\s*\.arrayBuffer\(\)/);
 });

@@ -352,11 +352,12 @@ async function createChromeHarness({
     sendFrameMessage(data) {
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
-      const message =
-        artifactSrc && !Object.hasOwn(data || {}, "artifact_load_token")
-          ? { ...data, artifact_load_token: frameLoadToken() }
-          : data;
-      for (const handler of handlers) handler({ source: frame.contentWindow, data: message });
+      // Sent verbatim: what the test writes is what the chrome receives. Callers
+      // modeling a genuine SDK message must stamp artifact_load_token themselves
+      // (chrome.artifactLoadToken()) - the real SDK does on every postMessage, and
+      // a harness that patches it in silently passes even when the real send omits
+      // the token (that is exactly how the token-less attachment upload shipped).
+      for (const handler of handlers) handler({ source: frame.contentWindow, data });
     },
     sendWhiteboardMessage(data) {
       const handlers = windowListeners.get("message") || [];
@@ -629,6 +630,49 @@ test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confus
   const throttled = chrome.postedToFrame.find((m) => m.type === "lavish:attachmentResult" && m.localId === "throttled");
   assert.equal(throttled.ok, false);
   assert.match(throttled.error, /Too many uploads/);
+});
+
+test("chrome only mediates uploads carrying the current artifact load token", async () => {
+  let fetches = 0;
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialArtifactLoadToken: "live-load" },
+    fetchImpl: async () => {
+      fetches += 1;
+      return { ok: true, json: async () => ({ attachment: { id: "a".repeat(64) + ".png" } }) };
+    },
+  });
+
+  // event.source alone is NOT the gate: an upload message from the artifact frame
+  // without the current load token is dropped before the upload handler runs, so
+  // the real SDK must stamp it (postArtifactMessage) on every upload.
+  chrome.sendFrameMessage({
+    type: "lavish:uploadAttachment",
+    nonce: "n",
+    localId: "no-token",
+    mime: "image/png",
+    bytes: new ArrayBuffer(16),
+  });
+  await flushPromises();
+  assert.equal(fetches, 0, "a token-less upload message never reaches the network");
+  assert.equal(
+    chrome.postedToFrame.some((m) => m.type === "lavish:attachmentResult" && m.localId === "no-token"),
+    false,
+    "a token-less upload message gets no result either - it is dropped, not handled",
+  );
+
+  // The same message stamped with the current load token is mediated normally.
+  chrome.sendFrameMessage({
+    artifact_load_token: "live-load",
+    type: "lavish:uploadAttachment",
+    nonce: "n",
+    localId: "with-token",
+    mime: "image/png",
+    bytes: new ArrayBuffer(16),
+  });
+  await flushPromises();
+  assert.equal(fetches, 1);
+  const result = chrome.postedToFrame.find((m) => m.type === "lavish:attachmentResult" && m.localId === "with-token");
+  assert.equal(result.ok, true);
 });
 
 function warningPayload(overrides = {}) {
@@ -1417,7 +1461,12 @@ test("a pre-load diagnostic silences the probe even while its response is delaye
 
   chrome.eventSource().listeners.get("reload")();
   await flushPromises();
-  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, findings: [] });
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:layoutDiagnostics",
+    complete: true,
+    findings: [],
+  });
   await flushPromises();
   chrome.frame.dispatch("load");
   chrome.runTimers(8000);
@@ -1470,7 +1519,11 @@ test("stale artifact messages are ignored until the current frame load", async (
   assert.equal(restoredScroll.x, 0);
   assert.equal(restoredScroll.y, 0);
 
-  chrome.sendFrameMessage({ type: "lavish:artifactAssetFailure", detail: "current asset" });
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:artifactAssetFailure",
+    detail: "current asset",
+  });
   await flushPromises();
   assert.equal(posts.filter((post) => post.url === "/api/abc/artifact-failures").length, 1);
 });
@@ -1492,7 +1545,13 @@ test("a delayed diagnostic response does not delay silencing the artifact probe"
     },
   });
 
-  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, viewport_width: 1440, findings: [] });
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:layoutDiagnostics",
+    complete: true,
+    viewport_width: 1440,
+    findings: [],
+  });
   await flushPromises();
   chrome.runTimers(8000);
   await flushPromises();
@@ -2296,7 +2355,13 @@ test("an artifact that reports diagnostics is never probed as unavailable", asyn
   });
 
   chrome.element("artifact").dispatch("load");
-  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, viewport_width: 1440, findings: [] });
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:layoutDiagnostics",
+    complete: true,
+    viewport_width: 1440,
+    findings: [],
+  });
   await flushPromises();
   chrome.runTimers(8000);
   await flushPromises();
