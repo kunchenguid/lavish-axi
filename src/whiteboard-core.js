@@ -41,6 +41,8 @@ const BOUND_TEXT_PADDING_X = 16;
 const BOUND_TEXT_PADDING_Y = 16;
 const NODE_LABEL_CONTAINER_TYPES = new Set(["rectangle", "ellipse", "diamond"]);
 
+// Node boxes only. Labelled arrows keep independently placed path-midpoint
+// labels; growing or recentering those containers would move the arrow.
 function isNodeLabelContainer(element) {
   return NODE_LABEL_CONTAINER_TYPES.has(element?.type);
 }
@@ -154,11 +156,7 @@ function withNormalizedLabelText(element) {
     }
   }
   const labelText = next.label?.text || next.originalText || next.text;
-  if (
-    typeof labelText === "string" &&
-    labelText.includes("\n") &&
-    isNodeLabelContainer(next)
-  ) {
+  if (typeof labelText === "string" && labelText.includes("\n") && isNodeLabelContainer(next)) {
     const fontSize = next.label?.fontSize || next.fontSize;
     const estimated = estimateMultilineLabelBox(labelText, fontSize);
     next = expandBoxToFit(next, estimated.width + BOUND_TEXT_PADDING_X, estimated.height + BOUND_TEXT_PADDING_Y);
