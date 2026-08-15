@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync,
 import { access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { AxiError, installSessionStartHooks, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
 
@@ -28,11 +28,30 @@ import {
 } from "./plugin.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
+import {
+  captureFullPageScreenshot,
+  DEFAULT_SCREENSHOT_VIEWPORT_WIDTH,
+  findChromeExecutable,
+  screenshotFileName,
+  ScreenshotError,
+} from "./screenshot.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+const COMMANDS = new Set([
+  "open",
+  "poll",
+  "end",
+  "stop",
+  "server",
+  "playbook",
+  "design",
+  "setup",
+  "export",
+  "share",
+  "screenshot",
+]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -120,6 +139,7 @@ export async function run(argv) {
         server: serverCommand,
         export: exportCommand,
         share: shareCommand,
+        screenshot: screenshotCommand,
       },
       getCommandHelp: (command) => getCommandHelp(command, { agent }),
     });
@@ -191,6 +211,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       'Rendered Mermaid diagrams in `.mermaid` containers become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; when a reload detects a changed Mermaid source, the reviewer explicitly chooses to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
+      "Run `lavish-axi screenshot <html-file> [--out <path>] [--width <px>]` to capture a full-page (long) PNG of the rendered artifact with headless Chrome - the image spans the document's full scroll height, not just the viewport. It renders the file directly, so it needs no Lavish server",
       "Run `lavish-axi share <html-file> [--password <pw>] [--token <t>]` to publish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and get back a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Local assets are inlined; remote refs load over the network. It returns the url plus a secret update_key for managing the page later. Use --token or LAVISH_AXI_HTML_APP_TOKEN only when you have an optional bearer token; it is never required. Users can also publish from the browser chrome's overflow menu",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
@@ -544,6 +565,77 @@ export function createExportOutput({ source, output, html, warnings, selfPaintWa
 
 function assetWarningSummaries(warnings) {
   return exportWarningSummaries(warnings);
+}
+
+// Capture a full-page PNG of the rendered artifact: the document's entire scroll height, not
+// just the viewport (a "long screenshot"). Like `export`, this is server-independent - a
+// throwaway headless Chrome renders the file directly over CDP (src/screenshot.js), so no new
+// runtime dependency is added; a local Chrome/Chromium install is required.
+async function screenshotCommand(args) {
+  const file = firstPositionalArg(args, ["--out", "--width"]);
+  if (!file) {
+    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi screenshot <html-file>`"]);
+  }
+  await assertHtmlFile(file);
+  const viewportWidth = parseScreenshotWidth(flagValue(args, "--width"));
+  const absolute = await canonicalFile(file);
+  const output = path.resolve(
+    flagValue(args, "--out") || path.join(path.dirname(absolute), screenshotFileName(absolute)),
+  );
+  const executable = findChromeExecutable();
+  if (!executable) {
+    throw new AxiError("No Chrome or Chromium browser found for rendering the screenshot", "NOT_FOUND", [
+      "Install Google Chrome or Chromium, or point LAVISH_AXI_CHROME_PATH at a Chrome/Chromium binary",
+      "Run `lavish-axi screenshot <html-file>` again afterward",
+    ]);
+  }
+  /** @type {{ png: Buffer, width: number, height: number }} */
+  let capture;
+  try {
+    capture = await captureFullPageScreenshot(pathToFileURL(absolute).href, { width: viewportWidth, executable });
+  } catch (error) {
+    if (error instanceof ScreenshotError) {
+      throw new AxiError(`Screenshot capture failed: ${error.message}`, "SERVER_ERROR", [
+        "Re-run `lavish-axi screenshot <html-file>` - a transient browser startup failure usually clears on retry",
+        "Set LAVISH_AXI_CHROME_PATH to another Chrome/Chromium binary if the detected one cannot start",
+      ]);
+    }
+    throw error;
+  }
+  await writeFile(output, capture.png);
+  return createScreenshotOutput({
+    source: absolute,
+    output,
+    bytes: capture.png.length,
+    width: capture.width,
+    height: capture.height,
+    viewportWidth,
+  });
+}
+
+function parseScreenshotWidth(value) {
+  if (value === null || value === undefined) return DEFAULT_SCREENSHOT_VIEWPORT_WIDTH;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new AxiError(`--width must be a positive integer, got: ${value}`, "VALIDATION_ERROR", [
+      "Run `lavish-axi screenshot <html-file> --width 1280`",
+    ]);
+  }
+  return parsed;
+}
+
+export function createScreenshotOutput({ source, output, bytes, width, height, viewportWidth }) {
+  return {
+    screenshot: {
+      source,
+      output,
+      bytes,
+      width,
+      height,
+      viewport_width: viewportWidth,
+    },
+    next_step: `Wrote ${output} - a full-page PNG screenshot (${width}x${height} px) of the artifact rendered at ${viewportWidth}px viewport width. The image spans the document's full scroll height, not just the viewport. Open or share it directly; it needs no Lavish server.`,
+  };
 }
 
 // Publish the artifact as a visitable page on third-party ht-ml.app. Builds the same local-inlined
@@ -1355,7 +1447,7 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi screenshot <html-file> [--out <path>] [--width <px>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
@@ -1364,6 +1456,7 @@ function createCommandHelp({ agent = "generic" } = {}) {
     poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again. ${POLL_SEND_AND_END_RULE}\n`,
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
+    screenshot: `Usage: lavish-axi screenshot <html-file> [--out <path>] [--width <px>]\n\nCapture a full-page PNG of the rendered artifact - the document's entire scroll height, not just the viewport (a long screenshot). Renders the file in a throwaway headless Chrome/Chromium over CDP, so it needs no Lavish server but does need a local Chrome or Chromium install (set LAVISH_AXI_CHROME_PATH to point at a specific binary). Defaults to writing <name>.screenshot.png next to the source at a 1280px-wide viewport; pass --out to choose a path and --width to render at another viewport width.\n`,
     share: `Usage: lavish-axi share <html-file> [--password <pw>] [--token <t>]\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for updating or deleting the page later. Set LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token; it is never required. The annotation SDK is never included.\n`,
     stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,

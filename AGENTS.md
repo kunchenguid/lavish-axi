@@ -152,6 +152,11 @@ It is dependency-injectable (`readLocalFile`, `resolveAbsolute`, `confineDir`, s
 The chrome's **Export standalone HTML** overflow-menu item `GET`s `/api/:key/export`; the CLI exposes the same transform as `lavish-axi export`, server-independently.
 Lavish's only `Content-Security-Policy` is the chrome page's `frame-ancestors 'none'`; it constrains nothing about artifact content (the sandboxed iframe relies on the `sandbox` attribute, not CSP). Author-set CSP meta tags are preserved and reported as export notices because they may still block exported inline assets.
 
+### Full-page screenshots
+
+`src/screenshot.js` backs `lavish-axi screenshot`: it spawns a throwaway headless Chrome/Chromium and talks raw CDP over Node 22's built-in WebSocket, so the feature adds no runtime dependency - this is the ONLY place Lavish drives a browser, and it stays server-independent like `export` (README's Full-page screenshots bullet owns the user-facing contract, including `LAVISH_AXI_CHROME_PATH`).
+The full scroll height comes from `Page.captureScreenshot` with `captureBeyondViewport` and a clip sized from `Page.getLayoutMetrics`, never from stitching viewport grabs. The real-browser coverage in `test/screenshot.test.js` is opt-in (`LAVISH_AXI_BROWSER_E2E=1`) like the other browser suites.
+
 ### Hosted sharing (ht-ml.app)
 
 `src/html-app.js` (`publishToHtmlApp`) publishes the local-inlined HTML to ht-ml.app with `POST {LAVISH_AXI_HTML_APP_API_URL or https://api.ht-ml.app}/v1/sites` as `{ html_content, password? }`.
