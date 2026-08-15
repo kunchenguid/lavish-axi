@@ -154,7 +154,8 @@ Lavish's only `Content-Security-Policy` is the chrome page's `frame-ancestors 'n
 
 ### Full-page screenshots
 
-`src/screenshot.js` backs `lavish-axi screenshot`: it spawns a throwaway headless Chrome/Chromium and talks raw CDP over Node 22's built-in WebSocket, so the feature adds no runtime dependency - this is the ONLY place Lavish drives a browser, and it stays server-independent like `export` (README's Full-page screenshots bullet owns the user-facing contract, including `LAVISH_AXI_CHROME_PATH`).
+`src/screenshot.js` backs `lavish-axi screenshot`: it spawns a throwaway headless Chrome/Chromium and talks raw CDP over Node 22's built-in WebSocket, so the feature adds no runtime dependency - this is the ONLY place Lavish drives a browser, and the CLI stays server-independent like `export` (README's Full-page screenshots bullet owns the user-facing contract, including `LAVISH_AXI_CHROME_PATH`).
+The browser chrome exposes the same capture as the overflow menu's **Export full-page PNG** item via `GET /api/:key/screenshot`, which renders the artifact's `file://` URL with the same `src/screenshot.js` capture; the route is **same-origin guarded** (`isSameOriginRequest`) because it spawns a browser and executes the artifact's scripts - a cross-origin page must not drive captures through the loopback server - and `serve()` takes a `captureScreenshot` injection so route tests never launch a real browser.
 The full scroll height comes from `Page.captureScreenshot` with `captureBeyondViewport` and a clip sized from `Page.getLayoutMetrics`, never from stitching viewport grabs. The real-browser coverage in `test/screenshot.test.js` is opt-in (`LAVISH_AXI_BROWSER_E2E=1`) like the other browser suites.
 
 ### Hosted sharing (ht-ml.app)

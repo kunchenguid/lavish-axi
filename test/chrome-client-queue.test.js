@@ -1106,6 +1106,36 @@ test("chrome client includes export notices alongside unresolved assets", async 
   );
 });
 
+test("chrome client downloads the full-page PNG export and restores the menu label", async () => {
+  /** @type {string[]} */
+  const fetched = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      fetched.push(String(url));
+      return { ok: true, blob: async () => ({}) };
+    },
+  });
+
+  await chrome.element("screenshotArtifact").onclick();
+  await flushPromises();
+
+  assert.deepEqual(fetched, ["/api/abc/screenshot"]);
+  assert.equal(chrome.element("screenshotArtifact").querySelector("span").textContent, "Export full-page PNG");
+  assert.equal(chrome.element("screenshotArtifact").disabled, false);
+});
+
+test("chrome client surfaces a failed full-page PNG export for retry", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({ ok: false, status: 500 }),
+  });
+
+  await chrome.element("screenshotArtifact").onclick();
+  await flushPromises();
+
+  assert.equal(chrome.element("screenshotArtifact").querySelector("span").textContent, "Export failed - retry");
+  assert.equal(chrome.element("screenshotArtifact").disabled, false);
+});
+
 test("chrome client surfaces share warnings from the server response", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async () => ({

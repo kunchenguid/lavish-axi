@@ -84,6 +84,7 @@ const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMen
 const reloadArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("reloadArtifact"));
 const copySnapshotButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySnapshot"));
 const exportArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportArtifact"));
+const screenshotArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("screenshotArtifact"));
 const shareArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareArtifact"));
 const shareDialog = /** @type {HTMLDivElement} */ (document.getElementById("shareDialog"));
 const shareForm = /** @type {HTMLFormElement} */ (document.getElementById("shareForm"));
@@ -1112,8 +1113,22 @@ function exportFileName() {
   return (base || "artifact") + ".export.html";
 }
 
+function screenshotFileName() {
+  const base = (filePath.split(/[\\/]/).pop() || "artifact.html").replace(/\.html?$/i, "");
+  return (base || "artifact") + ".screenshot.png";
+}
+
 function setExportLabel(text) {
-  const label = exportArtifactButton.querySelector("span");
+  setMenuItemLabel(exportArtifactButton, text);
+}
+
+function setScreenshotLabel(text) {
+  setMenuItemLabel(screenshotArtifactButton, text);
+}
+
+/** @param {HTMLButtonElement} button @param {string} text */
+function setMenuItemLabel(button, text) {
+  const label = button.querySelector("span");
   if (label) label.textContent = text;
 }
 
@@ -1162,6 +1177,32 @@ async function exportArtifact() {
     setExportLabel("Export failed - retry");
   } finally {
     exportArtifactButton.disabled = false;
+  }
+}
+
+async function exportScreenshot() {
+  // Rendering the artifact in headless Chrome and capturing the full scroll height can take
+  // several seconds - like the HTML export, keep the menu open and narrate progress in place.
+  screenshotArtifactButton.disabled = true;
+  setScreenshotLabel("Exporting...");
+  try {
+    const response = await fetch("/api/" + key + "/screenshot");
+    if (!response.ok) throw new Error("screenshot failed");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = screenshotFileName();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    setScreenshotLabel("Export full-page PNG");
+    closeMenus();
+  } catch {
+    setScreenshotLabel("Export failed - retry");
+  } finally {
+    screenshotArtifactButton.disabled = false;
   }
 }
 
@@ -2078,6 +2119,7 @@ copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
 exportArtifactButton.onclick = exportArtifact;
+screenshotArtifactButton.onclick = exportScreenshot;
 shareArtifactButton.onclick = openShareDialog;
 shareCloseButton.onclick = closeShareDialog;
 shareCancelButton.onclick = closeShareDialog;

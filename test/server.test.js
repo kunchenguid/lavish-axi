@@ -29,6 +29,7 @@ import {
   serve,
 } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
+import { ScreenshotError } from "../src/screenshot.js";
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -605,6 +606,21 @@ test("overflow menu offers a standalone HTML export that downloads a portable fi
   assert.match(js, /fetch\("\/api\/" \+ key \+ "\/export"\)/);
   assert.match(js, /link\.download = exportFileName\(\)/);
   assert.match(js, /exportArtifactButton\.onclick = exportArtifact/);
+});
+
+test("overflow menu offers a full-page PNG export directly below the standalone HTML export", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+
+  assert.match(
+    html,
+    /id="exportArtifact"[^<]*>[\s\S]*?Export standalone HTML[\s\S]*?id="screenshotArtifact"[^<]*>[\s\S]*?Export full-page PNG[\s\S]*?id="shareArtifact"/,
+  );
+  assert.match(js, /const screenshotArtifactButton/);
+  assert.match(js, /async function exportScreenshot/);
+  assert.match(js, /fetch\("\/api\/" \+ key \+ "\/screenshot"\)/);
+  assert.match(js, /link\.download = screenshotFileName\(\)/);
+  assert.match(js, /screenshotArtifactButton\.onclick = exportScreenshot/);
 });
 
 test("overflow menu offers publishing an ht-ml.app link via a share dialog", async () => {
@@ -2845,6 +2861,184 @@ test("GET /api/:key/export returns 404 for an unknown session", async () => {
   try {
     const res = await fetch(`http://127.0.0.1:${server.port}/api/does-not-exist/export`);
     assert.equal(res.status, 404);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/screenshot serves a full-page PNG download", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const calls = [];
+
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    captureScreenshot: async (url, options) => {
+      calls.push({ url, options });
+      return { png, width: 1280, height: 4000 };
+    },
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const res = await fetch(`${base}/api/${session.key}/screenshot`, { headers: { origin: base } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") || "", /image\/png/);
+    assert.match(res.headers.get("content-disposition") || "", /attachment; filename="artifact\.screenshot\.png"/);
+    assert.equal(res.headers.get("x-lavish-screenshot-width"), "1280");
+    assert.equal(res.headers.get("x-lavish-screenshot-height"), "4000");
+    assert.deepEqual(Buffer.from(await res.arrayBuffer()), png);
+
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.startsWith("file://"));
+    assert.equal(calls[0].options.width, 1280);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/screenshot accepts a positive integer width and rejects invalid ones", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+  const calls = [];
+
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    captureScreenshot: async (url, options) => {
+      calls.push(options);
+      return { png: Buffer.from([0x89]), width: options.width, height: 10 };
+    },
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const okRes = await fetch(`${base}/api/${session.key}/screenshot?width=640`, { headers: { origin: base } });
+    assert.equal(okRes.status, 200);
+    assert.equal(calls[0].width, 640);
+
+    for (const bad of ["abc", "0", "-5", "1.5"]) {
+      const res = await fetch(`${base}/api/${session.key}/screenshot?width=${bad}`, { headers: { origin: base } });
+      assert.equal(res.status, 400, `width=${bad}`);
+    }
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/screenshot rejects cross-origin requests", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+  let captures = 0;
+
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    captureScreenshot: async () => {
+      captures += 1;
+      return { png: Buffer.from([0x89]), width: 1, height: 1 };
+    },
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    // No Origin and no Referer - a cross-origin page's fetch carries neither this server can trust.
+    const anonRes = await fetch(`${base}/api/${session.key}/screenshot`);
+    assert.equal(anonRes.status, 403);
+    const foreignRes = await fetch(`${base}/api/${session.key}/screenshot`, {
+      headers: { origin: "https://evil.example" },
+    });
+    assert.equal(foreignRes.status, 403);
+    assert.equal(captures, 0);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/screenshot returns 404 for an unknown session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    captureScreenshot: async () => ({ png: Buffer.from([0x89]), width: 1, height: 1 }),
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const res = await fetch(`${base}/api/does-not-exist/screenshot`, { headers: { origin: base } });
+    assert.equal(res.status, 404);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/:key/screenshot maps capture failures to actionable statuses", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+  let failure = /** @type {Error} */ (new Error("unset"));
+
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    captureScreenshot: async () => {
+      throw failure;
+    },
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    failure = new ScreenshotError(
+      "No Chrome or Chromium browser found for rendering the screenshot",
+      "BROWSER_NOT_FOUND",
+    );
+    const missing = await fetch(`${base}/api/${session.key}/screenshot`, { headers: { origin: base } });
+    assert.equal(missing.status, 503);
+    assert.equal((await missing.json()).code, "BROWSER_NOT_FOUND");
+
+    failure = new ScreenshotError("Chrome returned an empty screenshot", "CDP_ERROR");
+    const failed = await fetch(`${base}/api/${session.key}/screenshot`, { headers: { origin: base } });
+    assert.equal(failed.status, 500);
+    assert.equal((await failed.json()).code, "CDP_ERROR");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
