@@ -5,10 +5,16 @@ import * as mermaidHelpers from "./mermaid-node.js";
 export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 
 export const MODE_TOGGLE_HOTKEY_KEY = "i";
+export const END_SESSION_HOTKEY_KEY = "e";
 
 export function isModeToggleHotkeyEvent(event) {
   if (event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
+}
+
+export function isEndSessionHotkeyEvent(event) {
+  if (!event.shiftKey || event.altKey) return false;
+  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === END_SESSION_HOTKEY_KEY;
 }
 
 // Derive the browser-only replacement key used to collapse unsent updates for the same input.
@@ -2388,6 +2394,18 @@ export function createArtifactSdk(
       if (!isModeToggleHotkeyEvent(event)) return;
       event.preventDefault();
       postArtifactMessage("lavish:toggleAnnotationMode");
+    },
+    true,
+  );
+
+  // Ending must work while the sandboxed artifact owns focus too. The three-key chord keeps this
+  // destructive action deliberate while still making it reachable from anywhere in the review.
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!isEndSessionHotkeyEvent(event)) return;
+      event.preventDefault();
+      postArtifactMessage("lavish:endSession");
     },
     true,
   );

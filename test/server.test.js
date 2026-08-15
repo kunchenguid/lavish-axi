@@ -359,6 +359,17 @@ test("artifact SDK registers a capture-phase document keydown listener for the m
   );
 });
 
+test("artifact SDK forwards the end-session hotkey from inside the sandboxed artifact", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /const END_SESSION_HOTKEY_KEY="e"/);
+  assert.match(js, /function isEndSessionHotkeyEvent\(event\)/);
+  assert.match(
+    js,
+    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isEndSessionHotkeyEvent\(event\)\) return;\s*event\.preventDefault\(\);\s*postArtifactMessage\("lavish:endSession"\);\s*\},\s*true,?\s*\);/,
+  );
+});
+
 test("chrome client toggles annotation mode via Cmd/Ctrl+I and on request from the artifact SDK", async () => {
   const js = await chromeClientSource();
 
@@ -584,15 +595,35 @@ test("chrome can copy the full file path from the overflow menu", async () => {
   assert.match(js, /copyHintText\.textContent = "Copy"/);
 });
 
-test("overflow menu offers reload, snapshot copy, and end session actions", async () => {
+test("overflow menu offers editing actions while end session stays visible in the top bar", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
+  const css = await chromeCssSource();
 
   assert.match(html, /id="reloadArtifact"[^<]*>.*Reload artifact/);
   assert.match(html, /id="copySnapshot"[^<]*>.*Copy DOM snapshot/);
-  assert.match(html, /class="menu-item danger" id="end"[^<]*>.*End session/);
+  assert.match(
+    html,
+    /class="end-session-button" id="end"[^>]*title="End session \(⇧⌘E \/ Ctrl\+Shift\+E\)"[^>]*>.*<span>End session<\/span><kbd[^>]*>⇧⌘E<\/kbd>/,
+  );
+  assert.doesNotMatch(html, /class="menu-item danger" id="end"/);
   assert.doesNotMatch(html, /End Session</);
+  assert.match(css, /\.end-session-button\{[^}]*background:var\(--danger\)/);
+  assert.match(css, /\.end-session-shortcut\{/);
   assert.match(js, /event\.key === "Escape"/);
+});
+
+test("chrome client ends the session via the discoverable Cmd/Ctrl+Shift+E shortcut", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
+
+  assert.match(html, /"endSessionHotkeyKey":"e"/);
+  assert.match(
+    js,
+    /const END_SESSION_HOTKEY_KEY = String\(sessionData\.endSessionHotkeyKey \|\| ""\)\.toLowerCase\(\);/,
+  );
+  assert.match(js, /function isEndSessionHotkeyEvent\(event\)/);
+  assert.match(js, /if \(isEndSessionHotkeyEvent\(event\)\) \{\s*event\.preventDefault\(\);\s*endSession\(\);/);
 });
 
 test("overflow menu offers a standalone HTML export that downloads a portable file", async () => {

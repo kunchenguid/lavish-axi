@@ -6,6 +6,7 @@ import {
   classifySevereTextOverflow,
   deriveLavishQueueKey,
   findStableLayoutFindings,
+  isEndSessionHotkeyEvent,
   isMaterialPageOverflow,
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
@@ -323,4 +324,13 @@ test("isModeToggleHotkeyEvent rejects extra shift or alt modifiers", () => {
 test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () => {
   assert.equal(isModeToggleHotkeyEvent({ key: "e", metaKey: true }), false);
   assert.equal(isModeToggleHotkeyEvent({ key: "Enter", metaKey: true }), false);
+});
+
+test("isEndSessionHotkeyEvent matches Cmd/Ctrl+Shift+E without accepting easier-to-mistype variants", () => {
+  assert.equal(isEndSessionHotkeyEvent({ key: "e", metaKey: true, shiftKey: true }), true);
+  assert.equal(isEndSessionHotkeyEvent({ key: "E", ctrlKey: true, shiftKey: true }), true);
+  assert.equal(isEndSessionHotkeyEvent({ key: "e", metaKey: true }), false);
+  assert.equal(isEndSessionHotkeyEvent({ key: "e", shiftKey: true }), false);
+  assert.equal(isEndSessionHotkeyEvent({ key: "e", ctrlKey: true, shiftKey: true, altKey: true }), false);
+  assert.equal(isEndSessionHotkeyEvent({ key: "i", metaKey: true, shiftKey: true }), false);
 });

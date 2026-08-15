@@ -5,9 +5,14 @@ import vm from "node:vm";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, endSessionHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number }} HarnessSessionData */
 /** @type {HarnessSessionData} */
-const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
+const defaultSessionData = {
+  key: "abc",
+  file: "/tmp/artifact.html",
+  modeToggleHotkeyKey: "i",
+  endSessionHotkeyKey: "e",
+};
 
 async function createChromeHarness({
   fetchImpl = /** @type {(url?: any, init?: any) => Promise<any>} */ (
@@ -1776,6 +1781,42 @@ test("chrome send and end with an empty composer nudges instead of ending", asyn
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.element("chatInput").disabled, false);
+});
+
+test("chrome ends the session from Cmd/Ctrl+Shift+E regardless of chrome focus", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, method: init.method });
+      return { ok: true };
+    },
+  });
+
+  const event = chrome.dispatchDocumentKeydown({ key: "E", metaKey: true, shiftKey: true });
+  await flushPromises();
+
+  assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(posts, [{ url: "/api/abc/end", method: "POST" }]);
+  assert.equal(chrome.element("end").disabled, true);
+  assert.equal(chrome.element("chatInput").disabled, true);
+});
+
+test("chrome end-session hotkey requires Shift and rejects Alt", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, method: init.method });
+      return { ok: true };
+    },
+  });
+
+  const missingShift = chrome.dispatchDocumentKeydown({ key: "e", metaKey: true });
+  const withAlt = chrome.dispatchDocumentKeydown({ key: "e", ctrlKey: true, shiftKey: true, altKey: true });
+  await flushPromises();
+
+  assert.equal(missingShift.defaultPrevented, false);
+  assert.equal(withAlt.defaultPrevented, false);
+  assert.deepEqual(posts, []);
 });
 
 test("chrome send and end during an in-flight submit still ends after the submit drains the queue", async () => {

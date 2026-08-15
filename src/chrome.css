@@ -1469,3 +1469,75 @@ body.panel-collapsed .panel-toggle {
   background: #eceff4;
   color: var(--accent);
 }
+
+/* Session termination is the one action that must remain unmistakable even when the overflow
+ * menu is closed. The solid rust control is intentionally the only high-chroma element in the
+ * bar; its inset shortcut key makes the action discoverable without adding explanatory copy. */
+.end-session-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 7px 0 9px;
+  border: 1px solid #a92f23;
+  border-radius: var(--radius-sm);
+  background: var(--danger);
+  color: #ffffff;
+  box-shadow: 0 2px 7px rgba(192, 57, 43, 0.24);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--w-bold);
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.end-session-button:hover:not(:disabled) {
+  background: #a92f23;
+  border-color: #8f281f;
+  box-shadow: 0 3px 10px rgba(192, 57, 43, 0.32);
+  transform: translateY(-1px);
+}
+.end-session-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(192, 57, 43, 0.22);
+}
+.end-session-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  box-shadow: none;
+}
+.end-session-button > svg {
+  flex-shrink: 0;
+}
+.end-session-shortcut {
+  padding: 2px 5px;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 5px;
+  background: rgba(75, 18, 13, 0.2);
+  color: currentColor;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: var(--w-bold);
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+}
+@media (max-width: 720px) {
+  .end-session-shortcut {
+    display: none;
+  }
+}
+@media (max-width: 520px) {
+  .end-session-button {
+    width: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+  .end-session-button > span {
+    display: none;
+  }
+}
