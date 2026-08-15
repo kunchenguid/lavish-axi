@@ -362,6 +362,37 @@ test("restoreMermaidLabelLineBreaks rewrites materialized text elements and size
   assert.ok(container.height >= text.height, "container must be at least as tall as the multiline label");
 });
 
+test("restoreMermaidLabelLineBreaks recenters bound text when container growth shifts the box", () => {
+  const box = rect("A", { x: 10, y: 20, width: 80, height: 24 });
+  const label = {
+    id: "t1",
+    type: "text",
+    containerId: "A",
+    x: 14,
+    y: 24,
+    width: 72,
+    height: 20,
+    fontSize: 16,
+    lineHeight: 1.25,
+    textAlign: "center",
+    verticalAlign: "middle",
+    text: "classify<br>checks",
+    originalText: "classify<br>checks",
+  };
+  const measure = (element) => {
+    const lines = String(element.text || "").split("\n");
+    return {
+      width: Math.max(...lines.map((line) => line.length * 10)),
+      height: lines.length * (Number(element.fontSize) || 16) * (Number(element.lineHeight) || 1.25),
+    };
+  };
+  const [container, text] = restoreMermaidLabelLineBreaks([box, label], { measure });
+  assert.ok(container.height > box.height, "container must grow so the recenter assertion is load-bearing");
+  assert.ok(container.y < box.y, "expandBoxToFit grows from the center, moving the container origin");
+  assert.equal(text.x, container.x + (container.width - text.width) / 2);
+  assert.equal(text.y, container.y + (container.height - text.height) / 2);
+});
+
 test("restoreMermaidLabelLineBreaks leaves single-line labels and non-label fields alone", () => {
   const box = rect("A", { width: 100, height: 40, customData: { keep: true } });
   const label = boundLabel("t1", "A", "Ready?");

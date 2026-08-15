@@ -74,6 +74,52 @@ function expandBoxToFit(element, minWidth, minHeight) {
   return next;
 }
 
+function positionBoundTextInContainer(container, text) {
+  const align = String(text.textAlign || "center");
+  const valign = String(text.verticalAlign || "middle");
+  const cx = Number(container.x) || 0;
+  const cy = Number(container.y) || 0;
+  const cw = Number(container.width) || 0;
+  const ch = Number(container.height) || 0;
+  const tw = Number(text.width) || 0;
+  const th = Number(text.height) || 0;
+  const x = align === "left" ? cx : align === "right" ? cx + cw - tw : cx + (cw - tw) / 2;
+  const y = valign === "top" ? cy : valign === "bottom" ? cy + ch - th : cy + (ch - th) / 2;
+  if (x === (Number(text.x) || 0) && y === (Number(text.y) || 0)) return text;
+  return { ...text, x, y };
+}
+
+function fitContainersToBoundText(elements) {
+  if (!Array.isArray(elements)) return [];
+  const byId = new Map();
+  for (const element of elements) {
+    if (element?.id) byId.set(element.id, element);
+  }
+  for (const element of elements) {
+    if (!element || element.type !== "text" || element.isDeleted || !element.containerId) continue;
+    const container = byId.get(element.containerId);
+    if (!container) continue;
+    const fitted = expandBoxToFit(
+      container,
+      (Number(element.width) || 0) + BOUND_TEXT_PADDING_X,
+      (Number(element.height) || 0) + BOUND_TEXT_PADDING_Y,
+    );
+    if (fitted !== container) byId.set(container.id, fitted);
+  }
+  // Bound text keeps its own x/y. Growing the container from the center (or
+  // growing the text box independently) leaves that label at the old coords,
+  // so it sits off-center until something like restore() recomputes it.
+  for (const element of elements) {
+    if (!element || element.type !== "text" || element.isDeleted || !element.containerId) continue;
+    const current = byId.get(element.id) ?? element;
+    const container = byId.get(current.containerId);
+    if (!container) continue;
+    const positioned = positionBoundTextInContainer(container, current);
+    if (positioned !== current) byId.set(current.id, positioned);
+  }
+  return elements.map((element) => (element?.id && byId.has(element.id) ? byId.get(element.id) : element));
+}
+
 function withNormalizedLabelText(element) {
   if (!element || typeof element !== "object") return element;
   let next = element;
@@ -113,29 +159,6 @@ function withNormalizedLabelText(element) {
     next = expandBoxToFit(next, estimated.width + BOUND_TEXT_PADDING_X, estimated.height + BOUND_TEXT_PADDING_Y);
   }
   return next;
-}
-
-function fitContainersToBoundText(elements) {
-  const list = Array.isArray(elements) ? elements.map((element) => element) : [];
-  const byId = new Map();
-  for (const element of list) {
-    if (element?.id) byId.set(element.id, element);
-  }
-  return list
-    .map((element) => {
-      if (!element || element.type !== "text" || element.isDeleted || !element.containerId) return element;
-      const container = byId.get(element.containerId);
-      if (!container) return element;
-      const fitted = expandBoxToFit(
-        container,
-        (Number(element.width) || 0) + BOUND_TEXT_PADDING_X,
-        (Number(element.height) || 0) + BOUND_TEXT_PADDING_Y,
-      );
-      if (fitted === container) return element;
-      byId.set(container.id, fitted);
-      return element;
-    })
-    .map((element) => (element?.id && byId.get(element.id) !== element ? byId.get(element.id) : element));
 }
 
 /**
