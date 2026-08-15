@@ -6,6 +6,7 @@ import {
   findDuplicateElementIds,
   normalizeExcalidrawSceneTarget,
   repairSavedSceneTextMetrics,
+  restoreMermaidLabelLineBreaks,
   sanitizeSceneLink,
   sceneIsImageFallback,
   summarizeSceneEdits,
@@ -244,4 +245,138 @@ test("normalizeExcalidrawSceneTarget coerces hostile values to bounded safe ones
   assert.equal(out.scenePath, "");
   assert.equal(out.imageFallback, false);
   assert.deepEqual(out.stats, { added: 0, removed: 10_000, moved: 0, relabeled: 3, drawn: 0 });
+});
+
+// ---------------------------------------------------------------------------
+// Mermaid -> Excalidraw label line breaks
+// parseMermaidToExcalidraw copies vertex.text into skeleton label.text, leaving
+// literal <br> tags and two-character \n sequences in place. convertToExcalidrawElements
+// then wraps that string as ordinary characters, so "classify<br>checks" becomes
+// the fused "classifychecks" once the tag is not a real newline.
+// These cases use the skeleton/text shapes that conversion actually emits.
+// ---------------------------------------------------------------------------
+
+function assertConvertedLines(element, expectedLines) {
+  const original = String(element.originalText ?? element.label?.text ?? element.text ?? "");
+  const text = String(element.text ?? element.label?.text ?? "");
+  for (const value of [original, text]) {
+    assert.equal(value.includes("<br"), false, `HTML break tags must not remain: ${JSON.stringify(value)}`);
+    assert.deepEqual(
+      value.split("\n"),
+      expectedLines,
+      `expected newline-separated lines, got ${JSON.stringify(value)}`,
+    );
+  }
+  const fused = expectedLines.join("");
+  assert.equal(original.includes(fused), false, `adjacent words were fused: ${JSON.stringify(original)}`);
+  assert.equal(text.includes(fused), false, `adjacent words were fused: ${JSON.stringify(text)}`);
+}
+
+test("restoreMermaidLabelLineBreaks turns <br> and <br/> into real newlines without fusing words", () => {
+  const skeletons = [
+    {
+      id: "br",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 140,
+      height: 40,
+      label: { text: "first line<br>second line", fontSize: 16 },
+    },
+    {
+      id: "brslash",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 140,
+      height: 40,
+      label: { text: "first line<br/>second line", fontSize: 16 },
+    },
+    {
+      id: "live",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 260,
+      height: 54,
+      label: {
+        text: "1  Scan + classify<br>checks - compliance - mergeable - blast radius - risky paths<br>FLEET_TOKEN, deterministic",
+        fontSize: 16,
+      },
+    },
+  ];
+  const [br, brslash, live] = restoreMermaidLabelLineBreaks(skeletons);
+  assertConvertedLines(br, ["first line", "second line"]);
+  assertConvertedLines(brslash, ["first line", "second line"]);
+  assertConvertedLines(live, [
+    "1  Scan + classify",
+    "checks - compliance - mergeable - blast radius - risky paths",
+    "FLEET_TOKEN, deterministic",
+  ]);
+  assert.equal(live.label.text.includes("classifychecks"), false);
+  assert.equal(live.label.text.includes("pathsFLEET_TOKEN"), false);
+});
+
+test("restoreMermaidLabelLineBreaks turns mermaid \\n label breaks into real newlines", () => {
+  const [node] = restoreMermaidLabelLineBreaks([
+    {
+      id: "nl",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 216,
+      height: 54,
+      label: { text: "first line\\nsecond line", fontSize: 16 },
+    },
+  ]);
+  assertConvertedLines(node, ["first line", "second line"]);
+});
+
+test("restoreMermaidLabelLineBreaks rewrites materialized text elements and sizes to the line set", () => {
+  const box = rect("A", { x: 10, y: 20, width: 80, height: 24 });
+  const label = {
+    id: "t1",
+    type: "text",
+    containerId: "A",
+    x: 14,
+    y: 24,
+    width: 72,
+    height: 20,
+    fontSize: 16,
+    lineHeight: 1.25,
+    text: "classify<br>checks",
+    originalText: "classify<br>checks",
+  };
+  const measure = (element) => {
+    const lines = String(element.text || "").split("\n");
+    return {
+      width: Math.max(...lines.map((line) => line.length * 10)),
+      height: lines.length * (Number(element.fontSize) || 16) * (Number(element.lineHeight) || 1.25),
+    };
+  };
+  const [container, text] = restoreMermaidLabelLineBreaks([box, label], { measure });
+  assertConvertedLines(text, ["classify", "checks"]);
+  assert.equal(text.width, 80);
+  assert.equal(text.height, 40);
+  assert.ok(container.width >= text.width, "container must be at least as wide as the multiline label");
+  assert.ok(container.height >= text.height, "container must be at least as tall as the multiline label");
+});
+
+test("restoreMermaidLabelLineBreaks leaves single-line labels and non-label fields alone", () => {
+  const box = rect("A", { width: 100, height: 40, customData: { keep: true } });
+  const label = boundLabel("t1", "A", "Ready?");
+  const arrow = {
+    id: "a1",
+    type: "arrow",
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    label: { text: "yes" },
+  };
+  const out = restoreMermaidLabelLineBreaks([box, label, arrow]);
+  assert.deepEqual(out[0], box);
+  assert.deepEqual(out[1], label);
+  assert.equal(out[2].label.text, "yes");
+  assert.equal(out[2].id, "a1");
 });

@@ -34,6 +34,7 @@ import {
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
   repairSavedSceneTextMetrics,
+  restoreMermaidLabelLineBreaks,
   sanitizeSceneLink,
   sanitizeWhiteboardAppState,
   sceneIsImageFallback,
@@ -425,9 +426,10 @@ async function loadSceneFonts(elements, files) {
 }
 
 async function convertSource(source) {
-  const { elements: skeletons, files } = await parseMermaidToExcalidraw(source, {
+  const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: "16px" },
   });
+  const skeletons = restoreMermaidLabelLineBreaks(parsedSkeletons);
   const materialize = (input) => {
     // Preserve Mermaid node/edge identity for edit summaries; regenerate only
     // when upstream emitted colliding ids (parallel edges), where uniqueness
@@ -438,12 +440,15 @@ async function convertSource(source) {
     }
     return elements;
   };
-  const elements = await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-    convert: materialize,
-    loadFonts: async (fallbackElements) => {
-      await loadSceneFonts(fallbackElements, files);
-    },
-  });
+  const elements = restoreMermaidLabelLineBreaks(
+    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+      convert: materialize,
+      loadFonts: async (fallbackElements) => {
+        await loadSceneFonts(fallbackElements, files);
+      },
+    }),
+    { measure: measureSceneText },
+  );
   return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
 }
 

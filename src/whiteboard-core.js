@@ -27,6 +27,135 @@ export function sanitizeWhiteboardScene(scene) {
   return { ...scene, appState: sanitizeWhiteboardAppState(scene.appState) };
 }
 
+// Mermaid node labels use `<br>` / `<br/>` and a two-character `\n` sequence as
+// line breaks. parseMermaidToExcalidraw copies vertex.text onto skeleton
+// `label.text` unchanged, and convertToExcalidrawElements then treats those
+// characters as part of a single line - so "classify<br>checks" renders as the
+// fused "classifychecks" instead of two lines. Excalidraw stores multiline
+// labels as real `\n` in `text` / `originalText`.
+const MERMAID_HTML_BREAK_RE = /<br\s*\/?\s*>/gi;
+const MERMAID_ESCAPED_NEWLINE_RE = /\\n/g;
+const LABEL_CHAR_WIDTH_RATIO = 0.62;
+const LABEL_LINE_HEIGHT = 1.25;
+const BOUND_TEXT_PADDING_X = 16;
+const BOUND_TEXT_PADDING_Y = 16;
+
+export function normalizeMermaidLabelLineBreaks(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  return text.replace(MERMAID_HTML_BREAK_RE, "\n").replace(MERMAID_ESCAPED_NEWLINE_RE, "\n");
+}
+
+function splitLabelLines(text) {
+  return String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n");
+}
+
+function estimateMultilineLabelBox(text, fontSize) {
+  const size = Number(fontSize) || 16;
+  const lines = splitLabelLines(text);
+  const width = Math.max(
+    20,
+    ...lines.map((line) => Math.ceil(Math.max(String(line).length, 1) * size * LABEL_CHAR_WIDTH_RATIO)),
+  );
+  const height = Math.max(1, lines.length) * size * LABEL_LINE_HEIGHT;
+  return { width, height, lineCount: lines.length };
+}
+
+function expandBoxToFit(element, minWidth, minHeight) {
+  const width = Number(element.width) || 0;
+  const height = Number(element.height) || 0;
+  const nextWidth = Math.max(width, minWidth);
+  const nextHeight = Math.max(height, minHeight);
+  if (nextWidth === width && nextHeight === height) return element;
+  const next = { ...element, width: nextWidth, height: nextHeight };
+  if (nextWidth > width) next.x = (Number(element.x) || 0) - (nextWidth - width) / 2;
+  if (nextHeight > height) next.y = (Number(element.y) || 0) - (nextHeight - height) / 2;
+  return next;
+}
+
+function withNormalizedLabelText(element) {
+  if (!element || typeof element !== "object") return element;
+  let next = element;
+  const write = (key, value) => {
+    if (next === element) next = { ...element };
+    next[key] = value;
+  };
+  if (typeof element.text === "string") {
+    const text = normalizeMermaidLabelLineBreaks(element.text);
+    if (text !== element.text) write("text", text);
+  }
+  if (typeof element.originalText === "string") {
+    const originalText = normalizeMermaidLabelLineBreaks(element.originalText);
+    if (originalText !== element.originalText) {
+      write("originalText", originalText);
+      // Drop leftover `<br>` from the wrapped `text` field; convertToExcalidrawElements
+      // can re-wrap from originalText on the next pass. Do not overwrite when
+      // originalText was already clean - that would discard legitimate wrapping.
+      if (typeof next.text === "string") write("text", originalText);
+    }
+  }
+  if (element.label && typeof element.label === "object" && typeof element.label.text === "string") {
+    const text = normalizeMermaidLabelLineBreaks(element.label.text);
+    if (text !== element.label.text) {
+      if (next === element) next = { ...element };
+      next.label = { ...element.label, text };
+    }
+  }
+  const labelText = next.label?.text || next.originalText || next.text;
+  if (
+    typeof labelText === "string" &&
+    labelText.includes("\n") &&
+    (next.type === "rectangle" || next.type === "ellipse" || next.type === "diamond")
+  ) {
+    const fontSize = next.label?.fontSize || next.fontSize;
+    const estimated = estimateMultilineLabelBox(labelText, fontSize);
+    next = expandBoxToFit(next, estimated.width + BOUND_TEXT_PADDING_X, estimated.height + BOUND_TEXT_PADDING_Y);
+  }
+  return next;
+}
+
+function fitContainersToBoundText(elements) {
+  const list = Array.isArray(elements) ? elements.map((element) => element) : [];
+  const byId = new Map();
+  for (const element of list) {
+    if (element?.id) byId.set(element.id, element);
+  }
+  return list
+    .map((element) => {
+      if (!element || element.type !== "text" || element.isDeleted || !element.containerId) return element;
+      const container = byId.get(element.containerId);
+      if (!container) return element;
+      const fitted = expandBoxToFit(
+        container,
+        (Number(element.width) || 0) + BOUND_TEXT_PADDING_X,
+        (Number(element.height) || 0) + BOUND_TEXT_PADDING_Y,
+      );
+      if (fitted === container) return element;
+      byId.set(container.id, fitted);
+      return element;
+    })
+    .map((element) => (element?.id && byId.get(element.id) !== element ? byId.get(element.id) : element));
+}
+
+/**
+ * @param {any[]} elements
+ * @param {{ measure?: (element: any) => { width: number, height: number } }} [adapters]
+ * @returns {any[]}
+ */
+export function restoreMermaidLabelLineBreaks(elements, { measure } = {}) {
+  const restored = (Array.isArray(elements) ? elements : []).map((element) => withNormalizedLabelText(element));
+  const sized = measure
+    ? restored.map((element) => {
+        const candidate = /** @type {Record<string, any>} */ (element);
+        if (!candidate || candidate.type !== "text" || candidate.isDeleted) return element;
+        const metrics = measure(element);
+        return expandBoxToFit(element, Number(metrics?.width) || 0, Number(metrics?.height) || 0);
+      })
+    : restored;
+  return fitContainersToBoundText(sized);
+}
+
 // Only plain web/mail links may leave the whiteboard. Everything else -
 // javascript:, data:, file:, vbscript:, chrome:, about:, or relative noise
 // coming from untrusted Mermaid `click` directives - is dropped.

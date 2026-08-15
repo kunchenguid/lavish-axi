@@ -7,6 +7,7 @@ import {
   convertExcalidrawSkeletonsAfterFontsLoad,
   findDuplicateElementIds,
   repairSavedSceneTextMetrics,
+  restoreMermaidLabelLineBreaks,
 } from "../../src/whiteboard-core.js";
 import fixture from "./excalidraw-label-clipping.json" with { type: "json" };
 
@@ -74,16 +75,44 @@ function withoutMetrics(element) {
   return copy;
 }
 
+function assertConvertedLines(element, lines, kind) {
+  const original = String(element?.originalText || "");
+  const text = String(element?.text || "");
+  const fused = lines.join("");
+  if (!element) throw new Error(`${kind} label was missing from the converted scene`);
+  if (original.includes("<br") || text.includes("<br")) {
+    throw new Error(`${kind} label kept HTML breaks: ${JSON.stringify({ original, text })}`);
+  }
+  if (original !== lines.join("\n")) {
+    throw new Error(`${kind} originalText was not newline-separated: ${JSON.stringify(original)}`);
+  }
+  if (text.includes(fused) || original.includes(fused)) {
+    throw new Error(`${kind} adjacent words were fused: ${JSON.stringify({ original, text })}`);
+  }
+  if (!text.includes("\n")) throw new Error(`${kind} display text lost line breaks: ${JSON.stringify(text)}`);
+  const measured = measureText(element);
+  if (measured.height > element.height + 0.1 || measured.width > element.width + 0.1) {
+    throw new Error(`${kind} multiline metrics overflow the text box`);
+  }
+  if (measured.height < (Number(element.fontSize) || 20) * (lines.length - 0.5)) {
+    throw new Error(`${kind} text box height does not reflect ${lines.length} lines`);
+  }
+}
+
 async function run() {
   const parsed = await parseMermaidToExcalidraw(fixture.source, { themeVariables: { fontSize: "16px" } });
+  const skeletons = restoreMermaidLabelLineBreaks(parsed.elements);
   let fallbackElements = [];
-  const elements = await convertExcalidrawSkeletonsAfterFontsLoad(parsed.elements, {
-    convert: materialize,
-    loadFonts: async (firstPass) => {
-      fallbackElements = structuredClone(firstPass);
-      await loadFonts(firstPass, parsed.files || null);
-    },
-  });
+  const elements = restoreMermaidLabelLineBreaks(
+    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+      convert: materialize,
+      loadFonts: async (firstPass) => {
+        fallbackElements = structuredClone(firstPass);
+        await loadFonts(firstPass, parsed.files || null);
+      },
+    }),
+    { measure: measureText },
+  );
   const expectedLabels = [...fixture.edgeLabels, fixture.multilineLabel];
   const labels = expectedLabels.map((text) => labelByText(elements, text));
   if (labels.some((label) => !label)) {
@@ -109,6 +138,11 @@ async function run() {
   if (!multiline.text.includes("\n") || measureText(multiline).height > multiline.height + 0.1) {
     throw new Error("multiline label geometry is clipped");
   }
+  if (String(multiline.originalText || "").includes("<br")) {
+    throw new Error(`TOOLS <br> survived conversion: ${JSON.stringify(multiline.originalText)}`);
+  }
+  assertConvertedLines(labelByText(elements, fixture.brLines.join("\n")), fixture.brLines, "<br>");
+  assertConvertedLines(labelByText(elements, fixture.newlineLines.join("\n")), fixture.newlineLines, "\\n");
   const rendered = await exportToCanvas({
     elements,
     appState: { exportBackground: false, exportPadding: 12 },
