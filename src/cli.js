@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -582,6 +582,7 @@ async function screenshotCommand(args) {
   const output = path.resolve(
     flagValue(args, "--out") || path.join(path.dirname(absolute), screenshotFileName(absolute)),
   );
+  await assertScreenshotOutputTarget(output, absolute);
   const executable = findChromeExecutable();
   if (!executable) {
     throw new AxiError("No Chrome or Chromium browser found for rendering the screenshot", "NOT_FOUND", [
@@ -611,6 +612,23 @@ async function screenshotCommand(args) {
     height: capture.height,
     viewportWidth,
   });
+}
+
+// The PNG write truncates whatever --out points at, so refuse to destroy the artifact being
+// captured: compare the resolved output against the canonical (realpath'd) input, which also
+// catches an --out symlink that resolves back to the source.
+export async function assertScreenshotOutputTarget(output, source) {
+  const canonicalOutput = await realpath(output).catch(() => output);
+  if (canonicalOutput === source || output === source) {
+    throw new AxiError(
+      `The screenshot output path must not be the input HTML file: ${output} would overwrite the artifact being captured`,
+      "VALIDATION_ERROR",
+      [
+        "Choose a different --out path, or omit --out to write <name>.screenshot.png next to the source",
+        "Run `lavish-axi screenshot <html-file> --out <path>` with an output path that is not the source file",
+      ],
+    );
+  }
 }
 
 function parseScreenshotWidth(value) {

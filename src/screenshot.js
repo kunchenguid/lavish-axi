@@ -15,6 +15,10 @@ import path from "node:path";
 
 export const DEFAULT_SCREENSHOT_VIEWPORT_WIDTH = 1280;
 export const DEFAULT_SCREENSHOT_TIMEOUT_MS = 60_000;
+// Upper bound for the in-page wait that lets asynchronous renderers (Mermaid diagrams, late
+// font swaps, decoding images) finish before the document height is measured. The overall
+// timeoutMs deadline always remains the outer guard.
+export const SCREENSHOT_RENDER_SETTLE_MAX_MS = 10_000;
 // The height a freshly created tab renders at before the full-document clip is computed.
 const INITIAL_VIEWPORT_HEIGHT = 900;
 
@@ -102,20 +106,26 @@ export class ScreenshotError extends Error {
  * Minimal CDP client over Node's built-in WebSocket. Handles the flat session protocol:
  * commands carry an optional sessionId, events are matched by method (+ sessionId when given).
  */
-class CdpConnection {
+export class CdpConnection {
+  /** @type {{ resolve: (value: any) => void, reject: (error: Error) => void } | undefined} */
+  settleOpened;
+
   /** @param {string} wsUrl @param {typeof WebSocket} WebSocketImpl */
   constructor(wsUrl, WebSocketImpl = WebSocket) {
     this.ws = new WebSocketImpl(wsUrl);
     this.nextId = 1;
     /** @type {Map<number, { resolve: (value: any) => void, reject: (error: Error) => void }>} */
     this.pending = new Map();
-    /** @type {{ method: string, sessionId: string | undefined, resolve: (params: any) => void }[]} */
+    /** @type {{ method: string, sessionId: string | undefined, resolve: (params: any) => void, reject: (error: Error) => void }[]} */
     this.eventWaiters = [];
     this.ws.addEventListener("message", (event) => this.handleMessage(String(event.data)));
     this.ws.addEventListener("close", () =>
       this.failAll(new ScreenshotError("Chrome closed the DevTools connection", "BROWSER_LOST")),
     );
     this.opened = new Promise((resolve, reject) => {
+      // failAll must be able to settle the open wait too, so a capture deadline never leaves it
+      // pending. Promise settlement is idempotent, so a reject after resolve is a no-op.
+      this.settleOpened = { resolve, reject };
       this.ws.addEventListener("open", () => resolve(undefined), { once: true });
       this.ws.addEventListener(
         "error",
@@ -177,15 +187,20 @@ class CdpConnection {
    * @param {string} method @param {string | undefined} sessionId @returns {Promise<any>}
    */
   waitForEvent(method, sessionId = undefined) {
-    return new Promise((resolve) => {
-      this.eventWaiters.push({ method, sessionId, resolve });
+    return new Promise((resolve, reject) => {
+      this.eventWaiters.push({ method, sessionId, resolve, reject });
     });
   }
 
+  /** Settle EVERY outstanding wait - commands, event waiters, and the open handshake. */
   /** @param {Error} error */
   failAll(error) {
     for (const slot of this.pending.values()) slot.reject(error);
     this.pending.clear();
+    const waiters = this.eventWaiters;
+    this.eventWaiters = [];
+    for (const waiter of waiters) waiter.reject(error);
+    this.settleOpened?.reject(error);
   }
 
   close() {
@@ -198,13 +213,16 @@ class CdpConnection {
 }
 
 /**
- * Spawn headless Chrome and return its process plus the browser-level DevTools WebSocket URL,
- * read from the "DevTools listening on ws://..." line Chrome prints to stderr.
+ * Spawn headless Chrome and return its process plus a promise for the browser-level DevTools
+ * WebSocket URL, read from the "DevTools listening on ws://..." line Chrome prints to stderr.
+ * Synchronous on purpose: the caller must hold the child handle IMMEDIATELY so the capture
+ * deadline can still kill a Chrome that stalls before ever publishing the URL.
  *
  * @param {string} executable
  * @param {{ width: number, profileDir: string, spawnImpl?: typeof spawn }} options
+ * @returns {{ child: import("node:child_process").ChildProcess, wsUrl: Promise<string> }}
  */
-async function launchHeadlessChrome(executable, { width, profileDir, spawnImpl = spawn }) {
+function launchHeadlessChrome(executable, { width, profileDir, spawnImpl = spawn }) {
   const args = [
     "--headless=new",
     "--disable-gpu",
@@ -219,7 +237,7 @@ async function launchHeadlessChrome(executable, { width, profileDir, spawnImpl =
   ];
   const child = spawnImpl(executable, args, { stdio: ["ignore", "ignore", "pipe"] });
   let stderrTail = "";
-  const wsUrl = await new Promise((resolve, reject) => {
+  const wsUrl = new Promise((resolve, reject) => {
     child.stderr.on("data", (chunk) => {
       stderrTail = `${stderrTail}${chunk}`.slice(-4096);
       const match = stderrTail.match(/DevTools listening on (ws:\/\/\S+)/);
@@ -245,7 +263,10 @@ async function launchHeadlessChrome(executable, { width, profileDir, spawnImpl =
  *   executable?: string,
  *   env?: Record<string, string | undefined>,
  *   platform?: string,
- * }} [options]
+ *   spawnImpl?: typeof spawn,
+ *   webSocketImpl?: typeof WebSocket,
+ * }} [options] spawnImpl/webSocketImpl are test seams for simulating a stalled browser or CDP
+ *   session without a real Chrome
  * @returns {Promise<{ png: Buffer, width: number, height: number }>} PNG bytes and pixel dimensions
  */
 export async function captureFullPageScreenshot(url, options = {}) {
@@ -265,60 +286,86 @@ export async function captureFullPageScreenshot(url, options = {}) {
   let child = null;
   /** @type {CdpConnection | null} */
   let connection = null;
+  // The deadline must settle EVERY pending wait, not just in-flight CDP commands: a Chrome that
+  // stalls before printing its DevTools URL (or a navigation that never fires loadEventFired)
+  // would otherwise hang past timeoutMs and leak the browser and its throwaway profile. Every
+  // async step below races against this rejection, and the timer also rejects the connection's
+  // pending commands/event waiters and kills the browser as a belt-and-suspenders pair.
+  /** @type {(error: Error) => void} */
+  let rejectDeadline;
+  const deadlineExceeded = new Promise((_, reject) => {
+    rejectDeadline = reject;
+  });
+  // Mark the shared rejection handled up front so a deadline firing between steps can never
+  // surface as an unhandled rejection; each step still observes it through its own race.
+  deadlineExceeded.catch(() => undefined);
   const deadline = setTimeout(() => {
-    connection?.failAll(new ScreenshotError(`Screenshot capture timed out after ${timeoutMs}ms`, "TIMEOUT"));
+    const error = new ScreenshotError(`Screenshot capture timed out after ${timeoutMs}ms`, "TIMEOUT");
+    rejectDeadline(error);
+    connection?.failAll(error);
     if (child && !child.killed) child.kill("SIGKILL");
   }, timeoutMs);
   // The timer is only a guard; it must not keep the process alive once the capture returns.
   deadline.unref?.();
+  /** Race one async step against the capture deadline. @param {Promise<any>} promise */
+  const guard = (promise) => Promise.race([promise, deadlineExceeded]);
 
   try {
-    const launched = await launchHeadlessChrome(executable, { width, profileDir });
+    const launched = launchHeadlessChrome(executable, { width, profileDir, spawnImpl: options.spawnImpl });
     child = launched.child;
-    connection = new CdpConnection(launched.wsUrl);
-    await connection.opened;
+    const wsUrl = await guard(launched.wsUrl);
+    connection = new CdpConnection(wsUrl, options.webSocketImpl || WebSocket);
+    await guard(connection.opened);
 
-    const { targetId } = await connection.send("Target.createTarget", { url: "about:blank" });
-    const { sessionId } = await connection.send("Target.attachToTarget", { targetId, flatten: true });
+    const { targetId } = await guard(connection.send("Target.createTarget", { url: "about:blank" }));
+    const { sessionId } = await guard(connection.send("Target.attachToTarget", { targetId, flatten: true }));
 
-    await connection.send("Page.enable", {}, sessionId);
-    await connection.send(
-      "Emulation.setDeviceMetricsOverride",
-      { width, height: INITIAL_VIEWPORT_HEIGHT, deviceScaleFactor: 1, mobile: false },
-      sessionId,
+    await guard(connection.send("Page.enable", {}, sessionId));
+    await guard(
+      connection.send(
+        "Emulation.setDeviceMetricsOverride",
+        { width, height: INITIAL_VIEWPORT_HEIGHT, deviceScaleFactor: 1, mobile: false },
+        sessionId,
+      ),
     );
     const loaded = connection.waitForEvent("Page.loadEventFired", sessionId);
-    await connection.send("Page.navigate", { url }, sessionId);
-    await loaded;
-    // `load` waits for images and stylesheets; fonts can still swap in afterwards, and Mermaid
-    // style diagrams render asynchronously. Wait for fonts plus one settled animation frame so
-    // the capture reflects what a reviewer would see.
-    await connection.send(
-      "Runtime.evaluate",
-      {
-        expression:
-          "document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))).then(() => true)",
-        awaitPromise: true,
-        returnByValue: true,
-      },
-      sessionId,
+    await guard(connection.send("Page.navigate", { url }, sessionId));
+    await guard(loaded);
+    // `load` waits for images and stylesheets, but fonts can still swap in afterwards and
+    // Mermaid-style diagrams render asynchronously (mermaid.run() takes far longer than the two
+    // animation frames that used to be the whole settle). Measuring or capturing before that
+    // work finishes omits the diagram from the PNG and under-measures the full-page height, so
+    // wait for rendered diagram nodes AND a stable document height before reading metrics.
+    const settleBudgetMs = Math.min(SCREENSHOT_RENDER_SETTLE_MAX_MS, Math.max(1_000, timeoutMs - 1_000));
+    await guard(
+      connection.send(
+        "Runtime.evaluate",
+        {
+          expression: renderSettleExpression(settleBudgetMs),
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId,
+      ),
     );
 
-    const metrics = await connection.send("Page.getLayoutMetrics", {}, sessionId);
+    const metrics = await guard(connection.send("Page.getLayoutMetrics", {}, sessionId));
     const content = metrics.cssContentSize || metrics.contentSize;
     if (!content || !Number.isFinite(content.width) || !Number.isFinite(content.height)) {
       throw new ScreenshotError("Chrome did not report the rendered document size", "CDP_ERROR");
     }
     const captureWidth = Math.max(1, Math.ceil(Math.max(content.width, width)));
     const captureHeight = Math.max(1, Math.ceil(content.height));
-    const shot = await connection.send(
-      "Page.captureScreenshot",
-      {
-        format: "png",
-        captureBeyondViewport: true,
-        clip: { x: 0, y: 0, width: captureWidth, height: captureHeight, scale: 1 },
-      },
-      sessionId,
+    const shot = await guard(
+      connection.send(
+        "Page.captureScreenshot",
+        {
+          format: "png",
+          captureBeyondViewport: true,
+          clip: { x: 0, y: 0, width: captureWidth, height: captureHeight, scale: 1 },
+        },
+        sessionId,
+      ),
     );
     if (!shot || typeof shot.data !== "string" || !shot.data) {
       throw new ScreenshotError("Chrome returned an empty screenshot", "CDP_ERROR");
@@ -331,4 +378,56 @@ export async function captureFullPageScreenshot(url, options = {}) {
     if (child && !child.killed) child.kill("SIGKILL");
     await rm(profileDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+/**
+ * In-page wait that holds off measurement and capture until asynchronous renderers finish.
+ * `document.fonts.ready` covers late font swaps; Mermaid-style diagrams render after `load`
+ * (mermaid.run() marks each `.mermaid` container `data-processed="true"` and swaps the source
+ * text for an `<svg>`), so every container must reach that state; finally the document scroll
+ * height must stay constant across several samples, catching any late layout shift. Everything
+ * is bounded by `budgetMs` so a pathological page degrades to a best-effort capture instead of
+ * a hang (the CDP-level deadline is the outer guard either way).
+ *
+ * @param {number} budgetMs maximum time the page-side wait may take
+ * @returns {string} JavaScript expression for Runtime.evaluate with awaitPromise
+ */
+export function renderSettleExpression(budgetMs) {
+  const budget = Math.max(0, Math.floor(budgetMs));
+  return `(async () => {
+  const deadline = Date.now() + ${budget};
+  const remaining = () => deadline - Date.now();
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  try {
+    await Promise.race([document.fonts.ready, sleep(Math.max(0, Math.min(remaining(), 3000)))]);
+  } catch (error) {}
+  // Mermaid-style diagrams render asynchronously after load: mermaid.run() marks each
+  // container data-processed="true" and swaps the source text for an <svg>. Wait for every
+  // container to reach that state so the diagram is present in the capture.
+  const diagrams = Array.from(document.querySelectorAll(".mermaid"));
+  while (diagrams.length > 0 && remaining() > 0) {
+    const rendered = diagrams.every(
+      (el) => el.getAttribute("data-processed") === "true" || el.querySelector("svg") !== null,
+    );
+    if (rendered) break;
+    await sleep(50);
+  }
+  // Late layout shifts (rendered diagrams, decoding images, font swaps) change the document
+  // height; capture only once it has stayed constant across several samples.
+  let lastHeight = -1;
+  let stableSamples = 0;
+  while (remaining() > 0) {
+    await sleep(50);
+    const height = document.documentElement.scrollHeight;
+    if (height === lastHeight) {
+      stableSamples += 1;
+      if (stableSamples >= 4) break;
+    } else {
+      stableSamples = 0;
+      lastHeight = height;
+    }
+  }
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  return true;
+})()`;
 }
