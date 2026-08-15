@@ -10,6 +10,7 @@ import {
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
+  serializeLiveDocument,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -323,4 +324,32 @@ test("isModeToggleHotkeyEvent rejects extra shift or alt modifiers", () => {
 test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () => {
   assert.equal(isModeToggleHotkeyEvent({ key: "e", metaKey: true }), false);
   assert.equal(isModeToggleHotkeyEvent({ key: "Enter", metaKey: true }), false);
+});
+
+test("serializeLiveDocument carries the live outerHTML and root attributes", () => {
+  const doc = {
+    doctype: {},
+    documentElement: {
+      outerHTML: '<html data-lang="zh"><head></head><body>你好</body></html>',
+      attributes: [
+        { name: "data-lang", value: "zh" },
+        { name: "class", value: "dark" },
+      ],
+    },
+  };
+  assert.deepEqual(serializeLiveDocument(/** @type {Document} */ (/** @type {any} */ (doc))), {
+    html: '<!DOCTYPE html>\n<html data-lang="zh"><head></head><body>你好</body></html>',
+    rootAttributes: { "data-lang": "zh", class: "dark" },
+  });
+});
+
+test("serializeLiveDocument tolerates a missing doctype and no root attributes", () => {
+  const doc = {
+    doctype: null,
+    documentElement: { outerHTML: "<html><body>x</body></html>", attributes: [] },
+  };
+  assert.deepEqual(serializeLiveDocument(/** @type {Document} */ (/** @type {any} */ (doc))), {
+    html: "<html><body>x</body></html>",
+    rootAttributes: {},
+  });
 });

@@ -1107,19 +1107,35 @@ test("chrome client includes export notices alongside unresolved assets", async 
 });
 
 test("chrome client downloads the full-page PNG export and restores the menu label", async () => {
-  /** @type {string[]} */
+  /** @type {{ url: string, init: any }[]} */
   const fetched = [];
   const chrome = await createChromeHarness({
-    fetchImpl: async (url) => {
-      fetched.push(String(url));
+    fetchImpl: async (url, init) => {
+      fetched.push({ url: String(url), init });
       return { ok: true, blob: async () => ({}) };
     },
   });
 
-  await chrome.element("screenshotArtifact").onclick();
+  const click = chrome.element("screenshotArtifact").onclick();
+  await flushPromises();
+  // WYSIWYG: the chrome first asks the artifact's SDK for its serialized live document.
+  assert.ok(chrome.postedToFrame.some((m) => m.type === "lavish:requestDocumentSnapshot"));
+  chrome.sendFrameMessage({
+    type: "lavish:documentSnapshot",
+    artifact_load_token: chrome.artifactLoadToken(),
+    html: '<html data-lang="zh"><body>你好</body></html>',
+    rootAttributes: { "data-lang": "zh" },
+  });
+  await click;
   await flushPromises();
 
-  assert.deepEqual(fetched, ["/api/abc/screenshot"]);
+  assert.equal(fetched.length, 1);
+  assert.equal(fetched[0].url, "/api/abc/screenshot");
+  assert.equal(fetched[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(fetched[0].init.body), {
+    html: '<html data-lang="zh"><body>你好</body></html>',
+    rootAttributes: { "data-lang": "zh" },
+  });
   assert.equal(chrome.element("screenshotArtifact").querySelector("span").textContent, "Export full-page PNG");
   assert.equal(chrome.element("screenshotArtifact").disabled, false);
 });
@@ -1129,7 +1145,31 @@ test("chrome client surfaces a failed full-page PNG export for retry", async () 
     fetchImpl: async () => ({ ok: false, status: 500 }),
   });
 
-  await chrome.element("screenshotArtifact").onclick();
+  const click = chrome.element("screenshotArtifact").onclick();
+  await flushPromises();
+  chrome.sendFrameMessage({
+    type: "lavish:documentSnapshot",
+    artifact_load_token: chrome.artifactLoadToken(),
+    html: "<html><body></body></html>",
+    rootAttributes: {},
+  });
+  await click;
+  await flushPromises();
+
+  assert.equal(chrome.element("screenshotArtifact").querySelector("span").textContent, "Export failed - retry");
+  assert.equal(chrome.element("screenshotArtifact").disabled, false);
+});
+
+test("chrome client fails the full-page PNG export when the artifact never answers the snapshot request", async () => {
+  const chrome = await createChromeHarness();
+
+  const click = chrome.element("screenshotArtifact").onclick();
+  await flushPromises();
+  assert.ok(chrome.postedToFrame.some((m) => m.type === "lavish:requestDocumentSnapshot"));
+  // The artifact frame may be mid-reload or missing its SDK; the export must not wedge the
+  // menu - the snapshot request times out and the item offers a retry.
+  chrome.runTimers(5000);
+  await click;
   await flushPromises();
 
   assert.equal(chrome.element("screenshotArtifact").querySelector("span").textContent, "Export failed - retry");

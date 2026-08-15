@@ -383,6 +383,28 @@ export function deriveAttachmentNoticeState(state = {}) {
 }
 
 /**
+ * Serialize the LIVE document for the editor's full-page PNG export. outerHTML carries
+ * in-session DOM state the file on disk does not - applied root attributes like a language
+ * toggle's data-lang and other JS mutations - so the server can re-render exactly what the
+ * reviewer sees (WYSIWYG). The root attributes also ride along as a separate map: the
+ * artifact's own init scripts run again in the fresh capture profile and may reset them from
+ * storage that is empty there, so the capture re-applies this map after load
+ * (restoreAttributesExpression in screenshot.js).
+ *
+ * @param {Document} doc
+ * @returns {{ html: string, rootAttributes: Record<string, string> }}
+ */
+export function serializeLiveDocument(doc) {
+  const root = doc.documentElement;
+  /** @type {Record<string, string>} */
+  const rootAttributes = {};
+  for (const attribute of Array.from(root.attributes || [])) {
+    rootAttributes[attribute.name] = attribute.value;
+  }
+  return { html: `${doc.doctype ? "<!DOCTYPE html>\n" : ""}${root.outerHTML}`, rootAttributes };
+}
+
+/**
  * @param {*} deriveQueueKey
  * @param {*} [isNativeInteractive]
  * @param {*} [mermaid]
@@ -2336,6 +2358,9 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:requestSnapshot") {
       postArtifactMessage("lavish:snapshot", { snapshot: snapshot() });
+    }
+    if (msg.type === "lavish:requestDocumentSnapshot") {
+      postArtifactMessage("lavish:documentSnapshot", serializeLiveDocument(document));
     }
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);

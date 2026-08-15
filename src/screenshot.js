@@ -21,6 +21,12 @@ export const DEFAULT_SCREENSHOT_TIMEOUT_MS = 60_000;
 export const SCREENSHOT_RENDER_SETTLE_MAX_MS = 10_000;
 // The height a freshly created tab renders at before the full-document clip is computed.
 const INITIAL_VIEWPORT_HEIGHT = 900;
+// Bounds for the live-document snapshot the editor posts for a WYSIWYG capture. The JSON body
+// parser caps the raw HTML payload; these bound the root-attribute map that is re-applied in
+// the page after load (see restoreAttributesExpression).
+export const MAX_SNAPSHOT_ROOT_ATTRIBUTES = 64;
+export const MAX_SNAPSHOT_ROOT_ATTRIBUTE_VALUE_CHARS = 2048;
+const SNAPSHOT_ROOT_ATTRIBUTE_NAME_RE = /^[a-zA-Z_][\w.:-]*$/;
 
 /** @param {string} file artifact path @returns {string} default PNG name sitting next to the source */
 export function screenshotFileName(file) {
@@ -100,6 +106,82 @@ export class ScreenshotError extends Error {
     this.name = "ScreenshotError";
     this.code = code;
   }
+}
+
+/**
+ * Validate the root-attribute map that accompanies a live-document snapshot. Returns the clean
+ * map, `{}` when the snapshot carries none, or null when the value is malformed - the route
+ * answers 400 for null so a crafted POST cannot smuggle odd shapes into the page.
+ *
+ * @param {unknown} value decoded JSON body field
+ * @returns {Record<string, string> | null}
+ */
+export function sanitizeSnapshotRootAttributes(value) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value);
+  if (entries.length > MAX_SNAPSHOT_ROOT_ATTRIBUTES) return null;
+  /** @type {Record<string, string>} */
+  const clean = {};
+  for (const [name, attributeValue] of entries) {
+    if (!SNAPSHOT_ROOT_ATTRIBUTE_NAME_RE.test(name)) return null;
+    if (typeof attributeValue !== "string" || attributeValue.length > MAX_SNAPSHOT_ROOT_ATTRIBUTE_VALUE_CHARS) {
+      return null;
+    }
+    clean[name] = attributeValue;
+  }
+  return clean;
+}
+
+/**
+ * Prepare a serialized live document (the artifact iframe's outerHTML) for off-server capture:
+ * drop Lavish's own injected SDK tag - it can only 404 from a file:// render - and pin a
+ * `<base href>` at the artifact's directory so the snapshot's relative stylesheet/script/image
+ * URLs keep resolving to the real sibling assets even though the snapshot itself is written to
+ * a temp directory. The base must precede every relative URL, so it goes first in `<head>`.
+ *
+ * @param {string} html serialized document (doctype optional)
+ * @param {string} baseHref file:// URL of the artifact's directory, trailing slash included
+ * @returns {string} document to write and render
+ */
+export function prepareSnapshotDocument(html, baseHref) {
+  const baseTag = `<base href="${baseHref}">`;
+  let documentHtml = String(html).replace(/<script\s+src="\/sdk\.js[^"]*"\s*><\/script>/g, "");
+  if (/<head(\s[^>]*)?>/i.test(documentHtml)) {
+    return documentHtml.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${baseTag}`);
+  }
+  if (/<html(\s[^>]*)?>/i.test(documentHtml)) {
+    return documentHtml.replace(/<html(\s[^>]*)?>/i, (match) => `${match}<head>${baseTag}</head>`);
+  }
+  return `${baseTag}${documentHtml}`;
+}
+
+/**
+ * Re-apply the snapshot's documentElement attributes inside the rendered page. A live-session
+ * snapshot carries in-session state on the root element (a language toggle's `data-lang`, a
+ * theme class), but the artifact's own init scripts run again in the fresh capture profile and
+ * may reset those attributes from storage that is empty there - so after every load handler
+ * ran, the capture restores the serialized values before settling and measuring (WYSIWYG).
+ * JSON.stringify output is a safe JS literal to embed: quotes and backslashes are escaped and
+ * the expression never crosses an HTML boundary.
+ *
+ * @param {Record<string, string>} attributes sanitized via sanitizeSnapshotRootAttributes
+ * @returns {string} JavaScript expression for Runtime.evaluate
+ */
+export function restoreAttributesExpression(attributes) {
+  const serialized = JSON.stringify(attributes && typeof attributes === "object" ? attributes : {});
+  return `(function () {
+  var root = document.documentElement;
+  var snapshot = ${serialized};
+  for (var i = root.attributes.length - 1; i >= 0; i--) {
+    var name = root.attributes[i].name;
+    if (!Object.prototype.hasOwnProperty.call(snapshot, name)) root.removeAttribute(name);
+  }
+  Object.keys(snapshot).forEach(function (key) {
+    if (root.getAttribute(key) !== snapshot[key]) root.setAttribute(key, snapshot[key]);
+  });
+  return true;
+})()`;
 }
 
 /**
@@ -263,10 +345,12 @@ function launchHeadlessChrome(executable, { width, profileDir, spawnImpl = spawn
  *   executable?: string,
  *   env?: Record<string, string | undefined>,
  *   platform?: string,
+ *   restoreAttributes?: Record<string, string>,
  *   spawnImpl?: typeof spawn,
  *   webSocketImpl?: typeof WebSocket,
- * }} [options] spawnImpl/webSocketImpl are test seams for simulating a stalled browser or CDP
- *   session without a real Chrome
+ * }} [options] restoreAttributes re-applies a live-document snapshot's documentElement
+ *   attributes after load (see restoreAttributesExpression); spawnImpl/webSocketImpl are test
+ *   seams for simulating a stalled browser or CDP session without a real Chrome
  * @returns {Promise<{ png: Buffer, width: number, height: number }>} PNG bytes and pixel dimensions
  */
 export async function captureFullPageScreenshot(url, options = {}) {
@@ -331,6 +415,21 @@ export async function captureFullPageScreenshot(url, options = {}) {
     const loaded = connection.waitForEvent("Page.loadEventFired", sessionId);
     await guard(connection.send("Page.navigate", { url }, sessionId));
     await guard(loaded);
+    // A live-session snapshot carries in-session state as documentElement attributes (a
+    // language toggle's data-lang, a theme class) that the artifact's own init scripts may
+    // reset on load - in the fresh capture profile their localStorage is empty. Every load
+    // handler has run by now, so re-apply the serialized attributes BEFORE settling and
+    // measuring: the capture must show exactly what the reviewer saw (WYSIWYG).
+    const restoreAttributes = options.restoreAttributes;
+    if (restoreAttributes && typeof restoreAttributes === "object" && Object.keys(restoreAttributes).length > 0) {
+      await guard(
+        connection.send(
+          "Runtime.evaluate",
+          { expression: restoreAttributesExpression(restoreAttributes), returnByValue: true },
+          sessionId,
+        ),
+      );
+    }
     // `load` waits for images and stylesheets, but fonts can still swap in afterwards and
     // Mermaid-style diagrams render asynchronously (mermaid.run() takes far longer than the two
     // animation frames that used to be the whole settle). Measuring or capturing before that

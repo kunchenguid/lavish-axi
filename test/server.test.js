@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
@@ -257,6 +258,14 @@ test("artifact SDK script is valid JavaScript", () => {
   const js = createSdkJs("abc");
 
   assert.doesNotThrow(() => new Function(js));
+});
+
+test("artifact SDK answers the editor's live-document snapshot request for the PNG export", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /lavish:requestDocumentSnapshot/);
+  assert.match(js, /lavish:documentSnapshot/);
+  assert.match(js, /serializeLiveDocument/);
 });
 
 test("artifact SDK ignores Lavish-owned annotation UI", () => {
@@ -618,7 +627,10 @@ test("overflow menu offers a full-page PNG export directly below the standalone 
   );
   assert.match(js, /const screenshotArtifactButton/);
   assert.match(js, /async function exportScreenshot/);
-  assert.match(js, /fetch\("\/api\/" \+ key \+ "\/screenshot"\)/);
+  // WYSIWYG: the export posts the live document snapshot the SDK serialized, not a bare GET.
+  assert.match(js, /await requestDocumentSnapshot\(\)/);
+  assert.match(js, /fetch\("\/api\/" \+ key \+ "\/screenshot", \{/);
+  assert.match(js, /method: "POST"/);
   assert.match(js, /link\.download = screenshotFileName\(\)/);
   assert.match(js, /screenshotArtifactButton\.onclick = exportScreenshot/);
 });
@@ -3039,6 +3051,115 @@ test("GET /api/:key/screenshot maps capture failures to actionable statuses", as
     const failed = await fetch(`${base}/api/${session.key}/screenshot`, { headers: { origin: base } });
     assert.equal(failed.status, 500);
     assert.equal((await failed.json()).code, "CDP_ERROR");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/screenshot captures the posted live-document snapshot (WYSIWYG)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const calls = [];
+
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    captureScreenshot: async (url, options) => {
+      // The snapshot must still exist while the capture runs; inspect it from inside the fake.
+      const snapshotHtml = await readFile(fileURLToPath(url), "utf8");
+      calls.push({ url, options, snapshotHtml });
+      return { png, width: 1280, height: 4000 };
+    },
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    // The reviewer switched the artifact to Chinese in the editor: the live document carries
+    // data-lang="zh" while the file on disk still says "en".
+    const liveHtml =
+      '<!DOCTYPE html>\n<html data-lang="zh"><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head>' +
+      '<body><span class="zh">你好</span><script src="/sdk.js?key=abc"></script></body></html>';
+    const res = await fetch(`${base}/api/${session.key}/screenshot`, {
+      method: "POST",
+      headers: { origin: base, "content-type": "application/json" },
+      body: JSON.stringify({ html: liveHtml, rootAttributes: { "data-lang": "zh" } }),
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") || "", /image\/png/);
+    assert.match(res.headers.get("content-disposition") || "", /attachment; filename="artifact\.screenshot\.png"/);
+    assert.deepEqual(Buffer.from(await res.arrayBuffer()), png);
+
+    assert.equal(calls.length, 1);
+    const [{ url, options, snapshotHtml }] = calls;
+    // The capture renders the SNAPSHOT (a throwaway temp file), not the artifact file...
+    assert.ok(url.startsWith("file://"));
+    assert.ok(!url.endsWith("artifact.html"), `expected a temp snapshot, got ${url}`);
+    // ...with the root attributes re-applied after load (the fresh profile's storage is empty,
+    // so the artifact's init script would otherwise reset data-lang back to "en")...
+    assert.deepEqual(options.restoreAttributes, { "data-lang": "zh" });
+    // ...a <base> pinned at the artifact directory so relative assets still resolve...
+    const expectedBase = pathToFileURL(`${await realpath(dir)}${path.sep}`).href;
+    assert.ok(snapshotHtml.includes(`<base href="${expectedBase}">`), snapshotHtml);
+    assert.ok(snapshotHtml.indexOf(`<base href="${expectedBase}">`) < snapshotHtml.indexOf('href="style.css"'));
+    // ...the live in-session state intact, and Lavish's own injected SDK tag stripped.
+    assert.ok(snapshotHtml.includes('data-lang="zh"'), snapshotHtml);
+    assert.ok(snapshotHtml.includes("你好"), snapshotHtml);
+    assert.ok(!snapshotHtml.includes("/sdk.js"), snapshotHtml);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/screenshot rejects cross-origin, unknown sessions, and malformed snapshots", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+  let captureCalls = 0;
+
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    captureScreenshot: async () => {
+      captureCalls += 1;
+      return { png: Buffer.from([0x89]), width: 1, height: 1 };
+    },
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+    const post = (key, body, headers = {}) =>
+      fetch(`${base}/api/${key}/screenshot`, {
+        method: "POST",
+        headers: { origin: base, "content-type": "application/json", ...headers },
+        body: JSON.stringify(body),
+      });
+
+    // A cross-origin page must not drive captures through the loopback server.
+    assert.equal((await post(session.key, { html: "<html></html>" }, { origin: "https://evil.example" })).status, 403);
+    assert.equal((await post("does-not-exist", { html: "<html></html>" })).status, 404);
+    // The snapshot is required, and rootAttributes must be a clean name/value map.
+    assert.equal((await post(session.key, {})).status, 400);
+    assert.equal((await post(session.key, { html: "   " })).status, 400);
+    assert.equal((await post(session.key, { html: "<html></html>", rootAttributes: ["data-lang"] })).status, 400);
+    assert.equal((await post(session.key, { html: "<html></html>", rootAttributes: { "data-lang": 42 } })).status, 400);
+    assert.equal(captureCalls, 0);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

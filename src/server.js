@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -25,6 +25,7 @@ import {
   attachmentSizeError,
   classifyAttachmentBatch,
   partitionDroppedFiles,
+  serializeLiveDocument,
   MODE_TOGGLE_HOTKEY_KEY,
 } from "./artifact-sdk.js";
 import {
@@ -51,6 +52,8 @@ import { publishToHtmlApp } from "./html-app.js";
 import {
   captureFullPageScreenshot,
   DEFAULT_SCREENSHOT_VIEWPORT_WIDTH,
+  prepareSnapshotDocument,
+  sanitizeSnapshotRootAttributes,
   ScreenshotError,
   screenshotFileName,
 } from "./screenshot.js";
@@ -115,6 +118,12 @@ export function defaultWhiteboardAssetsDir() {
 // whiteboard write routes get the larger limit.
 export function isWhiteboardWriteApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
+}
+
+// The editor's WYSIWYG screenshot export posts the serialized live document (outerHTML of the
+// artifact under review), which can carry inlined images and outgrow the default 2 MB JSON cap.
+export function isScreenshotSnapshotApiPath(pathname) {
+  return /^\/api\/[0-9a-f]{16}\/screenshot$/.test(String(pathname || ""));
 }
 
 // The attachment upload carries raw image bytes, not JSON, so it bypasses both
@@ -304,14 +313,17 @@ export async function serve({
   // interleave with a concurrent poll.
 
   const defaultJsonParser = express.json({ limit: "2mb" });
-  const whiteboardJsonParser = express.json({ limit: "20mb" });
+  // Whiteboard scene saves and WYSIWYG screenshot snapshots carry full serialized documents
+  // (Excalidraw scenes, PNG data URLs, inlined images) that outgrow the default 2 MB cap.
+  const largeJsonParser = express.json({ limit: "20mb" });
   app.use((req, res, next) => {
     // The attachment upload reads the raw request stream itself (see the route),
     // so no body parser runs for it - express.raw's limit aborts on Content-Length
     // WITHOUT draining the body, which leaves the browser's in-flight upload to be
     // reset mid-stream instead of receiving the 413.
     if (req.method === "POST" && isAttachmentUploadApiPath(req.path)) return next();
-    if (isWhiteboardWriteApiPath(req.path)) return whiteboardJsonParser(req, res, next);
+    if (isWhiteboardWriteApiPath(req.path) || (req.method === "POST" && isScreenshotSnapshotApiPath(req.path)))
+      return largeJsonParser(req, res, next);
     return defaultJsonParser(req, res, next);
   });
 
@@ -648,42 +660,97 @@ export async function serve({
   // path as `lavish-axi screenshot` (src/screenshot.js). Unlike the static export this spawns a
   // browser and executes the artifact's scripts, so it is same-origin guarded like /share: a
   // cross-origin page must not be able to drive captures through the loopback server.
+  /** @param {import("express").Response} res @param {unknown} error @param {import("express").NextFunction} next */
+  const handleScreenshotError = (res, error, next) => {
+    // No local Chrome/Chromium is an environment gap the user can fix, not a server fault.
+    if (error instanceof ScreenshotError && error.code === "BROWSER_NOT_FOUND") {
+      res.status(503).json({ error: error.message, code: error.code });
+      return;
+    }
+    if (error instanceof ScreenshotError) {
+      res.status(500).json({ error: error.message, code: error.code });
+      return;
+    }
+    next(error);
+  };
+  /** @param {import("express").Response} res @param {{ file: string }} session @param {{ png: Buffer, width: number, height: number }} capture */
+  const sendScreenshotCapture = (res, session, capture) => {
+    res.setHeader("content-disposition", screenshotContentDisposition(session.file));
+    res.setHeader("x-lavish-screenshot-width", String(capture.width));
+    res.setHeader("x-lavish-screenshot-height", String(capture.height));
+    res.type("png").send(capture.png);
+  };
+  /** @param {import("express").Request} req @param {import("express").Response} res @returns {Promise<{ session: any, width: number } | null>} */
+  const resolveScreenshotRequest = async (req, res) => {
+    if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+      res.status(403).json({ error: "cross-origin screenshot request rejected" });
+      return null;
+    }
+    const session = await store.findByKey(req.params.key);
+    if (!session) {
+      res.status(404).json({ error: "session not found" });
+      return null;
+    }
+    let width = DEFAULT_SCREENSHOT_VIEWPORT_WIDTH;
+    if (req.query.width !== undefined) {
+      const parsed = Number(req.query.width);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        res.status(400).json({ error: "width must be a positive integer" });
+        return null;
+      }
+      width = parsed;
+    }
+    return { session, width };
+  };
   app.get("/api/:key/screenshot", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
-        res.status(403).json({ error: "cross-origin screenshot request rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
-        res.status(404).json({ error: "session not found" });
-        return;
-      }
-      let width = DEFAULT_SCREENSHOT_VIEWPORT_WIDTH;
-      if (req.query.width !== undefined) {
-        const parsed = Number(req.query.width);
-        if (!Number.isInteger(parsed) || parsed < 1) {
-          res.status(400).json({ error: "width must be a positive integer" });
-          return;
-        }
-        width = parsed;
-      }
-      const capture = await captureScreenshot(pathToFileURL(session.file).href, { width });
-      res.setHeader("content-disposition", screenshotContentDisposition(session.file));
-      res.setHeader("x-lavish-screenshot-width", String(capture.width));
-      res.setHeader("x-lavish-screenshot-height", String(capture.height));
-      res.type("png").send(capture.png);
+      const request = await resolveScreenshotRequest(req, res);
+      if (!request) return;
+      const capture = await captureScreenshot(pathToFileURL(request.session.file).href, { width: request.width });
+      sendScreenshotCapture(res, request.session, capture);
     } catch (error) {
-      // No local Chrome/Chromium is an environment gap the user can fix, not a server fault.
-      if (error instanceof ScreenshotError && error.code === "BROWSER_NOT_FOUND") {
-        res.status(503).json({ error: error.message, code: error.code });
+      handleScreenshotError(res, error, next);
+    }
+  });
+
+  // WYSIWYG variant for the editor's overflow menu: the chrome POSTs the LIVE document state
+  // (the artifact iframe's serialized outerHTML plus its documentElement attributes), so the
+  // PNG shows what the reviewer currently sees - in-session state such as a language toggle
+  // that the file on disk does not carry. The snapshot is written to a throwaway temp file with
+  // a <base href> pinned at the artifact's directory so relative assets still resolve, rendered
+  // with the same full-document capture, and its root attributes are re-applied after load
+  // because the artifact's init scripts would otherwise reset them from the fresh profile's
+  // empty storage. Same-origin guarded and JSON size-bounded (20 MB) like the whiteboard writes.
+  app.post("/api/:key/screenshot", async (req, res, next) => {
+    try {
+      const request = await resolveScreenshotRequest(req, res);
+      if (!request) return;
+      const body = req.body && typeof req.body === "object" ? req.body : {};
+      const html = body.html;
+      if (typeof html !== "string" || !html.trim()) {
+        res.status(400).json({ error: "html must be a non-empty serialized document" });
         return;
       }
-      if (error instanceof ScreenshotError) {
-        res.status(500).json({ error: error.message, code: error.code });
+      const rootAttributes = sanitizeSnapshotRootAttributes(body.rootAttributes);
+      if (!rootAttributes) {
+        res.status(400).json({ error: "rootAttributes must be an object of attribute name/value strings" });
         return;
       }
-      next(error);
+      const snapshotDir = await mkdtemp(path.join(tmpdir(), "lavish-screenshot-snapshot-"));
+      try {
+        const baseHref = pathToFileURL(`${path.dirname(request.session.file)}${path.sep}`).href;
+        const snapshotFile = path.join(snapshotDir, "snapshot.html");
+        await writeFile(snapshotFile, prepareSnapshotDocument(html, baseHref), "utf8");
+        const capture = await captureScreenshot(pathToFileURL(snapshotFile).href, {
+          width: request.width,
+          restoreAttributes: rootAttributes,
+        });
+        sendScreenshotCapture(res, request.session, capture);
+      } finally {
+        await rm(snapshotDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    } catch (error) {
+      handleScreenshotError(res, error, next);
     }
   });
 
@@ -1999,6 +2066,7 @@ const classifyAttachmentBatch=${classifyAttachmentBatch.toString()};
 const partitionDroppedFiles=${partitionDroppedFiles.toString()};
 const isTrustedAttachmentResult=${isTrustedAttachmentResult.toString()};
 const deriveAttachmentNoticeState=${deriveAttachmentNoticeState.toString()};
+const serializeLiveDocument=${serializeLiveDocument.toString()};
 ${mermaidHelperDecls}
 const mermaidHelpers={ ${mermaidHelperKeys} };
 (${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key, ${JSON.stringify(sdkOptions)});

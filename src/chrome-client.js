@@ -131,6 +131,10 @@ let annotation = true;
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
+// In-flight WYSIWYG document-snapshot request for the full-page PNG export: the artifact
+// iframe's SDK serializes the live document and answers lavish:documentSnapshot.
+/** @type {{ resolve: (snapshot: { html: string, rootAttributes: Record<string, string> }) => void, reject: (error: Error) => void, timer: any } | null} */
+let pendingDocumentSnapshot = null;
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
 const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
 const layoutGateMaxHoldMs =
@@ -536,6 +540,25 @@ function postToFrame(message) {
 function requestSnapshot(action) {
   snapshotRequests.push(action);
   postToFrame({ type: "lavish:requestSnapshot" });
+}
+
+// Ask the artifact's SDK for its serialized live document (outerHTML + root attributes). The
+// sandboxed frame is cross-origin to the chrome, so this is the only way the editor can export
+// what the reviewer actually sees instead of the file on disk.
+/** @returns {Promise<{ html: string, rootAttributes: Record<string, string> }>} */
+function requestDocumentSnapshot() {
+  return new Promise((resolve, reject) => {
+    if (pendingDocumentSnapshot) {
+      clearTimeout(pendingDocumentSnapshot.timer);
+      pendingDocumentSnapshot.reject(new Error("superseded"));
+    }
+    const timer = setTimeout(() => {
+      pendingDocumentSnapshot = null;
+      reject(new Error("document snapshot timed out"));
+    }, 5000);
+    pendingDocumentSnapshot = { resolve, reject, timer };
+    postToFrame({ type: "lavish:requestDocumentSnapshot" });
+  });
 }
 
 function sendQueued(endAfter) {
@@ -1186,7 +1209,15 @@ async function exportScreenshot() {
   screenshotArtifactButton.disabled = true;
   setScreenshotLabel("Exporting...");
   try {
-    const response = await fetch("/api/" + key + "/screenshot");
+    // WYSIWYG: capture the LIVE document (a language toggle's data-lang and other in-session
+    // DOM state), not the file on disk. The server re-renders this snapshot, re-applying the
+    // root attributes after the artifact's init scripts run in the fresh capture profile.
+    const snapshot = await requestDocumentSnapshot();
+    const response = await fetch("/api/" + key + "/screenshot", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(snapshot),
+    });
     if (!response.ok) throw new Error("screenshot failed");
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
@@ -1941,6 +1972,17 @@ window.addEventListener("message", (event) => {
     } else {
       pendingSnapshot = msg.snapshot || "";
       submitQueued();
+    }
+  }
+  if (msg.type === "lavish:documentSnapshot") {
+    const pending = pendingDocumentSnapshot;
+    pendingDocumentSnapshot = null;
+    if (pending) {
+      clearTimeout(pending.timer);
+      pending.resolve({
+        html: String(msg.html || ""),
+        rootAttributes: msg.rootAttributes && typeof msg.rootAttributes === "object" ? msg.rootAttributes : {},
+      });
     }
   }
   if (msg.type === "lavish:scroll") {

@@ -15,7 +15,10 @@ import {
   CdpConnection,
   chromeExecutableCandidates,
   findChromeExecutable,
+  prepareSnapshotDocument,
   renderSettleExpression,
+  restoreAttributesExpression,
+  sanitizeSnapshotRootAttributes,
   screenshotFileName,
   ScreenshotError,
 } from "../src/screenshot.js";
@@ -331,6 +334,51 @@ test("renderSettleExpression waits for mermaid containers and a stable document 
   assert.ok(!expression.includes("[object"));
 });
 
+test("sanitizeSnapshotRootAttributes accepts a clean map and rejects crafted shapes", () => {
+  assert.deepEqual(sanitizeSnapshotRootAttributes(undefined), {});
+  assert.deepEqual(sanitizeSnapshotRootAttributes(null), {});
+  assert.deepEqual(sanitizeSnapshotRootAttributes({ "data-lang": "zh", class: "dark" }), {
+    "data-lang": "zh",
+    class: "dark",
+  });
+  assert.equal(sanitizeSnapshotRootAttributes("data-lang"), null);
+  assert.equal(sanitizeSnapshotRootAttributes(["data-lang"]), null);
+  assert.equal(sanitizeSnapshotRootAttributes({ "data-lang": 42 }), null);
+  assert.equal(sanitizeSnapshotRootAttributes({ '"><script>': "x" }), null);
+  assert.equal(sanitizeSnapshotRootAttributes({ "data-x": "v".repeat(3000) }), null);
+  const tooMany = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`data-a${index}`, "v"]));
+  assert.equal(sanitizeSnapshotRootAttributes(tooMany), null);
+});
+
+test("prepareSnapshotDocument pins a base href first in head and strips the injected SDK tag", () => {
+  const snapshot =
+    '<!DOCTYPE html>\n<html data-lang="zh"><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head>' +
+    '<body><script src="/sdk.js?key=abc"></script></body></html>';
+  const prepared = prepareSnapshotDocument(snapshot, "file:///tmp/artifacts/");
+  // The base must precede every relative URL in the document.
+  assert.ok(prepared.indexOf('<base href="file:///tmp/artifacts/">') < prepared.indexOf('href="style.css"'));
+  assert.ok(prepared.startsWith("<!DOCTYPE html>"));
+  // Lavish's own injected SDK tag can only 404 from a file:// render - it is stripped.
+  assert.ok(!prepared.includes("/sdk.js"));
+  assert.ok(prepared.includes('data-lang="zh"'));
+
+  // Documents without a <head> still get a base the parser accepts.
+  const noHead = prepareSnapshotDocument("<html><body>x</body></html>", "file:///tmp/a/");
+  assert.ok(noHead.includes('<head><base href="file:///tmp/a/"></head>'));
+  const bare = prepareSnapshotDocument("<p>fragment</p>", "file:///tmp/a/");
+  assert.ok(bare.startsWith('<base href="file:///tmp/a/">'));
+});
+
+test("restoreAttributesExpression embeds the snapshot attributes as a safe literal", () => {
+  const expression = restoreAttributesExpression({ "data-lang": "zh", class: 'quoted"value' });
+  assert.match(expression, /document\.documentElement/);
+  assert.match(expression, /setAttribute/);
+  assert.match(expression, /removeAttribute/);
+  // The attributes arrive as a JSON literal: quotes are escaped, never interpolated raw.
+  assert.ok(expression.includes(JSON.stringify({ "data-lang": "zh", class: 'quoted"value' })));
+  assert.ok(!expression.includes("[object"));
+});
+
 test("screenshot --out refuses to overwrite the input HTML file", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "lavish-screenshot-guard-"));
   try {
@@ -443,6 +491,69 @@ test(
       // 61 nodes at ~110px/rank: a rendered diagram clears 4000px easily, while the unrendered
       // source text would measure only a few hundred px.
       assert.ok(height >= 4000, `expected the rendered diagram height, got ${height}`);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "snapshot capture re-applies live root attributes the artifact's init script resets (WYSIWYG)",
+  { skip: !runBrowserE2e, timeout: 120_000 },
+  async () => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), "lavish-screenshot-wysiwyg-"));
+    try {
+      // The field pattern behind the bug report: a localStorage-backed language toggle that
+      // applies data-lang to the document root, with CSS showing one language band. The
+      // artifact's init script runs again in the fresh capture profile, finds EMPTY storage,
+      // and resets data-lang to "en" - so a snapshot render without the root-attribute restore
+      // shows the default language even though the reviewer had switched to Chinese.
+      const artifact = path.join(temp, "skills-map.html");
+      await writeFile(
+        artifact,
+        `<!doctype html><html data-lang="en"><head><meta charset="utf-8"><style>` +
+          `html[data-lang="en"] .zh { display: none; } html[data-lang="zh"] .en { display: none; }` +
+          `.en-band { height: 500px; background: #00f; } .zh-band { height: 2000px; background: #f00; }` +
+          `</style></head><body style="margin: 0">` +
+          `<div class="en en-band">Hello</div><div class="zh zh-band">你好</div>` +
+          `<script>` +
+          `var lang = "en";` +
+          `try { lang = localStorage.getItem("amap-lang") || "en"; } catch (error) {}` +
+          `document.documentElement.setAttribute("data-lang", lang);` +
+          `function toggle(lang) {` +
+          `  try { localStorage.setItem("amap-lang", lang); } catch (error) {}` +
+          `  document.documentElement.setAttribute("data-lang", lang);` +
+          `}` +
+          `</script></body></html>`,
+      );
+
+      // What the editor's SDK serializes after the reviewer switched to 中文: the same document,
+      // but the root carries the live data-lang="zh" (localStorage itself stays in the sandboxed
+      // editor session and cannot ride along).
+      const liveHtml = await readFile(artifact, "utf8");
+      const toggledLiveHtml = liveHtml.replace('data-lang="en"', 'data-lang="zh"');
+      const baseHref = pathToFileURL(`${temp}${path.sep}`).href;
+      const snapshotFile = path.join(temp, "snapshot.html");
+      await writeFile(snapshotFile, prepareSnapshotDocument(toggledLiveHtml, baseHref), "utf8");
+
+      // Without the restore the init script's clobber wins: the capture shows the DEFAULT
+      // language (the pre-fix behavior the captain hit).
+      const withoutRestore = await captureFullPageScreenshot(pathToFileURL(snapshotFile).href, { width: 900 });
+      assert.ok(
+        withoutRestore.height < 1000,
+        `without restore the init script resets to the short EN band, got ${withoutRestore.height}`,
+      );
+
+      // The editor export passes the live root attributes: the capture must show 中文.
+      const withRestore = await captureFullPageScreenshot(pathToFileURL(snapshotFile).href, {
+        width: 900,
+        restoreAttributes: { "data-lang": "zh" },
+      });
+      assert.ok(
+        withRestore.height >= 2000,
+        `with restore the capture must render the tall ZH band, got ${withRestore.height}`,
+      );
+      assert.notDeepEqual(withRestore.png, withoutRestore.png);
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
