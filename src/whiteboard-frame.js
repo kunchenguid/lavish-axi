@@ -480,17 +480,19 @@ async function convertSource(source) {
     return elements;
   };
   const elements = restoreMermaidLabelLineBreaks(
-    applyCleanStyle(
-      await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-        convert: materialize,
-        loadFonts: async (fallbackElements) => {
-          await loadSceneFonts(fallbackElements, files);
-        },
-      }),
-    ),
+    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+      convert: materialize,
+      loadFonts: async (fallbackElements) => {
+        await loadSceneFonts(fallbackElements, files);
+      },
+    }),
     { measure: measureSceneText },
   );
-  return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
+  return {
+    elements: applyCleanStyle(elements),
+    files: files || {},
+    imageFallback: sceneIsImageFallback(elements),
+  };
 }
 
 // LOCAL PATCH: render converted diagrams in a clean, drafting style rather than
