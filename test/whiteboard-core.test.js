@@ -393,6 +393,79 @@ test("restoreMermaidLabelLineBreaks recenters bound text when container growth s
   assert.equal(text.y, container.y + (container.height - text.height) / 2);
 });
 
+test("restoreMermaidLabelLineBreaks leaves labelled-arrow geometry and path-midpoint labels alone", () => {
+  const shortArrow = {
+    id: "edge-short",
+    type: "arrow",
+    x: 100,
+    y: 50,
+    width: 80,
+    height: 8,
+    points: [
+      [0, 0],
+      [80, 8],
+    ],
+    startBinding: { elementId: "A", focus: 0, gap: 1 },
+    endBinding: { elementId: "B", focus: 0, gap: 1 },
+  };
+  const shortLabel = {
+    id: "edge-short-label",
+    type: "text",
+    containerId: "edge-short",
+    x: 118,
+    y: 36,
+    width: 44,
+    height: 20,
+    textAlign: "center",
+    verticalAlign: "middle",
+    text: "yes",
+    originalText: "yes",
+  };
+  const elbowArrow = {
+    id: "edge-elbow",
+    type: "arrow",
+    x: 200,
+    y: 80,
+    width: 120,
+    height: 60,
+    points: [
+      [0, 0],
+      [60, 60],
+      [120, 0],
+    ],
+  };
+  const elbowLabel = {
+    id: "edge-elbow-label",
+    type: "text",
+    containerId: "edge-elbow",
+    x: 240,
+    y: 70,
+    width: 40,
+    height: 20,
+    textAlign: "center",
+    verticalAlign: "middle",
+    text: "maybe",
+    originalText: "maybe",
+  };
+  const [outShort, outShortLabel, outElbow, outElbowLabel] = restoreMermaidLabelLineBreaks(
+    [shortArrow, shortLabel, elbowArrow, elbowLabel],
+    { measure: (element) => ({ width: element.width, height: element.height }) },
+  );
+  assert.equal(outShort.x, shortArrow.x);
+  assert.equal(outShort.y, shortArrow.y);
+  assert.equal(outShort.width, shortArrow.width);
+  assert.equal(outShort.height, shortArrow.height);
+  assert.deepEqual(outShort.points, shortArrow.points);
+  assert.equal(outShortLabel.x, shortLabel.x);
+  assert.equal(outShortLabel.y, shortLabel.y);
+  assert.equal(outElbow.x, elbowArrow.x);
+  assert.equal(outElbow.y, elbowArrow.y);
+  assert.deepEqual(outElbow.points, elbowArrow.points);
+  assert.equal(outElbowLabel.x, elbowLabel.x);
+  assert.equal(outElbowLabel.y, elbowLabel.y);
+  assert.notEqual(elbowLabel.y, elbowArrow.y + (elbowArrow.height - elbowLabel.height) / 2);
+});
+
 test("restoreMermaidLabelLineBreaks leaves single-line labels and non-label fields alone", () => {
   const box = rect("A", { width: 100, height: 40, customData: { keep: true } });
   const label = boundLabel("t1", "A", "Ready?");

@@ -39,6 +39,11 @@ const LABEL_CHAR_WIDTH_RATIO = 0.62;
 const LABEL_LINE_HEIGHT = 1.25;
 const BOUND_TEXT_PADDING_X = 16;
 const BOUND_TEXT_PADDING_Y = 16;
+const NODE_LABEL_CONTAINER_TYPES = new Set(["rectangle", "ellipse", "diamond"]);
+
+function isNodeLabelContainer(element) {
+  return NODE_LABEL_CONTAINER_TYPES.has(element?.type);
+}
 
 export function normalizeMermaidLabelLineBreaks(text) {
   if (typeof text !== "string" || text.length === 0) return text;
@@ -98,7 +103,7 @@ function fitContainersToBoundText(elements) {
   for (const element of elements) {
     if (!element || element.type !== "text" || element.isDeleted || !element.containerId) continue;
     const container = byId.get(element.containerId);
-    if (!container) continue;
+    if (!container || !isNodeLabelContainer(container)) continue;
     const fitted = expandBoxToFit(
       container,
       (Number(element.width) || 0) + BOUND_TEXT_PADDING_X,
@@ -113,7 +118,7 @@ function fitContainersToBoundText(elements) {
     if (!element || element.type !== "text" || element.isDeleted || !element.containerId) continue;
     const current = byId.get(element.id) ?? element;
     const container = byId.get(current.containerId);
-    if (!container) continue;
+    if (!container || !isNodeLabelContainer(container)) continue;
     const positioned = positionBoundTextInContainer(container, current);
     if (positioned !== current) byId.set(current.id, positioned);
   }
@@ -152,7 +157,7 @@ function withNormalizedLabelText(element) {
   if (
     typeof labelText === "string" &&
     labelText.includes("\n") &&
-    (next.type === "rectangle" || next.type === "ellipse" || next.type === "diamond")
+    isNodeLabelContainer(next)
   ) {
     const fontSize = next.label?.fontSize || next.fontSize;
     const estimated = estimateMultilineLabelBox(labelText, fontSize);
