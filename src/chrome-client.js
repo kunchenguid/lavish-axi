@@ -105,6 +105,10 @@ const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
+const reviewDock = /** @type {HTMLDivElement} */ (document.getElementById("reviewDock"));
+const barToggle = /** @type {HTMLButtonElement} */ (document.getElementById("barToggle"));
+const barControls = /** @type {HTMLDivElement} */ (document.getElementById("barControls"));
+const barWarningCount = /** @type {HTMLSpanElement} */ (document.getElementById("barWarningCount"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
@@ -156,6 +160,7 @@ const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-arti
 
 const queued = loadQueuedPrompts();
 let annotation = true;
+let barExpanded = false;
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
@@ -964,6 +969,9 @@ function renderWarnings() {
   warningsWrap.hidden = count === 0 || ended;
   if (warningsWrap.hidden && warningsDrawerOpen) setWarningsDrawerOpen(false);
   warningsCount.textContent = String(count);
+  barWarningCount.hidden = count === 0 || ended;
+  barWarningCount.textContent = String(count);
+  updateBarToggleLabel();
   warningsButton.setAttribute(
     "aria-label",
     count === 1 ? "1 unresolved layout issue" : count + " unresolved layout issues",
@@ -2115,10 +2123,37 @@ function restorePanelCollapsed() {
   setPanelCollapsed(collapsed);
 }
 
+// LOCAL ADDITION: the review chrome no longer owns a full-width header. Keep its bottom-right
+// dock collapsed by default so it cannot obscure the artifact being reviewed; warnings remain
+// visible as a badge on the dock entrypoint.
+function setBarExpanded(expanded) {
+  barExpanded = Boolean(expanded) && !ended;
+  reviewDock.classList.toggle("is-expanded", barExpanded);
+  barControls.hidden = !barExpanded;
+  barToggle.setAttribute("aria-expanded", String(barExpanded));
+  updateBarToggleLabel();
+  if (!barExpanded) {
+    closeWarningsDrawer();
+    closeMenus();
+  }
+}
+
+function updateBarToggleLabel() {
+  const count = activeWarnings().length;
+  const action = barExpanded ? "Hide review controls" : "Show review controls";
+  const warningSummary =
+    count === 0 ? "" : count === 1 ? " · 1 unresolved layout issue" : ` · ${count} unresolved layout issues`;
+  const label = action + warningSummary;
+  barToggle.setAttribute("aria-label", label);
+  barToggle.title = label;
+}
+
 restorePanelCollapsed();
+setBarExpanded(false);
 
 sendButton.onclick = () => sendQueued(false);
 sendAndEndButton.onclick = () => sendQueued(true);
+barToggle.onclick = () => setBarExpanded(!barExpanded);
 moreButton.onclick = () => {
   closeWarningsDrawer();
   toggleMenu(moreButton, moreMenu);
@@ -2159,6 +2194,7 @@ document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
   if (warningsDrawerOpen && !warningsWrap.contains(target)) closeWarningsDrawer();
+  if (barExpanded && !reviewDock.contains(target)) setBarExpanded(false);
 });
 // A non-modal popover closes when focus leaves it, so keyboard users are never stranded inside a
 // panel they cannot see the end of.
@@ -2175,6 +2211,10 @@ document.addEventListener("keydown", (event) => {
       closeShareDialog();
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
+    } else if (!moreMenu.hidden) {
+      closeMenus();
+    } else if (barExpanded) {
+      setBarExpanded(false);
     } else {
       closeMenus();
     }

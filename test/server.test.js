@@ -463,7 +463,7 @@ test("annotation card shadow styles use Lavish design-system variables", () => {
   assert.match(js, /:focus-visible\{outline:2px solid var\(--accent\);outline-offset:2px/);
 });
 
-test("chrome top bar uses an Annotate switch instead of a labeled toggle button", () => {
+test("review dock uses an Annotate switch instead of a labeled toggle button", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /class="annotate-switch" id="annotation"[^>]*aria-pressed="true"/);
@@ -528,14 +528,28 @@ test("chrome keeps the editor usable on narrow screens", async () => {
   assert.match(css, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
 });
 
-test("chrome top bar follows the design mock wordmark and overflow menu treatment", async () => {
+test("chrome uses a collapsed review dock without a branded header", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const js = await chromeClientSource();
   const css = await chromeCssSource();
 
-  assert.match(html, /class="brand-mark">Lavish/);
-  assert.match(html, /class="brand-support">Editor/);
-  assert.match(css, /font-family:var\(--font-serif\)/);
-  assert.match(css, /letter-spacing:\.18em/);
+  assert.match(html, /class="bar"[^>]*role="toolbar" aria-label="Review controls"/);
+  assert.doesNotMatch(html, /class="brand(?:-mark|-support)?"/);
+  assert.doesNotMatch(html, />Lavish<\/span>/);
+  assert.match(html, /class="bar-toggle" id="barToggle"[^>]*aria-expanded="false"/);
+  assert.match(html, /class="bar-warning-count" id="barWarningCount" hidden>0<\/span>/);
+  assert.match(html, /class="bar-controls" id="barControls" hidden/);
+  assert.ok(
+    html.indexOf('id="annotation"') < html.indexOf('id="barControls"'),
+    "the annotation-mode switch stays visible while the low-frequency controls are collapsed",
+  );
+  assert.match(css, /--bar-h:0px/);
+  assert.match(css, /\.bar\{[^}]*position:fixed;[^}]*right:8px;bottom:8px;[^}]*width:max-content/);
+  assert.match(css, /\.bar-controls\{[^}]*display:flex/);
+  assert.match(css, /\.bar-controls\[hidden\]\{display:none/);
+  assert.match(css, /\.layout\{height:calc\(100vh - var\(--bar-h\)\)/);
+  assert.match(js, /function setBarExpanded\(expanded\)/);
+  assert.match(js, /barToggle\.onclick = \(\) => setBarExpanded\(!barExpanded\)/);
   assert.match(html, /class="more-button" id="moreButton"/);
   assert.match(html, /class="menu more-menu" id="moreMenu" hidden/);
   assert.doesNotMatch(html, /class="file-input"/);
@@ -595,7 +609,7 @@ test("chrome can copy the full file path from the overflow menu", async () => {
   assert.match(js, /copyHintText\.textContent = "Copy"/);
 });
 
-test("overflow menu offers editing actions while end session stays visible in the top bar", async () => {
+test("overflow menu offers editing actions while end session stays visible in the expanded dock", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
   const css = await chromeCssSource();
@@ -691,12 +705,12 @@ test("clipboard copy falls back when navigator clipboard rejects", async () => {
   assert.doesNotMatch(js, /navigator\.clipboard\.writeText\(text\)\.catch/);
 });
 
-test("chrome centers the top bar row while bottom-aligning the identity cluster", async () => {
+test("expanded review dock keeps its controls centered inside the compact overlay", async () => {
   const css = await chromeCssSource();
 
-  assert.match(css, /\.bar\{[^}]*align-items:center/);
-  assert.match(css, /\.brand\{[^}]*height:22px/);
-  assert.match(css, /\.brand\{[^}]*align-items:flex-end/);
+  assert.match(css, /\.bar-controls\{[^}]*align-items:center/);
+  assert.match(css, /\.bar\{[^}]*max-width:calc\(100vw - 16px\);min-height:42px/);
+  assert.match(css, /\.bar\{[^}]*background:rgba\(255,255,255,.94\)/);
 });
 
 test("chrome chat bubbles follow the preview mock shades", async () => {

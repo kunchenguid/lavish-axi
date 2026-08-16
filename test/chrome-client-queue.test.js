@@ -807,6 +807,28 @@ test("the warning button hides at zero and shows a deduplicated unresolved count
   assert.equal(chrome.warningRows().length, 2);
 });
 
+test("review dock starts collapsed, expands on demand, and mirrors warning count on its entrypoint", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.equal(chrome.element("barControls").hidden, true);
+  assert.equal(chrome.element("barToggle")["aria-expanded"], "false");
+
+  chrome.element("barToggle").click();
+  assert.equal(chrome.element("barControls").hidden, false);
+  assert.equal(chrome.element("barToggle")["aria-expanded"], "true");
+  assert.equal(chrome.element("reviewDock").classList.contains("is-expanded"), true);
+
+  chrome.element("barToggle").click();
+  chrome.eventSource().listeners.get("layout-warnings")({
+    data: JSON.stringify({ warnings: [warningPayload(), warningPayload({ id: "w2", selector: "p" })] }),
+  });
+
+  assert.equal(chrome.element("barControls").hidden, true);
+  assert.equal(chrome.element("barWarningCount").hidden, false);
+  assert.equal(chrome.element("barWarningCount").textContent, "2");
+  assert.equal(chrome.element("barToggle")["aria-label"], "Show review controls · 2 unresolved layout issues");
+});
+
 test("resolved warnings drop out of the active count and hide the button", async () => {
   const chrome = await createChromeHarness();
   const source = chrome.eventSource().listeners.get("layout-warnings");
@@ -1688,7 +1710,7 @@ test("layout gate stays skipped when the session disables it", async () => {
   assert.equal(chrome.element("warningsWrap").hidden, false, "the inbox still surfaces the finding");
 });
 
-test("a zero-warning review keeps the top bar unchanged", async () => {
+test("a zero-warning review keeps the dock badge hidden", async () => {
   const { posts, fetchImpl } = diagnosticsHarness([[]]);
   const chrome = await createChromeHarness({ fetchImpl });
 

@@ -231,7 +231,7 @@ test(
           "}); })()",
       );
       assert.equal(narrow.docOverflow, 0, "the narrow layout does not scroll sideways");
-      assert.equal(narrow.barOverflow, 0, "the top bar still fits at phone width");
+      assert.equal(narrow.barOverflow, 0, "the review dock still fits at phone width");
       assert.ok(narrow.left >= 0 && narrow.right <= narrow.innerWidth, "the drawer fits the narrow viewport");
       assert.equal(narrow.listOverflow, 0, "the list itself never overflows horizontally");
       run("chrome-devtools-axi", ["eval", '() => document.getElementById("warningsButton").click()'], chromeEnv);
@@ -389,7 +389,7 @@ test(
       );
 
       // ---------------------------------------------------------------------
-      // A review with zero warnings keeps the top bar unchanged and the poll silent.
+      // A review with zero warnings keeps the dock badge hidden and the poll silent.
       // ---------------------------------------------------------------------
       const clean = path.join(temp, "clean.html");
       await copyFile(path.join(fixtures, "real-plan-clean.html"), clean);

@@ -1350,7 +1350,7 @@ body.layout-gate-active iframe#artifact {
 }
 
 /* ============================================================================
- * LOCAL PATCH: light chrome, a shorter top bar, and a collapsible side panel.
+ * LOCAL PATCH: light chrome, an overlaid review toolbar, and a collapsible side panel.
  *
  * Appended as one block at the end rather than edited into the rules above, so
  * an upstream rebase touching those rules does not conflict with this.
@@ -1385,21 +1385,83 @@ body.layout-gate-active iframe#artifact {
   --danger: #c0392b;
   --shadow-tooltip: 0 12px 32px rgba(15, 17, 21, 0.13);
   --shadow-floating: 0 18px 56px rgba(15, 17, 21, 0.15);
-  /* Upstream 56px. The bar holds one 22px brand lockup and a few controls; the
-   * extra height came out of the artifact, which is the thing being reviewed. */
-  --bar-h: 42px;
+  /* The review toolbar overlays the artifact instead of reserving a second header row. */
+  --bar-h: 0px;
 }
 body.lavish {
   color-scheme: light;
 }
-.brand {
-  height: 18px;
+.bar {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  z-index: 55;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  min-height: 42px;
+  gap: 4px;
+  padding: 4px;
+  border: var(--hairline-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow-tooltip);
+  backdrop-filter: blur(12px);
 }
-.brand-mark {
-  font-size: 18px;
+.bar-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
-.brand-support {
-  font-size: 9px;
+.bar-controls[hidden] {
+  display: none;
+}
+.bar-toggle {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.bar-toggle:hover,
+.bar-toggle[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  background: #eceff4;
+  color: var(--accent);
+}
+.bar-warning-count {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--bg-bar);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 10px;
+  font-weight: var(--w-bold);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.bar-warning-count[hidden] {
+  display: none;
+}
+.warnings-drawer,
+.more-menu {
+  top: auto;
+  bottom: 42px;
 }
 
 /* Rules that bypass the semantic layer and name palette entries directly. */
@@ -1468,6 +1530,18 @@ body.panel-collapsed .panel {
 body.panel-collapsed .panel-toggle {
   background: #eceff4;
   color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .bar {
+    left: auto;
+    gap: 6px;
+    padding: 4px;
+  }
+  .warnings-drawer {
+    top: auto;
+    bottom: 56px;
+  }
 }
 
 /* Session termination is the one action that must remain unmistakable even when the overflow
