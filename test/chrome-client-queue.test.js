@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
 
@@ -237,6 +237,7 @@ async function createChromeHarness({
   };
 
   const context = {
+    AbortController,
     clearTimeout: fakeClearTimeout,
     console,
     fetch: harnessFetch,
@@ -716,6 +717,318 @@ test("chrome only mediates uploads carrying the current artifact load token", as
   assert.equal(fetches, 1);
   const result = chrome.postedToFrame.find((m) => m.type === "lavish:attachmentResult" && m.localId === "with-token");
   assert.equal(result.ok, true);
+});
+
+function pastedImage(name = "clipboard.png") {
+  return {
+    name,
+    type: "image/png",
+    size: 16,
+    async arrayBuffer() {
+      return new ArrayBuffer(16);
+    },
+  };
+}
+
+function clipboardEvent(file, text = "") {
+  return {
+    clipboardData: { files: [file], getData: (type) => (type === "text/plain" ? text : "") },
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+}
+
+test("attachment rejection copy applies to annotations and Conversation messages", async () => {
+  const source = await readFile(sourceUrl, "utf8");
+  assert.match(source, /per-prompt limit/);
+  assert.match(source, /images on one prompt/);
+  assert.doesNotMatch(source, /per-annotation limit|images on one annotation/);
+});
+
+test("Conversation accepts an image-only paste and sends its attachment ref", async () => {
+  const id = "b".repeat(64) + ".png";
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async (url) => {
+      assert.match(String(url), /\/api\/abc\/attachments$/);
+      return { ok: true, json: async () => ({ attachment: { id } }) };
+    },
+  });
+  const event = clipboardEvent(pastedImage());
+
+  chrome.element("chatInput").dispatch("paste", event);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(event.defaultPrevented, true);
+  assert.match(chrome.element("chatAttachments").innerHTML, /clipboard\.png/);
+  chrome.element("send").click();
+  assert.deepEqual(chrome.queued()[0].attachments, [{ id, name: "clipboard.png" }]);
+  assert.equal(chrome.queued()[0].prompt, "");
+});
+
+test("Conversation preserves text from a mixed text and image paste", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id: "c".repeat(64) + ".png" } }) }),
+  });
+  const event = clipboardEvent(pastedImage("mixed.png"), "Keep this caption");
+
+  chrome.element("chatInput").dispatch("paste", event);
+  await flushPromises();
+
+  assert.equal(event.defaultPrevented, false, "browser must still insert clipboard text");
+  assert.match(chrome.element("chatAttachments").innerHTML, /mixed\.png/);
+});
+
+test("Conversation blocks send while an image upload is pending", async () => {
+  /** @type {(value: any) => void} */
+  let resolveUpload = () => {};
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: () => new Promise((resolve) => (resolveUpload = resolve)),
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("waiting.png")));
+  await flushPromises();
+
+  chrome.element("send").click();
+  assert.deepEqual(chrome.queued(), []);
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /finish uploading/i);
+
+  resolveUpload({ ok: true, json: async () => ({ attachment: { id: "d".repeat(64) + ".png" } }) });
+  await flushPromises();
+});
+
+test("Conversation file picker uploads selected images", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id: "f".repeat(64) + ".png" } }) }),
+  });
+  chrome.element("chatAttachInput").files = [pastedImage("picked.png")];
+
+  chrome.element("chatAttachInput").dispatch("change");
+  await flushPromises();
+
+  assert.match(chrome.element("chatAttachments").innerHTML, /picked\.png/);
+  assert.equal(chrome.element("chatAttachInput").value, "");
+});
+
+test("Conversation picker and paste explain unsupported file types", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+  });
+  chrome.element("chatAttachInput").files = [{ name: "picked.gif", type: "image/gif", size: 20 }];
+  chrome.element("chatAttachInput").dispatch("change");
+  chrome
+    .element("chatInput")
+    .dispatch("paste", clipboardEvent({ name: "pasted.pdf", type: "application/pdf", size: 20 }));
+
+  const chips = chrome.element("chatAttachments").innerHTML;
+  assert.match(chips, /picked\.gif/);
+  assert.match(chips, /pasted\.pdf/);
+  assert.match(chips, /Unsupported file type\. Use PNG, JPEG, or WebP\./);
+  assert.match(chips, /data-error="UNSUPPORTED_TYPE"/);
+});
+
+test("Conversation removal cancels an upload before its bytes reach the server", async () => {
+  let fetchCalls = 0;
+  /** @type {(value: ArrayBuffer) => void} */
+  let resolveRead = () => {};
+  const file = pastedImage("removed.png");
+  file.arrayBuffer = () => new Promise((resolve) => (resolveRead = resolve));
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return { ok: true, json: async () => ({ attachment: { id: "7".repeat(64) + ".png" } }) };
+    },
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(file));
+  await flushPromises();
+
+  chrome.element("chatAttachments").dispatch("click", {
+    target: {
+      closest(selector) {
+        return selector === "[data-chat-attachment-remove]" ? { dataset: { chatAttachmentRemove: "0" } } : null;
+      },
+    },
+  });
+  resolveRead(new ArrayBuffer(16));
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(chrome.element("chatAttachments").innerHTML, "");
+});
+
+test("Conversation removal aborts an upload already in flight", async () => {
+  /** @type {AbortSignal | undefined} */
+  let uploadSignal;
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: (_url, init) => {
+      uploadSignal = init.signal;
+      return new Promise(() => {});
+    },
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("private.png")));
+  await flushPromises();
+  await flushPromises();
+  assert.ok(uploadSignal);
+
+  chrome.element("chatAttachments").dispatch("click", {
+    target: {
+      closest(selector) {
+        return selector === "[data-chat-attachment-remove]" ? { dataset: { chatAttachmentRemove: "0" } } : null;
+      },
+    },
+  });
+
+  assert.equal(uploadSignal.aborted, true);
+});
+
+test("Conversation retries a failed upload and then permits sending", async () => {
+  let attempts = 0;
+  const id = "a".repeat(64) + ".png";
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) return { ok: false, json: async () => ({ error: "storage full" }) };
+      return { ok: true, json: async () => ({ attachment: { id } }) };
+    },
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("retry.png")));
+  await flushPromises();
+  await flushPromises();
+  assert.match(chrome.element("chatAttachments").innerHTML, /storage full/);
+  assert.match(chrome.element("chatAttachments").innerHTML, /aria-label="Retry retry\.png"/);
+  assert.match(chrome.element("chatAttachments").innerHTML, /aria-label="Remove retry\.png"/);
+  assert.match(chrome.element("chatAttachments").innerHTML, /aria-live="polite"/);
+
+  chrome.element("send").click();
+  assert.deepEqual(chrome.queued(), []);
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /retry or remove/i);
+
+  chrome.element("chatAttachments").dispatch("click", {
+    target: {
+      closest(selector) {
+        return selector === "[data-chat-attachment-retry]" ? { dataset: { chatAttachmentRetry: "0" } } : null;
+      },
+    },
+  });
+  await flushPromises();
+  await flushPromises();
+  chrome.element("send").click();
+  assert.equal(attempts, 2);
+  assert.deepEqual(chrome.queued()[0].attachments, [{ id, name: "retry.png" }]);
+});
+
+test("Conversation enforces its image count before reading extra files", async () => {
+  let reads = 0;
+  const extra = pastedImage("extra.png");
+  extra.arrayBuffer = async () => {
+    reads += 1;
+    return new ArrayBuffer(16);
+  };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 1 },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id: "9".repeat(64) + ".png" } }) }),
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("first.png")));
+  await flushPromises();
+
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(extra));
+
+  assert.equal(reads, 0);
+  assert.doesNotMatch(chrome.element("chatAttachments").innerHTML, /extra\.png/);
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 images/i);
+});
+
+test("Conversation count notice survives upload completion until capacity changes", async () => {
+  /** @type {(value: any) => void} */
+  let resolveUpload = () => {};
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 1 },
+    fetchImpl: () => new Promise((resolve) => (resolveUpload = resolve)),
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("first.png")));
+  await flushPromises();
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("extra.png")));
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 images/i);
+
+  resolveUpload({ ok: true, json: async () => ({ attachment: { id: "5".repeat(64) + ".png" } }) });
+  await flushPromises();
+  await flushPromises();
+
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 images/i);
+});
+
+test("unsupported chips do not consume the Conversation image count", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 2 },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id: "6".repeat(64) + ".png" } }) }),
+  });
+  chrome.element("chatComposer").dispatch("drop", {
+    dataTransfer: { files: [{ name: "notes.pdf", type: "application/pdf", size: 20 }], types: ["Files"] },
+    preventDefault() {},
+  });
+
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("first.png")));
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("second.png")));
+  await flushPromises();
+
+  assert.match(chrome.element("chatAttachments").innerHTML, /first\.png/);
+  assert.match(chrome.element("chatAttachments").innerHTML, /second\.png/);
+});
+
+test("Conversation labels an image-only queued prompt as an image message", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id: "8".repeat(64) + ".png" } }) }),
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("only.png")));
+  await flushPromises();
+  await flushPromises();
+
+  chrome.element("send").click();
+
+  assert.match(chrome.element("annotationPills").innerHTML, /Image message/);
+});
+
+test("Conversation drop partial-accepts images and lets the rejected chip be removed", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id: "e".repeat(64) + ".png" } }) }),
+  });
+  const event = {
+    dataTransfer: {
+      files: [pastedImage("accepted.png"), { name: "notes.pdf", type: "application/pdf", size: 20 }],
+      types: ["Files"],
+    },
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+
+  chrome.element("chatComposer").dispatch("drop", event);
+  await flushPromises();
+  assert.equal(event.defaultPrevented, true);
+  assert.match(chrome.element("chatAttachments").innerHTML, /accepted\.png/);
+  assert.match(chrome.element("chatAttachments").innerHTML, /notes\.pdf/);
+  assert.match(chrome.element("chatAttachments").innerHTML, /UNSUPPORTED_TYPE/);
+
+  chrome.element("chatAttachments").dispatch("click", {
+    target: {
+      closest(selector) {
+        return selector === "[data-chat-attachment-remove]" ? { dataset: { chatAttachmentRemove: "1" } } : null;
+      },
+    },
+  });
+  assert.doesNotMatch(chrome.element("chatAttachments").innerHTML, /notes\.pdf/);
 });
 
 function warningPayload(overrides = {}) {

@@ -230,6 +230,14 @@ test("the SDK bundle wires the drop handler to partial-accept (W4-a)", () => {
   assert.match(sdk, /attachments\.rejectUnsupportedBatch\(unsupported\)/);
 });
 
+test("mixed clipboard text stays available to the annotation textarea", () => {
+  assert.match(sdk, /event\.clipboardData\?\.getData\("text\/plain"\)/);
+  assert.match(
+    sdk,
+    /if \(images\.length && attachments\.addFiles\(images\) && !clipboardText\) event\.preventDefault\(\)/,
+  );
+});
+
 test("attachmentSizeError rejects an over-limit file before it is read (round7-a)", () => {
   const cap = 10 * 1024 * 1024; // 10 MiB
   // Within the limit (and the boundary) is accepted.

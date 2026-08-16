@@ -2243,10 +2243,10 @@ export function createArtifactSdk(
       attachInput.value = "";
     });
     textarea.addEventListener("paste", (event) => {
-      // Images only: a paste carrying no image must still fall through to the
-      // textarea's normal text paste, so unsupported entries raise no chip here.
+      // Preserve normal text paste when clipboard carries text alongside images.
+      const clipboardText = event.clipboardData?.getData("text/plain") || "";
       const { images } = partitionDroppedFiles(event.clipboardData, ATTACHMENT_ACCEPTED_MIME);
-      if (images.length && attachments.addFiles(images)) event.preventDefault();
+      if (images.length && attachments.addFiles(images) && !clipboardText) event.preventDefault();
     });
     card.addEventListener("dragover", (event) => {
       // Accept ANY file drag so the drop lands on the card (and is preventable)

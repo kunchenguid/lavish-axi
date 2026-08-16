@@ -121,7 +121,7 @@ const ARTIFACT_HTML = `<!doctype html>
 `;
 
 test(
-  "an annotation image upload round-trips through the chrome token gate in a real browser",
+  "annotation and Conversation image uploads round-trip through the real browser chrome",
   { skip: !runBrowserE2e, timeout: 300_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-attach-e2e-"));
@@ -218,6 +218,43 @@ test(
       assert.match(poll, /status:\s*"?feedback/, poll);
       assert.match(poll, new RegExp(PNG_ID), `poll must deliver the attachment id:\n${poll}`);
       assert.match(poll, /attachments/, poll);
+      const replied = await fetch(`http://127.0.0.1:${port}/api/${key}/agent-reply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "Annotation received." }),
+      });
+      assert.equal(replied.status, 200);
+      wait(500);
+
+      // Exercise the top-level Conversation composer separately. Image-only paste
+      // must upload, queue, and reach poll without relying on annotation-card code.
+      evaluate(`(() => {
+        const bin = atob("${PNG_B64}");
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+        const dt = new DataTransfer();
+        dt.items.add(new File([bytes], "conversation.png", { type: "image/png" }));
+        document.getElementById("chatInput").dispatchEvent(
+          new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+        );
+      })()`);
+      const conversationDeadline = Date.now() + 60_000;
+      for (;;) {
+        const ready = evaluate('document.querySelectorAll(".chat-attachment-ready").length');
+        if (ready.includes("1")) break;
+        if (Date.now() > conversationDeadline) assert.fail(`Conversation image never became ready: ${ready}`);
+        wait(500);
+      }
+      evaluate('document.getElementById("send").click()');
+      const conversationPoll = run(
+        process.execPath,
+        ["bin/lavish-axi.js", "poll", artifact, "--timeout-ms", "20000"],
+        lavishEnv,
+        65_000,
+      );
+      assert.match(conversationPoll, /status:\s*"?feedback/, conversationPoll);
+      assert.match(conversationPoll, new RegExp(PNG_ID), conversationPoll);
+      assert.match(conversationPoll, /conversation\.png/, conversationPoll);
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       run("chrome-devtools-axi", ["stop"], chromeEnv);

@@ -12,6 +12,8 @@ const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
+const attachmentMaxCount = Number(sessionData.attachmentMaxCount) || 4;
+const CHAT_ATTACHMENT_MIME = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 // The chrome is the only path from the sandboxed (opaque-origin) artifact iframe to
 // the loopback server, so it is the sole place a same-origin confused-deputy can be
@@ -47,10 +49,10 @@ function describeAttachmentRejection(rejected, caps) {
   const reasons = new Set(rejected.map((ref) => ref && ref.reason));
   const parts = [];
   if (reasons.has("prompt-bytes-exceeded") && caps && caps.maxPromptBytes) {
-    parts.push("images exceed the " + formatByteLimit(caps.maxPromptBytes) + " per-annotation limit");
+    parts.push("images exceed the " + formatByteLimit(caps.maxPromptBytes) + " per-prompt limit");
   }
   if (reasons.has("too-many") && caps && caps.maxPerPrompt) {
-    parts.push("more than " + caps.maxPerPrompt + " images on one annotation");
+    parts.push("more than " + caps.maxPerPrompt + " images on one prompt");
   }
   if (reasons.has("too-many-in-request")) {
     parts.push("too many images queued at once");
@@ -74,7 +76,12 @@ const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifac
 const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
 const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
 const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"));
+const chatComposer = /** @type {HTMLDivElement} */ (document.getElementById("chatComposer"));
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
+const chatAttachments = /** @type {HTMLDivElement} */ (document.getElementById("chatAttachments"));
+const chatAttachButton = /** @type {HTMLButtonElement} */ (document.getElementById("chatAttach"));
+const chatAttachInput = /** @type {HTMLInputElement} */ (document.getElementById("chatAttachInput"));
+const chatAttachmentNotice = /** @type {HTMLSpanElement} */ (document.getElementById("chatAttachmentNotice"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
@@ -292,7 +299,10 @@ function render() {
       const showLocator = targetLabel && prompt.selector && targetLabel !== prompt.selector;
       return (
         '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
-        escapeHtml(prompt.prompt || (attachmentCount(prompt) ? "Image annotation" : "")) +
+        escapeHtml(
+          prompt.prompt ||
+            (attachmentCount(prompt) ? (prompt.tag === "message" ? "Image message" : "Image annotation") : ""),
+        ) +
         "</span>" +
         pillAttachmentsHtml(prompt) +
         '<button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
@@ -553,16 +563,210 @@ function requestSnapshot(action) {
   postToFrame({ type: "lavish:requestSnapshot" });
 }
 
+function createChatAttachmentsController() {
+  const items = [];
+  let nextId = 0;
+  let capRejected = false;
+
+  function currentImageCount() {
+    return items.filter((item) => item.file && CHAT_ATTACHMENT_MIME.has(item.file.type)).length;
+  }
+
+  function renderAttachments() {
+    chatAttachments.innerHTML = items
+      .map((item) => {
+        const status = item.status === "uploading" ? "Uploading…" : item.status === "error" ? item.error : "";
+        const preview = item.preview
+          ? '<img class="chat-attachment-thumb" src="' + escapeHtml(item.preview) + '" alt="">'
+          : "";
+        const retry =
+          item.status === "error" && item.file
+            ? '<button type="button" aria-label="Retry ' +
+              escapeHtml(item.name) +
+              '" data-chat-attachment-retry="' +
+              item.localId +
+              '">Retry</button>'
+            : "";
+        const errorData = item.errorCode ? ' data-error="' + escapeHtml(item.errorCode) + '"' : "";
+        return (
+          '<div class="chat-attachment-chip chat-attachment-' +
+          item.status +
+          '"' +
+          errorData +
+          ">" +
+          preview +
+          '<span class="chat-attachment-copy"><strong>' +
+          escapeHtml(item.name) +
+          "</strong>" +
+          (status ? '<span class="chat-attachment-status" aria-live="polite">' + escapeHtml(status) + "</span>" : "") +
+          "</span>" +
+          retry +
+          '<button type="button" aria-label="Remove ' +
+          escapeHtml(item.name) +
+          '" title="Remove ' +
+          escapeHtml(item.name) +
+          '" data-chat-attachment-remove="' +
+          item.localId +
+          '">×</button></div>'
+        );
+      })
+      .join("");
+  }
+
+  function clearNoticeWhenReady() {
+    if (currentImageCount() < attachmentMaxCount) capRejected = false;
+    if (capRejected) {
+      chatAttachmentNotice.textContent = "You can attach up to " + attachmentMaxCount + " images.";
+    } else if (!items.some((item) => item.status === "uploading" || item.status === "error")) {
+      chatAttachmentNotice.textContent = "";
+    }
+  }
+
+  async function startUpload(item) {
+    const abortController = new AbortController();
+    item.abortController = abortController;
+    item.status = "uploading";
+    item.error = "";
+    renderAttachments();
+    try {
+      const bytes = await item.file.arrayBuffer();
+      if (!items.includes(item)) return;
+      await uploadAttachment(
+        { localId: item.localId, bytes, mime: item.file.type },
+        (result) => {
+          if (!items.includes(item)) return;
+          if (result.ok && result.id) {
+            item.status = "ready";
+            item.id = result.id;
+          } else {
+            item.status = "error";
+            item.error = String(result.error || "Upload failed");
+          }
+          renderAttachments();
+          clearNoticeWhenReady();
+        },
+        abortController.signal,
+      );
+    } catch (error) {
+      if (!items.includes(item)) return;
+      item.status = "error";
+      item.error = error instanceof Error ? error.message : String(error);
+      renderAttachments();
+    }
+  }
+
+  function addFiles(files) {
+    let added = false;
+    let imageCount = currentImageCount();
+    for (const file of Array.from(files || [])) {
+      if (!CHAT_ATTACHMENT_MIME.has(String(file.type || ""))) continue;
+      if (imageCount >= attachmentMaxCount) {
+        capRejected = true;
+        chatAttachmentNotice.textContent = "You can attach up to " + attachmentMaxCount + " images.";
+        break;
+      }
+      const localId = String(nextId++);
+      const tooLarge = attachmentMaxBytes > 0 && Number(file.size) > attachmentMaxBytes;
+      const item = {
+        localId,
+        file,
+        name: String(file.name || "image"),
+        preview: URL.createObjectURL(file),
+        status: tooLarge ? "error" : "uploading",
+        error: tooLarge ? "Image is larger than the " + formatByteLimit(attachmentMaxBytes) + " limit" : "",
+        errorCode: "",
+        id: "",
+        abortController: /** @type {AbortController | null} */ (null),
+      };
+      items.push(item);
+      imageCount += 1;
+      added = true;
+      if (!tooLarge) startUpload(item);
+    }
+    renderAttachments();
+    return added;
+  }
+
+  function rejectUnsupported(files) {
+    for (const file of Array.from(files || [])) {
+      if (CHAT_ATTACHMENT_MIME.has(String(file.type || ""))) continue;
+      items.push({
+        localId: String(nextId++),
+        file: null,
+        name: String(file.name || "file"),
+        preview: "",
+        status: "error",
+        error: "Unsupported file type. Use PNG, JPEG, or WebP.",
+        errorCode: "UNSUPPORTED_TYPE",
+        id: "",
+        abortController: /** @type {AbortController | null} */ (null),
+      });
+    }
+    renderAttachments();
+  }
+
+  function remove(localId) {
+    const index = items.findIndex((item) => item.localId === localId);
+    if (index < 0) return;
+    const [item] = items.splice(index, 1);
+    item.abortController?.abort();
+    if (item.preview) URL.revokeObjectURL(item.preview);
+    renderAttachments();
+    clearNoticeWhenReady();
+  }
+
+  function reset() {
+    for (const item of items) {
+      item.abortController?.abort();
+      if (item.preview) URL.revokeObjectURL(item.preview);
+    }
+    items.length = 0;
+    capRejected = false;
+    chatAttachmentNotice.textContent = "";
+    renderAttachments();
+  }
+
+  return {
+    addFiles,
+    rejectUnsupported,
+    remove,
+    retry(localId) {
+      const item = items.find((candidate) => candidate.localId === localId);
+      if (item?.file) startUpload(item);
+    },
+    hasPending: () => items.some((item) => item.status === "uploading"),
+    hasErrors: () => items.some((item) => item.status === "error"),
+    collectReady: () =>
+      items.filter((item) => item.status === "ready").map((item) => ({ id: item.id, name: item.name })),
+    reset,
+  };
+}
+
+const chatAttachmentController = createChatAttachmentsController();
+
 function sendQueued(endAfter) {
   if (ended || agentPresence === "working") return;
   closeMenus();
 
+  if (chatAttachmentController.hasPending()) {
+    chatAttachmentNotice.textContent = "Waiting for an image to finish uploading…";
+    return;
+  }
+  if (chatAttachmentController.hasErrors()) {
+    chatAttachmentNotice.textContent = "An image couldn't be attached. Retry or remove it before sending.";
+    return;
+  }
+
   const text = chatInput.value.trim();
-  if (text) {
-    queued.push({ uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" });
+  const attachments = chatAttachmentController.collectReady();
+  if (text || attachments.length) {
+    const prompt = { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
+    if (attachments.length) prompt.attachments = attachments;
+    queued.push(prompt);
     persistQueuedPrompts();
-    addChat("user", text);
+    addChat("user", text || "Image message");
     chatInput.value = "";
+    chatAttachmentController.reset();
     render();
   }
   if (!queued.length) {
@@ -1942,7 +2146,7 @@ window.addEventListener("message", (event) => {
 // The sandboxed artifact iframe can't reach the loopback server (opaque origin),
 // so it hands captured image bytes here and the chrome performs the same-origin
 // upload, then reports the server-vetted id back to the card.
-async function uploadAttachment(message) {
+async function uploadAttachment(message, reportResult = postToFrame, signal) {
   const localId = String(message.localId || "");
   if (!localId) return;
   // Echoed verbatim on every result so the artifact can tell a reply to ITS upload
@@ -1962,7 +2166,7 @@ async function uploadAttachment(message) {
     }
   }
   if (!Number.isFinite(size) || size < 0) {
-    postToFrame({
+    reportResult({
       type: "lavish:attachmentResult",
       nonce,
       localId,
@@ -1976,7 +2180,7 @@ async function uploadAttachment(message) {
   // the chip would never leave "uploading". Catching it here guarantees the card
   // reaches its error+retry state. The server still enforces the cap authoritatively.
   if (attachmentMaxBytes > 0 && size > attachmentMaxBytes) {
-    postToFrame({
+    reportResult({
       type: "lavish:attachmentResult",
       nonce,
       localId,
@@ -1989,7 +2193,7 @@ async function uploadAttachment(message) {
   const now = Date.now();
   while (uploadTimestamps.length && now - uploadTimestamps[0] > UPLOAD_RATE_WINDOW_MS) uploadTimestamps.shift();
   if (uploadTimestamps.length >= UPLOAD_RATE_MAX) {
-    postToFrame({
+    reportResult({
       type: "lavish:attachmentResult",
       nonce,
       localId,
@@ -1999,7 +2203,7 @@ async function uploadAttachment(message) {
     return;
   }
   if (uploadedBytesTotal + size > UPLOAD_SESSION_BYTE_QUOTA) {
-    postToFrame({
+    reportResult({
       type: "lavish:attachmentResult",
       nonce,
       localId,
@@ -2012,7 +2216,7 @@ async function uploadAttachment(message) {
   // while the bound is full. The card keeps its retry affordance, and a settled
   // upload (below) frees a slot for the next.
   if (uploadsInFlight >= UPLOAD_MAX_IN_FLIGHT) {
-    postToFrame({
+    reportResult({
       type: "lavish:attachmentResult",
       nonce,
       localId,
@@ -2029,10 +2233,11 @@ async function uploadAttachment(message) {
       method: "POST",
       headers: { "content-type": String(message.mime || "application/octet-stream") },
       body: bytes,
+      signal,
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || "Upload failed");
-    postToFrame({
+    reportResult({
       type: "lavish:attachmentResult",
       nonce,
       localId,
@@ -2040,7 +2245,7 @@ async function uploadAttachment(message) {
       id: (data.attachment && data.attachment.id) || "",
     });
   } catch (error) {
-    postToFrame({
+    reportResult({
       type: "lavish:attachmentResult",
       nonce,
       localId,
@@ -2083,6 +2288,40 @@ moreButton.onclick = () => {
 warningsButton.onclick = toggleWarningsDrawer;
 warningsSelectAll.onchange = toggleSelectAllWarnings;
 warningsQueueButton.onclick = queueSelectedWarningFixes;
+chatAttachButton.onclick = () => chatAttachInput.click();
+chatAttachInput.addEventListener("change", () => {
+  chatAttachmentController.addFiles(chatAttachInput.files);
+  chatAttachmentController.rejectUnsupported(chatAttachInput.files);
+  chatAttachInput.value = "";
+});
+chatInput.addEventListener("paste", (event) => {
+  const clipboardText = event.clipboardData?.getData("text/plain") || "";
+  const files = Array.from(event.clipboardData?.files || []);
+  const added = chatAttachmentController.addFiles(files);
+  chatAttachmentController.rejectUnsupported(files);
+  if (added && !clipboardText) event.preventDefault();
+});
+chatComposer.addEventListener("dragover", (event) => {
+  if (Array.from(event.dataTransfer?.types || []).includes("Files")) {
+    event.preventDefault();
+    chatComposer.classList.add("is-dropping");
+  }
+});
+chatComposer.addEventListener("dragleave", () => chatComposer.classList.remove("is-dropping"));
+chatComposer.addEventListener("drop", (event) => {
+  event.preventDefault();
+  chatComposer.classList.remove("is-dropping");
+  const files = Array.from(event.dataTransfer?.files || []);
+  chatAttachmentController.addFiles(files);
+  chatAttachmentController.rejectUnsupported(files);
+});
+chatAttachments.addEventListener("click", (event) => {
+  const target = /** @type {HTMLElement | null} */ (event.target);
+  const remove = /** @type {HTMLElement | null} */ (target?.closest?.("[data-chat-attachment-remove]") || null);
+  if (remove) chatAttachmentController.remove(String(remove.dataset.chatAttachmentRemove || ""));
+  const retry = /** @type {HTMLElement | null} */ (target?.closest?.("[data-chat-attachment-retry]") || null);
+  if (retry) chatAttachmentController.retry(String(retry.dataset.chatAttachmentRetry || ""));
+});
 chatInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();

@@ -1162,6 +1162,72 @@ body.lavish {
 .composer textarea::placeholder {
   color: var(--fg-label);
 }
+.composer.is-dropping {
+  background: var(--bg-elevated);
+}
+.chat-attachments {
+  display: grid;
+  gap: 6px;
+}
+.chat-attachments:empty {
+  display: none;
+}
+.chat-attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  padding: 6px;
+  font-size: 11px;
+}
+.chat-attachment-thumb {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  object-fit: cover;
+}
+.chat-attachment-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+.chat-attachment-copy strong,
+.chat-attachment-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attachment-status {
+  color: var(--fg-faint);
+}
+.chat-attachment-error {
+  color: var(--danger);
+}
+.chat-attachment-chip button,
+.chat-attach {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 4px;
+}
+.chat-attachment-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chat-attachment-notice {
+  min-width: 0;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.35;
+}
 .actions {
   display: flex;
   align-items: center;
