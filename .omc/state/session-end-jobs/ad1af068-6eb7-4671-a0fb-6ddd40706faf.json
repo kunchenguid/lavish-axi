@@ -1,0 +1,288 @@
+{
+  "version": 1,
+  "jobId": "e8ed212e-dbb5-47e0-959a-ddee7a96882b",
+  "sessionId": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+  "scopeKey": "37b9161c6d4b495e3e63f01c945eb8499252fb6d684eac36183cf803c7c44acc",
+  "revision": 9,
+  "createdAt": "2026-08-16T18:54:27.780Z",
+  "updatedAt": "2026-08-16T18:54:28.045Z",
+  "producerGraceExpiresAt": "2026-08-16T18:54:57.780Z",
+  "bestEffortDeadlineAt": "2026-08-16T18:55:48.780Z",
+  "producers": {
+    "core": {
+      "state": "sealed",
+      "intentKey": "9ad527a25f6ade3ba420092ba667ab0efc81bf98cc19eb200ae44cc4fe87be4e",
+      "payloadDigest": "9ad527a25f6ade3ba420092ba667ab0efc81bf98cc19eb200ae44cc4fe87be4e",
+      "sealedAt": "2026-08-16T18:54:27.860Z",
+      "sealedBy": "foreground"
+    },
+    "wiki": {
+      "state": "no-op",
+      "sealedAt": "2026-08-16T18:54:27.780Z",
+      "sealedBy": "wiki-producer"
+    }
+  },
+  "actions": {
+    "foreground-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 0,
+      "idempotencyKey": "febf6dba2f2536433960a07f7cedce72e946b43ced0896570df80f017b8914d2",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+        "reason": "other",
+        "input": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "ended_at": "2026-08-16T18:54:27.779Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {},
+        "foregroundResult": {
+          "removedTransientFiles": 2,
+          "completedAt": "2026-08-16T18:54:27.860Z"
+        }
+      },
+      "budgetMs": 9000,
+      "completedAt": "2026-08-16T18:54:27.860Z",
+      "lastOutcomeCode": "completed"
+    },
+    "wiki-capture": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 0,
+      "idempotencyKey": "1719cd1ef5b51e0269b78c4cb8c9308c9c1f7b82fd1c067fc034c060f23863f5",
+      "payload": {},
+      "budgetMs": 9000,
+      "completedAt": "2026-08-16T18:54:27.780Z"
+    },
+    "team-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "cee6ac31df545408e1e822247ac249b3f8182a98a5fe8e448ae3b251e55bdee1",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+        "reason": "other",
+        "input": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "ended_at": "2026-08-16T18:54:27.779Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-08-16T18:54:27.905Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "20b851fe-2aef-4fb4-ac11-f3936ec19b27",
+        "phase": "terminal",
+        "deadlineAt": "2026-08-16T18:54:37.876Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-08-16T18:54:28.035Z"
+    },
+    "python-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "1f1370c4ac056606059d517e2f106b602d8cbcb04587b3fcc5f3b9f89e649cd0",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+        "reason": "other",
+        "input": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "ended_at": "2026-08-16T18:54:27.779Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000
+    },
+    "reply-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "0b3a8b47c28b26d56aca004d4f572b96c118f16819c0d35162418816f9a5420a",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+        "reason": "other",
+        "input": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "ended_at": "2026-08-16T18:54:27.779Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000
+    },
+    "callback": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "d068ede2655bf89e0c0950e087d0603d7dcf45538e94f20a654d08c6f4841895",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+        "reason": "other",
+        "input": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "ended_at": "2026-08-16T18:54:27.779Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 2000
+    },
+    "notification": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "89c0438ff63097ce04beb60efb87292ff68a7af350a0ee331f3de9dbf42d62fc",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+        "reason": "other",
+        "input": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "ended_at": "2026-08-16T18:54:27.779Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 2000
+    },
+    "openclaw": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "pending",
+      "attempts": 0,
+      "idempotencyKey": "31fe8f6e1cf204e27006de511df257326fdd98655122ca437013e8779ffc735b",
+      "payload": {
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+        "reason": "other",
+        "input": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "metrics": {
+          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+          "ended_at": "2026-08-16T18:54:27.779Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        },
+        "initialTeamNames": [],
+        "openClawEnabled": false,
+        "openClawRouting": {}
+      },
+      "budgetMs": 2000
+    }
+  },
+  "owner": {
+    "nonce": "a6b2882d-9847-4176-9f9a-9d514a92b52f",
+    "pid": 15759,
+    "processStartIdentity": "1786906467000",
+    "claimedAt": "2026-08-16T18:54:27.893Z",
+    "heartbeatAt": "2026-08-16T18:54:28.045Z",
+    "leaseExpiresAt": "2026-08-16T18:54:28.795Z",
+    "runDeadlineAt": "2026-08-16T18:54:37.876Z",
+    "leaseGeneration": 3,
+    "claimedFromRevision": 2
+  },
+  "phase": "processing"
+}

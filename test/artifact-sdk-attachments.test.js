@@ -7,6 +7,7 @@ import {
   deriveAttachmentNoticeState,
   isTrustedAttachmentResult,
   partitionDroppedFiles,
+  planClipboardPaste,
 } from "../src/artifact-sdk.js";
 import { createSdkJs } from "../src/server.js";
 
@@ -223,19 +224,39 @@ test("an empty drop partitions to nothing (W4-a)", () => {
   assert.deepEqual(partitionDroppedFiles({}, ACCEPTED), { images: [], unsupported: [] });
 });
 
+const clipboard = (files, text = "") => ({ files, getData: (type) => (type === "text/plain" ? text : "") });
+
+test("an image-only paste is consumed instead of also inserting clipboard text", () => {
+  const png = file("shot.png", "image/png");
+  const plan = planClipboardPaste(clipboard([png]), ACCEPTED);
+  assert.deepEqual(plan.images, [png]);
+  assert.equal(plan.keepTextPaste, false);
+});
+
+test("mixed clipboard text stays available to the annotation textarea", () => {
+  // The image attaches AND the browser must still insert the text, so the
+  // handler is told to leave the default paste alone.
+  const png = file("shot.png", "image/png");
+  const plan = planClipboardPaste(clipboard([png], "Keep this caption"), ACCEPTED);
+  assert.deepEqual(plan.images, [png]);
+  assert.equal(plan.keepTextPaste, true);
+});
+
+test("a text-only paste attaches nothing and keeps the default paste", () => {
+  const plan = planClipboardPaste(clipboard([], "just words"), ACCEPTED);
+  assert.deepEqual(plan.images, []);
+  assert.equal(plan.keepTextPaste, true);
+});
+
+test("a paste with no clipboard data at all is inert", () => {
+  assert.deepEqual(planClipboardPaste(null, ACCEPTED), { images: [], keepTextPaste: false });
+});
+
 test("the SDK bundle wires the drop handler to partial-accept (W4-a)", () => {
   assert.match(sdk, /const partitionDroppedFiles=/);
   assert.match(sdk, /partitionDroppedFiles\(event\.dataTransfer, ATTACHMENT_ACCEPTED_MIME\)/);
   // Unsupported files are rejected as a single batch (D7), not one render per file.
   assert.match(sdk, /attachments\.rejectUnsupportedBatch\(unsupported\)/);
-});
-
-test("mixed clipboard text stays available to the annotation textarea", () => {
-  assert.match(sdk, /event\.clipboardData\?\.getData\("text\/plain"\)/);
-  assert.match(
-    sdk,
-    /if \(images\.length && attachments\.addFiles\(images\) && !clipboardText\) event\.preventDefault\(\)/,
-  );
 });
 
 test("attachmentSizeError rejects an over-limit file before it is read (round7-a)", () => {

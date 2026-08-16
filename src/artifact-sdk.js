@@ -342,6 +342,25 @@ export function partitionDroppedFiles(dataTransfer, acceptedMime) {
 }
 
 /**
+ * Split a paste over the annotation textarea into the images it can attach and
+ * whether the browser's own text paste must be preserved.
+ *
+ * A screenshot pasted alone should not also drop its (usually empty or
+ * placeholder) text into the textarea, so that paste is consumed. A paste that
+ * carries real text alongside an image is a mixed paste: the image attaches AND
+ * the text must still land, so the default is left intact.
+ *
+ * @param {{ files?: ArrayLike<any>, items?: ArrayLike<any>, getData?: (type: string) => string }|null|undefined} clipboardData
+ * @param {Record<string, boolean>} acceptedMime
+ * @returns {{ images: any[], keepTextPaste: boolean }}
+ */
+export function planClipboardPaste(clipboardData, acceptedMime) {
+  const { images } = partitionDroppedFiles(clipboardData, acceptedMime);
+  const text = clipboardData && clipboardData.getData ? clipboardData.getData("text/plain") : "";
+  return { images, keepTextPaste: Boolean(text) };
+}
+
+/**
  * Decide whether an incoming `lavish:attachmentResult` may be applied to this
  * document's chips. Two independent conditions, both required:
  *
@@ -2243,10 +2262,8 @@ export function createArtifactSdk(
       attachInput.value = "";
     });
     textarea.addEventListener("paste", (event) => {
-      // Preserve normal text paste when clipboard carries text alongside images.
-      const clipboardText = event.clipboardData?.getData("text/plain") || "";
-      const { images } = partitionDroppedFiles(event.clipboardData, ATTACHMENT_ACCEPTED_MIME);
-      if (images.length && attachments.addFiles(images) && !clipboardText) event.preventDefault();
+      const { images, keepTextPaste } = planClipboardPaste(event.clipboardData, ATTACHMENT_ACCEPTED_MIME);
+      if (images.length && attachments.addFiles(images) && !keepTextPaste) event.preventDefault();
     });
     card.addEventListener("dragover", (event) => {
       // Accept ANY file drag so the drop lands on the card (and is preventable)

@@ -1,0 +1,213 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1786905545356,
+  "projectRoot": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=22",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "express",
+        "version": "5.2.1",
+        "category": "backend"
+      },
+      {
+        "name": "esbuild",
+        "version": "0.28.0",
+        "category": "build"
+      },
+      {
+        "name": "react",
+        "version": "18.3.1",
+        "category": "frontend"
+      },
+      {
+        "name": "react-dom",
+        "version": "18.3.1",
+        "category": "frontend"
+      }
+    ],
+    "packageManager": "pnpm",
+    "runtime": "Node.js 22"
+  },
+  "build": {
+    "buildCommand": "pnpm build",
+    "testCommand": "pnpm test",
+    "lintCommand": "pnpm lint",
+    "devCommand": "pnpm start",
+    "scripts": {
+      "build": "node scripts/build.js",
+      "build:skill": "node scripts/build-skill.js",
+      "build:plugin": "node scripts/build-plugin.js",
+      "check": "npm run build && npm run lint && npm run format:check && npm run typecheck && npm test && node scripts/build-skill.js --check && node scripts/build-plugin.js --check",
+      "start": "node dist/cli.mjs",
+      "lint": "eslint bin src test scripts",
+      "format": "prettier --write .",
+      "format:check": "prettier --check .",
+      "prepack": "npm run build",
+      "prepare": "npm run build",
+      "test": "node --test",
+      "typecheck": "tsc --noEmit"
+    }
+  },
+  "conventions": {
+    "namingStyle": "camelCase/PascalCase",
+    "importStyle": "ES modules",
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": true,
+    "workspaces": [],
+    "mainDirectories": [
+      "bin",
+      "scripts",
+      "src",
+      "test"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bin": {
+      "path": "bin",
+      "purpose": "Executable scripts",
+      "fileCount": 1,
+      "lastAccessed": 1786905545346,
+      "keyFiles": [
+        "lavish-axi.js"
+      ]
+    },
+    "lavish-editor-marketing": {
+      "path": "lavish-editor-marketing",
+      "purpose": null,
+      "fileCount": 7,
+      "lastAccessed": 1786905545346,
+      "keyFiles": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "DESIGN.md",
+        "hyperframes.json",
+        "index.html"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 3,
+      "lastAccessed": 1786905545349,
+      "keyFiles": [
+        "build-plugin.js",
+        "build-skill.js",
+        "build.js"
+      ]
+    },
+    "skills": {
+      "path": "skills",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1786905545351,
+      "keyFiles": []
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 25,
+      "lastAccessed": 1786905545352,
+      "keyFiles": [
+        "artifact-sdk.js",
+        "async-mutex.js",
+        "attachment-store.js",
+        "chrome-client.js",
+        "chrome.css"
+      ]
+    },
+    "task-evidence": {
+      "path": "task-evidence",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1786905545352,
+      "keyFiles": []
+    },
+    "test": {
+      "path": "test",
+      "purpose": "Test files",
+      "fileCount": 33,
+      "lastAccessed": 1786905545353,
+      "keyFiles": [
+        "agents-md.test.js",
+        "artifact-sdk-attachments.test.js",
+        "artifact-sdk.test.js",
+        "async-mutex.test.js",
+        "attachment-disk-admission.test.js"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/chrome-client.js",
+      "accessCount": 18,
+      "lastAccessed": 1786906404199,
+      "type": "file"
+    },
+    {
+      "path": "test/artifact-sdk-attachments.test.js",
+      "accessCount": 7,
+      "lastAccessed": 1786906272263,
+      "type": "file"
+    },
+    {
+      "path": "src/artifact-sdk.js",
+      "accessCount": 6,
+      "lastAccessed": 1786906195992,
+      "type": "file"
+    },
+    {
+      "path": "test/chrome-client-queue.test.js",
+      "accessCount": 6,
+      "lastAccessed": 1786906295147,
+      "type": "file"
+    },
+    {
+      "path": "src/server.js",
+      "accessCount": 3,
+      "lastAccessed": 1786906208215,
+      "type": "file"
+    },
+    {
+      "path": "test/attachment-upload.browser.test.js",
+      "accessCount": 3,
+      "lastAccessed": 1786906332681,
+      "type": "file"
+    },
+    {
+      "path": "src/chrome.css",
+      "accessCount": 2,
+      "lastAccessed": 1786906181477,
+      "type": "file"
+    },
+    {
+      "path": "test/server.test.js",
+      "accessCount": 1,
+      "lastAccessed": 1786906299275,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

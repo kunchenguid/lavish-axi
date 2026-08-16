@@ -255,6 +255,33 @@ test(
       assert.match(conversationPoll, /status:\s*"?feedback/, conversationPoll);
       assert.match(conversationPoll, new RegExp(PNG_ID), conversationPoll);
       assert.match(conversationPoll, /conversation\.png/, conversationPoll);
+
+      // A rejected file must READ as an error. The message lives in a child span
+      // whose own rule paints it faint, so an error color set only on the chip is
+      // overridden and the text renders as ordinary status copy.
+      evaluate(`(() => {
+        const dt = new DataTransfer();
+        dt.items.add(new File(["notes"], "notes.pdf", { type: "application/pdf" }));
+        document.getElementById("chatComposer").dispatchEvent(
+          new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }),
+        );
+      })()`);
+      wait(500);
+      const errorColors = evaluate(`(() => {
+        const status = document.querySelector(".chat-attachment-error .chat-attachment-status");
+        if (!status) return "missing-error-chip";
+        const danger = getComputedStyle(document.documentElement).getPropertyValue("--danger").trim();
+        const probe = document.createElement("span");
+        probe.style.color = danger;
+        document.body.appendChild(probe);
+        const expected = getComputedStyle(probe).color;
+        probe.remove();
+        return JSON.stringify({ actual: getComputedStyle(status).color, expected, text: status.textContent });
+      })()`);
+      assert.doesNotMatch(errorColors, /missing-error-chip/, errorColors);
+      const colors = JSON.parse(errorColors.match(/\{.*\}/)?.[0] || "{}");
+      assert.match(colors.text, /Unsupported file type/, errorColors);
+      assert.equal(colors.actual, colors.expected, `error status must render in --danger:\n${errorColors}`);
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       run("chrome-devtools-axi", ["stop"], chromeEnv);

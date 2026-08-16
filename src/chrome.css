@@ -1204,7 +1204,8 @@ body.lavish {
 .chat-attachment-status {
   color: var(--fg-faint);
 }
-.chat-attachment-error {
+.chat-attachment-error,
+.chat-attachment-error .chat-attachment-status {
   color: var(--danger);
 }
 .chat-attachment-chip button,

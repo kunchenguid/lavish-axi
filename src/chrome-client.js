@@ -567,6 +567,7 @@ function createChatAttachmentsController() {
   const items = [];
   let nextId = 0;
   let capRejected = false;
+  let sendBlocked = false;
 
   function currentImageCount() {
     return items.filter((item) => item.file && CHAT_ATTACHMENT_MIME.has(item.file.type)).length;
@@ -611,15 +612,25 @@ function createChatAttachmentsController() {
         );
       })
       .join("");
+    syncNotice();
   }
 
-  function clearNoticeWhenReady() {
+  // The notice is DERIVED from the current item states on every render, never
+  // written imperatively by a caller: a blocked send that only stamped a string
+  // went stale the moment the pending upload it described failed, leaving the
+  // user waiting on an upload that was already over.
+  function syncNotice() {
     if (currentImageCount() < attachmentMaxCount) capRejected = false;
-    if (capRejected) {
-      chatAttachmentNotice.textContent = "You can attach up to " + attachmentMaxCount + " images.";
-    } else if (!items.some((item) => item.status === "uploading" || item.status === "error")) {
-      chatAttachmentNotice.textContent = "";
-    }
+    const pending = items.some((item) => item.status === "uploading");
+    const errored = items.some((item) => item.status === "error");
+    if (!pending && !errored) sendBlocked = false;
+    chatAttachmentNotice.textContent = capRejected
+      ? "You can attach up to " + attachmentMaxCount + " images."
+      : sendBlocked && pending
+        ? "Waiting for an image to finish uploading…"
+        : sendBlocked && errored
+          ? "An image couldn't be attached. Retry or remove it before sending."
+          : "";
   }
 
   async function startUpload(item) {
@@ -643,7 +654,6 @@ function createChatAttachmentsController() {
             item.error = String(result.error || "Upload failed");
           }
           renderAttachments();
-          clearNoticeWhenReady();
         },
         abortController.signal,
       );
@@ -662,7 +672,6 @@ function createChatAttachmentsController() {
       if (!CHAT_ATTACHMENT_MIME.has(String(file.type || ""))) continue;
       if (imageCount >= attachmentMaxCount) {
         capRejected = true;
-        chatAttachmentNotice.textContent = "You can attach up to " + attachmentMaxCount + " images.";
         break;
       }
       const localId = String(nextId++);
@@ -712,7 +721,6 @@ function createChatAttachmentsController() {
     item.abortController?.abort();
     if (item.preview) URL.revokeObjectURL(item.preview);
     renderAttachments();
-    clearNoticeWhenReady();
   }
 
   function reset() {
@@ -722,7 +730,7 @@ function createChatAttachmentsController() {
     }
     items.length = 0;
     capRejected = false;
-    chatAttachmentNotice.textContent = "";
+    sendBlocked = false;
     renderAttachments();
   }
 
@@ -736,6 +744,10 @@ function createChatAttachmentsController() {
     },
     hasPending: () => items.some((item) => item.status === "uploading"),
     hasErrors: () => items.some((item) => item.status === "error"),
+    noteSendBlocked() {
+      sendBlocked = true;
+      syncNotice();
+    },
     collectReady: () =>
       items.filter((item) => item.status === "ready").map((item) => ({ id: item.id, name: item.name })),
     reset,
@@ -748,12 +760,8 @@ function sendQueued(endAfter) {
   if (ended || agentPresence === "working") return;
   closeMenus();
 
-  if (chatAttachmentController.hasPending()) {
-    chatAttachmentNotice.textContent = "Waiting for an image to finish uploading…";
-    return;
-  }
-  if (chatAttachmentController.hasErrors()) {
-    chatAttachmentNotice.textContent = "An image couldn't be attached. Retry or remove it before sending.";
+  if (chatAttachmentController.hasPending() || chatAttachmentController.hasErrors()) {
+    chatAttachmentController.noteSendBlocked();
     return;
   }
 
@@ -799,7 +807,7 @@ async function submitQueued() {
       endAfterSubmit = false;
     } else if (!ended && shouldSubmitAgain) {
       if (queued.length) {
-        submitQueued();
+        submitQueued().catch(() => {});
       } else if (endAfterSubmit) {
         endAfterSubmit = false;
         endSession();
@@ -2119,7 +2127,10 @@ window.addEventListener("message", (event) => {
       copyText(msg.snapshot || "");
     } else {
       pendingSnapshot = msg.snapshot || "";
-      submitQueued();
+      // submitQueuedOnce throws to signal "nothing was delivered" - its own
+      // finally already reset the end intent and it left the queue intact for a
+      // retry, so the rejection has no remaining consumer here.
+      submitQueued().catch(() => {});
     }
   }
   if (msg.type === "lavish:scroll") {

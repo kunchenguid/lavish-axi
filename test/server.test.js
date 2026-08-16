@@ -143,11 +143,6 @@ test("createChromeHtml exposes attachment limits and Conversation attachment con
   assert.match(html, /id="chatAttachInput"[^>]+accept="image\/png,image\/jpeg,image\/webp"/);
 });
 
-test("Conversation attachment errors use the chrome danger color", async () => {
-  const css = await chromeCssSource();
-  assert.match(css, /\.chat-attachment-error\s*\{[^}]*color:\s*var\(--danger\)/);
-});
-
 test("readAttachmentUploadBody buffers under the cap and drains the stream when over it", async () => {
   const under = await readAttachmentUploadBody(Readable.from([Buffer.from("ab"), Buffer.from("c")]), 10);
   assert.equal(under.tooLarge, false);

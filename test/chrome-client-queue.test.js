@@ -741,10 +741,35 @@ function clipboardEvent(file, text = "") {
 }
 
 test("attachment rejection copy applies to annotations and Conversation messages", async () => {
-  const source = await readFile(sourceUrl, "utf8");
-  assert.match(source, /per-prompt limit/);
-  assert.match(source, /images on one prompt/);
-  assert.doesNotMatch(source, /per-annotation limit|images on one annotation/);
+  // The server rejects a batch atomically (C4) and answers 400 with {rejected, caps};
+  // the chrome must surface that in wording that fits BOTH surfaces, since a
+  // Conversation message is a prompt but not an annotation.
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (!String(url).endsWith("/prompts")) return { ok: true, json: async () => ({}) };
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({
+          rejected: [{ reason: "prompt-bytes-exceeded" }, { reason: "too-many" }],
+          caps: { maxPromptBytes: 2 * 1024 * 1024, maxPerPrompt: 4 },
+        }),
+      };
+    },
+  });
+
+  chrome.element("chatInput").value = "Look at these";
+  chrome.element("send").click();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  await flushPromises();
+
+  const hint = chrome.element("sendHint").textContent;
+  assert.match(hint, /2 MB per-prompt limit/);
+  assert.match(hint, /more than 4 images on one prompt/);
+  assert.doesNotMatch(hint, /per-annotation limit|images on one annotation/);
+  // Nothing was delivered, so the queue is preserved for a corrected retry.
+  assert.equal(chrome.queued().length, 1);
 });
 
 test("Conversation accepts an image-only paste and sends its attachment ref", async () => {
@@ -799,6 +824,54 @@ test("Conversation blocks send while an image upload is pending", async () => {
 
   resolveUpload({ ok: true, json: async () => ({ attachment: { id: "d".repeat(64) + ".png" } }) });
   await flushPromises();
+});
+
+test("a blocked-send notice follows the upload that failed instead of going stale", async () => {
+  /** @type {(value: any) => void} */
+  let resolveUpload = () => {};
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: () => new Promise((resolve) => (resolveUpload = resolve)),
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("doomed.png")));
+  await flushPromises();
+
+  chrome.element("send").click();
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /finish uploading/i);
+
+  // The upload the notice describes then fails. Nothing is uploading any more,
+  // so the notice must stop telling the user to wait and point at the recovery
+  // affordances the chip now offers.
+  resolveUpload({ ok: false, json: async () => ({ error: "storage full" }) });
+  await flushPromises();
+  await flushPromises();
+
+  assert.doesNotMatch(chrome.element("chatAttachmentNotice").textContent, /finish uploading/i);
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /retry or remove/i);
+  assert.match(chrome.element("chatAttachments").innerHTML, /aria-label="Retry doomed\.png"/);
+});
+
+test("clearing the failed attachment clears the blocked-send notice", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => ({ ok: false, json: async () => ({ error: "storage full" }) }),
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("gone.png")));
+  await flushPromises();
+  await flushPromises();
+
+  chrome.element("send").click();
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /retry or remove/i);
+
+  chrome.element("chatAttachments").dispatch("click", {
+    target: {
+      closest(selector) {
+        return selector === "[data-chat-attachment-remove]" ? { dataset: { chatAttachmentRemove: "0" } } : null;
+      },
+    },
+  });
+
+  assert.equal(chrome.element("chatAttachmentNotice").textContent, "");
 });
 
 test("Conversation file picker uploads selected images", async () => {
