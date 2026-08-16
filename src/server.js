@@ -1862,6 +1862,32 @@ export function extractArtifactHead(html) {
   return { faviconTag, title };
 }
 
+// The chrome page ships with the layout-gate overlay already covering the artifact area, and
+// only `chrome-client.js` ever takes it down - the "Show anyway" button's handler is wired by
+// that same script. So when the script never runs (the shared server shut down between serving
+// this page and serving the script, which is exactly what a version-driven restart does), the
+// page is stuck on a spinner with nothing to click and no way back. This inline failsafe is
+// armed before the script tag, so it survives even a request that hangs instead of erroring,
+// and `chrome-client.js` cancels it once it has run to completion.
+export const CHROME_BOOT_FAILSAFE_MS = 15000;
+const CHROME_BOOT_FAILSAFE_JS = `(function(){
+var t=setTimeout(fail,${CHROME_BOOT_FAILSAFE_MS});
+window.__lavishCancelChromeBootFailsafe=function(){clearTimeout(t);};
+window.__lavishChromeBootFailed=function(){clearTimeout(t);fail();};
+function fail(){
+if(window.__lavishChromeReady)return;
+var o=document.getElementById("layoutGateOverlay");
+var h=document.getElementById("layoutGateTitle");
+var c=document.getElementById("layoutGateCopy");
+var a=document.getElementById("layoutGateAction");
+if(h)h.textContent="Lavish could not finish loading.";
+if(c)c.textContent="The Lavish editor script did not load. The server usually restarted while this page was opening. Reload to reconnect.";
+if(a){a.textContent="Reload";a.onclick=function(){location.reload();};}
+if(o)o.hidden=false;
+if(document.body)document.body.classList.add("layout-gate-active");
+}
+})();`;
+
 export function createChromeHtml(
   session,
   {
@@ -1917,7 +1943,8 @@ ${faviconTag}
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
 <div class="whiteboard-overlay" id="whiteboardOverlay" hidden><div class="whiteboard-shell"><div class="whiteboard-error" id="whiteboardError" hidden></div><button class="whiteboard-close" id="whiteboardClose" type="button" aria-label="Close whiteboard"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><iframe id="whiteboardFrame" title="Excalidraw whiteboard" sandbox="allow-scripts allow-popups"></iframe></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>
-<script src="/chrome-client.js"></script>
+<script>${CHROME_BOOT_FAILSAFE_JS}</script>
+<script src="/chrome-client.js" onerror="window.__lavishChromeBootFailed()"></script>
 </body>
 </html>`;
 }

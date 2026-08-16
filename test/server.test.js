@@ -12,6 +12,7 @@ process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 import {
   allowsAllHosts,
   buildAllowedHostnames,
+  CHROME_BOOT_FAILSAFE_MS,
   createChromeHtml,
   createSdkJs,
   displayPathParts,
@@ -127,8 +128,23 @@ test("server serves chrome browser behavior from a dedicated source file", async
 
   assert.match(source, /chrome-client\.js/);
   assert.match(html, /<script id="lavish-session" type="application\/json">/);
-  assert.match(html, /<script src="\/chrome-client\.js"><\/script>/);
+  assert.match(html, /<script src="\/chrome-client\.js" onerror="window\.__lavishChromeBootFailed\(\)"><\/script>/);
   assert.doesNotMatch(html, /<script>\s*const key=/);
+});
+
+test("chrome page carries a boot failsafe that clears the layout gate when its script never runs", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  // The failsafe must be armed BEFORE the external script tag: a request that hangs instead of
+  // erroring blocks parsing, so anything after that tag would never be reached.
+  const failsafeIndex = html.indexOf("__lavishCancelChromeBootFailsafe");
+  const scriptIndex = html.indexOf('<script src="/chrome-client.js"');
+  assert.ok(failsafeIndex > -1);
+  assert.ok(scriptIndex > failsafeIndex);
+  assert.match(html, /window\.__lavishChromeBootFailed\s*=/);
+  assert.match(html, new RegExp(`setTimeout\\(fail,${CHROME_BOOT_FAILSAFE_MS}\\)`));
+  assert.match(html, /if\(window\.__lavishChromeReady\)return;/);
+  assert.match(html, /a\.textContent="Reload"/);
 });
 
 test("artifact iframe sandbox lets popups escape without granting same-origin", () => {
@@ -1010,8 +1026,13 @@ test("chrome waits for the replacement server before version-driven reload", asy
 
   assert.match(js, /async function reloadAfterServerRestart\(\)/);
   assert.match(js, /let sawOutage = false/);
-  assert.match(js, /if \(sawOutage && res\.ok\) \{/);
+  assert.match(js, /if \(healthy && \(sawOutage \|\| Date\.now\(\) >= settleDeadline\)\) break;/);
   assert.match(js, /addEventListener\("chrome-reload", \(\) => reloadAfterServerRestart\(\)\)/);
+  // A reload issued while nothing is listening replaces a recoverable page with the browser's
+  // own connection-error page, which no Lavish code can undo. The reload must be gated on a
+  // healthy probe, never on the deadline alone. `test/chrome-client-queue.test.js` drives the
+  // behavior; this only pins the guard in place.
+  assert.match(js, /if \(!healthy\) \{[\s\S]*?setLayoutGateFailure\([\s\S]*?return;\s*\n\s*\}/);
 });
 
 test("chrome restores queued prompts from tab storage after reload", async () => {

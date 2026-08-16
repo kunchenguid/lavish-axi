@@ -163,6 +163,7 @@ const layoutGateMaxHoldMs =
 let layoutGateVisible = false;
 let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
+let layoutGateFailureActive = false;
 let layoutGateCycle = 0;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let layoutGateTimer;
@@ -183,6 +184,18 @@ let lastScroll = { x: 0, y: 0 };
 let lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
 const ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS = [100, 300];
+// Backoff for retrying a whole begin-load attempt after its in-call retries ran out. The
+// in-call retries span 400ms, which only covers a slow response - not the multi-second window
+// where the server is being replaced (a version-driven restart, or another `lavish-axi <file>`
+// invocation restarting the shared server). Without these the chrome abandons the artifact for
+// good: the frame is never navigated, `artifact_revision` never advances, and the page sits on
+// the layout gate and then on an empty frame with nothing to click.
+const ARTIFACT_LOAD_RECOVERY_DELAYS_MS = [1000, 3000, 8000, 20000];
+// How long a chrome told to reload after a server restart keeps probing /health before giving
+// up, and how long it waits for an outage to appear at all before treating a healthy answer as
+// "the server never went away".
+const CHROME_RESTART_SETTLE_MS = 5000;
+const CHROME_RESTART_WAIT_MS = 60000;
 let artifactLoadToken = "";
 let artifactLoadRevision = Number(sessionData.initialArtifactRevision) || 0;
 let artifactLoadRequestSequence = Number(sessionData.initialArtifactLoadSequence) || 0;
@@ -191,6 +204,9 @@ artifactLoadToken = String(sessionData.initialArtifactLoadToken || "");
 let artifactSpokeToken = "";
 let artifactMessageSequence = 0;
 let layoutDiagnosticSequence = 0;
+let artifactLoadRecoveryAttempt = 0;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let artifactLoadRecoveryTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let artifactSilenceTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
@@ -916,6 +932,39 @@ function setLayoutGateActive(active) {
   document.body?.classList?.toggle("layout-gate-active", active);
 }
 
+// Terminal, user-recoverable failure state for the one thing the chrome cannot work around on
+// its own: the artifact never loaded and retrying stopped helping. The overlay is reused because
+// it already covers the empty artifact area; without this the user is left looking at either a
+// spinner that never resolves or a blank frame, with nothing explaining it and nothing to click.
+// Bumping the cycle retires any pending reveal timer so a stale one cannot hide this card.
+function setLayoutGateFailure(title, copy, actionLabel = "Reload") {
+  if (ended) return;
+  layoutGateFailureActive = true;
+  layoutGateCycle += 1;
+  clearLayoutGateTimer();
+  layoutGateArmed = false;
+  if (layoutGateTitle) layoutGateTitle.textContent = title;
+  if (layoutGateCopy) layoutGateCopy.textContent = copy;
+  if (layoutGateAction) {
+    layoutGateAction.textContent = actionLabel;
+    layoutGateAction.onclick = () => location.reload();
+  }
+  setLayoutGateActive(true);
+}
+
+// A load attempt that gets going again retires the failure card. This runs even when the gate is
+// disabled or the user already bypassed it, because otherwise the card would keep covering an
+// artifact that has since loaded.
+function clearLayoutGateFailure() {
+  if (!layoutGateFailureActive) return;
+  layoutGateFailureActive = false;
+  if (layoutGateAction) {
+    layoutGateAction.textContent = "Show anyway";
+    layoutGateAction.onclick = () => forceRevealLayoutGate("manual");
+  }
+  revealLayoutGate();
+}
+
 function revealLayoutGate() {
   clearLayoutGateTimer();
   layoutGateArmed = false;
@@ -929,6 +978,7 @@ function forceRevealLayoutGate(reason) {
 }
 
 function startLayoutGateCycle() {
+  clearLayoutGateFailure();
   if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
 
   layoutGateCycle += 1;
@@ -1330,6 +1380,7 @@ async function endSession() {
 function markSessionEnded() {
   if (ended) return;
   ended = true;
+  cancelArtifactLoadRecovery();
   closeMenus();
   closeWarningsDrawer();
   renderWarnings();
@@ -1484,7 +1535,33 @@ async function publishShare(event) {
   }
 }
 
+function cancelArtifactLoadRecovery() {
+  if (artifactLoadRecoveryTimer) clearTimeout(artifactLoadRecoveryTimer);
+  artifactLoadRecoveryTimer = undefined;
+}
+
+// Retry a begin-load attempt that failed for a recoverable reason. Returns false once the
+// backoff is exhausted so the caller can surface the terminal failure. A `superseded` or
+// `out-of-order` outcome never lands here: another reviewer or a newer request in this same
+// chrome owns the artifact, and retrying would fight it.
+function scheduleArtifactLoadRecovery() {
+  if (ended) return false;
+  const delay = ARTIFACT_LOAD_RECOVERY_DELAYS_MS[artifactLoadRecoveryAttempt];
+  if (delay === undefined) return false;
+  artifactLoadRecoveryAttempt += 1;
+  const sequence = artifactLoadRequestSequence;
+  cancelArtifactLoadRecovery();
+  artifactLoadRecoveryTimer = setTimeout(() => {
+    artifactLoadRecoveryTimer = undefined;
+    if (ended || sequence !== artifactLoadRequestSequence) return;
+    replaceArtifactFrame().catch(() => {});
+  }, delay);
+  artifactLoadRecoveryTimer?.unref?.();
+  return true;
+}
+
 async function replaceArtifactFrame() {
+  cancelArtifactLoadRecovery();
   clearTimeout(artifactSilenceTimer);
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
@@ -1507,6 +1584,24 @@ async function replaceArtifactFrame() {
     }
     return false;
   };
+  // Keep whatever is on screen, then try again later. A begin-load can fail for reasons that
+  // clear on their own - the shared server is mid-restart, or its handoff map was reset by that
+  // restart and this chrome's one re-handshake landed in the same outage window. Giving up here
+  // is what leaves the review permanently unloaded.
+  const recoverLater = () => {
+    preservePreviousLoad();
+    if (requestSequence !== artifactLoadRequestSequence || ended) return false;
+    if (scheduleArtifactLoadRecovery()) return false;
+    // Out of retries. Only say so when there is nothing on screen to say it over: a chrome that
+    // already shows an artifact keeps showing it rather than losing a usable review.
+    if (!artifactLoadToken) {
+      setLayoutGateFailure(
+        "Lavish could not load this artifact.",
+        "The Lavish server did not answer this review's load request. It usually restarted while this page was opening. Reload to reconnect.",
+      );
+    }
+    return false;
+  };
   let load;
   let transportAttempt = 0;
   let handoffRefreshAttempted = false;
@@ -1526,18 +1621,32 @@ async function replaceArtifactFrame() {
       if (!response.ok) {
         const status = String(candidate?.status || "");
         if (status === "no-handoff") {
-          if (handoffRefreshAttempted) return preservePreviousLoad();
+          // One re-handshake per attempt keeps a live reviewer from being ping-ponged; the
+          // retry that follows is a whole fresh attempt, so the rule still holds.
+          if (handoffRefreshAttempted) return recoverLater();
           handoffRefreshAttempted = true;
           try {
             const refreshed = await refreshChromeLoadHandoff(requestSequence);
             if (!refreshed) return false;
           } catch {
-            return preservePreviousLoad();
+            return recoverLater();
           }
           continue;
         }
         if (status === "superseded") {
           setHandoffSuperseded(true);
+          // The takeover banner sits in the conversation panel, which the layout gate overlay
+          // covers whenever the gate is enabled. A chrome that never loaded the artifact would
+          // otherwise show the checking spinner until the gate's max hold expires and then
+          // reveal an empty frame, with the only recovery control hidden the whole time. Say it
+          // on the overlay instead. Still no background retry: the reload is the user's to make.
+          if (!artifactLoadToken) {
+            setLayoutGateFailure(
+              "This review is already open in another tab.",
+              "Lavish loads an artifact in one tab at a time. Take over here to move the review into this tab, or switch back to the tab that already has it.",
+              "Take over here",
+            );
+          }
           return preservePreviousLoad();
         }
         if (status === "out-of-order") return preservePreviousLoad();
@@ -1552,14 +1661,15 @@ async function replaceArtifactFrame() {
       break;
     } catch {
       const delay = ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS[transportAttempt++];
-      if (delay === undefined) return preservePreviousLoad();
+      if (delay === undefined) return recoverLater();
       await new Promise((resolve) => window.setTimeout(resolve, delay));
     }
   }
   if (requestSequence !== artifactLoadRequestSequence || ended) return false;
   const revision = Number(load?.artifact_revision);
   const token = String(load?.artifact_load_token || "");
-  if (!Number.isSafeInteger(revision) || revision < 0 || !token) return preservePreviousLoad();
+  if (!Number.isSafeInteger(revision) || revision < 0 || !token) return recoverLater();
+  artifactLoadRecoveryAttempt = 0;
   artifactLoadRevision = revision;
   artifactLoadToken = token;
   artifactSpokeToken = "";
@@ -2089,23 +2199,38 @@ async function reloadAfterServerRestart() {
   return chromeRestartReloadPromise;
 }
 
+// The replacement server usually binds within a second, but it is a fresh node process competing
+// with whatever else the machine is doing, and several `lavish-axi` invocations can be racing for
+// the same port. Reloading on a fixed short deadline regardless of whether anything is listening
+// trades a recoverable page for the browser's connection-error page, which no Lavish code can
+// recover from. So wait for the port to answer, and if it never does, say so instead.
 async function reloadChromeAfterServerRestart() {
   let sawOutage = false;
-  const deadline = Date.now() + 5000;
+  let healthy = false;
+  // Keep the pre-outage behavior: a server that never actually went away is reloaded promptly.
+  const settleDeadline = Date.now() + CHROME_RESTART_SETTLE_MS;
+  const deadline = Date.now() + CHROME_RESTART_WAIT_MS;
 
   while (Date.now() < deadline) {
     try {
       const res = await fetch("/health", { cache: "no-store" });
-      if (sawOutage && res.ok) {
-        await flushWhiteboardsBeforeChromeReload();
-        location.reload();
-        return;
-      }
+      healthy = Boolean(res.ok);
+      if (healthy && (sawOutage || Date.now() >= settleDeadline)) break;
     } catch {
       sawOutage = true;
+      healthy = false;
     }
 
     await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  if (!healthy) {
+    chromeRestartReloadPromise = null;
+    setLayoutGateFailure(
+      "Lavish is not running.",
+      "The Lavish server restarted and did not come back. Start it again with your agent, then reload this page.",
+    );
+    return;
   }
 
   await flushWhiteboardsBeforeChromeReload();
@@ -2502,3 +2627,10 @@ setWarningsDrawerOpen(false);
 renderWarnings();
 initialChat.forEach((item) => addChat(item.role, item.text));
 setAgentPresence("waiting");
+
+// Reaching this line is the only proof that this file parsed and ran to completion. The page it
+// bootstraps ships with the layout-gate overlay already covering the artifact, and only this
+// script ever takes it down - so the inline failsafe in the page holds it up until here.
+const chromeBootWindow = /** @type {Record<string, any>} */ (/** @type {unknown} */ (window));
+chromeBootWindow.__lavishChromeReady = true;
+chromeBootWindow.__lavishCancelChromeBootFailsafe?.();
