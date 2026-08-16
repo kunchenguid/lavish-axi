@@ -117,6 +117,9 @@ const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMen
 const reloadArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("reloadArtifact"));
 const copySnapshotButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySnapshot"));
 const exportArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportArtifact"));
+const menuPanelToggleButton = /** @type {HTMLButtonElement} */ (document.getElementById("menuPanelToggle"));
+const menuPanelToggleText = /** @type {HTMLSpanElement} */ (document.getElementById("menuPanelToggleText"));
+const menuEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("menuEnd"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
@@ -1106,6 +1109,7 @@ function markSessionEnded() {
   annotationSwitch.disabled = true;
   moreButton.disabled = true;
   endButton.disabled = true;
+  menuEndButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
   if (presenceBanner) presenceBanner.hidden = true;
@@ -2033,6 +2037,7 @@ function setPanelCollapsed(collapsed) {
   const action = collapsed ? "Show conversation panel" : "Collapse conversation panel";
   panelToggle.setAttribute("aria-label", action);
   panelToggle.title = action + " · ⌘\\ / Ctrl+\\";
+  menuPanelToggleText.textContent = action;
   try {
     if (collapsed) window.localStorage.setItem(panelCollapsedStorageKey, "1");
     else window.localStorage.removeItem(panelCollapsedStorageKey);
@@ -2098,12 +2103,20 @@ chatInput.addEventListener("keydown", (event) => {
   }
 });
 panelToggle.onclick = () => setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
+menuPanelToggleButton.onclick = () => {
+  closeMenus();
+  setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
+};
 chatInput.addEventListener("input", hideSendHint);
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
 exportArtifactButton.onclick = exportArtifact;
 endButton.onclick = () => {
+  closeMenus();
+  endSession();
+};
+menuEndButton.onclick = () => {
   closeMenus();
   endSession();
 };

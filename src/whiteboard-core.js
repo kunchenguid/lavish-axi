@@ -13,6 +13,10 @@ export const SUMMARY_MAX_LINE_CHARS = 200;
 const SUMMARY_MOVE_EPSILON_PX = 2;
 const STAT_KEYS = ["added", "removed", "moved", "relabeled", "drawn"];
 
+export function whiteboardModeStaysLocked(mode) {
+  return mode === "inline";
+}
+
 export function sanitizeWhiteboardAppState(appState) {
   if (!appState || typeof appState !== "object" || Array.isArray(appState)) return {};
   const safeAppState = { ...appState };

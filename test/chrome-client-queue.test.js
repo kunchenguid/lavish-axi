@@ -1886,6 +1886,32 @@ test("chrome client toggles the conversation panel when the artifact SDK request
   assert.equal(chrome.element("panelToggle").title, "Collapse conversation panel · ⌘\\ / Ctrl+\\");
 });
 
+test("narrow dock menu retains panel and end actions", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, method: init.method });
+      return { ok: true };
+    },
+  });
+
+  chrome.element("moreButton").click();
+  assert.equal(chrome.element("moreMenu").hidden, false);
+  chrome.element("menuPanelToggle").click();
+  assert.equal(chrome.element("moreMenu").hidden, true);
+  assert.equal(chrome.element("body").classList.contains("panel-collapsed"), true);
+  assert.equal(chrome.element("menuPanelToggleText").textContent, "Show conversation panel");
+
+  chrome.element("moreButton").click();
+  chrome.element("menuEnd").click();
+  await flushPromises();
+
+  assert.deepEqual(posts, [{ url: "/api/abc/end", method: "POST" }]);
+  assert.equal(chrome.element("end").disabled, true);
+  assert.equal(chrome.element("menuEnd").disabled, true);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
 test("chrome client ignores annotation mode toggles after the session ends", async () => {
   const chrome = await createChromeHarness();
 

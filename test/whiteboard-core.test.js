@@ -13,6 +13,7 @@ import {
   sceneIsImageFallback,
   summarizeSceneEdits,
   SUMMARY_MAX_LINE_CHARS,
+  whiteboardModeStaysLocked,
 } from "../src/whiteboard-core.js";
 
 function rect(id, opts = {}) {
@@ -22,6 +23,11 @@ function rect(id, opts = {}) {
 function boundLabel(id, containerId, text) {
   return { id, type: "text", containerId, text, x: 10, y: 10, width: 80, height: 20 };
 }
+
+test("inline whiteboards stay locked while overlay editors can unlock", () => {
+  assert.equal(whiteboardModeStaysLocked("inline"), true);
+  assert.equal(whiteboardModeStaysLocked("overlay"), false);
+});
 
 // ---------------------------------------------------------------------------
 // sanitizeSceneLink

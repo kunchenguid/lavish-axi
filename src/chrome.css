@@ -1222,6 +1222,10 @@ body.lavish {
 .bar-controls[hidden] {
   display: none;
 }
+.narrow-menu-item,
+.narrow-menu-rule {
+  display: none;
+}
 .bar-toggle {
   position: relative;
   width: 34px;
@@ -1423,5 +1427,20 @@ body.panel-collapsed .panel-toggle {
   }
   .end-session-button > span {
     display: none;
+  }
+}
+@media (max-width: 380px) {
+  .bar-controls {
+    gap: 4px;
+  }
+  .bar-controls > .panel-toggle,
+  .bar-controls > .end-session-button {
+    display: none;
+  }
+  .more-menu .narrow-menu-item {
+    display: flex;
+  }
+  .more-menu .narrow-menu-rule {
+    display: block;
   }
 }

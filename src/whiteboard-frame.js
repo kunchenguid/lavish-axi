@@ -43,6 +43,7 @@ import {
   sceneIsImageFallback,
   summarizeSceneEdits,
   WHITEBOARD_TEXT_METRICS_VERSION,
+  whiteboardModeStaysLocked,
 } from "./whiteboard-core.js";
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -294,7 +295,7 @@ function handleSaveResult(message) {
       post({ type: "lavish-whiteboard:teardownReady", flushId });
       return;
     }
-    state.setLocked?.(false);
+    state.setLocked?.(whiteboardModeStaysLocked(state.mode));
     const error = String(message.error || "failed to save whiteboard scene");
     showStatus(`Could not save before closing: ${error}`, { transient: false });
     post({ type: "lavish-whiteboard:teardownFailed", flushId, error });
@@ -350,7 +351,7 @@ function onLinkOpen(element, event) {
 // to fullscreen, which is the only editable mode. Escape leaves fullscreen - see the
 // handler further down.
 function activateInlineWhiteboard(setLocked) {
-  if (state.mode === "inline") {
+  if (whiteboardModeStaysLocked(state.mode)) {
     post({ type: "lavish-whiteboard:maximize", diagramIndex: state.diagramIndex });
     return;
   }
@@ -421,7 +422,7 @@ function mountEditor({ elements, appState, files, theme }) {
       appState,
       files,
       theme,
-      startLocked: state.mode === "inline",
+      startLocked: whiteboardModeStaysLocked(state.mode),
     }),
   );
 }

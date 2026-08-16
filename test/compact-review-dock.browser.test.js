@@ -38,7 +38,7 @@ function resultFromDump(html) {
   return match?.[1] ? JSON.parse(match[1]) : null;
 }
 
-test("compact review dock reserves chrome space without covering review surfaces", { timeout: 45_000 }, async (t) => {
+test("compact review dock reserves chrome space without covering review surfaces", { timeout: 60_000 }, async (t) => {
   const chrome = await chromePath();
   if (!chrome) {
     t.skip("Chrome or Chromium is required for the compact-dock regression");
@@ -54,15 +54,22 @@ test("compact review dock reserves chrome space without covering review surfaces
 Promise.resolve().then(() => {
   const rounded = (value) => Math.round(value);
   const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  const narrow = window.innerWidth <= 380;
+  if (narrow) {
+    document.getElementById("warningsWrap").hidden = false;
+    document.getElementById("warningsCount").textContent = "1";
+  }
   const snapshot = () => {
     const dock = document.getElementById("reviewDock");
     const layout = document.querySelector(".layout");
     const artifact = document.getElementById("artifact");
     const send = document.getElementById("sendActions");
+    const annotation = document.getElementById("annotation");
     const dockBox = dock.getBoundingClientRect();
     const layoutBox = layout.getBoundingClientRect();
     const artifactBox = artifact.getBoundingClientRect();
     const sendBox = send.getBoundingClientRect();
+    const annotationBox = annotation.getBoundingClientRect();
     return {
       position: getComputedStyle(dock).position,
       dockTop: rounded(dockBox.top),
@@ -70,12 +77,18 @@ Promise.resolve().then(() => {
       dockHeight: rounded(dockBox.height),
       layoutTop: rounded(layoutBox.top),
       layoutBottom: rounded(layoutBox.bottom),
+      viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
+      documentOverflow: rounded(document.documentElement.scrollWidth - window.innerWidth),
+      dockOverflow: rounded(dock.scrollWidth - dock.clientWidth),
       overlapsArtifact: overlaps(dockBox, artifactBox),
       overlapsSend: overlaps(dockBox, sendBox),
-      annotationVisible: getComputedStyle(document.getElementById("annotation")).display !== "none",
-      annotationPressed: document.getElementById("annotation").getAttribute("aria-pressed"),
+      annotationVisible: getComputedStyle(annotation).display !== "none",
+      annotationWithinViewport: annotationBox.left >= 0 && annotationBox.right <= window.innerWidth,
+      annotationPressed: annotation.getAttribute("aria-pressed"),
       controlsHidden: document.getElementById("barControls").hidden,
+      panelActionDisplay: getComputedStyle(document.getElementById("panelToggle")).display,
+      endActionDisplay: getComputedStyle(document.getElementById("end")).display,
     };
   };
 
@@ -93,7 +106,17 @@ Promise.resolve().then(() => {
 
   document.getElementById("barToggle").click();
   const expanded = snapshot();
-  document.getElementById("panelToggle").click();
+  let narrowMenu = null;
+  if (narrow) {
+    document.getElementById("moreButton").click();
+    narrowMenu = {
+      panelActionDisplay: getComputedStyle(document.getElementById("menuPanelToggle")).display,
+      endActionDisplay: getComputedStyle(document.getElementById("menuEnd")).display,
+    };
+    document.getElementById("menuPanelToggle").click();
+  } else {
+    document.getElementById("panelToggle").click();
+  }
   const panelCollapsed = {
     panelDisplay: getComputedStyle(document.querySelector(".panel")).display,
     artifactRight: rounded(document.getElementById("artifact").getBoundingClientRect().right),
@@ -107,6 +130,7 @@ Promise.resolve().then(() => {
     collapsed,
     annotationOff,
     expanded,
+    narrowMenu,
     panelCollapsed,
   });
 }).catch((error) => {
@@ -123,9 +147,26 @@ Promise.resolve().then(() => {
       '<script>window.EventSource=class { addEventListener() {} };</script><script src="/chrome-client.js"></script>',
     )
     .replace("</body>", `${probe}\n</body>`);
+  const narrowPage = `<!doctype html>
+<style>html,body{margin:0;width:320px;height:720px;overflow:hidden}iframe{display:block;width:320px;height:720px;border:0}</style>
+<iframe id="fixture" src="/"></iframe><pre id="testResult" hidden></pre>
+<script>
+const fixture = document.getElementById("fixture");
+function collectResult() {
+  const value = fixture.contentDocument?.getElementById("testResult")?.textContent;
+  if (value) document.getElementById("testResult").textContent = value;
+  else setTimeout(collectResult, 20);
+}
+fixture.addEventListener("load", collectResult);
+</script>`;
 
   const server = http.createServer((request, response) => {
     const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+    if (pathname === "/narrow") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      response.end(narrowPage);
+      return;
+    }
     if (pathname === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       response.end(page);
@@ -166,47 +207,68 @@ Promise.resolve().then(() => {
     await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
-    const { stdout } = await execFileAsync(
-      chrome,
-      [
-        "--headless=new",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--disable-background-networking",
-        "--no-sandbox",
-        `--user-data-dir=${path.join(root, "chrome-profile")}`,
-        "--window-size=1280,720",
-        "--run-all-compositor-stages-before-draw",
-        "--virtual-time-budget=1000",
-        "--dump-dom",
-        `http://127.0.0.1:${address.port}/`,
-      ],
-      { maxBuffer: 4 * 1024 * 1024, timeout: 15_000 },
-    );
-    const result = resultFromDump(stdout);
-    assert.ok(result, "browser fixture did not report a result");
-    assert.equal(result.error, undefined);
-    assert.equal(result.collapsed.position, "relative");
-    assert.equal(result.collapsed.dockTop, 0);
-    assert.ok(result.collapsed.dockHeight <= 42);
-    assert.equal(result.collapsed.layoutTop, result.collapsed.dockBottom);
-    assert.equal(result.collapsed.layoutBottom, result.collapsed.viewportHeight);
-    assert.equal(result.collapsed.overlapsArtifact, false);
-    assert.equal(result.collapsed.overlapsSend, false);
-    assert.equal(result.collapsed.annotationVisible, true);
-    assert.equal(result.collapsed.annotationPressed, "true");
-    assert.equal(result.collapsed.controlsHidden, true);
-    assert.deepEqual(result.annotationOff, { defaultPrevented: true, pressed: "false", colorChanged: true });
-    assert.ok(result.expanded.dockHeight <= 42);
-    assert.equal(result.expanded.controlsHidden, false);
-    assert.equal(result.expanded.overlapsArtifact, false);
-    assert.equal(result.expanded.overlapsSend, false);
-    assert.deepEqual(result.panelCollapsed, {
-      panelDisplay: "none",
-      artifactRight: result.panelCollapsed.viewportWidth,
-      viewportWidth: result.panelCollapsed.viewportWidth,
-      overlapsArtifact: false,
-    });
+    async function runBrowser(width) {
+      const { stdout } = await execFileAsync(
+        chrome,
+        [
+          "--headless=new",
+          "--disable-gpu",
+          "--disable-dev-shm-usage",
+          "--disable-background-networking",
+          "--no-sandbox",
+          `--user-data-dir=${path.join(root, `chrome-profile-${width}`)}`,
+          `--window-size=${Math.max(width, 500)},720`,
+          "--run-all-compositor-stages-before-draw",
+          "--virtual-time-budget=1000",
+          "--dump-dom",
+          `http://127.0.0.1:${address.port}${width === 320 ? "/narrow" : "/"}`,
+        ],
+        { maxBuffer: 4 * 1024 * 1024, timeout: 15_000 },
+      );
+      const result = resultFromDump(stdout);
+      assert.ok(result, `browser fixture at ${width}px did not report a result`);
+      assert.equal(result.error, undefined);
+      return result;
+    }
+
+    const [desktop, narrow] = await Promise.all([runBrowser(1280), runBrowser(320)]);
+
+    for (const result of [desktop, narrow]) {
+      assert.equal(result.collapsed.position, "relative");
+      assert.equal(result.collapsed.dockTop, 0);
+      assert.ok(result.collapsed.dockHeight <= 42);
+      assert.equal(result.collapsed.layoutTop, result.collapsed.dockBottom);
+      assert.equal(result.collapsed.layoutBottom, result.collapsed.viewportHeight);
+      assert.equal(result.collapsed.overlapsArtifact, false);
+      assert.equal(result.collapsed.overlapsSend, false);
+      assert.equal(result.collapsed.annotationVisible, true);
+      assert.equal(result.collapsed.annotationWithinViewport, true);
+      assert.equal(result.collapsed.annotationPressed, "true");
+      assert.equal(result.collapsed.controlsHidden, true);
+      assert.deepEqual(result.annotationOff, { defaultPrevented: true, pressed: "false", colorChanged: true });
+      assert.ok(result.expanded.dockHeight <= 42);
+      assert.equal(result.expanded.controlsHidden, false);
+      assert.equal(result.expanded.documentOverflow, 0);
+      assert.equal(result.expanded.dockOverflow, 0);
+      assert.equal(result.expanded.annotationWithinViewport, true);
+      assert.equal(result.expanded.overlapsArtifact, false);
+      assert.equal(result.expanded.overlapsSend, false);
+      assert.deepEqual(result.panelCollapsed, {
+        panelDisplay: "none",
+        artifactRight: result.panelCollapsed.viewportWidth,
+        viewportWidth: result.panelCollapsed.viewportWidth,
+        overlapsArtifact: false,
+      });
+    }
+
+    assert.equal(desktop.expanded.viewportWidth, 1280);
+    assert.notEqual(desktop.expanded.panelActionDisplay, "none");
+    assert.notEqual(desktop.expanded.endActionDisplay, "none");
+    assert.equal(desktop.narrowMenu, null);
+    assert.equal(narrow.expanded.viewportWidth, 320);
+    assert.equal(narrow.expanded.panelActionDisplay, "none");
+    assert.equal(narrow.expanded.endActionDisplay, "none");
+    assert.deepEqual(narrow.narrowMenu, { panelActionDisplay: "flex", endActionDisplay: "flex" });
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
