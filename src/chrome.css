@@ -1088,13 +1088,13 @@ body.layout-gate-active iframe#artifact {
   }
 }
 
-/* Whiteboard overlay: a full-viewport layer above the chrome hosting the
+/* Whiteboard overlay: fills the review surface below the dock while hosting the
    sandboxed Excalidraw frame. The frame owns all whiteboard UI; this layer
    only provides the backdrop, a fallback close control, and an error card
    for when the frame cannot boot. */
 .whiteboard-overlay {
   position: fixed;
-  inset: 0;
+  inset: var(--bar-h) 0 0 0;
   background: rgba(15, 17, 21, 0.92);
   z-index: 80;
   display: flex;

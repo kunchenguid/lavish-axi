@@ -28,6 +28,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "@excalidraw/excalidraw/index.css";
 import "./whiteboard-frame.css";
+import { createWhiteboardEndSessionHotkeyHandler } from "./whiteboard-hotkeys.js";
 
 import {
   CLEAN_FONT_FAMILY,
@@ -169,6 +170,14 @@ function buildShell(theme, mode) {
       queueButton.click();
     }
   });
+  document.addEventListener(
+    "keydown",
+    createWhiteboardEndSessionHotkeyHandler(
+      () => state.mode,
+      (message) => post(message),
+    ),
+    true,
+  );
   // LOCAL ADDITION: Escape leaves the fullscreen whiteboard.
   //
   // The chrome already closes the overlay on Escape, but only when the key reaches the

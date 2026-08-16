@@ -106,6 +106,26 @@ Promise.resolve().then(() => {
 
   document.getElementById("barToggle").click();
   const expanded = snapshot();
+  const whiteboardOverlay = document.getElementById("whiteboardOverlay");
+  whiteboardOverlay.hidden = false;
+  const overlayBox = whiteboardOverlay.getBoundingClientRect();
+  const dockBox = document.getElementById("reviewDock").getBoundingClientRect();
+  const annotation = document.getElementById("annotation");
+  const annotationBox = annotation.getBoundingClientRect();
+  const annotationHit = document.elementFromPoint(
+    annotationBox.left + annotationBox.width / 2,
+    annotationBox.top + annotationBox.height / 2,
+  );
+  const whiteboardGeometry = {
+    position: getComputedStyle(whiteboardOverlay).position,
+    overlayTop: rounded(overlayBox.top),
+    overlayBottom: rounded(overlayBox.bottom),
+    dockBottom: rounded(dockBox.bottom),
+    overlapsDock: overlaps(overlayBox, dockBox),
+    annotationUncovered: annotation === annotationHit || annotation.contains(annotationHit),
+    annotationPressed: annotation.getAttribute("aria-pressed"),
+  };
+  whiteboardOverlay.hidden = true;
   let narrowMenu = null;
   if (narrow) {
     document.getElementById("moreButton").click();
@@ -130,6 +150,7 @@ Promise.resolve().then(() => {
     collapsed,
     annotationOff,
     expanded,
+    whiteboardGeometry,
     narrowMenu,
     panelCollapsed,
   });
@@ -253,6 +274,12 @@ fixture.addEventListener("load", collectResult);
       assert.equal(result.expanded.annotationWithinViewport, true);
       assert.equal(result.expanded.overlapsArtifact, false);
       assert.equal(result.expanded.overlapsSend, false);
+      assert.equal(result.whiteboardGeometry.position, "fixed");
+      assert.equal(result.whiteboardGeometry.overlayTop, result.whiteboardGeometry.dockBottom);
+      assert.equal(result.whiteboardGeometry.overlayBottom, result.expanded.viewportHeight);
+      assert.equal(result.whiteboardGeometry.overlapsDock, false);
+      assert.equal(result.whiteboardGeometry.annotationUncovered, true);
+      assert.equal(result.whiteboardGeometry.annotationPressed, "false");
       assert.deepEqual(result.panelCollapsed, {
         panelDisplay: "none",
         artifactRight: result.panelCollapsed.viewportWidth,

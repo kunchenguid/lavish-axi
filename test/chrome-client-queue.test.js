@@ -2076,6 +2076,61 @@ test("whiteboard fullscreen waits for the authenticated inline frame to flush", 
   assert.match(chrome.element("whiteboardFrame").src, /^\/whiteboard-frame\?diagramIndex=0&key=abc$/);
 });
 
+test("only the authenticated fullscreen whiteboard can relay end session", async () => {
+  const calls = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url, method: init.method });
+      return whiteboardFetch(url);
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const prepare = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: prepare.flushId,
+  });
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:ready",
+    diagramIndex: 0,
+    channelToken: "overlay-channel",
+  });
+  await flushPromises();
+  await flushPromises();
+
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:endSession",
+    diagramIndex: 0,
+    channelId: "wrong-channel",
+  });
+  await flushPromises();
+  assert.equal(
+    calls.some((call) => call.url === "/api/abc/end"),
+    false,
+  );
+
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:endSession",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+  });
+  await flushPromises();
+
+  assert.deepEqual(
+    calls.filter((call) => call.url === "/api/abc/end"),
+    [{ url: "/api/abc/end", method: "POST" }],
+  );
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
 test("whiteboard close waits for the authenticated overlay frame to flush", async () => {
   const chrome = await createChromeHarness({ fetchImpl: async (url) => whiteboardFetch(url) });
   const inline = await initializeInlineWhiteboard(chrome);

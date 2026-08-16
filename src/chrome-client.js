@@ -1694,6 +1694,7 @@ function handleAuthenticatedWhiteboardMessage(index, message, mode) {
   if (message.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(index, message, mode);
   if (message.type === "lavish-whiteboard:maximize" && mode === "inline") openWhiteboardOverlay(index);
   if (message.type === "lavish-whiteboard:close" && mode === "overlay") closeWhiteboard();
+  if (message.type === "lavish-whiteboard:endSession" && mode === "overlay") endSession();
   if (message.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(index, message, mode);
   if (message.type === "lavish-whiteboard:teardownFailed") failWhiteboardTeardown(index, message, mode);
   if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(index, message, mode);

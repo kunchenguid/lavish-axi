@@ -1,20 +1,17 @@
 /* global CSS, Element, MutationObserver, ResizeObserver, document, getComputedStyle, parent, window */
 
 import * as mermaidHelpers from "./mermaid-node.js";
+import { END_SESSION_HOTKEY_KEY, isEndSessionHotkeyEvent } from "./review-hotkeys.js";
+
+export { END_SESSION_HOTKEY_KEY, isEndSessionHotkeyEvent } from "./review-hotkeys.js";
 
 export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 
 export const MODE_TOGGLE_HOTKEY_KEY = "i";
-export const END_SESSION_HOTKEY_KEY = "e";
 
 export function isModeToggleHotkeyEvent(event) {
   if (event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
-}
-
-export function isEndSessionHotkeyEvent(event) {
-  if (event.isComposing || !event.shiftKey || event.altKey) return false;
-  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === END_SESSION_HOTKEY_KEY;
 }
 
 export function isPanelToggleHotkeyEvent(event) {
