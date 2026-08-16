@@ -5,9 +5,14 @@ import vm from "node:vm";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[] }} HarnessSessionData */
 /** @type {HarnessSessionData} */
-const defaultSessionData = { key: "abc", file: "/tmp/artifact.html", modeToggleHotkeyKey: "i" };
+const defaultSessionData = {
+  key: "abc",
+  file: "/tmp/artifact.html",
+  modeToggleHotkeyKey: "i",
+  attachmentAcceptedMime: ["image/png", "image/jpeg", "image/webp"],
+};
 
 async function createChromeHarness({
   fetchImpl = /** @type {(url?: any, init?: any) => Promise<any>} */ (
@@ -201,6 +206,11 @@ async function createChromeHarness({
       postedToFrame.push(message);
     },
   };
+  // The served chrome nests these inside the composer, and drag handling reads
+  // that containment to decide whether a pointer actually left the drop target.
+  for (const childId of ["chatInput", "chatAttachments", "chatAttachInput", "chatAttach"]) {
+    element(childId).parentElement = element("chatComposer");
+  }
   element("whiteboardOverlay").hidden = true;
   element("shareDialog").hidden = true;
   element("moreMenu").hidden = true;
@@ -855,19 +865,114 @@ test("Conversation attaches a drop exposed only through data-transfer items", as
   assert.match(chrome.element("chatAttachments").innerHTML, /dropped\.png/);
 });
 
-test("dragging across the composer's own children keeps the drop highlight", async () => {
+test("the composer drop highlight survives its children and clears on the way out", async () => {
   const chrome = await createChromeHarness();
   const composer = chrome.element("chatComposer");
+  const input = chrome.element("chatInput");
 
   composer.dispatch("dragover", { dataTransfer: { types: ["Files"] }, preventDefault() {} });
   assert.equal(composer.classList.contains("is-dropping"), true);
 
-  // dragleave bubbles from every child, but the composer is still the drop target.
-  composer.dispatch("dragleave", { target: chrome.element("chatInput") });
+  // Crossing onto an inner element is not leaving the drop target.
+  composer.dispatch("dragleave", { target: composer, relatedTarget: input });
   assert.equal(composer.classList.contains("is-dropping"), true);
 
-  composer.dispatch("dragleave", { target: composer });
+  // dragleave fires only at the immediate previous target, so the exit is
+  // reported from the child - the highlight must still clear.
+  composer.dispatch("dragleave", { target: input, relatedTarget: chrome.element("chatLog") });
   assert.equal(composer.classList.contains("is-dropping"), false);
+});
+
+test("the composer drop highlight clears when the drag leaves the window", async () => {
+  const chrome = await createChromeHarness();
+  const composer = chrome.element("chatComposer");
+
+  composer.dispatch("dragover", { dataTransfer: { types: ["Files"] }, preventDefault() {} });
+  composer.dispatch("dragleave", { target: chrome.element("chatInput"), relatedTarget: null });
+
+  assert.equal(composer.classList.contains("is-dropping"), false);
+});
+
+test("a text drag dropped on the composer keeps the browser's own insertion", async () => {
+  const chrome = await createChromeHarness();
+  const event = {
+    dataTransfer: { types: ["text/plain"], files: [] },
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+
+  chrome.element("chatComposer").dispatch("drop", event);
+
+  assert.equal(event.defaultPrevented, false, "a text drop must still insert into the textarea");
+  assert.equal(chrome.element("chatAttachments").innerHTML, "");
+});
+
+test("an over-cap Conversation image is not retryable and its bytes are never read", async () => {
+  let reads = 0;
+  const big = pastedImage("huge.png");
+  big.size = 4096;
+  big.arrayBuffer = async () => {
+    reads += 1;
+    return new ArrayBuffer(4096);
+  };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => {
+      throw new Error("an over-cap image must never reach the network");
+    },
+  });
+
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(big));
+  await flushPromises();
+  await flushPromises();
+
+  const chips = chrome.element("chatAttachments").innerHTML;
+  assert.match(chips, /larger than the 1 KB limit/);
+  assert.match(chips, /aria-label="Remove huge\.png"/);
+  assert.doesNotMatch(chips, /aria-label="Retry huge\.png"/, "a guaranteed failure must not offer Retry");
+  assert.doesNotMatch(chips, /chat-attachment-thumb/, "the oversized bytes must not be decoded for a preview");
+
+  chrome.element("chatAttachments").dispatch("click", {
+    target: {
+      closest(selector) {
+        return selector === "[data-chat-attachment-retry]" ? { dataset: { chatAttachmentRetry: "0" } } : null;
+      },
+    },
+  });
+  await flushPromises();
+
+  assert.equal(reads, 0, "the file must never be read into a buffer");
+});
+
+test("the composer attaches an image type the server declares", async () => {
+  const id = "3".repeat(64) + ".avif";
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentAcceptedMime: ["image/avif"] },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id } }) }),
+  });
+  const avif = pastedImage("next.avif");
+  avif.type = "image/avif";
+
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(avif));
+  await flushPromises();
+  await flushPromises();
+
+  chrome.element("send").click();
+  assert.deepEqual(chrome.queued()[0].attachments, [{ id, name: "next.avif" }]);
+});
+
+test("the composer refuses an image type the server does not declare", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentAcceptedMime: ["image/avif"] },
+  });
+
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("legacy.png")));
+
+  const chips = chrome.element("chatAttachments").innerHTML;
+  assert.match(chips, /legacy\.png/);
+  assert.match(chips, /data-error="UNSUPPORTED_TYPE"/);
 });
 
 test("Conversation preserves text from a mixed text and image paste", async () => {

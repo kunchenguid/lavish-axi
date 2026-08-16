@@ -162,14 +162,14 @@
   "hotPaths": [
     {
       "path": "src/chrome-client.js",
-      "accessCount": 24,
-      "lastAccessed": 1786906897752,
+      "accessCount": 32,
+      "lastAccessed": 1786907673793,
       "type": "file"
     },
     {
       "path": "test/chrome-client-queue.test.js",
-      "accessCount": 9,
-      "lastAccessed": 1786906886367,
+      "accessCount": 14,
+      "lastAccessed": 1786907565325,
       "type": "file"
     },
     {
@@ -179,15 +179,15 @@
       "type": "file"
     },
     {
-      "path": "src/artifact-sdk.js",
-      "accessCount": 6,
-      "lastAccessed": 1786906195992,
+      "path": "src/server.js",
+      "accessCount": 7,
+      "lastAccessed": 1786907620705,
       "type": "file"
     },
     {
-      "path": "src/server.js",
-      "accessCount": 3,
-      "lastAccessed": 1786906208215,
+      "path": "src/artifact-sdk.js",
+      "accessCount": 6,
+      "lastAccessed": 1786906195992,
       "type": "file"
     },
     {
@@ -197,21 +197,27 @@
       "type": "file"
     },
     {
+      "path": "test/server.test.js",
+      "accessCount": 3,
+      "lastAccessed": 1786907575738,
+      "type": "file"
+    },
+    {
+      "path": "AGENTS.md",
+      "accessCount": 3,
+      "lastAccessed": 1786907633675,
+      "type": "file"
+    },
+    {
       "path": "src/chrome.css",
       "accessCount": 2,
       "lastAccessed": 1786906181477,
       "type": "file"
     },
     {
-      "path": "AGENTS.md",
+      "path": "src/attachment-store.js",
       "accessCount": 2,
-      "lastAccessed": 1786906930326,
-      "type": "file"
-    },
-    {
-      "path": "test/server.test.js",
-      "accessCount": 1,
-      "lastAccessed": 1786906299275,
+      "lastAccessed": 1786907602378,
       "type": "file"
     },
     {

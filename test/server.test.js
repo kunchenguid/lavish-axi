@@ -141,6 +141,18 @@ test("createChromeHtml exposes attachment limits and Conversation attachment con
   assert.match(html, /id="chatAttachments"/);
   assert.match(html, /id="chatAttach"/);
   assert.match(html, /id="chatAttachInput"[^>]+accept="image\/png,image\/jpeg,image\/webp"/);
+  assert.match(html, /"attachmentAcceptedMime":\["image\/png","image\/jpeg","image\/webp"\]/);
+});
+
+test("the accepted image types the chrome enforces and offers come from one value", () => {
+  // The file picker's accept attribute and the list the composer filters pastes
+  // and drops against must never be able to disagree.
+  const html = createChromeHtml(
+    { key: "abc", file: "/tmp/artifact.html" },
+    { attachmentAcceptedMime: ["image/png", "image/avif"] },
+  );
+  assert.match(html, /id="chatAttachInput"[^>]+accept="image\/png,image\/avif"/);
+  assert.match(html, /"attachmentAcceptedMime":\["image\/png","image\/avif"\]/);
 });
 
 test("readAttachmentUploadBody buffers under the cap and drains the stream when over it", async () => {

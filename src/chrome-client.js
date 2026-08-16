@@ -13,7 +13,11 @@ const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initial
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
 const attachmentMaxCount = Number(sessionData.attachmentMaxCount) || 4;
-const CHAT_ATTACHMENT_MIME = new Set(["image/png", "image/jpeg", "image/webp"]);
+// Threaded from the server's single accepted-image list, which also drives the
+// file picker's accept attribute, so the two can never disagree.
+const CHAT_ATTACHMENT_MIME = new Set(
+  (Array.isArray(sessionData.attachmentAcceptedMime) ? sessionData.attachmentAcceptedMime : []).map(String),
+);
 
 // The chrome is the only path from the sandboxed (opaque-origin) artifact iframe to
 // the loopback server, so it is the sole place a same-origin confused-deputy can be
@@ -678,9 +682,9 @@ function createChatAttachmentsController() {
       const tooLarge = attachmentMaxBytes > 0 && Number(file.size) > attachmentMaxBytes;
       const item = {
         localId,
-        file,
+        file: tooLarge ? null : file,
         name: String(file.name || "image"),
-        preview: URL.createObjectURL(file),
+        preview: tooLarge ? "" : URL.createObjectURL(file),
         status: tooLarge ? "error" : "uploading",
         error: tooLarge ? "Image is larger than the " + formatByteLimit(attachmentMaxBytes) + " limit" : "",
         errorCode: "",
@@ -2330,11 +2334,13 @@ chatComposer.addEventListener("dragover", (event) => {
   }
 });
 chatComposer.addEventListener("dragleave", (event) => {
-  if (event.target === chatComposer) chatComposer.classList.remove("is-dropping");
+  const entering = /** @type {Node | null} */ (event.relatedTarget);
+  if (!chatComposer.contains(entering)) chatComposer.classList.remove("is-dropping");
 });
 chatComposer.addEventListener("drop", (event) => {
-  event.preventDefault();
   chatComposer.classList.remove("is-dropping");
+  if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+  event.preventDefault();
   const files = transferredFiles(event.dataTransfer);
   chatAttachmentController.addFiles(files);
   chatAttachmentController.rejectUnsupported(files);

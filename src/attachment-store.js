@@ -152,6 +152,12 @@ function diskCapEnv(raw, fallback = DEFAULT_MAX_ATTACHMENT_DISK_BYTES) {
   return bytes >= 1 ? bytes : fallback;
 }
 
+// The image types this store admits, in the order clients should offer them.
+// `detectImageType` below is the enforcing authority; every client-facing list
+// (the chrome's file picker, the composer's paste/drop filter) derives from this
+// one so a new format can never be offered by a surface that then refuses it.
+export const ACCEPTED_IMAGE_MIME = ["image/png", "image/jpeg", "image/webp"];
+
 // Detect the image format from magic bytes alone. Returns { mime, ext } or null.
 export function detectImageType(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
