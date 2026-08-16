@@ -386,7 +386,10 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   // LOCAL PATCH: the per-artifact CSS builder replaces the CDN. Assert the whole contract the
   // agent needs to act on, because "build it locally" is useless without the command.
   assert.match(output.styling.how, /compiles ONLY the classes this artifact uses/);
-  assert.match(output.styling.build_command, /^node \S+[/\\]local[/\\]build-css\.mjs <artifact\.html> --minify/);
+  assert.equal(
+    output.styling.build_command,
+    "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify [--theme <daisyui-theme>]",
+  );
   assert.match(output.styling.build_command, /\[--theme <daisyui-theme>\]/);
   assert.match(output.styling.link_tag, /RELATIVE href/);
   assert.match(output.styling.link_tag, /Never a leading slash/);
@@ -422,6 +425,18 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   assert.ok(output.reference.drawer.notes.some((item) => item.includes("drawer-toggle")));
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("Keep `data-prefix` short")));
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
+});
+
+test("design output shell-quotes builder and artifact path arguments", () => {
+  const output = createDesignOutput({
+    cssBuilderPath: "/checkout path/it's $(unsafe)/local/build-css.mjs",
+  });
+
+  assert.equal(
+    output.styling.build_command,
+    `node '/checkout path/it'\"'\"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify [--theme <daisyui-theme>]`,
+  );
+  assert.match(output.styling.how, /artifact's shell-quoted path/);
 });
 
 test("design output withholds the build command when the local toolchain is incomplete", () => {

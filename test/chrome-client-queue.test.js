@@ -1838,10 +1838,14 @@ test("chrome client toggles the conversation panel when the artifact SDK request
   chrome.sendFrameMessage({ type: "lavish:togglePanel" });
   assert.equal(chrome.element("body").classList.contains("panel-collapsed"), true);
   assert.equal(chrome.element("panelToggle")["aria-pressed"], "true");
+  assert.equal(chrome.element("panelToggle")["aria-label"], "Show conversation panel");
+  assert.equal(chrome.element("panelToggle").title, "Show conversation panel · ⌘\\ / Ctrl+\\");
 
   chrome.sendFrameMessage({ type: "lavish:togglePanel" });
   assert.equal(chrome.element("body").classList.contains("panel-collapsed"), false);
   assert.equal(chrome.element("panelToggle")["aria-pressed"], "false");
+  assert.equal(chrome.element("panelToggle")["aria-label"], "Collapse conversation panel");
+  assert.equal(chrome.element("panelToggle").title, "Collapse conversation panel · ⌘\\ / Ctrl+\\");
 });
 
 test("chrome client ignores annotation mode toggles after the session ends", async () => {

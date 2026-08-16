@@ -2030,7 +2030,9 @@ annotationSwitch.onclick = toggleAnnotationMode;
 function setPanelCollapsed(collapsed) {
   document.body.classList.toggle("panel-collapsed", collapsed);
   panelToggle.setAttribute("aria-pressed", String(collapsed));
-  panelToggle.setAttribute("aria-label", collapsed ? "Show conversation panel" : "Collapse conversation panel");
+  const action = collapsed ? "Show conversation panel" : "Collapse conversation panel";
+  panelToggle.setAttribute("aria-label", action);
+  panelToggle.title = action + " · ⌘\\ / Ctrl+\\";
   try {
     if (collapsed) window.localStorage.setItem(panelCollapsedStorageKey, "1");
     else window.localStorage.removeItem(panelCollapsedStorageKey);

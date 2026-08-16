@@ -19,6 +19,10 @@ function localCssBuilderPath() {
   }
 }
 
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
+}
+
 export const TAILWIND_BROWSER_VERSION = "4.2.4";
 export const DAISYUI_VERSION = "5.5.19";
 export const MERMAID_VERSION = "11.15.0";
@@ -243,10 +247,10 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = 
     // "fetch a runtime at view time" to "compile the used classes into a sibling file".
     styling: {
       how: cssBuilderPath
-        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then run build_command. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server."
+        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then run build_command. Replace the quoted '<artifact.html>' placeholder with the artifact's shell-quoted path. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server."
         : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
       build_command: cssBuilderPath
-        ? `node ${cssBuilderPath} <artifact.html> --minify [--theme <daisyui-theme>]`
+        ? `node ${shellQuote(cssBuilderPath)} '<artifact.html>' --minify [--theme <daisyui-theme>]`
         : null,
       link_tag:
         'Reference the built file with a RELATIVE href in <head>: <link rel="stylesheet" href="<artifact-basename>.css">. Never a leading slash.',
