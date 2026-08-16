@@ -94,7 +94,7 @@ function isPanelToggleHotkeyEvent(event) {
 }
 
 function isSendHotkeyEvent(event) {
-  if (event.shiftKey || event.altKey) return false;
+  if (event.isComposing || event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && (event.key === "Enter" || event.code === "Enter");
 }
 
@@ -2181,8 +2181,8 @@ document.addEventListener(
 // handles the keys itself and forwards the intent over the same postMessage channel
 // that already carries lavish:restoreScroll.
 //
-// Not in the capture phase, and never while typing: a paging key inside a textarea
-// or the conversation panel belongs to whatever is focused there.
+// Not in the capture phase, and never while typing or navigating chrome-owned
+// scroll/popover UI: those keys belong to whatever is focused there.
 const ARTIFACT_SCROLL_KEYS = new Set(["PageDown", "PageUp", "Home", "End"]);
 
 function isTypingTarget(target) {
@@ -2194,15 +2194,22 @@ function isTypingTarget(target) {
 // Duck-typed like isTypingTarget: event.target is an EventTarget, and narrowing it to a
 // Node needs either a global this file's eslint config does not declare or a cast tsc
 // then rejects. An untyped parameter satisfies both.
-function isInsideConversationPanel(target) {
-  return Boolean(target && typeof target.nodeType === "number" && panelScroll.contains(target));
+function isInsideChromeNavigationRegion(target) {
+  return Boolean(
+    target &&
+    typeof target.nodeType === "number" &&
+    (panelScroll.contains(target) ||
+      (warningsDrawerOpen && warningsDrawer.contains(target)) ||
+      (!moreMenu.hidden && moreMenu.contains(target)) ||
+      (!whiteboardOverlay.hidden && whiteboardOverlay.contains(target))),
+  );
 }
 
 document.addEventListener("keydown", (event) => {
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   if (!ARTIFACT_SCROLL_KEYS.has(event.key)) return;
   if (isTypingTarget(event.target)) return;
-  if (isInsideConversationPanel(event.target)) return;
+  if (isInsideChromeNavigationRegion(event.target)) return;
   event.preventDefault();
   postToFrame({ type: "lavish:scrollKey", key: event.key });
 });

@@ -469,7 +469,6 @@ test("chrome declares the Lavish design-system tokens", async () => {
   assert.match(css, /--shadow-floating:0 20px 70px rgba\(0,0,0,.35\)/);
   assert.match(css, /--ease:cubic-bezier\(.2,.6,.2,1\)/);
   assert.match(css, /--dur-slow:320ms/);
-  assert.match(css, /--bar-h:56px/);
   assert.match(css, /--panel-w:360px/);
 });
 

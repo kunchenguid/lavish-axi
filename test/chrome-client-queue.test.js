@@ -1715,6 +1715,42 @@ test("chrome end-session hotkey requires Shift and rejects Alt", async () => {
   assert.deepEqual(posts, []);
 });
 
+test("global send ignores Cmd/Ctrl+Enter during IME composition", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("chatInput").value = "未確定";
+  const before = chrome.postedToFrame.length;
+
+  const composing = chrome.dispatchDocumentKeydown({ key: "Enter", metaKey: true, isComposing: true });
+
+  assert.equal(composing.defaultPrevented, false);
+  assert.equal(chrome.postedToFrame.length, before);
+
+  const committed = chrome.dispatchDocumentKeydown({ key: "Enter", metaKey: true });
+  assert.equal(committed.defaultPrevented, true);
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:requestSnapshot");
+});
+
+test("paging keys stay inside an open layout-issues drawer", async () => {
+  const chrome = await createChromeHarness();
+  const outside = chrome.element("outsidePagingTarget");
+  outside.nodeType = 1;
+
+  const forwarded = chrome.dispatchDocumentKeydown({ key: "PageDown", target: outside });
+  assert.equal(forwarded.defaultPrevented, true);
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:scrollKey");
+  assert.equal(chrome.postedToFrame.at(-1).key, "PageDown");
+
+  chrome.element("warningsButton").click();
+  const drawerControl = chrome.element("drawerPagingTarget");
+  drawerControl.nodeType = 1;
+  chrome.element("warningsDrawer").appendChild(drawerControl);
+  const before = chrome.postedToFrame.length;
+
+  const retained = chrome.dispatchDocumentKeydown({ key: "PageDown", target: drawerControl });
+  assert.equal(retained.defaultPrevented, false);
+  assert.equal(chrome.postedToFrame.length, before);
+});
+
 test("chrome send and end during an in-flight submit still ends after the submit drains the queue", async () => {
   const posts = [];
   let resolveFirstPost = () => {};
