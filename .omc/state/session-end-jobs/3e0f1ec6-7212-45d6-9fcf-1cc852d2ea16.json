@@ -1,24 +1,24 @@
 {
   "version": 1,
-  "jobId": "e8ed212e-dbb5-47e0-959a-ddee7a96882b",
-  "sessionId": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
+  "jobId": "a9d62df0-8d53-4396-9f48-28c14670807e",
+  "sessionId": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
   "scopeKey": "37b9161c6d4b495e3e63f01c945eb8499252fb6d684eac36183cf803c7c44acc",
-  "revision": 42,
-  "createdAt": "2026-08-16T18:54:27.780Z",
-  "updatedAt": "2026-08-16T19:02:41.371Z",
-  "producerGraceExpiresAt": "2026-08-16T18:54:57.780Z",
-  "bestEffortDeadlineAt": "2026-08-16T18:55:48.780Z",
+  "revision": 41,
+  "createdAt": "2026-08-16T19:00:14.133Z",
+  "updatedAt": "2026-08-16T19:00:15.332Z",
+  "producerGraceExpiresAt": "2026-08-16T19:00:44.133Z",
+  "bestEffortDeadlineAt": "2026-08-16T19:01:35.133Z",
   "producers": {
     "core": {
       "state": "sealed",
-      "intentKey": "9ad527a25f6ade3ba420092ba667ab0efc81bf98cc19eb200ae44cc4fe87be4e",
-      "payloadDigest": "9ad527a25f6ade3ba420092ba667ab0efc81bf98cc19eb200ae44cc4fe87be4e",
-      "sealedAt": "2026-08-16T18:54:27.860Z",
+      "intentKey": "706d848d1c483d9dad72cf930ab6d0fc5b6afd3e7f72ce132f3d8ac94cb3219e",
+      "payloadDigest": "706d848d1c483d9dad72cf930ab6d0fc5b6afd3e7f72ce132f3d8ac94cb3219e",
+      "sealedAt": "2026-08-16T19:00:14.220Z",
       "sealedBy": "foreground"
     },
     "wiki": {
       "state": "no-op",
-      "sealedAt": "2026-08-16T18:54:27.780Z",
+      "sealedAt": "2026-08-16T19:00:14.133Z",
       "sealedBy": "wiki-producer"
     }
   },
@@ -30,20 +30,20 @@
       "attempts": 0,
       "idempotencyKey": "febf6dba2f2536433960a07f7cedce72e946b43ced0896570df80f017b8914d2",
       "payload": {
-        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
         "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
         "reason": "other",
         "input": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
           "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
-          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "prompt_id": "a5da5cb1-b921-4335-986c-9d33d49b61f5",
           "hook_event_name": "SessionEnd",
           "reason": "other"
         },
         "metrics": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "ended_at": "2026-08-16T18:54:27.779Z",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "ended_at": "2026-08-16T19:00:14.132Z",
           "reason": "other",
           "agents_spawned": 0,
           "agents_completed": 0,
@@ -54,11 +54,11 @@
         "openClawRouting": {},
         "foregroundResult": {
           "removedTransientFiles": 2,
-          "completedAt": "2026-08-16T18:54:27.860Z"
+          "completedAt": "2026-08-16T19:00:14.220Z"
         }
       },
       "budgetMs": 9000,
-      "completedAt": "2026-08-16T18:54:27.860Z",
+      "completedAt": "2026-08-16T19:00:14.220Z",
       "lastOutcomeCode": "completed"
     },
     "wiki-capture": {
@@ -69,7 +69,7 @@
       "idempotencyKey": "1719cd1ef5b51e0269b78c4cb8c9308c9c1f7b82fd1c067fc034c060f23863f5",
       "payload": {},
       "budgetMs": 9000,
-      "completedAt": "2026-08-16T18:54:27.780Z"
+      "completedAt": "2026-08-16T19:00:14.133Z"
     },
     "team-cleanup": {
       "class": "required",
@@ -78,20 +78,20 @@
       "attempts": 1,
       "idempotencyKey": "cee6ac31df545408e1e822247ac249b3f8182a98a5fe8e448ae3b251e55bdee1",
       "payload": {
-        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
         "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
         "reason": "other",
         "input": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
           "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
-          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "prompt_id": "a5da5cb1-b921-4335-986c-9d33d49b61f5",
           "hook_event_name": "SessionEnd",
           "reason": "other"
         },
         "metrics": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "ended_at": "2026-08-16T18:54:27.779Z",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "ended_at": "2026-08-16T19:00:14.132Z",
           "reason": "other",
           "agents_spawned": 0,
           "agents_completed": 0,
@@ -102,15 +102,15 @@
         "openClawRouting": {}
       },
       "budgetMs": 9000,
-      "claimedAt": "2026-08-16T18:54:27.905Z",
+      "claimedAt": "2026-08-16T19:00:14.266Z",
       "runner": {
         "attempt": 1,
-        "runnerNonce": "20b851fe-2aef-4fb4-ac11-f3936ec19b27",
+        "runnerNonce": "bbf7344e-bff8-4e27-84cf-6d9c8a0ea8f4",
         "phase": "terminal",
-        "deadlineAt": "2026-08-16T18:54:37.876Z"
+        "deadlineAt": "2026-08-16T19:00:24.236Z"
       },
       "lastOutcomeCode": "completed",
-      "completedAt": "2026-08-16T18:54:28.035Z"
+      "completedAt": "2026-08-16T19:00:14.390Z"
     },
     "python-cleanup": {
       "class": "required",
@@ -119,20 +119,20 @@
       "attempts": 1,
       "idempotencyKey": "1f1370c4ac056606059d517e2f106b602d8cbcb04587b3fcc5f3b9f89e649cd0",
       "payload": {
-        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
         "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
         "reason": "other",
         "input": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
           "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
-          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "prompt_id": "a5da5cb1-b921-4335-986c-9d33d49b61f5",
           "hook_event_name": "SessionEnd",
           "reason": "other"
         },
         "metrics": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "ended_at": "2026-08-16T18:54:27.779Z",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "ended_at": "2026-08-16T19:00:14.132Z",
           "reason": "other",
           "agents_spawned": 0,
           "agents_completed": 0,
@@ -143,15 +143,15 @@
         "openClawRouting": {}
       },
       "budgetMs": 9000,
-      "claimedAt": "2026-08-16T18:54:28.055Z",
+      "claimedAt": "2026-08-16T19:00:14.411Z",
       "runner": {
         "attempt": 1,
-        "runnerNonce": "37f3cb42-e239-475d-a718-1b5018309136",
+        "runnerNonce": "b90fac11-29b0-4a11-98a6-48f5a459f0ce",
         "phase": "terminal",
-        "deadlineAt": "2026-08-16T18:54:37.876Z"
+        "deadlineAt": "2026-08-16T19:00:24.236Z"
       },
       "lastOutcomeCode": "completed",
-      "completedAt": "2026-08-16T18:54:28.198Z"
+      "completedAt": "2026-08-16T19:00:14.550Z"
     },
     "reply-cleanup": {
       "class": "required",
@@ -160,20 +160,20 @@
       "attempts": 1,
       "idempotencyKey": "0b3a8b47c28b26d56aca004d4f572b96c118f16819c0d35162418816f9a5420a",
       "payload": {
-        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
         "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
         "reason": "other",
         "input": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
           "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
-          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "prompt_id": "a5da5cb1-b921-4335-986c-9d33d49b61f5",
           "hook_event_name": "SessionEnd",
           "reason": "other"
         },
         "metrics": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "ended_at": "2026-08-16T18:54:27.779Z",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "ended_at": "2026-08-16T19:00:14.132Z",
           "reason": "other",
           "agents_spawned": 0,
           "agents_completed": 0,
@@ -184,15 +184,15 @@
         "openClawRouting": {}
       },
       "budgetMs": 9000,
-      "claimedAt": "2026-08-16T18:54:28.218Z",
+      "claimedAt": "2026-08-16T19:00:14.571Z",
       "runner": {
         "attempt": 1,
-        "runnerNonce": "46058fb1-242b-4c1b-8e78-10b136a117e5",
+        "runnerNonce": "e25b8ea7-0682-4616-945d-a2c3ad518680",
         "phase": "terminal",
-        "deadlineAt": "2026-08-16T18:54:37.876Z"
+        "deadlineAt": "2026-08-16T19:00:24.236Z"
       },
       "lastOutcomeCode": "completed",
-      "completedAt": "2026-08-16T18:54:28.353Z"
+      "completedAt": "2026-08-16T19:00:14.705Z"
     },
     "callback": {
       "class": "best-effort",
@@ -201,20 +201,20 @@
       "attempts": 1,
       "idempotencyKey": "d068ede2655bf89e0c0950e087d0603d7dcf45538e94f20a654d08c6f4841895",
       "payload": {
-        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
         "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
         "reason": "other",
         "input": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
           "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
-          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "prompt_id": "a5da5cb1-b921-4335-986c-9d33d49b61f5",
           "hook_event_name": "SessionEnd",
           "reason": "other"
         },
         "metrics": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "ended_at": "2026-08-16T18:54:27.779Z",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "ended_at": "2026-08-16T19:00:14.132Z",
           "reason": "other",
           "agents_spawned": 0,
           "agents_completed": 0,
@@ -225,15 +225,15 @@
         "openClawRouting": {}
       },
       "budgetMs": 2000,
-      "claimedAt": "2026-08-16T18:54:28.382Z",
+      "claimedAt": "2026-08-16T19:00:14.734Z",
       "runner": {
         "attempt": 1,
-        "runnerNonce": "a18ccdf3-7d10-4bcb-a695-2969b02d44e7",
+        "runnerNonce": "db23733d-01a6-4f31-946a-bca1ca52758f",
         "phase": "terminal",
-        "deadlineAt": "2026-08-16T18:54:37.876Z"
+        "deadlineAt": "2026-08-16T19:00:24.236Z"
       },
       "lastOutcomeCode": "completed",
-      "completedAt": "2026-08-16T18:54:28.534Z"
+      "completedAt": "2026-08-16T19:00:14.874Z"
     },
     "notification": {
       "class": "best-effort",
@@ -242,20 +242,20 @@
       "attempts": 1,
       "idempotencyKey": "89c0438ff63097ce04beb60efb87292ff68a7af350a0ee331f3de9dbf42d62fc",
       "payload": {
-        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
         "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
         "reason": "other",
         "input": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
           "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
-          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "prompt_id": "a5da5cb1-b921-4335-986c-9d33d49b61f5",
           "hook_event_name": "SessionEnd",
           "reason": "other"
         },
         "metrics": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "ended_at": "2026-08-16T18:54:27.779Z",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "ended_at": "2026-08-16T19:00:14.132Z",
           "reason": "other",
           "agents_spawned": 0,
           "agents_completed": 0,
@@ -266,15 +266,15 @@
         "openClawRouting": {}
       },
       "budgetMs": 2000,
-      "claimedAt": "2026-08-16T18:54:28.559Z",
+      "claimedAt": "2026-08-16T19:00:14.898Z",
       "runner": {
         "attempt": 1,
-        "runnerNonce": "8156ed08-6c05-4841-ae18-62527cc00269",
+        "runnerNonce": "6b7c75ab-27cd-4d89-b37f-6453442a79f2",
         "phase": "terminal",
-        "deadlineAt": "2026-08-16T18:54:37.876Z"
+        "deadlineAt": "2026-08-16T19:00:24.236Z"
       },
       "lastOutcomeCode": "completed",
-      "completedAt": "2026-08-16T18:54:28.699Z"
+      "completedAt": "2026-08-16T19:00:15.092Z"
     },
     "openclaw": {
       "class": "best-effort",
@@ -283,20 +283,20 @@
       "attempts": 1,
       "idempotencyKey": "31fe8f6e1cf204e27006de511df257326fdd98655122ca437013e8779ffc735b",
       "payload": {
-        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+        "transcriptPath": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
         "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
         "reason": "other",
         "input": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/ad1af068-6eb7-4671-a0fb-6ddd40706faf.jsonl",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "transcript_path": "/Users/adelinb/.claude/projects/-Users-adelinb--no-mistakes-worktrees-144fa0276c6d-01M05XXDSRGK55YMR8F6J297H7/3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16.jsonl",
           "cwd": "/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7",
-          "prompt_id": "129de830-1009-4e45-9037-f2aaf5334f7f",
+          "prompt_id": "a5da5cb1-b921-4335-986c-9d33d49b61f5",
           "hook_event_name": "SessionEnd",
           "reason": "other"
         },
         "metrics": {
-          "session_id": "ad1af068-6eb7-4671-a0fb-6ddd40706faf",
-          "ended_at": "2026-08-16T18:54:27.779Z",
+          "session_id": "3e0f1ec6-7212-45d6-9fcf-1cc852d2ea16",
+          "ended_at": "2026-08-16T19:00:14.132Z",
           "reason": "other",
           "agents_spawned": 0,
           "agents_completed": 0,
@@ -307,22 +307,22 @@
         "openClawRouting": {}
       },
       "budgetMs": 2000,
-      "claimedAt": "2026-08-16T18:54:28.727Z",
+      "claimedAt": "2026-08-16T19:00:15.138Z",
       "runner": {
         "attempt": 1,
-        "runnerNonce": "0406727e-70dc-4c59-b4a7-4af234f155a3",
+        "runnerNonce": "548999ac-638a-4dbb-a9a6-ba0adb24738b",
         "phase": "terminal",
-        "deadlineAt": "2026-08-16T18:54:37.876Z"
+        "deadlineAt": "2026-08-16T19:00:24.236Z"
       },
       "lastOutcomeCode": "completed",
-      "completedAt": "2026-08-16T18:54:28.902Z"
+      "completedAt": "2026-08-16T19:00:15.277Z"
     }
   },
   "owner": null,
   "phase": "complete",
   "completion": {
-    "completedAt": "2026-08-16T18:54:28.925Z",
-    "terminalDigest": "a0f210d76cfce3fb3ecd17de896408990dd403166c0aaa7e8d173f56ce96152e",
+    "completedAt": "2026-08-16T19:00:15.306Z",
+    "terminalDigest": "55e3e63be1c526d9f3f398f190319675595ced3c3aeac576f007250552cf37cc",
     "terminalRevision": 40
   }
 }

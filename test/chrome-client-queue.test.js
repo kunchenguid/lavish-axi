@@ -740,6 +740,20 @@ function clipboardEvent(file, text = "") {
   };
 }
 
+// A clipboard that exposes its payload ONLY through items. Several browsers hand
+// a pasted screenshot over this way and leave `files` empty.
+const asItems = (files) => files.map((file) => ({ kind: "file", type: file.type, getAsFile: () => file }));
+
+function clipboardItemsEvent(files, text = "") {
+  return {
+    clipboardData: { files: [], items: asItems(files), getData: (type) => (type === "text/plain" ? text : "") },
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+}
+
 test("attachment rejection copy applies to annotations and Conversation messages", async () => {
   // The server rejects a batch atomically (C4) and answers 400 with {rejected, caps};
   // the chrome must surface that in wording that fits BOTH surfaces, since a
@@ -792,6 +806,68 @@ test("Conversation accepts an image-only paste and sends its attachment ref", as
   chrome.element("send").click();
   assert.deepEqual(chrome.queued()[0].attachments, [{ id, name: "clipboard.png" }]);
   assert.equal(chrome.queued()[0].prompt, "");
+});
+
+test("Conversation attaches a screenshot exposed only through clipboard items", async () => {
+  const id = "1".repeat(64) + ".png";
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id } }) }),
+  });
+  const event = clipboardItemsEvent([pastedImage("screenshot.png")]);
+
+  chrome.element("chatInput").dispatch("paste", event);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(event.defaultPrevented, true);
+  assert.match(chrome.element("chatAttachments").innerHTML, /screenshot\.png/);
+  chrome.element("send").click();
+  assert.deepEqual(chrome.queued()[0].attachments, [{ id, name: "screenshot.png" }]);
+});
+
+test("an items-only paste of an unsupported file still explains itself", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+  });
+
+  chrome
+    .element("chatInput")
+    .dispatch("paste", clipboardItemsEvent([{ name: "notes.pdf", type: "application/pdf", size: 20 }]));
+
+  const chips = chrome.element("chatAttachments").innerHTML;
+  assert.match(chips, /notes\.pdf/);
+  assert.match(chips, /data-error="UNSUPPORTED_TYPE"/);
+});
+
+test("Conversation attaches a drop exposed only through data-transfer items", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async () => ({ ok: true, json: async () => ({ attachment: { id: "2".repeat(64) + ".png" } }) }),
+  });
+
+  chrome.element("chatComposer").dispatch("drop", {
+    dataTransfer: { files: [], items: asItems([pastedImage("dropped.png")]), types: ["Files"] },
+    preventDefault() {},
+  });
+  await flushPromises();
+
+  assert.match(chrome.element("chatAttachments").innerHTML, /dropped\.png/);
+});
+
+test("dragging across the composer's own children keeps the drop highlight", async () => {
+  const chrome = await createChromeHarness();
+  const composer = chrome.element("chatComposer");
+
+  composer.dispatch("dragover", { dataTransfer: { types: ["Files"] }, preventDefault() {} });
+  assert.equal(composer.classList.contains("is-dropping"), true);
+
+  // dragleave bubbles from every child, but the composer is still the drop target.
+  composer.dispatch("dragleave", { target: chrome.element("chatInput") });
+  assert.equal(composer.classList.contains("is-dropping"), true);
+
+  composer.dispatch("dragleave", { target: composer });
+  assert.equal(composer.classList.contains("is-dropping"), false);
 });
 
 test("Conversation preserves text from a mixed text and image paste", async () => {

@@ -1,0 +1,7 @@
+{
+  "tool_name": "Edit",
+  "tool_input_preview": "{\"file_path\":\"/Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7/CLAUDE.md\",\"old_string\":\"The sandboxed artifact iframe can't reach the loopback server (opaque origin), so t...",
+  "error": "Refusing to write through symlink: /Users/adelinb/.no-mistakes/worktrees/144fa0276c6d/01M05XXDSRGK55YMR8F6J297H7/CLAUDE.md. Resolve the symlink and pass the real target path explicitly.",
+  "timestamp": "2026-08-16T19:01:55.821Z",
+  "retry_count": 1
+}

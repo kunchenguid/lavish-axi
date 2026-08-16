@@ -2305,9 +2305,20 @@ chatAttachInput.addEventListener("change", () => {
   chatAttachmentController.rejectUnsupported(chatAttachInput.files);
   chatAttachInput.value = "";
 });
+// The one place a paste or drop is turned into a file list, so both surfaces see
+// the same payload. Pasted screenshots arrive as items, not files, in some
+// browsers; `.files` alone silently attaches nothing there.
+function transferredFiles(dataTransfer) {
+  const files = Array.from(dataTransfer?.files || []).filter(Boolean);
+  if (files.length) return files;
+  return Array.from(dataTransfer?.items || [])
+    .filter((item) => item && item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
 chatInput.addEventListener("paste", (event) => {
   const clipboardText = event.clipboardData?.getData("text/plain") || "";
-  const files = Array.from(event.clipboardData?.files || []);
+  const files = transferredFiles(event.clipboardData);
   const added = chatAttachmentController.addFiles(files);
   chatAttachmentController.rejectUnsupported(files);
   if (added && !clipboardText) event.preventDefault();
@@ -2318,11 +2329,13 @@ chatComposer.addEventListener("dragover", (event) => {
     chatComposer.classList.add("is-dropping");
   }
 });
-chatComposer.addEventListener("dragleave", () => chatComposer.classList.remove("is-dropping"));
+chatComposer.addEventListener("dragleave", (event) => {
+  if (event.target === chatComposer) chatComposer.classList.remove("is-dropping");
+});
 chatComposer.addEventListener("drop", (event) => {
   event.preventDefault();
   chatComposer.classList.remove("is-dropping");
-  const files = Array.from(event.dataTransfer?.files || []);
+  const files = transferredFiles(event.dataTransfer);
   chatAttachmentController.addFiles(files);
   chatAttachmentController.rejectUnsupported(files);
 });

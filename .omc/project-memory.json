@@ -162,8 +162,14 @@
   "hotPaths": [
     {
       "path": "src/chrome-client.js",
-      "accessCount": 18,
-      "lastAccessed": 1786906404199,
+      "accessCount": 24,
+      "lastAccessed": 1786906897752,
+      "type": "file"
+    },
+    {
+      "path": "test/chrome-client-queue.test.js",
+      "accessCount": 9,
+      "lastAccessed": 1786906886367,
       "type": "file"
     },
     {
@@ -176,12 +182,6 @@
       "path": "src/artifact-sdk.js",
       "accessCount": 6,
       "lastAccessed": 1786906195992,
-      "type": "file"
-    },
-    {
-      "path": "test/chrome-client-queue.test.js",
-      "accessCount": 6,
-      "lastAccessed": 1786906295147,
       "type": "file"
     },
     {
@@ -203,9 +203,27 @@
       "type": "file"
     },
     {
+      "path": "AGENTS.md",
+      "accessCount": 2,
+      "lastAccessed": 1786906930326,
+      "type": "file"
+    },
+    {
       "path": "test/server.test.js",
       "accessCount": 1,
       "lastAccessed": 1786906299275,
+      "type": "file"
+    },
+    {
+      "path": "src/session-store.js",
+      "accessCount": 1,
+      "lastAccessed": 1786906554704,
+      "type": "file"
+    },
+    {
+      "path": "CLAUDE.md",
+      "accessCount": 1,
+      "lastAccessed": 1786906904136,
       "type": "file"
     }
   ],
