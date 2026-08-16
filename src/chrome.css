@@ -1156,7 +1156,7 @@ body.layout-gate-active iframe#artifact {
 }
 
 /* ============================================================================
- * LOCAL PATCH: light chrome, an overlaid review toolbar, and a collapsible side panel.
+ * LOCAL PATCH: light chrome, a compact review dock, and a collapsible side panel.
  *
  * Appended as one block at the end rather than edited into the rules above, so
  * an upstream rebase touching those rules does not conflict with this.
@@ -1191,27 +1191,27 @@ body.layout-gate-active iframe#artifact {
   --danger: #c0392b;
   --shadow-tooltip: 0 12px 32px rgba(15, 17, 21, 0.13);
   --shadow-floating: 0 18px 56px rgba(15, 17, 21, 0.15);
-  /* The review toolbar overlays the artifact instead of reserving a second header row. */
-  --bar-h: 0px;
+  --bar-h: 42px;
 }
 body.lavish {
   color-scheme: light;
 }
 .bar {
-  position: fixed;
-  right: 8px;
-  bottom: 8px;
+  position: relative;
+  inset: auto;
   z-index: 55;
-  width: max-content;
-  max-width: calc(100vw - 16px);
-  min-height: 42px;
+  width: 100%;
+  max-width: none;
+  min-height: var(--bar-h);
+  justify-content: flex-end;
   gap: 4px;
-  padding: 4px;
-  border: var(--hairline-subtle);
-  border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--shadow-tooltip);
-  backdrop-filter: blur(12px);
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: var(--hairline-subtle);
+  border-radius: 0;
+  background: var(--bg-bar);
+  box-shadow: none;
+  backdrop-filter: none;
 }
 .bar-controls {
   display: flex;
@@ -1266,8 +1266,8 @@ body.lavish {
 }
 .warnings-drawer,
 .more-menu {
-  top: auto;
-  bottom: 42px;
+  top: 42px;
+  bottom: auto;
 }
 
 /* Rules that bypass the semantic layer and name palette entries directly. */
@@ -1345,13 +1345,12 @@ body.panel-collapsed .panel-toggle {
 
 @media (max-width: 640px) {
   .bar {
-    left: auto;
     gap: 6px;
-    padding: 4px;
+    padding: 4px 6px;
   }
   .warnings-drawer {
-    top: auto;
-    bottom: 56px;
+    top: calc(var(--bar-h) + 6px);
+    bottom: auto;
   }
 }
 

@@ -72,7 +72,7 @@ function isModeToggleHotkeyEvent(event) {
 }
 
 function isEndSessionHotkeyEvent(event) {
-  if (!event.shiftKey || event.altKey) return false;
+  if (event.isComposing || !event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === END_SESSION_HOTKEY_KEY;
 }
 
@@ -2051,8 +2051,7 @@ function restorePanelCollapsed() {
   setPanelCollapsed(collapsed);
 }
 
-// LOCAL ADDITION: the review chrome no longer owns a full-width header. Keep its bottom-right
-// dock collapsed by default so it cannot obscure the artifact being reviewed; warnings remain
+// LOCAL ADDITION: keep low-frequency review controls collapsed by default; warnings remain
 // visible as a badge on the dock entrypoint.
 function setBarExpanded(expanded) {
   barExpanded = Boolean(expanded) && !ended;

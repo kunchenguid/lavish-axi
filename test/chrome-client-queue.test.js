@@ -1708,10 +1708,12 @@ test("chrome end-session hotkey requires Shift and rejects Alt", async () => {
 
   const missingShift = chrome.dispatchDocumentKeydown({ key: "e", metaKey: true });
   const withAlt = chrome.dispatchDocumentKeydown({ key: "e", ctrlKey: true, shiftKey: true, altKey: true });
+  const composing = chrome.dispatchDocumentKeydown({ key: "e", ctrlKey: true, shiftKey: true, isComposing: true });
   await flushPromises();
 
   assert.equal(missingShift.defaultPrevented, false);
   assert.equal(withAlt.defaultPrevented, false);
+  assert.equal(composing.defaultPrevented, false);
   assert.deepEqual(posts, []);
 });
 

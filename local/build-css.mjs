@@ -12,7 +12,7 @@
 // Output: <artifact-basename>.css next to the artifact, plus the <link> tag to paste.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -65,41 +65,54 @@ const outPath = join(outDir, outName);
 // The generated input.css must live inside `local/`: Tailwind resolves `@import
 // "tailwindcss"` and `@plugin "daisyui"` from the input file's own directory, so an
 // input in the OS temp dir cannot see local/node_modules.
-const work = mkdtempSync(join(HERE, ".build-"));
-const input = join(work, "input.css");
-writeFileSync(
-  input,
-  [
-    '@import "tailwindcss" source(none);',
-    `@source "${artifact.replace(/["\\]/g, "\\$&")}";`,
-    "",
-    "/* Light is the default theme here by house rule; dark ships but is opt-in via",
-    '   data-theme="dark" rather than following the OS, so artifacts stay light unless asked.',
-    "   --theme <name> makes another DaisyUI theme the default; light and dark stay available. */",
-    '@plugin "daisyui" {',
-    `  themes: ${themeList.join(", ")};`,
-    "}",
-    "",
-  ].join("\n"),
-);
+let work = "";
+let outputWork = "";
+let bytes = 0;
+let buildFailure = "";
+try {
+  work = mkdtempSync(join(HERE, ".build-"));
+  outputWork = mkdtempSync(join(outDir, `.${outName}.build-`));
+  const input = join(work, "input.css");
+  const pendingOutPath = join(outputWork, outName);
+  writeFileSync(
+    input,
+    [
+      '@import "tailwindcss" source(none);',
+      `@source "${artifact.replace(/["\\]/g, "\\$&")}";`,
+      "",
+      "/* Light is the default theme here by house rule; dark ships but is opt-in via",
+      '   data-theme="dark" rather than following the OS, so artifacts stay light unless asked.',
+      "   --theme <name> makes another DaisyUI theme the default; light and dark stay available. */",
+      '@plugin "daisyui" {',
+      `  themes: ${themeList.join(", ")};`,
+      "}",
+      "",
+    ].join("\n"),
+  );
 
-const run = spawnSync(CLI, ["-i", input, "-o", outPath, ...(minify ? ["--minify"] : [])], {
-  encoding: "utf8",
-  stdio: ["ignore", "pipe", "pipe"],
-});
-rmSync(work, { recursive: true, force: true });
-
-if (run.status !== 0) {
-  fail(`tailwind build failed\n${run.stderr || run.stdout || ""}`.trim());
+  const run = spawnSync(CLI, ["-i", input, "-o", pendingOutPath, ...(minify ? ["--minify"] : [])], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (run.status !== 0) {
+    buildFailure = `tailwind build failed\n${run.stderr || run.stdout || ""}`.trim();
+  } else {
+    bytes = statSync(pendingOutPath).size;
+    const hasRules = bytes > 0 && /\{/.test(readFileSync(pendingOutPath, "utf8"));
+    if (!hasRules) {
+      buildFailure = `built ${outPath} but it contains no rules - does ${basename(artifact)} actually use Tailwind/DaisyUI classes?`;
+    } else {
+      renameSync(pendingOutPath, outPath);
+    }
+  }
+} catch (error) {
+  buildFailure = `tailwind build failed\n${error instanceof Error ? error.message : String(error)}`.trim();
+} finally {
+  if (work) rmSync(work, { recursive: true, force: true });
+  if (outputWork) rmSync(outputWork, { recursive: true, force: true });
 }
 
-// An empty-ish output means the scan matched nothing - almost always a wrong path or an
-// artifact that has no utility classes yet. Say so instead of shipping a blank stylesheet.
-const bytes = statSync(outPath).size;
-const hasRules = /\{/.test(readFileSync(outPath, "utf8"));
-if (!hasRules) {
-  fail(`built ${outPath} but it contains no rules - does ${basename(artifact)} actually use Tailwind/DaisyUI classes?`);
-}
+if (buildFailure) fail(buildFailure);
 
 console.log(
   [

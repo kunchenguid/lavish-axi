@@ -386,11 +386,11 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   // LOCAL PATCH: the per-artifact CSS builder replaces the CDN. Assert the whole contract the
   // agent needs to act on, because "build it locally" is useless without the command.
   assert.match(output.styling.how, /compiles ONLY the classes this artifact uses/);
+  assert.equal(output.styling.build_command, "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify");
   assert.equal(
-    output.styling.build_command,
-    "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify [--theme <daisyui-theme>]",
+    output.styling.themed_build_command,
+    "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'",
   );
-  assert.match(output.styling.build_command, /\[--theme <daisyui-theme>\]/);
   assert.match(output.styling.link_tag, /RELATIVE href/);
   assert.match(output.styling.link_tag, /Never a leading slash/);
   assert.match(output.styling.themes, /light \(default\) and dark are both compiled in/);
@@ -434,7 +434,11 @@ test("design output shell-quotes builder and artifact path arguments", () => {
 
   assert.equal(
     output.styling.build_command,
-    `node '/checkout path/it'\"'\"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify [--theme <daisyui-theme>]`,
+    `node '/checkout path/it'\"'\"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify`,
+  );
+  assert.equal(
+    output.styling.themed_build_command,
+    `node '/checkout path/it'\"'\"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'`,
   );
   assert.match(output.styling.how, /artifact's shell-quoted path/);
 });
@@ -443,6 +447,7 @@ test("design output withholds the build command when the local toolchain is inco
   const output = createDesignOutput({ cssBuilderPath: null });
 
   assert.equal(output.styling.build_command, null);
+  assert.equal(output.styling.themed_build_command, null);
   assert.match(output.styling.how, /CSS build script or local Tailwind executable is unavailable/);
   assert.match(output.styling.how, /hand-write self-contained inline CSS/);
 });
@@ -456,7 +461,7 @@ test("design output defaults to light and warns against @apply on DaisyUI classe
   assert.ok(output.theme_usage.some((item) => /^Light is the default/.test(item)));
   assert.ok(output.theme_usage.some((item) => /data-theme="dark"/.test(item) && /opt-in/.test(item)));
   assert.ok(output.theme_usage.some((item) => /does NOT follow the OS/i.test(item)));
-  assert.ok(output.theme_usage.some((item) => /`--theme <name>` on the build command/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /themed_build_command with `--theme <name>`/.test(item)));
   assert.ok(!output.theme_usage.some((item) => /luxury/i.test(item)));
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
   assert.ok(output.theme_usage.some((item) => /aborts the whole compile/i.test(item)));

@@ -331,6 +331,7 @@ test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () 
 test("isEndSessionHotkeyEvent matches Cmd/Ctrl+Shift+E without accepting easier-to-mistype variants", () => {
   assert.equal(isEndSessionHotkeyEvent({ key: "e", metaKey: true, shiftKey: true }), true);
   assert.equal(isEndSessionHotkeyEvent({ key: "E", ctrlKey: true, shiftKey: true }), true);
+  assert.equal(isEndSessionHotkeyEvent({ key: "e", metaKey: true, shiftKey: true, isComposing: true }), false);
   assert.equal(isEndSessionHotkeyEvent({ key: "e", metaKey: true }), false);
   assert.equal(isEndSessionHotkeyEvent({ key: "e", shiftKey: true }), false);
   assert.equal(isEndSessionHotkeyEvent({ key: "e", ctrlKey: true, shiftKey: true, altKey: true }), false);
@@ -364,15 +365,18 @@ test("artifact hotkey handler forwards chrome actions from focused content", () 
   const mode = event({ key: "i", metaKey: true });
   const panel = event({ key: "\\", metaKey: true, code: "Backslash" });
   const end = event({ key: "E", ctrlKey: true, shiftKey: true });
+  const composingEnd = event({ key: "E", ctrlKey: true, shiftKey: true, isComposing: true });
   const plain = event({ key: "e" });
   handler(mode);
   handler(panel);
   handler(end);
+  handler(composingEnd);
   handler(plain);
 
   assert.equal(mode.defaultPrevented, true);
   assert.equal(panel.defaultPrevented, true);
   assert.equal(end.defaultPrevented, true);
+  assert.equal(composingEnd.defaultPrevented, false);
   assert.equal(plain.defaultPrevented, false);
   assert.deepEqual(messages, ["lavish:toggleAnnotationMode", "lavish:togglePanel", "lavish:endSession"]);
 });

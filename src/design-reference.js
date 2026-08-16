@@ -247,15 +247,16 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = 
     // "fetch a runtime at view time" to "compile the used classes into a sibling file".
     styling: {
       how: cssBuilderPath
-        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then run build_command. Replace the quoted '<artifact.html>' placeholder with the artifact's shell-quoted path. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server."
+        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then run build_command. Replace the quoted '<artifact.html>' placeholder with the artifact's shell-quoted path. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_command and replace both quoted placeholders."
         : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
-      build_command: cssBuilderPath
-        ? `node ${shellQuote(cssBuilderPath)} '<artifact.html>' --minify [--theme <daisyui-theme>]`
+      build_command: cssBuilderPath ? `node ${shellQuote(cssBuilderPath)} '<artifact.html>' --minify` : null,
+      themed_build_command: cssBuilderPath
+        ? `node ${shellQuote(cssBuilderPath)} '<artifact.html>' --minify --theme '<daisyui-theme>'`
         : null,
       link_tag:
         'Reference the built file with a RELATIVE href in <head>: <link rel="stylesheet" href="<artifact-basename>.css">. Never a leading slash.',
       themes:
-        'light (default) and dark are both compiled in. Light applies automatically; dark is opt-in via data-theme="dark" rather than following the OS, so artifacts stay light unless the user asks. Any other theme from `themes` below needs --theme <name> on the build command - the theme list is not compiled in wholesale.',
+        'light (default) and dark are both compiled in. Light applies automatically; dark is opt-in via data-theme="dark" rather than following the OS, so artifacts stay light unless the user asks. Any other theme from `themes` below needs themed_build_command with --theme <name> - the theme list is not compiled in wholesale.',
       rebuild_note:
         "The build is a snapshot of the classes present at build time. Add or change classes -> re-run build_command before telling the user to look.",
       rules: [
@@ -270,7 +271,7 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = 
     theme_usage: [
       "Light is the default and applies with no `data-theme` attribute at all. Do not set one unless you mean it.",
       'Dark ships in every build but is opt-in via `data-theme="dark"` on `<html>` or a section - it deliberately does NOT follow the OS, so artifacts stay light unless the user asks.',
-      "Any other theme from the list below needs `--theme <name>` on the build command; without it the classes compile but the theme's colors are simply absent.",
+      "Any other theme from the list below needs themed_build_command with `--theme <name>`; without it the classes compile but the theme's colors are simply absent.",
       'Set a nested section theme with `<section data-theme="dark">`.',
       "Prefer semantic colors such as `bg-base-100`, `bg-base-200`, `text-base-content`, `bg-primary`, `text-primary-content`, `alert-warning`, and `btn-primary` so themes remain readable.",
       "Avoid hardcoded Tailwind color names for text and surfaces unless the user asked for exact colors.",

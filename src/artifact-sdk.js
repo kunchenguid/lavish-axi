@@ -13,7 +13,7 @@ export function isModeToggleHotkeyEvent(event) {
 }
 
 export function isEndSessionHotkeyEvent(event) {
-  if (!event.shiftKey || event.altKey) return false;
+  if (event.isComposing || !event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === END_SESSION_HOTKEY_KEY;
 }
 
