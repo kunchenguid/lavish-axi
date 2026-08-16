@@ -23,6 +23,7 @@ import {
   isNearTotalOcclusion,
   isTrustedAttachmentResult,
   attachmentSizeError,
+  acceptedImageTypes,
   classifyAttachmentBatch,
   partitionDroppedFiles,
   planClipboardPaste,
@@ -1923,13 +1924,13 @@ function serializeModuleHelpers(module) {
  * @param {string} key
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
- * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[] }} [options]
  */
 export function createSdkJs(
   key,
   artifactRevision = 0,
   artifactLoadToken = "",
-  { maxAttachmentCount, maxAttachmentBytes } = {},
+  { maxAttachmentCount, maxAttachmentBytes, acceptedImageMime = ACCEPTED_IMAGE_MIME } = {},
 ) {
   const mermaidHelperSource = serializeModuleHelpers(mermaidNode);
   const tableHelperSource = serializeModuleHelpers(tableCellHelpers);
@@ -1943,6 +1944,7 @@ export function createSdkJs(
   const sdkOptions = {
     maxAttachmentCount: Number.isFinite(maxAttachmentCount) ? maxAttachmentCount : undefined,
     maxAttachmentBytes: Number.isFinite(maxAttachmentBytes) ? maxAttachmentBytes : undefined,
+    acceptedImageMime: acceptedImageMime.map(String),
   };
   return `(() => {
 const key=${JSON.stringify(key)};
@@ -1961,6 +1963,7 @@ const attachmentSizeError=${attachmentSizeError.toString()};
 const classifyAttachmentBatch=${classifyAttachmentBatch.toString()};
 const partitionDroppedFiles=${partitionDroppedFiles.toString()};
 const planClipboardPaste=${planClipboardPaste.toString()};
+const acceptedImageTypes=${acceptedImageTypes.toString()};
 const isTrustedAttachmentResult=${isTrustedAttachmentResult.toString()};
 const deriveAttachmentNoticeState=${deriveAttachmentNoticeState.toString()};
 ${mermaidHelperSource.declarations}

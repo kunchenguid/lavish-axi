@@ -342,6 +342,27 @@ export function partitionDroppedFiles(dataTransfer, acceptedMime) {
 }
 
 /**
+ * Build the accepted-image lookups the annotation card needs from the server's
+ * `ACCEPTED_IMAGE_MIME` list, threaded in by `createSdkJs`.
+ *
+ * The card's paste/drop filter and its file picker's `accept` attribute both come
+ * from the returned value, so no surface can offer a format another one refuses.
+ * The literal is only the unwired fallback (a direct `createArtifactSdk` call in a
+ * unit test), matching how the count and byte caps behave.
+ *
+ * @param {string[]|null|undefined} list
+ * @returns {{ mimes: string[], accepted: Record<string, boolean>, accept: string }}
+ */
+export function acceptedImageTypes(list) {
+  const named = (Array.isArray(list) ? list : []).map(String).filter(Boolean);
+  const mimes = named.length ? named : ["image/png", "image/jpeg", "image/webp"];
+  /** @type {Record<string, boolean>} */
+  const accepted = {};
+  for (const mime of mimes) accepted[mime] = true;
+  return { mimes, accepted, accept: mimes.join(",") };
+}
+
+/**
  * Split a paste over the annotation textarea into the images it can attach and
  * whether the browser's own text paste must be preserved.
  *
@@ -409,7 +430,7 @@ export function deriveAttachmentNoticeState(state = {}) {
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
  * @param {string} [sessionKey]
- * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[] }} [options]
  */
 export function createArtifactSdk(
   deriveQueueKey,
@@ -448,7 +469,8 @@ export function createArtifactSdk(
   // allocated and structured-cloned into the chrome ahead of any rejection.
   const ATTACHMENT_MAX_BYTES =
     Number.isFinite(options.maxAttachmentBytes) && options.maxAttachmentBytes > 0 ? options.maxAttachmentBytes : 0;
-  const ATTACHMENT_ACCEPTED_MIME = { "image/png": true, "image/jpeg": true, "image/webp": true };
+  const ATTACHMENT_IMAGE_TYPES = acceptedImageTypes(options.acceptedImageMime);
+  const ATTACHMENT_ACCEPTED_MIME = ATTACHMENT_IMAGE_TYPES.accepted;
   // Minted once per document load and stamped on every upload, so a result the
   // chrome posts back can be tied to the exact document that asked for it. Chip
   // ids restart at att-1 on each load, so they cannot do this on their own: an
@@ -2209,7 +2231,9 @@ export function createArtifactSdk(
       '<div class="lavish-attach-row"><button class="lavish-attach" type="button">' +
       '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>' +
       "<span>Attach image</span></button>" +
-      '<input class="lavish-attach-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden></div>' +
+      '<input class="lavish-attach-input" type="file" accept="' +
+      ATTACHMENT_IMAGE_TYPES.accept +
+      '" multiple hidden></div>' +
       '<div class="lavish-hint">Enter to queue &middot; ' +
       sendNowHint +
       "+Enter to send &middot; paste or drop an image" +

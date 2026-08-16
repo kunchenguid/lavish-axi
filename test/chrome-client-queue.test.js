@@ -1082,7 +1082,7 @@ test("Conversation picker and paste explain unsupported file types", async () =>
   const chips = chrome.element("chatAttachments").innerHTML;
   assert.match(chips, /picked\.gif/);
   assert.match(chips, /pasted\.pdf/);
-  assert.match(chips, /Unsupported file type\. Use PNG, JPEG, or WebP\./);
+  assert.match(chips, /Unsupported file type\. Use PNG, JPEG, or WEBP\./);
   assert.match(chips, /data-error="UNSUPPORTED_TYPE"/);
 });
 
@@ -1180,6 +1180,37 @@ test("Conversation retries a failed upload and then permits sending", async () =
   assert.deepEqual(chrome.queued()[0].attachments, [{ id, name: "retry.png" }]);
 });
 
+test("a blocked send outranks the attachment count notice", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 1 },
+    fetchImpl: async () => ({ ok: false, json: async () => ({ error: "storage full" }) }),
+  });
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("failed.png")));
+  await flushPromises();
+  await flushPromises();
+
+  // The failed chip still occupies the one slot, so the next paste trips the cap.
+  chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("extra.png")));
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 image\./i);
+
+  // Send is refused because of the ERROR, not the cap - the notice must name the
+  // condition the user has to clear, or Send looks dead for no stated reason.
+  chrome.element("send").click();
+
+  assert.deepEqual(chrome.queued(), []);
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /retry or remove/i);
+});
+
+test("the composer names the server's accepted types when it refuses a file", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, attachmentAcceptedMime: ["image/avif"] },
+  });
+
+  chrome.element("chatInput").dispatch("paste", clipboardEvent({ name: "old.png", type: "image/png", size: 12 }));
+
+  assert.match(chrome.element("chatAttachments").innerHTML, /Unsupported file type\. Use AVIF\./);
+});
+
 test("Conversation enforces its image count before reading extra files", async () => {
   let reads = 0;
   const extra = pastedImage("extra.png");
@@ -1198,7 +1229,7 @@ test("Conversation enforces its image count before reading extra files", async (
 
   assert.equal(reads, 0);
   assert.doesNotMatch(chrome.element("chatAttachments").innerHTML, /extra\.png/);
-  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 images/i);
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 image\./i);
 });
 
 test("Conversation count notice survives upload completion until capacity changes", async () => {
@@ -1211,13 +1242,13 @@ test("Conversation count notice survives upload completion until capacity change
   chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("first.png")));
   await flushPromises();
   chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("extra.png")));
-  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 images/i);
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 image\./i);
 
   resolveUpload({ ok: true, json: async () => ({ attachment: { id: "5".repeat(64) + ".png" } }) });
   await flushPromises();
   await flushPromises();
 
-  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 images/i);
+  assert.match(chrome.element("chatAttachmentNotice").textContent, /up to 1 image\./i);
 });
 
 test("unsupported chips do not consume the Conversation image count", async () => {

@@ -18,6 +18,13 @@ const attachmentMaxCount = Number(sessionData.attachmentMaxCount) || 4;
 const CHAT_ATTACHMENT_MIME = new Set(
   (Array.isArray(sessionData.attachmentAcceptedMime) ? sessionData.attachmentAcceptedMime : []).map(String),
 );
+// Named in the rejection copy, so the message can never tell the user to use a
+// format this build does not accept.
+const CHAT_ATTACHMENT_LABELS = (() => {
+  const labels = [...CHAT_ATTACHMENT_MIME].map((mime) => mime.replace(/^image\//, "").toUpperCase());
+  if (labels.length < 2) return labels.join("");
+  return labels.slice(0, -1).join(", ") + (labels.length > 2 ? ", or " : " or ") + labels[labels.length - 1];
+})();
 
 // The chrome is the only path from the sandboxed (opaque-origin) artifact iframe to
 // the loopback server, so it is the sole place a same-origin confused-deputy can be
@@ -628,13 +635,14 @@ function createChatAttachmentsController() {
     const pending = items.some((item) => item.status === "uploading");
     const errored = items.some((item) => item.status === "error");
     if (!pending && !errored) sendBlocked = false;
-    chatAttachmentNotice.textContent = capRejected
-      ? "You can attach up to " + attachmentMaxCount + " images."
-      : sendBlocked && pending
+    chatAttachmentNotice.textContent =
+      sendBlocked && pending
         ? "Waiting for an image to finish uploading…"
         : sendBlocked && errored
           ? "An image couldn't be attached. Retry or remove it before sending."
-          : "";
+          : capRejected
+            ? "You can attach up to " + attachmentMaxCount + " image" + (attachmentMaxCount === 1 ? "" : "s") + "."
+            : "";
   }
 
   async function startUpload(item) {
@@ -709,7 +717,7 @@ function createChatAttachmentsController() {
         name: String(file.name || "file"),
         preview: "",
         status: "error",
-        error: "Unsupported file type. Use PNG, JPEG, or WebP.",
+        error: "Unsupported file type. Use " + CHAT_ATTACHMENT_LABELS + ".",
         errorCode: "UNSUPPORTED_TYPE",
         id: "",
         abortController: /** @type {AbortController | null} */ (null),

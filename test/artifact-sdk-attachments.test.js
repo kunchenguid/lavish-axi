@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  acceptedImageTypes,
   attachmentSizeError,
   classifyAttachmentBatch,
   deriveAttachmentNoticeState,
@@ -51,9 +52,35 @@ test("the SDK bundle carries ready attachment refs on the queued prompt", () => 
   assert.match(sdk, /queuePrompt\(prompt, \{ \.\.\.c, queueKey: "", attachments: readyAttachments \}\)/);
 });
 
-test("the SDK bundle only accepts PNG, JPEG, and WebP images", () => {
-  assert.match(sdk, /ATTACHMENT_ACCEPTED_MIME = \{ "image\/png": true, "image\/jpeg": true, "image\/webp": true \}/);
-  assert.match(sdk, /accept="image\/png,image\/jpeg,image\/webp"/);
+test("acceptedImageTypes turns the server's list into the card's lookups", () => {
+  const types = acceptedImageTypes(["image/png", "image/avif"]);
+  assert.deepEqual(types.mimes, ["image/png", "image/avif"]);
+  assert.deepEqual(types.accepted, { "image/png": true, "image/avif": true });
+  // The same list drives the file picker, so the card can never offer a format
+  // its own paste/drop filter would then refuse.
+  assert.equal(types.accept, "image/png,image/avif");
+  // The filters the card feeds this to agree with it.
+  const avif = { name: "a.avif", type: "image/avif" };
+  assert.deepEqual(partitionDroppedFiles({ files: [avif] }, types.accepted), { images: [avif], unsupported: [] });
+  assert.deepEqual(
+    partitionDroppedFiles({ files: [{ name: "a.webp", type: "image/webp" }] }, types.accepted).images,
+    [],
+  );
+});
+
+test("acceptedImageTypes falls back to PNG, JPEG, and WebP when unwired", () => {
+  for (const unwired of [undefined, [], null]) {
+    assert.deepEqual(acceptedImageTypes(unwired).mimes, ["image/png", "image/jpeg", "image/webp"]);
+  }
+});
+
+test("the SDK bundle carries the server's accepted image list, not a literal of its own", () => {
+  // The served /sdk.js is generated output: vary the server's list and the
+  // bundle must carry that list, which a hardcoded copy could not do.
+  const custom = createSdkJs("0123456789abcdef", 0, "", { acceptedImageMime: ["image/avif"] });
+  assert.match(custom, /"acceptedImageMime":\["image\/avif"\]/);
+  assert.doesNotMatch(custom, /"image\/webp": ?true/);
+  assert.match(sdk, /"acceptedImageMime":\["image\/png","image\/jpeg","image\/webp"\]/);
 });
 
 test("the SDK bundle renders chips with a thumbnail, name, and status", () => {
