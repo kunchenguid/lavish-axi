@@ -434,11 +434,11 @@ test("design output shell-quotes builder and artifact path arguments", () => {
 
   assert.equal(
     output.styling.build_command,
-    `node '/checkout path/it'\"'\"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify`,
+    `node '/checkout path/it'"'"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify`,
   );
   assert.equal(
     output.styling.themed_build_command,
-    `node '/checkout path/it'\"'\"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'`,
+    `node '/checkout path/it'"'"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'`,
   );
   assert.match(output.styling.how, /artifact's shell-quoted path/);
 });

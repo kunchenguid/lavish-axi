@@ -1,6 +1,6 @@
 // Render-free check for the one authoring failure that makes a review surface silently
 // unusable: an artifact that never paints its own page background, so its text renders
-// over whatever surface hosts it (the Lavish chrome, a shared page, a captain's light
+// over whatever surface hosts it (the Lavish chrome, an exported page, a captain's light
 // theme) and can be invisible. The check is deliberately fail-open - any stylesheet
 // link, @import, Tailwind runtime script, or root paint signal suppresses the warning -
 // because a wrong warning here is noise on every open. It must stay a warning:

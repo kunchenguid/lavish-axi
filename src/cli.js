@@ -558,11 +558,9 @@ function assetWarningSummaries(warnings) {
   return exportWarningSummaries(warnings);
 }
 
-// Publish the artifact as a visitable page on third-party ht-ml.app. Builds the same local-inlined
-// HTML as `export` (remote refs left as links), then POSTs it to ht-ml.app's `/v1/sites` API,
-// sending the artifact to ht-ml.app's servers. The service is not part of Lavish, needs no
-// account or API key, and returns the share URL plus the secret update_key for
-// managing the page later. Server-independent.
+// Legacy hosted-publishing implementation retained behind the installation's unconditional
+// fail-closed guard. `shareCommand` returns before reading the artifact or reaching this body;
+// keeping the old body isolated here makes the disabled boundary explicit during rebases.
 async function shareCommand(args) {
   // LOCAL PATCH: refuse before touching the file. The other two guards are situational - the
   // help text only steers an agent that reads it, and LAVISH_AXI_HTML_APP_API_URL lives in

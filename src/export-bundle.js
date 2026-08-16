@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 // the artifact references by relative path, fetchable file:// URL, or a trusted root-absolute
 // resolver - as inline <style>/<script> blocks and data URIs. Remote references (http(s) CDN/font URLs,
 // protocol-relative URLs, CSS url() pointing at the network) are deliberately LEFT AS-IS: the
-// browser loads them at render time, so the export and the hosted share render correctly wherever
-// there is network access. Because nothing remote is ever fetched, the transform makes no outbound
+// browser loads them at render time, so the export renders correctly wherever there is network
+// access. Because nothing remote is ever fetched, the transform makes no outbound
 // requests (no SSRF) and stays a small, deterministic local-file rewrite. The only security surface
 // is local file reading, which is confined to the artifact directory both lexically and by
 // real-path/symlink resolution, except for caller-provided trusted resolver mappings such as
@@ -3285,7 +3285,7 @@ async function readBudgeted(descriptor, ref, ctx, options = {}) {
 
 // Default local read: resolve the real (symlink-followed) path and refuse to read anything that
 // escapes the artifact directory, so a symlink inside the directory cannot exfiltrate an outside
-// file (e.g. ~/.ssh/id_rsa) into an exported or publicly shared bundle.
+// file (e.g. ~/.ssh/id_rsa) into an exported bundle.
 async function guardedRead(absPath, confineDir, readOptions = {}) {
   const real = await realpath(absPath);
   if (confineDir) {

@@ -228,6 +228,7 @@ fixture.addEventListener("load", collectResult);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+    const port = address.port;
     async function runBrowser(width) {
       const { stdout } = await execFileAsync(
         chrome,
@@ -242,7 +243,7 @@ fixture.addEventListener("load", collectResult);
           "--run-all-compositor-stages-before-draw",
           "--virtual-time-budget=1000",
           "--dump-dom",
-          `http://127.0.0.1:${address.port}${width === 320 ? "/narrow" : "/"}`,
+          `http://127.0.0.1:${port}${width === 320 ? "/narrow" : "/"}`,
         ],
         { maxBuffer: 4 * 1024 * 1024, timeout: 15_000 },
       );

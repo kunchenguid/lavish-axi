@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global console, process */
 // LOCAL ADDITION (not upstream): per-artifact Tailwind + DaisyUI compiler.
 //
 // Why this exists: this install removed the Tailwind/DaisyUI CDN fallback, because a CDN

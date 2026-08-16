@@ -33,13 +33,13 @@ That loses the thing HTML is best at: interactivity.
 
 Lavish Editor opens agent-generated HTML files in a local browser, lets you pinpoint elements and selected text, edit rendered Mermaid diagrams as whiteboards, and send feedback to the agent to address.
 
-- **Local-first** - Review local HTML artifacts with a local CLI and no cloud dependency; this installation disables third-party hosted sharing.
+- **Local-first** - Review local HTML artifacts with a local CLI and no cloud dependency in the feedback loop; this installation disables third-party hosted sharing.
 - **Human-AI collaboration** - Annotate elements and selected text ranges, edit Mermaid diagrams as whiteboards, and send messages to the agent without leaving Lavish Editor.
 - **Battery included** - Lavish Editor teaches your agent good visualization for common use cases such as product or technical plans, design explorations and more out of the box.
 
 Lavish Editor is an [AXI](https://axi.md), which means -
 
-- It's just a CLI any capable agent can run without setup.
+- It's just a CLI any capable agent can run after this patched checkout is linked.
 - It's optimized for agent ergonomics. TOON output, long polling, and contextual disclosure making it highly token efficient.
 - The skill and hooks below only handle discovery; agents learn to use the AXI by using it.
 
@@ -51,9 +51,9 @@ Install the Lavish skill in the [Agent Skills](https://agentskills.io) format wi
 npx skills add kunchenguid/lavish-axi --skill lavish
 ```
 
-That is the entire setup - no npm install needed.
-The skill teaches your agent to run Lavish through `npx -y lavish-axi`, so the CLI comes along on demand.
-In restricted subprocess sandboxes, CI, or agent harnesses where `npx -y` exits opaquely, the skill also documents direct installed-copy fallbacks through the local or global npm install path.
+First complete the [from-source setup](#from-source) so the patched CLI and its local design toolchain are linked on this machine.
+The skill deliberately teaches your agent to use the bare `lavish-axi` command, which resolves to that linked checkout.
+Do not substitute `npx -y lavish-axi`: it fetches the public package and bypasses this installation's local policies and toolchain.
 Its frontmatter also includes Hermes Agent metadata, so Hermes-compatible harnesses can categorize and surface it as a first-class productivity skill.
 This installs the public `lavish` skill.
 The repository also contains an internal `lavish-design` brand skill for maintainers; default `npx skills add ... --list` and skills.sh discovery hide it unless `INSTALL_INTERNAL_SKILLS=1` is set.
@@ -72,22 +72,20 @@ By default the skill lands in the current project's skills directory (`.claude/s
 
 The skill is the recommended path, but it is not the only one.
 
-### Zero setup
+### Direct CLI use
 
-Lavish is an AXI, so any capable agent can run the CLI directly with nothing installed at all.
-Just tell your agent:
+After completing the [from-source setup](#from-source), you can skip the skill and tell your agent:
 
 ```
-Use `npx -y lavish-axi` to write a product or technical plan for what we discussed.
+Use `lavish-axi` to write a product or technical plan for what we discussed.
 ```
 
 ### Session hook
 
 Want Lavish's ambient context - including your live open sessions - fed into every agent session instead of loading on demand?
-Install the CLI globally and opt into the hook:
+After linking the source checkout, opt into the hook:
 
 ```sh
-npm install -g lavish-axi
 lavish-axi setup hooks
 ```
 
@@ -99,10 +97,9 @@ Unlike the skill, the hook also shows your live open sessions, so a fresh agent 
 
 Lavish also ships as an [Agent Plugin](https://agent-plugins.org) - the vendor-neutral packaging standard for skills and MCP servers - so clients that speak that format can load it directly.
 
-**No marketplace is involved.** The installed npm package _is_ the plugin: `plugin.json` sits at the package root next to the `skills/` directory, so whatever `npm install` already put on disk is a complete, conformant plugin. Install the CLI, then register it:
+**No marketplace is involved.** The linked package _is_ the plugin: `plugin.json` sits at the package root next to the `skills/` directory. After linking the source checkout, register it:
 
 ```sh
-npm install -g lavish-axi
 lavish-axi setup plugin
 ```
 
@@ -127,6 +124,7 @@ Lavish declares no MCP server - the CLI itself is the agent interface - so a plu
 git clone https://github.com/kunchenguid/lavish-axi.git
 cd lavish-axi
 pnpm install --frozen-lockfile
+npm install --prefix local
 pnpm run build
 pnpm link
 ```
@@ -192,9 +190,11 @@ pnpm link
   The browser chrome lives in a slim review dock above the artifact. Annotate and its current mode stay visible so the Cmd/Ctrl+I state is always apparent; expanding the dock reveals the conversation-panel toggle, the editing overflow menu (copy path, reload artifact, copy DOM snapshot, export standalone HTML), and a high-contrast **End session** action without covering the artifact or composer. The composer exposes **Send & End** beside **Send to Agent** to submit queued prompts and user-ended attribution together.
 - **Keyboard shortcuts** - In the chrome composer, Enter sends queued prompts and Shift+Enter inserts a newline.
   In the annotation card, Enter queues the annotation, Shift+Enter inserts a newline, and Ctrl+Enter (Cmd+Enter on macOS) queues it and sends all queued prompts immediately.
+  Cmd+Enter or Ctrl+Enter also sends the current queue while focus is elsewhere in the browser chrome.
   Cmd+I or Ctrl+I toggles between annotate and explore mode from either the browser chrome or the artifact iframe, including while focus is in a textarea or control.
   `Cmd+\` or `Ctrl+\` collapses or restores the conversation panel from either the browser chrome or the artifact iframe.
-  Cmd+Shift+E or Ctrl+Shift+E ends the review session from either the browser chrome or the artifact iframe.
+  Cmd+Shift+E or Ctrl+Shift+E ends the review session from the browser chrome, artifact iframe, or full-screen whiteboard.
+  PageUp, PageDown, Home, and End still navigate the artifact while focus is in the chrome, except while typing or navigating a chrome-owned panel; Escape closes the full-screen whiteboard unless a text field or link dialog is active.
 - **Agent presence** - The browser shows when no agent is listening, keeps queued feedback for the next successful `lavish-axi poll` send even across reloads, and only blocks human sends while the agent is working on delivered feedback; the agent's reply (`--agent-reply`) concludes that work and re-enables sends.
   The no-timeout poll always writes an immediate stderr banner so it is visibly not hung; it adds the periodic stderr wait ticks only in an interactive terminal, so when stderr is piped (as under agent harnesses) the captured output carries no tick noise. Stdout always stays reserved for the final response; if the poll is interrupted or times out, re-run it because queued feedback is never lost.
   Codex-specific guidance keeps that poll attached to the active turn instead of hiding it in a background task, because completed background tasks may not resume the agent.

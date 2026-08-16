@@ -45,12 +45,7 @@ import {
   saveWhiteboard,
   writeWhiteboardFeedbackFiles,
 } from "./whiteboard-store.js";
-import {
-  buildSelfContainedHtml,
-  exportFileName,
-  exportWarningSummaries,
-  splitExportWarnings,
-} from "./export-bundle.js";
+import { buildSelfContainedHtml, exportFileName, splitExportWarnings } from "./export-bundle.js";
 import { SHARE_DISABLED_MESSAGE } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
@@ -670,7 +665,7 @@ export async function serve({
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
       // Nothing legitimately frames the review chrome - it is the top-level
-      // page, and shares/exports ship standalone HTML rather than embedding it.
+      // page, and exports ship standalone HTML rather than embedding it.
       // Refusing to be framed denies an attacker page both a window handle to
       // this chrome and a clickjacking surface over Send. Scoped to this route:
       // /artifact/* is framed by this page and /whiteboard-frame is framed by
@@ -1452,8 +1447,8 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
   return isAllowedHostHeader(forwarded.split(",").pop(), allowedHostnames);
 }
 
-// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
-// browser attaches an Origin/Referer that must match this server's own origin.
+// Guard state-changing routes that accept reviewer instructions or persist whiteboard data
+// against CSRF: a browser attaches an Origin/Referer that must match this server's own origin.
 function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
   const host = parseHostAuthority(req.headers.host);
   if (!host) return false;

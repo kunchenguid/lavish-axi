@@ -1,7 +1,7 @@
 /* global CSS, Element, MutationObserver, ResizeObserver, document, getComputedStyle, parent, window */
 
 import * as mermaidHelpers from "./mermaid-node.js";
-import { END_SESSION_HOTKEY_KEY, isEndSessionHotkeyEvent } from "./review-hotkeys.js";
+import { isEndSessionHotkeyEvent } from "./review-hotkeys.js";
 
 export { END_SESSION_HOTKEY_KEY, isEndSessionHotkeyEvent } from "./review-hotkeys.js";
 
