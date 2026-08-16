@@ -17,6 +17,11 @@ export function isEndSessionHotkeyEvent(event) {
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === END_SESSION_HOTKEY_KEY;
 }
 
+export function isPanelToggleHotkeyEvent(event) {
+  if (event.shiftKey || event.altKey) return false;
+  return Boolean(event.metaKey || event.ctrlKey) && (event.key === "\\" || event.code === "Backslash");
+}
+
 /**
  * @param {(type: string) => void} postMessage
  * @returns {(event: any) => void}
@@ -26,6 +31,11 @@ export function createArtifactHotkeyHandler(postMessage) {
     if (isModeToggleHotkeyEvent(event)) {
       event.preventDefault();
       postMessage("lavish:toggleAnnotationMode");
+      return;
+    }
+    if (isPanelToggleHotkeyEvent(event)) {
+      event.preventDefault();
+      postMessage("lavish:togglePanel");
       return;
     }
     if (isEndSessionHotkeyEvent(event)) {

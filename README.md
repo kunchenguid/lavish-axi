@@ -162,7 +162,7 @@ pnpm link
 - **Portable artifacts** - The artifact runs in an iframe while Lavish injects a small SDK for annotations, snapshots, feedback controls, and render-time layout checks.
   Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser.
   Run `lavish-axi design` for the single source of agent-facing design guidance and optional CDN or Mermaid snippets.
-- **Self-paint warning** - `lavish-axi <html-file>`, `export`, and `share` run a render-free check for artifacts missing an explicit page background and return a one-line `self_paint_warning`.
+- **Self-paint warning** - `lavish-axi <html-file>` and `export` run a render-free check for artifacts missing an explicit page background and return a one-line `self_paint_warning`.
   The check fails open - any stylesheet link, `@import`, Tailwind runtime script, `color-scheme`, or `html`/`body`/`:root` background signal suppresses it - and it never blocks the open.
 - **Open-time layout gate** - The browser chrome masks an artifact only while the real in-iframe audit waits for fonts and final geometry.
   The first completed check always reveals the artifact, whatever it found; the gate never holds the review hostage waiting for a repair.

@@ -22,6 +22,7 @@ import {
   isEndSessionHotkeyEvent,
   isMaterialPageOverflow,
   isModeToggleHotkeyEvent,
+  isPanelToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
   isTrustedAttachmentResult,
@@ -1902,6 +1903,7 @@ const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
 const isModeToggleHotkeyEvent=${isModeToggleHotkeyEvent.toString()};
+const isPanelToggleHotkeyEvent=${isPanelToggleHotkeyEvent.toString()};
 const END_SESSION_HOTKEY_KEY=${JSON.stringify(END_SESSION_HOTKEY_KEY)};
 const isEndSessionHotkeyEvent=${isEndSessionHotkeyEvent.toString()};
 const createArtifactHotkeyHandler=${createArtifactHotkeyHandler.toString()};

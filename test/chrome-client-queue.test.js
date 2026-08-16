@@ -1831,6 +1831,19 @@ test("chrome client toggles annotation mode when the artifact SDK requests it vi
   assert.equal(chrome.postedToFrame.at(-1).enabled, true);
 });
 
+test("chrome client toggles the conversation panel when the artifact SDK requests it", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.equal(chrome.element("body").classList.contains("panel-collapsed"), false);
+  chrome.sendFrameMessage({ type: "lavish:togglePanel" });
+  assert.equal(chrome.element("body").classList.contains("panel-collapsed"), true);
+  assert.equal(chrome.element("panelToggle")["aria-pressed"], "true");
+
+  chrome.sendFrameMessage({ type: "lavish:togglePanel" });
+  assert.equal(chrome.element("body").classList.contains("panel-collapsed"), false);
+  assert.equal(chrome.element("panelToggle")["aria-pressed"], "false");
+});
+
 test("chrome client ignores annotation mode toggles after the session ends", async () => {
   const chrome = await createChromeHarness();
 

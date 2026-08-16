@@ -12,6 +12,7 @@ import {
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
+  isPanelToggleHotkeyEvent,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -336,7 +337,14 @@ test("isEndSessionHotkeyEvent matches Cmd/Ctrl+Shift+E without accepting easier-
   assert.equal(isEndSessionHotkeyEvent({ key: "i", metaKey: true, shiftKey: true }), false);
 });
 
-test("artifact hotkey handler forwards mode and end actions from focused content", () => {
+test("isPanelToggleHotkeyEvent recognizes the panel shortcut across keyboard layouts", () => {
+  assert.equal(isPanelToggleHotkeyEvent({ key: "\\", metaKey: true }), true);
+  assert.equal(isPanelToggleHotkeyEvent({ key: "¥", code: "Backslash", ctrlKey: true }), true);
+  assert.equal(isPanelToggleHotkeyEvent({ key: "\\", metaKey: true, shiftKey: true }), false);
+  assert.equal(isPanelToggleHotkeyEvent({ key: "\\" }), false);
+});
+
+test("artifact hotkey handler forwards chrome actions from focused content", () => {
   /** @type {string[]} */
   const messages = [];
   const handler = createArtifactHotkeyHandler((type) => messages.push(type));
@@ -354,14 +362,17 @@ test("artifact hotkey handler forwards mode and end actions from focused content
   });
 
   const mode = event({ key: "i", metaKey: true });
+  const panel = event({ key: "\\", metaKey: true, code: "Backslash" });
   const end = event({ key: "E", ctrlKey: true, shiftKey: true });
   const plain = event({ key: "e" });
   handler(mode);
+  handler(panel);
   handler(end);
   handler(plain);
 
   assert.equal(mode.defaultPrevented, true);
+  assert.equal(panel.defaultPrevented, true);
   assert.equal(end.defaultPrevented, true);
   assert.equal(plain.defaultPrevented, false);
-  assert.deepEqual(messages, ["lavish:toggleAnnotationMode", "lavish:endSession"]);
+  assert.deepEqual(messages, ["lavish:toggleAnnotationMode", "lavish:togglePanel", "lavish:endSession"]);
 });

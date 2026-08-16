@@ -1885,6 +1885,9 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
+  if (msg.type === "lavish:togglePanel") {
+    setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
+  }
 });
 
 // The sandboxed artifact iframe can't reach the loopback server (opaque origin),
