@@ -182,6 +182,32 @@ export function restoreMermaidLabelLineBreaks(elements, { measure } = {}) {
   return fitContainersToBoundText(sized);
 }
 
+export const CLEAN_ROUGHNESS = 0;
+export const CLEAN_FONT_FAMILY = 2;
+
+/**
+ * @param {any[]} elements
+ * @returns {any[]}
+ */
+export function applyCleanStyle(elements) {
+  return (Array.isArray(elements) ? elements : []).map((element) => {
+    const clean = { ...element, roughness: CLEAN_ROUGHNESS };
+    if (element.type === "text") clean.fontFamily = CLEAN_FONT_FAMILY;
+    return clean;
+  });
+}
+
+/**
+ * @param {any[]} elements
+ * @param {{ loadFonts?: (elements: any[]) => Promise<unknown> | unknown, measure?: (element: any) => { width: number, height: number } }} [adapters]
+ * @returns {Promise<any[]>}
+ */
+export async function finalizeMermaidScene(elements, { loadFonts = async () => {}, measure } = {}) {
+  const styled = applyCleanStyle(elements);
+  await loadFonts(styled);
+  return restoreMermaidLabelLineBreaks(styled, { measure });
+}
+
 // Only plain web/mail links may leave the whiteboard. Everything else -
 // javascript:, data:, file:, vbscript:, chrome:, about:, or relative noise
 // coming from untrusted Mermaid `click` directives - is dropped.

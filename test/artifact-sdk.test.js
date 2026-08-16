@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   classifyMaterialRectEscape,
   classifySevereTextOverflow,
+  createArtifactHotkeyHandler,
   deriveLavishQueueKey,
   findStableLayoutFindings,
   isEndSessionHotkeyEvent,
@@ -333,4 +334,34 @@ test("isEndSessionHotkeyEvent matches Cmd/Ctrl+Shift+E without accepting easier-
   assert.equal(isEndSessionHotkeyEvent({ key: "e", shiftKey: true }), false);
   assert.equal(isEndSessionHotkeyEvent({ key: "e", ctrlKey: true, shiftKey: true, altKey: true }), false);
   assert.equal(isEndSessionHotkeyEvent({ key: "i", metaKey: true, shiftKey: true }), false);
+});
+
+test("artifact hotkey handler forwards mode and end actions from focused content", () => {
+  /** @type {string[]} */
+  const messages = [];
+  const handler = createArtifactHotkeyHandler((type) => messages.push(type));
+  const event = (properties) => ({
+    key: "",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    defaultPrevented: false,
+    ...properties,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  });
+
+  const mode = event({ key: "i", metaKey: true });
+  const end = event({ key: "E", ctrlKey: true, shiftKey: true });
+  const plain = event({ key: "e" });
+  handler(mode);
+  handler(end);
+  handler(plain);
+
+  assert.equal(mode.defaultPrevented, true);
+  assert.equal(end.defaultPrevented, true);
+  assert.equal(plain.defaultPrevented, false);
+  assert.deepEqual(messages, ["lavish:toggleAnnotationMode", "lavish:endSession"]);
 });

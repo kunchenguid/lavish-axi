@@ -117,19 +117,6 @@ const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMen
 const reloadArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("reloadArtifact"));
 const copySnapshotButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySnapshot"));
 const exportArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportArtifact"));
-const shareArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareArtifact"));
-const shareDialog = /** @type {HTMLDivElement} */ (document.getElementById("shareDialog"));
-const shareForm = /** @type {HTMLFormElement} */ (document.getElementById("shareForm"));
-const shareCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareClose"));
-const shareCancelButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareCancel"));
-const sharePublishButton = /** @type {HTMLButtonElement} */ (document.getElementById("sharePublish"));
-const sharePasswordInput = /** @type {HTMLInputElement} */ (document.getElementById("sharePassword"));
-const shareStatus = /** @type {HTMLDivElement} */ (document.getElementById("shareStatus"));
-const shareResult = /** @type {HTMLDivElement} */ (document.getElementById("shareResult"));
-const shareUrlInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUrl"));
-const shareUpdateKeyInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUpdateKey"));
-const copyShareUrlButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareUrl"));
-const copyUpdateKeyButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyUpdateKey"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
@@ -1203,70 +1190,6 @@ async function exportArtifact() {
   }
 }
 
-function openShareDialog() {
-  closeMenus();
-  shareDialog.hidden = false;
-  shareStatus.textContent = "";
-  shareStatus.classList.remove("error");
-  shareResult.hidden = true;
-  sharePasswordInput.value = "";
-  sharePasswordInput.focus();
-}
-
-function closeShareDialog() {
-  shareDialog.hidden = true;
-}
-
-async function copyToButton(value, button, label) {
-  await copyText(value);
-  button.textContent = "Copied";
-  setTimeout(() => {
-    button.textContent = label;
-  }, 1200);
-}
-
-async function publishShare(event) {
-  event.preventDefault();
-  sharePublishButton.disabled = true;
-  shareStatus.classList.remove("error");
-  shareStatus.textContent = "Publishing to ht-ml.app...";
-  shareResult.hidden = true;
-  const password = sharePasswordInput.value.trim();
-  const passwordProtected = Boolean(password);
-  try {
-    const response = await fetch("/api/" + key + "/share", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(password ? { password } : {}),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "publish failed");
-    shareUrlInput.value = data.url || "";
-    shareUpdateKeyInput.value = data.update_key || "";
-    const unresolvedAssets = Array.isArray(data.unresolved_local_assets) ? data.unresolved_local_assets : [];
-    const notices = Array.isArray(data.notices) ? data.notices : [];
-    const warningCount = unresolvedAssets.length;
-    const noticeCount = notices.length;
-    const noticeSummary = noticeCount ? noticeText(noticeCount) : "";
-    shareStatus.textContent =
-      warningCount > 0
-        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}${noticeSummary ? ` and ${noticeSummary}` : ""}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
-        : noticeCount > 0
-          ? `Published with ${noticeSummary}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
-          : passwordProtected
-            ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
-            : "Published. Anyone with the link can view this page.";
-    shareResult.hidden = false;
-    shareUrlInput.focus();
-    shareUrlInput.select();
-  } catch (error) {
-    shareStatus.classList.add("error");
-    shareStatus.textContent = error instanceof Error ? error.message : String(error);
-  } finally {
-    sharePublishButton.disabled = false;
-  }
-}
-
 async function replaceArtifactFrame() {
   clearTimeout(artifactSilenceTimer);
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
@@ -2176,15 +2099,6 @@ copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
 exportArtifactButton.onclick = exportArtifact;
-shareArtifactButton.onclick = openShareDialog;
-shareCloseButton.onclick = closeShareDialog;
-shareCancelButton.onclick = closeShareDialog;
-shareForm.addEventListener("submit", publishShare);
-shareDialog.addEventListener("click", (event) => {
-  if (event.target === shareDialog) closeShareDialog();
-});
-copyShareUrlButton.onclick = () => copyToButton(shareUrlInput.value, copyShareUrlButton, "Copy URL");
-copyUpdateKeyButton.onclick = () => copyToButton(shareUpdateKeyInput.value, copyUpdateKeyButton, "Copy key");
 endButton.onclick = () => {
   closeMenus();
   endSession();
@@ -2207,8 +2121,6 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (!whiteboardOverlay.hidden) {
       closeWhiteboard();
-    } else if (!shareDialog.hidden) {
-      closeShareDialog();
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
     } else if (!moreMenu.hidden) {

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { listPlaybooks, PLAYBOOK_ROUTER_INSTRUCTION } from "./playbooks.js";
@@ -8,8 +8,15 @@ import { listPlaybooks, PLAYBOOK_ROUTER_INSTRUCTION } from "./playbooks.js";
 // `src/` and `dist/` both sit one level under the checkout root, so the same relative URL
 // resolves for source runs and packaged runs alike.
 function localCssBuilderPath() {
-  const path = fileURLToPath(new URL("../local/build-css.mjs", import.meta.url));
-  return existsSync(path) ? path : null;
+  const builder = fileURLToPath(new URL("../local/build-css.mjs", import.meta.url));
+  const executable = fileURLToPath(new URL("../local/node_modules/.bin/tailwindcss", import.meta.url));
+  if (!existsSync(builder)) return null;
+  try {
+    accessSync(executable, constants.X_OK);
+    return builder;
+  } catch {
+    return null;
+  }
 }
 
 export const TAILWIND_BROWSER_VERSION = "4.2.4";
@@ -201,7 +208,7 @@ export const DAISYUI_THEMES = [
   "silk",
 ];
 
-export function createDesignOutput() {
+export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = {}) {
   return {
     playbook_router: {
       instruction: PLAYBOOK_ROUTER_INSTRUCTION,
@@ -235,11 +242,11 @@ export function createDesignOutput() {
     // Tailwind + DaisyUI classes are still the vocabulary - only the delivery changes, from
     // "fetch a runtime at view time" to "compile the used classes into a sibling file".
     styling: {
-      how: localCssBuilderPath()
+      how: cssBuilderPath
         ? "Write the artifact with Tailwind utility classes and DaisyUI components, then run build_command. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server."
-        : "LOCAL TOOLCHAIN MISSING: local/build-css.mjs was not found in this checkout. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
-      build_command: localCssBuilderPath()
-        ? `node ${localCssBuilderPath()} <artifact.html> --minify [--theme <daisyui-theme>]`
+        : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
+      build_command: cssBuilderPath
+        ? `node ${cssBuilderPath} <artifact.html> --minify [--theme <daisyui-theme>]`
         : null,
       link_tag:
         'Reference the built file with a RELATIVE href in <head>: <link rel="stylesheet" href="<artifact-basename>.css">. Never a leading slash.',

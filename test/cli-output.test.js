@@ -357,7 +357,7 @@ test("top-level help renders static home output without dynamic sessions", async
 });
 
 test("design output ships the DaisyUI vocabulary with a local build instead of CDN URLs", () => {
-  const output = createDesignOutput();
+  const output = createDesignOutput({ cssBuilderPath: "/checkout/local/build-css.mjs" });
 
   assert.match(output.playbook_router.instruction, /MUST open each matching playbook before writing HTML/);
   assert.equal(output.playbook_router.playbooks.length, 7);
@@ -422,6 +422,14 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   assert.ok(output.reference.drawer.notes.some((item) => item.includes("drawer-toggle")));
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("Keep `data-prefix` short")));
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
+});
+
+test("design output withholds the build command when the local toolchain is incomplete", () => {
+  const output = createDesignOutput({ cssBuilderPath: null });
+
+  assert.equal(output.styling.build_command, null);
+  assert.match(output.styling.how, /CSS build script or local Tailwind executable is unavailable/);
+  assert.match(output.styling.how, /hand-write self-contained inline CSS/);
 });
 
 // LOCAL PATCH: upstream defaults to `luxury`, which is dark. This install is light-first, and

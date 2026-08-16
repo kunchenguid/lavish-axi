@@ -4,7 +4,9 @@ import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import { convertToExcalidrawElements, exportToCanvas, FONT_FAMILY } from "@excalidraw/excalidraw";
 
 import {
+  CLEAN_FONT_FAMILY,
   convertExcalidrawSkeletonsAfterFontsLoad,
+  finalizeMermaidScene,
   findDuplicateElementIds,
   repairSavedSceneTextMetrics,
   restoreMermaidLabelLineBreaks,
@@ -103,17 +105,23 @@ async function run() {
   const parsed = await parseMermaidToExcalidraw(fixture.source, { themeVariables: { fontSize: "16px" } });
   const skeletons = restoreMermaidLabelLineBreaks(parsed.elements);
   let fallbackElements = [];
-  const elements = restoreMermaidLabelLineBreaks(
-    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-      convert: materialize,
-      loadFonts: async (firstPass) => {
-        fallbackElements = structuredClone(firstPass);
-        await loadFonts(firstPass, parsed.files || null);
-      },
-    }),
-    { measure: measureText },
-  );
+  const convertedElements = await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+    convert: materialize,
+    loadFonts: async (firstPass) => {
+      fallbackElements = structuredClone(firstPass);
+      await loadFonts(firstPass, parsed.files || null);
+    },
+  });
   const expectedLabels = [...fixture.edgeLabels, fixture.multilineLabel];
+  const fallbackLabels = expectedLabels.map((text) => labelByText(fallbackElements, text));
+  const convertedLabels = expectedLabels.map((text) => labelByText(convertedElements, text));
+  if (!convertedLabels.some((label, index) => label.width > fallbackLabels[index].width + 1)) {
+    throw new Error("cold conversion did not reproduce fallback-sized text");
+  }
+  const elements = await finalizeMermaidScene(convertedElements, {
+    loadFonts: async (styled) => loadFonts(styled, parsed.files || null),
+    measure: measureText,
+  });
   const labels = expectedLabels.map((text) => labelByText(elements, text));
   if (labels.some((label) => !label)) {
     const actual = elements
@@ -121,12 +129,11 @@ async function run() {
       .map((element) => element.originalText || element.text);
     throw new Error(`fixture labels were missing from the converted scene: ${JSON.stringify(actual)}`);
   }
+  if (labels.some((label) => label.fontFamily !== CLEAN_FONT_FAMILY)) {
+    throw new Error("converted labels did not use the final clean font");
+  }
   if (labels.filter((label) => label.containerId).length < 4) {
     throw new Error("fixture node labels were not bound to diagram boxes");
-  }
-  const fallbackLabels = expectedLabels.map((text) => labelByText(fallbackElements, text));
-  if (!labels.some((label, index) => label.width > fallbackLabels[index].width + 1)) {
-    throw new Error("cold conversion did not reproduce fallback-sized text");
   }
   const geometry = labels.map((label) => ({ label, measured: measureText(label) }));
   if (

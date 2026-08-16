@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 // The passive layout-warning inbox. Detection is passive: a browser diagnostic pass never wakes
 // an agent and never triggers a repair. Findings land here as durable records the user triages
-// from the Lavish top bar, and only an explicit "Queue selected fixes" turns them into an
+// from the Lavish review dock, and only an explicit "Queue selected fixes" turns them into an
 // ordinary queued prompt.
 //
 // Every rule in this module is a lifecycle rule, and the lifecycle is deliberately conservative:

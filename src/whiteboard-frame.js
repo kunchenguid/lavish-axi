@@ -5,7 +5,7 @@
 // where the artifact SDK embeds one frame in place of each rendered Mermaid
 // diagram; and overlay,
 // where the chrome hosts one frame full-viewport (reached from the inline
-// frame's fullscreen action). The `mode` field of the init message selects the
+// preview). The `mode` field of the init message selects the
 // placement-specific UI; everything else is identical. Bundled by
 // `scripts/build.js` (esbuild) together with Excalidraw, the Mermaid
 // converter, its own exactly-pinned mermaid, and React into
@@ -30,8 +30,11 @@ import "@excalidraw/excalidraw/index.css";
 import "./whiteboard-frame.css";
 
 import {
+  CLEAN_FONT_FAMILY,
+  CLEAN_ROUGHNESS,
   convertExcalidrawSkeletonsAfterFontsLoad,
   createWhiteboardPersistencePayload,
+  finalizeMermaidScene,
   findDuplicateElementIds,
   repairSavedSceneTextMetrics,
   restoreMermaidLabelLineBreaks,
@@ -64,8 +67,7 @@ const state = {
   teardownFlushId: "",
   flushIds: new Set(),
   queueBusy: false,
-  // Inline frames boot locked (view mode) so a page full of embedded
-  // whiteboards scrolls normally; the first click on the canvas unlocks it.
+  // Inline frames stay locked so a page full of embedded whiteboards scrolls normally.
   setLocked: null,
 };
 
@@ -479,17 +481,22 @@ async function convertSource(source) {
     }
     return elements;
   };
-  const elements = restoreMermaidLabelLineBreaks(
+  const elements = await finalizeMermaidScene(
     await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
       convert: materialize,
       loadFonts: async (fallbackElements) => {
         await loadSceneFonts(fallbackElements, files);
       },
     }),
-    { measure: measureSceneText },
+    {
+      loadFonts: async (styledElements) => {
+        await loadSceneFonts(styledElements, files);
+      },
+      measure: measureSceneText,
+    },
   );
   return {
-    elements: applyCleanStyle(elements),
+    elements,
     files: files || {},
     imageFallback: sceneIsImageFallback(elements),
   };
@@ -505,17 +512,6 @@ async function convertSource(source) {
 //   fontFamily  1 = Virgil/handwritten (default), 2 = Helvetica, 3 = Cascadia
 //
 // The user can still switch any element back from the Excalidraw toolbar.
-const CLEAN_ROUGHNESS = 0;
-const CLEAN_FONT_FAMILY = 2;
-
-function applyCleanStyle(elements) {
-  return elements.map((element) => {
-    const clean = { ...element, roughness: CLEAN_ROUGHNESS };
-    if (element.type === "text") clean.fontFamily = CLEAN_FONT_FAMILY;
-    return clean;
-  });
-}
-
 // Theme is passed only through the <Excalidraw theme> prop - putting it in
 // appState as well double-applies the dark-mode invert filter and washes the
 // canvas out. The background stays a light paper color in both themes; dark

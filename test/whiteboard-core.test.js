@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CLEAN_FONT_FAMILY,
   createWhiteboardPersistencePayload,
+  finalizeMermaidScene,
   findDuplicateElementIds,
   normalizeExcalidrawSceneTarget,
   repairSavedSceneTextMetrics,
@@ -391,6 +393,37 @@ test("restoreMermaidLabelLineBreaks recenters bound text when container growth s
   assert.ok(container.y < box.y, "expandBoxToFit grows from the center, moving the container origin");
   assert.equal(text.x, container.x + (container.width - text.width) / 2);
   assert.equal(text.y, container.y + (container.height - text.height) / 2);
+});
+
+test("finalizeMermaidScene loads and measures the final clean font", async () => {
+  const box = rect("A", { width: 80, height: 24 });
+  const label = {
+    id: "t1",
+    type: "text",
+    containerId: "A",
+    width: 60,
+    height: 20,
+    fontFamily: 1,
+    fontSize: 16,
+    lineHeight: 1.25,
+    text: "wide label",
+    originalText: "wide label",
+  };
+  let fontsLoaded = false;
+  const [, text] = await finalizeMermaidScene([box, label], {
+    loadFonts: async (elements) => {
+      assert.equal(elements[1].fontFamily, CLEAN_FONT_FAMILY);
+      fontsLoaded = true;
+    },
+    measure: (element) => {
+      assert.equal(fontsLoaded, true);
+      assert.equal(element.fontFamily, CLEAN_FONT_FAMILY);
+      return { width: 120, height: 20 };
+    },
+  });
+
+  assert.equal(text.fontFamily, CLEAN_FONT_FAMILY);
+  assert.equal(text.width, 120);
 });
 
 test("restoreMermaidLabelLineBreaks leaves labelled-arrow geometry and path-midpoint labels alone", () => {

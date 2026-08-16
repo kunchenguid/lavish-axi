@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { createServer, request as httpRequest } from "node:http";
+import { request as httpRequest } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -343,33 +343,6 @@ test("annotation mode forces the artifact cursor to default", () => {
   assert.match(js, /setAnnotationMode\(enabled\)/);
 });
 
-test("artifact SDK registers a capture-phase document keydown listener for the mode toggle hotkey", () => {
-  const js = createSdkJs("abc");
-
-  assert.match(js, /const MODE_TOGGLE_HOTKEY_KEY="i"/);
-  assert.match(js, /function isModeToggleHotkeyEvent\(event\)/);
-  assert.match(js, /if \(!isModeToggleHotkeyEvent\(event\)\) return;/);
-  assert.match(js, /function postArtifactMessage\(type,\s*payload\s*=\s*\{\}\)/);
-  assert.match(js, /postArtifactMessage\("lavish:toggleAnnotationMode"\)/);
-  // Registered with the capture flag so it fires regardless of where focus is inside the
-  // sandboxed artifact document, without a duplicate call sneaking in un-captured.
-  assert.match(
-    js,
-    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isModeToggleHotkeyEvent\(event\)\) return;\s*event\.preventDefault\(\);\s*postArtifactMessage\("lavish:toggleAnnotationMode"\);\s*\},\s*true,?\s*\);/,
-  );
-});
-
-test("artifact SDK forwards the end-session hotkey from inside the sandboxed artifact", () => {
-  const js = createSdkJs("abc");
-
-  assert.match(js, /const END_SESSION_HOTKEY_KEY="e"/);
-  assert.match(js, /function isEndSessionHotkeyEvent\(event\)/);
-  assert.match(
-    js,
-    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isEndSessionHotkeyEvent\(event\)\) return;\s*event\.preventDefault\(\);\s*postArtifactMessage\("lavish:endSession"\);\s*\},\s*true,?\s*\);/,
-  );
-});
-
 test("chrome client toggles annotation mode via Cmd/Ctrl+I and on request from the artifact SDK", async () => {
   const js = await chromeClientSource();
 
@@ -528,10 +501,8 @@ test("chrome keeps the editor usable on narrow screens", async () => {
   assert.match(css, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
 });
 
-test("chrome uses a collapsed review dock without a branded header", async () => {
+test("chrome output starts with an unbranded collapsed review dock", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
 
   assert.match(html, /class="bar"[^>]*role="toolbar" aria-label="Review controls"/);
   assert.doesNotMatch(html, /class="brand(?:-mark|-support)?"/);
@@ -543,13 +514,6 @@ test("chrome uses a collapsed review dock without a branded header", async () =>
     html.indexOf('id="annotation"') < html.indexOf('id="barControls"'),
     "the annotation-mode switch stays visible while the low-frequency controls are collapsed",
   );
-  assert.match(css, /--bar-h:0px/);
-  assert.match(css, /\.bar\{[^}]*position:fixed;[^}]*right:8px;bottom:8px;[^}]*width:max-content/);
-  assert.match(css, /\.bar-controls\{[^}]*display:flex/);
-  assert.match(css, /\.bar-controls\[hidden\]\{display:none/);
-  assert.match(css, /\.layout\{height:calc\(100vh - var\(--bar-h\)\)/);
-  assert.match(js, /function setBarExpanded\(expanded\)/);
-  assert.match(js, /barToggle\.onclick = \(\) => setBarExpanded\(!barExpanded\)/);
   assert.match(html, /class="more-button" id="moreButton"/);
   assert.match(html, /class="menu more-menu" id="moreMenu" hidden/);
   assert.doesNotMatch(html, /class="file-input"/);
@@ -609,10 +573,8 @@ test("chrome can copy the full file path from the overflow menu", async () => {
   assert.match(js, /copyHintText\.textContent = "Copy"/);
 });
 
-test("overflow menu offers editing actions while end session stays visible in the expanded dock", async () => {
+test("chrome output keeps editing actions in the menu and end session in the dock", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
 
   assert.match(html, /id="reloadArtifact"[^<]*>.*Reload artifact/);
   assert.match(html, /id="copySnapshot"[^<]*>.*Copy DOM snapshot/);
@@ -622,22 +584,6 @@ test("overflow menu offers editing actions while end session stays visible in th
   );
   assert.doesNotMatch(html, /class="menu-item danger" id="end"/);
   assert.doesNotMatch(html, /End Session</);
-  assert.match(css, /\.end-session-button\{[^}]*background:var\(--danger\)/);
-  assert.match(css, /\.end-session-shortcut\{/);
-  assert.match(js, /event\.key === "Escape"/);
-});
-
-test("chrome client ends the session via the discoverable Cmd/Ctrl+Shift+E shortcut", async () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-
-  assert.match(html, /"endSessionHotkeyKey":"e"/);
-  assert.match(
-    js,
-    /const END_SESSION_HOTKEY_KEY = String\(sessionData\.endSessionHotkeyKey \|\| ""\)\.toLowerCase\(\);/,
-  );
-  assert.match(js, /function isEndSessionHotkeyEvent\(event\)/);
-  assert.match(js, /if \(isEndSessionHotkeyEvent\(event\)\) \{\s*event\.preventDefault\(\);\s*endSession\(\);/);
 });
 
 test("overflow menu offers a standalone HTML export that downloads a portable file", async () => {
@@ -652,38 +598,13 @@ test("overflow menu offers a standalone HTML export that downloads a portable fi
   assert.match(js, /exportArtifactButton\.onclick = exportArtifact/);
 });
 
-test("overflow menu offers publishing an ht-ml.app link via a share dialog", async () => {
+test("chrome output omits hosted publishing controls", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
 
-  assert.match(html, /id="shareArtifact"[^<]*>.*Publish link/);
-  assert.match(html, /id="shareDialog"/);
-  assert.match(
-    html,
-    /Publish to <a class="share-link" href="https:\/\/ht-ml\.app" target="_blank" rel="noopener noreferrer">ht-ml\.app<\/a>/,
-  );
-  assert.match(html, /third-party hosting service, not part of Lavish/);
-  assert.match(html, /id="sharePassword"/);
-  assert.match(html, /id="shareUpdateKey"/);
-  assert.match(html, /Without a password, the page is PUBLIC/);
-  assert.match(html, /With a password, the page is PRIVATE/);
-  assert.doesNotMatch(html, /Everything published is public/);
-  assert.doesNotMatch(html, /Get a public link/);
-  assert.match(css, /\.share-overlay/);
-  assert.match(css, /\.share-overlay\{[^}]*z-index:80;/);
-  assert.match(css, /\.share-card/);
-  assert.match(css, /\.share-link/);
-  assert.match(css, /box-shadow:var\(--shadow-floating\)/);
-  // The codebase has no global [hidden] rule, so display-setting overlays need explicit
-  // [hidden] rules or they show through before they should (e.g. the result block).
-  assert.match(css, /\.share-overlay\[hidden\]\{display:none;?\}/);
-  assert.match(css, /\.share-result\[hidden\]\{display:none;?\}/);
-  assert.match(js, /const shareArtifactButton/);
-  assert.match(js, /async function publishShare/);
-  assert.match(js, /fetch\("\/api\/" \+ key \+ "\/share"/);
-  assert.match(js, /shareUrlInput\.value = data\.url/);
-  assert.match(js, /shareUpdateKeyInput\.value = data\.update_key/);
+  assert.doesNotMatch(html, /id="shareArtifact"/);
+  assert.doesNotMatch(html, /id="shareDialog"/);
+  assert.doesNotMatch(html, /Publish link/);
+  assert.doesNotMatch(html, /ht-ml\.app/);
 });
 
 test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
@@ -703,14 +624,6 @@ test("clipboard copy falls back when navigator clipboard rejects", async () => {
   assert.match(js, /await navigator\.clipboard\.writeText\(text\)/);
   assert.match(js, /document\.execCommand\("copy"\)/);
   assert.doesNotMatch(js, /navigator\.clipboard\.writeText\(text\)\.catch/);
-});
-
-test("expanded review dock keeps its controls centered inside the compact overlay", async () => {
-  const css = await chromeCssSource();
-
-  assert.match(css, /\.bar-controls\{[^}]*align-items:center/);
-  assert.match(css, /\.bar\{[^}]*max-width:calc\(100vw - 16px\);min-height:42px/);
-  assert.match(css, /\.bar\{[^}]*background:rgba\(255,255,255,.94\)/);
 });
 
 test("chrome chat bubbles follow the preview mock shades", async () => {
@@ -2896,179 +2809,23 @@ test("GET /api/:key/export returns 404 for an unknown session", async () => {
   }
 });
 
-test("POST /api/:key/share publishes the local-inlined artifact to ht-ml.app", async () => {
+test("POST /api/:key/share reports that hosted sharing is disabled", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(
-    artifact,
-    '<!doctype html><html><head><link rel="stylesheet" href="local.css">' +
-      '<link rel="stylesheet" href="https://cdn.example/app.css"></head>' +
-      '<body><h1>Ship</h1><script src="/sdk.js?key=x"></script></body></html>',
-  );
-  await writeFile(path.join(dir, "local.css"), ".btn{color:red}");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
   try {
     const base = `http://127.0.0.1:${server.port}`;
-    const sessionRes = await fetch(`${base}/api/sessions`, {
+    const shareRes = await fetch(`${base}/api/does-not-exist/share`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const session = await sessionRes.json();
-
-    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: base },
-      body: JSON.stringify({ password: "pw" }),
+      body: JSON.stringify({ password: "must-not-matter" }),
     });
     const body = await shareRes.json();
 
-    assert.equal(shareRes.status, 200);
-    assert.deepEqual(body, {
-      url: "https://abc123.ht-ml.app/",
-      site_id: "abc123",
-      update_key: "uk_secret",
-      status: "active",
-    });
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].method, "POST");
-    assert.equal(requests[0].url, "/v1/sites");
-    // local stylesheet inlined, SDK stripped, remote stylesheet left intact (never fetched)
-    assert.match(requests[0].body.html_content, /<style>\.btn\{color:red\}<\/style>/);
-    assert.doesNotMatch(requests[0].body.html_content, /sdk\.js/);
-    assert.match(requests[0].body.html_content, /<link rel="stylesheet" href="https:\/\/cdn\.example\/app\.css">/);
-    assert.equal(requests[0].body.password, "pw");
+    assert.equal(shareRes.status, 410);
+    assert.match(body.error, /Hosted sharing is disabled/);
+    assert.match(body.error, /lavish-axi export/);
   } finally {
     await server.close();
-    await htmlApp.close();
-    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("POST /api/:key/share returns unresolved local asset warnings", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, '<!doctype html><html><body><img src="missing.png"><h1>Ship</h1></body></html>');
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const sessionRes = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const session = await sessionRes.json();
-
-    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: base },
-      body: JSON.stringify({}),
-    });
-    const body = await shareRes.json();
-
-    assert.equal(shareRes.status, 200);
-    assert.equal(body.url, "https://abc123.ht-ml.app/");
-    assert.equal(body.warnings.length, 1);
-    assert.equal(body.unresolved_local_assets.length, 1);
-    assert.equal("notices" in body, false);
-    assert.equal(body.warnings[0].kind, "load-failed");
-    assert.equal(body.warnings[0].ref, "missing.png");
-    assert.match(body.warnings[0].reason || "", /ENOENT/);
-    assert.equal(requests.length, 1);
-    assert.match(requests[0].body.html_content, /<img src="missing\.png">/);
-  } finally {
-    await server.close();
-    await htmlApp.close();
-    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("POST /api/:key/share rejects cross-origin browser requests", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, "<!doctype html><title>x</title><h1>Private</h1>\n");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const sessionRes = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const session = await sessionRes.json();
-
-    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "https://attacker.example" },
-      body: JSON.stringify({}),
-    });
-    const body = await shareRes.json();
-
-    assert.equal(shareRes.status, 403);
-    assert.deepEqual(body, { error: "cross-origin share request rejected" });
-    assert.equal(requests.length, 0);
-  } finally {
-    await server.close();
-    await htmlApp.close();
-    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("POST /api/:key/share rejects requests without provenance headers", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, "<!doctype html><title>x</title><h1>Private</h1>\n");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const sessionRes = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const session = await sessionRes.json();
-
-    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    const body = await shareRes.json();
-
-    assert.equal(shareRes.status, 403);
-    assert.deepEqual(body, { error: "cross-origin share request rejected" });
-    assert.equal(requests.length, 0);
-  } finally {
-    await server.close();
-    await htmlApp.close();
-    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -4131,46 +3888,6 @@ test("chrome client chat input sends on Enter and inserts newline on Shift+Enter
   assert.match(js, /event\.preventDefault\(\)/);
   assert.match(js, /sendQueued\(\)/);
 });
-
-async function startFakeHtmlApp(requests, responseBody = null) {
-  const body = responseBody ?? {
-    site_id: "abc123",
-    url: "https://abc123.ht-ml.app/",
-    update_key: "uk_secret",
-    status: "active",
-  };
-  const server = createServer((req, res) => {
-    let raw = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      raw += chunk;
-    });
-    req.on("end", () => {
-      requests.push({
-        method: req.method,
-        url: req.url,
-        headers: req.headers,
-        body: raw ? JSON.parse(raw) : null,
-      });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(body));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  const address = server.address();
-  return {
-    port: typeof address === "object" && address ? address.port : 0,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
-  };
-}
-
-function restoreEnv(name, value) {
-  if (value === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = value;
-  }
-}
 
 test("chrome falls back to a default favicon and title when none are provided", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
