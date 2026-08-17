@@ -9,3 +9,5 @@ CHANGELOG.md
 plugin.json
 .agents
 .claude/settings.local.json
+# Canonical two-line @AGENTS.md pointer; prettier would add a blank line.
+CLAUDE.md
