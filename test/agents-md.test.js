@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile, readlink } from "node:fs/promises";
+import { readFile, lstat } from "node:fs/promises";
 import test from "node:test";
+
+const CLAUDE_POINTER = `<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
+@AGENTS.md
+`;
 
 const MAINTENANCE_PREAMBLE = `## Maintaining this file
 
@@ -17,14 +21,13 @@ test("AGENTS.md ends with the canonical self-governance preamble", async () => {
   assert.ok(agents.endsWith(`\n\n${MAINTENANCE_PREAMBLE}`));
 });
 
-test("CLAUDE.md keeps the root agent guidance available through its symlink", async () => {
+test("CLAUDE.md is a real pointer file importing AGENTS.md, not a symlink", async () => {
   const claude = new URL("../CLAUDE.md", import.meta.url);
-  const [target, agents, throughClaude] = await Promise.all([
-    readlink(claude),
-    readFile(new URL("../AGENTS.md", import.meta.url), "utf8"),
-    readFile(claude, "utf8"),
-  ]);
+  const [stats, contents] = await Promise.all([lstat(claude), readFile(claude, "utf8")]);
 
-  assert.equal(target, "AGENTS.md");
-  assert.equal(throughClaude, agents);
+  // A symlink here is a footgun: writing to CLAUDE.md would follow it and
+  // destroy AGENTS.md. The `@AGENTS.md` import loads the same content with no
+  // extra turns, and a stray write only clobbers this two-line file.
+  assert.equal(stats.isSymbolicLink(), false);
+  assert.equal(contents, CLAUDE_POINTER);
 });
