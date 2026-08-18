@@ -418,7 +418,7 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   assert.match(output.styling.link_tag, /Never a leading slash/);
   assert.match(output.styling.themes, /light \(default\) and dark are both compiled in/);
   assert.match(output.styling.themes, /--theme <name>/);
-  assert.match(output.styling.rebuild_note, /re-run build_command/);
+  assert.match(output.styling.rebuild_note, /re-run build_argv/);
   assert.ok(output.styling.rules.some((item) => item.includes("Every asset must be local")));
   assert.ok(output.styling.rules.some((item) => /Mermaid is the one deliberate remote dependency/.test(item)));
 
@@ -467,20 +467,21 @@ test("design output shell-quotes builder and artifact path arguments", () => {
   assert.match(output.styling.how, /artifact path as one argument/);
 });
 
-test("design output quotes spaced paths for Windows shells", () => {
+test("design output withholds generic Windows shell commands", () => {
   const output = createDesignOutput({
     cssBuilderPath: "C:\\checkout path\\local\\build-css.mjs",
     platform: "win32",
   });
 
-  assert.equal(
-    output.styling.build_command,
-    'node "C:\\checkout path\\local\\build-css.mjs" "<artifact.html>" --minify',
-  );
-  assert.equal(
-    output.styling.themed_build_command,
-    'node "C:\\checkout path\\local\\build-css.mjs" "<artifact.html>" --minify --theme "<daisyui-theme>"',
-  );
+  assert.equal(output.styling.build_command, null);
+  assert.equal(output.styling.themed_build_command, null);
+  assert.deepEqual(output.styling.build_argv, [
+    process.execPath,
+    "C:\\checkout path\\local\\build-css.mjs",
+    "<artifact.html>",
+    "--minify",
+  ]);
+  assert.match(output.styling.how, /Windows it is intentionally null/);
 });
 
 test("design output withholds the build command when the local toolchain is incomplete", () => {
@@ -503,7 +504,7 @@ test("design output defaults to light and warns against @apply on DaisyUI classe
   assert.ok(output.theme_usage.some((item) => /^Light is the default/.test(item)));
   assert.ok(output.theme_usage.some((item) => /data-theme="dark"/.test(item) && /opt-in/.test(item)));
   assert.ok(output.theme_usage.some((item) => /does NOT follow the OS/i.test(item)));
-  assert.ok(output.theme_usage.some((item) => /themed_build_command with `--theme <name>`/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /themed_build_argv with `--theme <name>`/.test(item)));
   assert.ok(!output.theme_usage.some((item) => /luxury/i.test(item)));
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
   assert.ok(output.theme_usage.some((item) => /aborts the whole compile/i.test(item)));

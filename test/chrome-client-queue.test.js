@@ -1668,12 +1668,16 @@ test("chrome send and end with an empty composer nudges instead of ending", asyn
     },
   });
   chrome.element("sendHint").hidden = true;
+  chrome.sendFrameMessage({ type: "lavish:togglePanel" });
+  assert.equal(chrome.element("body").classList.contains("panel-collapsed"), true);
 
   chrome.element("sendAndEnd").onclick();
   await flushPromises();
 
   assert.equal(posts.length, 0);
   assert.equal(chrome.postedToFrame.length, 0);
+  assert.equal(chrome.element("body").classList.contains("panel-collapsed"), false);
+  assert.equal(chrome.element("panelToggle")["aria-pressed"], "false");
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.element("chatInput").disabled, false);

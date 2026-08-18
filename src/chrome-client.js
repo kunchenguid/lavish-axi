@@ -389,6 +389,7 @@ function pillAttachmentsHtml(prompt) {
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600) {
+  setPanelCollapsed(false);
   sendHint.textContent = message;
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);

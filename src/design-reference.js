@@ -22,8 +22,7 @@ function localCssBuilderPath() {
   }
 }
 
-function shellQuote(value, platform) {
-  if (platform === "win32") return `"${String(value).replaceAll('"', '\\"')}"`;
+function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
 }
 
@@ -171,7 +170,7 @@ export const LAYOUT_SAFETY_CSS_SNIPPET = `<style>
 // the `lavish-axi design` summary, and the design command help. Edit the rule here only;
 // other surfaces embed it or point at it instead of restating it.
 export const DESIGN_PRIORITY_RULE =
-  "Decide the design direction in this strict priority order, and only move to the next step when the current one truly yields nothing: (1) if the user asked for a specific look or named design system, use that; (2) otherwise you must first inspect the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and match that project's design system: Tailwind or theme config, shared CSS variables or design tokens, component library, brand assets, or existing styled pages. If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo; (3) only when both steps come up empty, write the artifact with Tailwind + DaisyUI classes and compile them locally with this install's per-artifact CSS builder (see `build_command` in `lavish-axi design`), light theme by default. LOCAL PATCH: the styles must ship as a LOCAL sibling .css file referenced by a relative href. Never load a CDN-hosted style runtime (Tailwind browser runtime, DaisyUI CDN, jsdelivr) and never use the root-absolute `/design/...` route: the first needs network at view time, the second only resolves while the Lavish server is running, and `lavish-axi export` inlines local relative assets only - so either one produces an 'export' that is not actually portable.";
+  "Decide the design direction in this strict priority order, and only move to the next step when the current one truly yields nothing: (1) if the user asked for a specific look or named design system, use that; (2) otherwise you must first inspect the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and match that project's design system: Tailwind or theme config, shared CSS variables or design tokens, component library, brand assets, or existing styled pages. If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo; (3) only when both steps come up empty, write the artifact with Tailwind + DaisyUI classes and compile them locally with this install's per-artifact CSS builder (see `build_argv` in `lavish-axi design`), light theme by default. LOCAL PATCH: the styles must ship as a LOCAL sibling .css file referenced by a relative href. Never load a CDN-hosted style runtime (Tailwind browser runtime, DaisyUI CDN, jsdelivr) and never use the root-absolute `/design/...` route: the first needs network at view time, the second only resolves while the Lavish server is running, and `lavish-axi export` inlines local relative assets only - so either one produces an 'export' that is not actually portable.";
 
 export const DESIGN_SYSTEM_HINT =
   "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Before writing any HTML: " +
@@ -219,6 +218,7 @@ export const DAISYUI_THEMES = [
 export function createDesignOutput({ cssBuilderPath = localCssBuilderPath(), platform = process.platform } = {}) {
   const buildArgs = cssBuilderPath ? [cssBuilderPath, "<artifact.html>", "--minify"] : null;
   const themedBuildArgs = buildArgs ? [...buildArgs, "--theme", "<daisyui-theme>"] : null;
+  const hasShellCommand = Boolean(cssBuilderPath && platform !== "win32");
   return {
     playbook_router: {
       instruction: PLAYBOOK_ROUTER_INSTRUCTION,
@@ -233,7 +233,7 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath(), pla
       summary:
         "Lavish does not auto-inject any design system; artifacts stay portable HTML. Paint an explicit page background and readable text. " +
         DESIGN_PRIORITY_RULE +
-        " There is no CDN snippet to paste: this installation replaced the CDN fallback with a local compile step, so you still get the full Tailwind + DaisyUI vocabulary - see `styling.build_command` below.",
+        " There is no CDN snippet to paste: this installation replaced the CDN fallback with a local compile step, so you still get the full Tailwind + DaisyUI vocabulary - see `styling.build_argv` below.",
       layout_safety_snippet: LAYOUT_SAFETY_CSS_SNIPPET,
       layout_safety_note:
         "Optional copy-paste CSS for artifacts with dense nested grid/flex layouts, badges, wide monospace or pixel fonts, or local media. Paste it into the artifact yourself when useful. Lavish never auto-injects it, so direct-open portability stays intact.",
@@ -253,22 +253,22 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath(), pla
     // "fetch a runtime at view time" to "compile the used classes into a sibling file".
     styling: {
       how: cssBuilderPath
-        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then execute build_argv as an argument vector when possible; otherwise run build_command, which is quoted for this platform. Replace <artifact.html> with the artifact path as one argument. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_argv or themed_build_command and replace both placeholders."
+        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then execute build_argv as an argument vector and replace <artifact.html> with the artifact path as one argument. On POSIX systems, build_command is a copy-paste convenience; on Windows it is intentionally null because PowerShell and cmd.exe have incompatible quoting rules. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_argv and replace both placeholders."
         : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
-      build_command: cssBuilderPath
-        ? `node ${shellQuote(cssBuilderPath, platform)} ${shellQuote("<artifact.html>", platform)} --minify`
+      build_command: hasShellCommand
+        ? `node ${shellQuote(cssBuilderPath)} ${shellQuote("<artifact.html>")} --minify`
         : null,
-      themed_build_command: cssBuilderPath
-        ? `node ${shellQuote(cssBuilderPath, platform)} ${shellQuote("<artifact.html>", platform)} --minify --theme ${shellQuote("<daisyui-theme>", platform)}`
+      themed_build_command: hasShellCommand
+        ? `node ${shellQuote(cssBuilderPath)} ${shellQuote("<artifact.html>")} --minify --theme ${shellQuote("<daisyui-theme>")}`
         : null,
       build_argv: buildArgs ? [process.execPath, ...buildArgs] : null,
       themed_build_argv: themedBuildArgs ? [process.execPath, ...themedBuildArgs] : null,
       link_tag:
         'Reference the built file with a RELATIVE href in <head>: <link rel="stylesheet" href="<artifact-basename>.css">. Never a leading slash.',
       themes:
-        'light (default) and dark are both compiled in. Light applies automatically; dark is opt-in via data-theme="dark" rather than following the OS, so artifacts stay light unless the user asks. Any other theme from `themes` below needs themed_build_command with --theme <name> - the theme list is not compiled in wholesale.',
+        'light (default) and dark are both compiled in. Light applies automatically; dark is opt-in via data-theme="dark" rather than following the OS, so artifacts stay light unless the user asks. Any other theme from `themes` below needs themed_build_argv with --theme <name> - the theme list is not compiled in wholesale.',
       rebuild_note:
-        "The build is a snapshot of the classes present at build time. Add or change classes -> re-run build_command before telling the user to look.",
+        "The build is a snapshot of the classes present at build time. Add or change classes -> re-run build_argv before telling the user to look.",
       rules: [
         "Every asset must be local. `lavish-axi export` inlines local relative refs only, so a CDN or root-absolute reference silently makes the export non-portable.",
         "Keep body copy to a readable measure (~760-820px) and put wide tables or diagrams in their own overflow-x:auto container so the page itself never scrolls sideways.",
@@ -281,7 +281,7 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath(), pla
     theme_usage: [
       "Light is the default and applies with no `data-theme` attribute at all. Do not set one unless you mean it.",
       'Dark ships in every build but is opt-in via `data-theme="dark"` on `<html>` or a section - it deliberately does NOT follow the OS, so artifacts stay light unless the user asks.',
-      "Any other theme from the list below needs themed_build_command with `--theme <name>`; without it the classes compile but the theme's colors are simply absent.",
+      "Any other theme from the list below needs themed_build_argv with `--theme <name>`; without it the classes compile but the theme's colors are simply absent.",
       'Set a nested section theme with `<section data-theme="dark">`.',
       "Prefer semantic colors such as `bg-base-100`, `bg-base-200`, `text-base-content`, `bg-primary`, `text-primary-content`, `alert-warning`, and `btn-primary` so themes remain readable.",
       "Avoid hardcoded Tailwind color names for text and surfaces unless the user asked for exact colors.",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -37,6 +37,165 @@ function resultFromDump(html) {
   const match = html.match(/<pre id="testResult"[^>]*>([\s\S]*?)<\/pre>/);
   return match?.[1] ? JSON.parse(match[1]) : null;
 }
+
+async function waitForValue(read, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await read();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw lastError || new Error("timed out waiting for browser state");
+}
+
+async function connectCdp(url) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+  let nextId = 1;
+  const pending = new Map();
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(String(event.data));
+    const waiter = pending.get(message.id);
+    if (!waiter) return;
+    pending.delete(message.id);
+    if (message.error) waiter.reject(new Error(message.error.message));
+    else waiter.resolve(message.result);
+  });
+  return {
+    send(method, params = {}) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+    },
+    close() {
+      socket.close();
+    },
+  };
+}
+
+function parseColor(value) {
+  const numbers = String(value).match(/[\d.]+/g)?.map(Number) || [];
+  assert.ok(numbers.length >= 3, `expected an rgb color, got ${value}`);
+  return [numbers[0], numbers[1], numbers[2], numbers[3] ?? 1];
+}
+
+function compositeOverWhite(color) {
+  const alpha = color[3];
+  return color.slice(0, 3).map((channel) => channel * alpha + 255 * (1 - alpha));
+}
+
+function contrastRatio(foreground, background) {
+  const luminance = (color) => {
+    const channels = color.slice(0, 3).map((channel) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  };
+  const foregroundLuminance = luminance(compositeOverWhite(foreground));
+  const backgroundLuminance = luminance(compositeOverWhite(background));
+  const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+  const darker = Math.min(foregroundLuminance, backgroundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+test("light dock hover controls retain accessible contrast", { timeout: 60_000 }, async (t) => {
+  const chrome = await chromePath();
+  if (!chrome) {
+    t.skip("Chrome or Chromium is required for the compact-dock regression");
+    return;
+  }
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "lavish-hover-contrast-"));
+  const profile = path.join(root, "chrome-profile");
+  const chromeCss = await readFile(path.join(projectRoot, "src", "chrome.css"));
+  const server = http.createServer((request, response) => {
+    if (new URL(request.url, "http://127.0.0.1").pathname === "/chrome.css") {
+      response.writeHead(200, { "content-type": "text/css; charset=utf-8" });
+      response.end(chromeCss);
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(
+      '<!doctype html><link rel="stylesheet" href="/chrome.css"><body class="lavish"><main style="padding:40px;display:flex;gap:20px;background:#fff"><button id="more" class="more-button" aria-label="More">...</button><button id="warnings" class="warnings-button">Warnings</button></main>',
+    );
+  });
+  let browser;
+  let cdp;
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
+    const pageUrl = `http://127.0.0.1:${address.port}/`;
+    browser = spawn(
+      chrome,
+      [
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-background-networking",
+        "--no-sandbox",
+        "--remote-debugging-port=0",
+        `--user-data-dir=${profile}`,
+        "--window-size=800,600",
+        pageUrl,
+      ],
+      { stdio: "ignore" },
+    );
+    const devtools = await waitForValue(async () => {
+      const [port] = (await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).trim().split("\n");
+      const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
+      return targets.find((target) => target.type === "page" && target.url === pageUrl);
+    });
+    cdp = await connectCdp(devtools.webSocketDebuggerUrl);
+    const evaluate = async (expression) => {
+      const result = await cdp.send("Runtime.evaluate", { expression, returnByValue: true });
+      if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+      return result.result.value;
+    };
+    await waitForValue(async () => (await evaluate("document.readyState")) === "complete");
+
+    for (const id of ["more", "warnings"]) {
+      const rect = await evaluate(
+        `(() => { const box = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height }; })()`,
+      );
+      await cdp.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+      });
+      const style = await waitForValue(async () => {
+        const value = await evaluate(
+          `(() => { const button = document.getElementById(${JSON.stringify(id)}); const style = getComputedStyle(button); return { hovered: button.matches(":hover"), color: style.color, background: style.backgroundColor }; })()`,
+        );
+        return value.hovered ? value : null;
+      });
+      const ratio = contrastRatio(parseColor(style.color), parseColor(style.background));
+      assert.ok(ratio >= 4.5, `${id} hover contrast was ${ratio.toFixed(2)}:1`);
+    }
+  } finally {
+    cdp?.close();
+    if (browser && browser.exitCode === null) {
+      const exited = new Promise((resolve) => browser.once("exit", resolve));
+      browser.kill("SIGTERM");
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+      if (browser.exitCode === null) browser.kill("SIGKILL");
+    }
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("compact review dock reserves chrome space without covering review surfaces", { timeout: 60_000 }, async (t) => {
   const chrome = await chromePath();

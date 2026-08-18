@@ -1280,6 +1280,7 @@ body.lavish {
   background: rgba(244, 201, 93, 0.18);
   color: var(--accent);
 }
+.warnings-button:hover:not(:disabled),
 .warnings-button[aria-expanded="true"] {
   border-color: rgba(154, 111, 20, 0.6);
   background: rgba(244, 201, 93, 0.34);
@@ -1290,6 +1291,7 @@ body.lavish {
 .warning-chip {
   background: #f2f4f7;
 }
+.more-button:hover:not(:disabled),
 .more-button[aria-expanded="true"],
 .menu-file:hover,
 .menu-item:hover:not(:disabled) {

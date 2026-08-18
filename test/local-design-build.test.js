@@ -13,14 +13,18 @@ const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 test("design output exposes executable Windows-safe base and themed argv", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-design-command-"));
   try {
-    const builderDir = path.join(root, "checkout path", "it's $(unsafe)");
+    const pathSpecial = `spaces $HOME %TEMP% 'single' $(unsafe)`;
+    const argumentSpecial = `${pathSpecial} "double"`;
+    const builderDir = path.join(root, "checkout path", pathSpecial);
     const builder = path.join(builderDir, "build-css.mjs");
-    const artifact = path.join(root, "artifact file.html");
+    const artifact = path.join(root, `artifact ${pathSpecial}.html`);
     await mkdir(builderDir, { recursive: true });
     await writeFile(builder, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
     await writeFile(artifact, "<!doctype html><title>artifact</title>\n");
 
     const output = createDesignOutput({ cssBuilderPath: builder, platform: "win32" });
+    assert.equal(output.styling.build_command, null);
+    assert.equal(output.styling.themed_build_command, null);
     const baseArgv = output.styling.build_argv?.map((arg) => (arg === "<artifact.html>" ? artifact : arg));
     assert.ok(baseArgv);
     const base = spawnSync(baseArgv[0], baseArgv.slice(1), { encoding: "utf8" });
@@ -29,13 +33,13 @@ test("design output exposes executable Windows-safe base and themed argv", async
 
     const themedArgv = output.styling.themed_build_argv?.map((arg) => {
       if (arg === "<artifact.html>") return artifact;
-      if (arg === "<daisyui-theme>") return "night";
+      if (arg === "<daisyui-theme>") return argumentSpecial;
       return arg;
     });
     assert.ok(themedArgv);
     const themed = spawnSync(themedArgv[0], themedArgv.slice(1), { encoding: "utf8" });
     assert.equal(themed.status, 0, themed.stderr);
-    assert.deepEqual(JSON.parse(themed.stdout), [artifact, "--minify", "--theme", "night"]);
+    assert.deepEqual(JSON.parse(themed.stdout), [artifact, "--minify", "--theme", argumentSpecial]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
