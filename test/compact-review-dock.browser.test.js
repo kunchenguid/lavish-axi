@@ -84,7 +84,10 @@ async function connectCdp(url) {
 }
 
 function parseColor(value) {
-  const numbers = String(value).match(/[\d.]+/g)?.map(Number) || [];
+  const numbers =
+    String(value)
+      .match(/[\d.]+/g)
+      ?.map(Number) || [];
   assert.ok(numbers.length >= 3, `expected an rgb color, got ${value}`);
   return [numbers[0], numbers[1], numbers[2], numbers[3] ?? 1];
 }
@@ -109,7 +112,7 @@ function contrastRatio(foreground, background) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-test("light dock hover controls retain accessible contrast", { timeout: 60_000 }, async (t) => {
+test("light dock controls and labels retain accessible contrast", { timeout: 60_000 }, async (t) => {
   const chrome = await chromePath();
   if (!chrome) {
     t.skip("Chrome or Chromium is required for the compact-dock regression");
@@ -127,7 +130,7 @@ test("light dock hover controls retain accessible contrast", { timeout: 60_000 }
     }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(
-      '<!doctype html><link rel="stylesheet" href="/chrome.css"><body class="lavish"><main style="padding:40px;display:flex;gap:20px;background:#fff"><button id="more" class="more-button" aria-label="More">...</button><button id="warnings" class="warnings-button">Warnings</button></main>',
+      '<!doctype html><link rel="stylesheet" href="/chrome.css"><body class="lavish"><main style="padding:40px;display:grid;gap:20px;background:#fff"><div style="display:flex;gap:20px"><button id="more" class="more-button" aria-label="More">...</button><button id="warnings" class="warnings-button">Warnings</button></div><div id="warningsDrawer" class="menu warnings-drawer" style="position:static"><div class="warnings-list"><div id="warningSurface" class="warning-row"><div class="warning-body"><span id="warningTarget" class="warning-target">main &gt; article</span></div></div></div><div class="warnings-foot"><p id="warningsNote" class="warnings-note">Queueing sends a repair request.</p></div></div><div id="tooltipSurface" class="pill-tooltip" style="display:block"><div id="tooltipLabel" class="tooltip-label">Target</div></div><div class="composer"><textarea id="composerInput" placeholder="Write a message for the agent..."></textarea></div></main>',
     );
   });
   let browser;
@@ -182,6 +185,19 @@ test("light dock hover controls retain accessible contrast", { timeout: 60_000 }
       });
       const ratio = contrastRatio(parseColor(style.color), parseColor(style.background));
       assert.ok(ratio >= 4.5, `${id} hover contrast was ${ratio.toFixed(2)}:1`);
+    }
+
+    for (const spec of [
+      { id: "warningTarget", backgroundId: "warningSurface" },
+      { id: "warningsNote", backgroundId: "warningsDrawer" },
+      { id: "tooltipLabel", backgroundId: "tooltipSurface" },
+      { id: "composerInput", backgroundId: "composerInput", pseudo: "::placeholder" },
+    ]) {
+      const style = await evaluate(
+        `(() => { const text = document.getElementById(${JSON.stringify(spec.id)}); const background = document.getElementById(${JSON.stringify(spec.backgroundId)}); return { color: getComputedStyle(text, ${JSON.stringify(spec.pseudo || null)}).color, background: getComputedStyle(background).backgroundColor }; })()`,
+      );
+      const ratio = contrastRatio(parseColor(style.color), parseColor(style.background));
+      assert.ok(ratio >= 4.5, `${spec.id} contrast was ${ratio.toFixed(2)}:1`);
     }
   } finally {
     cdp?.close();

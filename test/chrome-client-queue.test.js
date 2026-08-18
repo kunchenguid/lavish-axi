@@ -1954,6 +1954,29 @@ async function initializeInlineWhiteboard(chrome, token = "inline-channel") {
   return whiteboard;
 }
 
+async function initializeOverlayWhiteboard(chrome) {
+  const inline = await initializeInlineWhiteboard(chrome);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const prepare = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: prepare.flushId,
+  });
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:ready",
+    diagramIndex: 0,
+    channelToken: "overlay-channel",
+  });
+  await flushPromises();
+  await flushPromises();
+}
+
 test("artifact relays cannot invoke whiteboard persistence", async () => {
   const calls = [];
   const chrome = await createChromeHarness({
@@ -2082,33 +2105,16 @@ test("whiteboard fullscreen waits for the authenticated inline frame to flush", 
 
 test("only the authenticated fullscreen whiteboard can relay end session", async () => {
   const calls = [];
+  const events = [];
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {
       calls.push({ url, method: init.method });
+      if (url === "/api/abc/whiteboard/0" && init.method === "PUT") events.push("save");
+      if (url === "/api/abc/end") events.push("end");
       return whiteboardFetch(url);
     },
   });
-  const inline = await initializeInlineWhiteboard(chrome);
-
-  chrome.sendInlineWhiteboardMessage(inline, {
-    type: "lavish-whiteboard:maximize",
-    diagramIndex: 0,
-    channelId: "inline-channel",
-  });
-  const prepare = inline.posted.at(-1);
-  chrome.sendInlineWhiteboardMessage(inline, {
-    type: "lavish-whiteboard:teardownReady",
-    diagramIndex: 0,
-    channelId: "inline-channel",
-    flushId: prepare.flushId,
-  });
-  chrome.sendWhiteboardMessage({
-    type: "lavish-whiteboard:ready",
-    diagramIndex: 0,
-    channelToken: "overlay-channel",
-  });
-  await flushPromises();
-  await flushPromises();
+  await initializeOverlayWhiteboard(chrome);
 
   chrome.sendWhiteboardMessage({
     type: "lavish-whiteboard:endSession",
@@ -2128,9 +2134,151 @@ test("only the authenticated fullscreen whiteboard can relay end session", async
   });
   await flushPromises();
 
+  const teardown = chrome.postedToWhiteboard.at(-1);
+  assert.equal(teardown.type, "lavish-whiteboard:prepareTeardown");
+  assert.equal(
+    calls.some((call) => call.url === "/api/abc/end"),
+    false,
+  );
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:save",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: teardown.flushId,
+    sourceHash: "hash",
+    scene: { elements: [], appState: {}, files: {} },
+  });
+  await flushPromises();
+  await flushPromises();
+  const saveResult = chrome.postedToWhiteboard.at(-1);
+  assert.equal(saveResult.type, "lavish-whiteboard:saveResult");
+  assert.equal(saveResult.ok, true);
+  assert.deepEqual(events, ["save"]);
+
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: teardown.flushId,
+  });
+  await flushPromises();
+  await flushPromises();
+
   assert.deepEqual(
     calls.filter((call) => call.url === "/api/abc/end"),
     [{ url: "/api/abc/end", method: "POST" }],
+  );
+  assert.deepEqual(events, ["save", "end"]);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+test("fullscreen end remains open when whiteboard teardown fails", async () => {
+  const calls = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url, method: init.method });
+      if (url === "/api/abc/whiteboard/0" && init.method === "PUT") return { ok: false };
+      return whiteboardFetch(url);
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  await initializeOverlayWhiteboard(chrome);
+
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:endSession",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+  });
+  const teardown = chrome.postedToWhiteboard.at(-1);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:save",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: teardown.flushId,
+    sourceHash: "hash",
+    scene: { elements: [], appState: {}, files: {} },
+  });
+  await flushPromises();
+  await flushPromises();
+
+  const saveResult = chrome.postedToWhiteboard.at(-1);
+  assert.equal(saveResult.type, "lavish-whiteboard:saveResult");
+  assert.equal(saveResult.ok, false);
+  assert.match(saveResult.error, /failed to save whiteboard scene/);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownFailed",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: teardown.flushId,
+    error: saveResult.error,
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(
+    calls.some((call) => call.url === "/api/abc/end"),
+    false,
+  );
+  assert.equal(chrome.element("whiteboardOverlay").hidden, false);
+  assert.match(chrome.element("whiteboardFrame").src, /^\/whiteboard-frame/);
+  assert.equal(chrome.element("endedOverlay").hidden, true);
+  assert.equal(chrome.element("end").disabled, false);
+});
+
+test("Send and End flushes the whiteboard before its atomic prompt delivery", async () => {
+  const calls = [];
+  const events = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      calls.push({ url, method: init.method, body });
+      if (url === "/api/abc/whiteboard/0" && init.method === "PUT") events.push("save");
+      if (url === "/api/abc/prompts") events.push("prompts");
+      if (url === "/api/abc/end") events.push("end");
+      return whiteboardFetch(url);
+    },
+  });
+  await initializeOverlayWhiteboard(chrome);
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" },
+  });
+
+  chrome.element("sendAndEnd").click();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  const teardown = chrome.postedToWhiteboard.at(-1);
+  assert.equal(teardown.type, "lavish-whiteboard:prepareTeardown");
+  assert.deepEqual(events, []);
+
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:save",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: teardown.flushId,
+    sourceHash: "hash",
+    scene: { elements: [], appState: {}, files: {} },
+  });
+  await flushPromises();
+  await flushPromises();
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: teardown.flushId,
+  });
+  await flushPromises();
+  await flushPromises();
+
+  const promptCall = calls.find((call) => call.url === "/api/abc/prompts");
+  assert.deepEqual(events, ["save", "prompts"]);
+  assert.equal(promptCall.body.endSession, true);
+  assert.deepEqual(promptCall.body.prompts, [
+    { prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" },
+  ]);
+  assert.equal(
+    calls.some((call) => call.url === "/api/abc/end"),
+    false,
   );
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });

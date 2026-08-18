@@ -176,6 +176,7 @@ let endAfterSubmit = false;
 let workingBubble = null;
 let submitQueuedPromise = null;
 let submitQueuedAgain = false;
+let endSessionPromise = null;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
@@ -616,6 +617,7 @@ async function submitQueued() {
 async function submitQueuedOnce() {
   const prompts = queued.slice();
   const shouldEndSession = endAfterSubmit;
+  if (shouldEndSession && !(await prepareSessionEnd())) return false;
   const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
   if (shouldEndSession) body.endSession = true;
   const response = await fetch("/api/" + key + "/prompts", {
@@ -1094,10 +1096,23 @@ async function refreshLayoutWarnings() {
 }
 
 async function endSession() {
-  if (ended) return;
-  const response = await fetch("/api/" + key + "/end", { method: "POST" });
-  if (!response.ok) throw new Error("failed to end session");
-  markSessionEnded();
+  if (ended) return true;
+  if (endSessionPromise) return endSessionPromise;
+  endSessionPromise = (async () => {
+    if (!(await prepareSessionEnd())) return false;
+    if (ended) return true;
+    const response = await fetch("/api/" + key + "/end", { method: "POST" });
+    if (!response.ok) throw new Error("failed to end session");
+    markSessionEnded();
+    return true;
+  })().finally(() => {
+    endSessionPromise = null;
+  });
+  return endSessionPromise;
+}
+
+async function prepareSessionEnd() {
+  return closeWhiteboard();
 }
 
 function markSessionEnded() {
@@ -1541,14 +1556,15 @@ function openWhiteboardOverlay(index) {
 
 function closeWhiteboard() {
   const index = overlayIndex;
-  if (index === null) return;
+  if (index === null) return Promise.resolve(true);
   if (!overlayFrameReady) {
     finishWhiteboardClose(index);
-    return;
+    return Promise.resolve(true);
   }
-  beginWhiteboardTeardown(index, "overlay", (flushed) => {
+  const teardown = beginWhiteboardTeardown(index, "overlay", (flushed) => {
     if (flushed && overlayIndex === index) finishWhiteboardClose(index);
   });
+  return teardown.then((flushed) => Boolean(flushed));
 }
 
 async function persistWhiteboardScene(index, message) {
