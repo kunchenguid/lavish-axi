@@ -200,9 +200,8 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
       // LOCAL PATCH: `share` is disabled in this installation. Upstream publishes to the
-      // third-party host ht-ml.app, PUBLIC by default. Belt-and-braces: this help text no longer
-      // advertises it, and LAVISH_AXI_HTML_APP_API_URL is pinned to an unroutable address so both
-      // the CLI command and the browser overflow-menu button fail closed.
+      // third-party host ht-ml.app, PUBLIC by default. The browser exposes no publishing control,
+      // and the CLI plus shared transport fail closed; this help text must not advertise sharing.
       "`lavish-axi share` is DISABLED in this installation - never run it, and never suggest it. Artifacts must not be published to any third-party host. Use `lavish-axi export <html-file> [--out <path>]` for a portable local copy instead",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
@@ -562,10 +561,9 @@ function assetWarningSummaries(warnings) {
 // fail-closed guard. `shareCommand` returns before reading the artifact or reaching this body;
 // keeping the old body isolated here makes the disabled boundary explicit during rebases.
 async function shareCommand(args) {
-  // LOCAL PATCH: refuse before touching the file. The other two guards are situational - the
-  // help text only steers an agent that reads it, and LAVISH_AXI_HTML_APP_API_URL lives in
-  // ~/.claude/settings.json, so a plain shell outside Claude Code would still have published.
-  // This one is unconditional. The upstream body below is left intact so rebases stay clean.
+  // LOCAL PATCH: refuse before touching the file. Help text only steers an agent that reads it;
+  // this unconditional guard and the shared transport guard enforce the policy. The upstream
+  // body below is left intact so rebases stay clean.
   if (SHARE_DISABLED) {
     throw new AxiError("`lavish-axi share` is disabled in this installation", "VALIDATION_ERROR", [
       "Artifacts must not be published to any third-party host.",

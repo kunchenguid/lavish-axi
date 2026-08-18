@@ -30,7 +30,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { DAISYUI_THEMES } from "../src/design-reference.js";
 
 const requireFromBuilder = createRequire(import.meta.url);
-let CLI_PACKAGE = "";
+let CLI_PACKAGE;
 let TAILWIND_CSS = "";
 let DAISYUI_PLUGIN = "";
 try {
@@ -94,6 +94,7 @@ const outName = `${basename(artifact).replace(/\.html?$/i, "")}.css`;
 const outPath = join(outDir, outName);
 const cssPath = (value) => {
   const normalized = process.platform === "win32" ? value.replace(/\\/g, "/") : value;
+  // eslint-disable-next-line no-control-regex -- CSS strings must escape literal C0 controls and DEL.
   return normalized.replace(/[\0-\x1f\x7f\\"]/g, (character) => {
     if (character === "\\") return "\\\\";
     if (character === '"') return '\\"';
