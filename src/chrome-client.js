@@ -1,4 +1,4 @@
-/* global AbortController, EventSource, document, location, window */
+/* global EventSource, document, location, window */
 
 const sessionDataElement = document.getElementById("lavish-session");
 const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
@@ -642,6 +642,10 @@ function settleOrdinarySendOperation(operation, result) {
   operation.resolve(Boolean(result));
 }
 
+/**
+ * @param {string} action
+ * @param {{ endOperation?: any, sendOperation?: any, onTimeout?: () => void }} [options]
+ */
 function requestSnapshot(action, { endOperation = null, sendOperation = null, onTimeout } = {}) {
   const requestId = `snapshot-${++nextSnapshotRequestId}`;
   const request = { action, endOperation, sendOperation, onTimeout, timer: undefined };

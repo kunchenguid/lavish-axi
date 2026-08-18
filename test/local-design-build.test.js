@@ -23,7 +23,7 @@ test("design output exposes executable injection-safe base and themed argv", asy
     await writeFile(builder, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
     await writeFile(artifact, "<!doctype html><title>artifact</title>\n");
 
-    const output = createDesignOutput({ cssBuilderPath: builder, platform: "win32" });
+    const output = createDesignOutput({ cssBuilderPath: builder });
     assert.equal(output.styling.build_command, null);
     assert.equal(output.styling.themed_build_command, null);
     const baseArgv = output.styling.build_argv?.map((arg) => (arg === "<artifact.html>" ? artifact : arg));

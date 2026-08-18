@@ -168,7 +168,6 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
 test("generated design-priority guidance keeps its three-step semantics", () => {
   const designSummary = createDesignOutput({
     cssBuilderPath: "/checkout/local/build-css.mjs",
-    platform: "linux",
   }).design.summary;
   const homeOutput = createHomeOutput({
     bin: "lavish-axi",
@@ -377,7 +376,7 @@ test("top-level help renders static home output without dynamic sessions", async
 });
 
 test("design output ships the DaisyUI vocabulary with a local build instead of CDN URLs", () => {
-  const output = createDesignOutput({ cssBuilderPath: "/checkout/local/build-css.mjs", platform: "linux" });
+  const output = createDesignOutput({ cssBuilderPath: "/checkout/local/build-css.mjs" });
 
   assert.match(output.playbook_router.instruction, /MUST open each matching playbook before writing HTML/);
   assert.equal(output.playbook_router.playbooks.length, 7);
@@ -461,7 +460,6 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
 test("design output withholds placeholder shell commands", () => {
   const output = createDesignOutput({
     cssBuilderPath: "/checkout path/it's $(unsafe)/local/build-css.mjs",
-    platform: "linux",
   });
 
   assert.equal(output.styling.build_command, null);
@@ -479,7 +477,6 @@ test("design output withholds placeholder shell commands", () => {
 test("design output withholds generic Windows shell commands", () => {
   const output = createDesignOutput({
     cssBuilderPath: "C:\\checkout path\\local\\build-css.mjs",
-    platform: "win32",
   });
 
   assert.equal(output.styling.build_command, null);

@@ -1822,7 +1822,7 @@ test("direct End waits for an ordinary Send snapshot and delivery", async () => 
   const events = [];
   let releasePrompts = () => {};
   const promptsReleased = new Promise((resolve) => {
-    releasePrompts = resolve;
+    releasePrompts = () => resolve();
   });
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {
@@ -2154,7 +2154,7 @@ test("a later successful ordinary Send lets pending End ignore an earlier failed
   const calls = [];
   let releaseFirst = () => {};
   const firstReleased = new Promise((resolve) => {
-    releaseFirst = resolve;
+    releaseFirst = () => resolve();
   });
   let promptCalls = 0;
   const chrome = await createChromeHarness({
@@ -2322,7 +2322,7 @@ test("a failed ordinary send cannot cancel a queued atomic Send and End", async 
   const posts = [];
   let releaseFirstPost = () => {};
   const firstPost = new Promise((resolve) => {
-    releaseFirstPost = resolve;
+    releaseFirstPost = () => resolve();
   });
   let promptPosts = 0;
   const chrome = await createChromeHarness({
@@ -2999,9 +2999,9 @@ test("narrow menu End restores focus through teardown timeout and retry", async 
 test("direct End waits for pending atomic Send and End delivery", async () => {
   const calls = [];
   const events = [];
-  let releasePrompts;
+  let releasePrompts = () => {};
   const promptsReleased = new Promise((resolve) => {
-    releasePrompts = resolve;
+    releasePrompts = () => resolve();
   });
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {

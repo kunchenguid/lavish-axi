@@ -136,7 +136,7 @@ test("light dock controls and labels retain accessible contrast", { timeout: 60_
   let browser;
   let cdp;
   try {
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
     const pageUrl = `http://127.0.0.1:${address.port}/`;
