@@ -148,11 +148,32 @@ test("a view-only autosave plus a Mermaid-source change silently re-converts", (
   const saved = savedScene({
     sourceHash: "hash-old",
     elements: [
-      { ...baseline[0], version: 3, updated: 99 },
-      { ...baseline[1], version: 4, updated: 100 },
+      { ...baseline[0], index: "a1", seed: 7, version: 3, versionNonce: 31, updated: 99 },
+      { ...baseline[1], index: "a2", seed: 8, version: 4, versionNonce: 32, updated: 100 },
     ],
     baseline,
     appState: { scrollX: 408.5, scrollY: -5.1, zoom: { value: 0.7 } },
+  });
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-new"), "convert");
+});
+
+test("style-only scene changes do not become preservable edits", () => {
+  const baseline = [rect("A")];
+  const saved = savedScene({
+    sourceHash: "hash-old",
+    elements: [
+      rect("A", {
+        backgroundColor: "#ffc9c9",
+        fillStyle: "hachure",
+        opacity: 60,
+        roughness: 0,
+        roundness: { type: 3 },
+        strokeColor: "#e03131",
+        strokeStyle: "dashed",
+        strokeWidth: 4,
+      }),
+    ],
+    baseline,
   });
   assert.equal(resolveWhiteboardInitAction(saved, "hash-new"), "convert");
 });
@@ -169,8 +190,20 @@ test("a genuinely edited scene plus a Mermaid-source change still prompts", () =
     elements: [...structuredClone(baseline), { id: "fd1", type: "freedraw", x: 40, y: 18 }],
     baseline,
   });
+  const rotated = savedScene({
+    sourceHash: "hash-old",
+    elements: [rect("A", { angle: Math.PI / 4 })],
+    baseline,
+  });
+  const propertyEdited = savedScene({
+    sourceHash: "hash-old",
+    elements: [rect("A", { customData: { reviewerNote: "keep" } })],
+    baseline,
+  });
   assert.equal(resolveWhiteboardInitAction(moved, "hash-new"), "prompt");
   assert.equal(resolveWhiteboardInitAction(drawn, "hash-new"), "prompt");
+  assert.equal(resolveWhiteboardInitAction(rotated, "hash-new"), "prompt");
+  assert.equal(resolveWhiteboardInitAction(propertyEdited, "hash-new"), "prompt");
   assert.equal(resolveWhiteboardInitAction(moved, "hash-old"), "restore");
 });
 

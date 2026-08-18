@@ -272,15 +272,69 @@ export function createWhiteboardPersistencePayload(state, scene) {
 // Conversion always autosaves on view, so a sidecar's presence is not proof of
 // user edits. When the Mermaid source hash changes, prompt only if the saved
 // scene actually differs from its conversion baseline.
+const BENIGN_ELEMENT_CHANGE_KEYS = new Set([
+  "backgroundColor",
+  "fillStyle",
+  "fontFamily",
+  "fontSize",
+  "index",
+  "lineHeight",
+  "opacity",
+  "roughness",
+  "roundness",
+  "seed",
+  "strokeColor",
+  "strokeSharpness",
+  "strokeStyle",
+  "strokeWidth",
+  "textAlign",
+  "updated",
+  "version",
+  "versionNonce",
+  "verticalAlign",
+]);
+const JITTER_ELEMENT_KEYS = new Set(["height", "width", "x", "y"]);
+
+function valuesDiffer(before, after, key, elementProperty = false) {
+  if (elementProperty && BENIGN_ELEMENT_CHANGE_KEYS.has(key)) return false;
+  if (elementProperty && JITTER_ELEMENT_KEYS.has(key)) {
+    return Math.abs(Math.round((Number(after) || 0) - (Number(before) || 0))) > SUMMARY_MOVE_EPSILON_PX;
+  }
+  if (Object.is(before, after)) return false;
+  if (!before || !after || typeof before !== "object" || typeof after !== "object") return true;
+  if (Array.isArray(before) || Array.isArray(after)) {
+    if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return true;
+    return before.some((value, index) => valuesDiffer(value, after[index], String(index)));
+  }
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const childKey of keys) {
+    if (valuesDiffer(before[childKey], after[childKey], childKey)) return true;
+  }
+  return false;
+}
+
+function elementHasMeaningfulDifference(before, after) {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (key === "isDeleted") continue;
+    if (valuesDiffer(before[key], after[key], key, true)) return true;
+  }
+  return false;
+}
+
 export function savedSceneHasPreservableEdits(saved) {
   const sceneElements = saved?.scene?.elements;
   const baselineElements = saved?.baseline?.elements;
-  if (!Array.isArray(baselineElements)) {
-    // No baseline to compare against: fail closed so a genuine edit is not
-    // discarded by a silent re-convert.
-    return Array.isArray(sceneElements);
+  if (!Array.isArray(baselineElements)) return Array.isArray(sceneElements);
+  if (!Array.isArray(sceneElements)) return true;
+  const baseline = byId(liveElements(baselineElements));
+  const scene = byId(liveElements(sceneElements));
+  if (baseline.size !== scene.size) return true;
+  for (const [id, element] of scene) {
+    const original = baseline.get(id);
+    if (!original || elementHasMeaningfulDifference(original, element)) return true;
   }
-  return summarizeSceneEdits(baselineElements, sceneElements).totalChanges > 0;
+  return false;
 }
 
 /**
