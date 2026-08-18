@@ -463,14 +463,42 @@ function defaultAppState() {
   };
 }
 
+function restoreSceneData(elements, appState, files) {
+  return restore(
+    {
+      elements: Array.isArray(elements) ? elements : [],
+      appState: sanitizeWhiteboardAppState(appState),
+      files: files || {},
+    },
+    null,
+    null,
+    { repairBindings: true },
+  );
+}
+
+function normalizeSavedSceneForComparison(saved) {
+  const scene = restoreSceneData(saved.scene?.elements, saved.scene?.appState, saved.scene?.files);
+  const baseline = Array.isArray(saved.baseline?.elements)
+    ? restoreSceneData(saved.baseline.elements, defaultAppState(), saved.scene?.files)
+    : null;
+  return {
+    ...saved,
+    scene: { ...saved.scene, elements: scene.elements },
+    baseline: baseline ? { ...saved.baseline, elements: baseline.elements } : null,
+  };
+}
+
 async function startFromConversion(init) {
-  const { elements, files, imageFallback } = await convertSource(init.source);
+  const converted = await convertSource(init.source);
+  const restored = restoreSceneData(converted.elements, defaultAppState(), converted.files);
+  const elements = restored.elements;
+  const files = restored.files || converted.files;
   state.baselineElements = JSON.parse(JSON.stringify(elements));
   state.files = files;
-  state.imageFallback = imageFallback;
+  state.imageFallback = sceneIsImageFallback(elements);
   state.sceneSourceHash = init.sourceHash;
   state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
-  if (imageFallback) {
+  if (state.imageFallback) {
     setBanner(
       "wbFallbackBanner",
       "This diagram type is not natively editable, so it is shown as an image - draw, annotate, and add shapes on top.",
@@ -489,16 +517,7 @@ async function startFromSavedScene(init) {
   // restore() is Excalidraw's defensive loader: it fills missing fields with
   // defaults and repairs bindings, so a stale or hand-edited sidecar cannot
   // crash the editor.
-  const restored = restore(
-    {
-      elements: Array.isArray(saved.scene?.elements) ? saved.scene.elements : [],
-      appState: savedAppState,
-      files: saved.scene?.files || {},
-    },
-    null,
-    null,
-    { repairBindings: true },
-  );
+  const restored = restoreSceneData(saved.scene?.elements, savedAppState, saved.scene?.files);
   let elements = restored.elements;
   let baselineElements = Array.isArray(saved.baseline?.elements)
     ? JSON.parse(JSON.stringify(saved.baseline.elements))
@@ -618,7 +637,10 @@ async function handleInit(init) {
 
   const saved = init.saved && typeof init.saved === "object" && init.saved.scene ? init.saved : null;
   try {
-    const action = resolveWhiteboardInitAction(saved, init.sourceHash);
+    const action = resolveWhiteboardInitAction(
+      saved ? normalizeSavedSceneForComparison(saved) : null,
+      init.sourceHash,
+    );
     if (action === "restore" && saved) {
       await startFromSavedScene({ ...init, saved, theme });
       return;
