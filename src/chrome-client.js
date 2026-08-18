@@ -2213,6 +2213,7 @@ endButton.onclick = () => {
   endSession();
 };
 menuEndButton.onclick = () => {
+  moreButton.focus();
   closeMenus();
   endSession();
 };

@@ -2390,7 +2390,7 @@ test("fullscreen end remains open when whiteboard teardown fails", async () => {
   assert.equal(chrome.element("end").disabled, false);
 });
 
-test("fullscreen end timeout surfaces failure and permits retry", async () => {
+test("narrow menu End restores focus through teardown timeout and retry", async () => {
   const calls = [];
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {
@@ -2401,7 +2401,11 @@ test("fullscreen end timeout surfaces failure and permits retry", async () => {
   chrome.element("endedOverlay").hidden = true;
   await initializeOverlayWhiteboard(chrome);
 
-  chrome.element("end").click();
+  chrome.element("moreButton").click();
+  chrome.element("menuEnd").focus();
+  chrome.element("menuEnd").click();
+  assert.equal(chrome.element("moreMenu").hidden, true);
+  assert.equal(chrome.focusLog.at(-1), "moreButton");
   await flushPromises();
   const firstTeardown = chrome.postedToWhiteboard.at(-1);
   assert.equal(firstTeardown.type, "lavish-whiteboard:prepareTeardown");
@@ -2418,7 +2422,11 @@ test("fullscreen end timeout surfaces failure and permits retry", async () => {
   assert.equal(chrome.element("endedOverlay").hidden, true);
   assert.equal(chrome.element("end").disabled, false);
 
-  chrome.element("end").click();
+  chrome.element("moreButton").click();
+  chrome.element("menuEnd").focus();
+  chrome.element("menuEnd").click();
+  assert.equal(chrome.element("moreMenu").hidden, true);
+  assert.equal(chrome.focusLog.at(-1), "moreButton");
   await flushPromises();
   const retryTeardown = chrome.postedToWhiteboard.at(-1);
   assert.equal(retryTeardown.type, "lavish-whiteboard:prepareTeardown");
