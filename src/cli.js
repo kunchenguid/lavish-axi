@@ -54,7 +54,7 @@ export const MODEL_USAGE_RULE =
 export const POLL_SEND_AND_END_RULE =
   "`Send & End` ends the session. Its final feedback is still delivered once. After that response, polling stops, and the agent must not reopen the session uninvited.";
 const CODEX_POLL_WAKE_PATH_GUIDANCE =
-  "Codex detected: completed background tasks may not resume Codex automatically, so keep the poll attached to the active turn. Resume the existing exec cell or terminal session with the longest supported wait. Do not call `wait_agent`, do not spawn a polling subagent, and do not start a second `lavish-axi poll`; those routes create extra reasoning loops or detach feedback from this turn.";
+  "Codex detected: completed background tasks may not resume Codex automatically, so keep the poll attached to the active turn. Resume the existing exec cell or terminal session with the longest supported wait. Do not call `wait_agent`, do not spawn a polling subagent, and do not start a second `lavish-axi poll` while the tracked poll is still alive; those routes create extra reasoning loops or detach feedback from this turn.";
 // Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
 export const VERSION =
   process.env.LAVISH_AXI_BUILD_VERSION ||
