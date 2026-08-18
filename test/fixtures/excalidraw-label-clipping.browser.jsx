@@ -201,11 +201,11 @@ async function run() {
   };
 }
 
+function report(result) {
+  location.replace(`/result?value=${encodeURIComponent(JSON.stringify(result))}`);
+}
+
 run().then(
-  (result) => {
-    document.body.dataset.result = JSON.stringify(result);
-  },
-  (error) => {
-    document.body.dataset.result = JSON.stringify({ pass: false, error: error?.stack || String(error) });
-  },
+  (result) => report(result),
+  (error) => report({ pass: false, error: error?.stack || String(error) }),
 );

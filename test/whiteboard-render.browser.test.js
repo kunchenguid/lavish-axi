@@ -1,17 +1,15 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { access, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import * as esbuild from "esbuild";
 import { parse } from "parse5";
 
-const execFileAsync = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 async function chromePath() {
@@ -42,6 +40,43 @@ function contentType(file) {
   return "application/octet-stream";
 }
 
+function dumpChromeDom(chrome, args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(chrome, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    let stdout = "";
+    let settled = false;
+    const stop = () => {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stop();
+      if (error) reject(error);
+      else resolve(stdout);
+    };
+    const timer = setTimeout(() => finish(new Error("Chrome did not dump the fixture DOM in time")), timeoutMs);
+    child.on("error", finish);
+    child.on("exit", (code) => {
+      if (!settled) finish(new Error(`Chrome exited before dumping the fixture DOM (${code})`));
+    });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (stdout.length > 8 * 1024 * 1024) {
+        finish(new Error("Chrome fixture DOM exceeded 8 MB"));
+      } else if (stdout.includes("</html>")) {
+        finish();
+      }
+    });
+  });
+}
+
 function resultFromDump(html) {
   const document = parse(html);
   const stack = /** @type {import("parse5").DefaultTreeAdapterMap["node"][]} */ ([document]);
@@ -58,16 +93,16 @@ function resultFromDump(html) {
   return null;
 }
 
-test("real Excalidraw rendering keeps loaded-font labels inside their text bounds", { timeout: 90_000 }, async (t) => {
+async function runBrowserFixture(t, fixtureName) {
   const chrome = await chromePath();
   if (!chrome) {
     t.skip("Chrome or Chromium is required for the real-render regression");
-    return;
+    return null;
   }
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-excalidraw-render-"));
   try {
     await esbuild.build({
-      entryPoints: [path.join(projectRoot, "test/fixtures/excalidraw-label-clipping.browser.jsx")],
+      entryPoints: [path.join(projectRoot, `test/fixtures/${fixtureName}.browser.jsx`)],
       outdir: root,
       entryNames: "fixture",
       assetNames: "assets/[name]-[hash]",
@@ -92,7 +127,14 @@ test("real Excalidraw rendering keeps loaded-font labels inside their text bound
     );
     const server = http.createServer(async (request, response) => {
       try {
-        const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+        const url = new URL(request.url, "http://127.0.0.1");
+        const pathname = url.pathname;
+        if (pathname === "/result") {
+          const value = String(url.searchParams.get("value") || "").replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+          response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+          response.end(`<!doctype html><html><body data-result="${value}"></body></html>`);
+          return;
+        }
         const relative = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
         const file = path.resolve(root, relative);
         if (file !== root && !file.startsWith(`${root}${path.sep}`)) throw new Error("outside fixture root");
@@ -107,9 +149,8 @@ test("real Excalidraw rendering keeps loaded-font labels inside their text bound
     try {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("test server did not bind to a TCP port");
-      const port = address.port;
       const profile = path.join(root, "chrome-profile");
-      const { stdout } = await execFileAsync(
+      const stdout = await dumpChromeDom(
         chrome,
         [
           "--headless=new",
@@ -120,18 +161,14 @@ test("real Excalidraw rendering keeps loaded-font labels inside their text bound
           "--run-all-compositor-stages-before-draw",
           "--virtual-time-budget=20000",
           "--dump-dom",
-          `http://127.0.0.1:${port}/`,
+          `http://127.0.0.1:${address.port}/`,
         ],
-        { maxBuffer: 8 * 1024 * 1024, timeout: 75_000 },
+        75_000,
       );
       const result = resultFromDump(stdout);
       assert.ok(result, "browser fixture did not report a result");
       assert.equal(result.pass, true, result.error);
-      assert.equal(result.fontReady, true);
-      assert.equal(result.edgeLabels, 4);
-      assert.ok(result.multilineLines >= 2);
-      assert.ok(result.repaired >= 5);
-      assert.ok(result.opaquePixels >= 1000);
+      return result;
     } finally {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
@@ -139,4 +176,22 @@ test("real Excalidraw rendering keeps loaded-font labels inside their text bound
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+test("real Excalidraw rendering keeps loaded-font labels inside their text bounds", { timeout: 90_000 }, async (t) => {
+  const result = await runBrowserFixture(t, "excalidraw-label-clipping");
+  if (!result) return;
+  assert.equal(result.fontReady, true);
+  assert.equal(result.edgeLabels, 4);
+  assert.ok(result.multilineLines >= 2);
+  assert.ok(result.repaired >= 5);
+  assert.ok(result.opaquePixels >= 1000);
+});
+
+test("mounted Excalidraw autosaves prompt only after genuine edits", { timeout: 90_000 }, async (t) => {
+  const result = await runBrowserFixture(t, "excalidraw-autosave-conflict");
+  if (!result) return;
+  assert.equal(result.preMountBaselineAction, "prompt");
+  assert.equal(result.viewOnlyAction, "convert");
+  assert.equal(result.editedAction, "prompt");
 });
