@@ -48,7 +48,6 @@ import {
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
-import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
 import { resolveVsCodeSettingsFile } from "../src/plugin.js";
 import { createSkillMarkdown } from "../src/skill.js";
 import { SELF_PAINT_WARNING } from "../src/self-paint.js";
@@ -160,42 +159,54 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
   assert.ok(output.help.some((item) => item.includes("reference other filesystem assets")));
   assert.ok(output.help.some((item) => item.includes("same directory as the HTML file")));
-  assert.ok(output.help.includes(DESIGN_SYSTEM_HINT), "home help carries the single-sourced design rule verbatim");
+  assert.ok(output.help.some((item) => item.includes("strict priority order") && item.includes("lavish-axi design")));
   assert.ok(!output.help.some((item) => item.includes('<meta name="lavish-design" content="off">')));
   assert.ok(!output.help.some((item) => item.includes("Known IDs")));
   assert.ok(output.help.some((item) => item.includes("technical plan")));
 });
 
-test("the design-priority rule is single-sourced and keeps its three-step semantics", () => {
-  // Keyword-level checks on the one owner constant; every surface that needs the rule
-  // embeds DESIGN_PRIORITY_RULE, so wording changes happen here and nowhere else.
-  assert.match(DESIGN_PRIORITY_RULE, /strict priority order/);
-  assert.match(DESIGN_PRIORITY_RULE, /\(1\)[\s\S]*\(2\)[\s\S]*\(3\)/);
-  assert.match(DESIGN_PRIORITY_RULE, /user asked for a specific look or named design system/);
-  assert.match(DESIGN_PRIORITY_RULE, /project the artifact is about/);
-  assert.match(DESIGN_PRIORITY_RULE, /current working directory/);
-  assert.match(DESIGN_PRIORITY_RULE, /previews, proposes, or mocks/);
-  assert.match(DESIGN_PRIORITY_RULE, /app's own design system/);
-  assert.match(DESIGN_PRIORITY_RULE, /only when both steps come up empty/);
-  assert.doesNotMatch(DESIGN_PRIORITY_RULE, /inspect the current project/i);
+test("generated design-priority guidance keeps its three-step semantics", () => {
+  const designSummary = createDesignOutput({
+    cssBuilderPath: "/checkout/local/build-css.mjs",
+    platform: "linux",
+  }).design.summary;
+  const homeOutput = createHomeOutput({
+    bin: "lavish-axi",
+    sessions: [],
+    includeSessions: false,
+    agent: "static",
+  }).help.join("\n");
+  const designHelp = getCommandHelp("design");
+  const skillMarkdown = createSkillMarkdown();
+  const outputs = [designSummary, homeOutput, designHelp, skillMarkdown];
 
-  // LOCAL PATCH: tier 3 is a local compile, not a CDN runtime. Both halves matter - the
-  // vocabulary must stay (an earlier cut removed it along with the CDN and the artifacts
-  // regressed to hand-written CSS), and the delivery must stay local (a CDN-styled artifact
-  // survives `lavish-axi export` as a file that silently needs network to render).
-  assert.match(DESIGN_PRIORITY_RULE, /Tailwind \+ DaisyUI classes and compile them locally/);
-  assert.match(DESIGN_PRIORITY_RULE, /light theme by default/);
-  assert.match(DESIGN_PRIORITY_RULE, /LOCAL sibling \.css file referenced by a relative href/);
-  assert.match(DESIGN_PRIORITY_RULE, /Never load a CDN-hosted style runtime/);
-  assert.match(DESIGN_PRIORITY_RULE, /never use the root-absolute `\/design\/\.\.\.` route/);
-  assert.doesNotMatch(DESIGN_PRIORITY_RULE, /Tailwind CSS browser runtime v4/);
-  assert.doesNotMatch(DESIGN_PRIORITY_RULE, /hand-writing styles/);
+  for (const output of outputs) {
+    assert.match(output, /strict priority order/);
+    assert.match(output, /\(1\)[\s\S]*\(2\)[\s\S]*\(3\)/);
+    assert.match(output, /user asked for a specific look or named design system/);
+    assert.match(output, /project the artifact is about/);
+    assert.match(output, /current working directory/);
+    assert.match(output, /previews, proposes, or mocks/);
+    assert.match(output, /app's own design system/);
+    assert.match(output, /only when both steps come up empty/);
+    assert.match(output, /Tailwind \+ DaisyUI classes and compile them locally/);
+    assert.match(output, /light theme by default/);
+    assert.match(output, /LOCAL sibling \.css file referenced by a relative href/);
+    assert.match(output, /Never load a CDN-hosted style runtime/);
+    assert.match(output, /never use the root-absolute `\/design\/\.\.\.` route/);
+    assert.match(output, /portable/);
+    assert.match(output, /lavish-axi design/);
+    assert.doesNotMatch(output, /inspect the current project/i);
+    assert.doesNotMatch(output, /Tailwind CSS browser runtime v4/);
+    assert.doesNotMatch(output, /hand-writing styles/);
+  }
 
-  assert.ok(DESIGN_SYSTEM_HINT.includes(DESIGN_PRIORITY_RULE), "the home/skill hint embeds the rule");
-  assert.match(DESIGN_SYSTEM_HINT, /does not auto-inject/);
-  assert.match(DESIGN_SYSTEM_HINT, /portable/);
-  assert.match(DESIGN_SYSTEM_HINT, /lavish-axi design/);
-  assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
+  for (const output of [designSummary, homeOutput, skillMarkdown]) {
+    assert.match(output, /does not auto-inject/);
+  }
+  for (const output of [homeOutput, skillMarkdown]) {
+    assert.match(output, /state which of the three design sources/);
+  }
 });
 
 test("design output is the sole emitted concise explicit-background guidance", () => {
@@ -374,7 +385,7 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
     output.playbook_router.playbooks.find((playbook) => playbook.id === "diagram")?.use_when,
     "Map relationships, flows, state, and architecture",
   );
-  assert.ok(output.design.summary.includes(DESIGN_PRIORITY_RULE), "design summary embeds the single-sourced rule");
+  assert.match(output.design.summary, /strict priority order/);
   assert.match(output.design.summary, /does not auto-inject/);
   // LOCAL PATCH: upstream opened with "Use this ... fallback only if"; DaisyUI is not a
   // fallback here, so the summary leads with portability and the priority rule instead.
@@ -2225,7 +2236,7 @@ test("open can resume a session without opening another browser window", () => {
   assert.match(getCommandHelp("design"), /DaisyUI/);
   assert.match(getCommandHelp("design"), /lavish-axi design/);
   assert.match(getCommandHelp("design"), /portable/);
-  assert.ok(getCommandHelp("design").includes(DESIGN_PRIORITY_RULE), "design help embeds the single-sourced rule");
+  assert.match(getCommandHelp("design"), /strict priority order/);
   // LOCAL PATCH: upstream framed DaisyUI as an opt-in CDN fallback. Here it is the vocabulary
   // and the only thing that changed is delivery, so the help must not still call it a fallback.
   assert.match(getCommandHelp("design"), /this install has no CDN fallback/i);
