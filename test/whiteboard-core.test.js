@@ -207,13 +207,25 @@ test("a genuinely edited scene plus a Mermaid-source change still prompts", () =
   assert.equal(resolveWhiteboardInitAction(moved, "hash-old"), "restore");
 });
 
-test("sub-epsilon view jitter is not a preservable edit", () => {
-  const saved = savedScene({
+test("geometry differences use a symmetric raw epsilon", () => {
+  const jitter = savedScene({
     sourceHash: "hash-old",
     elements: [rect("A", { x: 1.4, y: -1.2 })],
     baseline: [rect("A")],
   });
-  assert.equal(resolveWhiteboardInitAction(saved, "hash-new"), "convert");
+  const negativeMove = savedScene({
+    sourceHash: "hash-old",
+    elements: [rect("A", { x: -2.5 })],
+    baseline: [rect("A")],
+  });
+  const positiveMove = savedScene({
+    sourceHash: "hash-old",
+    elements: [rect("A", { x: 2.5 })],
+    baseline: [rect("A")],
+  });
+  assert.equal(resolveWhiteboardInitAction(jitter, "hash-new"), "convert");
+  assert.equal(resolveWhiteboardInitAction(negativeMove, "hash-new"), "prompt");
+  assert.equal(resolveWhiteboardInitAction(positiveMove, "hash-new"), "prompt");
 });
 
 test("a sidecar without a baseline fails closed toward prompting", () => {

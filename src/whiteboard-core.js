@@ -298,7 +298,7 @@ const JITTER_ELEMENT_KEYS = new Set(["height", "width", "x", "y"]);
 function valuesDiffer(before, after, key, elementProperty = false) {
   if (elementProperty && BENIGN_ELEMENT_CHANGE_KEYS.has(key)) return false;
   if (elementProperty && JITTER_ELEMENT_KEYS.has(key)) {
-    return Math.abs(Math.round((Number(after) || 0) - (Number(before) || 0))) > SUMMARY_MOVE_EPSILON_PX;
+    return Math.abs((Number(after) || 0) - (Number(before) || 0)) > SUMMARY_MOVE_EPSILON_PX;
   }
   if (Object.is(before, after)) return false;
   if (!before || !after || typeof before !== "object" || typeof after !== "object") return true;
