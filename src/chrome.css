@@ -1168,6 +1168,10 @@ body.lavish {
 .chat-attachments {
   display: grid;
   gap: 6px;
+  /* W3 backstop, like the annotation card's chip list: unbounded chips must
+     scroll here, never push Send/Send & End or their own Remove off-frame. */
+  max-height: 176px;
+  overflow-y: auto;
 }
 .chat-attachments:empty {
   display: none;

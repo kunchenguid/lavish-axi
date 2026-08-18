@@ -371,6 +371,11 @@ export function acceptedImageTypes(list) {
  * carries real text alongside an image is a mixed paste: the image attaches AND
  * the text must still land, so the default is left intact.
  *
+ * Placeholder text includes the pasted files' own names: Finder/Explorer file
+ * copies put the file's name or full path in text/plain, and keeping it would
+ * silently paste a filesystem path beside the attached image. Text is kept
+ * only when at least one line is not a pasted image's name or path.
+ *
  * @param {{ files?: ArrayLike<any>, items?: ArrayLike<any>, getData?: (type: string) => string }|null|undefined} clipboardData
  * @param {Record<string, boolean>} acceptedMime
  * @returns {{ images: any[], keepTextPaste: boolean }}
@@ -378,7 +383,20 @@ export function acceptedImageTypes(list) {
 export function planClipboardPaste(clipboardData, acceptedMime) {
   const { images } = partitionDroppedFiles(clipboardData, acceptedMime);
   const text = clipboardData && clipboardData.getData ? clipboardData.getData("text/plain") : "";
-  return { images, keepTextPaste: Boolean(text) };
+  const lines = String(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const names = images.map((file) => String((file && file.name) || "")).filter(Boolean);
+  const keepTextPaste =
+    lines.length > 0 &&
+    !(
+      names.length > 0 &&
+      lines.every((line) =>
+        names.some((name) => line === name || line.endsWith("/" + name) || line.endsWith("\\" + name)),
+      )
+    );
+  return { images, keepTextPaste };
 }
 
 /**

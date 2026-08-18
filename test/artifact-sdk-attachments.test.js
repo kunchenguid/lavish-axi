@@ -279,6 +279,30 @@ test("a paste with no clipboard data at all is inert", () => {
   assert.deepEqual(planClipboardPaste(null, ACCEPTED), { images: [], keepTextPaste: false });
 });
 
+test("a copied file's filename or path text is a placeholder, not a caption", () => {
+  // Finder/Explorer file copies put the file's name or full path in text/plain;
+  // keeping that "text" would silently paste a filesystem path beside the image.
+  const png = file("shot.png", "image/png");
+  for (const text of ["shot.png", "/Users/me/Desktop/shot.png", "C:\\Users\\me\\shot.png", "  shot.png  "]) {
+    assert.equal(planClipboardPaste(clipboard([png], text), ACCEPTED).keepTextPaste, false, JSON.stringify(text));
+  }
+});
+
+test("a multi-file copy's newline-joined names are still placeholder text", () => {
+  const a = file("a.png", "image/png");
+  const b = file("b.png", "image/png");
+  const plan = planClipboardPaste(
+    { files: [a, b], getData: (type) => (type === "text/plain" ? "/tmp/a.png\n/tmp/b.png" : "") },
+    ACCEPTED,
+  );
+  assert.equal(plan.keepTextPaste, false);
+});
+
+test("text that is not the pasted image's name stays a real mixed paste", () => {
+  const png = file("shot.png", "image/png");
+  assert.equal(planClipboardPaste(clipboard([png], "see shot.png here"), ACCEPTED).keepTextPaste, true);
+});
+
 test("the SDK bundle wires the drop handler to partial-accept (W4-a)", () => {
   assert.match(sdk, /const partitionDroppedFiles=/);
   assert.match(sdk, /partitionDroppedFiles\(event\.dataTransfer, ATTACHMENT_ACCEPTED_MIME\)/);

@@ -14,9 +14,15 @@ const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toL
 const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
 const attachmentMaxCount = Number(sessionData.attachmentMaxCount) || 4;
 // Threaded from the server's single accepted-image list, which also drives the
-// file picker's accept attribute, so the two can never disagree.
+// file picker's accept attribute, so the two can never disagree. An unwired
+// list falls back to the same defaults as the SDK's acceptedImageTypes - an
+// empty Set would refuse every image while the card in the same session
+// accepts them, the exact divergence the single list exists to prevent.
 const CHAT_ATTACHMENT_MIME = new Set(
-  (Array.isArray(sessionData.attachmentAcceptedMime) ? sessionData.attachmentAcceptedMime : []).map(String),
+  (Array.isArray(sessionData.attachmentAcceptedMime) && sessionData.attachmentAcceptedMime.length
+    ? sessionData.attachmentAcceptedMime
+    : ["image/png", "image/jpeg", "image/webp"]
+  ).map(String),
 );
 // Named in the rejection copy, so the message can never tell the user to use a
 // format this build does not accept.
@@ -682,12 +688,16 @@ function createChatAttachmentsController() {
     let imageCount = currentImageCount();
     for (const file of Array.from(files || [])) {
       if (!CHAT_ATTACHMENT_MIME.has(String(file.type || ""))) continue;
-      if (imageCount >= attachmentMaxCount) {
+      const tooLarge = attachmentMaxBytes > 0 && Number(file.size) > attachmentMaxBytes;
+      // The cap counts only chips that can upload, mirroring currentImageCount:
+      // if a size-refused chip (file: null) consumed a slot here, syncNotice
+      // would clear the cap notice on the same render tick and a valid image
+      // later in the batch would vanish with no chip and no explanation.
+      if (!tooLarge && imageCount >= attachmentMaxCount) {
         capRejected = true;
-        break;
+        continue;
       }
       const localId = String(nextId++);
-      const tooLarge = attachmentMaxBytes > 0 && Number(file.size) > attachmentMaxBytes;
       const item = {
         localId,
         file: tooLarge ? null : file,
@@ -700,7 +710,7 @@ function createChatAttachmentsController() {
         abortController: /** @type {AbortController | null} */ (null),
       };
       items.push(item);
-      imageCount += 1;
+      if (!tooLarge) imageCount += 1;
       added = true;
       if (!tooLarge) startUpload(item);
     }
@@ -772,30 +782,35 @@ function sendQueued(endAfter) {
   if (ended || agentPresence === "working") return;
   closeMenus();
 
-  if (chatAttachmentController.hasPending() || chatAttachmentController.hasErrors()) {
-    chatAttachmentController.noteSendBlocked();
-    return;
-  }
+  // A pending or failed chip holds back only the COMPOSER message (and an
+  // explicit end, which would strand the chips) - queued annotation prompts
+  // still deliver, mirroring how the annotation card holds only its own card
+  // open. Gating the whole pipeline here made Send and Send & End silently
+  // deliver nothing while the only signal sat in the composer toolbar.
+  const chipsBlocked = chatAttachmentController.hasPending() || chatAttachmentController.hasErrors();
+  if (chipsBlocked) chatAttachmentController.noteSendBlocked();
 
-  const text = chatInput.value.trim();
-  const attachments = chatAttachmentController.collectReady();
-  if (text || attachments.length) {
-    const prompt = { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
-    if (attachments.length) prompt.attachments = attachments;
-    queued.push(prompt);
-    persistQueuedPrompts();
-    addChat("user", text || "Image message");
-    chatInput.value = "";
-    chatAttachmentController.reset();
-    render();
+  if (!chipsBlocked) {
+    const text = chatInput.value.trim();
+    const attachments = chatAttachmentController.collectReady();
+    if (text || attachments.length) {
+      const prompt = { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
+      if (attachments.length) prompt.attachments = attachments;
+      queued.push(prompt);
+      persistQueuedPrompts();
+      addChat("user", text || "Image message");
+      chatInput.value = "";
+      chatAttachmentController.reset();
+      render();
+    }
   }
   if (!queued.length) {
-    showSendHint();
+    if (!chipsBlocked) showSendHint();
     return;
   }
   hideSendHint();
 
-  if (endAfter) endAfterSubmit = true;
+  if (endAfter && !chipsBlocked) endAfterSubmit = true;
   requestSnapshot("submit");
 }
 
@@ -2328,12 +2343,30 @@ function transferredFiles(dataTransfer) {
     .map((item) => item.getAsFile())
     .filter(Boolean);
 }
+// Finder/Explorer file copies put the copied file's name or path in text/plain;
+// that placeholder must not land in the message beside the attached image. Real
+// captions (any line that is not a pasted file's name) keep the default paste.
+// Mirrors planClipboardPaste in artifact-sdk.js, which owns the same rule for
+// the annotation card - this file is served raw and cannot import it.
+function keepsClipboardText(text, files) {
+  const lines = String(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return false;
+  const names = files.map((file) => String(file?.name || "")).filter(Boolean);
+  if (!names.length) return true;
+  return !lines.every((line) =>
+    names.some((name) => line === name || line.endsWith("/" + name) || line.endsWith("\\" + name)),
+  );
+}
 chatInput.addEventListener("paste", (event) => {
-  const clipboardText = event.clipboardData?.getData("text/plain") || "";
   const files = transferredFiles(event.clipboardData);
+  // Images only: Office and macOS pastes expose stray non-image file flavors
+  // beside their text, so unsupported entries raise no chip here (matching the
+  // annotation card) - a chip would block sending for a perceived text paste.
   const added = chatAttachmentController.addFiles(files);
-  chatAttachmentController.rejectUnsupported(files);
-  if (added && !clipboardText) event.preventDefault();
+  if (added && !keepsClipboardText(event.clipboardData?.getData("text/plain") || "", files)) event.preventDefault();
 });
 chatComposer.addEventListener("dragover", (event) => {
   if (Array.from(event.dataTransfer?.types || []).includes("Files")) {
@@ -2350,8 +2383,23 @@ chatComposer.addEventListener("drop", (event) => {
   if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
   event.preventDefault();
   const files = transferredFiles(event.dataTransfer);
+  if (!files.length) {
+    // A drag advertising Files with nothing enumerable: the default was already
+    // consumed, so refuse visibly (like the card) instead of swallowing it.
+    chatAttachmentController.rejectUnsupported([{ name: "file", type: "" }]);
+    return;
+  }
   chatAttachmentController.addFiles(files);
   chatAttachmentController.rejectUnsupported(files);
+});
+// A file drop that misses the composer must not navigate the chrome away from
+// the session (losing chips, uploads, and the SSE connection). Text drags stay
+// untouched so dropping text into the textarea keeps working.
+document.addEventListener("dragover", (event) => {
+  if (Array.from(event.dataTransfer?.types || []).includes("Files")) event.preventDefault();
+});
+document.addEventListener("drop", (event) => {
+  if (Array.from(event.dataTransfer?.types || []).includes("Files")) event.preventDefault();
 });
 chatAttachments.addEventListener("click", (event) => {
   const target = /** @type {HTMLElement | null} */ (event.target);
