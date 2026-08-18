@@ -269,6 +269,32 @@ export function createWhiteboardPersistencePayload(state, scene) {
   };
 }
 
+// Conversion always autosaves on view, so a sidecar's presence is not proof of
+// user edits. When the Mermaid source hash changes, prompt only if the saved
+// scene actually differs from its conversion baseline.
+export function savedSceneHasPreservableEdits(saved) {
+  const sceneElements = saved?.scene?.elements;
+  const baselineElements = saved?.baseline?.elements;
+  if (!Array.isArray(baselineElements)) {
+    // No baseline to compare against: fail closed so a genuine edit is not
+    // discarded by a silent re-convert.
+    return Array.isArray(sceneElements) && sceneElements.length > 0;
+  }
+  return summarizeSceneEdits(baselineElements, sceneElements).totalChanges > 0;
+}
+
+/**
+ * @param {object | null | undefined} saved
+ * @param {string} currentSourceHash
+ * @returns {"convert" | "restore" | "prompt"}
+ */
+export function resolveWhiteboardInitAction(saved, currentSourceHash) {
+  const record = saved && typeof saved === "object" && saved.scene ? saved : null;
+  if (!record) return "convert";
+  if (String(record.source_hash || "") === String(currentSourceHash || "")) return "restore";
+  return savedSceneHasPreservableEdits(record) ? "prompt" : "convert";
+}
+
 function liveElements(elements) {
   return (Array.isArray(elements) ? elements : []).filter(
     (el) => el && typeof el === "object" && el.id && !el.isDeleted,

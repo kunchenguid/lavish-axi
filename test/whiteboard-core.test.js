@@ -6,6 +6,7 @@ import {
   findDuplicateElementIds,
   normalizeExcalidrawSceneTarget,
   repairSavedSceneTextMetrics,
+  resolveWhiteboardInitAction,
   restoreMermaidLabelLineBreaks,
   sanitizeSceneLink,
   sceneIsImageFallback,
@@ -112,6 +113,83 @@ test("whiteboard persistence payload keeps migration and baseline fields togethe
       baseline: { elements: baselineElements },
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// resolveWhiteboardInitAction
+// ---------------------------------------------------------------------------
+
+/** @param {{ sourceHash?: string, elements?: object[], baseline?: object[], appState?: object }} [opts] */
+function savedScene({ sourceHash, elements, baseline, appState } = {}) {
+  const sceneElements = elements ?? [rect("A")];
+  return {
+    source_hash: sourceHash,
+    scene: {
+      elements: sceneElements,
+      appState: appState ?? { scrollX: 10, scrollY: -4, zoom: { value: 0.7 } },
+    },
+    baseline: { elements: baseline ?? structuredClone(sceneElements) },
+  };
+}
+
+test("resolveWhiteboardInitAction converts when nothing is saved", () => {
+  assert.equal(resolveWhiteboardInitAction(null, "hash-new"), "convert");
+  assert.equal(resolveWhiteboardInitAction({}, "hash-new"), "convert");
+  assert.equal(resolveWhiteboardInitAction({ source_hash: "hash-old" }, "hash-new"), "convert");
+});
+
+test("resolveWhiteboardInitAction restores a same-hash sidecar even without user edits", () => {
+  const saved = savedScene({ sourceHash: "hash-1" });
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-1"), "restore");
+});
+
+test("a view-only autosave plus a Mermaid-source change silently re-converts", () => {
+  const baseline = [rect("A"), rect("B")];
+  const saved = savedScene({
+    sourceHash: "hash-old",
+    elements: [
+      { ...baseline[0], version: 3, updated: 99 },
+      { ...baseline[1], version: 4, updated: 100 },
+    ],
+    baseline,
+    appState: { scrollX: 408.5, scrollY: -5.1, zoom: { value: 0.7 } },
+  });
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-new"), "convert");
+});
+
+test("a genuinely edited scene plus a Mermaid-source change still prompts", () => {
+  const baseline = [rect("A")];
+  const moved = savedScene({
+    sourceHash: "hash-old",
+    elements: [rect("A", { x: 80, y: 12 })],
+    baseline,
+  });
+  const drawn = savedScene({
+    sourceHash: "hash-old",
+    elements: [...structuredClone(baseline), { id: "fd1", type: "freedraw", x: 40, y: 18 }],
+    baseline,
+  });
+  assert.equal(resolveWhiteboardInitAction(moved, "hash-new"), "prompt");
+  assert.equal(resolveWhiteboardInitAction(drawn, "hash-new"), "prompt");
+  assert.equal(resolveWhiteboardInitAction(moved, "hash-old"), "restore");
+});
+
+test("sub-epsilon view jitter is not a preservable edit", () => {
+  const saved = savedScene({
+    sourceHash: "hash-old",
+    elements: [rect("A", { x: 1.4, y: -1.2 })],
+    baseline: [rect("A")],
+  });
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-new"), "convert");
+});
+
+test("a sidecar without a baseline fails closed toward prompting", () => {
+  const saved = {
+    source_hash: "hash-old",
+    scene: { elements: [rect("A")] },
+    baseline: null,
+  };
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-new"), "prompt");
 });
 
 // ---------------------------------------------------------------------------

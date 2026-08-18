@@ -34,6 +34,7 @@ import {
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
   repairSavedSceneTextMetrics,
+  resolveWhiteboardInitAction,
   restoreMermaidLabelLineBreaks,
   sanitizeSceneLink,
   sanitizeWhiteboardAppState,
@@ -476,6 +477,9 @@ async function startFromConversion(init) {
     );
   }
   mountEditor({ elements, appState: defaultAppState(), files, theme: init.theme });
+  // View-only conversion still autosaves so a same-hash reopen can restore.
+  // Hash mismatch does not treat that sidecar as user edits; see
+  // resolveWhiteboardInitAction.
   scheduleSave();
 }
 
@@ -525,9 +529,9 @@ async function startFromSavedScene(init) {
   if (savedMetricsVersion < WHITEBOARD_TEXT_METRICS_VERSION) scheduleSave();
 }
 
-// The saved scene was converted from a different version of the diagram. Never
-// merge silently: the user explicitly picks between re-converting (discarding
-// edits) and continuing on the saved scene.
+// The saved scene has user edits and was converted from a different version of
+// the diagram. Never merge those silently: the reviewer explicitly picks
+// between re-converting (discarding edits) and continuing on the saved scene.
 function offerStaleChoice() {
   const staleBanner = document.getElementById("wbStaleBanner");
   staleBanner.textContent = "This diagram changed since these whiteboard edits were saved. ";
@@ -614,20 +618,19 @@ async function handleInit(init) {
 
   const saved = init.saved && typeof init.saved === "object" && init.saved.scene ? init.saved : null;
   try {
-    if (!saved) {
-      await startFromConversion({ ...init, theme });
-      return;
-    }
-    if (saved.source_hash === init.sourceHash) {
+    const action = resolveWhiteboardInitAction(saved, init.sourceHash);
+    if (action === "restore" && saved) {
       await startFromSavedScene({ ...init, saved, theme });
       return;
     }
-    const choice = await offerStaleChoice();
-    if (choice === "keep") {
-      await startFromSavedScene({ ...init, saved, theme });
-    } else {
-      await startFromConversion({ ...init, theme });
+    if (action === "prompt" && saved) {
+      const choice = await offerStaleChoice();
+      if (choice === "keep") {
+        await startFromSavedScene({ ...init, saved, theme });
+        return;
+      }
     }
+    await startFromConversion({ ...init, theme });
   } catch (error) {
     showStatus(`Could not open this diagram as a whiteboard: ${describeError(error)}`, { transient: false });
   }
