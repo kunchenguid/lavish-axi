@@ -1199,7 +1199,7 @@ body.lavish {
 .bar {
   position: relative;
   inset: auto;
-  z-index: 55;
+  z-index: 81;
   width: 100%;
   max-width: none;
   min-height: var(--bar-h);

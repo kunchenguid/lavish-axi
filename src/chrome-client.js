@@ -2060,7 +2060,9 @@ function restorePanelCollapsed() {
 // LOCAL ADDITION: keep low-frequency review controls collapsed by default; warnings remain
 // visible as a badge on the dock entrypoint.
 function setBarExpanded(expanded) {
-  barExpanded = Boolean(expanded) && !ended;
+  const nextExpanded = Boolean(expanded) && !ended;
+  const restoreToggleFocus = !nextExpanded && barControls.contains(document.activeElement);
+  barExpanded = nextExpanded;
   reviewDock.classList.toggle("is-expanded", barExpanded);
   barControls.hidden = !barExpanded;
   barToggle.setAttribute("aria-expanded", String(barExpanded));
@@ -2069,6 +2071,7 @@ function setBarExpanded(expanded) {
     closeWarningsDrawer();
     closeMenus();
   }
+  if (restoreToggleFocus) barToggle.focus();
 }
 
 function updateBarToggleLabel() {

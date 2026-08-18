@@ -55,10 +55,8 @@ Promise.resolve().then(() => {
   const rounded = (value) => Math.round(value);
   const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
   const narrow = window.innerWidth <= 380;
-  if (narrow) {
-    document.getElementById("warningsWrap").hidden = false;
-    document.getElementById("warningsCount").textContent = "1";
-  }
+  document.getElementById("warningsWrap").hidden = false;
+  document.getElementById("warningsCount").textContent = "1";
   const snapshot = () => {
     const dock = document.getElementById("reviewDock");
     const layout = document.querySelector(".layout");
@@ -125,9 +123,43 @@ Promise.resolve().then(() => {
     annotationUncovered: annotation === annotationHit || annotation.contains(annotationHit),
     annotationPressed: annotation.getAttribute("aria-pressed"),
   };
+  document.getElementById("moreButton").click();
+  const moreMenu = document.getElementById("moreMenu");
+  const reloadArtifact = document.getElementById("reloadArtifact");
+  const reloadBox = reloadArtifact.getBoundingClientRect();
+  const reloadHit = document.elementFromPoint(
+    reloadBox.left + reloadBox.width / 2,
+    reloadBox.top + reloadBox.height / 2,
+  );
+  const moreMenuAboveWhiteboard = {
+    visible: !moreMenu.hidden && getComputedStyle(moreMenu).display !== "none",
+    interactive: reloadArtifact === reloadHit || reloadArtifact.contains(reloadHit),
+  };
+  document.getElementById("warningsButton").click();
+  const warningsDrawer = document.getElementById("warningsDrawer");
+  const warningsSelectAll = document.getElementById("warningsSelectAll");
+  const selectAllBox = warningsSelectAll.getBoundingClientRect();
+  const selectAllHit = document.elementFromPoint(
+    selectAllBox.left + selectAllBox.width / 2,
+    selectAllBox.top + selectAllBox.height / 2,
+  );
+  const warningsDrawerAboveWhiteboard = {
+    visible: !warningsDrawer.hidden && getComputedStyle(warningsDrawer).display !== "none",
+    interactive: warningsSelectAll === selectAllHit || warningsSelectAll.contains(selectAllHit),
+  };
+  document.getElementById("warningsButton").click();
   whiteboardOverlay.hidden = true;
+  document.getElementById("moreButton").focus();
+  const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  document.dispatchEvent(escape);
+  const collapseFocus = {
+    controlsHidden: document.getElementById("barControls").hidden,
+    expanded: document.getElementById("barToggle").getAttribute("aria-expanded"),
+    activeElement: document.activeElement?.id || "",
+  };
   let narrowMenu = null;
   if (narrow) {
+    document.getElementById("barToggle").click();
     document.getElementById("moreButton").click();
     narrowMenu = {
       panelActionDisplay: getComputedStyle(document.getElementById("menuPanelToggle")).display,
@@ -151,6 +183,9 @@ Promise.resolve().then(() => {
     annotationOff,
     expanded,
     whiteboardGeometry,
+    moreMenuAboveWhiteboard,
+    warningsDrawerAboveWhiteboard,
+    collapseFocus,
     narrowMenu,
     panelCollapsed,
   });
@@ -281,6 +316,13 @@ fixture.addEventListener("load", collectResult);
       assert.equal(result.whiteboardGeometry.overlapsDock, false);
       assert.equal(result.whiteboardGeometry.annotationUncovered, true);
       assert.equal(result.whiteboardGeometry.annotationPressed, "false");
+      assert.deepEqual(result.moreMenuAboveWhiteboard, { visible: true, interactive: true });
+      assert.deepEqual(result.warningsDrawerAboveWhiteboard, { visible: true, interactive: true });
+      assert.deepEqual(result.collapseFocus, {
+        controlsHidden: true,
+        expanded: "false",
+        activeElement: "barToggle",
+      });
       assert.deepEqual(result.panelCollapsed, {
         panelDisplay: "none",
         artifactRight: result.panelCollapsed.viewportWidth,
