@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.53](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.52...lavish-axi-v0.1.53) (2026-08-18)
+
+
+### Bug Fixes
+
+* avoid phantom whiteboard conflicts ([#252](https://github.com/kunchenguid/lavish-axi/issues/252)) ([196d24f](https://github.com/kunchenguid/lavish-axi/commit/196d24f132e6361a432509e8f634ba16b8976154))
+
 ## [0.1.52](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.51...lavish-axi-v0.1.52) (2026-08-15)
 
 
