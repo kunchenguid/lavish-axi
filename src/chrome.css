@@ -1010,12 +1010,36 @@ body.lavish {
   display: none;
 }
 .ended-card {
-  width: min(360px, calc(100vw - 48px));
+  width: min(420px, calc(100vw - 48px));
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--bg-panel);
   padding: 20px 24px;
   text-align: center;
+}
+.ended-unsent {
+  display: grid;
+  gap: var(--space-4);
+  margin-bottom: var(--space-10);
+  padding: var(--space-8);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: rgba(240, 100, 100, 0.1);
+  color: var(--fg);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  text-align: left;
+}
+.ended-unsent[hidden] {
+  display: none;
+}
+.ended-unsent strong,
+.ended-unsent span {
+  display: block;
+}
+.ended-unsent-copy {
+  justify-self: start;
+  margin-top: var(--space-2);
 }
 .ended-title {
   font-family: var(--font-serif);

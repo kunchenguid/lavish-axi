@@ -13,8 +13,18 @@
 // Output: <artifact-basename>.css next to the artifact, plus the <link> tag to paste.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { DAISYUI_THEMES } from "../src/design-reference.js";
@@ -82,7 +92,14 @@ const themeList = theme
 const outDir = dirname(artifact);
 const outName = `${basename(artifact).replace(/\.html?$/i, "")}.css`;
 const outPath = join(outDir, outName);
-const cssPath = (value) => value.replace(/\\/g, "/").replace(/"/g, '\\"');
+const cssPath = (value) => {
+  const normalized = process.platform === "win32" ? value.replace(/\\/g, "/") : value;
+  return normalized.replace(/[\0-\x1f\x7f\\"]/g, (character) => {
+    if (character === "\\") return "\\\\";
+    if (character === '"') return '\\"';
+    return `\\${character.charCodeAt(0).toString(16)} `;
+  });
+};
 const outHref = encodeURIComponent(outName).replace(
   /["'&<>]/g,
   (character) => ({ '"': "&quot;", "'": "&#39;", "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character],
@@ -97,15 +114,17 @@ let outputWork = "";
 let bytes = 0;
 let buildFailure = "";
 try {
-  work = mkdtempSync(join(outDir, `.${outName}.input-`));
-  outputWork = mkdtempSync(join(outDir, `.${outName}.build-`));
+  work = mkdtempSync(join(tmpdir(), "lavish-css-input-"));
+  outputWork = mkdtempSync(join(outDir, ".lavish-css-build-"));
   const input = join(work, "input.css");
+  const sourceArtifact = join(work, "artifact.html");
   const pendingOutPath = join(outputWork, outName);
+  copyFileSync(artifact, sourceArtifact);
   writeFileSync(
     input,
     [
       `@import "${cssPath(TAILWIND_CSS)}" source(none);`,
-      `@source "${cssPath(artifact)}";`,
+      `@source "${cssPath(sourceArtifact)}";`,
       "",
       "/* Light is the default theme here by house rule; dark ships but is opt-in via",
       '   data-theme="dark" rather than following the OS, so artifacts stay light unless asked.',

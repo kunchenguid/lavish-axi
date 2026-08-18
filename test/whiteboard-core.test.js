@@ -6,6 +6,7 @@ import {
   createWhiteboardPersistencePayload,
   finalizeMermaidScene,
   findDuplicateElementIds,
+  focusWhiteboardActivation,
   normalizeExcalidrawSceneTarget,
   repairSavedSceneTextMetrics,
   restoreMermaidLabelLineBreaks,
@@ -27,6 +28,21 @@ function boundLabel(id, containerId, text) {
 test("inline whiteboards stay locked while overlay editors can unlock", () => {
   assert.equal(whiteboardModeStaysLocked("inline"), true);
   assert.equal(whiteboardModeStaysLocked("overlay"), false);
+});
+
+test("whiteboard activation focus targets the replacement inline control", () => {
+  let focusCount = 0;
+  const activation = { focus: () => (focusCount += 1) };
+  const documentLike = {
+    querySelector(selector) {
+      assert.equal(selector, ".wb-activate");
+      return activation;
+    },
+  };
+
+  assert.equal(focusWhiteboardActivation(documentLike), true);
+  assert.equal(focusCount, 1);
+  assert.equal(focusWhiteboardActivation({ querySelector: () => null }), false);
 });
 
 // ---------------------------------------------------------------------------

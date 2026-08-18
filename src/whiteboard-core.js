@@ -299,6 +299,13 @@ export function createWhiteboardPersistencePayload(state, scene) {
   };
 }
 
+export function focusWhiteboardActivation(documentLike) {
+  const target = documentLike?.querySelector?.(".wb-activate");
+  if (!target || typeof target.focus !== "function") return false;
+  target.focus();
+  return true;
+}
+
 function liveElements(elements) {
   return (Array.isArray(elements) ? elements : []).filter(
     (el) => el && typeof el === "object" && el.id && !el.isDeleted,

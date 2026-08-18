@@ -37,6 +37,7 @@ import {
   createWhiteboardPersistencePayload,
   finalizeMermaidScene,
   findDuplicateElementIds,
+  focusWhiteboardActivation,
   repairSavedSceneTextMetrics,
   restoreMermaidLabelLineBreaks,
   sanitizeSceneLink,
@@ -48,6 +49,17 @@ import {
 } from "./whiteboard-core.js";
 
 const SAVE_DEBOUNCE_MS = 800;
+let activationFocusRequest = 0;
+
+function requestActivationFocus() {
+  const request = ++activationFocusRequest;
+  const tryFocus = (remaining) => {
+    if (request !== activationFocusRequest) return;
+    if (focusWhiteboardActivation(document) || remaining <= 0) return;
+    window.setTimeout(() => tryFocus(remaining - 1), 50);
+  };
+  tryFocus(20);
+}
 
 const state = {
   mode: "overlay",
@@ -739,6 +751,7 @@ function main() {
     }
     if (!initialized || msg.channelId !== state.channelId) return;
     if (msg.type === "lavish-whiteboard:sourceChanged") handleSourceChanged(msg);
+    if (msg.type === "lavish-whiteboard:focusActivation") requestActivationFocus();
     if (msg.type === "lavish-whiteboard:prepareTeardown") prepareTeardown(msg);
     if (msg.type === "lavish-whiteboard:flush") flushSaveNow(msg);
     if (msg.type === "lavish-whiteboard:saveResult") handleSaveResult(msg);

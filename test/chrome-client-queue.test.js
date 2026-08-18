@@ -1971,6 +1971,59 @@ test("prompt and end timeouts retry with stable mutation ids", async () => {
   assert.equal(endChrome.element("endedOverlay").hidden, false);
 });
 
+test("mutation deadlines include stalled response bodies and retain request ids", async () => {
+  const promptCalls = [];
+  const promptChrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      if (url !== "/api/abc/prompts") return { ok: true };
+      promptCalls.push(JSON.parse(init.body));
+      if (promptCalls.length === 1) {
+        return { ok: true, status: 200, json: async () => new Promise(() => {}) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  promptChrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Read the whole response", selector: "main", tag: "annotation", text: "Main" },
+  });
+  promptChrome.element("send").click();
+  promptChrome.sendSnapshot("body-timeout snapshot");
+  await flushPromises();
+
+  assert.equal(promptCalls.length, 1);
+  promptChrome.runTimers(5000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(promptCalls.length, 2);
+  assert.equal(promptCalls[0].requestId, promptCalls[1].requestId);
+  assert.equal(promptChrome.queued().length, 0);
+
+  const endCalls = [];
+  const endChrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      if (url !== "/api/abc/end") return { ok: true };
+      endCalls.push(JSON.parse(init.body));
+      if (endCalls.length === 1) {
+        return { ok: true, status: 200, json: async () => new Promise(() => {}) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  endChrome.element("end").click();
+  await flushPromises();
+
+  assert.equal(endCalls.length, 1);
+  endChrome.runTimers(5000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(endCalls.length, 2);
+  assert.equal(endCalls[0].requestId, endCalls[1].requestId);
+  assert.equal(endChrome.element("endedOverlay").hidden, false);
+});
+
 test("direct End settles after bounded request timeouts and remains retryable", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async () => new Promise(() => {}),
@@ -2084,6 +2137,17 @@ test("an ended rejection preserves changed unsent feedback", async () => {
   assert.equal(chrome.queued()[0].prompt, "Changed after end");
   assert.equal(chrome.element("endedOverlay").hidden, false);
   assert.equal(chrome.element("chatInput").disabled, true);
+  assert.equal(chrome.element("endedUnsentWarning").hidden, false);
+  assert.equal(chrome.element("endedUnsentCopy").disabled, false);
+
+  chrome.element("endedUnsentCopy").click();
+  await flushPromises();
+  const recovered = chrome.clipboardWrites.at(-1);
+  assert.match(recovered, /^Unsent Lavish feedback for \/tmp\/artifact\.html\n\n/);
+  const recoveredPrompts = JSON.parse(recovered.slice(recovered.indexOf("\n\n") + 2));
+  assert.equal(recoveredPrompts.length, 1);
+  assert.equal(recoveredPrompts[0].prompt, "Changed after end");
+  assert.equal(chrome.element("endedUnsentCopy").textContent, "Copied unsent feedback");
 });
 
 test("a later successful ordinary Send lets pending End ignore an earlier failed duplicate", async () => {
@@ -2624,7 +2688,7 @@ test("whiteboard fullscreen waits for the authenticated inline frame to flush", 
   assert.match(chrome.element("whiteboardFrame").src, /^\/whiteboard-frame\?diagramIndex=0&key=abc$/);
 });
 
-test("whiteboard fullscreen moves focus into the overlay and restores its opener", async () => {
+test("whiteboard fullscreen restores focus to the replacement inline activation control", async () => {
   const chrome = await createChromeHarness({ fetchImpl: async (url) => whiteboardFetch(url) });
   const inline = await initializeInlineWhiteboard(chrome);
 
@@ -2657,6 +2721,99 @@ test("whiteboard fullscreen moves focus into the overlay and restores its opener
 
   assert.equal(inline.focusCount, 1);
   assert.equal(chrome.focusLog.at(-1), "inlineWhiteboard");
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:ready",
+    diagramIndex: 0,
+    diagramId: "mermaid-1",
+    channelToken: "replacement-inline-channel",
+  });
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  const focusRequest = inline.posted.findLast((message) => message.type === "lavish-whiteboard:focusActivation");
+  assert.equal(focusRequest.channelId, "replacement-inline-channel");
+});
+
+test("a timed-out whiteboard save releases its chain for an end retry", async () => {
+  const calls = [];
+  let saveCalls = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url, method: init.method });
+      if (url === "/api/abc/whiteboard/0" && init.method === "PUT") {
+        saveCalls += 1;
+        if (saveCalls === 1) return new Promise(() => {});
+      }
+      return whiteboardFetch(url);
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  await initializeOverlayWhiteboard(chrome);
+
+  chrome.element("end").click();
+  await flushPromises();
+  const firstTeardown = chrome.postedToWhiteboard.at(-1);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:save",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: firstTeardown.flushId,
+    sourceHash: "hash",
+    scene: { elements: [], appState: {}, files: {} },
+  });
+  await flushPromises();
+  chrome.runTimers(4000);
+  await flushPromises();
+  await flushPromises();
+
+  const failedSave = chrome.postedToWhiteboard.at(-1);
+  assert.equal(failedSave.type, "lavish-whiteboard:saveResult");
+  assert.equal(failedSave.ok, false);
+  assert.match(failedSave.error, /request timed out/i);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownFailed",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: firstTeardown.flushId,
+    error: failedSave.error,
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("endedOverlay").hidden, true);
+  assert.equal(chrome.element("end").disabled, false);
+
+  chrome.element("end").click();
+  await flushPromises();
+  const retryTeardown = chrome.postedToWhiteboard.at(-1);
+  assert.notEqual(retryTeardown.flushId, firstTeardown.flushId);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:save",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: retryTeardown.flushId,
+    sourceHash: "hash",
+    scene: { elements: [{ id: "retry" }], appState: {}, files: {} },
+  });
+  await flushPromises();
+  await flushPromises();
+
+  const successfulSave = chrome.postedToWhiteboard.at(-1);
+  assert.equal(successfulSave.type, "lavish-whiteboard:saveResult");
+  assert.equal(successfulSave.ok, true);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: retryTeardown.flushId,
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(saveCalls, 2);
+  assert.equal(calls.filter((call) => call.url === "/api/abc/end").length, 1);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
 });
 
 test("only the authenticated fullscreen whiteboard can relay end session", async () => {

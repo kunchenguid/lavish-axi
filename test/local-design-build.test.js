@@ -93,6 +93,28 @@ test("CSS builder rejects directory artifact paths before scanning", async () =>
   }
 });
 
+test(
+  "CSS builder preserves POSIX backslashes and control characters in artifact paths",
+  { skip: process.platform === "win32" },
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "lavish-css-posix-path-"));
+    try {
+      const artifact = path.join(root, "report\\draft\nline.html");
+      const stylesheet = path.join(root, "report\\draft\nline.css");
+      await writeFile(artifact, '<!doctype html><div class="bg-red-500">Hello</div>\n');
+
+      const result = spawnSync(process.execPath, [path.join(projectRoot, "local", "build-css.mjs"), artifact], {
+        encoding: "utf8",
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(await readFile(stylesheet, "utf8"), /\.bg-red-500/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test("packaged tarball ships an executable CSS builder and runtime dependencies", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-css-package-"));
   const readOnlyDirs = [];

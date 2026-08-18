@@ -130,6 +130,8 @@ const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("p
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
 const endedOverlay = /** @type {HTMLDivElement} */ (document.getElementById("endedOverlay"));
+const endedUnsentWarning = /** @type {HTMLDivElement} */ (document.getElementById("endedUnsentWarning"));
+const endedUnsentCopyButton = /** @type {HTMLButtonElement} */ (document.getElementById("endedUnsentCopy"));
 const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateOverlay"));
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
@@ -587,17 +589,22 @@ function clearPromptRequestId(requestId) {
   if (cached?.requestId === requestId) sessionStorage.removeItem(promptRequestStorageKey);
 }
 
-async function fetchWithTimeout(url, init) {
+async function fetchWithDeadline(url, init, timeoutMs, parseJson = false) {
   const controller = new AbortController();
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
       controller.abort();
       reject(new Error("request timed out"));
-    }, MUTATION_REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
   });
   try {
-    return await Promise.race([fetch(url, { ...init, signal: controller.signal }), timeout]);
+    const request = (async () => {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      const data = parseJson && typeof response.json === "function" ? await response.json().catch(() => null) : null;
+      return { response, data };
+    })();
+    return await Promise.race([request, timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -607,8 +614,9 @@ async function fetchMutationWithRetry(url, init) {
   let lastError;
   for (let attempt = 0; attempt < MUTATION_REQUEST_ATTEMPTS; attempt += 1) {
     try {
-      const response = await fetchWithTimeout(url, init);
-      if (response.ok || response.status < 500 || attempt === MUTATION_REQUEST_ATTEMPTS - 1) return response;
+      const result = await fetchWithDeadline(url, init, MUTATION_REQUEST_TIMEOUT_MS, true);
+      if (result.response.ok || result.response.status < 500 || attempt === MUTATION_REQUEST_ATTEMPTS - 1)
+        return result;
     } catch (error) {
       lastError = error;
       if (attempt === MUTATION_REQUEST_ATTEMPTS - 1) throw error;
@@ -721,33 +729,31 @@ async function submitQueuedOnce(endOperation, snapshot) {
   const requestId = promptRequestIdFor(prompts);
   const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: snapshot, requestId };
   if (shouldEndSession) body.endSession = true;
-  const response = await fetchMutationWithRetry("/api/" + key + "/prompts", {
+  const { response, data: responseData } = await fetchMutationWithRetry("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!response.ok) {
     if (response.status === 409) {
-      const data = await response.json().catch(() => null);
-      if (data?.ended === true) {
+      if (responseData?.ended === true) {
         markSessionEnded();
         return false;
       }
-      if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
+      if (Array.isArray(responseData?.warnings)) setLayoutWarnings(responseData.warnings);
       return false;
     }
     // C4: the server persisted nothing (atomic reject) - the queue below is left
     // intact because the splice only runs on success. Surface exactly what failed
     // so the user can fix the offending attachment(s) rather than losing them.
     if (response.status === 400) {
-      const detail = await response.json().catch(() => ({}));
+      const detail = responseData || {};
       if (Array.isArray(detail.rejected) && detail.rejected.length) {
         showSendHint(describeAttachmentRejection(detail.rejected, detail.caps), 6000);
       }
     }
     throw new Error("failed to submit queued prompts");
   }
-  const responseData = typeof response.json === "function" ? await response.json().catch(() => null) : null;
   if (shouldEndSession && responseData?.replayed && !responseData.ended) {
     if (!(await performDirectSessionEnd())) return false;
   }
@@ -1257,11 +1263,11 @@ async function performDirectSessionEnd() {
   pendingEndRequestId ||= createMutationRequestId("end");
   let response;
   try {
-    response = await fetchMutationWithRetry("/api/" + key + "/end", {
+    ({ response } = await fetchMutationWithRetry("/api/" + key + "/end", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ requestId: pendingEndRequestId }),
-    });
+    }));
   } catch {
     showSendHint("Could not end the session. The request timed out; try End again.", 6000);
     return false;
@@ -1297,7 +1303,25 @@ function markSessionEnded() {
   layoutGateManuallyBypassed = true;
   revealLayoutGate();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
+  const hasUnsentFeedback = queued.length > 0;
+  endedUnsentWarning.hidden = !hasUnsentFeedback;
+  endedUnsentCopyButton.disabled = !hasUnsentFeedback;
+  endedUnsentCopyButton.textContent = "Copy unsent feedback";
   endedOverlay.hidden = false;
+}
+
+function unsentFeedbackRecoveryText() {
+  return [
+    "Unsent Lavish feedback for " + filePath,
+    "",
+    JSON.stringify(queued.map(stripInternalPromptFields), null, 2),
+  ].join("\n");
+}
+
+async function copyUnsentFeedback() {
+  if (!queued.length) return;
+  await copyText(unsentFeedbackRecoveryText());
+  endedUnsentCopyButton.textContent = "Copied unsent feedback";
 }
 
 function copyFilePath() {
@@ -1454,6 +1478,7 @@ async function replaceArtifactFrame() {
   artifactLoadToken = token;
   artifactSpokeToken = "";
   inlineWhiteboardChannels.clear();
+  inlineWhiteboardFocusRequests.clear();
   setHandoffSuperseded(false);
   startLayoutGateCycle();
   frame.src = artifactFrameSrcForLoad({ revision, token });
@@ -1501,10 +1526,12 @@ let nextWhiteboardFlushId = 0;
 let artifactResetPromise = null;
 let chromeRestartReloadPromise = null;
 const WHITEBOARD_TEARDOWN_TIMEOUT_MS = 5000;
+const WHITEBOARD_SAVE_TIMEOUT_MS = 4000;
 const whiteboardTeardowns = new Map();
 const whiteboardFlushes = new Map();
 const whiteboardSaveChains = new Map();
 const inlineWhiteboardChannels = new Map();
+const inlineWhiteboardFocusRequests = new Set();
 
 function whiteboardTheme() {
   // LOCAL PATCH: the chrome is light-only in this install, so a dark whiteboard would
@@ -1618,6 +1645,7 @@ function finishWhiteboardClose(index) {
   overlayOpenerWindow = null;
   inlineWhiteboardChannels.delete(index);
   if (!ended) {
+    inlineWhiteboardFocusRequests.add(index);
     postToFrame({ type: "lavish:resumeWhiteboard", diagramIndex: index });
     if (openerWindow && typeof openerWindow.focus === "function") openerWindow.focus();
   }
@@ -1763,16 +1791,20 @@ function closeWhiteboard() {
 }
 
 async function persistWhiteboardScene(index, message) {
-  const response = await fetch("/api/" + key + "/whiteboard/" + index, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      source_hash: String(message.sourceHash || ""),
-      text_metrics_version: Number(message.textMetricsVersion) || 0,
-      scene: message.scene || null,
-      baseline: message.baseline || null,
-    }),
-  });
+  const { response } = await fetchWithDeadline(
+    "/api/" + key + "/whiteboard/" + index,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source_hash: String(message.sourceHash || ""),
+        text_metrics_version: Number(message.textMetricsVersion) || 0,
+        scene: message.scene || null,
+        baseline: message.baseline || null,
+      }),
+    },
+    WHITEBOARD_SAVE_TIMEOUT_MS,
+  );
   if (!response.ok) throw new Error("failed to save whiteboard scene");
 }
 
@@ -1947,7 +1979,11 @@ function handleInlineWhiteboardMessage(event, message) {
       whiteboardRecord(index).diagramId = String(message.diagramId || "");
       handleWhiteboardReady(index, "inline", () => inlineWhiteboardChannels.get(index) === channel).then(
         (initialized) => {
-          if (inlineWhiteboardChannels.get(index) === channel) channel.initialized = initialized;
+          if (inlineWhiteboardChannels.get(index) !== channel) return;
+          channel.initialized = initialized;
+          if (initialized && inlineWhiteboardFocusRequests.delete(index)) {
+            postToInlineWhiteboard(index, { type: "lavish-whiteboard:focusActivation" });
+          }
         },
       );
     });
@@ -2347,6 +2383,7 @@ copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
 exportArtifactButton.onclick = exportArtifact;
+endedUnsentCopyButton.onclick = copyUnsentFeedback;
 endButton.onclick = () => {
   closeMenus();
   endSession();
