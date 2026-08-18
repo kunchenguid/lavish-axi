@@ -1473,7 +1473,11 @@ test("a missing accepted-image list falls back to PNG, JPEG, and WebP like the c
   chrome.element("chatInput").dispatch("paste", clipboardEvent(pastedImage("shot.png")));
   await flushPromises();
 
-  assert.match(chrome.element("chatAttachments").innerHTML, /shot\.png/);
+  const chips = chrome.element("chatAttachments").innerHTML;
+  assert.match(chips, /shot\.png/);
+  // The chip must be an accepted upload, not a refusal that happens to name the
+  // file - an empty accepted list used to refuse every image.
+  assert.doesNotMatch(chips, /data-error/);
 });
 
 test("the composer consumes a copied file's filename text instead of pasting it", async () => {
