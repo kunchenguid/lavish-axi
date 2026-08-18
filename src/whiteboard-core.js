@@ -278,7 +278,7 @@ export function savedSceneHasPreservableEdits(saved) {
   if (!Array.isArray(baselineElements)) {
     // No baseline to compare against: fail closed so a genuine edit is not
     // discarded by a silent re-convert.
-    return Array.isArray(sceneElements) && sceneElements.length > 0;
+    return Array.isArray(sceneElements);
   }
   return summarizeSceneEdits(baselineElements, sceneElements).totalChanges > 0;
 }

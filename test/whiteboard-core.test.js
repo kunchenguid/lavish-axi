@@ -189,7 +189,13 @@ test("a sidecar without a baseline fails closed toward prompting", () => {
     scene: { elements: [rect("A")] },
     baseline: null,
   };
+  const deleteAll = {
+    source_hash: "hash-old",
+    scene: { elements: [] },
+    baseline: null,
+  };
   assert.equal(resolveWhiteboardInitAction(saved, "hash-new"), "prompt");
+  assert.equal(resolveWhiteboardInitAction(deleteAll, "hash-new"), "prompt");
 });
 
 // ---------------------------------------------------------------------------
