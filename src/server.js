@@ -59,6 +59,7 @@ import {
   themeFile,
 } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import { parseThemeCustomProperties, resolveCustomProperty, serializeCustomProperties } from "./theme-css.js";
 import {
   isValidAttachmentKey,
   removeAttachment,
@@ -83,6 +84,21 @@ async function readThemeCss() {
   } catch {
     return "";
   }
+}
+
+// The annotation card is the one editor surface /chrome.css cannot reach: it lives in a
+// shadow root inside the sandboxed artifact iframe. Only the theme's custom properties
+// cross that boundary (see theme-css.js) - never the stylesheet itself, which would fight
+// the artifact's own theme - and the card's :host block already declares the same token
+// names, so remapping those tokens is all it takes.
+async function readThemeSdkOptions() {
+  const tokens = parseThemeCustomProperties(await readThemeCss());
+  return {
+    themeTokens: serializeCustomProperties(tokens),
+    // The annotate-mode outline is set on artifact elements, outside any block that
+    // carries the theme's tokens, so it needs a literal rather than a var() reference.
+    themeAccent: resolveCustomProperty(tokens, "--accent"),
+  };
 }
 const designAssetUrls = {
   "daisyui.css": {
@@ -959,6 +975,7 @@ export async function serve({
         createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token, {
           maxAttachmentCount: attachmentConfig.maxPerPrompt,
           maxAttachmentBytes: attachmentConfig.maxBytes,
+          ...(await readThemeSdkOptions()),
         }),
       );
     } catch (error) {
@@ -1915,13 +1932,13 @@ export function createWhiteboardFrameHtml(channelToken = "") {
  * @param {string} key
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
- * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, themeTokens?: string, themeAccent?: string }} [options]
  */
 export function createSdkJs(
   key,
   artifactRevision = 0,
   artifactLoadToken = "",
-  { maxAttachmentCount, maxAttachmentBytes } = {},
+  { maxAttachmentCount, maxAttachmentBytes, themeTokens, themeAccent } = {},
 ) {
   // Serialize every helper exported by mermaid-node.js as a same-scope const so
   // cross-helper calls (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the
@@ -1937,9 +1954,14 @@ export function createSdkJs(
   // pass it to the SDK so the annotation card's local count guard matches the server
   // limit instead of a hardcoded literal (W1). The card is still only a UX guide - the
   // server re-enforces the cap on /prompts and rejects the whole batch on a mismatch.
+  // Operator theme tokens for the annotation card's shadow root, already reduced to
+  // custom-property declarations by theme-css.js. Empty when no theme is configured,
+  // which leaves the card's own token block untouched.
   const sdkOptions = {
     maxAttachmentCount: Number.isFinite(maxAttachmentCount) ? maxAttachmentCount : undefined,
     maxAttachmentBytes: Number.isFinite(maxAttachmentBytes) ? maxAttachmentBytes : undefined,
+    themeTokens: themeTokens ? String(themeTokens) : undefined,
+    themeAccent: themeAccent ? String(themeAccent) : undefined,
   };
   return `(() => {
 const key=${JSON.stringify(key)};

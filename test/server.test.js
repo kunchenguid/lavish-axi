@@ -442,6 +442,26 @@ test("annotation card title renders selected tag as an html element name", () =>
   assert.match(js, /"Annotate &lt;" \+ c\.tag \+ "&gt;"/);
 });
 
+test("annotation card shadow styles carry the operator theme tokens when one is configured", () => {
+  const themed = createSdkJs("abc", 0, "", {
+    themeTokens: "--accent:#00e5a0;--accent-ink:#062017;",
+    themeAccent: "#00e5a0",
+  });
+
+  // The card lives in a shadow root inside the sandboxed artifact iframe, so
+  // /chrome.css cannot reach it - only these tokens cross that boundary.
+  assert.match(themed, /--accent:#00e5a0;--accent-ink:#062017;/);
+  assert.match(themed, /THEME_TOKENS\}font-family:var\(--font-sans\)\}/);
+  assert.match(themed, /"themeAccent":"#00e5a0"/);
+  // The Queue button's ink follows the theme's accent ink, falling back to brass.
+  assert.match(themed, /\.lavish-send\{background:var\(--accent\);color:var\(--accent-ink,var\(--brass-ink\)\)\}/);
+
+  // With no theme configured the card keeps its own tokens untouched.
+  const plain = createSdkJs("abc");
+  assert.doesNotMatch(plain, /"themeTokens"/);
+  assert.doesNotMatch(plain, /"themeAccent"/);
+});
+
 test("annotation card shadow styles use Lavish design-system variables", () => {
   const js = createSdkJs("abc");
 
@@ -492,9 +512,15 @@ test("chrome declares the Lavish design-system tokens", async () => {
 test("artifact SDK uses design-token aliases for annotation highlight and shadow UI", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /--lavish-accent:#f4c95d/);
+  // Both accent sites read THEME_ACCENT, which falls back to the packaged brass
+  // when no operator theme is configured.
+  assert.match(
+    js,
+    /THEME_ACCENT\s*=\s*\(typeof options\.themeAccent === "string" && options\.themeAccent\) \|\| "#f4c95d"/,
+  );
+  assert.match(js, /":root\{--lavish-accent:"\s*\+\s*THEME_ACCENT/);
   assert.match(js, /--lavish-annotate-outline:2px solid var\(--lavish-accent\)/);
-  assert.match(js, /el\.style\.outline\s*=\s*["']var\(--lavish-annotate-outline,2px solid #f4c95d\)["']/);
+  assert.match(js, /el\.style\.outline\s*=\s*["']var\(--lavish-annotate-outline,2px solid ["']\s*\+\s*THEME_ACCENT/);
   assert.match(js, /el\.style\.outlineOffset\s*=\s*["']var\(--lavish-annotate-offset,2px\)["']/);
   assert.match(js, /--fg-faint:var\(--steel-300\)/);
   assert.match(js, /textarea::placeholder\{color:var\(--fg-faint\)\}/);
