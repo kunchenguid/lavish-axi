@@ -366,7 +366,7 @@ test("top-level help renders static home output without dynamic sessions", async
 });
 
 test("design output ships the DaisyUI vocabulary with a local build instead of CDN URLs", () => {
-  const output = createDesignOutput({ cssBuilderPath: "/checkout/local/build-css.mjs" });
+  const output = createDesignOutput({ cssBuilderPath: "/checkout/local/build-css.mjs", platform: "linux" });
 
   assert.match(output.playbook_router.instruction, /MUST open each matching playbook before writing HTML/);
   assert.equal(output.playbook_router.playbooks.length, 7);
@@ -400,6 +400,20 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
     output.styling.themed_build_command,
     "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'",
   );
+  assert.deepEqual(output.styling.build_argv, [
+    process.execPath,
+    "/checkout/local/build-css.mjs",
+    "<artifact.html>",
+    "--minify",
+  ]);
+  assert.deepEqual(output.styling.themed_build_argv, [
+    process.execPath,
+    "/checkout/local/build-css.mjs",
+    "<artifact.html>",
+    "--minify",
+    "--theme",
+    "<daisyui-theme>",
+  ]);
   assert.match(output.styling.link_tag, /RELATIVE href/);
   assert.match(output.styling.link_tag, /Never a leading slash/);
   assert.match(output.styling.themes, /light \(default\) and dark are both compiled in/);
@@ -439,6 +453,7 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
 test("design output shell-quotes builder and artifact path arguments", () => {
   const output = createDesignOutput({
     cssBuilderPath: "/checkout path/it's $(unsafe)/local/build-css.mjs",
+    platform: "linux",
   });
 
   assert.equal(
@@ -449,7 +464,23 @@ test("design output shell-quotes builder and artifact path arguments", () => {
     output.styling.themed_build_command,
     `node '/checkout path/it'"'"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'`,
   );
-  assert.match(output.styling.how, /artifact's shell-quoted path/);
+  assert.match(output.styling.how, /artifact path as one argument/);
+});
+
+test("design output quotes spaced paths for Windows shells", () => {
+  const output = createDesignOutput({
+    cssBuilderPath: "C:\\checkout path\\local\\build-css.mjs",
+    platform: "win32",
+  });
+
+  assert.equal(
+    output.styling.build_command,
+    'node "C:\\checkout path\\local\\build-css.mjs" "<artifact.html>" --minify',
+  );
+  assert.equal(
+    output.styling.themed_build_command,
+    'node "C:\\checkout path\\local\\build-css.mjs" "<artifact.html>" --minify --theme "<daisyui-theme>"',
+  );
 });
 
 test("design output withholds the build command when the local toolchain is incomplete", () => {
@@ -457,6 +488,8 @@ test("design output withholds the build command when the local toolchain is inco
 
   assert.equal(output.styling.build_command, null);
   assert.equal(output.styling.themed_build_command, null);
+  assert.equal(output.styling.build_argv, null);
+  assert.equal(output.styling.themed_build_argv, null);
   assert.match(output.styling.how, /CSS build script or local Tailwind executable is unavailable/);
   assert.match(output.styling.how, /hand-write self-contained inline CSS/);
 });

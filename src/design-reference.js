@@ -1,4 +1,5 @@
-import { accessSync, constants, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { listPlaybooks, PLAYBOOK_ROUTER_INSTRUCTION } from "./playbooks.js";
@@ -9,17 +10,20 @@ import { listPlaybooks, PLAYBOOK_ROUTER_INSTRUCTION } from "./playbooks.js";
 // resolves for source runs and packaged runs alike.
 function localCssBuilderPath() {
   const builder = fileURLToPath(new URL("../local/build-css.mjs", import.meta.url));
-  const executable = fileURLToPath(new URL("../local/node_modules/.bin/tailwindcss", import.meta.url));
-  if (!existsSync(builder)) return null;
+  const cliPackagePath = fileURLToPath(new URL("../local/node_modules/@tailwindcss/cli/package.json", import.meta.url));
+  if (!existsSync(builder) || !existsSync(cliPackagePath)) return null;
   try {
-    accessSync(executable, constants.X_OK);
-    return builder;
+    const cliPackage = JSON.parse(readFileSync(cliPackagePath, "utf8"));
+    const cliBin = typeof cliPackage.bin === "string" ? cliPackage.bin : cliPackage.bin?.tailwindcss;
+    const cliEntry = typeof cliBin === "string" && cliBin ? resolve(dirname(cliPackagePath), cliBin) : "";
+    return cliEntry && existsSync(cliEntry) ? builder : null;
   } catch {
     return null;
   }
 }
 
-function shellQuote(value) {
+function shellQuote(value, platform) {
+  if (platform === "win32") return `"${String(value).replaceAll('"', '\\"')}"`;
   return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
 }
 
@@ -212,7 +216,9 @@ export const DAISYUI_THEMES = [
   "silk",
 ];
 
-export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = {}) {
+export function createDesignOutput({ cssBuilderPath = localCssBuilderPath(), platform = process.platform } = {}) {
+  const buildArgs = cssBuilderPath ? [cssBuilderPath, "<artifact.html>", "--minify"] : null;
+  const themedBuildArgs = buildArgs ? [...buildArgs, "--theme", "<daisyui-theme>"] : null;
   return {
     playbook_router: {
       instruction: PLAYBOOK_ROUTER_INSTRUCTION,
@@ -247,12 +253,16 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = 
     // "fetch a runtime at view time" to "compile the used classes into a sibling file".
     styling: {
       how: cssBuilderPath
-        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then run build_command. Replace the quoted '<artifact.html>' placeholder with the artifact's shell-quoted path. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_command and replace both quoted placeholders."
+        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then execute build_argv as an argument vector when possible; otherwise run build_command, which is quoted for this platform. Replace <artifact.html> with the artifact path as one argument. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_argv or themed_build_command and replace both placeholders."
         : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
-      build_command: cssBuilderPath ? `node ${shellQuote(cssBuilderPath)} '<artifact.html>' --minify` : null,
-      themed_build_command: cssBuilderPath
-        ? `node ${shellQuote(cssBuilderPath)} '<artifact.html>' --minify --theme '<daisyui-theme>'`
+      build_command: cssBuilderPath
+        ? `node ${shellQuote(cssBuilderPath, platform)} ${shellQuote("<artifact.html>", platform)} --minify`
         : null,
+      themed_build_command: cssBuilderPath
+        ? `node ${shellQuote(cssBuilderPath, platform)} ${shellQuote("<artifact.html>", platform)} --minify --theme ${shellQuote("<daisyui-theme>", platform)}`
+        : null,
+      build_argv: buildArgs ? [process.execPath, ...buildArgs] : null,
+      themed_build_argv: themedBuildArgs ? [process.execPath, ...themedBuildArgs] : null,
       link_tag:
         'Reference the built file with a RELATIVE href in <head>: <link rel="stylesheet" href="<artifact-basename>.css">. Never a leading slash.',
       themes:

@@ -10,11 +10,7 @@ import { createDesignOutput } from "../src/design-reference.js";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
-}
-
-test("design output exposes executable base and themed build commands", async () => {
+test("design output exposes executable Windows-safe base and themed argv", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-design-command-"));
   try {
     const builderDir = path.join(root, "checkout path", "it's $(unsafe)");
@@ -24,18 +20,20 @@ test("design output exposes executable base and themed build commands", async ()
     await writeFile(builder, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
     await writeFile(artifact, "<!doctype html><title>artifact</title>\n");
 
-    const output = createDesignOutput({ cssBuilderPath: builder });
-    assert.ok(output.styling.build_command);
-    assert.ok(output.styling.themed_build_command);
-    const baseCommand = output.styling.build_command.replace("'<artifact.html>'", shellQuote(artifact));
-    const base = spawnSync(baseCommand, { encoding: "utf8", shell: true });
+    const output = createDesignOutput({ cssBuilderPath: builder, platform: "win32" });
+    const baseArgv = output.styling.build_argv?.map((arg) => (arg === "<artifact.html>" ? artifact : arg));
+    assert.ok(baseArgv);
+    const base = spawnSync(baseArgv[0], baseArgv.slice(1), { encoding: "utf8" });
     assert.equal(base.status, 0, base.stderr);
     assert.deepEqual(JSON.parse(base.stdout), [artifact, "--minify"]);
 
-    const themedCommand = output.styling.themed_build_command
-      .replace("'<artifact.html>'", shellQuote(artifact))
-      .replace("'<daisyui-theme>'", shellQuote("night"));
-    const themed = spawnSync(themedCommand, { encoding: "utf8", shell: true });
+    const themedArgv = output.styling.themed_build_argv?.map((arg) => {
+      if (arg === "<artifact.html>") return artifact;
+      if (arg === "<daisyui-theme>") return "night";
+      return arg;
+    });
+    assert.ok(themedArgv);
+    const themed = spawnSync(themedArgv[0], themedArgv.slice(1), { encoding: "utf8" });
     assert.equal(themed.status, 0, themed.stderr);
     assert.deepEqual(JSON.parse(themed.stdout), [artifact, "--minify", "--theme", "night"]);
   } finally {
