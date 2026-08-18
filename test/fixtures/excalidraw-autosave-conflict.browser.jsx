@@ -98,10 +98,7 @@ async function run() {
     appState: sanitizeWhiteboardAppState(api.getAppState()),
     files: api.getFiles(),
   };
-  const editedAction = resolveWhiteboardInitAction(
-    normalizedSaved(editedScene, baseline, initial.files),
-    "hash-new",
-  );
+  const editedAction = resolveWhiteboardInitAction(normalizedSaved(editedScene, baseline, initial.files), "hash-new");
 
   if (preMountBaselineAction !== "prompt") {
     throw new Error(`fixture did not reproduce the pre-mount baseline conflict: ${preMountBaselineAction}`);

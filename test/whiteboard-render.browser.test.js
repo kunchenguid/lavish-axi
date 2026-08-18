@@ -130,7 +130,9 @@ async function runBrowserFixture(t, fixtureName) {
         const url = new URL(request.url, "http://127.0.0.1");
         const pathname = url.pathname;
         if (pathname === "/result") {
-          const value = String(url.searchParams.get("value") || "").replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+          const value = String(url.searchParams.get("value") || "")
+            .replaceAll("&", "&amp;")
+            .replaceAll('"', "&quot;");
           response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
           response.end(`<!doctype html><html><body data-result="${value}"></body></html>`);
           return;

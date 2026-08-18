@@ -637,10 +637,7 @@ async function handleInit(init) {
 
   const saved = init.saved && typeof init.saved === "object" && init.saved.scene ? init.saved : null;
   try {
-    const action = resolveWhiteboardInitAction(
-      saved ? normalizeSavedSceneForComparison(saved) : null,
-      init.sourceHash,
-    );
+    const action = resolveWhiteboardInitAction(saved ? normalizeSavedSceneForComparison(saved) : null, init.sourceHash);
     if (action === "restore" && saved) {
       await startFromSavedScene({ ...init, saved, theme });
       return;
