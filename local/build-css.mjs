@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { DAISYUI_THEMES } from "../src/design-reference.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CLI = join(HERE, "node_modules", ".bin", "tailwindcss");
+const CLI_PACKAGE = join(HERE, "node_modules", "@tailwindcss", "cli", "package.json");
 const USAGE = "usage: node build-css.mjs <artifact.html> [--minify] [--theme <daisyui-theme>]";
 
 function fail(message) {
@@ -48,7 +48,17 @@ if (args.length !== 1) fail(USAGE);
 
 const artifact = resolve(args[0]);
 if (!existsSync(artifact)) fail(`no such file: ${artifact}`);
-if (!existsSync(CLI)) fail(`toolchain missing - run: npm install --prefix ${HERE}`);
+if (!existsSync(CLI_PACKAGE)) fail(`toolchain missing - run: npm install --prefix ${HERE}`);
+
+let cliEntry = "";
+try {
+  const cliPackage = JSON.parse(readFileSync(CLI_PACKAGE, "utf8"));
+  const cliBin = typeof cliPackage.bin === "string" ? cliPackage.bin : cliPackage.bin?.tailwindcss;
+  if (typeof cliBin === "string" && cliBin) cliEntry = resolve(dirname(CLI_PACKAGE), cliBin);
+} catch {
+  cliEntry = "";
+}
+if (!cliEntry || !existsSync(cliEntry)) fail(`toolchain missing - run: npm install --prefix ${HERE}`);
 
 // light and dark always ship; --theme only changes which one is the default.
 const themeList = theme
@@ -91,10 +101,14 @@ try {
     ].join("\n"),
   );
 
-  const run = spawnSync(CLI, ["-i", input, "-o", pendingOutPath, ...(minify ? ["--minify"] : [])], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const run = spawnSync(
+    process.execPath,
+    [cliEntry, "-i", input, "-o", pendingOutPath, ...(minify ? ["--minify"] : [])],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   if (run.status !== 0) {
     buildFailure = `tailwind build failed\n${run.stderr || run.stdout || ""}`.trim();
   } else {
