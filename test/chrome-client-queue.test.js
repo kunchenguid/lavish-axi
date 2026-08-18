@@ -1971,6 +1971,56 @@ test("prompt and end timeouts retry with stable mutation ids", async () => {
   assert.equal(endChrome.element("endedOverlay").hidden, false);
 });
 
+test("a changed queue reconciles an ambiguous batch before sending new prompts", async () => {
+  const promptCalls = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      if (url !== "/api/abc/prompts") return { ok: true };
+      const body = JSON.parse(init.body);
+      promptCalls.push(body);
+      if (promptCalls.length <= 2) return new Promise(() => {});
+      if (promptCalls.length === 3) {
+        return { ok: true, status: 200, json: async () => ({ replayed: true, ended: false }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Persisted A", selector: "main", tag: "annotation", text: "A" },
+  });
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("first snapshot");
+  await flushPromises();
+  chrome.runTimers(5000);
+  await flushPromises();
+  chrome.runTimers(5000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.queued().length, 1);
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "New B", selector: "aside", tag: "annotation", text: "B" },
+  });
+  chrome.element("send").click();
+  chrome.sendSnapshot("second snapshot");
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(promptCalls.length, 4);
+  assert.equal(promptCalls[0].requestId, promptCalls[1].requestId);
+  assert.equal(promptCalls[1].requestId, promptCalls[2].requestId);
+  assert.notEqual(promptCalls[2].requestId, promptCalls[3].requestId);
+  assert.deepEqual(
+    promptCalls.map((call) => call.prompts.map((prompt) => prompt.prompt)),
+    [["Persisted A"], ["Persisted A"], ["Persisted A"], ["New B"]],
+  );
+  assert.equal(chrome.queued().length, 0);
+});
+
 test("mutation deadlines include stalled response bodies and retain request ids", async () => {
   const promptCalls = [];
   const promptChrome = await createChromeHarness({

@@ -573,15 +573,44 @@ function createMutationRequestId(kind) {
     .slice(2, 10)}`;
 }
 
-function promptRequestIdFor(prompts) {
+function promptsMatchingSignature(prompts, signature) {
+  let expected;
+  try {
+    expected = JSON.parse(signature);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(expected) || expected.length === 0) return null;
+
+  const candidates = prompts.map((prompt) => ({
+    prompt,
+    signature: JSON.stringify(stripInternalPromptFields(prompt)),
+    used: false,
+  }));
+  const matched = [];
+  for (const expectedPrompt of expected) {
+    const expectedSignature = JSON.stringify(expectedPrompt);
+    const candidate = candidates.find((item) => !item.used && item.signature === expectedSignature);
+    if (!candidate) return null;
+    candidate.used = true;
+    matched.push(candidate.prompt);
+  }
+  return matched;
+}
+
+function promptRequestFor(prompts) {
   const signature = JSON.stringify(prompts.map(stripInternalPromptFields));
   const cached = loadJsonState(promptRequestStorageKey, null);
   if (cached?.signature === signature && typeof cached.requestId === "string" && cached.requestId) {
-    return cached.requestId;
+    return { prompts, requestId: cached.requestId };
+  }
+  if (typeof cached?.signature === "string" && typeof cached.requestId === "string" && cached.requestId) {
+    const pendingPrompts = promptsMatchingSignature(prompts, cached.signature);
+    if (pendingPrompts) return { prompts: pendingPrompts, requestId: cached.requestId };
   }
   const requestId = createMutationRequestId("prompts");
   saveJsonState(promptRequestStorageKey, { signature, requestId });
-  return requestId;
+  return { prompts, requestId };
 }
 
 function clearPromptRequestId(requestId) {
@@ -723,54 +752,61 @@ async function submitQueued(endOperation, snapshot) {
 
 async function submitQueuedOnce(endOperation, snapshot) {
   if (ended) return true;
-  const prompts = queued.slice();
+  let remainingPrompts = queued.slice();
   const shouldEndSession = Boolean(endOperation);
-  if (prompts.length === 0) {
+  if (remainingPrompts.length === 0) {
     if (endOperation) return runSessionEndOperation(endOperation, performDirectSessionEnd);
     return true;
   }
   if (shouldEndSession && !(await prepareSessionEnd())) return false;
-  const requestId = promptRequestIdFor(prompts);
-  const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: snapshot, requestId };
-  if (shouldEndSession) body.endSession = true;
-  const { response, data: responseData } = await fetchMutationWithRetry("/api/" + key + "/prompts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    if (response.status === 409) {
-      if (responseData?.ended === true) {
-        markSessionEnded();
+  while (remainingPrompts.length > 0) {
+    const request = promptRequestFor(remainingPrompts);
+    const prompts = request.prompts;
+    const requestId = request.requestId;
+    const endingThisBatch = shouldEndSession && prompts.length === remainingPrompts.length;
+    const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: snapshot, requestId };
+    if (endingThisBatch) body.endSession = true;
+    const { response, data: responseData } = await fetchMutationWithRetry("/api/" + key + "/prompts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      if (response.status === 409) {
+        if (responseData?.ended === true) {
+          markSessionEnded();
+          return false;
+        }
+        if (Array.isArray(responseData?.warnings)) setLayoutWarnings(responseData.warnings);
         return false;
       }
-      if (Array.isArray(responseData?.warnings)) setLayoutWarnings(responseData.warnings);
-      return false;
-    }
-    // C4: the server persisted nothing (atomic reject) - the queue below is left
-    // intact because the splice only runs on success. Surface exactly what failed
-    // so the user can fix the offending attachment(s) rather than losing them.
-    if (response.status === 400) {
-      const detail = responseData || {};
-      if (Array.isArray(detail.rejected) && detail.rejected.length) {
-        showSendHint(describeAttachmentRejection(detail.rejected, detail.caps), 6000);
+      // C4: the server persisted nothing (atomic reject) - the queue below is left
+      // intact because the splice only runs on success. Surface exactly what failed
+      // so the user can fix the offending attachment(s) rather than losing them.
+      if (response.status === 400) {
+        const detail = responseData || {};
+        if (Array.isArray(detail.rejected) && detail.rejected.length) {
+          showSendHint(describeAttachmentRejection(detail.rejected, detail.caps), 6000);
+        }
       }
+      throw new Error("failed to submit queued prompts");
     }
-    throw new Error("failed to submit queued prompts");
-  }
-  if (shouldEndSession && responseData?.replayed && !responseData.ended) {
-    if (!(await performDirectSessionEnd())) return false;
-  }
-  clearPromptRequestId(requestId);
-  for (const prompt of prompts) {
-    const index = queued.indexOf(prompt);
-    if (index !== -1) queued.splice(index, 1);
-  }
-  persistQueuedPrompts();
-  render();
-  if (shouldEndSession || responseData?.ended === true) {
-    markSessionEnded();
-    return true;
+    if (endingThisBatch && responseData?.replayed && !responseData.ended) {
+      if (!(await performDirectSessionEnd())) return false;
+    }
+    clearPromptRequestId(requestId);
+    for (const prompt of prompts) {
+      const index = queued.indexOf(prompt);
+      if (index !== -1) queued.splice(index, 1);
+    }
+    const delivered = new Set(prompts);
+    remainingPrompts = remainingPrompts.filter((prompt) => !delivered.has(prompt));
+    persistQueuedPrompts();
+    render();
+    if (endingThisBatch || responseData?.ended === true) {
+      markSessionEnded();
+      return true;
+    }
   }
   if (agentPresence === "listening") setAgentPresence("working");
   return true;
