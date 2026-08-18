@@ -1007,6 +1007,7 @@ test("a stale queued layout prompt remains available for user re-decision", asyn
   row.children[0].checked = true;
   row.children[0].dispatch("change");
   await chrome.element("warningsQueueButton").onclick();
+  chrome.element("send").click();
   chrome.sendSnapshot("");
   await flushPromises();
 
@@ -3202,8 +3203,9 @@ test("whiteboard fullscreen close accepts the resumed inline frame", async () =>
   await flushPromises();
   await flushPromises();
 
-  assert.equal(resumed.posted.at(-1).type, "lavish-whiteboard:init");
-  assert.equal(resumed.posted.at(-1).channelId, "resumed-channel");
+  const init = resumed.posted.find((message) => message.type === "lavish-whiteboard:init");
+  assert.equal(init.channelId, "resumed-channel");
+  assert.equal(resumed.posted.at(-1).type, "lavish-whiteboard:focusActivation");
 });
 
 test("artifact reload waits for inline whiteboards to flush", async () => {

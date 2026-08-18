@@ -9,4 +9,5 @@ minimumReleaseAgeExclude:
 onlyBuiltDependencies:
   - esbuild
 allowBuilds:
+  "@parcel/watcher": false
   esbuild: true

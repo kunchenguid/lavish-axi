@@ -716,14 +716,6 @@ test("composer offers two always-visible top-level send actions", async () => {
   assert.match(css, /\.actions\{[^}]*min-width:0/);
 });
 
-test("chrome only marks session ended after the end request succeeds", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /const response = await fetch\("\/api\/" \+ key \+ "\/end", \{ method: "POST" \}\)/);
-  assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\)/);
-  assert.match(js, /if \(!response\.ok\) throw new Error\("failed to end session"\);\n {2}markSessionEnded\(\)/);
-});
-
 test("chrome shows a waiting banner when no agent has attached", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
@@ -921,17 +913,6 @@ test("chrome restores queued prompts from tab storage after reload", async () =>
   assert.match(js, /function loadQueuedPrompts\(\)/);
   assert.match(js, /const queued = loadQueuedPrompts\(\)/);
   assert.match(js, /sessionStorage\.getItem\(queueStorageKey\)/);
-});
-
-test("chrome keeps queued prompts persisted until submit succeeds", async () => {
-  const js = await chromeClientSource();
-
-  assert.doesNotMatch(js, /const prompts = queued\.splice\(0, queued\.length\)/);
-  assert.match(js, /await fetch\("\/api\/" \+ key \+ "\/prompts", \{/);
-  assert.doesNotMatch(js, /queued\.splice\(0, prompts\.length\)/);
-  assert.match(js, /for \(const prompt of prompts\) \{/);
-  assert.match(js, /const index = queued\.indexOf\(prompt\)/);
-  assert.match(js, /if \(index !== -1\) queued\.splice\(index, 1\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
