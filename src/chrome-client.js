@@ -1,10 +1,11 @@
-/* global EventSource, document, location, window */
+/* global AbortController, EventSource, document, location, window */
 
 const sessionDataElement = document.getElementById("lavish-session");
 const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
 const key = String(sessionData.key || "");
 const filePath = String(sessionData.file || "");
 const queueStorageKey = "lavish-axi:queued:" + key;
+const promptRequestStorageKey = "lavish-axi:prompt-request:" + key;
 // Review-chrome state that must survive a browser refresh. Keyed per session so one review's
 // triage can never leak into another artifact's.
 const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
@@ -173,11 +174,15 @@ const selectedWarningIds = new Set(loadJsonState(warningSelectionStorageKey, [])
 let warningsDrawerOpen = false;
 const snapshotRequests = new Map();
 const SNAPSHOT_REQUEST_TIMEOUT_MS = 5000;
+const MUTATION_REQUEST_TIMEOUT_MS = 5000;
+const MUTATION_REQUEST_ATTEMPTS = 2;
 let nextSnapshotRequestId = 0;
+let nextMutationRequestId = 0;
 const ordinarySendOperations = new Set();
 let workingBubble = null;
 let submitQueuedPromise = null;
 let sessionEndOperation = null;
+let pendingEndRequestId = "";
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
@@ -559,6 +564,59 @@ function postToFrame(message) {
   if (frame.contentWindow) frame.contentWindow.postMessage(message, "*");
 }
 
+function createMutationRequestId(kind) {
+  nextMutationRequestId += 1;
+  return `${kind}-${Date.now().toString(36)}-${nextMutationRequestId.toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
+function promptRequestIdFor(prompts) {
+  const signature = JSON.stringify(prompts.map(stripInternalPromptFields));
+  const cached = loadJsonState(promptRequestStorageKey, null);
+  if (cached?.signature === signature && typeof cached.requestId === "string" && cached.requestId) {
+    return cached.requestId;
+  }
+  const requestId = createMutationRequestId("prompts");
+  saveJsonState(promptRequestStorageKey, { signature, requestId });
+  return requestId;
+}
+
+function clearPromptRequestId(requestId) {
+  const cached = loadJsonState(promptRequestStorageKey, null);
+  if (cached?.requestId === requestId) sessionStorage.removeItem(promptRequestStorageKey);
+}
+
+async function fetchWithTimeout(url, init) {
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("request timed out"));
+    }, MUTATION_REQUEST_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([fetch(url, { ...init, signal: controller.signal }), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchMutationWithRetry(url, init) {
+  let lastError;
+  for (let attempt = 0; attempt < MUTATION_REQUEST_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(url, init);
+      if (response.ok || response.status < 500 || attempt === MUTATION_REQUEST_ATTEMPTS - 1) return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt === MUTATION_REQUEST_ATTEMPTS - 1) throw error;
+    }
+  }
+  throw lastError || new Error("request failed");
+}
+
 function beginOrdinarySendOperation() {
   let resolve;
   const promise = new Promise((complete) => {
@@ -660,9 +718,10 @@ async function submitQueuedOnce(endOperation, snapshot) {
     return true;
   }
   if (shouldEndSession && !(await prepareSessionEnd())) return false;
-  const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: snapshot };
+  const requestId = promptRequestIdFor(prompts);
+  const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: snapshot, requestId };
   if (shouldEndSession) body.endSession = true;
-  const response = await fetch("/api/" + key + "/prompts", {
+  const response = await fetchMutationWithRetry("/api/" + key + "/prompts", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -684,6 +743,11 @@ async function submitQueuedOnce(endOperation, snapshot) {
     }
     throw new Error("failed to submit queued prompts");
   }
+  const responseData = typeof response.json === "function" ? await response.json().catch(() => null) : null;
+  if (shouldEndSession && responseData?.replayed && !responseData.ended) {
+    if (!(await performDirectSessionEnd())) return false;
+  }
+  clearPromptRequestId(requestId);
   for (const prompt of prompts) {
     const index = queued.indexOf(prompt);
     if (index !== -1) queued.splice(index, 1);
@@ -1173,8 +1237,8 @@ function endSession() {
   const operation = beginSessionEndOperation("direct");
   return runSessionEndOperation(operation, async () => {
     if (pendingSends.length) {
-      const delivered = await Promise.all(pendingSends);
-      if (delivered.some((result) => !result)) {
+      await Promise.all(pendingSends);
+      if (queued.length > 0) {
         showSendHint("Could not finish sending feedback. It remains queued; retry Send before ending.", 6000);
         return false;
       }
@@ -1186,8 +1250,23 @@ function endSession() {
 async function performDirectSessionEnd() {
   if (!(await prepareSessionEnd())) return false;
   if (ended) return true;
-  const response = await fetch("/api/" + key + "/end", { method: "POST" });
-  if (!response.ok) throw new Error("failed to end session");
+  pendingEndRequestId ||= createMutationRequestId("end");
+  let response;
+  try {
+    response = await fetchMutationWithRetry("/api/" + key + "/end", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestId: pendingEndRequestId }),
+    });
+  } catch {
+    showSendHint("Could not end the session. The request timed out; try End again.", 6000);
+    return false;
+  }
+  if (!response.ok) {
+    showSendHint("Could not end the session. Try End again.", 6000);
+    return false;
+  }
+  pendingEndRequestId = "";
   markSessionEnded();
   return true;
 }
@@ -1992,10 +2071,15 @@ window.addEventListener("message", (event) => {
       if (request.sendOperation) {
         submission.then(
           (result) => settleOrdinarySendOperation(request.sendOperation, result !== false),
-          () => settleOrdinarySendOperation(request.sendOperation, false),
+          () => {
+            settleOrdinarySendOperation(request.sendOperation, false);
+            showSendHint("Could not send feedback. It remains queued; try Send again.", 6000);
+          },
         );
       } else {
-        submission.catch(() => {});
+        submission.catch(() => {
+          showSendHint("Could not send feedback. It remains queued; try Send again.", 6000);
+        });
       }
     }
   }

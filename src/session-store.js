@@ -46,6 +46,19 @@ export const MAX_REQUEST_ATTACHMENT_REFS = 256;
 // far more than any one request may queue. Trimming the current delivery to fit a
 // constant is what reopens the hole this retention exists to close.
 export const MAX_DELIVERED_ATTACHMENTS = 256;
+const MAX_COMPLETED_MUTATION_REQUESTS = 64;
+
+function mutationRequestId(value) {
+  const requestId = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z0-9._:-]{1,200}$/.test(requestId) ? requestId : "";
+}
+
+function rememberMutationRequest(requests, requestId) {
+  if (!requestId) return Array.isArray(requests) ? requests : [];
+  return [...new Set([...(Array.isArray(requests) ? requests : []), requestId])].slice(
+    -MAX_COMPLETED_MUTATION_REQUESTS,
+  );
+}
 
 export class SessionStore {
   constructor(file) {
@@ -111,6 +124,10 @@ export class SessionStore {
       // reading the path. Every field this constructor omits is silently dropped, so
       // any new session field must be added here too.
       delivered_attachments: Array.isArray(existing.delivered_attachments) ? existing.delivered_attachments : [],
+      completed_prompt_requests: Array.isArray(existing.completed_prompt_requests)
+        ? existing.completed_prompt_requests
+        : [],
+      completed_end_requests: Array.isArray(existing.completed_end_requests) ? existing.completed_end_requests : [],
       dom_snapshot: existing.dom_snapshot || "",
       chat: existing.chat || [],
       updated_at: new Date().toISOString(),
@@ -139,6 +156,10 @@ export class SessionStore {
     const session = state.sessions[key];
     if (!session) {
       return null;
+    }
+    const requestId = mutationRequestId(payload.requestId || payload.request_id);
+    if (requestId && session.completed_prompt_requests?.includes(requestId)) {
+      return { ...session, request_replayed: true };
     }
     const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
     const shouldEndSession = Boolean(payload.endSession || payload.end_session);
@@ -219,6 +240,7 @@ export class SessionStore {
     session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
     session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
     if (shouldEndSession) session.ended_by = "user";
+    session.completed_prompt_requests = rememberMutationRequest(session.completed_prompt_requests, requestId);
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
     return session;
@@ -558,17 +580,22 @@ export class SessionStore {
   // `endedBy` distinguishes a human ending review from the browser chrome ("user") from an
   // agent explicitly closing the loop via `lavish-axi end` ("agent"). Only a user-initiated end
   // blocks a plain reopen - see `SessionStore` callers in server.js.
-  async endSession(key, endedBy = "agent") {
+  async endSession(key, endedBy = "agent", { requestId: rawRequestId = "" } = {}) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
       if (!session) {
         return null;
       }
+      const requestId = mutationRequestId(rawRequestId);
+      if (requestId && session.completed_end_requests?.includes(requestId)) {
+        return { ...session, request_replayed: true };
+      }
       const existingEndedBy = session.status === "ended" ? session.ended_by : undefined;
       const nextEndedBy = endedBy === "user" || existingEndedBy === "user" ? "user" : "agent";
       session.status = "ended";
       session.ended_by = nextEndedBy;
+      session.completed_end_requests = rememberMutationRequest(session.completed_end_requests, requestId);
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
       return session;

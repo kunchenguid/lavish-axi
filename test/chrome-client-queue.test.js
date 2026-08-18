@@ -247,6 +247,15 @@ async function createChromeHarness({
   };
 
   const context = {
+    AbortController: class FakeAbortController {
+      constructor() {
+        this.signal = { aborted: false };
+      }
+
+      abort() {
+        this.signal.aborted = true;
+      }
+    },
     clearTimeout: fakeClearTimeout,
     console,
     fetch: harnessFetch,
@@ -444,6 +453,13 @@ async function createChromeHarness({
 
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+function withoutMutationRequestId(body, kind = "prompts") {
+  assert.match(body.requestId, new RegExp(`^${kind}-`));
+  const result = { ...body };
+  delete result.requestId;
+  return result;
 }
 
 test("chrome client re-handshakes once after a missing reviewer handoff", async () => {
@@ -1660,7 +1676,7 @@ test("chrome client strips the internal queue key before posting prompts", async
 
   assert.equal(posts.length, 1);
   assert.equal(posts[0].url, "/api/abc/prompts");
-  assert.deepEqual(posts[0].body, {
+  assert.deepEqual(withoutMutationRequestId(posts[0].body), {
     prompts: [{ prompt: "Use plan B", selector: "input#plan-b", tag: "choice", text: "Plan B" }],
     domSnapshot: "uid=1 body",
   });
@@ -1719,7 +1735,7 @@ test("chrome send and end carries the end intent with queued prompts", async () 
     posts.map((post) => post.url),
     ["/api/abc/prompts"],
   );
-  assert.deepEqual(posts[0].body, {
+  assert.deepEqual(withoutMutationRequestId(posts[0].body), {
     prompts: [{ prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" }],
     domSnapshot: "uid=1 body",
     endSession: true,
@@ -1824,7 +1840,10 @@ test("direct End waits for an ordinary Send snapshot and delivery", async () => 
   chrome.sendSnapshot("ordinary snapshot");
   await flushPromises();
   assert.deepEqual(events, ["prompts-started"]);
-  assert.equal(calls.some((call) => call.url === "/api/abc/end"), false);
+  assert.equal(
+    calls.some((call) => call.url === "/api/abc/end"),
+    false,
+  );
 
   releasePrompts();
   await flushPromises();
@@ -1832,13 +1851,16 @@ test("direct End waits for an ordinary Send snapshot and delivery", async () => 
   await flushPromises();
 
   assert.deepEqual(events, ["prompts-started", "prompts-delivered", "end"]);
-  assert.deepEqual(calls[0], {
-    url: "/api/abc/prompts",
-    body: {
-      prompts: [{ prompt: "Send this", selector: "main", tag: "annotation", text: "Main" }],
-      domSnapshot: "ordinary snapshot",
+  assert.deepEqual(
+    { ...calls[0], body: withoutMutationRequestId(calls[0].body) },
+    {
+      url: "/api/abc/prompts",
+      body: {
+        prompts: [{ prompt: "Send this", selector: "main", tag: "annotation", text: "Main" }],
+        domSnapshot: "ordinary snapshot",
+      },
     },
-  });
+  );
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });
 
@@ -1886,6 +1908,167 @@ test("a failed ordinary Send blocks direct End and preserves a retryable queue",
   assert.equal(calls[1].url, "/api/abc/prompts");
   assert.equal(calls[1].body.endSession, true);
   assert.equal(calls[1].body.domSnapshot, "retry snapshot");
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+test("prompt and end timeouts retry with stable mutation ids", async () => {
+  const promptCalls = [];
+  const promptChrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      if (url !== "/api/abc/prompts") return { ok: true };
+      promptCalls.push(JSON.parse(init.body));
+      if (promptCalls.length === 1) return new Promise(() => {});
+      return { ok: true };
+    },
+  });
+  promptChrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Retry me", selector: "main", tag: "annotation", text: "Main" },
+  });
+  promptChrome.element("send").click();
+  promptChrome.sendSnapshot("timeout snapshot");
+  await flushPromises();
+  promptChrome.runTimers(5000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(promptCalls.length, 2);
+  assert.equal(promptCalls[0].requestId, promptCalls[1].requestId);
+  assert.match(promptCalls[0].requestId, /^prompts-/);
+  assert.equal(promptChrome.queued().length, 0);
+
+  const endCalls = [];
+  const endChrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      if (url !== "/api/abc/end") return { ok: true };
+      endCalls.push(JSON.parse(init.body));
+      if (endCalls.length === 1) return new Promise(() => {});
+      return { ok: true };
+    },
+  });
+  endChrome.element("endedOverlay").hidden = true;
+  endChrome.element("end").click();
+  await flushPromises();
+  endChrome.runTimers(5000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(endCalls.length, 2);
+  assert.equal(endCalls[0].requestId, endCalls[1].requestId);
+  assert.match(endCalls[0].requestId, /^end-/);
+  assert.equal(endChrome.element("endedOverlay").hidden, false);
+});
+
+test("direct End settles after bounded request timeouts and remains retryable", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => new Promise(() => {}),
+  });
+  chrome.element("endedOverlay").hidden = true;
+
+  chrome.element("end").click();
+  await flushPromises();
+  chrome.runTimers(5000);
+  await flushPromises();
+  chrome.runTimers(5000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("endedOverlay").hidden, true);
+  assert.equal(chrome.element("end").disabled, false);
+  assert.match(chrome.element("sendHint").textContent, /request timed out.*try End again/i);
+});
+
+test("Send and End reconciles an ordinary request whose success response was lost", async () => {
+  const calls = [];
+  let promptCalls = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      calls.push({ url, body });
+      if (url === "/api/abc/prompts") {
+        promptCalls += 1;
+        if (promptCalls <= 2) return new Promise(() => {});
+        return { ok: true, json: async () => ({ replayed: true, ended: false }) };
+      }
+      return { ok: true };
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Persist once", selector: "main", tag: "annotation", text: "Main" },
+  });
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("lost response snapshot");
+  await flushPromises();
+  chrome.runTimers(5000);
+  await flushPromises();
+  chrome.runTimers(5000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.queued().length, 1);
+
+  chrome.element("sendAndEnd").click();
+  chrome.sendSnapshot("reconcile snapshot");
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  const promptRequests = calls.filter((call) => call.url === "/api/abc/prompts");
+  assert.equal(promptRequests.length, 3);
+  assert.equal(new Set(promptRequests.map((call) => call.body.requestId)).size, 1);
+  assert.equal(calls.filter((call) => call.url === "/api/abc/end").length, 1);
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+test("a later successful ordinary Send lets pending End ignore an earlier failed duplicate", async () => {
+  const calls = [];
+  let releaseFirst = () => {};
+  const firstReleased = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  let promptCalls = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      calls.push({ url, body });
+      if (url === "/api/abc/prompts") {
+        promptCalls += 1;
+        if (promptCalls === 1) {
+          await firstReleased;
+          return { ok: false, status: 409, json: async () => ({ warnings: [] }) };
+        }
+      }
+      return { ok: true };
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Deliver once", selector: "main", tag: "annotation", text: "Main" },
+  });
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("first snapshot");
+  await flushPromises();
+  chrome.element("send").click();
+  chrome.sendSnapshot("retry snapshot");
+  chrome.element("end").click();
+  await flushPromises();
+
+  releaseFirst();
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  const submitted = calls.filter((call) => call.url === "/api/abc/prompts");
+  assert.equal(submitted.length, 2);
+  assert.equal(submitted[0].body.requestId, submitted[1].body.requestId);
+  assert.equal(calls.at(-1).url, "/api/abc/end");
   assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });
@@ -2000,11 +2183,11 @@ test("chrome send and end during an in-flight submit still ends after the submit
     posts.map((post) => post.url),
     ["/api/abc/prompts", "/api/abc/end"],
   );
-  assert.deepEqual(posts[0].body, {
+  assert.deepEqual(withoutMutationRequestId(posts[0].body), {
     prompts: [{ prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" }],
     domSnapshot: "uid=1 body",
   });
-  assert.equal(posts[1].body, null);
+  assert.deepEqual(withoutMutationRequestId(posts[1].body, "end"), {});
   assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("chatInput").disabled, true);
 });

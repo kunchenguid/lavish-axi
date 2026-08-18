@@ -4,14 +4,12 @@ import { fileURLToPath } from "node:url";
 
 import { listPlaybooks, PLAYBOOK_ROUTER_INSTRUCTION } from "./playbooks.js";
 
-// LOCAL ADDITION: absolute path to the per-artifact Tailwind+DaisyUI compiler. Resolved at
-// runtime rather than hardcoded so the command works from any cwd and on any checkout path.
-// `src/` and `dist/` both sit one level under the checkout root, so the same relative URL
-// resolves for source runs and packaged runs alike.
 function localCssBuilderPath() {
-  const builder = fileURLToPath(new URL("../local/build-css.mjs", import.meta.url));
-  const cliPackagePath = fileURLToPath(new URL("../local/node_modules/@tailwindcss/cli/package.json", import.meta.url));
-  if (!existsSync(builder) || !existsSync(cliPackagePath)) return null;
+  const packagedBuilder = fileURLToPath(new URL("./build-css.mjs", import.meta.url));
+  const sourceBuilder = fileURLToPath(new URL("../local/build-css.mjs", import.meta.url));
+  const builder = [packagedBuilder, sourceBuilder].find((candidate) => existsSync(candidate));
+  const cliPackagePath = fileURLToPath(new URL("../node_modules/@tailwindcss/cli/package.json", import.meta.url));
+  if (!builder || !existsSync(cliPackagePath)) return null;
   try {
     const cliPackage = JSON.parse(readFileSync(cliPackagePath, "utf8"));
     const cliBin = typeof cliPackage.bin === "string" ? cliPackage.bin : cliPackage.bin?.tailwindcss;
@@ -249,7 +247,7 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = 
     styling: {
       how: cssBuilderPath
         ? "Write the artifact with Tailwind utility classes and DaisyUI components, then execute build_argv as the authoritative argument vector and replace <artifact.html> with the artifact path as one argument. build_command and themed_build_command are intentionally null because the real artifact path is not known here and substituting it into a shell string would be unsafe. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_argv and replace both placeholders."
-        : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Install the dependencies declared by local/package.json with your package manager, then re-check, or hand-write self-contained inline CSS for now.",
+        : "LOCAL TOOLCHAIN MISSING: the packaged CSS build script or Tailwind executable is unavailable. Reinstall lavish-axi with its production dependencies, then re-check, or hand-write self-contained inline CSS for now.",
       build_command: null,
       themed_build_command: null,
       build_argv: buildArgs ? [process.execPath, ...buildArgs] : null,

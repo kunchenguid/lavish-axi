@@ -20,7 +20,11 @@ import { fileURLToPath } from "node:url";
 import { DAISYUI_THEMES } from "../src/design-reference.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CLI_PACKAGE = join(HERE, "node_modules", "@tailwindcss", "cli", "package.json");
+const CLI_PACKAGE =
+  [
+    join(HERE, "..", "node_modules", "@tailwindcss", "cli", "package.json"),
+    join(HERE, "node_modules", "@tailwindcss", "cli", "package.json"),
+  ].find((candidate) => existsSync(candidate)) || "";
 const USAGE = "usage: node build-css.mjs <artifact.html> [--minify] [--theme <daisyui-theme>]";
 
 function fail(message) {
@@ -49,8 +53,8 @@ if (args.length !== 1) fail(USAGE);
 const artifact = resolve(args[0]);
 if (!existsSync(artifact)) fail(`no such file: ${artifact}`);
 if (!statSync(artifact).isFile()) fail(`not a file: ${artifact}`);
-if (!existsSync(CLI_PACKAGE)) {
-  fail("toolchain missing; install the dependencies declared by local/package.json, then retry");
+if (!CLI_PACKAGE) {
+  fail("toolchain missing; reinstall lavish-axi with its production dependencies, then retry");
 }
 
 let cliEntry = "";
@@ -62,7 +66,7 @@ try {
   cliEntry = "";
 }
 if (!cliEntry || !existsSync(cliEntry)) {
-  fail("toolchain missing; install the dependencies declared by local/package.json, then retry");
+  fail("toolchain missing; reinstall lavish-axi with its production dependencies, then retry");
 }
 
 // light and dark always ship; --theme only changes which one is the default.
@@ -73,6 +77,10 @@ const themeList = theme
 const outDir = dirname(artifact);
 const outName = `${basename(artifact).replace(/\.html?$/i, "")}.css`;
 const outPath = join(outDir, outName);
+const outHref = encodeURIComponent(outName).replace(
+  /["'&<>]/g,
+  (character) => ({ '"': "&quot;", "'": "&#39;", "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character],
+);
 
 // Tailwind v4 takes its content sources from CSS, not flags. `source(none)` turns off
 // automatic directory scanning so a stray file in /tmp can never widen the build, then a
@@ -139,7 +147,7 @@ console.log(
     `built: ${outPath}  (${(bytes / 1024).toFixed(1)} KB${minify ? ", minified" : ""})`,
     "",
     "Paste into the artifact's <head> - relative path, never a leading slash:",
-    `  <link rel="stylesheet" href="${outName}">`,
+    `  <link rel="stylesheet" href="${outHref}">`,
     "",
     "Keep the .css beside the .html: lavish serves siblings, and `lavish-axi export`",
     "inlines local assets into a single portable file.",

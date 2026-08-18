@@ -472,14 +472,21 @@ export async function serve({
         });
         return;
       }
-      if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
-      if (hasLayoutWarningPrompt) {
+      if (shouldEndSession && !session.request_replayed) {
+        clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      }
+      if (hasLayoutWarningPrompt && !session.request_replayed) {
         await syncOutstandingRepairs(req.params.key);
         events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(session.layout_warnings));
       }
-      events.emit(shouldEndSession ? "ended" : "feedback", req.params.key);
-      res.json({ status: "queued", pending_prompts: session.pending_prompts });
-      if (shouldEndSession) await shutdownIfNoLiveSessions();
+      if (!session.request_replayed) events.emit(shouldEndSession ? "ended" : "feedback", req.params.key);
+      res.json({
+        status: "queued",
+        pending_prompts: session.pending_prompts,
+        ended: session.status === "ended",
+        ...(session.request_replayed ? { replayed: true } : {}),
+      });
+      if (shouldEndSession && !session.request_replayed) await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);
     }
@@ -578,11 +585,15 @@ export async function serve({
 
   app.post("/api/:key/end", async (req, res, next) => {
     try {
-      await store.endSession(req.params.key, "user");
-      clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
-      events.emit("ended", req.params.key);
-      res.json({ status: "ended" });
-      await shutdownIfNoLiveSessions();
+      const session = await store.endSession(req.params.key, "user", {
+        requestId: req.body?.requestId || req.body?.request_id,
+      });
+      if (!session?.request_replayed) {
+        clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+        events.emit("ended", req.params.key);
+      }
+      res.json({ status: "ended", ...(session?.request_replayed ? { replayed: true } : {}) });
+      if (!session?.request_replayed) await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);
     }

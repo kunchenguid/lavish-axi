@@ -500,8 +500,8 @@ test("design output withholds the build command when the local toolchain is inco
   assert.equal(output.styling.themed_build_command, null);
   assert.equal(output.styling.build_argv, null);
   assert.equal(output.styling.themed_build_argv, null);
-  assert.match(output.styling.how, /CSS build script or local Tailwind executable is unavailable/);
-  assert.match(output.styling.how, /dependencies declared by local\/package\.json/);
+  assert.match(output.styling.how, /packaged CSS build script or Tailwind executable is unavailable/);
+  assert.match(output.styling.how, /Reinstall lavish-axi with its production dependencies/);
   assert.match(output.styling.how, /hand-write self-contained inline CSS/);
   assert.doesNotMatch(output.styling.how, /npm install|--prefix|<checkout>/);
 });

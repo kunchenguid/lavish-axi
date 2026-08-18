@@ -22,6 +22,16 @@ await esbuild.build({
 });
 
 await chmod("dist/cli.mjs", 0o755);
+await esbuild.build({
+  entryPoints: ["local/build-css.mjs"],
+  outfile: "dist/build-css.mjs",
+  bundle: true,
+  packages: "external",
+  platform: "node",
+  format: "esm",
+  target: "node22",
+});
+await chmod("dist/build-css.mjs", 0o755);
 await copyFile("src/chrome-client.js", "dist/chrome-client.js");
 await copyFile("src/chrome.css", "dist/chrome.css");
 await mkdir("dist/design", { recursive: true });

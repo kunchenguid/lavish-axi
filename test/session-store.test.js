@@ -68,6 +68,36 @@ test("queued prompts are returned with DOM snapshot context and then cleared", a
   }
 });
 
+test("prompt and end mutation request ids replay without duplicate state", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-idempotency-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const payload = {
+      requestId: "prompts-request-1",
+      domSnapshot: "snapshot",
+      prompts: [{ uid: "1", prompt: "Only once", selector: "h1", tag: "h1", text: "Hello" }],
+    };
+
+    const firstPrompt = await store.queuePrompts(session.key, payload);
+    const replayedPrompt = await store.queuePrompts(session.key, payload);
+    assert.equal(firstPrompt.request_replayed, undefined);
+    assert.equal(replayedPrompt.request_replayed, true);
+    assert.equal((await store.findByKey(session.key)).prompts.length, 1);
+
+    const firstEnd = await store.endSession(session.key, "user", { requestId: "end-request-1" });
+    const replayedEnd = await store.endSession(session.key, "user", { requestId: "end-request-1" });
+    assert.equal(firstEnd.request_replayed, undefined);
+    assert.equal(replayedEnd.request_replayed, true);
+    assert.equal((await store.findByKey(session.key)).status, "ended");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("queued text selection prompts preserve range anchors", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
