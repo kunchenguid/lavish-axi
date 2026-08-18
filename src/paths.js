@@ -48,8 +48,16 @@ export function hostForUrl(host) {
   return host;
 }
 
-export function stateDir() {
-  return process.env.LAVISH_AXI_STATE_DIR || path.join(os.homedir(), ".lavish-axi");
+export function stateDir(env = process.env) {
+  return env.LAVISH_AXI_STATE_DIR || path.join(os.homedir(), ".lavish-axi");
+}
+
+// Optional operator stylesheet appended after the packaged chrome stylesheet
+// (LAVISH_AXI_THEME_CSS), so a deployment can restyle the editor shell without
+// patching the package. Defaults to theme.css in the state directory; a missing
+// file is the normal case and the server simply serves the base stylesheet.
+export function themeFile(env = process.env) {
+  return env.LAVISH_AXI_THEME_CSS?.trim() || path.join(stateDir(env), "theme.css");
 }
 
 export function stateFile() {

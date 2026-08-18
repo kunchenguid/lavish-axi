@@ -2665,6 +2665,8 @@ test("/chrome-client.js serves the extracted chrome client script", async () => 
 
 test("/chrome.css serves the extracted chrome stylesheet", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const previousTheme = process.env.LAVISH_AXI_THEME_CSS;
+  process.env.LAVISH_AXI_THEME_CSS = path.join(dir, "absent-theme.css");
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
   try {
     const res = await fetch(`http://127.0.0.1:${server.port}/chrome.css`);
@@ -2677,7 +2679,58 @@ test("/chrome.css serves the extracted chrome stylesheet", async () => {
       normalizeCssForAssertions(body),
       /\.layout\{[^}]*grid-template-columns:minmax\(0,1fr\) ?var\(--panel-w\)/,
     );
+    // A missing theme file is the normal case - the response stays byte-identical
+    // to the packaged stylesheet.
+    assert.equal(body, await readFile(new URL("../src/chrome.css", import.meta.url), "utf8"));
   } finally {
+    restoreEnv("LAVISH_AXI_THEME_CSS", previousTheme);
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/chrome.css appends the operator theme file after the base stylesheet", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const themePath = path.join(dir, "theme.css");
+  const theme = ":root { --bg: #123456; --accent: #abcdef; }\n";
+  await writeFile(themePath, theme);
+  const previousTheme = process.env.LAVISH_AXI_THEME_CSS;
+  process.env.LAVISH_AXI_THEME_CSS = themePath;
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/chrome.css`);
+    const body = await res.text();
+
+    assert.equal(res.status, 200);
+    assert.equal(body, `${await readFile(new URL("../src/chrome.css", import.meta.url), "utf8")}\n${theme}`);
+
+    // The theme is read per request, so editing it and reloading is enough.
+    await writeFile(themePath, ":root { --bg: #654321; }\n");
+    const updated = await (await fetch(`http://127.0.0.1:${server.port}/chrome.css`)).text();
+    assert.match(updated, /--bg: #654321/);
+    assert.doesNotMatch(updated, /--bg: #123456/);
+  } finally {
+    restoreEnv("LAVISH_AXI_THEME_CSS", previousTheme);
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/chrome.css still serves the base stylesheet when the theme file cannot be read", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const themePath = path.join(dir, "theme-dir.css");
+  await mkdir(themePath);
+  const previousTheme = process.env.LAVISH_AXI_THEME_CSS;
+  process.env.LAVISH_AXI_THEME_CSS = themePath;
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/chrome.css`);
+    const body = await res.text();
+
+    assert.equal(res.status, 200);
+    assert.equal(body, await readFile(new URL("../src/chrome.css", import.meta.url), "utf8"));
+  } finally {
+    restoreEnv("LAVISH_AXI_THEME_CSS", previousTheme);
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }

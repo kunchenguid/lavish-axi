@@ -49,7 +49,15 @@ import {
 } from "./export-bundle.js";
 import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
-import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
+import {
+  bindHost,
+  extraAllowedHosts,
+  hostForUrl,
+  IPV6_LOOPBACK_HOST,
+  linkHost,
+  LOOPBACK_HOST,
+  themeFile,
+} from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import {
   isValidAttachmentKey,
@@ -63,6 +71,19 @@ import {
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
+
+// Operator theme hook: the optional stylesheet at themeFile() is read per request and
+// appended after the packaged chrome stylesheet, so a plain `:root {}` override wins
+// without !important and editing the file only needs a page reload to take effect.
+// It is optional by design - a missing or unreadable theme must never break the editor,
+// so every failure falls back to serving the base stylesheet alone.
+async function readThemeCss() {
+  try {
+    return "\n" + (await readFile(themeFile(), "utf8"));
+  } catch {
+    return "";
+  }
+}
 const designAssetUrls = {
   "daisyui.css": {
     packaged: new URL("./design/daisyui.css", import.meta.url),
@@ -899,7 +920,8 @@ export async function serve({
 
   app.get("/chrome.css", async (req, res, next) => {
     try {
-      res.type("text/css").send(await readFile(chromeCssUrl, "utf8"));
+      const base = await readFile(chromeCssUrl, "utf8");
+      res.type("text/css").send(base + (await readThemeCss()));
     } catch (error) {
       next(error);
     }
