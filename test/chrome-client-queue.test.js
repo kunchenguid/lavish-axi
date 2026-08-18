@@ -1042,6 +1042,18 @@ test("the drawer manages focus and closes on Escape", async () => {
   assert.equal(chrome.focusLog.at(-1), "warningsButton", "focus returns to the trigger");
 });
 
+test("the More menu returns focus to its trigger on Escape", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.element("moreButton").click();
+  chrome.element("menuEnd").focus();
+  chrome.dispatchDocumentKeydown({ key: "Escape" });
+
+  assert.equal(chrome.element("moreMenu").hidden, true);
+  assert.equal(chrome.element("moreButton")["aria-expanded"], "false");
+  assert.equal(chrome.focusLog.at(-1), "moreButton");
+});
+
 test("a click outside the drawer closes it", async () => {
   const chrome = await createChromeHarness();
   chrome.eventSource().listeners.get("layout-warnings")({
@@ -1775,6 +1787,106 @@ test("Send and End snapshot timeout preserves feedback and releases direct End",
   await flushPromises();
 
   assert.deepEqual(posts, [{ url: "/api/abc/end", method: "POST" }]);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+test("direct End waits for an ordinary Send snapshot and delivery", async () => {
+  const calls = [];
+  const events = [];
+  let releasePrompts = () => {};
+  const promptsReleased = new Promise((resolve) => {
+    releasePrompts = resolve;
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      calls.push({ url, body });
+      if (url === "/api/abc/prompts") {
+        events.push("prompts-started");
+        await promptsReleased;
+        events.push("prompts-delivered");
+      }
+      if (url === "/api/abc/end") events.push("end");
+      return { ok: true };
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Send this", selector: "main", tag: "annotation", text: "Main" },
+  });
+
+  chrome.element("send").click();
+  chrome.element("end").click();
+  await flushPromises();
+  assert.deepEqual(calls, []);
+
+  chrome.sendSnapshot("ordinary snapshot");
+  await flushPromises();
+  assert.deepEqual(events, ["prompts-started"]);
+  assert.equal(calls.some((call) => call.url === "/api/abc/end"), false);
+
+  releasePrompts();
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(events, ["prompts-started", "prompts-delivered", "end"]);
+  assert.deepEqual(calls[0], {
+    url: "/api/abc/prompts",
+    body: {
+      prompts: [{ prompt: "Send this", selector: "main", tag: "annotation", text: "Main" }],
+      domSnapshot: "ordinary snapshot",
+    },
+  });
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+test("a failed ordinary Send blocks direct End and preserves a retryable queue", async () => {
+  const calls = [];
+  let promptCalls = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      calls.push({ url, body });
+      if (url === "/api/abc/prompts") {
+        promptCalls += 1;
+        if (promptCalls === 1) return { ok: false, status: 409, json: async () => ({ warnings: [] }) };
+      }
+      return { ok: true };
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Keep this", selector: "main", tag: "annotation", text: "Main" },
+  });
+
+  chrome.element("send").click();
+  chrome.element("end").click();
+  chrome.sendSnapshot("failed snapshot");
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    ["/api/abc/prompts"],
+  );
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.element("endedOverlay").hidden, true);
+  assert.equal(chrome.element("end").disabled, false);
+  assert.match(chrome.element("sendHint").textContent, /remains queued.*retry Send before ending/i);
+
+  chrome.element("sendAndEnd").click();
+  chrome.sendSnapshot("retry snapshot");
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(calls[1].url, "/api/abc/prompts");
+  assert.equal(calls[1].body.endSession, true);
+  assert.equal(calls[1].body.domSnapshot, "retry snapshot");
+  assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });
 

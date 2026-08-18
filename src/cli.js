@@ -542,15 +542,15 @@ export function createExportOutput({ source, output, html, warnings, selfPaintWa
   if (notices.length) result.notices = exportWarningSummaries(notices);
   if (unresolved.length) {
     result.next_step =
-      "Some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); they will break once the file is moved. Remote CDN/font references are intentionally left as links and render where there is network access.";
+      "Some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); they will break once the file is moved. Fix them before opening the export locally or transferring the HTML file directly. Do not publish the export to an external host. Remote CDN/font references are intentionally left as links and render where there is network access.";
   } else if (notices.length) {
-    result.next_step = `Wrote ${output} with export notices (see notices). Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
+    result.next_step = `Wrote ${output} with export notices (see notices). Open it locally or transfer the HTML file directly; do not publish it to an external host. It needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
   } else {
-    result.next_step = `Wrote ${output}. Open it directly or host it anywhere - it needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
+    result.next_step = `Wrote ${output}. Open it locally or transfer the HTML file directly; do not publish it to an external host. It needs no Lavish server. Local assets are inlined; remote CDN/font references are left as links, so it needs network to render those.`;
   }
   if (selfPaintWarning) {
     result.self_paint_warning = selfPaintWarning;
-    result.next_step = `Fix the unpainted page surface flagged in self_paint_warning and re-run the export before sharing the file - an exported page renders over whatever surface hosts it. ${result.next_step}`;
+    result.next_step = `Fix the unpainted page surface flagged in self_paint_warning and re-run the export before opening or transferring the file. ${result.next_step}`;
   }
   return result;
 }

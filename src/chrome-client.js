@@ -174,6 +174,7 @@ let warningsDrawerOpen = false;
 const snapshotRequests = new Map();
 const SNAPSHOT_REQUEST_TIMEOUT_MS = 5000;
 let nextSnapshotRequestId = 0;
+const ordinarySendOperations = new Set();
 let workingBubble = null;
 let submitQueuedPromise = null;
 let sessionEndOperation = null;
@@ -558,9 +559,26 @@ function postToFrame(message) {
   if (frame.contentWindow) frame.contentWindow.postMessage(message, "*");
 }
 
-function requestSnapshot(action, { endOperation = null, onTimeout } = {}) {
+function beginOrdinarySendOperation() {
+  let resolve;
+  const promise = new Promise((complete) => {
+    resolve = complete;
+  });
+  const operation = { promise, resolve, settled: false };
+  ordinarySendOperations.add(operation);
+  return operation;
+}
+
+function settleOrdinarySendOperation(operation, result) {
+  if (!operation || operation.settled) return;
+  operation.settled = true;
+  ordinarySendOperations.delete(operation);
+  operation.resolve(Boolean(result));
+}
+
+function requestSnapshot(action, { endOperation = null, sendOperation = null, onTimeout } = {}) {
   const requestId = `snapshot-${++nextSnapshotRequestId}`;
-  const request = { action, endOperation, onTimeout, timer: undefined };
+  const request = { action, endOperation, sendOperation, onTimeout, timer: undefined };
   snapshotRequests.set(requestId, request);
   request.timer = setTimeout(() => {
     if (!snapshotRequests.delete(requestId)) return;
@@ -591,12 +609,15 @@ function sendQueued(endAfter) {
   if (endAfter) {
     atomicEnd = beginSessionEndOperation("atomic");
   }
+  const ordinarySend = endAfter ? null : beginOrdinarySendOperation();
   requestSnapshot("submit", {
     endOperation: atomicEnd,
+    sendOperation: ordinarySend,
     onTimeout: () => {
       if (atomicEnd && sessionEndOperation === atomicEnd) {
         settleSessionEndOperation(atomicEnd, false);
       }
+      settleOrdinarySendOperation(ordinarySend, false);
       showSendHint(
         "Could not read the artifact snapshot. Feedback remains queued; reload the artifact and try again.",
         6000,
@@ -1148,8 +1169,18 @@ function runSessionEndOperation(operation, action) {
 function endSession() {
   if (ended) return Promise.resolve(true);
   if (sessionEndOperation) return sessionEndOperation.promise;
+  const pendingSends = [...ordinarySendOperations].map((operation) => operation.promise);
   const operation = beginSessionEndOperation("direct");
-  return runSessionEndOperation(operation, performDirectSessionEnd);
+  return runSessionEndOperation(operation, async () => {
+    if (pendingSends.length) {
+      const delivered = await Promise.all(pendingSends);
+      if (delivered.some((result) => !result)) {
+        showSendHint("Could not finish sending feedback. It remains queued; retry Send before ending.", 6000);
+        return false;
+      }
+    }
+    return performDirectSessionEnd();
+  });
 }
 
 async function performDirectSessionEnd() {
@@ -1957,7 +1988,15 @@ window.addEventListener("message", (event) => {
     if (request.action === "copy") {
       copyText(msg.snapshot || "");
     } else {
-      submitQueued(request.endOperation, msg.snapshot || "").catch(() => {});
+      const submission = submitQueued(request.endOperation, msg.snapshot || "");
+      if (request.sendOperation) {
+        submission.then(
+          (result) => settleOrdinarySendOperation(request.sendOperation, result !== false),
+          () => settleOrdinarySendOperation(request.sendOperation, false),
+        );
+      } else {
+        submission.catch(() => {});
+      }
     }
   }
   if (msg.type === "lavish:scroll") {
@@ -2238,6 +2277,7 @@ document.addEventListener("keydown", (event) => {
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
     } else if (!moreMenu.hidden) {
+      moreButton.focus();
       closeMenus();
     } else if (barExpanded) {
       setBarExpanded(false);

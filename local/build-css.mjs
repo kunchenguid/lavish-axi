@@ -48,6 +48,7 @@ if (args.length !== 1) fail(USAGE);
 
 const artifact = resolve(args[0]);
 if (!existsSync(artifact)) fail(`no such file: ${artifact}`);
+if (!statSync(artifact).isFile()) fail(`not a file: ${artifact}`);
 if (!existsSync(CLI_PACKAGE)) {
   fail("toolchain missing; install the dependencies declared by local/package.json, then retry");
 }

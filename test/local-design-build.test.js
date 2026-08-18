@@ -78,6 +78,21 @@ test("missing CSS toolchain guidance is non-executable in hostile checkout paths
   }
 });
 
+test("CSS builder rejects directory artifact paths before scanning", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lavish-css-directory-"));
+  try {
+    const result = spawnSync(process.execPath, [path.join(projectRoot, "local", "build-css.mjs"), root], {
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /error: not a file:/);
+    assert.doesNotMatch(result.stderr, /toolchain missing/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("CSS builder runs the package JavaScript entrypoint and preserves the last good stylesheet", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-css-builder-"));
   try {

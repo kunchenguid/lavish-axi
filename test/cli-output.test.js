@@ -924,6 +924,26 @@ test("export output reports the written file and reassures it needs no server", 
   assert.match(output.next_step, /remote CDN\/font references are left as links/);
 });
 
+test("export guidance keeps every outcome local-only", () => {
+  const warningSets = [
+    [],
+    [{ kind: "file-url-redacted", ref: "file:///tmp/private.png" }],
+    [{ kind: "load-failed", ref: "./missing.png" }],
+  ];
+
+  for (const warnings of warningSets) {
+    const output = createExportOutput({
+      source: "/tmp/report.html",
+      output: "/tmp/report.export.html",
+      html: "<html></html>",
+      warnings,
+    });
+    assert.match(output.next_step, /locally|transfer(?:ring)? the HTML file directly/i);
+    assert.match(output.next_step, /Do not publish .* external host/i);
+    assert.doesNotMatch(output.next_step, /host it anywhere|publish it anywhere/i);
+  }
+});
+
 test("export output surfaces local assets that could not be inlined", () => {
   const output = createExportOutput({
     source: "/tmp/report.html",
