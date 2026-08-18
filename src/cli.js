@@ -1189,8 +1189,8 @@ async function waitForPortFree(baseUrl, timeoutMs) {
 
 // Last-resort fallback for the bootstrap upgrade case: a pre-handshake server is squatting
 // on the port and doesn't expose /shutdown, so we resolve its PID via lsof and SIGTERM it.
-// macOS/Linux only - Windows users would need to kill manually, but lavish-axi isn't
-// shipped for Windows today.
+// macOS/Linux only. On Windows, a pre-handshake server that cannot answer /shutdown
+// must be stopped manually before this startup path can reclaim the port.
 function killProcessOnPort(port) {
   try {
     const result = spawnSync("lsof", ["-t", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });

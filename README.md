@@ -45,13 +45,13 @@ Lavish Editor is an [AXI](https://axi.md), which means -
 
 ## Quick Start
 
-Install the Lavish skill in the [Agent Skills](https://agentskills.io) format with [`npx skills`](https://github.com/vercel-labs/skills):
+First complete the [from-source setup](#from-source) so the patched CLI and its local design toolchain are linked on this machine.
+Then install the Lavish skill in the [Agent Skills](https://agentskills.io) format with [`npx skills`](https://github.com/vercel-labs/skills):
 
 ```sh
 npx skills add kunchenguid/lavish-axi --skill lavish
 ```
 
-First complete the [from-source setup](#from-source) so the patched CLI and its local design toolchain are linked on this machine.
 The skill deliberately teaches your agent to use the bare `lavish-axi` command, which resolves to that linked checkout.
 Do not substitute `npx -y lavish-axi`: it fetches the public package and bypasses this installation's local policies and toolchain.
 Its frontmatter also includes Hermes Agent metadata, so Hermes-compatible harnesses can categorize and surface it as a first-class productivity skill.
