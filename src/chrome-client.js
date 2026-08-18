@@ -176,7 +176,7 @@ let endAfterSubmit = false;
 let workingBubble = null;
 let submitQueuedPromise = null;
 let submitQueuedAgain = false;
-let endSessionPromise = null;
+let sessionEndOperation = null;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
@@ -564,7 +564,7 @@ function requestSnapshot(action) {
 }
 
 function sendQueued(endAfter) {
-  if (ended || agentPresence === "working") return;
+  if (ended || agentPresence === "working" || sessionEndOperation) return;
   closeMenus();
 
   const text = chatInput.value.trim();
@@ -581,7 +581,10 @@ function sendQueued(endAfter) {
   }
   hideSendHint();
 
-  if (endAfter) endAfterSubmit = true;
+  if (endAfter) {
+    endAfterSubmit = true;
+    beginSessionEndOperation("atomic");
+  }
   requestSnapshot("submit");
 }
 
@@ -601,14 +604,19 @@ async function submitQueued() {
     submitQueuedPromise = null;
     const shouldSubmitAgain = submitQueuedAgain;
     submitQueuedAgain = false;
+    const atomicEnd = sessionEndOperation?.kind === "atomic" ? sessionEndOperation : null;
     if (!succeeded) {
       endAfterSubmit = false;
+      if (atomicEnd) settleSessionEndOperation(atomicEnd, false);
+    } else if (ended) {
+      if (atomicEnd) settleSessionEndOperation(atomicEnd, true);
     } else if (!ended && shouldSubmitAgain) {
       if (queued.length) {
         submitQueued();
       } else if (endAfterSubmit) {
         endAfterSubmit = false;
-        endSession();
+        if (atomicEnd) runSessionEndOperation(atomicEnd, performDirectSessionEnd);
+        else endSession();
       }
     }
   }
@@ -1095,20 +1103,50 @@ async function refreshLayoutWarnings() {
   }
 }
 
-async function endSession() {
-  if (ended) return true;
-  if (endSessionPromise) return endSessionPromise;
-  endSessionPromise = (async () => {
-    if (!(await prepareSessionEnd())) return false;
-    if (ended) return true;
-    const response = await fetch("/api/" + key + "/end", { method: "POST" });
-    if (!response.ok) throw new Error("failed to end session");
-    markSessionEnded();
-    return true;
-  })().finally(() => {
-    endSessionPromise = null;
+function beginSessionEndOperation(kind) {
+  if (sessionEndOperation) return sessionEndOperation;
+  let resolve;
+  let reject;
+  const promise = new Promise((complete, fail) => {
+    resolve = complete;
+    reject = fail;
   });
-  return endSessionPromise;
+  sessionEndOperation = { kind, promise, resolve, reject, running: false };
+  return sessionEndOperation;
+}
+
+function settleSessionEndOperation(operation, result, error) {
+  if (sessionEndOperation === operation) sessionEndOperation = null;
+  if (error) operation.reject(error);
+  else operation.resolve(Boolean(result));
+}
+
+function runSessionEndOperation(operation, action) {
+  if (operation.running) return operation.promise;
+  operation.running = true;
+  Promise.resolve()
+    .then(action)
+    .then(
+      (result) => settleSessionEndOperation(operation, result),
+      (error) => settleSessionEndOperation(operation, false, error),
+    );
+  return operation.promise;
+}
+
+function endSession() {
+  if (ended) return Promise.resolve(true);
+  if (sessionEndOperation) return sessionEndOperation.promise;
+  const operation = beginSessionEndOperation("direct");
+  return runSessionEndOperation(operation, performDirectSessionEnd);
+}
+
+async function performDirectSessionEnd() {
+  if (!(await prepareSessionEnd())) return false;
+  if (ended) return true;
+  const response = await fetch("/api/" + key + "/end", { method: "POST" });
+  if (!response.ok) throw new Error("failed to end session");
+  markSessionEnded();
+  return true;
 }
 
 async function prepareSessionEnd() {
@@ -1334,6 +1372,7 @@ let overlayOpeningIndex = null;
 let nextWhiteboardFlushId = 0;
 let artifactResetPromise = null;
 let chromeRestartReloadPromise = null;
+const WHITEBOARD_TEARDOWN_TIMEOUT_MS = 5000;
 const whiteboardTeardowns = new Map();
 const whiteboardFlushes = new Map();
 const whiteboardSaveChains = new Map();
@@ -1465,11 +1504,28 @@ function beginWhiteboardTeardown(index, placement, onComplete) {
   const promise = new Promise((complete) => {
     resolve = complete;
   });
-  const teardown = { index, placement, flushId, promise, resolve, onComplete };
+  const teardown = { index, placement, flushId, promise, resolve, onComplete, timer: undefined };
   whiteboardTeardowns.set(key, teardown);
+  teardown.timer = setTimeout(() => {
+    settleWhiteboardTeardown(
+      teardown,
+      false,
+      "The whiteboard stopped responding before its edits could be saved. Keep it open and try again.",
+    );
+  }, WHITEBOARD_TEARDOWN_TIMEOUT_MS);
   const message = { type: "lavish-whiteboard:prepareTeardown", flushId };
   postToWhiteboard(index, placement, message);
   return promise;
+}
+
+function settleWhiteboardTeardown(teardown, flushed, error = "") {
+  const key = whiteboardTeardownKey(teardown.index, teardown.placement);
+  if (whiteboardTeardowns.get(key) !== teardown) return;
+  whiteboardTeardowns.delete(key);
+  clearTimeout(teardown.timer);
+  if (!flushed && error && teardown.placement === "overlay") showWhiteboardError(error);
+  teardown.onComplete?.(flushed);
+  teardown.resolve(flushed);
 }
 
 function finishWhiteboardTeardown(index, message, placement) {
@@ -1477,9 +1533,7 @@ function finishWhiteboardTeardown(index, message, placement) {
   const key = whiteboardTeardownKey(index, placement);
   const teardown = whiteboardTeardowns.get(key);
   if (!teardown || teardown.index !== index || teardown.placement !== placement || teardown.flushId !== flushId) return;
-  whiteboardTeardowns.delete(key);
-  teardown.onComplete?.(true);
-  teardown.resolve(true);
+  settleWhiteboardTeardown(teardown, true);
 }
 
 function failWhiteboardTeardown(index, message, placement) {
@@ -1487,9 +1541,12 @@ function failWhiteboardTeardown(index, message, placement) {
   const key = whiteboardTeardownKey(index, placement);
   const teardown = whiteboardTeardowns.get(key);
   if (!teardown || teardown.index !== index || teardown.placement !== placement || teardown.flushId !== flushId) return;
-  whiteboardTeardowns.delete(key);
-  teardown.onComplete?.(false);
-  teardown.resolve(false);
+  settleWhiteboardTeardown(
+    teardown,
+    false,
+    "The whiteboard could not save its edits. Keep it open, fix the problem, and try again: " +
+      String(message.error || "unknown save error"),
+  );
 }
 
 function whiteboardFlushKey(index, placement) {

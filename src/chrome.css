@@ -1278,7 +1278,7 @@ body.lavish {
 .warnings-button {
   border-color: rgba(154, 111, 20, 0.35);
   background: rgba(244, 201, 93, 0.18);
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 .warnings-button:hover:not(:disabled),
 .warnings-button[aria-expanded="true"] {
@@ -1290,6 +1290,11 @@ body.lavish {
 }
 .warning-chip {
   background: #f2f4f7;
+  color: var(--fg-label);
+}
+.warning-chip.status-queued,
+.warning-chip.status-unverified {
+  color: var(--accent-hover);
 }
 .more-button:hover:not(:disabled),
 .more-button[aria-expanded="true"],
@@ -1300,7 +1305,7 @@ body.lavish {
 .layout-issue-banner {
   border-color: rgba(154, 111, 20, 0.35);
   background: #fdf6e3;
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 .menu {
   box-shadow: var(--shadow-floating);

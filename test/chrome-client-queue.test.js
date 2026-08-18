@@ -2189,6 +2189,7 @@ test("fullscreen end remains open when whiteboard teardown fails", async () => {
     diagramIndex: 0,
     channelId: "overlay-channel",
   });
+  await flushPromises();
   const teardown = chrome.postedToWhiteboard.at(-1);
   chrome.sendWhiteboardMessage({
     type: "lavish-whiteboard:save",
@@ -2225,19 +2226,76 @@ test("fullscreen end remains open when whiteboard teardown fails", async () => {
   assert.equal(chrome.element("end").disabled, false);
 });
 
-test("Send and End flushes the whiteboard before its atomic prompt delivery", async () => {
+test("fullscreen end timeout surfaces failure and permits retry", async () => {
+  const calls = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url, method: init.method });
+      return whiteboardFetch(url);
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  await initializeOverlayWhiteboard(chrome);
+
+  chrome.element("end").click();
+  await flushPromises();
+  const firstTeardown = chrome.postedToWhiteboard.at(-1);
+  assert.equal(firstTeardown.type, "lavish-whiteboard:prepareTeardown");
+  chrome.runTimers(5000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(
+    calls.some((call) => call.url === "/api/abc/end"),
+    false,
+  );
+  assert.equal(chrome.element("whiteboardError").hidden, false);
+  assert.match(chrome.element("whiteboardError").textContent, /stopped responding.*try again/i);
+  assert.equal(chrome.element("endedOverlay").hidden, true);
+  assert.equal(chrome.element("end").disabled, false);
+
+  chrome.element("end").click();
+  await flushPromises();
+  const retryTeardown = chrome.postedToWhiteboard.at(-1);
+  assert.equal(retryTeardown.type, "lavish-whiteboard:prepareTeardown");
+  assert.notEqual(retryTeardown.flushId, firstTeardown.flushId);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: retryTeardown.flushId,
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    calls.filter((call) => call.url === "/api/abc/end"),
+    [{ url: "/api/abc/end", method: "POST" }],
+  );
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+test("direct End waits for pending atomic Send and End delivery", async () => {
   const calls = [];
   const events = [];
+  let releasePrompts;
+  const promptsReleased = new Promise((resolve) => {
+    releasePrompts = resolve;
+  });
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {
       const body = init.body ? JSON.parse(init.body) : null;
       calls.push({ url, method: init.method, body });
       if (url === "/api/abc/whiteboard/0" && init.method === "PUT") events.push("save");
-      if (url === "/api/abc/prompts") events.push("prompts");
+      if (url === "/api/abc/prompts") {
+        events.push("prompts");
+        await promptsReleased;
+      }
       if (url === "/api/abc/end") events.push("end");
       return whiteboardFetch(url);
     },
   });
+  chrome.element("endedOverlay").hidden = true;
   await initializeOverlayWhiteboard(chrome);
   chrome.sendFrameMessage({
     type: "lavish:queuePrompt",
@@ -2249,6 +2307,9 @@ test("Send and End flushes the whiteboard before its atomic prompt delivery", as
   await flushPromises();
   const teardown = chrome.postedToWhiteboard.at(-1);
   assert.equal(teardown.type, "lavish-whiteboard:prepareTeardown");
+  assert.deepEqual(events, []);
+  chrome.element("end").click();
+  await flushPromises();
   assert.deepEqual(events, []);
 
   chrome.sendWhiteboardMessage({
@@ -2276,6 +2337,17 @@ test("Send and End flushes the whiteboard before its atomic prompt delivery", as
   assert.deepEqual(promptCall.body.prompts, [
     { prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" },
   ]);
+  assert.equal(
+    calls.some((call) => call.url === "/api/abc/end"),
+    false,
+  );
+  assert.equal(chrome.element("endedOverlay").hidden, true);
+
+  releasePrompts();
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(events, ["save", "prompts"]);
   assert.equal(
     calls.some((call) => call.url === "/api/abc/end"),
     false,
