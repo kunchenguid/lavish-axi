@@ -22,10 +22,6 @@ function localCssBuilderPath() {
   }
 }
 
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
-}
-
 export const TAILWIND_BROWSER_VERSION = "4.2.4";
 export const DAISYUI_VERSION = "5.5.19";
 export const MERMAID_VERSION = "11.15.0";
@@ -175,7 +171,7 @@ export const DESIGN_PRIORITY_RULE =
 export const DESIGN_SYSTEM_HINT =
   "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Before writing any HTML: " +
   DESIGN_PRIORITY_RULE +
-  " Run `lavish-axi design` for a content-to-playbook router, a Mermaid CDN snippet/init for diagrams, and the local Tailwind+DaisyUI build command. When you deliver the artifact, state which of the three design sources you used and why.";
+  " Run `lavish-axi design` for a content-to-playbook router, a Mermaid CDN snippet/init for diagrams, and the local Tailwind+DaisyUI build argument vectors. When you deliver the artifact, state which of the three design sources you used and why.";
 
 export const DAISYUI_THEMES = [
   "light",
@@ -215,10 +211,9 @@ export const DAISYUI_THEMES = [
   "silk",
 ];
 
-export function createDesignOutput({ cssBuilderPath = localCssBuilderPath(), platform = process.platform } = {}) {
+export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = {}) {
   const buildArgs = cssBuilderPath ? [cssBuilderPath, "<artifact.html>", "--minify"] : null;
   const themedBuildArgs = buildArgs ? [...buildArgs, "--theme", "<daisyui-theme>"] : null;
-  const hasShellCommand = Boolean(cssBuilderPath && platform !== "win32");
   return {
     playbook_router: {
       instruction: PLAYBOOK_ROUTER_INSTRUCTION,
@@ -253,14 +248,10 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath(), pla
     // "fetch a runtime at view time" to "compile the used classes into a sibling file".
     styling: {
       how: cssBuilderPath
-        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then execute build_argv as an argument vector and replace <artifact.html> with the artifact path as one argument. On POSIX systems, build_command is a copy-paste convenience; on Windows it is intentionally null because PowerShell and cmd.exe have incompatible quoting rules. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_argv and replace both placeholders."
+        ? "Write the artifact with Tailwind utility classes and DaisyUI components, then execute build_argv as the authoritative argument vector and replace <artifact.html> with the artifact path as one argument. build_command and themed_build_command are intentionally null because the real artifact path is not known here and substituting it into a shell string would be unsafe. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_argv and replace both placeholders."
         : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
-      build_command: hasShellCommand
-        ? `node ${shellQuote(cssBuilderPath)} ${shellQuote("<artifact.html>")} --minify`
-        : null,
-      themed_build_command: hasShellCommand
-        ? `node ${shellQuote(cssBuilderPath)} ${shellQuote("<artifact.html>")} --minify --theme ${shellQuote("<daisyui-theme>")}`
-        : null,
+      build_command: null,
+      themed_build_command: null,
       build_argv: buildArgs ? [process.execPath, ...buildArgs] : null,
       themed_build_argv: themedBuildArgs ? [process.execPath, ...themedBuildArgs] : null,
       link_tag:

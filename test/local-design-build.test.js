@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,11 +10,12 @@ import { createDesignOutput } from "../src/design-reference.js";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
-test("design output exposes executable Windows-safe base and themed argv", async () => {
+test("design output exposes executable injection-safe base and themed argv", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-design-command-"));
   try {
     const pathSpecial = `spaces $HOME %TEMP% 'single' $(unsafe)`;
-    const argumentSpecial = `${pathSpecial} "double"`;
+    const marker = path.join(root, "shell-injection-marker");
+    const argumentSpecial = `${pathSpecial} "double" $(touch ${marker})`;
     const builderDir = path.join(root, "checkout path", pathSpecial);
     const builder = path.join(builderDir, "build-css.mjs");
     const artifact = path.join(root, `artifact ${pathSpecial}.html`);
@@ -40,6 +41,7 @@ test("design output exposes executable Windows-safe base and themed argv", async
     const themed = spawnSync(themedArgv[0], themedArgv.slice(1), { encoding: "utf8" });
     assert.equal(themed.status, 0, themed.stderr);
     assert.deepEqual(JSON.parse(themed.stdout), [artifact, "--minify", "--theme", argumentSpecial]);
+    await assert.rejects(access(marker));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

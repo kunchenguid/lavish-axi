@@ -100,6 +100,7 @@ function isSendHotkeyEvent(event) {
 
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
 const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
+const conversationPanel = panelScroll.parentElement;
 const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
 const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"));
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
@@ -171,7 +172,9 @@ let layoutGateTimer;
 let layoutWarnings = Array.isArray(sessionData.initialLayoutWarnings) ? sessionData.initialLayoutWarnings : [];
 const selectedWarningIds = new Set(loadJsonState(warningSelectionStorageKey, []));
 let warningsDrawerOpen = false;
-const snapshotRequests = [];
+const snapshotRequests = new Map();
+const SNAPSHOT_REQUEST_TIMEOUT_MS = 5000;
+let nextSnapshotRequestId = 0;
 let endAfterSubmit = false;
 let workingBubble = null;
 let submitQueuedPromise = null;
@@ -558,9 +561,15 @@ function postToFrame(message) {
   if (frame.contentWindow) frame.contentWindow.postMessage(message, "*");
 }
 
-function requestSnapshot(action) {
-  snapshotRequests.push(action);
-  postToFrame({ type: "lavish:requestSnapshot" });
+function requestSnapshot(action, onTimeout) {
+  const requestId = `snapshot-${++nextSnapshotRequestId}`;
+  const request = { action, onTimeout, timer: undefined };
+  snapshotRequests.set(requestId, request);
+  request.timer = setTimeout(() => {
+    if (!snapshotRequests.delete(requestId)) return;
+    request.onTimeout?.();
+  }, SNAPSHOT_REQUEST_TIMEOUT_MS);
+  postToFrame({ type: "lavish:requestSnapshot", requestId });
 }
 
 function sendQueued(endAfter) {
@@ -581,11 +590,21 @@ function sendQueued(endAfter) {
   }
   hideSendHint();
 
+  let atomicEnd = null;
   if (endAfter) {
     endAfterSubmit = true;
-    beginSessionEndOperation("atomic");
+    atomicEnd = beginSessionEndOperation("atomic");
   }
-  requestSnapshot("submit");
+  requestSnapshot("submit", () => {
+    if (atomicEnd && sessionEndOperation === atomicEnd) {
+      endAfterSubmit = false;
+      settleSessionEndOperation(atomicEnd, false);
+    }
+    showSendHint(
+      "Could not read the artifact snapshot. Feedback remains queued; reload the artifact and try again.",
+      6000,
+    );
+  });
 }
 
 async function submitQueued() {
@@ -1937,8 +1956,12 @@ window.addEventListener("message", (event) => {
     enqueuePrompt(msg.prompt);
   }
   if (msg.type === "lavish:snapshot") {
-    const snapshotAction = snapshotRequests.shift() || "submit";
-    if (snapshotAction === "copy") {
+    const requestId = String(msg.requestId || "");
+    const request = snapshotRequests.get(requestId);
+    if (!request) return;
+    snapshotRequests.delete(requestId);
+    clearTimeout(request.timer);
+    if (request.action === "copy") {
       copyText(msg.snapshot || "");
     } else {
       pendingSnapshot = msg.snapshot || "";
@@ -2107,6 +2130,7 @@ annotationSwitch.onclick = toggleAnnotationMode;
 // LOCAL ADDITION: collapse the conversation panel to give the artifact the full width.
 // Persisted per session, so a reload or a hot-reload keeps the layout you were reading in.
 function setPanelCollapsed(collapsed) {
+  const restoreToggleFocus = collapsed && conversationPanel?.contains(document.activeElement);
   document.body.classList.toggle("panel-collapsed", collapsed);
   panelToggle.setAttribute("aria-pressed", String(collapsed));
   const action = collapsed ? "Show conversation panel" : "Collapse conversation panel";
@@ -2119,6 +2143,7 @@ function setPanelCollapsed(collapsed) {
   } catch {
     // Private mode or a blocked storage partition - the toggle still works for this tab.
   }
+  if (restoreToggleFocus) barToggle.focus();
 }
 
 function restorePanelCollapsed() {

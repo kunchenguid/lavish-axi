@@ -2366,7 +2366,7 @@ export function createArtifactSdk(
       activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);
     }
     if (msg.type === "lavish:requestSnapshot") {
-      postArtifactMessage("lavish:snapshot", { snapshot: snapshot() });
+      postArtifactMessage("lavish:snapshot", { requestId: String(msg.requestId || ""), snapshot: snapshot() });
     }
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);

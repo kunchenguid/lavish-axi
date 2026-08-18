@@ -359,7 +359,7 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /lavish-axi playbook <playbook_id>/);
     assert.match(result.stdout, /reference other filesystem assets/);
     assert.match(result.stdout, /same directory as the HTML file/);
-    assert.match(result.stdout, /local Tailwind\+DaisyUI build command/);
+    assert.match(result.stdout, /local Tailwind\+DaisyUI build argument vectors/);
     // LOCAL PATCH: no surface may hand the agent a jsdelivr URL - not the style runtime it
     // no longer uses, and not Mermaid, which is pinned to an npmmirror mirror instead.
     assert.doesNotMatch(result.stdout, /cdn\.jsdelivr\.net/);
@@ -406,11 +406,8 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   // LOCAL PATCH: the per-artifact CSS builder replaces the CDN. Assert the whole contract the
   // agent needs to act on, because "build it locally" is useless without the command.
   assert.match(output.styling.how, /compiles ONLY the classes this artifact uses/);
-  assert.equal(output.styling.build_command, "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify");
-  assert.equal(
-    output.styling.themed_build_command,
-    "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'",
-  );
+  assert.equal(output.styling.build_command, null);
+  assert.equal(output.styling.themed_build_command, null);
   assert.deepEqual(output.styling.build_argv, [
     process.execPath,
     "/checkout/local/build-css.mjs",
@@ -461,21 +458,22 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
 });
 
-test("design output shell-quotes builder and artifact path arguments", () => {
+test("design output withholds placeholder shell commands", () => {
   const output = createDesignOutput({
     cssBuilderPath: "/checkout path/it's $(unsafe)/local/build-css.mjs",
     platform: "linux",
   });
 
-  assert.equal(
-    output.styling.build_command,
-    `node '/checkout path/it'"'"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify`,
-  );
-  assert.equal(
-    output.styling.themed_build_command,
-    `node '/checkout path/it'"'"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'`,
-  );
+  assert.equal(output.styling.build_command, null);
+  assert.equal(output.styling.themed_build_command, null);
+  assert.deepEqual(output.styling.build_argv, [
+    process.execPath,
+    "/checkout path/it's $(unsafe)/local/build-css.mjs",
+    "<artifact.html>",
+    "--minify",
+  ]);
   assert.match(output.styling.how, /artifact path as one argument/);
+  assert.match(output.styling.how, /authoritative argument vector/);
 });
 
 test("design output withholds generic Windows shell commands", () => {
@@ -492,7 +490,7 @@ test("design output withholds generic Windows shell commands", () => {
     "<artifact.html>",
     "--minify",
   ]);
-  assert.match(output.styling.how, /Windows it is intentionally null/);
+  assert.match(output.styling.how, /authoritative argument vector/);
 });
 
 test("design output withholds the build command when the local toolchain is incomplete", () => {
