@@ -53,8 +53,8 @@ export const MODEL_USAGE_RULE =
   "Lavish does not choose or change the agent's model or reasoning effort; it inherits the active agent for artifact creation. Use that active agent for visual judgment, but keep the waiting phase model-free; do not spawn a separate or cheaper agent solely to poll.";
 export const POLL_SEND_AND_END_RULE =
   "`Send & End` ends the session. Its final feedback is still delivered once. After that response, polling stops, and the agent must not reopen the session uninvited.";
-const CODEX_POLL_WAKE_PATH_GUIDANCE =
-  "Codex detected: completed background tasks may not resume Codex automatically, so keep the poll attached to the active turn. Resume the existing exec cell or terminal session with the longest supported wait. Do not call `wait_agent`, do not spawn a polling subagent, and do not start a second `lavish-axi poll` while the tracked poll is still alive; those routes create extra reasoning loops or detach feedback from this turn.";
+export const CODEX_POLL_WAKE_PATH_GUIDANCE =
+  "Codex detected: use one `functions.exec` cell as the callback owner. Inside that JavaScript, start `lavish-axi poll` with `tools.exec_command`; if it yields a session_id, call `yield_control()` once, keep the long `tools.write_stdin` waits inside that cell until the process exits, then call `notify(...)` only with the final poll output. This keeps waiting model-free and delivers completion to the same agent. Do not make the model call `functions.wait` or `write_stdin` in a loop. Do not call `wait_agent`, do not spawn a polling subagent, and do not start a second `lavish-axi poll`. If code-mode callbacks are unavailable, keep the original poll attached to the active turn with the longest supported blocking wait.";
 // Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
 export const VERSION =
   process.env.LAVISH_AXI_BUILD_VERSION ||

@@ -1,4 +1,4 @@
-import { createHomeOutput } from "./cli.js";
+import { CODEX_POLL_WAKE_PATH_GUIDANCE, createHomeOutput } from "./cli.js";
 import { PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 
 // Trigger string Claude Code (and other agents) match against to auto-load the skill.
@@ -98,6 +98,12 @@ ${home.help[home.help.length - 1]}
 ## Poll contract
 
 - ${skillCommandText(pollHelp)}
+
+## Codex callback adapter
+
+When the active host is Codex, apply this adapter to every poll; other hosts ignore this section and keep the Poll contract above.
+
+- ${CODEX_POLL_WAKE_PATH_GUIDANCE}
 
 ## Visual guidance
 

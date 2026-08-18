@@ -146,7 +146,22 @@ test("createSkillMarkdown requires an observable wake path for every poll", () =
     1,
     "the generated skill owns the wake-path contract in one section",
   );
-  assert.doesNotMatch(md, /Codex detected/);
+  assert.match(md, /## Codex callback adapter/);
+});
+
+test("createSkillMarkdown keeps Codex waiting inside one callback-owning exec cell", () => {
+  const md = createSkillMarkdown();
+  const adapter = md.slice(md.indexOf("## Codex callback adapter"), md.indexOf("## Visual guidance"));
+
+  assert.match(adapter, /one `functions\.exec` cell/i);
+  assert.match(adapter, /`yield_control\(\)` once/i);
+  assert.match(adapter, /keep the long `tools\.write_stdin` waits inside that cell/i);
+  assert.match(adapter, /`notify\(\.\.\.\)` only with the final poll output/i);
+  assert.match(adapter, /waiting model-free/i);
+  assert.match(adapter, /do not make the model call `functions\.wait`/i);
+  assert.match(adapter, /do not spawn a polling subagent/i);
+  assert.match(adapter, /If code-mode callbacks are unavailable/i);
+  assert.doesNotMatch(adapter, /app-server|thread\/resume/i);
 });
 
 test("createSkillMarkdown keeps model choice inherited and waiting model-free", () => {

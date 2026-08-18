@@ -315,11 +315,17 @@ test("home output tailors poll guidance when invoked under Codex", () => {
 
   assertObservablePollWakePath(pollHelp);
   assert.match(pollHelp, /Codex detected/);
-  assert.match(pollHelp, /keep the poll attached to the active turn/);
-  assert.match(pollHelp, /resume the existing exec cell or terminal session with the longest supported wait/i);
+  assert.match(pollHelp, /one `functions\.exec` cell/i);
+  assert.match(pollHelp, /`yield_control\(\)` once/i);
+  assert.match(pollHelp, /`notify\(\.\.\.\)` only with the final poll output/i);
+  assert.match(pollHelp, /keep the long `tools\.write_stdin` waits inside that cell/i);
+  assert.match(pollHelp, /waiting model-free/i);
+  assert.match(pollHelp, /do not make the model call `functions\.wait`/i);
   assert.match(pollHelp, /do not call `wait_agent`/i);
   assert.match(pollHelp, /do not spawn a polling subagent/i);
   assert.match(pollHelp, /do not start a second `lavish-axi poll`/i);
+  assert.match(pollHelp, /If code-mode callbacks are unavailable/i);
+  assert.doesNotMatch(pollHelp, /app-server|thread\/resume/i);
 });
 
 test("home output keeps static skill poll guidance safe and agent-neutral", () => {
@@ -888,7 +894,9 @@ test("open output gives Codex the shared wake-path contract plus an attached-tur
 
   assertObservablePollWakePath(output.next_step);
   assert.match(output.next_step, /Codex detected/);
-  assert.match(output.next_step, /keep the poll attached to the active turn/);
+  assert.match(output.next_step, /one `functions\.exec` cell/i);
+  assert.match(output.next_step, /`yield_control\(\)` once/i);
+  assert.match(output.next_step, /`notify\(\.\.\.\)` only with the final poll output/i);
 });
 
 test("a user-ended open refuses with a status agents can branch on, not a URL to open", () => {
@@ -1204,7 +1212,8 @@ test("poll help is Codex-aware when requested", () => {
 
   assertObservablePollWakePath(help);
   assert.match(help, /Codex detected/);
-  assert.match(help, /keep the poll attached to the active turn/);
+  assert.match(help, /one `functions\.exec` cell/i);
+  assert.match(help, /do not make the model call `functions\.wait`/i);
 });
 
 // LOCAL PATCH: upstream's `share` publishes to ht-ml.app, PUBLIC by default. This install must
@@ -1252,7 +1261,8 @@ test("feedback next step is Codex-aware when requested", () => {
 
   assertObservablePollWakePath(output.next_step);
   assert.match(output.next_step, /Codex detected/);
-  assert.match(output.next_step, /keep the poll attached to the active turn/);
+  assert.match(output.next_step, /one `functions\.exec` cell/i);
+  assert.match(output.next_step, /`notify\(\.\.\.\)` only with the final poll output/i);
 });
 
 test("detected layout warnings never appear in poll output", () => {
