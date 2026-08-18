@@ -111,12 +111,20 @@ function assertObservablePollWakePath(text) {
   assert.match(text, /no completion-aware background facility/i);
   assert.match(text, /verified wake callback into the surrounding supervisor/i);
   assert.match(text, /Do not tell the user the artifact is being monitored until that wake path is live/i);
-  assert.match(text, /resume that same tracked (?:command|process)/i);
-  assert.match(text, /longest practical blocking wait/i);
-  assert.match(text, /short fixed intervals/i);
-  assert.match(text, /empty wait result must not trigger fresh reasoning or narration/i);
-  assert.match(text, /do not substitute agent-status polling/i);
   assert.doesNotMatch(text, /foreground command may run.*run the poll as a background task/i);
+}
+
+function assertNoCodexPollAdapter(text) {
+  assert.doesNotMatch(
+    text,
+    /functions\.exec|yield_control|tools\.write_stdin|longest practical blocking|longest supported blocking wait|empty wait|agent-status polling|wait_agent|polling subagent|second `lavish-axi poll`|codex app-server|thread\/resume/i,
+  );
+}
+
+function withoutCodexMarkers(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => key !== "CODEX_SANDBOX" && key !== "CODEX_THREAD_ID"),
+  );
 }
 
 test("CLI version tracks package.json so release-please bumps reach the published binary", async () => {
@@ -293,6 +301,7 @@ test("home output warns agents that poll needs an observable wake path", () => {
   assert.match(pollHelp, /never kill it/);
   assertObservablePollWakePath(pollHelp);
   assert.doesNotMatch(pollHelp, /Codex/);
+  assertNoCodexPollAdapter(output.help.join("\n"));
   assert.match(pollHelp, /re-run/);
   assert.match(pollHelp, /queued feedback is never lost/);
   assert.match(pollHelp, /`Send & End` ends the session/);
@@ -318,14 +327,18 @@ test("home output tailors poll guidance when invoked under Codex", () => {
   assert.match(pollHelp, /one `functions\.exec` cell/i);
   assert.match(pollHelp, /`yield_control\(\)` once/i);
   assert.match(pollHelp, /`notify\(\.\.\.\)` only with the final poll output/i);
-  assert.match(pollHelp, /keep the long `tools\.write_stdin` waits inside that cell/i);
   assert.match(pollHelp, /waiting model-free/i);
   assert.match(pollHelp, /do not make the model call `functions\.wait`/i);
   assert.match(pollHelp, /do not call `wait_agent`/i);
-  assert.match(pollHelp, /do not spawn a polling subagent/i);
-  assert.match(pollHelp, /do not start a second `lavish-axi poll`/i);
+  assert.match(pollHelp, /separate or cheaper polling subagent/i);
+  assert.match(pollHelp, /start a second `lavish-axi poll`/i);
+  assert.match(pollHelp, /longest practical blocking `tools\.write_stdin` waits/i);
+  assert.match(pollHelp, /empty wait must not trigger fresh reasoning or narration/i);
+  assert.match(pollHelp, /do not substitute agent-status polling/i);
+  assert.match(pollHelp, /Never start a detached `codex app-server`/i);
+  assert.match(pollHelp, /call `thread\/resume` for the active `CODEX_THREAD_ID`/i);
+  assert.match(pollHelp, /creates a second runtime owner/i);
   assert.match(pollHelp, /If code-mode callbacks are unavailable/i);
-  assert.doesNotMatch(pollHelp, /app-server|thread\/resume/i);
 });
 
 test("home output keeps static skill poll guidance safe and agent-neutral", () => {
@@ -335,6 +348,7 @@ test("home output keeps static skill poll guidance safe and agent-neutral", () =
   assertObservablePollWakePath(pollHelp);
   assert.doesNotMatch(pollHelp, /keep the poll attached to the active turn/i);
   assert.doesNotMatch(pollHelp, /Codex detected/);
+  assertNoCodexPollAdapter(output.help.join("\n"));
   assert.match(pollHelp, /queued feedback is never lost/);
 });
 
@@ -355,7 +369,7 @@ test("top-level help renders static home output without dynamic sessions", async
       {
         cwd: fileURLToPath(new URL("..", import.meta.url)),
         encoding: "utf8",
-        env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir },
+        env: { ...withoutCodexMarkers(process.env), LAVISH_AXI_STATE_DIR: stateDir },
       },
     );
 
@@ -372,6 +386,7 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /strict priority order/);
     assert.match(result.stdout, /never kill it/);
     assert.match(result.stdout, /queued feedback is never lost/);
+    assertNoCodexPollAdapter(result.stdout);
     assert.doesNotMatch(result.stdout, /above 10 minutes/);
     assert.doesNotMatch(result.stdout, /lavish-design/);
     assert.doesNotMatch(result.stdout, /sessions\[/);
@@ -1199,6 +1214,7 @@ test("poll help requires an observable wake path", () => {
   assert.match(help, /never kill it/);
   assertObservablePollWakePath(help);
   assert.doesNotMatch(help, /Codex/);
+  assertNoCodexPollAdapter(help);
   assert.match(help, /queued feedback is never lost/);
   assert.match(help, /Do not pass --timeout-ms/);
   assert.match(help, /tests and debugging only/);

@@ -117,7 +117,7 @@ test("createSkillMarkdown explains the open-time self-paint warning", () => {
 test("createSkillMarkdown requires an observable wake path for every poll", () => {
   const md = createSkillMarkdown();
   const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Poll contract"));
-  const pollContract = md.slice(md.indexOf("## Poll contract"), md.indexOf("## Visual guidance"));
+  const pollContract = md.slice(md.indexOf("## Poll contract"), md.indexOf("## Codex callback adapter"));
 
   assert.match(workflow, /follow the single Poll contract below/i);
   assert.match(pollContract, /Keep .*poll in the foreground by default.*return the feedback directly to the agent/i);
@@ -133,14 +133,13 @@ test("createSkillMarkdown requires an observable wake path for every poll", () =
     /If the harness has no completion-aware background facility, use the foreground poll or first wire a verified wake callback into the surrounding supervisor/i,
   );
   assert.match(pollContract, /Do not tell the user the artifact is being monitored until that wake path is live/i);
-  assert.match(pollContract, /resume that same tracked (?:command|process)/i);
-  assert.match(pollContract, /longest practical blocking wait/i);
-  assert.match(pollContract, /short fixed intervals/i);
-  assert.match(pollContract, /empty wait result must not trigger fresh reasoning or narration/i);
-  assert.match(pollContract, /do not substitute agent-status polling/i);
   assert.match(pollContract, /`Send & End` ends the session.*final feedback is still delivered once.*polling stops/i);
   assert.match(pollContract, /(?:do|must) not reopen (?:it|the session) uninvited/i);
   assert.match(pollContract, /queued feedback is never lost/);
+  assert.doesNotMatch(
+    pollContract,
+    /functions\.exec|yield_control|tools\.write_stdin|longest practical blocking|longest supported blocking wait|empty wait|agent-status polling|wait_agent|polling subagent|second `lavish-axi poll`|codex app-server|thread\/resume/i,
+  );
   assert.equal(
     md.split("harness-native tracked background-job facility").length - 1,
     1,
@@ -155,22 +154,19 @@ test("createSkillMarkdown keeps Codex waiting inside one callback-owning exec ce
 
   assert.match(adapter, /one `functions\.exec` cell/i);
   assert.match(adapter, /`yield_control\(\)` once/i);
-  assert.match(adapter, /keep the long `tools\.write_stdin` waits inside that cell/i);
+  assert.match(adapter, /keep the longest practical blocking `tools\.write_stdin` waits inside that cell/i);
   assert.match(adapter, /`notify\(\.\.\.\)` only with the final poll output/i);
   assert.match(adapter, /waiting model-free/i);
   assert.match(adapter, /do not make the model call `functions\.wait`/i);
-  assert.match(adapter, /do not spawn a polling subagent/i);
+  assert.match(adapter, /empty wait must not trigger fresh reasoning or narration/i);
+  assert.match(adapter, /do not substitute agent-status polling/i);
+  assert.match(adapter, /do not call `wait_agent`/i);
+  assert.match(adapter, /separate or cheaper polling subagent/i);
+  assert.match(adapter, /start a second `lavish-axi poll`/i);
+  assert.match(adapter, /Never start a detached `codex app-server`/i);
+  assert.match(adapter, /call `thread\/resume` for the active `CODEX_THREAD_ID`/i);
+  assert.match(adapter, /creates a second runtime owner/i);
   assert.match(adapter, /If code-mode callbacks are unavailable/i);
-  assert.doesNotMatch(adapter, /app-server|thread\/resume/i);
-});
-
-test("createSkillMarkdown keeps model choice inherited and waiting model-free", () => {
-  const md = createSkillMarkdown();
-
-  assert.match(md, /Lavish does not choose or change the agent's model or reasoning effort/i);
-  assert.match(md, /inherits the active agent/i);
-  assert.match(md, /keep the waiting phase model-free/i);
-  assert.match(md, /do not spawn a separate or cheaper agent solely to poll/i);
 });
 
 test("createSkillMarkdown keeps layout detection passive", () => {
