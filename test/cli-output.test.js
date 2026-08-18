@@ -112,6 +112,11 @@ function assertObservablePollWakePath(text) {
   assert.match(text, /no completion-aware background facility/i);
   assert.match(text, /verified wake callback into the surrounding supervisor/i);
   assert.match(text, /Do not tell the user the artifact is being monitored until that wake path is live/i);
+  assert.match(text, /resume that same tracked (?:command|process)/i);
+  assert.match(text, /longest practical blocking wait/i);
+  assert.match(text, /short fixed intervals/i);
+  assert.match(text, /empty wait result must not trigger fresh reasoning or narration/i);
+  assert.match(text, /do not substitute agent-status polling/i);
   assert.doesNotMatch(text, /foreground command may run.*run the poll as a background task/i);
 }
 
@@ -301,6 +306,10 @@ test("home output tailors poll guidance when invoked under Codex", () => {
   assertObservablePollWakePath(pollHelp);
   assert.match(pollHelp, /Codex detected/);
   assert.match(pollHelp, /keep the poll attached to the active turn/);
+  assert.match(pollHelp, /resume the existing exec cell or terminal session with the longest supported wait/i);
+  assert.match(pollHelp, /do not call `wait_agent`/i);
+  assert.match(pollHelp, /do not spawn a polling subagent/i);
+  assert.match(pollHelp, /do not start a second `lavish-axi poll`/i);
 });
 
 test("home output keeps static skill poll guidance safe and agent-neutral", () => {

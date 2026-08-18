@@ -116,32 +116,56 @@ test("createSkillMarkdown explains the open-time self-paint warning", () => {
 
 test("createSkillMarkdown requires an observable wake path for every poll", () => {
   const md = createSkillMarkdown();
-  const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Visual guidance"));
+  const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Poll contract"));
+  const pollContract = md.slice(md.indexOf("## Poll contract"), md.indexOf("## Visual guidance"));
 
-  assert.match(workflow, /Keep .*poll in the foreground by default.*return the feedback directly to the agent/i);
-  assert.match(workflow, /harness-native tracked background-job facility/i);
-  assert.match(workflow, /completion result is guaranteed to resume or notify the same agent/i);
-  assert.match(workflow, /Never use `nohup`/);
-  assert.match(workflow, /shell `&`/);
-  assert.match(workflow, /`disown`/);
-  assert.match(workflow, /redirected fire-and-forget processes/);
-  assert.match(workflow, /detached terminal without an explicit verified callback/);
+  assert.match(workflow, /follow the single Poll contract below/i);
+  assert.match(pollContract, /Keep .*poll in the foreground by default.*return the feedback directly to the agent/i);
+  assert.match(pollContract, /harness-native tracked background-job facility/i);
+  assert.match(pollContract, /completion result is guaranteed to resume or notify the same agent/i);
+  assert.match(pollContract, /Never use `nohup`/);
+  assert.match(pollContract, /shell `&`/);
+  assert.match(pollContract, /`disown`/);
+  assert.match(pollContract, /redirected fire-and-forget processes/);
+  assert.match(pollContract, /detached terminal without an explicit verified callback/);
   assert.match(
-    workflow,
+    pollContract,
     /If the harness has no completion-aware background facility, use the foreground poll or first wire a verified wake callback into the surrounding supervisor/i,
   );
-  assert.match(workflow, /Do not tell the user the artifact is being monitored until that wake path is live/i);
-  assert.match(workflow, /`Send & End` ends the session.*final feedback is still delivered once.*polling stops/i);
-  assert.match(workflow, /(?:do|must) not reopen (?:it|the session) uninvited/i);
-  assert.match(workflow, /queued feedback is never lost/);
+  assert.match(pollContract, /Do not tell the user the artifact is being monitored until that wake path is live/i);
+  assert.match(pollContract, /resume that same tracked (?:command|process)/i);
+  assert.match(pollContract, /longest practical blocking wait/i);
+  assert.match(pollContract, /short fixed intervals/i);
+  assert.match(pollContract, /empty wait result must not trigger fresh reasoning or narration/i);
+  assert.match(pollContract, /do not substitute agent-status polling/i);
+  assert.match(pollContract, /`Send & End` ends the session.*final feedback is still delivered once.*polling stops/i);
+  assert.match(pollContract, /(?:do|must) not reopen (?:it|the session) uninvited/i);
+  assert.match(pollContract, /queued feedback is never lost/);
+  assert.equal(
+    md.split("harness-native tracked background-job facility").length - 1,
+    1,
+    "the generated skill owns the wake-path contract in one section",
+  );
   assert.doesNotMatch(md, /Codex detected/);
+});
+
+test("createSkillMarkdown keeps model choice inherited and waiting model-free", () => {
+  const md = createSkillMarkdown();
+
+  assert.match(md, /Lavish does not choose or change the agent's model or reasoning effort/i);
+  assert.match(md, /inherits the active agent/i);
+  assert.match(md, /keep the waiting phase model-free/i);
+  assert.match(md, /do not spawn a separate or cheaper agent solely to poll/i);
 });
 
 test("createSkillMarkdown keeps layout detection passive", () => {
   const md = createSkillMarkdown();
 
   assert.match(md, /layout issues are filed passively/);
-  assert.match(md, /ordinary `layout-warnings` prompt only when the user selects and queues them/);
+  assert.match(
+    md,
+    /ordinary (?:tag )?[`"]layout-warnings[`"] prompt only when the user selects and queues (?:them|the fixes)/,
+  );
   assert.doesNotMatch(md, /returned as `layout_warnings`/);
   assert.doesNotMatch(md, /If poll returns `layout_warnings`/);
 });
