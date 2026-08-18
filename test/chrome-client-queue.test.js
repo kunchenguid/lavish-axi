@@ -347,6 +347,7 @@ async function createChromeHarness({
     postedToWhiteboard,
     createInlineWhiteboard() {
       const posted = [];
+      let focusCount = 0;
       // A real inline whiteboard frame is created by the SDK inside the
       // artifact document, so its window's parent is the artifact window.
       const source = {
@@ -354,8 +355,18 @@ async function createChromeHarness({
         postMessage(message) {
           posted.push(message);
         },
+        focus() {
+          focusCount += 1;
+          focusLog.push("inlineWhiteboard");
+        },
       };
-      const whiteboard = { source, posted };
+      const whiteboard = {
+        source,
+        posted,
+        get focusCount() {
+          return focusCount;
+        },
+      };
       inlineWhiteboards.push(whiteboard);
       return whiteboard;
     },
@@ -2024,6 +2035,57 @@ test("Send and End reconciles an ordinary request whose success response was los
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });
 
+test("an ended replay transitions an ordinary retry to ended", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (url === "/api/abc/prompts") {
+        return { ok: true, json: async () => ({ replayed: true, ended: true }) };
+      }
+      return { ok: true };
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Already delivered", selector: "main", tag: "annotation", text: "Main" },
+  });
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("replayed snapshot");
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+  assert.equal(chrome.element("chatInput").disabled, true);
+});
+
+test("an ended rejection preserves changed unsent feedback", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (url === "/api/abc/prompts") {
+        return { ok: false, status: 409, json: async () => ({ status: "ended", ended: true }) };
+      }
+      return { ok: true };
+    },
+  });
+  chrome.element("endedOverlay").hidden = true;
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Changed after end", selector: "main", tag: "annotation", text: "Main" },
+  });
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("changed snapshot");
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.queued()[0].prompt, "Changed after end");
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+  assert.equal(chrome.element("chatInput").disabled, true);
+});
+
 test("a later successful ordinary Send lets pending End ignore an earlier failed duplicate", async () => {
   const calls = [];
   let releaseFirst = () => {};
@@ -2560,6 +2622,41 @@ test("whiteboard fullscreen waits for the authenticated inline frame to flush", 
 
   assert.equal(chrome.postedToFrame.at(-1).type, "lavish:suspendWhiteboard");
   assert.match(chrome.element("whiteboardFrame").src, /^\/whiteboard-frame\?diagramIndex=0&key=abc$/);
+});
+
+test("whiteboard fullscreen moves focus into the overlay and restores its opener", async () => {
+  const chrome = await createChromeHarness({ fetchImpl: async (url) => whiteboardFetch(url) });
+  const inline = await initializeInlineWhiteboard(chrome);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  const maximizePrepare = inline.posted.at(-1);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: maximizePrepare.flushId,
+  });
+
+  assert.equal(chrome.focusLog.at(-1), "whiteboardClose");
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  await flushPromises();
+
+  chrome.element("whiteboardClose").click();
+  const closePrepare = chrome.postedToWhiteboard.at(-1);
+  chrome.sendWhiteboardMessage({
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "overlay-channel",
+    flushId: closePrepare.flushId,
+  });
+
+  assert.equal(inline.focusCount, 1);
+  assert.equal(chrome.focusLog.at(-1), "inlineWhiteboard");
 });
 
 test("only the authenticated fullscreen whiteboard can relay end session", async () => {

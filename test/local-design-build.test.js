@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -95,6 +95,7 @@ test("CSS builder rejects directory artifact paths before scanning", async () =>
 
 test("packaged tarball ships an executable CSS builder and runtime dependencies", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-css-package-"));
+  const readOnlyDirs = [];
   try {
     const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", root], {
       cwd: projectRoot,
@@ -102,34 +103,58 @@ test("packaged tarball ships an executable CSS builder and runtime dependencies"
     });
     assert.equal(packed.status, 0, packed.stderr);
     const [{ filename }] = JSON.parse(packed.stdout);
-    const extracted = spawnSync("tar", ["-xzf", path.join(root, filename), "-C", root], { encoding: "utf8" });
-    assert.equal(extracted.status, 0, extracted.stderr);
+    const tarball = path.join(root, filename);
 
-    const packageDir = path.join(root, "package");
-    const manifest = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
-    assert.equal(manifest.dependencies["@tailwindcss/cli"], "4.2.4");
-    assert.equal(manifest.dependencies.tailwindcss, "4.2.4");
-    assert.ok(manifest.dependencies.daisyui);
-    await symlink(path.join(projectRoot, "node_modules"), path.join(packageDir, "node_modules"), "dir");
+    for (const nodeLinker of ["isolated", "hoisted"]) {
+      const installDir = path.join(root, nodeLinker);
+      await mkdir(installDir, { recursive: true });
+      const extracted = spawnSync("tar", ["-xzf", tarball, "-C", installDir, "--strip-components=1"], {
+        encoding: "utf8",
+      });
+      assert.equal(extracted.status, 0, extracted.stderr);
+      await copyFile(path.join(projectRoot, "pnpm-lock.yaml"), path.join(installDir, "pnpm-lock.yaml"));
+      await writeFile(path.join(installDir, ".npmrc"), `node-linker=${nodeLinker}\n`);
+      const installed = spawnSync("pnpm", ["install", "--prod", "--offline", "--ignore-scripts", "--frozen-lockfile"], {
+        cwd: installDir,
+        encoding: "utf8",
+      });
+      assert.equal(installed.status, 0, `${installed.stderr}\n${installed.stdout}`);
 
-    const stateDir = path.join(root, "state");
-    const design = spawnSync(process.execPath, [path.join(packageDir, "dist", "cli.mjs"), "design"], {
-      encoding: "utf8",
-      env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_TELEMETRY: "0" },
-    });
-    assert.equal(design.status, 0, design.stderr);
-    assert.match(design.stdout, /build_argv/);
-    assert.match(design.stdout, /dist\/build-css\.mjs/);
-    assert.doesNotMatch(design.stdout, /build_argv: null/);
+      const packageDir = installDir;
+      const manifest = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
+      assert.equal(manifest.dependencies["@tailwindcss/cli"], "4.2.4");
+      assert.equal(manifest.dependencies.tailwindcss, "4.2.4");
+      assert.ok(manifest.dependencies.daisyui);
 
-    const artifact = path.join(root, "packaged artifact.html");
-    await writeFile(artifact, '<!doctype html><button class="btn btn-primary">Ship</button>\n');
-    const build = spawnSync(process.execPath, [path.join(packageDir, "dist", "build-css.mjs"), artifact, "--minify"], {
-      encoding: "utf8",
-    });
-    assert.equal(build.status, 0, build.stderr);
-    assert.match(await readFile(path.join(root, "packaged artifact.css"), "utf8"), /\.btn/);
+      const stateDir = path.join(installDir, "state");
+      const design = spawnSync(process.execPath, [path.join(packageDir, "dist", "cli.mjs"), "design"], {
+        encoding: "utf8",
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_TELEMETRY: "0" },
+      });
+      assert.equal(design.status, 0, design.stderr);
+      assert.match(design.stdout, /build_argv/);
+      assert.match(design.stdout, /dist\/build-css\.mjs/);
+      assert.doesNotMatch(design.stdout, /build_argv: null/);
+
+      const artifact = path.join(installDir, `${nodeLinker} artifact.html`);
+      await writeFile(artifact, '<!doctype html><button class="btn btn-primary">Ship</button>\n');
+      const distDir = path.join(packageDir, "dist");
+      await chmod(distDir, 0o555);
+      readOnlyDirs.push(distDir);
+      const build = spawnSync(
+        process.execPath,
+        [path.join(packageDir, "dist", "build-css.mjs"), artifact, "--minify"],
+        { encoding: "utf8" },
+      );
+      assert.equal(build.status, 0, build.stderr);
+      assert.match(await readFile(path.join(installDir, `${nodeLinker} artifact.css`), "utf8"), /\.btn/);
+      assert.equal(
+        (await readdir(distDir)).some((name) => name.startsWith(".build-") || name.includes(".input-")),
+        false,
+      );
+    }
   } finally {
+    for (const dir of readOnlyDirs) await chmod(dir, 0o755).catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -140,8 +165,12 @@ test("CSS builder runs the package JavaScript entrypoint and preserves the last 
     const localDir = path.join(root, "local");
     const sourceDir = path.join(root, "src");
     const cliDir = path.join(root, "node_modules", "@tailwindcss", "cli");
+    const tailwindDir = path.join(root, "node_modules", "tailwindcss");
+    const daisyuiDir = path.join(root, "node_modules", "daisyui");
     const artifactDir = path.join(root, "artifacts");
     await mkdir(path.join(cliDir, "dist"), { recursive: true });
+    await mkdir(tailwindDir, { recursive: true });
+    await mkdir(daisyuiDir, { recursive: true });
     await mkdir(localDir, { recursive: true });
     await mkdir(sourceDir, { recursive: true });
     await mkdir(artifactDir, { recursive: true });
@@ -151,8 +180,19 @@ test("CSS builder runs the package JavaScript entrypoint and preserves the last 
 
     await writeFile(
       path.join(cliDir, "package.json"),
-      JSON.stringify({ type: "module", bin: { tailwindcss: "./dist/index.mjs" } }),
+      JSON.stringify({
+        type: "module",
+        exports: { "./package.json": "./package.json" },
+        bin: { tailwindcss: "./dist/index.mjs" },
+      }),
     );
+    await writeFile(
+      path.join(tailwindDir, "package.json"),
+      JSON.stringify({ type: "module", exports: { "./index.css": "./index.css" } }),
+    );
+    await writeFile(path.join(tailwindDir, "index.css"), "@theme {}\n");
+    await writeFile(path.join(daisyuiDir, "package.json"), JSON.stringify({ type: "module", main: "./index.js" }));
+    await writeFile(path.join(daisyuiDir, "index.js"), "export default {};\n");
     const fakeTailwind = path.join(cliDir, "dist", "index.mjs");
     await writeFile(
       fakeTailwind,
@@ -196,7 +236,7 @@ test("CSS builder runs the package JavaScript entrypoint and preserves the last 
       false,
     );
     assert.equal(
-      (await readdir(localDir)).some((name) => name.startsWith(".build-")),
+      (await readdir(artifactDir)).some((name) => name.includes(".input-")),
       false,
     );
   } finally {

@@ -462,6 +462,14 @@ export async function serve({
         });
         return;
       }
+      if (result.ended_rejected) {
+        res.status(409).json({
+          status: "ended",
+          ended: true,
+          ended_by: result.session.ended_by,
+        });
+        return;
+      }
       const session = result;
       if (session.conflict) {
         res.status(409).json({

@@ -161,9 +161,11 @@ export class SessionStore {
     if (requestId && session.completed_prompt_requests?.includes(requestId)) {
       return { ...session, request_replayed: true };
     }
+    if (session.status === "ended") {
+      return { ended_rejected: true, session };
+    }
     const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
     const shouldEndSession = Boolean(payload.endSession || payload.end_session);
-    const alreadyEnded = session.status === "ended";
     const normalized = prompts.map(normalizePrompt);
     const normalizedPrompts = normalized.map((entry) => entry.prompt);
     // Resolve every attachment BEFORE mutating anything. If any prompt's images
@@ -238,7 +240,7 @@ export class SessionStore {
     session.chat = [...(session.chat || []), ...userMessages];
     session.pending_prompts = session.prompts.length;
     session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-    session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
+    session.status = shouldEndSession ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
     if (shouldEndSession) session.ended_by = "user";
     session.completed_prompt_requests = rememberMutationRequest(session.completed_prompt_requests, requestId);
     session.updated_at = new Date().toISOString();

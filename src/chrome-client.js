@@ -729,6 +729,10 @@ async function submitQueuedOnce(endOperation, snapshot) {
   if (!response.ok) {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
+      if (data?.ended === true) {
+        markSessionEnded();
+        return false;
+      }
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
       return false;
     }
@@ -754,7 +758,7 @@ async function submitQueuedOnce(endOperation, snapshot) {
   }
   persistQueuedPrompts();
   render();
-  if (shouldEndSession) {
+  if (shouldEndSession || responseData?.ended === true) {
     markSessionEnded();
     return true;
   }
@@ -1491,6 +1495,8 @@ let overlayIndex = null;
 let overlayFrameReady = false;
 let overlayChannelId = "";
 let overlayOpeningIndex = null;
+let overlayOpeningOpenerWindow = null;
+let overlayOpenerWindow = null;
 let nextWhiteboardFlushId = 0;
 let artifactResetPromise = null;
 let chromeRestartReloadPromise = null;
@@ -1584,14 +1590,16 @@ async function handleWhiteboardReady(index, mode, isCurrent) {
   }
 }
 
-function showWhiteboardOverlay(index) {
+function showWhiteboardOverlay(index, openerWindow) {
   if (ended) return;
   overlayIndex = index;
   overlayFrameReady = false;
   overlayChannelId = "";
+  overlayOpenerWindow = openerWindow;
   inlineWhiteboardChannels.delete(index);
   whiteboardError.hidden = true;
   whiteboardOverlay.hidden = false;
+  whiteboardCloseButton.focus();
   postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
   // A fresh document per open: the frame boots, posts ready, and receives its
   // init - no stale editor state can leak between opens.
@@ -1600,14 +1608,19 @@ function showWhiteboardOverlay(index) {
 }
 
 function finishWhiteboardClose(index) {
+  const openerWindow = overlayOpenerWindow;
   whiteboardOverlay.hidden = true;
   whiteboardError.hidden = true;
   whiteboardFrame.src = "about:blank";
   overlayIndex = null;
   overlayFrameReady = false;
   overlayChannelId = "";
+  overlayOpenerWindow = null;
   inlineWhiteboardChannels.delete(index);
-  if (!ended) postToFrame({ type: "lavish:resumeWhiteboard", diagramIndex: index });
+  if (!ended) {
+    postToFrame({ type: "lavish:resumeWhiteboard", diagramIndex: index });
+    if (openerWindow && typeof openerWindow.focus === "function") openerWindow.focus();
+  }
 }
 
 function whiteboardTeardownKey(index, placement) {
@@ -1723,13 +1736,16 @@ async function flushInlineWhiteboards() {
   return true;
 }
 
-function openWhiteboardOverlay(index) {
+function openWhiteboardOverlay(index, openerWindow) {
   if (ended || overlayIndex !== null || overlayOpeningIndex !== null) return;
   overlayOpeningIndex = index;
+  overlayOpeningOpenerWindow = openerWindow;
   beginWhiteboardTeardown(index, "inline", (flushed) => {
     if (overlayOpeningIndex !== index) return;
+    const opener = overlayOpeningOpenerWindow;
     overlayOpeningIndex = null;
-    if (flushed && !ended && overlayIndex === null) showWhiteboardOverlay(index);
+    overlayOpeningOpenerWindow = null;
+    if (flushed && !ended && overlayIndex === null) showWhiteboardOverlay(index, opener);
   });
 }
 
@@ -1885,10 +1901,10 @@ function validWhiteboardIndex(value) {
   return Number.isInteger(index) && index >= 0 && index <= 999 ? index : null;
 }
 
-function handleAuthenticatedWhiteboardMessage(index, message, mode) {
+function handleAuthenticatedWhiteboardMessage(index, message, mode, source) {
   if (message.type === "lavish-whiteboard:save") handleWhiteboardSave(index, message, mode);
   if (message.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(index, message, mode);
-  if (message.type === "lavish-whiteboard:maximize" && mode === "inline") openWhiteboardOverlay(index);
+  if (message.type === "lavish-whiteboard:maximize" && mode === "inline") openWhiteboardOverlay(index, source);
   if (message.type === "lavish-whiteboard:close" && mode === "overlay") closeWhiteboard();
   if (message.type === "lavish-whiteboard:endSession" && mode === "overlay") endSession();
   if (message.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(index, message, mode);
@@ -1939,7 +1955,7 @@ function handleInlineWhiteboardMessage(event, message) {
   }
   const channel = inlineWhiteboardChannels.get(index);
   if (!channel || channel.window !== event.source || channel.channelId !== message.channelId) return;
-  handleAuthenticatedWhiteboardMessage(index, message, "inline");
+  handleAuthenticatedWhiteboardMessage(index, message, "inline", event.source);
 }
 
 function handleOverlayWhiteboardMessage(event, message) {
@@ -1965,7 +1981,7 @@ function handleOverlayWhiteboardMessage(event, message) {
     return;
   }
   if (!overlayFrameReady || message.channelId !== overlayChannelId) return;
-  handleAuthenticatedWhiteboardMessage(index, message, "overlay");
+  handleAuthenticatedWhiteboardMessage(index, message, "overlay", event.source);
 }
 
 window.addEventListener("message", (event) => {

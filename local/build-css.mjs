@@ -14,17 +14,22 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { DAISYUI_THEMES } from "../src/design-reference.js";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const CLI_PACKAGE =
-  [
-    join(HERE, "..", "node_modules", "@tailwindcss", "cli", "package.json"),
-    join(HERE, "node_modules", "@tailwindcss", "cli", "package.json"),
-  ].find((candidate) => existsSync(candidate)) || "";
+const requireFromBuilder = createRequire(import.meta.url);
+let CLI_PACKAGE = "";
+let TAILWIND_CSS = "";
+let DAISYUI_PLUGIN = "";
+try {
+  CLI_PACKAGE = requireFromBuilder.resolve("@tailwindcss/cli/package.json");
+  TAILWIND_CSS = requireFromBuilder.resolve("tailwindcss/index.css");
+  DAISYUI_PLUGIN = requireFromBuilder.resolve("daisyui");
+} catch {
+  CLI_PACKAGE = "";
+}
 const USAGE = "usage: node build-css.mjs <artifact.html> [--minify] [--theme <daisyui-theme>]";
 
 function fail(message) {
@@ -53,7 +58,7 @@ if (args.length !== 1) fail(USAGE);
 const artifact = resolve(args[0]);
 if (!existsSync(artifact)) fail(`no such file: ${artifact}`);
 if (!statSync(artifact).isFile()) fail(`not a file: ${artifact}`);
-if (!CLI_PACKAGE) {
+if (!CLI_PACKAGE || !TAILWIND_CSS || !DAISYUI_PLUGIN) {
   fail("toolchain missing; reinstall lavish-axi with its production dependencies, then retry");
 }
 
@@ -77,6 +82,7 @@ const themeList = theme
 const outDir = dirname(artifact);
 const outName = `${basename(artifact).replace(/\.html?$/i, "")}.css`;
 const outPath = join(outDir, outName);
+const cssPath = (value) => value.replace(/\\/g, "/").replace(/"/g, '\\"');
 const outHref = encodeURIComponent(outName).replace(
   /["'&<>]/g,
   (character) => ({ '"': "&quot;", "'": "&#39;", "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character],
@@ -86,28 +92,25 @@ const outHref = encodeURIComponent(outName).replace(
 // automatic directory scanning so a stray file in /tmp can never widen the build, then a
 // single explicit @source pins it to this one artifact.
 //
-// The generated input.css must live inside `local/`: Tailwind resolves `@import
-// "tailwindcss"` and `@plugin "daisyui"` from the input file's own directory, so an
-// input in the OS temp dir cannot see local/node_modules.
 let work = "";
 let outputWork = "";
 let bytes = 0;
 let buildFailure = "";
 try {
-  work = mkdtempSync(join(HERE, ".build-"));
+  work = mkdtempSync(join(outDir, `.${outName}.input-`));
   outputWork = mkdtempSync(join(outDir, `.${outName}.build-`));
   const input = join(work, "input.css");
   const pendingOutPath = join(outputWork, outName);
   writeFileSync(
     input,
     [
-      '@import "tailwindcss" source(none);',
-      `@source "${artifact.replace(/["\\]/g, "\\$&")}";`,
+      `@import "${cssPath(TAILWIND_CSS)}" source(none);`,
+      `@source "${cssPath(artifact)}";`,
       "",
       "/* Light is the default theme here by house rule; dark ships but is opt-in via",
       '   data-theme="dark" rather than following the OS, so artifacts stay light unless asked.',
       "   --theme <name> makes another DaisyUI theme the default; light and dark stay available. */",
-      '@plugin "daisyui" {',
+      `@plugin "${cssPath(DAISYUI_PLUGIN)}" {`,
       `  themes: ${themeList.join(", ")};`,
       "}",
       "",

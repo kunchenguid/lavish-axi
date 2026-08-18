@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,9 +9,9 @@ function localCssBuilderPath() {
   const packagedBuilder = fileURLToPath(new URL("./build-css.mjs", import.meta.url));
   const sourceBuilder = fileURLToPath(new URL("../local/build-css.mjs", import.meta.url));
   const builder = [packagedBuilder, sourceBuilder].find((candidate) => existsSync(candidate));
-  const cliPackagePath = fileURLToPath(new URL("../node_modules/@tailwindcss/cli/package.json", import.meta.url));
-  if (!builder || !existsSync(cliPackagePath)) return null;
+  if (!builder) return null;
   try {
+    const cliPackagePath = createRequire(import.meta.url).resolve("@tailwindcss/cli/package.json");
     const cliPackage = JSON.parse(readFileSync(cliPackagePath, "utf8"));
     const cliBin = typeof cliPackage.bin === "string" ? cliPackage.bin : cliPackage.bin?.tailwindcss;
     const cliEntry = typeof cliBin === "string" && cliBin ? resolve(dirname(cliPackagePath), cliBin) : "";

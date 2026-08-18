@@ -83,14 +83,14 @@ test("prompt and end mutation request ids replay without duplicate state", async
     };
 
     const firstPrompt = await store.queuePrompts(session.key, payload);
-    const replayedPrompt = await store.queuePrompts(session.key, payload);
     assert.equal(firstPrompt.request_replayed, undefined);
-    assert.equal(replayedPrompt.request_replayed, true);
     assert.equal((await store.findByKey(session.key)).prompts.length, 1);
 
     const firstEnd = await store.endSession(session.key, "user", { requestId: "end-request-1" });
+    const replayedPrompt = await store.queuePrompts(session.key, payload);
     const replayedEnd = await store.endSession(session.key, "user", { requestId: "end-request-1" });
     assert.equal(firstEnd.request_replayed, undefined);
+    assert.equal(replayedPrompt.request_replayed, true);
     assert.equal(replayedEnd.request_replayed, true);
     assert.equal((await store.findByKey(session.key)).status, "ended");
   } finally {
@@ -921,7 +921,7 @@ test("queued prompts can atomically carry a browser end intent", async () => {
   }
 });
 
-test("late prompts after a user end preserve the ended session state", async () => {
+test("unseen prompts after a user end are rejected without changing feedback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
@@ -931,23 +931,21 @@ test("late prompts after a user end preserve the ended session state", async () 
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
     await store.endSession(session.key, "user");
-    await store.queuePrompts(session.key, {
+    const rejected = await store.queuePrompts(session.key, {
+      requestId: "late-prompt-request",
       domSnapshot: 'uid=1 h1 "Hello"',
       prompts: [{ uid: "", prompt: "Late feedback", selector: "", tag: "message", text: "Freeform message" }],
     });
 
+    assert.equal(rejected.ended_rejected, true);
     const updated = await store.findByKey(session.key);
     assert.equal(updated.status, "ended");
     assert.equal(updated.ended_by, "user");
+    assert.equal(updated.prompts.length, 0);
 
-    const first = feedbackResult(await store.takeFeedback(session.key));
-    assert.equal(first.session_ended, true);
-    assert.equal(first.ended_by, "user");
-    assert.equal(first.prompts[0].prompt, "Late feedback");
-
-    const second = await store.takeFeedback(session.key);
-    assert.equal(second.status, "ended");
-    assert.equal(second.ended_by, "user");
+    const result = await store.takeFeedback(session.key);
+    assert.equal(result.status, "ended");
+    assert.equal(result.ended_by, "user");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
