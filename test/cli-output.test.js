@@ -501,7 +501,9 @@ test("design output withholds the build command when the local toolchain is inco
   assert.equal(output.styling.build_argv, null);
   assert.equal(output.styling.themed_build_argv, null);
   assert.match(output.styling.how, /CSS build script or local Tailwind executable is unavailable/);
+  assert.match(output.styling.how, /dependencies declared by local\/package\.json/);
   assert.match(output.styling.how, /hand-write self-contained inline CSS/);
+  assert.doesNotMatch(output.styling.how, /npm install|--prefix|<checkout>/);
 });
 
 // LOCAL PATCH: upstream defaults to `luxury`, which is dark. This install is light-first, and

@@ -154,7 +154,6 @@ let annotation = true;
 let barExpanded = false;
 let ended = false;
 let agentPresence = "waiting";
-let pendingSnapshot = "";
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
 const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
 const layoutGateMaxHoldMs =
@@ -175,10 +174,8 @@ let warningsDrawerOpen = false;
 const snapshotRequests = new Map();
 const SNAPSHOT_REQUEST_TIMEOUT_MS = 5000;
 let nextSnapshotRequestId = 0;
-let endAfterSubmit = false;
 let workingBubble = null;
 let submitQueuedPromise = null;
-let submitQueuedAgain = false;
 let sessionEndOperation = null;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
@@ -561,9 +558,9 @@ function postToFrame(message) {
   if (frame.contentWindow) frame.contentWindow.postMessage(message, "*");
 }
 
-function requestSnapshot(action, onTimeout) {
+function requestSnapshot(action, { endOperation = null, onTimeout } = {}) {
   const requestId = `snapshot-${++nextSnapshotRequestId}`;
-  const request = { action, onTimeout, timer: undefined };
+  const request = { action, endOperation, onTimeout, timer: undefined };
   snapshotRequests.set(requestId, request);
   request.timer = setTimeout(() => {
     if (!snapshotRequests.delete(requestId)) return;
@@ -592,60 +589,57 @@ function sendQueued(endAfter) {
 
   let atomicEnd = null;
   if (endAfter) {
-    endAfterSubmit = true;
     atomicEnd = beginSessionEndOperation("atomic");
   }
-  requestSnapshot("submit", () => {
-    if (atomicEnd && sessionEndOperation === atomicEnd) {
-      endAfterSubmit = false;
-      settleSessionEndOperation(atomicEnd, false);
-    }
-    showSendHint(
-      "Could not read the artifact snapshot. Feedback remains queued; reload the artifact and try again.",
-      6000,
-    );
+  requestSnapshot("submit", {
+    endOperation: atomicEnd,
+    onTimeout: () => {
+      if (atomicEnd && sessionEndOperation === atomicEnd) {
+        settleSessionEndOperation(atomicEnd, false);
+      }
+      showSendHint(
+        "Could not read the artifact snapshot. Feedback remains queued; reload the artifact and try again.",
+        6000,
+      );
+    },
   });
 }
 
-async function submitQueued() {
-  if (submitQueuedPromise) {
-    submitQueuedAgain = true;
-    return submitQueuedPromise;
-  }
-
-  let succeeded = false;
-  submitQueuedPromise = submitQueuedOnce();
-  try {
-    const result = await submitQueuedPromise;
-    succeeded = result !== false;
-    return result;
-  } finally {
-    submitQueuedPromise = null;
-    const shouldSubmitAgain = submitQueuedAgain;
-    submitQueuedAgain = false;
-    const atomicEnd = sessionEndOperation?.kind === "atomic" ? sessionEndOperation : null;
-    if (!succeeded) {
-      endAfterSubmit = false;
-      if (atomicEnd) settleSessionEndOperation(atomicEnd, false);
-    } else if (ended) {
-      if (atomicEnd) settleSessionEndOperation(atomicEnd, true);
-    } else if (!ended && shouldSubmitAgain) {
-      if (queued.length) {
-        submitQueued();
-      } else if (endAfterSubmit) {
-        endAfterSubmit = false;
-        if (atomicEnd) runSessionEndOperation(atomicEnd, performDirectSessionEnd);
-        else endSession();
+async function submitQueued(endOperation, snapshot) {
+  const previousSubmit = submitQueuedPromise;
+  const currentSubmit = (async () => {
+    if (previousSubmit) await previousSubmit.catch(() => {});
+    try {
+      const result = await submitQueuedOnce(endOperation, snapshot);
+      if (endOperation && sessionEndOperation === endOperation) {
+        settleSessionEndOperation(endOperation, result !== false && ended);
       }
+      return result;
+    } catch (error) {
+      if (endOperation && sessionEndOperation === endOperation) {
+        settleSessionEndOperation(endOperation, false);
+      }
+      throw error;
     }
+  })();
+  submitQueuedPromise = currentSubmit;
+  try {
+    return await currentSubmit;
+  } finally {
+    if (submitQueuedPromise === currentSubmit) submitQueuedPromise = null;
   }
 }
 
-async function submitQueuedOnce() {
+async function submitQueuedOnce(endOperation, snapshot) {
+  if (ended) return true;
   const prompts = queued.slice();
-  const shouldEndSession = endAfterSubmit;
+  const shouldEndSession = Boolean(endOperation);
+  if (prompts.length === 0) {
+    if (endOperation) return runSessionEndOperation(endOperation, performDirectSessionEnd);
+    return true;
+  }
   if (shouldEndSession && !(await prepareSessionEnd())) return false;
-  const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
+  const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: snapshot };
   if (shouldEndSession) body.endSession = true;
   const response = await fetch("/api/" + key + "/prompts", {
     method: "POST",
@@ -656,7 +650,6 @@ async function submitQueuedOnce() {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
-      endAfterSubmit = false;
       return false;
     }
     // C4: the server persisted nothing (atomic reject) - the queue below is left
@@ -677,11 +670,11 @@ async function submitQueuedOnce() {
   persistQueuedPrompts();
   render();
   if (shouldEndSession) {
-    endAfterSubmit = false;
     markSessionEnded();
-    return;
+    return true;
   }
   if (agentPresence === "listening") setAgentPresence("working");
+  return true;
 }
 
 function normalizeLayoutFindings(value) {
@@ -1964,8 +1957,7 @@ window.addEventListener("message", (event) => {
     if (request.action === "copy") {
       copyText(msg.snapshot || "");
     } else {
-      pendingSnapshot = msg.snapshot || "";
-      submitQueued();
+      submitQueued(request.endOperation, msg.snapshot || "").catch(() => {});
     }
   }
   if (msg.type === "lavish:scroll") {
@@ -2209,6 +2201,7 @@ panelToggle.onclick = () => setPanelCollapsed(!document.body.classList.contains(
 menuPanelToggleButton.onclick = () => {
   closeMenus();
   setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
+  moreButton.focus();
 };
 chatInput.addEventListener("input", hideSendHint);
 copyPathButton.onclick = copyFilePath;

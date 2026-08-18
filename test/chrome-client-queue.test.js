@@ -41,6 +41,7 @@ async function createChromeHarness({
   const beginRequests = [];
   const artifactBeginRequests = [];
   const focusLog = [];
+  const clipboardWrites = [];
   let activeElement = null;
   let nextTimerId = 1;
   let reloadCount = 0;
@@ -254,7 +255,13 @@ async function createChromeHarness({
         reloadCount += 1;
       },
     },
-    navigator: {},
+    navigator: {
+      clipboard: {
+        async writeText(value) {
+          clipboardWrites.push(String(value));
+        },
+      },
+    },
     setTimeout: fakeSetTimeout,
     URL: {
       createObjectURL() {
@@ -371,14 +378,16 @@ async function createChromeHarness({
       // the token (that is exactly how the token-less attachment upload shipped).
       for (const handler of handlers) handler({ source: frame.contentWindow, data });
     },
-    sendSnapshot(snapshot) {
-      const request = postedToFrame.findLast((message) => message.type === "lavish:requestSnapshot");
-      assert.ok(request?.requestId, "chrome-client requested a correlated snapshot");
+    sendSnapshot(snapshot, requestedSnapshot) {
+      const latest = postedToFrame.findLast((message) => message.type === "lavish:requestSnapshot");
+      const requestId =
+        typeof requestedSnapshot === "string" ? requestedSnapshot : requestedSnapshot?.requestId || latest?.requestId;
+      assert.ok(requestId, "chrome-client requested a correlated snapshot");
       const handlers = windowListeners.get("message") || [];
       for (const handler of handlers) {
         handler({
           source: frame.contentWindow,
-          data: { type: "lavish:snapshot", requestId: request.requestId, snapshot },
+          data: { type: "lavish:snapshot", requestId, snapshot },
         });
       }
     },
@@ -416,6 +425,7 @@ async function createChromeHarness({
     reloadCount() {
       return reloadCount;
     },
+    clipboardWrites,
     focusLog,
     storage,
     warningRows() {
@@ -1645,6 +1655,34 @@ test("chrome client strips the internal queue key before posting prompts", async
   assert.equal(chrome.queued().length, 0);
 });
 
+test("concurrent Copy DOM and Send snapshots stay correlated", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      posts.push({ url, body: JSON.parse(init.body) });
+      return { ok: true };
+    },
+  });
+
+  chrome.element("copySnapshot").click();
+  const copyRequest = chrome.postedToFrame.at(-1);
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Review this", selector: "main", tag: "annotation", text: "Main" },
+  });
+  chrome.element("send").click();
+  const submitRequest = chrome.postedToFrame.at(-1);
+
+  chrome.sendSnapshot("submit snapshot", submitRequest);
+  await flushPromises();
+  chrome.sendSnapshot("copy snapshot", copyRequest);
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.domSnapshot, "submit snapshot");
+  assert.deepEqual(chrome.clipboardWrites, ["copy snapshot"]);
+});
+
 test("chrome send and end carries the end intent with queued prompts", async () => {
   const posts = [];
   const chrome = await createChromeHarness({
@@ -1859,6 +1897,61 @@ test("chrome send and end during an in-flight submit still ends after the submit
   assert.equal(chrome.element("chatInput").disabled, true);
 });
 
+test("a failed ordinary send cannot cancel a queued atomic Send and End", async () => {
+  const posts = [];
+  let releaseFirstPost = () => {};
+  const firstPost = new Promise((resolve) => {
+    releaseFirstPost = resolve;
+  });
+  let promptPosts = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      posts.push({ url, body });
+      if (url === "/api/abc/prompts") {
+        promptPosts += 1;
+        if (promptPosts === 1) {
+          await firstPost;
+          return { ok: false, status: 409, json: async () => ({ warnings: [] }) };
+        }
+      }
+      return { ok: true };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" },
+  });
+  chrome.element("send").click();
+  chrome.sendSnapshot("ordinary snapshot");
+  await flushPromises();
+
+  chrome.element("sendAndEnd").click();
+  chrome.sendSnapshot("final snapshot");
+  chrome.element("end").click();
+  await flushPromises();
+  assert.equal(posts.length, 1);
+
+  releaseFirstPost();
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    posts.map((post) => post.url),
+    ["/api/abc/prompts", "/api/abc/prompts"],
+  );
+  assert.equal(posts[0].body.endSession, undefined);
+  assert.equal(posts[1].body.endSession, true);
+  assert.equal(posts[1].body.domSnapshot, "final snapshot");
+  assert.deepEqual(posts[1].body.prompts, [
+    { prompt: "Ship this", selector: "button#ship", tag: "choice", text: "Ship" },
+  ]);
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
 test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of focus", async () => {
   const chrome = await createChromeHarness();
 
@@ -1970,10 +2063,12 @@ test("narrow dock menu retains panel and end actions", async () => {
 
   chrome.element("moreButton").click();
   assert.equal(chrome.element("moreMenu").hidden, false);
+  chrome.element("menuPanelToggle").focus();
   chrome.element("menuPanelToggle").click();
   assert.equal(chrome.element("moreMenu").hidden, true);
   assert.equal(chrome.element("body").classList.contains("panel-collapsed"), true);
   assert.equal(chrome.element("menuPanelToggleText").textContent, "Show conversation panel");
+  assert.equal(chrome.focusLog.at(-1), "moreButton");
 
   chrome.element("moreButton").click();
   chrome.element("menuEnd").click();

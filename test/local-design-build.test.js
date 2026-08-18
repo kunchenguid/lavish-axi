@@ -47,6 +47,37 @@ test("design output exposes executable injection-safe base and themed argv", asy
   }
 });
 
+test("missing CSS toolchain guidance is non-executable in hostile checkout paths", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lavish-css-missing-"));
+  try {
+    const checkout = path.join(root, "checkout $HOME %TEMP% 'single' $(touch shell-marker)");
+    const localDir = path.join(checkout, "local");
+    const sourceDir = path.join(checkout, "src");
+    await mkdir(localDir, { recursive: true });
+    await mkdir(sourceDir, { recursive: true });
+    await copyFile(path.join(projectRoot, "local", "build-css.mjs"), path.join(localDir, "build-css.mjs"));
+    await copyFile(path.join(projectRoot, "src", "design-reference.js"), path.join(sourceDir, "design-reference.js"));
+    await copyFile(path.join(projectRoot, "src", "playbooks.js"), path.join(sourceDir, "playbooks.js"));
+    const artifact = path.join(root, "artifact with spaces.html");
+    await writeFile(artifact, "<!doctype html><title>artifact</title>\n");
+
+    const result = spawnSync(process.execPath, [path.join(localDir, "build-css.mjs"), artifact], {
+      cwd: root,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 1);
+    assert.equal(
+      result.stderr.trim(),
+      "error: toolchain missing; install the dependencies declared by local/package.json, then retry",
+    );
+    assert.doesNotMatch(result.stderr, /npm install|--prefix|\$HOME|%TEMP%|\$\(touch/);
+    await assert.rejects(access(path.join(root, "shell-marker")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("CSS builder runs the package JavaScript entrypoint and preserves the last good stylesheet", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-css-builder-"));
   try {

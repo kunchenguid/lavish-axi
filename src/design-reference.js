@@ -249,7 +249,7 @@ export function createDesignOutput({ cssBuilderPath = localCssBuilderPath() } = 
     styling: {
       how: cssBuilderPath
         ? "Write the artifact with Tailwind utility classes and DaisyUI components, then execute build_argv as the authoritative argument vector and replace <artifact.html> with the artifact path as one argument. build_command and themed_build_command are intentionally null because the real artifact path is not known here and substituting it into a shell string would be unsafe. It compiles ONLY the classes this artifact uses (~20KB) into a sibling .css file - no browser-side compile, no network at view time, and the file still renders correctly when opened directly with no server. To make another DaisyUI theme the default, use themed_build_argv and replace both placeholders."
-        : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Run `npm install --prefix <checkout>/local` and re-check, or hand-write self-contained inline CSS for now.",
+        : "LOCAL TOOLCHAIN MISSING: the CSS build script or local Tailwind executable is unavailable. Install the dependencies declared by local/package.json with your package manager, then re-check, or hand-write self-contained inline CSS for now.",
       build_command: null,
       themed_build_command: null,
       build_argv: buildArgs ? [process.execPath, ...buildArgs] : null,

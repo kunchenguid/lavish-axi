@@ -48,7 +48,9 @@ if (args.length !== 1) fail(USAGE);
 
 const artifact = resolve(args[0]);
 if (!existsSync(artifact)) fail(`no such file: ${artifact}`);
-if (!existsSync(CLI_PACKAGE)) fail(`toolchain missing - run: npm install --prefix ${HERE}`);
+if (!existsSync(CLI_PACKAGE)) {
+  fail("toolchain missing; install the dependencies declared by local/package.json, then retry");
+}
 
 let cliEntry = "";
 try {
@@ -58,7 +60,9 @@ try {
 } catch {
   cliEntry = "";
 }
-if (!cliEntry || !existsSync(cliEntry)) fail(`toolchain missing - run: npm install --prefix ${HERE}`);
+if (!cliEntry || !existsSync(cliEntry)) {
+  fail("toolchain missing; install the dependencies declared by local/package.json, then retry");
+}
 
 // light and dark always ship; --theme only changes which one is the default.
 const themeList = theme
