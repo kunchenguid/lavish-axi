@@ -277,10 +277,20 @@ function persistQueuedPrompts() {
   }
 }
 
+function promptTargetLabel(prompt) {
+  if (prompt?.target?.type === "table-cell") {
+    const semantic = [prompt.target.rowLabel, prompt.target.columnLabel].filter(Boolean).join(" → ");
+    if (semantic) return semantic;
+  }
+  return String(prompt?.selector || "");
+}
+
 function render() {
   annotationPills.innerHTML = queued
-    .map(
-      (prompt, index) =>
+    .map((prompt, index) => {
+      const targetLabel = promptTargetLabel(prompt);
+      const showLocator = targetLabel && prompt.selector && targetLabel !== prompt.selector;
+      return (
         '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
         escapeHtml(prompt.prompt || (attachmentCount(prompt) ? "Image annotation" : "")) +
         "</span>" +
@@ -288,15 +298,21 @@ function render() {
         '<button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
         index +
         '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
-        (prompt.selector
+        (targetLabel
           ? '<div class="tooltip-label">Target</div><div class="pill-tooltip-target">' +
+            escapeHtml(targetLabel) +
+            "</div>"
+          : "") +
+        (showLocator
+          ? '<div class="tooltip-label">Locator</div><div class="pill-tooltip-target">' +
             escapeHtml(prompt.selector) +
             "</div>"
           : "") +
         '<div class="tooltip-label">Prompt</div><div class="pill-tooltip-prompt">' +
         escapeHtml(prompt.prompt) +
-        "</div></div></div>",
-    )
+        "</div></div></div>"
+      );
+    })
     .join("");
 
   for (const button of annotationPills.querySelectorAll(".pill-close")) {
