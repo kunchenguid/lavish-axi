@@ -192,7 +192,6 @@ No need to explicitly document the telemetry behaviors.
 
 ## Things to know when editing
 
-- Two global middlewares in `serve()` run before every route; keep them ordered Host-guard then origin-guard and do not let a new route slip in ahead of them. The Host allowlist is the DNS-rebinding defense. The mutating-route origin guard 403s any non-GET/HEAD/OPTIONS request that arrives with a present foreign Origin/Referer, using the same origin construction as `isSameOriginRequest` (including forwarded host/proto). It deliberately allows header-less requests because the CLI control channel dials the server with no Origin, relying on the Host allowlist instead - never tighten it to reject absent headers. Per-route `isSameOriginRequest` checks stay in place and still reject header-less callers; the global guard does not replace them.
 - `run()` short-circuits `--version`/`-v`/`-V` (`isVersionOnlyArgv`) before `ensureStateDir` and `initDefaultTelemetry`, because agent harnesses probe every tool's version at session start and the telemetry drain in the `finally` block costs up to a full second. Any new startup work must go after that short-circuit; `test/cli-version.test.js` guards both the latency budget and the "no telemetry request, no state dir" property.
 - `canonicalFile` runs `realpath`, so symlinks resolve to their target before becoming session keys. Two paths that refer to the same file always collapse to one session.
 - The SDK injected into artifacts lives in `src/artifact-sdk.js` and is wrapped by `createSdkJs`.

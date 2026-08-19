@@ -292,7 +292,7 @@ export async function serve({
   // real Origin, so mutating requests with a present, non-matching Origin or
   // Referer are rejected. Header-less CLI control-channel requests have no
   // Origin and are allowed; the Host allowlist remains their gate. Routes that
-  // already call isSameOriginRequest keep those checks — they also reject
+  // already call isSameOriginRequest keep those checks - they also reject
   // header-less callers, and this middleware does not replace them.
   app.use((req, res, next) => {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
