@@ -270,6 +270,7 @@ export async function serve({
   //
   // This guard is installed as the first middleware so every route - including the
   // attachment upload/fetch/remove endpoints below - is behind the Host allowlist.
+  // The mutating-route origin/Referer guard is installed immediately after.
   const allowedHostnames = buildAllowedHostnames({ host, linkHost: linkHostName, allowedHosts });
   const allowAnyHostname = allowsAllHosts(allowedHosts);
   if (!allowAnyHostname) {
@@ -285,6 +286,25 @@ export async function serve({
       res.status(403).json({ error: "forbidden host" });
     });
   }
+
+  // CSRF defense-in-depth on top of the Host allowlist. A foreign page that
+  // can reach 127.0.0.1 passes the Host check, but the browser attaches the
+  // real Origin, so mutating requests with a present, non-matching Origin or
+  // Referer are rejected. Header-less CLI control-channel requests have no
+  // Origin and are allowed; the Host allowlist remains their gate. Routes that
+  // already call isSameOriginRequest keep those checks — they also reject
+  // header-less callers, and this middleware does not replace them.
+  app.use((req, res, next) => {
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+      next();
+      return;
+    }
+    if (hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+      res.status(403).json({ error: "cross-origin request rejected" });
+      return;
+    }
+    next();
+  });
 
   const attachmentConfig = resolveAttachmentConfig();
   // Attachment bytes are content-addressed on disk alongside the whiteboard sidecars.
@@ -1400,8 +1420,9 @@ function encodeRfc5987Value(value) {
 
 // Wildcard bind addresses ("all interfaces") are not connectable hostnames, so
 // they never belong in the Host allowlist - and "0.0.0.0" as a Host is a known
-// loopback-reach trick, so it must stay rejected.
-const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::"]);
+// loopback-reach trick, so it must stay rejected. Both the bare ("::") and
+// bracketed ("[::]") IPv6 wildcard forms are excluded.
+const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
 
 // The set of Host header hostnames this server answers to: loopback names plus
 // the resolved bind and link host and any explicit LAVISH_AXI_ALLOWED_HOSTS
@@ -1490,8 +1511,15 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
   return isAllowedHostHeader(forwarded.split(",").pop(), allowedHostnames);
 }
 
+function hasPresentOriginOrReferer(req) {
+  return Boolean(req.get("origin") || req.get("referer"));
+}
+
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
-// browser attaches an Origin/Referer that must match this server's own origin.
+// browser attaches an Origin/Referer that must match this server's own origin. The global
+// mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
+// middleware is lenient (absent headers pass) while per-route callers still reject header-less
+// requests.
 function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
   const host = parseHostAuthority(req.headers.host);
   if (!host) return false;
