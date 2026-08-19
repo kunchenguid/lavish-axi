@@ -204,9 +204,8 @@ pnpm link
   `lavish-axi poll`'s `ended` response and the `feedback` response for the final batch before an end both carry `next_step` guidance telling the agent to stop polling and deliver remaining updates in chat instead of reopening.
 - **Precise targets** - Text annotations include selected text plus range anchors, and text selections carry those anchors only.
   Clicking an element inside a table also carries the cell's visible row and column names alongside the exact CSS locator, so filtered or sorted rows do not make feedback look misdirected.
-  A name a merged cell makes unprovable is left out rather than guessed: merged header or body cells drop the column name, and a row reached by a `rowspan` from earlier in its own `<thead>`/`<tbody>`/`<tfoot>` section drops its row name unless it declares a `<th scope="row">` heading.
-  A merge cannot cross a section boundary, so a grouped header's merged cells leave every body row named.
-  A dropped name is simply absent - the CSS locator still points at the exact element you clicked, so the annotation is never mislabelled, only less descriptive.
+  When merged cells make either name ambiguous, Lavish leaves that name out rather than guessing; an explicit `<th scope="row">` remains authoritative even when a `rowspan` makes the row's position ambiguous.
+  The CSS locator still points at the exact element you clicked, so an annotation with an omitted name is only less descriptive, never mislabelled.
 - **Image attachments** - Attach reference images (PNG, JPEG, WebP) to an annotation by pasting, drag-dropping, or using the annotation card's **Attach image** picker; each shows a thumbnail chip with upload, remove, retry, and error states.
   Images are stored under the state dir and the queued prompt carries a server-generated absolute `path` and content-hash `id` (plus mime and dimensions) - never the raw bytes - so `lavish-axi poll` hands the agent a local file path to open.
   Limits are `LAVISH_AXI_MAX_ATTACHMENT_BYTES` (default 10 MiB per image), `LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT` (default 4), and `LAVISH_AXI_MAX_PROMPT_ATTACHMENT_BYTES` (default 25 MiB per annotation); if any image is missing or any annotation breaches a count or byte cap, the entire send batch is rejected, the queue is preserved, and the reason is surfaced in the composer rather than silently dropping images.
