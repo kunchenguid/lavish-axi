@@ -37,6 +37,7 @@ Every behavior contract has one owner surface; other surfaces point at it instea
 
 - README.md owns the user-facing contract: features, CLI/flag reference, environment variables and their defaults, keyboard shortcuts, export/share semantics, and session-end etiquette.
 - Runtime guidance strings (`src/cli.js`, `src/design-reference.js`, `src/playbooks.js`) own everything agents are told while using Lavish; the generated skill mirrors them via `src/skill.js`.
+- VISION.md owns the acceptance policy: why the project exists, its principles, its named non-goals, and the tests for whether a change belongs. Consult it when a change's scope is in question; it is author-approved, so change it only through the author.
 - This file owns only what neither shows at a glance: architecture internals, invariants, security rationale, and easy-to-reintroduce failure modes.
 
 When a change touches an owned contract, update the owner; edit this file only when an invariant changed.
