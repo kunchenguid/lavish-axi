@@ -131,6 +131,15 @@ test("server serves chrome browser behavior from a dedicated source file", async
   assert.doesNotMatch(html, /<script>\s*const key=/);
 });
 
+test("artifact iframe sandbox lets popups escape without granting same-origin", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const match = html.match(/<iframe id="artifact" sandbox="([^"]+)"/);
+  assert.ok(match, "artifact iframe must declare a sandbox");
+  const tokens = new Set(match[1].split(/\s+/).filter(Boolean));
+  assert.equal(tokens.has("allow-popups-to-escape-sandbox"), true);
+  assert.equal(tokens.has("allow-same-origin"), false);
+});
+
 test("createChromeHtml exposes attachment limits and Conversation attachment controls", () => {
   const html = createChromeHtml(
     { key: "abc", file: "/tmp/artifact.html" },
@@ -4146,7 +4155,7 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   assert.match(html, /<body class="lavish layout-gate-active">/);
   assert.match(
     html,
-    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
+    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
   );
   assert.doesNotMatch(html, /<iframe id="artifact"[^>]* src=/);
   assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
