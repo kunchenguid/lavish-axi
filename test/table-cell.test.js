@@ -145,6 +145,20 @@ test("tableCellTarget treats rowspan=0 as spanning to the end of the row group",
   assert.deepEqual(labels(target), { rowLabel: "", columnLabel: "" });
 });
 
+test("tableCellTarget restores semantic labels after a finite rowspan ends", () => {
+  const target = node("td", { textContent: "4 apps" });
+  node("table", {}, [
+    node("thead", {}, [row(["Permission", "Visible state"], "th")]),
+    node("tbody", {}, [
+      node("tr", {}, [node("td", { rowspan: "2", textContent: "Media" }), node("td", { textContent: "None" })]),
+      node("tr", {}, [node("td", { textContent: "1 app" })]),
+      row(["Media & Apple Music", target]),
+    ]),
+  ]);
+
+  assert.deepEqual(labels(target), { rowLabel: "Media & Apple Music", columnLabel: "Visible state" });
+});
+
 test("tableCellTarget keeps a declared scope=row heading even when a rowspan shifts the grid", () => {
   const target = node("td", { textContent: "4 apps" });
   node("table", {}, [

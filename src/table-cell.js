@@ -54,10 +54,11 @@ export function tableColumnSpan(cell) {
 }
 
 // `rowspan="0"` is valid HTML - it spans to the end of the row group - and browsers report
-// `cell.rowSpan === 0` for it, so anything but a plain 1 pushes later rows sideways.
-export function tableCellSpansRows(cell) {
+// `cell.rowSpan === 0` for it. A finite span shifts only the following rows it actually reaches.
+export function tableCellSpansRows(cell, rowDistance = 1) {
   const span = tableSpanValue(cell, "rowspan", cell?.rowSpan);
-  return span !== null && span !== 1;
+  const renderedSpan = span === null || span < 0 ? 1 : span;
+  return renderedSpan === 0 || renderedSpan > rowDistance;
 }
 
 // A rowspan is clipped to its own row group, so the group is the widest span of rows one can
@@ -74,9 +75,9 @@ export function tableRowGroup(table, row) {
 }
 
 // A span starting in an earlier row of this row's own group means its DOM order is no longer its
-// rendered column order, and a per-row walk cannot model that. Which columns such a span still
-// covers here needs a full grid walk, so any earlier span in the group counts as shifting this
-// row; a row that cannot be placed in its own group at all is unprovable the same way.
+// rendered column order, and a per-row walk cannot model that. A finite span shifts only rows
+// within its declared range, while rowspan=0 reaches the end of the group; a row that cannot be
+// placed in its own group at all is unprovable the same way.
 export function tableRowIsShifted(table, row) {
   if (!table || !row) return true;
   const rows = tableRowsIn(tableRowGroup(table, row));
@@ -84,7 +85,7 @@ export function tableRowIsShifted(table, row) {
   if (index < 0) return true;
   for (let i = 0; i < index; i += 1) {
     for (const cell of tableRowCells(rows[i])) {
-      if (tableCellSpansRows(cell)) return true;
+      if (tableCellSpansRows(cell, index - i)) return true;
     }
   }
   return false;
