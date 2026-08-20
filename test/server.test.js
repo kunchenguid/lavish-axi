@@ -1697,6 +1697,10 @@ test("/artifact serves files copied under the artifact directory", async () => {
     '<!doctype html><html><head><link rel="stylesheet" href="assets/style.css"></head><body><img src="./assets/icon.svg"></body></html>',
   );
   await writeFile(path.join(assetDir, "style.css"), "body { color: rgb(1 2 3); }\n");
+  await writeFile(
+    path.join(assetDir, "popup.html"),
+    "<!doctype html><script>document.title = 'artifact popup'</script>",
+  );
   await writeFile(path.join(assetDir, "icon.svg"), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>');
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
   try {
@@ -1707,13 +1711,23 @@ test("/artifact serves files copied under the artifact directory", async () => {
       body: JSON.stringify({ file: artifact }),
     });
     const session = await sessionRes.json();
+    const load = await beginArtifactLoad(base, session.key);
+    const documentResponse = await fetch(artifactLoadUrl(base, session.key, load));
+    const popup = await fetch(`${base}/artifact/${session.key}/assets/popup.html`);
     const css = await fetch(`${base}/artifact/${session.key}/assets/style.css`);
     const svg = await fetch(`${base}/artifact/${session.key}/assets/icon.svg`);
+    const expectedSandbox =
+      "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
 
+    assert.equal(documentResponse.status, 200);
+    assert.equal(documentResponse.headers.get("content-security-policy"), expectedSandbox);
+    assert.equal(popup.status, 200);
+    assert.equal(popup.headers.get("content-security-policy"), expectedSandbox);
     assert.equal(css.status, 200);
     assert.match(css.headers.get("content-type") || "", /text\/css/);
     assert.equal(await css.text(), "body { color: rgb(1 2 3); }\n");
     assert.equal(svg.status, 200);
+    assert.equal(svg.headers.get("content-security-policy"), expectedSandbox);
     assert.match(svg.headers.get("content-type") || "", /image\/svg\+xml/);
     assert.match(await svg.text(), /<svg/);
   } finally {
