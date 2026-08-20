@@ -2841,6 +2841,56 @@ test("a retired draft's text survives a page reload and never touches the compos
   assert.equal(reloaded.element("chatInput").value, "");
 });
 
+// Retire one draft against the anchor named, leaving the chrome ready for the next one.
+async function retireDraft(chrome, selector, text) {
+  reportDraft(chrome, selector, text);
+  await flushPromises();
+  reportUnrestorable(chrome, selector);
+  await flushPromises();
+  await loadNextArtifactRevision(chrome);
+  reportUnrestorable(chrome, selector);
+  await flushPromises();
+}
+
+// The handback is the only copy of writing the user never saw again, so nothing already handed
+// back may be dropped to make room for a newer note.
+test("no retired draft is dropped to make room for a later one", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+
+  for (let i = 1; i <= 8; i += 1) {
+    await retireDraft(chrome, `#note-${i}`, `note number ${i}`);
+  }
+
+  const reloaded = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+  const notes = retiredDraftNotes(reloaded);
+  assert.equal(notes.length, 8);
+  for (let i = 1; i <= 8; i += 1) {
+    assert.ok(
+      notes.some((note) => String(note.innerHTML).includes(`note number ${i}`)),
+      `note ${i} must still be there after seven later retirements`,
+    );
+  }
+});
+
+// The alternative to evicting an older note is telling the user this one is only on screen.
+test("a retired draft the browser refuses to store says so in its own note", async () => {
+  const storage = new (class extends Map {
+    set(storageKey, value) {
+      if (String(storageKey).startsWith("lavish-axi:retired-drafts:")) throw new Error("quota exceeded");
+      return super.set(storageKey, value);
+    }
+  })();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+
+  await retireDraft(chrome, "#hero", "needs a shorter headline");
+
+  const notes = retiredDraftNotes(chrome);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].innerHTML, /needs a shorter headline/);
+  assert.match(notes[0].innerHTML, /refused to store it/);
+});
+
 test("repeated misses on one artifact revision never retire a draft", async () => {
   const storage = new Map();
   const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });

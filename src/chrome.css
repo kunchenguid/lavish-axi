@@ -955,6 +955,10 @@ body.lavish {
   white-space: pre-wrap;
   user-select: text;
 }
+.bubble.note .note-warning {
+  margin-top: 6px;
+  color: var(--danger);
+}
 .bubble.agent-working {
   display: flex;
   align-items: center;

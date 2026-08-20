@@ -15,7 +15,6 @@ const reviewStateStorageKey = "lavish-axi:review-state:" + key;
 // Drafts Lavish could not replay. The text outlives the draft that carried it, so the user can
 // still read and copy it after the anchor it was written against is gone for good.
 const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
-const MAX_RETIRED_DRAFTS = 5;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
@@ -279,8 +278,10 @@ function loadJsonState(storageKey, fallback) {
 function saveJsonState(storageKey, value) {
   try {
     sessionStorage.setItem(storageKey, JSON.stringify(value));
+    return true;
   } catch {
     // The in-memory state still works if browser storage is unavailable.
+    return false;
   }
 }
 
@@ -617,17 +618,19 @@ function discardUnrestorableDraft(selector) {
 function loadRetiredDrafts() {
   const stored = loadJsonState(retiredDraftStorageKey, []);
   if (!Array.isArray(stored)) return [];
-  return stored.filter((entry) => typeof entry === "string" && entry.trim()).slice(-MAX_RETIRED_DRAFTS);
+  return stored.filter((entry) => typeof entry === "string" && entry.trim());
 }
 
+// No entry already handed back is ever dropped to make room for a new one. When browser storage
+// refuses the write, the note says so on the spot instead of an older one quietly disappearing at
+// the next page load - the text the user wrote is the thing being protected here.
 function keepRetiredDraft(text) {
   if (!text.trim()) return;
-  retiredDrafts = [...retiredDrafts, text].slice(-MAX_RETIRED_DRAFTS);
-  saveJsonState(retiredDraftStorageKey, retiredDrafts);
-  renderRetiredDraft(text);
+  retiredDrafts = [...retiredDrafts, text];
+  renderRetiredDraft(text, saveJsonState(retiredDraftStorageKey, retiredDrafts));
 }
 
-function renderRetiredDraft(text) {
+function renderRetiredDraft(text, stored = true) {
   if (!chatLog) return;
   const el = document.createElement("div");
   el.className = "bubble note";
@@ -635,7 +638,10 @@ function renderRetiredDraft(text) {
     "<small>Unsent annotation</small><div>The element this note was attached to is no longer in the artifact, so Lavish could not reopen the card. Your text is kept here:</div>" +
     '<div class="note-draft">' +
     escapeHtml(text) +
-    "</div>";
+    "</div>" +
+    (stored
+      ? ""
+      : '<div class="note-warning">This browser refused to store it, so copy it before you reload this page.</div>');
   chatLog.appendChild(el);
   scrollElementIntoView(el);
 }
