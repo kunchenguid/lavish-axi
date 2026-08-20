@@ -170,6 +170,8 @@ const layoutGateMaxHoldMs =
     : 12_000;
 let chromeOutdatedReason = "";
 let outdatedReloadInFlight = false;
+/** @type {{ selector: string, revision: number } | null} */
+let unrestorableDraftMiss = null;
 let layoutGateVisible = false;
 let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
@@ -565,6 +567,8 @@ function setChromeOutdated(visible, reason = chromeOutdatedReason) {
 
 function setReviewState(state) {
   lastReviewState = state;
+  // The artifact reported a card, so its anchor exists: whatever miss was recorded is answered.
+  if (state?.card) unrestorableDraftMiss = null;
   if (!state || (!state.card && !(Array.isArray(state.fields) && state.fields.length))) {
     try {
       sessionStorage.removeItem(reviewStateStorageKey);
@@ -580,12 +584,23 @@ function hasUnsentDraft() {
   return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
 }
 
-// The SDK looked for this draft's anchor in the loaded artifact and it is gone, so the draft can
-// never be replayed. Retiring it is itself data loss, so it happens only on that definite answer
-// for the draft actually stored - never on a transient failure or a stale selector.
+// The SDK looked for this draft's anchor in a loaded artifact and did not find it. Retiring a
+// draft is itself data loss - the user may still be typing while the agent rewrites the element
+// they anchored to - so one miss only records the answer. The draft is retired only when a
+// SECOND artifact revision reports the same anchor missing: an element that is merely being
+// rewritten comes back, and a report on the revision already recorded is the same answer twice,
+// not two answers. Any report for a different draft, or for a draft that is no longer stored,
+// leaves the stored text alone.
 function discardUnrestorableDraft(selector) {
   if (!selector || !lastReviewState || !lastReviewState.card) return;
   if (String(lastReviewState.card.selector || "") !== selector) return;
+  const revision = artifactLoadRevision;
+  if (unrestorableDraftMiss?.selector !== selector) {
+    unrestorableDraftMiss = { selector, revision };
+    return;
+  }
+  if (unrestorableDraftMiss.revision === revision) return;
+  unrestorableDraftMiss = null;
   setReviewState({ ...lastReviewState, card: null });
 }
 
@@ -1004,6 +1019,10 @@ function setLayoutGateActive(active) {
 // Bumping the cycle retires any pending reveal timer so a stale one cannot hide this card.
 function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { sticky = false } = {}) {
   if (ended) return;
+  // A sticky card is the user's to retire, and that has to hold against being overwritten as
+  // well as against being cleared: the version-skew warning is the only thing telling this page
+  // it is running the pre-upgrade client, and a later ordinary load failure must not replace it.
+  if (layoutGateFailureActive && layoutGateFailureSticky && !sticky) return;
   layoutGateFailureActive = true;
   layoutGateFailureSticky = sticky;
   layoutGateCycle += 1;
@@ -1017,6 +1036,27 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
     layoutGateAction.onclick = onAction || (() => location.reload());
   }
   setLayoutGateActive(true);
+}
+
+// Every failure card in this feature is raised in a state where the server may not be listening,
+// so none of them may navigate on trust: a reload into a dead port replaces a recoverable page
+// with the browser's own connection-error page. Ask first, and say so when nothing answers.
+function checkServerThenReload(stillDownCopy) {
+  let checking = false;
+  return async () => {
+    if (checking) return;
+    checking = true;
+    if (layoutGateAction) layoutGateAction.disabled = true;
+    const running = await probeChromeHealth();
+    if (running) {
+      await flushWhiteboardsBeforeChromeReload();
+      location.reload();
+      return;
+    }
+    checking = false;
+    if (layoutGateAction) layoutGateAction.disabled = false;
+    if (layoutGateCopy) layoutGateCopy.textContent = stillDownCopy;
+  };
 }
 
 // A load attempt that gets going again retires the failure card. This runs even when the gate is
@@ -1675,7 +1715,11 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
     if (!artifactLoadToken) {
       setLayoutGateFailure(
         "Lavish could not load this artifact.",
-        "The Lavish server did not answer this review's load request. It usually restarted while this page was opening. Reload to reconnect.",
+        "The Lavish server did not answer this review's load request. It usually restarted while this page was opening. Check and reload to reconnect.",
+        "Check and reload",
+        checkServerThenReload(
+          "Lavish is still not answering. Start it again with your agent, then use Check and reload.",
+        ),
       );
     }
     return false;
@@ -2324,30 +2368,11 @@ async function reloadChromeAfterServerRestart() {
 
   if (!healthy) {
     chromeRestartReloadPromise = null;
-    let retrying = false;
-    // Reloading while nothing is listening is exactly what this whole path exists to avoid, so
-    // the card's own button probes first and stays up when the server is still gone.
-    const reloadWhenServerIsBack = async () => {
-      if (retrying) return;
-      retrying = true;
-      if (layoutGateAction) layoutGateAction.disabled = true;
-      const back = await probeChromeHealth();
-      if (back) {
-        await flushWhiteboardsBeforeChromeReload();
-        location.reload();
-        return;
-      }
-      retrying = false;
-      if (layoutGateAction) layoutGateAction.disabled = false;
-      if (layoutGateCopy) {
-        layoutGateCopy.textContent = "Lavish is still not running. Start it again with your agent, then use Reload.";
-      }
-    };
     setLayoutGateFailure(
       "Lavish is not running.",
-      "The Lavish server restarted and did not come back. Start it again with your agent, then reload this page.",
-      "Reload",
-      reloadWhenServerIsBack,
+      "The Lavish server restarted and did not come back. Start it again with your agent, then check and reload this page.",
+      "Check and reload",
+      checkServerThenReload("Lavish is still not running. Start it again with your agent, then use Check and reload."),
       { sticky: true },
     );
     return;

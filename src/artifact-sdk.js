@@ -2063,6 +2063,7 @@ export function createArtifactSdk(
 
   let activeCardContext = null;
   let reviewStateTimer = 0;
+  const REVIEW_DRAFT_ANCHOR_SETTLE_MS = 1500;
 
   function safeQuerySelector(selector) {
     try {
@@ -2151,10 +2152,20 @@ export function createArtifactSdk(
     if (!card || !card.selector || !String(card.text || "").trim()) return;
     const target = safeQuerySelector(card.selector);
     if (!target) {
-      // This document is loaded and the anchor is not in it, so the draft can never be replayed
-      // here. Say so rather than staying silent: the chrome cannot see into this document, and a
-      // draft it is never told about is retried against every later load.
-      postArtifactMessage("lavish:reviewDraftUnrestorable", { selector: String(card.selector) });
+      // The load event says the document parsed, not that it finished rendering: a section this
+      // page builds in script, or a Mermaid diagram, arrives later. Ask again once it has had
+      // time to appear, and restore the card if it did. Only then is the anchor's absence an
+      // answer worth reporting - the chrome cannot see into this document, and a draft it is
+      // never told about is retried against every later load.
+      window.setTimeout(() => {
+        const late = safeQuerySelector(card.selector);
+        if (late) {
+          showAnnotationCard(late, { restoreText: String(card.text) });
+          return;
+        }
+        if (activeCardContext) return;
+        postArtifactMessage("lavish:reviewDraftUnrestorable", { selector: String(card.selector) });
+      }, REVIEW_DRAFT_ANCHOR_SETTLE_MS);
       return;
     }
     showAnnotationCard(target, { restoreText: String(card.text) });

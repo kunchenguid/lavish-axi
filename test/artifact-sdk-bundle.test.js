@@ -107,6 +107,15 @@ function cell(tag, text) {
 function bootSdk() {
   const posted = [];
   const documentListeners = [];
+  // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
+  // re-query is a real timer, and asserting on it means running it rather than assuming it.
+  const timers = [];
+  const scheduleTimer = (fn, ms) => timers.push({ fn, ms }) && timers.length;
+  const cancelTimer = (id) => {
+    if (timers[id - 1]) timers[id - 1].cancelled = true;
+  };
+  /** @type {(selector: string) => any} */
+  let documentQuery = () => null;
   const documentElement = createElement("html");
   const head = createElement("head");
   const body = createElement("body");
@@ -133,8 +142,8 @@ function bootSdk() {
       revokeObjectURL() {},
     },
     getComputedStyle: () => ({}),
-    setTimeout: () => 0,
-    clearTimeout() {},
+    setTimeout: scheduleTimer,
+    clearTimeout: cancelTimer,
     requestAnimationFrame: () => 0,
     document: {
       readyState: "complete",
@@ -147,7 +156,7 @@ function bootSdk() {
       removeEventListener() {},
       createElement,
       getElementById: () => null,
-      querySelector: () => null,
+      querySelector: (selector) => documentQuery(selector),
       querySelectorAll: () => [],
       getSelection: () => null,
     },
@@ -156,8 +165,8 @@ function bootSdk() {
   sandbox.window = {
     addEventListener: (type, handler) => windowListeners.push({ type, handler }),
     removeEventListener() {},
-    setTimeout: () => 0,
-    clearTimeout() {},
+    setTimeout: scheduleTimer,
+    clearTimeout: cancelTimer,
     requestAnimationFrame: () => 0,
     innerWidth: 1280,
     innerHeight: 800,
@@ -178,6 +187,15 @@ function bootSdk() {
       const listener = documentListeners.find((entry) => entry.type === "click");
       assert.ok(listener, "the SDK registers a document click listener");
       listener.handler({ target, preventDefault() {}, stopPropagation() {} });
+    },
+    setDocumentQuery(query) {
+      documentQuery = query;
+    },
+    runTimers() {
+      const pending = timers.splice(0, timers.length);
+      for (const timer of pending) {
+        if (!timer.cancelled) timer.fn();
+      }
     },
     // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
     sendChromeMessage(data) {
@@ -302,10 +320,40 @@ test("the served SDK bundle reports a draft whose anchor the artifact no longer 
     state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
   });
 
+  // The load event proves the document parsed, not that it finished rendering, so nothing is
+  // reported until the anchor has had time to appear.
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:reviewDraftUnrestorable"),
+    false,
+  );
+
+  sdk.runTimers();
   const report = sdk.posted.at(-1);
   assert.equal(report.type, "lavish:reviewDraftUnrestorable");
   assert.equal(report.selector, "#hero");
   assert.equal(report.artifact_load_token, "load-token");
+});
+
+// A section this page builds in script, or a Mermaid diagram, is not in the document when it
+// loads. Reporting that as a missing anchor is how a live draft gets thrown away.
+test("the served SDK bundle restores a draft whose anchor arrives after the load", () => {
+  const sdk = bootSdk();
+  let late = null;
+  sdk.setDocumentQuery((selector) => (selector === "#hero" ? late : null));
+
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+  });
+  late = appendTo(sdk.body, cell("h1", "Headline"));
+  sdk.runTimers();
+
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:reviewDraftUnrestorable"),
+    false,
+    "an anchor that arrived late is restored, not reported gone",
+  );
+  assert.equal(sdk.card().querySelector("textarea").value, "needs a shorter headline");
 });
 
 test("the served SDK bundle reports nothing when there is no draft to restore", () => {
@@ -314,6 +362,7 @@ test("the served SDK bundle reports nothing when there is no draft to restore", 
 
   sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: { card: null, fields: [] } });
   sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: { card: { selector: "#hero", text: "  " } } });
+  sdk.runTimers();
 
   assert.equal(sdk.posted.length, before);
 });

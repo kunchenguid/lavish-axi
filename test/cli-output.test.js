@@ -2320,3 +2320,109 @@ async function startFakeHtmlApp(requests) {
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
 }
+
+// A stand-in for a running server of another version: it answers /health, records what the CLI
+// actually puts on the wire at /shutdown, and then frees the port like a real one.
+async function startShutdownRecorder(version = "0.0.0-previous") {
+  const bodies = [];
+  const server = createServer((req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version }));
+      return;
+    }
+    if (req.url === "/shutdown" && req.method === "POST") {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        bodies.push(raw ? JSON.parse(raw) : {});
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "shutting-down" }));
+        server.close();
+        server.closeAllConnections?.();
+      });
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  const address = /** @type {import("node:net").AddressInfo} */ (server.address());
+  return { bodies, port: address.port, close: () => server.close() };
+}
+
+test("lavish-axi stop tells the server it was stopped, and names no session to reload", async () => {
+  const recorder = await startShutdownRecorder();
+  try {
+    const output = await shutdownServerOnPort(recorder.port, {
+      baseUrl: `http://127.0.0.1:${recorder.port}`,
+      currentVersion: "0.1.4",
+    });
+
+    assert.deepEqual(recorder.bodies, [{ reason: "stop" }]);
+    assert.equal(output.server.status, "stopped");
+  } finally {
+    recorder.close();
+  }
+});
+
+// The page being opened is the one that reloads itself, and the server picks it by key, so the
+// key the CLI sends has to be the canonical session key for the file - an empty or non-canonical
+// one silently degrades the feature to "nobody reloads, everybody gets a banner".
+test("opening an artifact names that session as the one to reload across a version upgrade", async () => {
+  const recorder = await startShutdownRecorder();
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-open-reload-"));
+  const stateDir = path.join(dir, "state");
+  const nested = path.join(dir, "pages");
+  await mkdir(nested, { recursive: true });
+  const artifact = path.join(nested, "board.html");
+  await writeFile(artifact, "<!doctype html><html><body>board</body></html>");
+  const base = `http://127.0.0.1:${recorder.port}`;
+
+  try {
+    // Spawned asynchronously on purpose: the recorder runs in this process, so a blocking
+    // spawnSync would deadlock the CLI's own /health request against it.
+    const child = spawn(
+      process.execPath,
+      // A path with a `..` hop: the key must come from the canonicalized file, not this spelling.
+      [
+        fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)),
+        path.join(nested, "..", "pages", "board.html"),
+        "--no-open",
+      ],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {
+          ...process.env,
+          LAVISH_AXI_PORT: String(recorder.port),
+          LAVISH_AXI_STATE_DIR: stateDir,
+          LAVISH_AXI_TELEMETRY: "0",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.stdout.resume();
+    const code = await new Promise((resolve) => child.on("exit", resolve));
+
+    assert.equal(code, 0, stderr);
+    assert.deepEqual(recorder.bodies, [{ reload_key: sessionKey(await canonicalFile(artifact)), reason: "upgrade" }]);
+  } finally {
+    // The CLI replaced the recorder with a real server on that port; stop it again.
+    await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => {});
+    for (let i = 0; i < 30; i += 1) {
+      const alive = await fetch(`${base}/health`).then(
+        () => true,
+        () => false,
+      );
+      if (!alive) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    recorder.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
