@@ -2789,6 +2789,10 @@ test("GET /api/:key/export inlines local assets and leaves remote references int
 
     const exportRes = await fetch(`${base}/api/${session.key}/export`);
     assert.equal(exportRes.status, 200);
+    assert.equal(
+      exportRes.headers.get("content-security-policy"),
+      "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads",
+    );
     assert.match(exportRes.headers.get("content-disposition") || "", /attachment; filename="artifact\.export\.html"/);
     const body = await exportRes.text();
     // local stylesheet + image inlined

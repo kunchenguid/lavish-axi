@@ -656,6 +656,10 @@ export async function serve({
         resolveAbsolute: resolveDesignAssetPath,
       });
       const { unresolved, notices } = splitExportWarnings(warnings);
+      // Although this response downloads in normal chrome usage, an escaped artifact popup can
+      // navigate to it directly. Preserve the artifact's opaque-origin boundary if the browser
+      // renders the exported HTML instead of saving it.
+      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
       res.setHeader("content-disposition", exportContentDisposition(session.file));
       res.setHeader("x-lavish-export-warning-count", String(unresolved.length));
       res.setHeader("x-lavish-export-notice-count", String(notices.length));
