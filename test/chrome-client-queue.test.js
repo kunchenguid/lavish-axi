@@ -2679,6 +2679,11 @@ test("the outdated banner says what actually happened to the server", async () =
   sendChromeOutdated(chrome, "stop");
   assert.equal(chrome.element("outdatedText").textContent, "Lavish was stopped. Reload after you start it again.");
 
+  sendChromeOutdated(chrome, "local-build");
+  const localBuild = chrome.element("outdatedText").textContent;
+  assert.match(localBuild, /local build/);
+  assert.doesNotMatch(localBuild, /updated/);
+
   for (const unnamed of [undefined, "", "something-else"]) {
     sendChromeOutdated(chrome, unnamed);
     const copy = chrome.element("outdatedText").textContent;
@@ -2783,6 +2788,64 @@ test("a restart wait whose port never answers still reaches the not-running card
 
   assert.equal(chrome.reloadCount(), 0);
   assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+});
+
+// A probe can take until its timeout, and by then the overlay may have moved on to a different
+// card - or back to the checking gate over an artifact that is loading. Its copy is not this
+// probe's to overwrite.
+test("a slow probe does not write its failure copy over a card that moved on", async () => {
+  const health = wedgedHealthHarness();
+  const beginLoadResponses = [];
+  for (let i = 0; i < 15; i += 1) beginLoadResponses.push({ ok: false, status: 503 });
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    beginLoadResponses,
+    fetchImpl: health.fetchImpl,
+  });
+
+  await exhaustOneBeginLoadAttempt(chrome);
+  for (const delay of [1000, 3000, 8000, 20000]) {
+    chrome.runTimers(delay);
+    await exhaustOneBeginLoadAttempt(chrome);
+  }
+  assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish could not load this artifact.");
+
+  chrome.element("layoutGateAction").click();
+  await flushPromises();
+
+  // The artifact loads while the probe is still out, so the gate is back on its checking card.
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+  assert.match(String(chrome.element("layoutGateTitle").innerHTML), /Checking layout/);
+  const checkingCopy = chrome.element("layoutGateCopy").textContent;
+
+  chrome.runTimers(4000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("layoutGateCopy").textContent, checkingCopy);
+  assert.equal(chrome.element("layoutGateAction").disabled, false, "the control still comes back");
+});
+
+test("a slow probe does not write its failure copy over a newer banner", async () => {
+  const health = wedgedHealthHarness();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", fetchImpl: health.fetchImpl });
+
+  sendChromeOutdated(chrome, "upgrade");
+  chrome.element("outdatedReload").click();
+  await flushPromises();
+
+  // A second shutdown lands mid-probe and names a different reason.
+  sendChromeOutdated(chrome, "stop");
+  const freshCopy = chrome.element("outdatedText").textContent;
+
+  chrome.runTimers(4000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("outdatedText").textContent, freshCopy);
+  assert.equal(chrome.element("outdatedReload").disabled, false);
 });
 
 test("a health check that never answers hands the failure card's button back", async () => {

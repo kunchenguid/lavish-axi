@@ -99,7 +99,7 @@ const ATTACHMENT_SWEEP_INTERVAL_MS = 60 * 60_000;
 // The reasons a caller may name for shutting this server down. Each one drives a different line
 // in the chrome's outdated banner, so an unknown value is dropped rather than passed through to
 // text the user would read as a fact.
-const SHUTDOWN_REASONS = new Set(["upgrade", "stop"]);
+const SHUTDOWN_REASONS = new Set(["upgrade", "local-build", "stop"]);
 
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
 // layout-warning batch is outstanding, the agent is applying several related edits, so widen the

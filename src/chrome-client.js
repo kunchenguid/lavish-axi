@@ -172,6 +172,7 @@ const layoutGateMaxHoldMs =
     ? Math.min(configuredLayoutGateMaxHoldMs, 60_000)
     : 12_000;
 let chromeOutdatedReason = "";
+let chromeOutdatedGeneration = 0;
 let outdatedReloadInFlight = false;
 /** @type {{ selector: string, revision: number } | null} */
 let unrestorableDraftMiss = null;
@@ -562,6 +563,9 @@ function setHandoffSuperseded(visible) {
 // caller that names none) claims neither.
 function chromeOutdatedCopy(reason) {
   if (reason === "upgrade") return "Lavish was updated. This page is running the previous version.";
+  if (reason === "local-build") {
+    return "Lavish was restarted to pick up a local build. This page is running the copy the previous server sent.";
+  }
   if (reason === "stop") return "Lavish was stopped. Reload after you start it again.";
   return "The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.";
 }
@@ -570,6 +574,7 @@ function chromeOutdatedCopy(reason) {
 // interrupts whatever they were reading or writing.
 function setChromeOutdated(visible, reason = chromeOutdatedReason) {
   chromeOutdatedReason = String(reason || "");
+  chromeOutdatedGeneration += 1;
   if (outdatedText) outdatedText.textContent = chromeOutdatedCopy(chromeOutdatedReason);
   outdatedReloadInFlight = false;
   if (outdatedReloadButton) outdatedReloadButton.disabled = false;
@@ -1094,6 +1099,10 @@ function checkServerThenReload(stillDownCopy) {
     if (checking) return;
     checking = true;
     if (layoutGateAction) layoutGateAction.disabled = true;
+    // The card this click was made on. A probe can take until HEALTH_PROBE_TIMEOUT_MS, and the
+    // overlay may have moved on to a different card - or back to the checking gate - by then; its
+    // copy is not this probe's to overwrite.
+    const cycle = layoutGateCycle;
     let outcome = "not-running";
     let navigating = false;
     try {
@@ -1109,7 +1118,7 @@ function checkServerThenReload(stillDownCopy) {
       if (!navigating) {
         checking = false;
         if (layoutGateAction) layoutGateAction.disabled = false;
-        if (layoutGateCopy) {
+        if (layoutGateCopy && cycle === layoutGateCycle) {
           layoutGateCopy.textContent = outcome === "no-answer" ? HEALTH_NO_ANSWER_COPY : stillDownCopy;
         }
       }
@@ -2462,6 +2471,8 @@ async function reloadChromeForOutdatedBanner() {
   if (outdatedReloadInFlight) return;
   outdatedReloadInFlight = true;
   if (outdatedReloadButton) outdatedReloadButton.disabled = true;
+  // The banner this click was made on: a later one carries a newer reason, and that line stands.
+  const generation = chromeOutdatedGeneration;
   let outcome = "not-running";
   let navigating = false;
   try {
@@ -2475,7 +2486,7 @@ async function reloadChromeForOutdatedBanner() {
     if (!navigating) {
       outdatedReloadInFlight = false;
       if (outdatedReloadButton) outdatedReloadButton.disabled = false;
-      if (outdatedText) {
+      if (outdatedText && generation === chromeOutdatedGeneration) {
         outdatedText.textContent =
           outcome === "no-answer"
             ? HEALTH_NO_ANSWER_COPY

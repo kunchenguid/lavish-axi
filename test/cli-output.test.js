@@ -37,6 +37,7 @@ import {
   resolveCopilotHookDir,
   resolveHookHomeDir,
   resolveServerEntry,
+  serverReplacementReason,
   shutdownServerOnPort,
   shouldForceRestartForLocalBuild,
   shouldKillProcessOnPort,
@@ -2097,6 +2098,25 @@ test("shouldRestartServer does not restart when /health was unreachable", () => 
   // null = fetch failed; the caller should fall through to startServer instead of trying
   // to POST /shutdown against nothing.
   assert.equal(shouldRestartServer("0.1.4", null), false);
+});
+
+// Every other open review page is told why its server went away, so the reason has to name the
+// branch that actually fired: a local-build force replaces a server of the same version, and
+// calling that an update is false on both counts.
+test("serverReplacementReason names a local-build force apart from a real version change", () => {
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }), "upgrade");
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi" }), "upgrade");
+  assert.equal(
+    serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }, true),
+    "local-build",
+  );
+  // A version difference is an upgrade even when the local-build force is also set.
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }, true), "upgrade");
+});
+
+test("serverReplacementReason names nothing when no replacement is warranted", () => {
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), "");
+  assert.equal(serverReplacementReason("0.1.4", null), "");
 });
 
 test("shouldKillProcessOnPort does not kill unidentified health responders", () => {

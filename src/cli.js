@@ -1083,7 +1083,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     }
     // Stale server from an older release is squatting on the port. Ask it to shut down
     // gracefully so the upgraded client doesn't keep handing users an old chrome.
-    await requestShutdown(baseUrl, { reloadKey, reason: "upgrade" });
+    await requestShutdown(baseUrl, { reloadKey, reason: serverReplacementReason(VERSION, existing, forceRestart) });
     const freed = await waitForPortFree(baseUrl, 2000);
     if (!freed) {
       // Pre-handshake servers (any release older than this change) don't expose /shutdown
@@ -1118,6 +1118,18 @@ export function shouldRestartServer(currentVersion, healthBody, forceRestart = f
   if (forceRestart && healthBody.app === "lavish-axi") return true;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
   return healthBody.version !== currentVersion;
+}
+
+// Which branch of `shouldRestartServer` actually fired, because that is what the other open
+// review pages are told. A local-build force replaces a server of the SAME version, so calling it
+// an upgrade would be false on both counts; only a version this CLI does not match is one.
+export function serverReplacementReason(currentVersion, healthBody, forceRestart = false) {
+  if (!shouldRestartServer(currentVersion, healthBody, forceRestart)) return "";
+  const runningVersion = healthBody.version;
+  if (typeof runningVersion !== "string" || runningVersion === "" || runningVersion !== currentVersion) {
+    return "upgrade";
+  }
+  return "local-build";
 }
 
 export function shouldForceRestartForLocalBuild(executablePath, sourceServerExists = localSourceServerExists()) {
