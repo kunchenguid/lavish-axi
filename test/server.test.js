@@ -77,6 +77,10 @@ function artifactMutation(load, body = {}) {
   };
 }
 
+function flushMicrotasks() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 function chromeSessionData(html) {
   const match = String(html).match(/<script id="lavish-session" type="application\/json">([\s\S]*?)<\/script>/);
   assert.ok(match);
@@ -165,8 +169,13 @@ function bootChromeFailsafe(options = {}) {
   const timers = new Map();
   let reloads = 0;
   let nextTimerId = 1;
+  let serverRunning = false;
 
   const context = {
+    fetch(url) {
+      assert.equal(String(url), "/health", "the failsafe may only ask the server whether it runs");
+      return serverRunning ? Promise.resolve({ ok: true }) : Promise.reject(new Error("connection refused"));
+    },
     document: {
       body: { classList: { add: (name) => bodyClasses.add(name) } },
       getElementById(id) {
@@ -207,10 +216,13 @@ function bootChromeFailsafe(options = {}) {
       }
     },
     reloadCount: () => reloads,
+    startServer() {
+      serverRunning = true;
+    },
   };
 }
 
-test("the chrome boot failsafe turns the layout gate into a reloadable failure when its script never runs", () => {
+test("the chrome boot failsafe turns the layout gate into a reloadable failure when its script never runs", async () => {
   const boot = bootChromeFailsafe();
 
   // The failsafe must be armed BEFORE the external script tag: a request that hangs instead of
@@ -228,10 +240,12 @@ test("the chrome boot failsafe turns the layout gate into a reloadable failure w
   assert.equal(boot.element("layoutGateOverlay").hidden, false);
   assert.match(boot.element("layoutGateTitle").textContent, /could not finish loading/);
   assert.match(boot.element("layoutGateCopy").textContent, /did not load/);
-  assert.equal(boot.element("layoutGateAction").textContent, "Reload");
+  assert.equal(boot.element("layoutGateAction").textContent, "Check and reload");
   assert.equal(boot.bodyClasses.has("layout-gate-active"), true);
 
+  boot.startServer();
   boot.element("layoutGateAction").onclick();
+  await flushMicrotasks();
   assert.equal(boot.reloadCount(), 1);
 });
 
@@ -280,8 +294,29 @@ test("a chrome client script that fails to load raises the failure card immediat
 
   assert.equal(boot.element("layoutGateOverlay").hidden, false);
   assert.match(boot.element("layoutGateTitle").textContent, /could not finish loading/);
-  assert.equal(boot.element("layoutGateAction").textContent, "Reload");
+  assert.equal(boot.element("layoutGateAction").textContent, "Check and reload");
   assert.deepEqual(boot.pendingDelays(), [], "the immediate failure retires the pending timer");
+});
+
+// The failsafe's own copy says the server most likely went away between serving this page and
+// serving the client script, so its button is the one most likely to be clicked while nothing is
+// listening. It cannot use the client's helper - the client is exactly what failed to load.
+test("the chrome boot failsafe asks the server before navigating", async () => {
+  const boot = bootChromeFailsafe();
+  boot.runTimers();
+
+  assert.equal(boot.element("layoutGateAction").textContent, "Check and reload");
+  boot.element("layoutGateAction").onclick();
+  await flushMicrotasks();
+
+  assert.equal(boot.reloadCount(), 0, "never navigate into a port nothing is listening on");
+  assert.match(boot.element("layoutGateCopy").textContent, /still not running/);
+  assert.equal(boot.element("layoutGateAction").disabled, false, "the button stays usable for a later try");
+
+  boot.startServer();
+  boot.element("layoutGateAction").onclick();
+  await flushMicrotasks();
+  assert.equal(boot.reloadCount(), 1);
 });
 
 test("artifact iframe sandbox lets popups escape without granting same-origin", () => {

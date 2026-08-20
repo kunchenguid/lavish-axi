@@ -2779,6 +2779,14 @@ function reportUnrestorable(chrome, selector) {
   });
 }
 
+function retiredDraftNotes(chrome) {
+  return chrome.element("chatLog").children.filter((child) =>
+    String(child.className || "")
+      .split(/\s+/)
+      .includes("note"),
+  );
+}
+
 async function restoredDraft(storage) {
   const next = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
   return next.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState");
@@ -2803,6 +2811,34 @@ test("a draft the artifact can no longer anchor is retired after a second revisi
   await flushPromises();
 
   assert.deepEqual(await restoredDraft(storage), []);
+  // Retiring ends Lavish's ability to replay the note, so the text is handed back where the user
+  // can read and copy it instead of disappearing.
+  assert.equal(retiredDraftNotes(chrome).length, 1);
+  assert.match(retiredDraftNotes(chrome)[0].innerHTML, /needs a shorter headline/);
+});
+
+// The recovered text is the only copy left, so it must not depend on the page staying up, and it
+// must never land on top of something the user is writing.
+test("a retired draft's text survives a page reload and never touches the composer", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+  chrome.element("chatInput").value = "a message I was already writing";
+
+  reportDraft(chrome, "#hero", "needs a shorter headline");
+  await flushPromises();
+  reportUnrestorable(chrome, "#hero");
+  await flushPromises();
+  await loadNextArtifactRevision(chrome);
+  reportUnrestorable(chrome, "#hero");
+  await flushPromises();
+
+  assert.equal(chrome.element("chatInput").value, "a message I was already writing");
+
+  const reloaded = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+  const notes = retiredDraftNotes(reloaded);
+  assert.equal(notes.length, 1, "the recovered text outlives the page that recovered it");
+  assert.match(notes[0].innerHTML, /needs a shorter headline/);
+  assert.equal(reloaded.element("chatInput").value, "");
 });
 
 test("repeated misses on one artifact revision never retire a draft", async () => {

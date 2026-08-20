@@ -12,6 +12,10 @@ const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
 // destroy it unless the chrome persists what the SDK reports. Keyed per session like the queue,
 // so a draft can never reappear over a different artifact.
 const reviewStateStorageKey = "lavish-axi:review-state:" + key;
+// Drafts Lavish could not replay. The text outlives the draft that carried it, so the user can
+// still read and copy it after the anchor it was written against is gone for good.
+const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
+const MAX_RETIRED_DRAFTS = 5;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
@@ -172,6 +176,7 @@ let chromeOutdatedReason = "";
 let outdatedReloadInFlight = false;
 /** @type {{ selector: string, revision: number } | null} */
 let unrestorableDraftMiss = null;
+let retiredDrafts = loadRetiredDrafts();
 let layoutGateVisible = false;
 let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
@@ -601,7 +606,38 @@ function discardUnrestorableDraft(selector) {
   }
   if (unrestorableDraftMiss.revision === revision) return;
   unrestorableDraftMiss = null;
+  keepRetiredDraft(String(lastReviewState.card.text || ""));
   setReviewState({ ...lastReviewState, card: null });
+}
+
+// Retiring a draft ends Lavish's ability to replay it, so the text itself is handed back to the
+// user before it goes: it is written to the conversation panel verbatim, where it is selectable,
+// nothing overwrites what they may already be typing, and no control can discard it by accident.
+// It is persisted per session so a reload does not take the last copy with it.
+function loadRetiredDrafts() {
+  const stored = loadJsonState(retiredDraftStorageKey, []);
+  if (!Array.isArray(stored)) return [];
+  return stored.filter((entry) => typeof entry === "string" && entry.trim()).slice(-MAX_RETIRED_DRAFTS);
+}
+
+function keepRetiredDraft(text) {
+  if (!text.trim()) return;
+  retiredDrafts = [...retiredDrafts, text].slice(-MAX_RETIRED_DRAFTS);
+  saveJsonState(retiredDraftStorageKey, retiredDrafts);
+  renderRetiredDraft(text);
+}
+
+function renderRetiredDraft(text) {
+  if (!chatLog) return;
+  const el = document.createElement("div");
+  el.className = "bubble note";
+  el.innerHTML =
+    "<small>Unsent annotation</small><div>The element this note was attached to is no longer in the artifact, so Lavish could not reopen the card. Your text is kept here:</div>" +
+    '<div class="note-draft">' +
+    escapeHtml(text) +
+    "</div>";
+  chatLog.appendChild(el);
+  scrollElementIntoView(el);
 }
 
 async function refreshChromeLoadHandoff(requestSequence) {
@@ -2817,6 +2853,7 @@ setChromeOutdated(false);
 setWarningsDrawerOpen(false);
 renderWarnings();
 initialChat.forEach((item) => addChat(item.role, item.text));
+retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
 
 // Reaching this line is the only proof that this file parsed and ran to completion. The page it

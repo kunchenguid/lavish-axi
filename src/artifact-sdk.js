@@ -2158,12 +2158,16 @@ export function createArtifactSdk(
       // answer worth reporting - the chrome cannot see into this document, and a draft it is
       // never told about is retried against every later load.
       window.setTimeout(() => {
+        // The user may have opened a card of their own inside the settle window, and
+        // `showAnnotationCard` closes whatever is open before it draws. Restoring over live
+        // typing destroys text nothing has carried to the chrome yet, so a card on screen ends
+        // this attempt: the draft is still stored, and the next load tries again.
+        if (activeCardContext) return;
         const late = safeQuerySelector(card.selector);
         if (late) {
           showAnnotationCard(late, { restoreText: String(card.text) });
           return;
         }
-        if (activeCardContext) return;
         postArtifactMessage("lavish:reviewDraftUnrestorable", { selector: String(card.selector) });
       }, REVIEW_DRAFT_ANCHOR_SETTLE_MS);
       return;

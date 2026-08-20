@@ -1890,19 +1890,28 @@ export function extractArtifactHead(html) {
 export const CHROME_BOOT_FAILSAFE_MS = 15000;
 const CHROME_BOOT_FAILSAFE_JS = `(function(){
 var t=setTimeout(fail,${CHROME_BOOT_FAILSAFE_MS});
+var o,h,c,a;
 window.__lavishCancelChromeBootFailsafe=function(){clearTimeout(t);};
 window.__lavishChromeBootFailed=function(){clearTimeout(t);fail();};
 function fail(){
 if(window.__lavishChromeReady)return;
-var o=document.getElementById("layoutGateOverlay");
-var h=document.getElementById("layoutGateTitle");
-var c=document.getElementById("layoutGateCopy");
-var a=document.getElementById("layoutGateAction");
+o=document.getElementById("layoutGateOverlay");
+h=document.getElementById("layoutGateTitle");
+c=document.getElementById("layoutGateCopy");
+a=document.getElementById("layoutGateAction");
 if(h)h.textContent="Lavish could not finish loading.";
-if(c)c.textContent="The Lavish editor script did not load. The server usually restarted while this page was opening. Reload to reconnect.";
-if(a){a.textContent="Reload";a.onclick=function(){location.reload();};}
+if(c)c.textContent="The Lavish editor script did not load. The server usually restarted while this page was opening. Check and reload to reconnect.";
+if(a){a.textContent="Check and reload";a.disabled=false;a.onclick=check;}
 if(o)o.hidden=false;
 if(document.body)document.body.classList.add("layout-gate-active");
+}
+function check(){
+if(a)a.disabled=true;
+fetch("/health",{cache:"no-store"}).then(function(r){return r&&r.ok;},function(){return false;}).then(function(ok){
+if(ok){location.reload();return;}
+if(a)a.disabled=false;
+if(c)c.textContent="Lavish is still not running. Start it again with your agent, then use Check and reload.";
+});
 }
 })();`;
 

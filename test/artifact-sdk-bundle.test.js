@@ -366,3 +366,31 @@ test("the served SDK bundle reports nothing when there is no draft to restore", 
 
   assert.equal(sdk.posted.length, before);
 });
+
+// `showAnnotationCard` closes whatever card is open before it draws, so a late restore landing on
+// a card the user opened inside the settle window would delete text they are still typing - text
+// no report has carried to the chrome yet.
+test("the served SDK bundle leaves a card the user opened alone when the anchor arrives late", () => {
+  const sdk = bootSdk();
+  let late = null;
+  sdk.setDocumentQuery((selector) => (selector === "#hero" ? late : null));
+
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+  });
+
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  sdk.card().querySelector("textarea").value = "typing something new";
+  late = appendTo(sdk.body, cell("h1", "Headline"));
+  sdk.runTimers();
+
+  assert.equal(sdk.card().querySelector("textarea").value, "typing something new");
+  // The draft is still stored on the chrome side, so a later load can try again; nothing here
+  // claims the anchor is gone either.
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:reviewDraftUnrestorable"),
+    false,
+  );
+});

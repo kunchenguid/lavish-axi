@@ -943,6 +943,18 @@ body.lavish {
   background: transparent;
   border-color: var(--border-subtle);
 }
+.bubble.note {
+  align-self: stretch;
+  max-width: 100%;
+  background: transparent;
+  border-color: var(--border-strong);
+  border-style: dashed;
+}
+.bubble.note .note-draft {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  user-select: text;
+}
 .bubble.agent-working {
   display: flex;
   align-items: center;
