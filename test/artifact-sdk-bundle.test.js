@@ -203,10 +203,13 @@ function bootSdk() {
       assert.ok(listeners.length > 0, "the SDK registers a window message listener");
       for (const listener of listeners) listener.handler({ source: sandbox.parent, data });
     },
-    card() {
-      const card = documentElement.children
+    cards() {
+      return documentElement.children
         .flatMap((child) => child.shadowRoot?.children || [])
-        .findLast((child) => child.className === "lavish-annotation-card");
+        .filter((child) => child.className === "lavish-annotation-card");
+    },
+    card() {
+      const card = this.cards().at(-1);
       assert.ok(card, "clicking an element opens an annotation card");
       return card;
     },
@@ -389,6 +392,36 @@ test("the served SDK bundle leaves a card the user opened alone when the anchor 
   assert.equal(sdk.card().querySelector("textarea").value, "typing something new");
   // The draft is still stored on the chrome side, so a later load can try again; nothing here
   // claims the anchor is gone either.
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:reviewDraftUnrestorable"),
+    false,
+  );
+});
+
+// Cancelling a card reports `card: null`, which is what retires the stored draft on the chrome
+// side. A late restore firing after that cancel would draw text the chrome no longer holds and
+// report it back as a live draft, so the card the user dismissed reappears with someone else's
+// text in it.
+test("the served SDK bundle drops a late restore once the user has opened a card of their own", () => {
+  const sdk = bootSdk();
+  let late = null;
+  sdk.setDocumentQuery((selector) => (selector === "#hero" ? late : null));
+
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+  });
+
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  sdk.card().querySelector(".lavish-cancel").onclick();
+  const cardsAfterCancel = sdk.cards().length;
+
+  late = appendTo(sdk.body, cell("h1", "Headline"));
+  sdk.runTimers();
+
+  assert.equal(sdk.cards().length, cardsAfterCancel, "the cancelled card is not replaced by a restored one");
+  assert.notEqual(sdk.card().querySelector("textarea").value, "needs a shorter headline");
   assert.equal(
     sdk.posted.some((message) => message.type === "lavish:reviewDraftUnrestorable"),
     false,

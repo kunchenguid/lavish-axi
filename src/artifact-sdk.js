@@ -2063,7 +2063,18 @@ export function createArtifactSdk(
 
   let activeCardContext = null;
   let reviewStateTimer = 0;
+  let draftRestoreTimer = 0;
   const REVIEW_DRAFT_ANCHOR_SETTLE_MS = 1500;
+
+  // A card the user opened ends the pending late restore for good, not just for the instant the
+  // settle timer happens to fire: closing that card reports `card: null`, which retires the stored
+  // draft, so a restore landing afterwards would put text the chrome no longer holds back on
+  // screen and back into persistence over a card the user already dismissed.
+  function cancelPendingDraftRestore() {
+    if (!draftRestoreTimer) return;
+    window.clearTimeout(draftRestoreTimer);
+    draftRestoreTimer = 0;
+  }
 
   function safeQuerySelector(selector) {
     try {
@@ -2157,7 +2168,9 @@ export function createArtifactSdk(
       // time to appear, and restore the card if it did. Only then is the anchor's absence an
       // answer worth reporting - the chrome cannot see into this document, and a draft it is
       // never told about is retried against every later load.
-      window.setTimeout(() => {
+      cancelPendingDraftRestore();
+      draftRestoreTimer = window.setTimeout(() => {
+        draftRestoreTimer = 0;
         // The user may have opened a card of their own inside the settle window, and
         // `showAnnotationCard` closes whatever is open before it draws. Restoring over live
         // typing destroys text nothing has carried to the chrome yet, so a card on screen ends
@@ -2217,6 +2230,7 @@ export function createArtifactSdk(
   }
 
   function showAnnotationCard(target, options = {}) {
+    cancelPendingDraftRestore();
     const root = ensureShadow();
     closeCard();
 
