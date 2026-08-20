@@ -196,6 +196,10 @@ const ARTIFACT_LOAD_RECOVERY_DELAYS_MS = [1000, 3000, 8000, 20000];
 // "the server never went away".
 const CHROME_RESTART_SETTLE_MS = 5000;
 const CHROME_RESTART_WAIT_MS = 60000;
+// Probe fast while the replacement is expected to bind, then back off: a server that never comes
+// back would otherwise spend the whole wait filling the network log with refused connections.
+const CHROME_RESTART_PROBE_MS = 100;
+const CHROME_RESTART_SLOW_PROBE_MS = 500;
 let artifactLoadToken = "";
 let artifactLoadRevision = Number(sessionData.initialArtifactRevision) || 0;
 let artifactLoadRequestSequence = Number(sessionData.initialArtifactLoadSequence) || 0;
@@ -1554,14 +1558,19 @@ function scheduleArtifactLoadRecovery() {
   artifactLoadRecoveryTimer = setTimeout(() => {
     artifactLoadRecoveryTimer = undefined;
     if (ended || sequence !== artifactLoadRequestSequence) return;
-    replaceArtifactFrame().catch(() => {});
+    replaceArtifactFrame({ recoveryRetry: true }).catch(() => {});
   }, delay);
   artifactLoadRecoveryTimer?.unref?.();
   return true;
 }
 
-async function replaceArtifactFrame() {
+// The backoff budget belongs to the load attempt that started it, not to the page: anything
+// asking for a fresh load - a live reload, Reload artifact, a takeover - gets the whole budget
+// again, and only the recovery timer's own retries spend it down. A page that carried an
+// exhausted counter forward would have no retries left at all for the next outage.
+async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   cancelArtifactLoadRecovery();
+  if (!recoveryRetry) artifactLoadRecoveryAttempt = 0;
   clearTimeout(artifactSilenceTimer);
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
@@ -2221,7 +2230,8 @@ async function reloadChromeAfterServerRestart() {
       healthy = false;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const probeDelay = Date.now() < settleDeadline ? CHROME_RESTART_PROBE_MS : CHROME_RESTART_SLOW_PROBE_MS;
+    await new Promise((resolve) => setTimeout(resolve, probeDelay));
   }
 
   if (!healthy) {

@@ -2306,6 +2306,39 @@ test("a first begin-load that never recovers surfaces a reloadable failure inste
   assert.equal(chrome.reloadCount(), 1);
 });
 
+// The backoff budget belongs to the attempt that started it, not to the page. A chrome that
+// spent it surviving one long outage must still get the full backoff the next time something
+// asks for a fresh load, or it silently gives up on the first failure for the rest of its life.
+test("a load that asks for the artifact again gets the whole recovery backoff again", async () => {
+  const beginLoadResponses = [];
+  for (let i = 0; i < 18; i += 1) beginLoadResponses.push({ ok: false, status: 503 });
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    beginLoadResponses,
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+
+  await exhaustOneBeginLoadAttempt(chrome);
+  for (const delay of [1000, 3000, 8000, 20000]) {
+    chrome.runTimers(delay);
+    await exhaustOneBeginLoadAttempt(chrome);
+  }
+  assert.equal(chrome.artifactBeginRequests.length, 15);
+  assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish could not load this artifact.");
+
+  // A fresh attempt whose own begin fails must schedule the backoff again instead of giving up.
+  chrome.element("reloadArtifact").click();
+  await exhaustOneBeginLoadAttempt(chrome);
+  assert.equal(chrome.artifactBeginRequests.length, 18);
+  assert.equal(chrome.frame.src, "");
+
+  chrome.runTimers(1000);
+  await flushPromises();
+  assert.equal(chrome.artifactBeginRequests.length, 19);
+  assert.match(chrome.frame.src, /artifact_load_token=/);
+  assert.match(String(chrome.element("layoutGateTitle").innerHTML), /Checking layout/);
+});
+
 test("a superseded reviewer is not retried in the background", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
