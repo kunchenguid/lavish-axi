@@ -941,7 +941,7 @@ function setLayoutGateActive(active) {
 // it already covers the empty artifact area; without this the user is left looking at either a
 // spinner that never resolves or a blank frame, with nothing explaining it and nothing to click.
 // Bumping the cycle retires any pending reveal timer so a stale one cannot hide this card.
-function setLayoutGateFailure(title, copy, actionLabel = "Reload") {
+function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction) {
   if (ended) return;
   layoutGateFailureActive = true;
   layoutGateCycle += 1;
@@ -950,8 +950,9 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload") {
   if (layoutGateTitle) layoutGateTitle.textContent = title;
   if (layoutGateCopy) layoutGateCopy.textContent = copy;
   if (layoutGateAction) {
+    layoutGateAction.disabled = false;
     layoutGateAction.textContent = actionLabel;
-    layoutGateAction.onclick = () => location.reload();
+    layoutGateAction.onclick = onAction || (() => location.reload());
   }
   setLayoutGateActive(true);
 }
@@ -2208,6 +2209,15 @@ async function reloadAfterServerRestart() {
   return chromeRestartReloadPromise;
 }
 
+async function probeChromeHealth() {
+  try {
+    const res = await fetch("/health", { cache: "no-store" });
+    return Boolean(res.ok);
+  } catch {
+    return false;
+  }
+}
+
 // The replacement server usually binds within a second, but it is a fresh node process competing
 // with whatever else the machine is doing, and several `lavish-axi` invocations can be racing for
 // the same port. Reloading on a fixed short deadline regardless of whether anything is listening
@@ -2234,11 +2244,37 @@ async function reloadChromeAfterServerRestart() {
     await new Promise((resolve) => setTimeout(resolve, probeDelay));
   }
 
+  // The loop can exit on the deadline carrying whatever the last probe happened to see, and in a
+  // hidden tab the browser clamps these timers to seconds or minutes - so a single failed probe
+  // can be the only one that ran. Confirm before claiming the server never came back.
+  if (!healthy) healthy = await probeChromeHealth();
+
   if (!healthy) {
     chromeRestartReloadPromise = null;
+    let retrying = false;
+    // Reloading while nothing is listening is exactly what this whole path exists to avoid, so
+    // the card's own button probes first and stays up when the server is still gone.
+    const reloadWhenServerIsBack = async () => {
+      if (retrying) return;
+      retrying = true;
+      if (layoutGateAction) layoutGateAction.disabled = true;
+      const back = await probeChromeHealth();
+      if (back) {
+        await flushWhiteboardsBeforeChromeReload();
+        location.reload();
+        return;
+      }
+      retrying = false;
+      if (layoutGateAction) layoutGateAction.disabled = false;
+      if (layoutGateCopy) {
+        layoutGateCopy.textContent = "Lavish is still not running. Start it again with your agent, then use Reload.";
+      }
+    };
     setLayoutGateFailure(
       "Lavish is not running.",
       "The Lavish server restarted and did not come back. Start it again with your agent, then reload this page.",
+      "Reload",
+      reloadWhenServerIsBack,
     );
     return;
   }

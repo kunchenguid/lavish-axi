@@ -2456,6 +2456,74 @@ test("a chrome whose replacement server never returns says so instead of reloadi
   assert.equal(chrome.element("layoutGateAction").textContent, "Reload");
 });
 
+// A hidden tab has its timers clamped to seconds or minutes, so the wait can end on a single
+// stale failed probe while the replacement server is already serving. Deciding from that probe
+// alone puts a "did not come back" card over a working session.
+test("a chrome confirms the server is gone before saying it never came back", async () => {
+  let healthy = false;
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fakeClock: true,
+    fetchImpl: async (url) => {
+      if (String(url) === "/health") {
+        if (!healthy) throw new Error("connection refused");
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  // The tab wakes up past the deadline, by which time the replacement server is up.
+  chrome.advanceClock(61000);
+  healthy = true;
+  for (let i = 0; i < 3; i += 1) {
+    chrome.runTimers(100);
+    await flushPromises();
+  }
+
+  assert.equal(chrome.reloadCount(), 1);
+  assert.notEqual(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+});
+
+test("the not-running card reloads only once the server answers again", async () => {
+  let healthy = false;
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fakeClock: true,
+    fetchImpl: async (url) => {
+      if (String(url) === "/health") {
+        if (!healthy) throw new Error("connection refused");
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.advanceClock(61000);
+  for (let i = 0; i < 3; i += 1) {
+    chrome.runTimers(100);
+    await flushPromises();
+  }
+  assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+
+  // Clicking while nothing is listening must not navigate into the dead port - that is the
+  // browser connection-error page this whole path exists to avoid.
+  await chrome.element("layoutGateAction").click();
+  await flushPromises();
+  assert.equal(chrome.reloadCount(), 0);
+  assert.match(chrome.element("layoutGateCopy").textContent, /still not running/);
+  assert.equal(chrome.element("layoutGateAction").disabled, false);
+
+  healthy = true;
+  await chrome.element("layoutGateAction").click();
+  await flushPromises();
+  assert.equal(chrome.reloadCount(), 1);
+});
+
 test("a current load token accepts artifact messages before the frame load event", async () => {
   const posts = [];
   const chrome = await createChromeHarness({

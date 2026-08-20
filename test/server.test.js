@@ -133,14 +133,34 @@ test("server serves chrome browser behavior from a dedicated source file", async
   assert.doesNotMatch(html, /<script>\s*const key=/);
 });
 
-// Runs the chrome page's inline boot failsafe against a fake document, so the assertions below
-// are about what the shipped script does rather than what it says.
-function bootChromeFailsafe() {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+// The elements the served chrome page actually declares, so a document that no longer carries an
+// id the failsafe queries cannot be papered over by an invented element.
+function parseChromeElements(html) {
+  const elements = new Map();
+  for (const [, attributes] of html.matchAll(/<[a-zA-Z][\w-]*((?:"[^"]*"|[^">])*)>/g)) {
+    const id = attributes.match(/\sid="([^"]*)"/);
+    if (!id) continue;
+    const text = html.match(new RegExp(`\\sid="${id[1]}"(?:"[^"]*"|[^">])*>([^<]*)`));
+    elements.set(id[1], {
+      id: id[1],
+      hidden: /\shidden(?=[\s>=]|$)/.test(attributes),
+      textContent: text ? text[1] : "",
+      onclick: null,
+    });
+  }
+  return elements;
+}
+
+// Runs the chrome page's inline boot failsafe against a document built from the page the server
+// really serves, so the assertions below are about what the shipped script does rather than what
+// it says - and an id the page stopped declaring makes the script a no-op here exactly as it
+// would in a browser.
+function bootChromeFailsafe(options = {}) {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, options);
   const inline = html.match(/<script>([\s\S]*?)<\/script>\s*<script src="\/chrome-client\.js"/);
   assert.ok(inline, "the chrome page must inline a boot failsafe before its client script");
 
-  const elements = new Map();
+  const elements = parseChromeElements(html);
   const bodyClasses = new Set();
   const timers = new Map();
   let reloads = 0;
@@ -150,8 +170,7 @@ function bootChromeFailsafe() {
     document: {
       body: { classList: { add: (name) => bodyClasses.add(name) } },
       getElementById(id) {
-        if (!elements.has(id)) elements.set(id, { id, hidden: true, textContent: "", onclick: null });
-        return elements.get(id);
+        return elements.get(id) || null;
       },
     },
     location: {
@@ -174,7 +193,11 @@ function bootChromeFailsafe() {
   return {
     context,
     html,
-    element: (id) => context.document.getElementById(id),
+    element(id) {
+      const el = context.document.getElementById(id);
+      assert.ok(el, `the chrome page must declare #${id} for the boot failsafe to recover it`);
+      return el;
+    },
     bodyClasses,
     pendingDelays: () => [...timers.values()].map((timer) => timer.ms),
     runTimers() {
@@ -198,13 +221,13 @@ test("the chrome boot failsafe turns the layout gate into a reloadable failure w
   assert.ok(scriptIndex > failsafeIndex);
 
   assert.deepEqual(boot.pendingDelays(), [CHROME_BOOT_FAILSAFE_MS]);
-  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.match(boot.element("layoutGateTitle").textContent, /Checking layout/);
 
   boot.runTimers();
 
   assert.equal(boot.element("layoutGateOverlay").hidden, false);
   assert.match(boot.element("layoutGateTitle").textContent, /could not finish loading/);
-  assert.notEqual(boot.element("layoutGateCopy").textContent, "");
+  assert.match(boot.element("layoutGateCopy").textContent, /did not load/);
   assert.equal(boot.element("layoutGateAction").textContent, "Reload");
   assert.equal(boot.bodyClasses.has("layout-gate-active"), true);
 
@@ -212,25 +235,40 @@ test("the chrome boot failsafe turns the layout gate into a reloadable failure w
   assert.equal(boot.reloadCount(), 1);
 });
 
+test("the chrome boot failsafe reveals a gate the page shipped hidden", () => {
+  const boot = bootChromeFailsafe({ layoutGateEnabled: false });
+
+  assert.equal(boot.element("layoutGateOverlay").hidden, true, "a gate-free page ships the overlay hidden");
+
+  boot.runTimers();
+
+  assert.equal(boot.element("layoutGateOverlay").hidden, false);
+  assert.match(boot.element("layoutGateTitle").textContent, /could not finish loading/);
+});
+
 test("the chrome client cancels the boot failsafe once it has run", () => {
   const boot = bootChromeFailsafe();
+  const gateCopy = boot.element("layoutGateCopy").textContent;
 
   boot.context.window.__lavishChromeReady = true;
   boot.context.window.__lavishCancelChromeBootFailsafe();
 
   assert.deepEqual(boot.pendingDelays(), [], "a cancelled failsafe leaves no timer behind");
   boot.runTimers();
-  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.element("layoutGateAction").textContent, "Show anyway");
+  assert.equal(boot.element("layoutGateCopy").textContent, gateCopy);
 });
 
 test("a boot failsafe that fires after the chrome client is ready changes nothing", () => {
   const boot = bootChromeFailsafe();
+  const gateCopy = boot.element("layoutGateCopy").textContent;
 
   boot.context.window.__lavishChromeReady = true;
   boot.runTimers();
 
-  assert.equal(boot.element("layoutGateOverlay").hidden, true);
-  assert.equal(boot.element("layoutGateAction").textContent, "");
+  assert.equal(boot.element("layoutGateAction").textContent, "Show anyway");
+  assert.equal(boot.element("layoutGateCopy").textContent, gateCopy);
+  assert.equal(boot.bodyClasses.size, 0);
 });
 
 test("a chrome client script that fails to load raises the failure card immediately", () => {
@@ -241,6 +279,7 @@ test("a chrome client script that fails to load raises the failure card immediat
   runInNewContext(onerror[1].replaceAll("&quot;", '"'), boot.context);
 
   assert.equal(boot.element("layoutGateOverlay").hidden, false);
+  assert.match(boot.element("layoutGateTitle").textContent, /could not finish loading/);
   assert.equal(boot.element("layoutGateAction").textContent, "Reload");
   assert.deepEqual(boot.pendingDelays(), [], "the immediate failure retires the pending timer");
 });
@@ -1117,16 +1156,6 @@ test("chrome ignores Lavish postMessages not sent by the artifact iframe", async
   const js = await chromeClientSource();
 
   assert.match(js, /event\.source\s*!==\s*frame\.contentWindow/);
-});
-
-test("chrome waits for the replacement server before version-driven reload", async () => {
-  const js = await chromeClientSource();
-
-  // The behavior - waiting for a healthy probe, and surfacing a failure card instead of
-  // reloading into a port nothing is listening on - is driven executably in
-  // `test/chrome-client-queue.test.js`.
-  assert.match(js, /async function reloadAfterServerRestart\(\)/);
-  assert.match(js, /addEventListener\("chrome-reload", \(\) => reloadAfterServerRestart\(\)\)/);
 });
 
 test("chrome restores queued prompts from tab storage after reload", async () => {
