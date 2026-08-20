@@ -1277,13 +1277,15 @@ export async function serve({
     // adopts that session via state.json once it binds, and the caller named it. Every other
     // open review page is told why this server went away and left alone - a forced reload of a
     // page the user is reading or writing in is exactly what this avoids.
-    const outdatedData = JSON.stringify({ reason });
+    // Both events carry the same reason: the reloaded page can end up showing a line from it too,
+    // and two pages describing one shutdown differently is how a false claim gets in.
+    const shutdownData = JSON.stringify({ reason });
     for (const [res, clientKey] of sseClients) {
       try {
         if (reloadKey && clientKey === reloadKey) {
-          res.write("event: chrome-reload\ndata: {}\n\n");
+          res.write(`event: chrome-reload\ndata: ${shutdownData}\n\n`);
         } else {
-          res.write(`event: chrome-outdated\ndata: ${outdatedData}\n\n`);
+          res.write(`event: chrome-outdated\ndata: ${shutdownData}\n\n`);
         }
         res.end();
       } catch {

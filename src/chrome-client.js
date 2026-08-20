@@ -561,6 +561,15 @@ function setHandoffSuperseded(visible) {
 // the shutdown names its reason and each one gets its own line - a page told "Lavish was updated"
 // after a deliberate stop is being told something false. An unnamed reason (SIGTERM, or any
 // caller that names none) claims neither.
+// Both shutdown events carry the reason the same way, so both render from one rule.
+function shutdownEventReason(event) {
+  try {
+    return String(JSON.parse(event?.data || "{}").reason || "");
+  } catch {
+    return "";
+  }
+}
+
 function chromeOutdatedCopy(reason) {
   if (reason === "upgrade") return "Lavish was updated. This page is running the previous version.";
   if (reason === "local-build") {
@@ -2382,9 +2391,9 @@ function reloadArtifact() {
   });
 }
 
-async function reloadAfterServerRestart() {
+async function reloadAfterServerRestart(reason) {
   if (chromeRestartReloadPromise) return chromeRestartReloadPromise;
-  chromeRestartReloadPromise = reloadChromeAfterServerRestart();
+  chromeRestartReloadPromise = reloadChromeAfterServerRestart(reason);
   return chromeRestartReloadPromise;
 }
 
@@ -2409,7 +2418,7 @@ async function probeChromeHealth() {
 // the same port. Reloading on a fixed short deadline regardless of whether anything is listening
 // trades a recoverable page for the browser's connection-error page, which no Lavish code can
 // recover from. So wait for the port to answer, and if it never does, say so instead.
-async function reloadChromeAfterServerRestart() {
+async function reloadChromeAfterServerRestart(reason = "") {
   let sawOutage = false;
   let healthy = false;
   let settled = false;
@@ -2456,7 +2465,9 @@ async function reloadChromeAfterServerRestart() {
   // it. The same applies to a page the user is only reading: the banner never reloads by itself.
   if (hasUnsentDraft()) {
     chromeRestartReloadPromise = null;
-    setChromeOutdated(true, "upgrade");
+    // The line this page shows comes from the same reason its siblings were sent. An event that
+    // named none leaves the branch that claims neither.
+    setChromeOutdated(true, reason);
     return;
   }
 
@@ -2878,18 +2889,10 @@ events.addEventListener("reload", () => {
     if (reloaded) refreshWhiteboardSource();
   });
 });
-events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
+events.addEventListener("chrome-reload", (event) => reloadAfterServerRestart(shutdownEventReason(event)));
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
-events.addEventListener("chrome-outdated", (event) => {
-  let reason = "";
-  try {
-    reason = String(JSON.parse(event?.data || "{}").reason || "");
-  } catch {
-    reason = "";
-  }
-  setChromeOutdated(true, reason);
-});
+events.addEventListener("chrome-outdated", (event) => setChromeOutdated(true, shutdownEventReason(event)));
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));

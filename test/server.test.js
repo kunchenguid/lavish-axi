@@ -3438,11 +3438,16 @@ async function openShutdownBroadcastServer() {
   };
 }
 
-// The chrome renders a different line per reason, so the reason has to survive the wire.
-function outdatedReason(events) {
-  const match = String(events).match(/event: chrome-outdated\ndata: (.+)\n/);
-  assert.ok(match, "the stream must carry a chrome-outdated event");
+// The chrome renders a different line per reason, so the reason has to survive the wire - on both
+// events, because the reloaded page can end up showing a line from it too.
+function shutdownEventReason(events, name) {
+  const match = String(events).match(new RegExp(`event: ${name}\\ndata: (.+)\\n`));
+  assert.ok(match, `the stream must carry a ${name} event`);
   return JSON.parse(match[1]).reason;
+}
+
+function outdatedReason(events) {
+  return shutdownEventReason(events, "chrome-outdated");
 }
 
 test("a version-driven shutdown reloads only the chrome whose session it names", async () => {
@@ -3465,6 +3470,8 @@ test("a version-driven shutdown reloads only the chrome whose session it names",
     assert.match(otherEvents, /event: chrome-outdated/);
     assert.doesNotMatch(otherEvents, /event: chrome-reload/);
     assert.equal(outdatedReason(otherEvents), "upgrade");
+    // One shutdown, one cause: the reloaded page is told the same thing as its siblings.
+    assert.equal(shutdownEventReason(openedEvents, "chrome-reload"), "upgrade");
   } finally {
     openedStream.close();
     otherStream.close();

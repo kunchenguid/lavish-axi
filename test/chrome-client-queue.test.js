@@ -3124,7 +3124,9 @@ test("an unrestorable report for a different anchor leaves the stored draft alon
 
 // Unsent annotation text is the user's writing. A restart-driven reload replays it, but the
 // interruption is still theirs to choose.
-test("a restart reload with an unsent draft offers the banner instead of reloading", async () => {
+// The banner this page shows comes from the same shutdown its sibling tabs were told about, so it
+// has to name the same cause - and name none when the event named none.
+async function restartWithUnsentDraft(reason) {
   let healthy = false;
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -3145,7 +3147,9 @@ test("a restart reload with an unsent draft offers the banner instead of reloadi
   });
   await flushPromises();
 
-  chrome.eventSource().listeners.get("chrome-reload")();
+  chrome.eventSource().listeners.get("chrome-reload")({
+    data: JSON.stringify(reason === undefined ? {} : { reason }),
+  });
   await flushPromises();
   chrome.runTimers(100);
   await flushPromises();
@@ -3156,9 +3160,32 @@ test("a restart reload with an unsent draft offers the banner instead of reloadi
     chrome.runTimers(100);
     await flushPromises();
   }
+  return chrome;
+}
+
+test("a restart reload with an unsent draft offers the banner instead of reloading", async () => {
+  const chrome = await restartWithUnsentDraft("upgrade");
 
   assert.equal(chrome.reloadCount(), 0);
   assert.equal(chrome.element("outdatedBanner").hidden, false);
+  assert.equal(
+    chrome.element("outdatedText").textContent,
+    "Lavish was updated. This page is running the previous version.",
+  );
+});
+
+test("the banner a held-back reload shows names the reason the shutdown gave", async () => {
+  const localBuild = await restartWithUnsentDraft("local-build");
+  const localBuildCopy = localBuild.element("outdatedText").textContent;
+  assert.match(localBuildCopy, /local build/);
+  assert.doesNotMatch(localBuildCopy, /updated/);
+
+  // An event that named no reason may not claim one.
+  const unnamed = await restartWithUnsentDraft(undefined);
+  const unnamedCopy = unnamed.element("outdatedText").textContent;
+  assert.match(unnamedCopy, /no longer running/);
+  assert.doesNotMatch(unnamedCopy, /updated/);
+  assert.doesNotMatch(unnamedCopy, /local build/);
 });
 
 // A full page reload used to destroy an annotation draft: the chrome kept it in memory only,
