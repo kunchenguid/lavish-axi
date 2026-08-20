@@ -168,6 +168,10 @@ async function createChromeHarness({
         return false;
       },
       appendChild(child) {
+        // Appending a node that is already in the tree moves it, as the real DOM does; a harness
+        // that duplicated it would hide a re-append that reorders the panel.
+        const existing = child.parentElement;
+        if (existing) existing.children = existing.children.filter((node) => node !== child);
         child.parentElement = this;
         this.children.push(child);
         this.lastAppendedChild = child;
@@ -2727,15 +2731,25 @@ test("the outdated banner's reload asks the server before navigating", async () 
 // button: the probe is bounded, and the control comes back saying what it could not establish.
 function wedgedHealthHarness() {
   let wedged = true;
+  let refused = false;
   const fetchImpl = async (url, init = {}) => {
-    if (String(url) === "/health" && wedged) {
-      return new Promise((_resolve, reject) => {
-        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
-      });
+    if (String(url) === "/health") {
+      if (refused) throw new Error("connection refused");
+      if (wedged) {
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      }
     }
     return { ok: true, json: async () => ({}) };
   };
-  return { fetchImpl, answer: () => (wedged = false) };
+  return {
+    fetchImpl,
+    answer: () => (wedged = false),
+    answerRefused: () => {
+      refused = true;
+    },
+  };
 }
 
 test("a health check that never answers hands the outdated banner's button back", async () => {
@@ -3004,6 +3018,75 @@ test("a retired draft's text survives a page reload and never touches the compos
   assert.equal(notes.length, 1, "the recovered text outlives the page that recovered it");
   assert.match(notes[0].innerHTML, /needs a shorter headline/);
   assert.equal(reloaded.element("chatInput").value, "");
+});
+
+// A card must not assert a definite cause in its title over a body saying the cause is unknown.
+test("a probe that never answers leaves the not-running card's title and body agreeing", async () => {
+  const health = wedgedHealthHarness();
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fakeClock: true,
+    fetchImpl: health.fetchImpl,
+  });
+
+  chrome.eventSource().listeners.get("chrome-reload")({ data: JSON.stringify({ reason: "upgrade" }) });
+  await flushPromises();
+  chrome.runTimers(4000);
+  await flushPromises();
+  chrome.advanceClock(61000);
+  for (let i = 0; i < 3; i += 1) {
+    chrome.runTimers(100);
+    chrome.runTimers(4000);
+    await flushPromises();
+  }
+  assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+
+  chrome.element("layoutGateAction").click();
+  await flushPromises();
+  chrome.runTimers(4000);
+  await flushPromises();
+  await flushPromises();
+
+  const title = chrome.element("layoutGateTitle").textContent;
+  const copy = chrome.element("layoutGateCopy").textContent;
+  assert.match(copy, /did not answer/);
+  assert.match(title, /did not answer/);
+  assert.doesNotMatch(title, /is not running/);
+
+  // A probe that does answer puts the card's own definite title back.
+  health.answerRefused();
+  chrome.element("layoutGateAction").click();
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+  assert.match(chrome.element("layoutGateCopy").textContent, /still not running/);
+});
+
+// The handback is the one thing in this panel the user cannot recover anywhere else, so a chat
+// sync that re-appends the whole transcript must not leave it above - and out of view.
+test("a retired draft stays at the end of the conversation across a chat sync", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+
+  await retireDraft(chrome, "#hero", "needs a shorter headline");
+  const note = retiredDraftNotes(chrome)[0];
+  assert.ok(note);
+
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [
+        { role: "user", text: "first" },
+        { role: "agent", text: "second" },
+        { role: "user", text: "third" },
+      ],
+    }),
+  });
+  await flushPromises();
+
+  const children = chrome.element("chatLog").children;
+  assert.equal(children.filter((child) => child === note).length, 1, "the note is moved, not copied");
+  assert.equal(children[children.length - 1], note, "the handback stays below the transcript");
+  assert.ok(note.scrolledIntoView, "and is scrolled to rather than left off-screen");
 });
 
 // Retire one draft against the anchor named, leaving the chrome ready for the next one.

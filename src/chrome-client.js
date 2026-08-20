@@ -15,6 +15,8 @@ const reviewStateStorageKey = "lavish-axi:review-state:" + key;
 // Drafts Lavish could not replay. The text outlives the draft that carried it, so the user can
 // still read and copy it after the anchor it was written against is gone for good.
 const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
+/** @type {any[]} */
+const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
@@ -225,6 +227,7 @@ const CHROME_RESTART_PROBE_MS = 100;
 const CHROME_RESTART_SLOW_PROBE_MS = 500;
 // A probe must always settle, so the control that is waiting on it always comes back.
 const HEALTH_PROBE_TIMEOUT_MS = 4000;
+const HEALTH_NO_ANSWER_TITLE = "Lavish did not answer.";
 const HEALTH_NO_ANSWER_COPY =
   "Lavish did not answer the check, so this page cannot tell whether it is running. Try again in a moment.";
 let artifactLoadToken = "";
@@ -525,12 +528,13 @@ function syncChat(chat) {
 
   let lastChatBubble = null;
   for (const item of chat) lastChatBubble = addChat(item.role, item.text, false) || lastChatBubble;
-  if (workingBubble) {
-    chatLog.appendChild(workingBubble);
-    scrollElementIntoView(workingBubble);
-  } else if (lastChatBubble) {
-    scrollElementIntoView(lastChatBubble);
-  }
+  if (workingBubble) chatLog.appendChild(workingBubble);
+  // Handed-back drafts were written at the end of the conversation, and a rebuild re-appends the
+  // whole transcript - so without this they end up above it, where the scroll below would leave
+  // them off-screen. They are the one thing here the user cannot recover anywhere else.
+  for (const note of retiredDraftNodes) chatLog.appendChild(note);
+  const anchor = retiredDraftNodes[retiredDraftNodes.length - 1] || workingBubble || lastChatBubble;
+  if (anchor) scrollElementIntoView(anchor);
 }
 
 function setAgentPresence(state) {
@@ -661,6 +665,7 @@ function renderRetiredDraft(text, stored = true) {
     (stored
       ? ""
       : '<div class="note-warning">This browser refused to store it, so copy it before you reload this page.</div>');
+  retiredDraftNodes.push(el);
   chatLog.appendChild(el);
   scrollElementIntoView(el);
 }
@@ -1102,7 +1107,10 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
 // Every failure card in this feature is raised in a state where the server may not be listening,
 // so none of them may navigate on trust: a reload into a dead port replaces a recoverable page
 // with the browser's own connection-error page. Ask first, and say so when nothing answers.
-function checkServerThenReload(stillDownCopy) {
+// Title and body are written together: a probe that timed out establishes neither that the server
+// is running nor that it is gone, so a heading naming a definite cause may not stand over a line
+// saying the cause is unknown.
+function checkServerThenReload(failureTitle, stillDownCopy) {
   let checking = false;
   return async () => {
     if (checking) return;
@@ -1127,8 +1135,10 @@ function checkServerThenReload(stillDownCopy) {
       if (!navigating) {
         checking = false;
         if (layoutGateAction) layoutGateAction.disabled = false;
-        if (layoutGateCopy && cycle === layoutGateCycle) {
-          layoutGateCopy.textContent = outcome === "no-answer" ? HEALTH_NO_ANSWER_COPY : stillDownCopy;
+        if (cycle === layoutGateCycle) {
+          const answered = outcome !== "no-answer";
+          if (layoutGateTitle) layoutGateTitle.textContent = answered ? failureTitle : HEALTH_NO_ANSWER_TITLE;
+          if (layoutGateCopy) layoutGateCopy.textContent = answered ? stillDownCopy : HEALTH_NO_ANSWER_COPY;
         }
       }
     }
@@ -1794,6 +1804,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
         "The Lavish server did not answer this review's load request. It usually restarted while this page was opening. Check and reload to reconnect.",
         "Check and reload",
         checkServerThenReload(
+          "Lavish could not load this artifact.",
           "Lavish is still not answering. Start it again with your agent, then use Check and reload.",
         ),
       );
@@ -2454,7 +2465,10 @@ async function reloadChromeAfterServerRestart(reason = "") {
       "Lavish is not running.",
       "The Lavish server restarted and did not come back. Start it again with your agent, then check and reload this page.",
       "Check and reload",
-      checkServerThenReload("Lavish is still not running. Start it again with your agent, then use Check and reload."),
+      checkServerThenReload(
+        "Lavish is not running.",
+        "Lavish is still not running. Start it again with your agent, then use Check and reload.",
+      ),
       { sticky: true },
     );
     return;
