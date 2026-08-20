@@ -814,6 +814,13 @@ function revealLayoutGate() {
   setLayoutGateActive(false);
 }
 
+/** Aba voltou a ser visível: a verificação vale de novo, mas só uma vez por retorno. */
+function handleLayoutGateVisibility() {
+  if (typeof document === "undefined" || document.visibilityState === "hidden") return;
+  document.removeEventListener("visibilitychange", handleLayoutGateVisibility);
+  startLayoutGateCycle();
+}
+
 function forceRevealLayoutGate(reason) {
   if (!layoutGateEnabled || ended) return;
   if (reason === "manual") layoutGateManuallyBypassed = true;
@@ -822,6 +829,17 @@ function forceRevealLayoutGate(reason) {
 
 function startLayoutGateCycle() {
   if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
+
+  // Aba invisível não compõe frames: `requestAnimationFrame` nunca dispara, a passada de layout
+  // nunca completa e o temporizador de segurança é estrangulado pelo navegador. O gate ficava de pé
+  // indefinidamente numa aba que ninguém está olhando — e quem chegava depois encontrava o artefato
+  // sequestrado por uma verificação que jamais terminaria. Segurar só faz sentido diante de olhos:
+  // sem visibilidade, revela agora e rearma quando a aba voltar (a passada roda e alimenta o inbox).
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    revealLayoutGate();
+    document.addEventListener("visibilitychange", handleLayoutGateVisibility);
+    return;
+  }
 
   layoutGateCycle += 1;
   layoutGateArmed = true;
