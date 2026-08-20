@@ -1888,6 +1888,9 @@ export function extractArtifactHead(html) {
 // armed before the script tag, so it survives even a request that hangs instead of erroring,
 // and `chrome-client.js` cancels it once it has run to completion.
 export const CHROME_BOOT_FAILSAFE_MS = 15000;
+// The failsafe's button is the only control on a page whose client script is dead, so its own
+// probe is bounded too: a port that accepts and never answers must not disable it for good.
+const CHROME_BOOT_FAILSAFE_PROBE_TIMEOUT_MS = 4000;
 const CHROME_BOOT_FAILSAFE_JS = `(function(){
 var t=setTimeout(fail,${CHROME_BOOT_FAILSAFE_MS});
 var o,h,c,a;
@@ -1907,10 +1910,13 @@ if(document.body)document.body.classList.add("layout-gate-active");
 }
 function check(){
 if(a)a.disabled=true;
-fetch("/health",{cache:"no-store"}).then(function(r){return r&&r.ok;},function(){return false;}).then(function(ok){
-if(ok){location.reload();return;}
+var ctl=new AbortController();
+var pt=setTimeout(function(){ctl.abort();},${CHROME_BOOT_FAILSAFE_PROBE_TIMEOUT_MS});
+fetch("/health",{cache:"no-store",signal:ctl.signal}).then(function(r){return r&&r.ok?"running":"not-running";},function(){return ctl.signal.aborted?"no-answer":"not-running";}).then(function(outcome){
+clearTimeout(pt);
+if(outcome==="running"){location.reload();return;}
 if(a)a.disabled=false;
-if(c)c.textContent="Lavish is still not running. Start it again with your agent, then use Check and reload.";
+if(c)c.textContent=outcome==="no-answer"?"Lavish did not answer the check, so this page cannot tell whether it is running. Try again in a moment.":"Lavish is still not running. Start it again with your agent, then use Check and reload.";
 });
 }
 })();`;

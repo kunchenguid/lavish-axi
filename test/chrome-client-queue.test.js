@@ -2718,6 +2718,108 @@ test("the outdated banner's reload asks the server before navigating", async () 
   assert.equal(chrome.reloadCount(), 1);
 });
 
+// A port that accepts a connection and then says nothing must not leave the user holding a dead
+// button: the probe is bounded, and the control comes back saying what it could not establish.
+function wedgedHealthHarness() {
+  let wedged = true;
+  const fetchImpl = async (url, init = {}) => {
+    if (String(url) === "/health" && wedged) {
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  return { fetchImpl, answer: () => (wedged = false) };
+}
+
+test("a health check that never answers hands the outdated banner's button back", async () => {
+  const health = wedgedHealthHarness();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", fetchImpl: health.fetchImpl });
+
+  sendChromeOutdated(chrome, "stop");
+  chrome.element("outdatedReload").click();
+  await flushPromises();
+  assert.equal(chrome.element("outdatedReload").disabled, true, "the click is in flight");
+
+  chrome.runTimers(4000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.reloadCount(), 0);
+  assert.equal(chrome.element("outdatedReload").disabled, false);
+  const copy = chrome.element("outdatedText").textContent;
+  assert.match(copy, /did not answer/);
+  assert.doesNotMatch(copy, /still not running/);
+
+  // And the control still works once the server answers again.
+  health.answer();
+  await chrome.element("outdatedReload").click();
+  await flushPromises();
+  assert.equal(chrome.reloadCount(), 1);
+});
+
+// The wait loop probes the same way, so a wedged port must not hold one iteration open past the
+// deadline - that would leave the page running the pre-upgrade client with no card and no notice.
+test("a restart wait whose port never answers still reaches the not-running card", async () => {
+  const health = wedgedHealthHarness();
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fakeClock: true,
+    fetchImpl: health.fetchImpl,
+  });
+
+  chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.runTimers(4000);
+  await flushPromises();
+
+  chrome.advanceClock(61000);
+  for (let i = 0; i < 3; i += 1) {
+    chrome.runTimers(100);
+    chrome.runTimers(4000);
+    await flushPromises();
+  }
+
+  assert.equal(chrome.reloadCount(), 0);
+  assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+});
+
+test("a health check that never answers hands the failure card's button back", async () => {
+  const health = wedgedHealthHarness();
+  const beginLoadResponses = [];
+  for (let i = 0; i < 40; i += 1) beginLoadResponses.push({ ok: false, status: 503 });
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    beginLoadResponses,
+    fetchImpl: health.fetchImpl,
+  });
+
+  await exhaustOneBeginLoadAttempt(chrome);
+  for (const delay of [1000, 3000, 8000, 20000]) {
+    chrome.runTimers(delay);
+    await exhaustOneBeginLoadAttempt(chrome);
+  }
+  assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish could not load this artifact.");
+
+  chrome.element("layoutGateAction").click();
+  await flushPromises();
+  assert.equal(chrome.element("layoutGateAction").disabled, true);
+
+  chrome.runTimers(4000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.reloadCount(), 0);
+  assert.equal(chrome.element("layoutGateAction").disabled, false);
+  assert.match(chrome.element("layoutGateCopy").textContent, /did not answer/);
+
+  health.answer();
+  await chrome.element("layoutGateAction").click();
+  await flushPromises();
+  assert.equal(chrome.reloadCount(), 1);
+});
+
 // Only the user retires the version-skew card, and that has to hold against a later ordinary
 // load failure repainting the overlay as well as against a successful load clearing it.
 test("an ordinary load failure cannot replace the not-running card", async () => {

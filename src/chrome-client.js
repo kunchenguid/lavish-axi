@@ -222,6 +222,10 @@ const CHROME_RESTART_WAIT_MS = 60000;
 // back would otherwise spend the whole wait filling the network log with refused connections.
 const CHROME_RESTART_PROBE_MS = 100;
 const CHROME_RESTART_SLOW_PROBE_MS = 500;
+// A probe must always settle, so the control that is waiting on it always comes back.
+const HEALTH_PROBE_TIMEOUT_MS = 4000;
+const HEALTH_NO_ANSWER_COPY =
+  "Lavish did not answer the check, so this page cannot tell whether it is running. Try again in a moment.";
 let artifactLoadToken = "";
 let artifactLoadRevision = Number(sessionData.initialArtifactRevision) || 0;
 let artifactLoadRequestSequence = Number(sessionData.initialArtifactLoadSequence) || 0;
@@ -567,6 +571,7 @@ function chromeOutdatedCopy(reason) {
 function setChromeOutdated(visible, reason = chromeOutdatedReason) {
   chromeOutdatedReason = String(reason || "");
   if (outdatedText) outdatedText.textContent = chromeOutdatedCopy(chromeOutdatedReason);
+  outdatedReloadInFlight = false;
   if (outdatedReloadButton) outdatedReloadButton.disabled = false;
   if (outdatedBanner) outdatedBanner.hidden = ended || !visible;
 }
@@ -1089,15 +1094,26 @@ function checkServerThenReload(stillDownCopy) {
     if (checking) return;
     checking = true;
     if (layoutGateAction) layoutGateAction.disabled = true;
-    const running = await probeChromeHealth();
-    if (running) {
-      await flushWhiteboardsBeforeChromeReload();
-      location.reload();
-      return;
+    let outcome = "not-running";
+    let navigating = false;
+    try {
+      outcome = await probeChromeHealth();
+      if (outcome === "running") {
+        navigating = true;
+        await flushWhiteboardsBeforeChromeReload();
+        location.reload();
+      }
+    } finally {
+      // Every path that does not navigate hands the control back, including a probe that timed
+      // out or threw: a button that stays disabled is worse than the reload it was guarding.
+      if (!navigating) {
+        checking = false;
+        if (layoutGateAction) layoutGateAction.disabled = false;
+        if (layoutGateCopy) {
+          layoutGateCopy.textContent = outcome === "no-answer" ? HEALTH_NO_ANSWER_COPY : stillDownCopy;
+        }
+      }
     }
-    checking = false;
-    if (layoutGateAction) layoutGateAction.disabled = false;
-    if (layoutGateCopy) layoutGateCopy.textContent = stillDownCopy;
   };
 }
 
@@ -2363,12 +2379,19 @@ async function reloadAfterServerRestart() {
   return chromeRestartReloadPromise;
 }
 
+// Three outcomes, not two: a port that accepts a connection and then says nothing proves neither
+// that the server is running nor that it is gone, and a probe that never settles would leave the
+// control the user is holding disabled for as long as the browser's own network timeout takes.
 async function probeChromeHealth() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
   try {
-    const res = await fetch("/health", { cache: "no-store" });
-    return Boolean(res.ok);
+    const res = await fetch("/health", { cache: "no-store", signal: controller.signal });
+    return res.ok ? "running" : "not-running";
   } catch {
-    return false;
+    return controller.signal.aborted ? "no-answer" : "not-running";
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -2386,16 +2409,15 @@ async function reloadChromeAfterServerRestart() {
   const deadline = Date.now() + CHROME_RESTART_WAIT_MS;
 
   while (Date.now() < deadline) {
-    try {
-      const res = await fetch("/health", { cache: "no-store" });
-      healthy = Boolean(res.ok);
-      if (healthy && (sawOutage || Date.now() >= settleDeadline)) {
-        settled = true;
-        break;
-      }
-    } catch {
-      sawOutage = true;
-      healthy = false;
+    // The bounded probe is what keeps this loop honest: a port that accepts and then says nothing
+    // would otherwise hold one iteration open past the deadline, and neither the reload nor the
+    // card below would ever happen.
+    const outcome = await probeChromeHealth();
+    healthy = outcome === "running";
+    if (!healthy) sawOutage = true;
+    if (healthy && (sawOutage || Date.now() >= settleDeadline)) {
+      settled = true;
+      break;
     }
 
     const probeDelay = Date.now() < settleDeadline ? CHROME_RESTART_PROBE_MS : CHROME_RESTART_SLOW_PROBE_MS;
@@ -2406,7 +2428,7 @@ async function reloadChromeAfterServerRestart() {
   // hidden tab the browser clamps these timers to seconds or minutes - so a single probe can be
   // the only one that ran. Neither answer may be trusted then: a stale failure claims a running
   // server is gone, and a stale success reloads into a port nothing is listening on.
-  if (!settled) healthy = await probeChromeHealth();
+  if (!settled) healthy = (await probeChromeHealth()) === "running";
 
   if (!healthy) {
     chromeRestartReloadPromise = null;
@@ -2440,16 +2462,26 @@ async function reloadChromeForOutdatedBanner() {
   if (outdatedReloadInFlight) return;
   outdatedReloadInFlight = true;
   if (outdatedReloadButton) outdatedReloadButton.disabled = true;
-  const running = await probeChromeHealth();
-  if (running) {
-    await flushWhiteboardsBeforeChromeReload();
-    location.reload();
-    return;
-  }
-  outdatedReloadInFlight = false;
-  if (outdatedReloadButton) outdatedReloadButton.disabled = false;
-  if (outdatedText) {
-    outdatedText.textContent = "Lavish is still not running. Start it again, then use Check and reload.";
+  let outcome = "not-running";
+  let navigating = false;
+  try {
+    outcome = await probeChromeHealth();
+    if (outcome === "running") {
+      navigating = true;
+      await flushWhiteboardsBeforeChromeReload();
+      location.reload();
+    }
+  } finally {
+    if (!navigating) {
+      outdatedReloadInFlight = false;
+      if (outdatedReloadButton) outdatedReloadButton.disabled = false;
+      if (outdatedText) {
+        outdatedText.textContent =
+          outcome === "no-answer"
+            ? HEALTH_NO_ANSWER_COPY
+            : "Lavish is still not running. Start it again, then use Check and reload.";
+      }
+    }
   }
 }
 

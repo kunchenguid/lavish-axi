@@ -170,10 +170,17 @@ function bootChromeFailsafe(options = {}) {
   let reloads = 0;
   let nextTimerId = 1;
   let serverRunning = false;
+  let serverWedged = false;
 
   const context = {
-    fetch(url) {
+    AbortController,
+    fetch(url, init = {}) {
       assert.equal(String(url), "/health", "the failsafe may only ask the server whether it runs");
+      if (serverWedged) {
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      }
       return serverRunning ? Promise.resolve({ ok: true }) : Promise.reject(new Error("connection refused"));
     },
     document: {
@@ -217,7 +224,11 @@ function bootChromeFailsafe(options = {}) {
     },
     reloadCount: () => reloads,
     startServer() {
+      serverWedged = false;
       serverRunning = true;
+    },
+    wedgeServer() {
+      serverWedged = true;
     },
   };
 }
@@ -312,6 +323,32 @@ test("the chrome boot failsafe asks the server before navigating", async () => {
   assert.equal(boot.reloadCount(), 0, "never navigate into a port nothing is listening on");
   assert.match(boot.element("layoutGateCopy").textContent, /still not running/);
   assert.equal(boot.element("layoutGateAction").disabled, false, "the button stays usable for a later try");
+
+  boot.startServer();
+  boot.element("layoutGateAction").onclick();
+  await flushMicrotasks();
+  assert.equal(boot.reloadCount(), 1);
+});
+
+// The failsafe's button is the only control on a page whose client script never ran, so a probe
+// that never answers must not take it away.
+test("a boot failsafe check that never answers hands its button back", async () => {
+  const boot = bootChromeFailsafe();
+  boot.runTimers();
+  boot.wedgeServer();
+
+  boot.element("layoutGateAction").onclick();
+  await flushMicrotasks();
+  assert.equal(boot.element("layoutGateAction").disabled, true, "the check is in flight");
+
+  boot.runTimers();
+  await flushMicrotasks();
+
+  assert.equal(boot.reloadCount(), 0);
+  assert.equal(boot.element("layoutGateAction").disabled, false);
+  const copy = boot.element("layoutGateCopy").textContent;
+  assert.match(copy, /did not answer/);
+  assert.doesNotMatch(copy, /still not running/);
 
   boot.startServer();
   boot.element("layoutGateAction").onclick();
