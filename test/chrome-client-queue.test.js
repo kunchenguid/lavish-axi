@@ -26,6 +26,7 @@ async function createChromeHarness({
   sessionData = defaultSessionData,
   artifactSrc = "",
   storage = new Map(),
+  visibilityState = "visible",
   beginLoadResponses = [],
   handoffResponses = [],
   compactViewport = false,
@@ -284,12 +285,21 @@ async function createChromeHarness({
     },
     document: {
       body: element("body"),
+      visibilityState,
       getElementById(id) {
         return element(id);
       },
       addEventListener(type, handler, capture) {
         if (!documentListeners.has(type)) documentListeners.set(type, []);
         documentListeners.get(type).push({ handler, capture: Boolean(capture) });
+      },
+      removeEventListener(type, handler) {
+        const handlers = documentListeners.get(type);
+        if (!handlers) return;
+        documentListeners.set(
+          type,
+          handlers.filter((entry) => entry.handler !== handler),
+        );
       },
       createElement(tag) {
         const el = element(`${tag}-${elements.size}`);
@@ -393,6 +403,16 @@ async function createChromeHarness({
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
       for (const handler of handlers) handler({ source: whiteboard.source, data });
+    },
+    /** Aba volta a ficar visível: o cliente rearma a verificação de layout. */
+    becomeVisible() {
+      context.document.visibilityState = "visible";
+      const handlers = documentListeners.get("visibilitychange") || [];
+      for (const { handler } of handlers) handler({});
+      return handlers.length;
+    },
+    documentListenerCount(type) {
+      return (documentListeners.get(type) || []).length;
     },
     dispatchDocumentKeydown(eventProps) {
       const handlers = documentListeners.get("keydown") || [];
@@ -1117,6 +1137,23 @@ test("chrome client registers message listener before loading the artifact ifram
   assert.equal(chrome.srcLoads.length, 1);
   assert.match(chrome.srcLoads[0].src, /^\/artifact\/abc\/index\.html\?artifact_revision=\d+&artifact_load_token=/);
   assert.equal(chrome.srcLoads[0].hadMessageListener, true);
+});
+
+// Aba invisível não compõe frames: a passada de layout nunca completa e o temporizador de segurança
+// é estrangulado pelo navegador. O gate ficava de pé indefinidamente e sequestrava o artefato de
+// quem chegasse depois — inclusive de automação, que abre a aba em segundo plano.
+test("the layout gate does not hold a hidden tab hostage, and re-arms when it becomes visible", async () => {
+  const chrome = await createChromeHarness({ visibilityState: "hidden" });
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true, "aba invisível revela imediatamente");
+  assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
+  assert.equal(chrome.documentListenerCount("visibilitychange"), 1, "rearma quando a aba voltar");
+
+  chrome.becomeVisible();
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false, "com olhos na tela a verificação vale");
+  assert.equal(chrome.element("body").classList.contains("layout-gate-active"), true);
+  assert.equal(chrome.documentListenerCount("visibilitychange"), 0, "o listener de retorno se desarma ao disparar");
 });
 
 test("the layout gate reveals after a completed pass with no findings", async () => {

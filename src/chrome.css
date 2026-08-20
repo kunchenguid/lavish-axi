@@ -1278,13 +1278,24 @@ body.lavish {
 .composer textarea::placeholder {
   color: var(--fg-label);
 }
+/* O rodapé do painel tem largura de barra lateral, e os rótulos são longos ("Enviar e encerrar" +
+   "Enviar ao agente"). Sem `flex-wrap` os dois botões estouravam a linha e o PRIMEIRO era cortado
+   pela borda do painel — a pessoa via "viar e encerrar" e um alvo de clique mutilado. Envolver é a
+   única saída correta: botão de ação não pode ser truncado nem sair da área clicável. */
 .actions {
   display: flex;
   align-items: center;
   gap: 8px;
   justify-content: flex-end;
+  flex-wrap: wrap;
   min-width: 0;
+  max-width: 100%;
   position: relative;
+}
+.actions > .button {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 .send-hint {
   color: var(--fg-faint);
