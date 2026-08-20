@@ -2150,7 +2150,13 @@ export function createArtifactSdk(
     const card = state.card;
     if (!card || !card.selector || !String(card.text || "").trim()) return;
     const target = safeQuerySelector(card.selector);
-    if (!target) return;
+    if (!target) {
+      // This document is loaded and the anchor is not in it, so the draft can never be replayed
+      // here. Say so rather than staying silent: the chrome cannot see into this document, and a
+      // draft it is never told about is retried against every later load.
+      postArtifactMessage("lavish:reviewDraftUnrestorable", { selector: String(card.selector) });
+      return;
+    }
     showAnnotationCard(target, { restoreText: String(card.text) });
   }
 

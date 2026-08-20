@@ -658,7 +658,7 @@ export async function shutdownServerOnPort(
   if (!(await canControlServerOnPort(port, health, processMatchesLavish))) {
     return { server: { status: "not-lavish", port } };
   }
-  await shutdownRequester(baseUrl);
+  await shutdownRequester(baseUrl, { reason: "stop" });
   let freed = await portFreeWaiter(baseUrl, 3000);
   if (!freed && shouldKillProcessOnPort(currentVersion, health)) {
     portKiller(port);
@@ -1083,7 +1083,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     }
     // Stale server from an older release is squatting on the port. Ask it to shut down
     // gracefully so the upgraded client doesn't keep handing users an old chrome.
-    await requestShutdown(baseUrl, reloadKey);
+    await requestShutdown(baseUrl, { reloadKey, reason: "upgrade" });
     const freed = await waitForPortFree(baseUrl, 2000);
     if (!freed) {
       // Pre-handshake servers (any release older than this change) don't expose /shutdown
@@ -1153,12 +1153,17 @@ async function fetchHealth(baseUrl) {
   }
 }
 
-async function requestShutdown(baseUrl, reloadKey = "") {
+// `reason` is what every other open review page is told: this CLI has exactly two callers, and
+// each knows which of them it is.
+async function requestShutdown(baseUrl, { reloadKey = "", reason = "" } = {}) {
+  const body = {};
+  if (reloadKey) body.reload_key = reloadKey;
+  if (reason) body.reason = reason;
   try {
     await fetch(`${baseUrl}/shutdown`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(reloadKey ? { reload_key: reloadKey } : {}),
+      body: JSON.stringify(body),
     });
   } catch {
     // Best effort. If the server died before answering, the port will free up on its own.

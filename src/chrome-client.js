@@ -133,6 +133,7 @@ const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("p
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
 const outdatedBanner = /** @type {HTMLDivElement} */ (document.getElementById("outdatedBanner"));
+const outdatedText = /** @type {HTMLSpanElement} */ (document.getElementById("outdatedText"));
 const outdatedReloadButton = /** @type {HTMLButtonElement} */ (document.getElementById("outdatedReload"));
 const outdatedDismissButton = /** @type {HTMLButtonElement} */ (document.getElementById("outdatedDismiss"));
 const endedOverlay = /** @type {HTMLDivElement} */ (document.getElementById("endedOverlay"));
@@ -167,6 +168,8 @@ const layoutGateMaxHoldMs =
   Number.isFinite(configuredLayoutGateMaxHoldMs) && configuredLayoutGateMaxHoldMs > 0
     ? Math.min(configuredLayoutGateMaxHoldMs, 60_000)
     : 12_000;
+let chromeOutdatedReason = "";
+let outdatedReloadInFlight = false;
 let layoutGateVisible = false;
 let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
@@ -541,10 +544,22 @@ function setHandoffSuperseded(visible) {
   if (handoffBanner) handoffBanner.hidden = ended || !visible;
 }
 
-// A replacement server is serving this artifact, but this page is still running the client it
-// was served by the previous one. Say so where the user can dismiss it, and never reload on
-// their behalf - a forced reload interrupts whatever they were reading or writing.
-function setChromeOutdated(visible) {
+// The server this page was connected to went away. What is true beyond that depends on why, so
+// the shutdown names its reason and each one gets its own line - a page told "Lavish was updated"
+// after a deliberate stop is being told something false. An unnamed reason (SIGTERM, or any
+// caller that names none) claims neither.
+function chromeOutdatedCopy(reason) {
+  if (reason === "upgrade") return "Lavish was updated. This page is running the previous version.";
+  if (reason === "stop") return "Lavish was stopped. Reload after you start it again.";
+  return "The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.";
+}
+
+// Say so where the user can dismiss it, and never reload on their behalf - a forced reload
+// interrupts whatever they were reading or writing.
+function setChromeOutdated(visible, reason = chromeOutdatedReason) {
+  chromeOutdatedReason = String(reason || "");
+  if (outdatedText) outdatedText.textContent = chromeOutdatedCopy(chromeOutdatedReason);
+  if (outdatedReloadButton) outdatedReloadButton.disabled = false;
   if (outdatedBanner) outdatedBanner.hidden = ended || !visible;
 }
 
@@ -563,6 +578,15 @@ function setReviewState(state) {
 
 function hasUnsentDraft() {
   return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
+}
+
+// The SDK looked for this draft's anchor in the loaded artifact and it is gone, so the draft can
+// never be replayed. Retiring it is itself data loss, so it happens only on that definite answer
+// for the draft actually stored - never on a transient failure or a stale selector.
+function discardUnrestorableDraft(selector) {
+  if (!selector || !lastReviewState || !lastReviewState.card) return;
+  if (String(lastReviewState.card.selector || "") !== selector) return;
+  setReviewState({ ...lastReviewState, card: null });
 }
 
 async function refreshChromeLoadHandoff(requestSequence) {
@@ -2334,7 +2358,7 @@ async function reloadChromeAfterServerRestart() {
   // it. The same applies to a page the user is only reading: the banner never reloads by itself.
   if (hasUnsentDraft()) {
     chromeRestartReloadPromise = null;
-    setChromeOutdated(true);
+    setChromeOutdated(true, "upgrade");
     return;
   }
 
@@ -2342,10 +2366,24 @@ async function reloadChromeAfterServerRestart() {
   location.reload();
 }
 
+// The banner is shown at the moment a server goes away, and in the deliberate-stop case nothing
+// is coming to replace it, so this button probes before it navigates for the same reason the
+// not-running card does: a reload into a dead port lands on the browser's own error page.
 async function reloadChromeForOutdatedBanner() {
+  if (outdatedReloadInFlight) return;
+  outdatedReloadInFlight = true;
   if (outdatedReloadButton) outdatedReloadButton.disabled = true;
-  await flushWhiteboardsBeforeChromeReload();
-  location.reload();
+  const running = await probeChromeHealth();
+  if (running) {
+    await flushWhiteboardsBeforeChromeReload();
+    location.reload();
+    return;
+  }
+  outdatedReloadInFlight = false;
+  if (outdatedReloadButton) outdatedReloadButton.disabled = false;
+  if (outdatedText) {
+    outdatedText.textContent = "Lavish is still not running. Start it again, then use Check and reload.";
+  }
 }
 
 window.addEventListener("message", (event) => {
@@ -2401,6 +2439,9 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:reviewState") {
     setReviewState(msg.state && typeof msg.state === "object" ? msg.state : null);
+  }
+  if (msg.type === "lavish:reviewDraftUnrestorable") {
+    discardUnrestorableDraft(String(msg.selector || ""));
   }
   if (msg.type === "lavish:artifactAssetFailure") {
     reportArtifactFailures(
@@ -2730,7 +2771,15 @@ events.addEventListener("reload", () => {
 events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
-events.addEventListener("chrome-outdated", () => setChromeOutdated(true));
+events.addEventListener("chrome-outdated", (event) => {
+  let reason = "";
+  try {
+    reason = String(JSON.parse(event?.data || "{}").reason || "");
+  } catch {
+    reason = "";
+  }
+  setChromeOutdated(true, reason);
+});
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));

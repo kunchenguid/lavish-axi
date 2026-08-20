@@ -152,8 +152,9 @@ function bootSdk() {
       getSelection: () => null,
     },
   };
+  const windowListeners = [];
   sandbox.window = {
-    addEventListener() {},
+    addEventListener: (type, handler) => windowListeners.push({ type, handler }),
     removeEventListener() {},
     setTimeout: () => 0,
     clearTimeout() {},
@@ -177,6 +178,12 @@ function bootSdk() {
       const listener = documentListeners.find((entry) => entry.type === "click");
       assert.ok(listener, "the SDK registers a document click listener");
       listener.handler({ target, preventDefault() {}, stopPropagation() {} });
+    },
+    // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
+    sendChromeMessage(data) {
+      const listeners = windowListeners.filter((entry) => entry.type === "message");
+      assert.ok(listeners.length > 0, "the SDK registers a window message listener");
+      for (const listener of listeners) listener.handler({ source: sandbox.parent, data });
     },
     card() {
       const card = documentElement.children
@@ -283,4 +290,30 @@ test("the served SDK bundle annotates elements outside tables with no table targ
 
   assert.equal(message.prompt.tag, "p");
   assert.equal(message.prompt.target, undefined);
+});
+
+// The chrome cannot see into this document, so a draft whose anchor is gone is only ever retired
+// if the SDK says so. Silence left it to be retried against every later load.
+test("the served SDK bundle reports a draft whose anchor the artifact no longer has", () => {
+  const sdk = bootSdk();
+
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+  });
+
+  const report = sdk.posted.at(-1);
+  assert.equal(report.type, "lavish:reviewDraftUnrestorable");
+  assert.equal(report.selector, "#hero");
+  assert.equal(report.artifact_load_token, "load-token");
+});
+
+test("the served SDK bundle reports nothing when there is no draft to restore", () => {
+  const sdk = bootSdk();
+  const before = sdk.posted.length;
+
+  sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: { card: null, fields: [] } });
+  sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: { card: { selector: "#hero", text: "  " } } });
+
+  assert.equal(sdk.posted.length, before);
 });

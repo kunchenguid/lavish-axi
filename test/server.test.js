@@ -3366,6 +3366,13 @@ async function openShutdownBroadcastServer() {
   };
 }
 
+// The chrome renders a different line per reason, so the reason has to survive the wire.
+function outdatedReason(events) {
+  const match = String(events).match(/event: chrome-outdated\ndata: (.+)\n/);
+  assert.ok(match, "the stream must carry a chrome-outdated event");
+  return JSON.parse(match[1]).reason;
+}
+
 test("a version-driven shutdown reloads only the chrome whose session it names", async () => {
   const { base, dir, server, openedKey, otherKey } = await openShutdownBroadcastServer();
   const openedStream = await collectEventStream(base, openedKey);
@@ -3374,7 +3381,7 @@ test("a version-driven shutdown reloads only the chrome whose session it names",
     await fetch(`${base}/shutdown`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reload_key: openedKey }),
+      body: JSON.stringify({ reload_key: openedKey, reason: "upgrade" }),
     });
 
     const openedEvents = await openedStream.finished();
@@ -3385,6 +3392,7 @@ test("a version-driven shutdown reloads only the chrome whose session it names",
     // running the previous version.
     assert.match(otherEvents, /event: chrome-outdated/);
     assert.doesNotMatch(otherEvents, /event: chrome-reload/);
+    assert.equal(outdatedReason(otherEvents), "upgrade");
   } finally {
     openedStream.close();
     otherStream.close();
@@ -3398,11 +3406,40 @@ test("a shutdown that names no session reloads nobody", async () => {
   const openedStream = await collectEventStream(base, openedKey);
   const otherStream = await collectEventStream(base, otherKey);
   try {
-    await fetch(`${base}/shutdown`, { method: "POST" });
+    await fetch(`${base}/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "stop" }),
+    });
 
     for (const events of [await openedStream.finished(), await otherStream.finished()]) {
       assert.doesNotMatch(events, /event: chrome-reload/);
       assert.match(events, /event: chrome-outdated/);
+      assert.equal(outdatedReason(events), "stop");
+    }
+  } finally {
+    openedStream.close();
+    otherStream.close();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// A page must never be told something the shutdown did not claim, so an unnamed or unrecognized
+// reason reaches the chrome as no reason at all.
+test("a shutdown that names no reason claims none", async () => {
+  const { base, dir, server, openedKey, otherKey } = await openShutdownBroadcastServer();
+  const openedStream = await collectEventStream(base, openedKey);
+  const otherStream = await collectEventStream(base, otherKey);
+  try {
+    await fetch(`${base}/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "because" }),
+    });
+
+    for (const events of [await openedStream.finished(), await otherStream.finished()]) {
+      assert.equal(outdatedReason(events), "");
     }
   } finally {
     openedStream.close();

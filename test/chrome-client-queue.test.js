@@ -2606,12 +2606,18 @@ test("the not-running card survives a later successful artifact load", async () 
   assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
 });
 
+function sendChromeOutdated(chrome, reason) {
+  chrome.eventSource().listeners.get("chrome-outdated")({
+    data: JSON.stringify(reason === undefined ? {} : { reason }),
+  });
+}
+
 test("an outdated chrome shows a dismissible banner and never reloads itself", async () => {
   const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
 
   assert.equal(chrome.element("outdatedBanner").hidden, true);
   const gateBefore = chrome.element("layoutGateOverlay").hidden;
-  chrome.eventSource().listeners.get("chrome-outdated")();
+  sendChromeOutdated(chrome, "upgrade");
   await flushPromises();
 
   assert.equal(chrome.element("outdatedBanner").hidden, false);
@@ -2624,10 +2630,114 @@ test("an outdated chrome shows a dismissible banner and never reloads itself", a
   chrome.element("outdatedDismiss").click();
   assert.equal(chrome.element("outdatedBanner").hidden, true);
 
-  chrome.eventSource().listeners.get("chrome-outdated")();
+  sendChromeOutdated(chrome, "upgrade");
   await chrome.element("outdatedReload").click();
   await flushPromises();
   assert.equal(chrome.reloadCount(), 1);
+});
+
+// Every sentence has to be true in the case it is shown: a deliberate stop is not an update, and
+// a server that never said why was neither.
+test("the outdated banner says what actually happened to the server", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+
+  sendChromeOutdated(chrome, "upgrade");
+  assert.equal(
+    chrome.element("outdatedText").textContent,
+    "Lavish was updated. This page is running the previous version.",
+  );
+
+  sendChromeOutdated(chrome, "stop");
+  assert.equal(chrome.element("outdatedText").textContent, "Lavish was stopped. Reload after you start it again.");
+
+  for (const unnamed of [undefined, "", "something-else"]) {
+    sendChromeOutdated(chrome, unnamed);
+    const copy = chrome.element("outdatedText").textContent;
+    assert.match(copy, /no longer running/);
+    assert.doesNotMatch(copy, /updated/);
+    assert.doesNotMatch(copy, /stopped/);
+  }
+});
+
+test("the outdated banner's reload asks the server before navigating", async () => {
+  let running = false;
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: async (url) => {
+      if (String(url) === "/health") {
+        if (!running) throw new Error("connection refused");
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  // `lavish-axi stop` leaves no replacement behind, so this button must not navigate into a port
+  // nothing is listening on.
+  sendChromeOutdated(chrome, "stop");
+  await chrome.element("outdatedReload").click();
+  await flushPromises();
+
+  assert.equal(chrome.reloadCount(), 0);
+  assert.equal(chrome.element("outdatedBanner").hidden, false);
+  assert.match(chrome.element("outdatedText").textContent, /still not running/);
+  assert.equal(chrome.element("outdatedReload").disabled, false, "the button stays usable for a later try");
+
+  running = true;
+  await chrome.element("outdatedReload").click();
+  await flushPromises();
+  assert.equal(chrome.reloadCount(), 1);
+});
+
+// A draft whose anchor the agent removed can never be replayed, so it must not be retried
+// against every later load - but only a definite answer about the loaded artifact may retire it.
+test("a draft the artifact can no longer anchor is retired", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:reviewState",
+    state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+  });
+  await flushPromises();
+
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:reviewDraftUnrestorable",
+    selector: "#hero",
+  });
+  await flushPromises();
+
+  const next = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+  assert.deepEqual(
+    next.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState"),
+    [],
+  );
+});
+
+test("an unrestorable report for a different anchor leaves the stored draft alone", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:reviewState",
+    state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+  });
+  await flushPromises();
+
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:reviewDraftUnrestorable",
+    selector: "#footer",
+  });
+  await flushPromises();
+
+  const next = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+  const restored = next.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState");
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].state.card.text, "needs a shorter headline");
 });
 
 // Unsent annotation text is the user's writing. A restart-driven reload replays it, but the
