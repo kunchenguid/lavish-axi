@@ -3315,6 +3315,103 @@ test("POST /shutdown stops the listener so the client can spawn a fresh server",
   }
 });
 
+// Collects a chrome's SSE stream until the server ends it, which is what a shutdown does.
+async function collectEventStream(base, key) {
+  const controller = new AbortController();
+  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  const finished = (async () => {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return text;
+      text += decoder.decode(value, { stream: true });
+    }
+  })();
+  return {
+    finished: () =>
+      Promise.race([
+        finished,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("event stream never closed")), 2000)),
+      ]),
+    close() {
+      controller.abort();
+    },
+  };
+}
+
+async function openShutdownBroadcastServer() {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const opened = path.join(dir, "opened.html");
+  const other = path.join(dir, "other.html");
+  await writeFile(opened, "<!doctype html><html><body>opened</body></html>");
+  await writeFile(other, "<!doctype html><html><body>other</body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  const openSession = async (file) => {
+    const res = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file }),
+    });
+    return (await res.json()).key;
+  };
+  return {
+    base,
+    dir,
+    server,
+    openedKey: await openSession(opened),
+    otherKey: await openSession(other),
+  };
+}
+
+test("a version-driven shutdown reloads only the chrome whose session it names", async () => {
+  const { base, dir, server, openedKey, otherKey } = await openShutdownBroadcastServer();
+  const openedStream = await collectEventStream(base, openedKey);
+  const otherStream = await collectEventStream(base, otherKey);
+  try {
+    await fetch(`${base}/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reload_key: openedKey }),
+    });
+
+    const openedEvents = await openedStream.finished();
+    const otherEvents = await otherStream.finished();
+    assert.match(openedEvents, /event: chrome-reload/);
+    assert.doesNotMatch(openedEvents, /event: chrome-outdated/);
+    // A page the user never asked to reopen keeps its review on screen and is only told it is
+    // running the previous version.
+    assert.match(otherEvents, /event: chrome-outdated/);
+    assert.doesNotMatch(otherEvents, /event: chrome-reload/);
+  } finally {
+    openedStream.close();
+    otherStream.close();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a shutdown that names no session reloads nobody", async () => {
+  const { base, dir, server, openedKey, otherKey } = await openShutdownBroadcastServer();
+  const openedStream = await collectEventStream(base, openedKey);
+  const otherStream = await collectEventStream(base, otherKey);
+  try {
+    await fetch(`${base}/shutdown`, { method: "POST" });
+
+    for (const events of [await openedStream.finished(), await otherStream.finished()]) {
+      assert.doesNotMatch(events, /event: chrome-reload/);
+      assert.match(events, /event: chrome-outdated/);
+    }
+  } finally {
+    openedStream.close();
+    otherStream.close();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("resolveIdleTimeoutMs defaults, parses, and only explicit opt-outs disable", () => {
   assert.equal(resolveIdleTimeoutMs({}), 30 * 60_000);
   assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "" }), 30 * 60_000);

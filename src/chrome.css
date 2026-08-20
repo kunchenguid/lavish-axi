@@ -1020,6 +1020,11 @@ body.lavish {
 .handoff-takeover:hover {
   color: var(--fg);
 }
+.outdated-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
 .annotation-pills {
   display: flex;
   flex-wrap: wrap;

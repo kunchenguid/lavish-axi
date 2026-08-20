@@ -8,6 +8,10 @@ const queueStorageKey = "lavish-axi:queued:" + key;
 // Review-chrome state that must survive a browser refresh. Keyed per session so one review's
 // triage can never leak into another artifact's.
 const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
+// Unsent annotation-card text lives only in the sandboxed iframe, so a full page reload would
+// destroy it unless the chrome persists what the SDK reports. Keyed per session like the queue,
+// so a draft can never reappear over a different artifact.
+const reviewStateStorageKey = "lavish-axi:review-state:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
@@ -128,6 +132,9 @@ const copyHintText = /** @type {HTMLSpanElement} */ (document.getElementById("co
 const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("presenceBanner"));
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
+const outdatedBanner = /** @type {HTMLDivElement} */ (document.getElementById("outdatedBanner"));
+const outdatedReloadButton = /** @type {HTMLButtonElement} */ (document.getElementById("outdatedReload"));
+const outdatedDismissButton = /** @type {HTMLButtonElement} */ (document.getElementById("outdatedDismiss"));
 const endedOverlay = /** @type {HTMLDivElement} */ (document.getElementById("endedOverlay"));
 const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateOverlay"));
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
@@ -164,6 +171,10 @@ let layoutGateVisible = false;
 let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
 let layoutGateFailureActive = false;
+// A failure only the user can retire. The artifact-load card clears itself once a load succeeds;
+// the server-replacement card must not, because the page is still running the pre-upgrade client
+// against the replacement server and nothing else would tell the user that.
+let layoutGateFailureSticky = false;
 let layoutGateCycle = 0;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let layoutGateTimer;
@@ -180,8 +191,10 @@ let submitQueuedAgain = false;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
-// it as it changes and the chrome replays it once the new document is up.
-let lastReviewState = null;
+// it as it changes and the chrome replays it once the new document is up. It is persisted per
+// session so a full page reload replays it too.
+let lastReviewState = loadJsonState(reviewStateStorageKey, null);
+if (lastReviewState && typeof lastReviewState !== "object") lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
 const ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS = [100, 300];
 // Backoff for retrying a whole begin-load attempt after its in-call retries ran out. The
@@ -526,6 +539,30 @@ function setAgentPresence(state) {
 
 function setHandoffSuperseded(visible) {
   if (handoffBanner) handoffBanner.hidden = ended || !visible;
+}
+
+// A replacement server is serving this artifact, but this page is still running the client it
+// was served by the previous one. Say so where the user can dismiss it, and never reload on
+// their behalf - a forced reload interrupts whatever they were reading or writing.
+function setChromeOutdated(visible) {
+  if (outdatedBanner) outdatedBanner.hidden = ended || !visible;
+}
+
+function setReviewState(state) {
+  lastReviewState = state;
+  if (!state || (!state.card && !(Array.isArray(state.fields) && state.fields.length))) {
+    try {
+      sessionStorage.removeItem(reviewStateStorageKey);
+    } catch {
+      // The in-memory state still works if browser storage is unavailable.
+    }
+    return;
+  }
+  saveJsonState(reviewStateStorageKey, state);
+}
+
+function hasUnsentDraft() {
+  return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
 }
 
 async function refreshChromeLoadHandoff(requestSequence) {
@@ -941,9 +978,10 @@ function setLayoutGateActive(active) {
 // it already covers the empty artifact area; without this the user is left looking at either a
 // spinner that never resolves or a blank frame, with nothing explaining it and nothing to click.
 // Bumping the cycle retires any pending reveal timer so a stale one cannot hide this card.
-function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction) {
+function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { sticky = false } = {}) {
   if (ended) return;
   layoutGateFailureActive = true;
+  layoutGateFailureSticky = sticky;
   layoutGateCycle += 1;
   clearLayoutGateTimer();
   layoutGateArmed = false;
@@ -961,7 +999,7 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction) {
 // disabled or the user already bypassed it, because otherwise the card would keep covering an
 // artifact that has since loaded.
 function clearLayoutGateFailure() {
-  if (!layoutGateFailureActive) return;
+  if (!layoutGateFailureActive || layoutGateFailureSticky) return;
   layoutGateFailureActive = false;
   if (layoutGateAction) {
     layoutGateAction.textContent = "Show anyway";
@@ -971,6 +1009,7 @@ function clearLayoutGateFailure() {
 }
 
 function revealLayoutGate() {
+  if (layoutGateFailureSticky) return;
   clearLayoutGateTimer();
   layoutGateArmed = false;
   setLayoutGateActive(false);
@@ -984,6 +1023,9 @@ function forceRevealLayoutGate(reason) {
 
 function startLayoutGateCycle() {
   clearLayoutGateFailure();
+  // A sticky failure owns the overlay until the user acts on it, so a later load must not repaint
+  // the checking card over the message it left there.
+  if (layoutGateFailureSticky) return;
   if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
 
   layoutGateCycle += 1;
@@ -1396,7 +1438,9 @@ function markSessionEnded() {
   updateSendState();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
+  if (outdatedBanner) outdatedBanner.hidden = true;
   layoutGateManuallyBypassed = true;
+  layoutGateFailureSticky = false;
   revealLayoutGate();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
@@ -2226,6 +2270,7 @@ async function probeChromeHealth() {
 async function reloadChromeAfterServerRestart() {
   let sawOutage = false;
   let healthy = false;
+  let settled = false;
   // Keep the pre-outage behavior: a server that never actually went away is reloaded promptly.
   const settleDeadline = Date.now() + CHROME_RESTART_SETTLE_MS;
   const deadline = Date.now() + CHROME_RESTART_WAIT_MS;
@@ -2234,7 +2279,10 @@ async function reloadChromeAfterServerRestart() {
     try {
       const res = await fetch("/health", { cache: "no-store" });
       healthy = Boolean(res.ok);
-      if (healthy && (sawOutage || Date.now() >= settleDeadline)) break;
+      if (healthy && (sawOutage || Date.now() >= settleDeadline)) {
+        settled = true;
+        break;
+      }
     } catch {
       sawOutage = true;
       healthy = false;
@@ -2244,10 +2292,11 @@ async function reloadChromeAfterServerRestart() {
     await new Promise((resolve) => setTimeout(resolve, probeDelay));
   }
 
-  // The loop can exit on the deadline carrying whatever the last probe happened to see, and in a
-  // hidden tab the browser clamps these timers to seconds or minutes - so a single failed probe
-  // can be the only one that ran. Confirm before claiming the server never came back.
-  if (!healthy) healthy = await probeChromeHealth();
+  // A loop that ended on the deadline carries whatever the last probe happened to see, and in a
+  // hidden tab the browser clamps these timers to seconds or minutes - so a single probe can be
+  // the only one that ran. Neither answer may be trusted then: a stale failure claims a running
+  // server is gone, and a stale success reloads into a port nothing is listening on.
+  if (!settled) healthy = await probeChromeHealth();
 
   if (!healthy) {
     chromeRestartReloadPromise = null;
@@ -2275,10 +2324,26 @@ async function reloadChromeAfterServerRestart() {
       "The Lavish server restarted and did not come back. Start it again with your agent, then reload this page.",
       "Reload",
       reloadWhenServerIsBack,
+      { sticky: true },
     );
     return;
   }
 
+  // Unsent annotation text is the user's writing. A reload replays it, but it is still their
+  // call when to interrupt the card they are typing into, so offer the reload instead of taking
+  // it. The same applies to a page the user is only reading: the banner never reloads by itself.
+  if (hasUnsentDraft()) {
+    chromeRestartReloadPromise = null;
+    setChromeOutdated(true);
+    return;
+  }
+
+  await flushWhiteboardsBeforeChromeReload();
+  location.reload();
+}
+
+async function reloadChromeForOutdatedBanner() {
+  if (outdatedReloadButton) outdatedReloadButton.disabled = true;
   await flushWhiteboardsBeforeChromeReload();
   location.reload();
 }
@@ -2335,7 +2400,7 @@ window.addEventListener("message", (event) => {
     lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
   }
   if (msg.type === "lavish:reviewState") {
-    lastReviewState = msg.state && typeof msg.state === "object" ? msg.state : null;
+    setReviewState(msg.state && typeof msg.state === "object" ? msg.state : null);
   }
   if (msg.type === "lavish:artifactAssetFailure") {
     reportArtifactFailures(
@@ -2604,6 +2669,8 @@ endButton.onclick = () => {
   endSession();
 };
 handoffTakeoverButton.onclick = () => location.reload();
+if (outdatedReloadButton) outdatedReloadButton.onclick = () => reloadChromeForOutdatedBanner();
+if (outdatedDismissButton) outdatedDismissButton.onclick = () => setChromeOutdated(false);
 document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
@@ -2661,6 +2728,9 @@ events.addEventListener("reload", () => {
   });
 });
 events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
+// The replacement server serves a different artifact's review. This page keeps working against
+// it; it is only running the previous version of the chrome, which is the user's to act on.
+events.addEventListener("chrome-outdated", () => setChromeOutdated(true));
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
@@ -2669,6 +2739,7 @@ events.addEventListener("layout-warnings", (event) => setLayoutWarnings(JSON.par
 events.addEventListener("open", () => refreshLayoutWarnings());
 
 render();
+setChromeOutdated(false);
 setWarningsDrawerOpen(false);
 renderWarnings();
 initialChat.forEach((item) => addChat(item.role, item.text));

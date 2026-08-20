@@ -226,8 +226,8 @@ pnpm link
   Lavish changes only the browser view, so saved, standalone, and exported artifacts still render plain Mermaid.
 - **Server cleanup** - The detached server stops after the last session ends when nothing is connected, or after `LAVISH_AXI_IDLE_TIMEOUT_MS` (default 30 minutes) with no browser or poll connections.
   Set `LAVISH_AXI_IDLE_TIMEOUT_MS=0` or `off` to disable idle self-shutdown.
-- **Server upgrades** - One background server serves every session, so upgrading `lavish-axi` while reviews are open makes the next `lavish-axi <html-file>` replace that server, and every open review page reloads itself once the replacement answers.
-  In-flight `lavish-axi poll` commands end with an interrupted-poll error and are safe to re-run; queued feedback is never lost.
+- **Server upgrades** - One background server serves every session, so upgrading `lavish-axi` while reviews are open makes the next `lavish-axi <html-file>` replace that server. Only the review page for the artifact being opened reloads itself once the replacement answers; every other open review page keeps working and shows a banner saying Lavish was updated, with a Reload button and a Dismiss button, so no page you are reading reloads on its own.
+  In-flight `lavish-axi poll` commands end with an interrupted-poll error and are safe to re-run; queued feedback is never lost, and annotation text you have typed but not queued yet survives a reload.
   A page waits for the replacement rather than reloading into a port nothing is listening on, and tells the user to restart Lavish if it never returns.
 - **Local-first state** - Session state stays under `~/.lavish-axi/` by default, or `LAVISH_AXI_STATE_DIR` when set.
 - **Diagnostic viewports** - `LAVISH_AXI_DIAGNOSTIC_VIEWPORTS` sets which viewport classes the layout-issue inbox tracks (`mobile`, `compact`, `desktop`; comma-separated, default all). Warnings whose class leaves the set are marked obsolete with an explicit reason instead of silently reading as fixed.

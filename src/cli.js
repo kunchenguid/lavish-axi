@@ -251,7 +251,10 @@ async function openCommand(args) {
   const selfPaintWarning = await selfPaintWarningForFile(absolute);
   const noGate = args.includes("--no-gate");
   const reopen = args.includes("--reopen");
-  const baseUrl = await ensureServer({ forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || "") });
+  const baseUrl = await ensureServer({
+    forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || ""),
+    reloadKey: sessionKey(absolute),
+  });
   const response = await postJson(`${baseUrl}/api/sessions`, { file: absolute, noGate, reopen });
   if (response.status === "user-ended") {
     return createUserEndedOpenOutput({ file: absolute, url: response.url });
@@ -1063,7 +1066,9 @@ function isHtmlPath(file) {
   return file.toLowerCase().endsWith(".html") || file.toLowerCase().endsWith(".htm");
 }
 
-async function ensureServer({ forceRestart = false } = {}) {
+// `reloadKey` names the session this invocation is about to open. A version-driven replacement
+// reloads that chrome only; every other open review page is told it is outdated and left alone.
+async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   const port = defaultPort();
   const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
   const existing = await fetchHealth(baseUrl);
@@ -1078,7 +1083,7 @@ async function ensureServer({ forceRestart = false } = {}) {
     }
     // Stale server from an older release is squatting on the port. Ask it to shut down
     // gracefully so the upgraded client doesn't keep handing users an old chrome.
-    await requestShutdown(baseUrl);
+    await requestShutdown(baseUrl, reloadKey);
     const freed = await waitForPortFree(baseUrl, 2000);
     if (!freed) {
       // Pre-handshake servers (any release older than this change) don't expose /shutdown
@@ -1148,9 +1153,13 @@ async function fetchHealth(baseUrl) {
   }
 }
 
-async function requestShutdown(baseUrl) {
+async function requestShutdown(baseUrl, reloadKey = "") {
   try {
-    await fetch(`${baseUrl}/shutdown`, { method: "POST" });
+    await fetch(`${baseUrl}/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(reloadKey ? { reload_key: reloadKey } : {}),
+    });
   } catch {
     // Best effort. If the server died before answering, the port will free up on its own.
   }
