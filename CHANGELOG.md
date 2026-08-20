@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.54](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.53...lavish-axi-v0.1.54) (2026-08-20)
+
+
+### Features
+
+* **attachments:** support image paste, drop, and picker uploads in the conversation composer ([#248](https://github.com/kunchenguid/lavish-axi/issues/248)) ([4726242](https://github.com/kunchenguid/lavish-axi/commit/47262422fe34efb8373909775d3532b7eb354bdc))
+
+
+### Bug Fixes
+
+* add semantic names to table annotations ([#256](https://github.com/kunchenguid/lavish-axi/issues/256)) ([d27e2e8](https://github.com/kunchenguid/lavish-axi/commit/d27e2e8b489a3504cb1620c61dffc6d79afcae49))
+* **chrome:** recover a review that never finishes loading ([#268](https://github.com/kunchenguid/lavish-axi/issues/268)) ([30ef253](https://github.com/kunchenguid/lavish-axi/commit/30ef25389f409464a6f0a7d0121830e4a9335242))
+* **cli:** put poll feedback ahead of the DOM snapshot in output ([#266](https://github.com/kunchenguid/lavish-axi/issues/266)) ([9f42941](https://github.com/kunchenguid/lavish-axi/commit/9f429413694b28e1d968af0ac5061e4efe4a7234))
+* let artifact popups escape the iframe sandbox ([#258](https://github.com/kunchenguid/lavish-axi/issues/258)) ([c62b5f9](https://github.com/kunchenguid/lavish-axi/commit/c62b5f9606c06569df6a51949bae3d53e065dfc8))
+* preserve Mermaid label line breaks ([#237](https://github.com/kunchenguid/lavish-axi/issues/237)) ([c7db61c](https://github.com/kunchenguid/lavish-axi/commit/c7db61c438e290a04c3c403625c1351699b9d326))
+* **server:** keep sends available while an agent works and stop losing feedback on closed polls ([#265](https://github.com/kunchenguid/lavish-axi/issues/265)) ([cc186c2](https://github.com/kunchenguid/lavish-axi/commit/cc186c208e2cf5b30ffee782eda78b38ca79d387))
+* **server:** reject foreign origins on mutating routes ([#257](https://github.com/kunchenguid/lavish-axi/issues/257)) ([ec50b1e](https://github.com/kunchenguid/lavish-axi/commit/ec50b1e7304466fd559e6c06b3259b3d2da6189e))
+
 ## [0.1.53](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.52...lavish-axi-v0.1.53) (2026-08-18)
 
 
