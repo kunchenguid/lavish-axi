@@ -442,11 +442,18 @@ function renderActionPanel(value) {
   actionPanelSummary.setAttribute("aria-live", "polite");
   actionPanel.appendChild(actionPanelSummary);
 
+  // The status line travels WITH the actions in the pinned footer. It is the only channel a throwing
+  // handler has, and a message the person cannot see is indistinguishable from nothing happening:
+  // measured in the Gate 4 panel of CTB-1373 (1912x867), it rendered at 722px inside a 571px visible
+  // area, so "Conclusão exige um resumo de QA." never reached the screen and the session looked inert.
+  const footer = document.createElement("div");
+  footer.className = "action-panel-footer";
+
   actionPanelStatus = document.createElement("p");
   actionPanelStatus.className = "action-panel-status";
   actionPanelStatus.setAttribute("role", "status");
   actionPanelStatus.setAttribute("aria-live", "polite");
-  actionPanel.appendChild(actionPanelStatus);
+  footer.appendChild(actionPanelStatus);
 
   const actions = document.createElement("div");
   actions.className = "action-panel-actions";
@@ -474,7 +481,8 @@ function renderActionPanel(value) {
     actionPanelButtons.set(action.id, button);
     actions.appendChild(button);
   }
-  actionPanel.appendChild(actions);
+  footer.appendChild(actions);
+  actionPanel.appendChild(footer);
   actionPanel.hidden = false;
   sendAndEndButton.hidden = normalized.hideGenericSendAndEnd;
   updateActionPanelButtons();

@@ -1729,6 +1729,61 @@ test("non-Gate action panels keep required-field guidance", async () => {
   assert.equal(fieldError.textContent, "Preencha o campo obrigatório.");
 });
 
+test("a throwing handler puts its error in the pinned footer, next to the actions", async () => {
+  // Regression boundary for a lost QA decision (CTB-1373). The status line is the ONLY channel a
+  // throwing handler has, and it used to render in the scrolling flow AFTER every field: measured at
+  // 722px inside a 571px visible area on the Gate 4 panel, so "Conclusão exige um resumo de QA." never
+  // reached the screen. Invisible validation error reads as "I clicked and nothing happened".
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:registerActionPanel",
+    panel: {
+      schema: "lavish-action-panel-v1",
+      id: "dealernet-qa",
+      title: "Decisão de QA",
+      fields: [
+        { id: "actor", type: "textarea", label: "Quem decide", maxLength: 80 },
+        { id: "summary", type: "textarea", label: "Resumo da QA", maxLength: 4000 },
+        { id: "feedback_text", type: "textarea", label: "Feedback", maxLength: 4000 },
+      ],
+      actions: [{ id: "complete", label: "Concluir QA", tone: "primary", successMessage: "QA concluída." }],
+    },
+  });
+
+  const panel = chrome.element("actionPanel");
+  const footer = descendants(panel).find((node) => node.className === "action-panel-footer");
+  assert.ok(footer, "the panel needs a pinned footer");
+  const dentroDoFooter = descendants(footer);
+  assert.ok(
+    dentroDoFooter.some((node) => node.className === "action-panel-status"),
+    "the status line lives in the pinned footer, never below the fields",
+  );
+  assert.ok(
+    dentroDoFooter.some((node) => node.className === "action-panel-actions"),
+    "the actions stay in the same pinned footer",
+  );
+  // O resumo continua no fluxo que rola: é contexto, não é o canal de erro.
+  assert.equal(
+    dentroDoFooter.some((node) => node.className === "action-panel-summary"),
+    false,
+  );
+
+  const complete = descendants(panel).find((node) => node.dataset.actionPanelAction === "complete");
+  complete.click();
+  const invocation = chrome.postedToFrame.filter((m) => m.type === "lavish:actionPanelInvoke").at(-1);
+  chrome.sendFrameMessage({
+    type: "lavish:actionPanelResult",
+    panelId: "dealernet-qa",
+    invocationId: invocation.invocationId,
+    ok: false,
+    error: "Conclusão exige um resumo de QA.",
+  });
+  const status = descendants(footer).find((node) => node.className === "action-panel-status");
+  assert.equal(status.textContent, "Conclusão exige um resumo de QA.");
+  assert.equal(complete.disabled, false, "a rejected action stays clickable after the fix");
+});
+
 test("compact Gate keeps the same sidebar DOM with Gate and conversation open", async () => {
   const chrome = await createChromeHarness({ compactViewport: true });
   chrome.element("conversationSection").open = true;

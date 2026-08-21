@@ -1012,12 +1012,17 @@ body.lavish {
   font: inherit;
 }
 /*
- * As ações ficam PRESAS ao rodapé do painel, que rola.
+ * O rodapé do painel — status + ações — fica PRESO à área visível, que rola.
  *
  * Sem isto, um descritor com vários campos empurra os botões para fora da área visível. Medido no Gate 4
  * da CTB-1373 (viewport 1912x867): `scrollHeight 911` contra `clientHeight 533`, com só "Entregar"
  * visível — "Solicitar ajustes" e "Abortar demanda" só existiam depois de rolar. Painel de decisão em que
  * a ação de ABORTAR é invisível não é questão de estética.
+ *
+ * A linha de STATUS entrou no mesmo bloco por um segundo motivo, medido no mesmo painel: ela é o ÚNICO
+ * canal de um handler que lança, e nascia em 722px dentro de 571px de área visível. Erro de validação
+ * escrito fora da tela é indistinguível de "cliquei e nada aconteceu" — foi assim que uma decisão de QA
+ * se perdeu sem ninguém saber por quê. O resumo continua no fluxo que rola: ele é contexto, não erro.
  *
  * Vale para todos os gates porque o número de campos é escolhido pelo descritor, não pelo chrome: o
  * Gate 1 hoje só escapa por declarar um campo, e passaria a falhar no dia em que ganhasse outro.
@@ -1026,9 +1031,7 @@ body.lavish {
  * para o fundo cobrir o conteúdo que passa por baixo ao rolar; `bottom: -24px` cancela o padding inferior
  * do container, de modo que o bloco encoste no fim da área visível em vez de flutuar 24px acima.
  */
-.action-panel-actions {
-  display: grid;
-  gap: 8px;
+.action-panel-footer {
   position: sticky;
   bottom: -24px;
   z-index: 1;
@@ -1036,6 +1039,16 @@ body.lavish {
   padding: 12px 16px 24px;
   background: var(--bg-panel);
   box-shadow: 0 -10px 14px -10px rgb(0 0 0 / 0.22);
+}
+.action-panel-actions {
+  display: grid;
+  gap: 8px;
+}
+.action-panel-footer .action-panel-status {
+  margin: 0 0 10px;
+}
+.action-panel-footer .action-panel-status:empty {
+  display: none;
 }
 .action-panel-button {
   width: 100%;
