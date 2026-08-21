@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 import { createChromeHtml } from "../src/server.js";
+import { REVISION_PALETTE, REVISION_PATTERN_CSS } from "../src/artifact-sdk.js";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
@@ -16,13 +17,16 @@ const servedChromeIds = new Set(
   ),
 );
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[] }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], revisionPatterns?: Record<string, { backgroundImage: string, backgroundSize: string }> }} HarnessSessionData */
 /** @type {HarnessSessionData} */
+// revisionPatterns mirrors what createChromeHtml puts in the session JSON;
+// server.test.js is what proves the server actually ships it.
 const defaultSessionData = {
   key: "abc",
   file: "/tmp/artifact.html",
   modeToggleHotkeyKey: "i",
   attachmentAcceptedMime: ["image/png", "image/jpeg", "image/webp"],
+  revisionPatterns: REVISION_PATTERN_CSS,
 };
 
 async function createChromeHarness({
@@ -4759,4 +4763,382 @@ test("a load that recovers after the failure card retires it even when the gate 
   assert.match(chrome.frame.src, /artifact_load_token=/);
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
   assert.equal(chrome.element("layoutGateAction").textContent, "Show anyway");
+});
+
+// ---------------------------------------------------------------------------
+// Revision legend
+// ---------------------------------------------------------------------------
+
+function sampleRevisions() {
+  return [
+    {
+      id: "1",
+      label: "Initial draft",
+      timestamp: "2026-07-29T10:00:00.000Z",
+      summary: "First pass layout",
+      sections: ["Hero", "Pricing table"],
+      index: 0,
+      color: { hex: "#0072B2", borderStyle: "solid", pattern: "diagonal" },
+    },
+    {
+      id: "2",
+      label: "Pricing fix",
+      timestamp: "",
+      summary: "",
+      sections: [],
+      index: 1,
+      color: { hex: "#D55E00", borderStyle: "dashed", pattern: "dots" },
+    },
+  ];
+}
+
+test("revision legend stays hidden for a legacy artifact that never sends lavish:revisions", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.equal(chrome.element("revisionLegendList").innerHTML, "");
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:setRevisionVisibility"),
+    false,
+  );
+});
+
+test("revision legend renders color, label, timestamp, summary, and affected sections", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: sampleRevisions(),
+    artifact_load_token: chrome.artifactLoadToken(),
+  });
+
+  assert.equal(chrome.element("revisionWrap").hidden, false);
+  assert.equal(chrome.element("revisionLegendCount").textContent, "(2)");
+  const html = chrome.element("revisionLegendList").innerHTML;
+  assert.match(html, /Initial draft/);
+  assert.match(html, /First pass layout/);
+  assert.match(html, /Hero/);
+  assert.match(html, /Pricing table/);
+  assert.match(html, /background-color:#0072B2/);
+  assert.match(html, /border-style:solid/);
+  assert.match(html, /Pricing fix/);
+  assert.match(html, /border-style:dashed/);
+});
+
+/** Every `style` attribute of a rendered `.revision-swatch`, in row order. */
+function swatchStyles(html) {
+  return Array.from(html.matchAll(/<span class="revision-swatch" style="([^"]*)"/g), (match) => match[1]);
+}
+
+test("legend swatches carry the pattern, so palette entries sharing a border style stay distinguishable without color", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: REVISION_PALETTE.map((color, index) => ({
+      id: String(index + 1),
+      label: `Revision ${index + 1}`,
+      timestamp: "",
+      summary: "",
+      sections: [],
+      index,
+      color,
+    })),
+  });
+
+  const styles = swatchStyles(chrome.element("revisionLegendList").innerHTML);
+  assert.equal(styles.length, REVISION_PALETTE.length);
+
+  for (const [i, a] of REVISION_PALETTE.entries()) {
+    for (const [j, b] of REVISION_PALETTE.entries()) {
+      if (j <= i || a.borderStyle !== b.borderStyle) continue;
+      assert.notEqual(
+        styles[i].replace(/background-color:[^;]*/, ""),
+        styles[j].replace(/background-color:[^;]*/, ""),
+        `swatches ${i} and ${j} share border-style "${a.borderStyle}" and are separated by hue alone`,
+      );
+    }
+  }
+});
+
+test("a legend swatch renders the same texture definition the artifact highlight paints", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: [
+      { id: "1", label: "Dotted", index: 0, color: { hex: "#D55E00", borderStyle: "dashed", pattern: "dots" } },
+    ],
+  });
+
+  const [style] = swatchStyles(chrome.element("revisionLegendList").innerHTML);
+  assert.ok(style.includes("background-image:" + REVISION_PATTERN_CSS.dots.backgroundImage));
+  assert.ok(style.includes("background-size:" + REVISION_PATTERN_CSS.dots.backgroundSize));
+});
+
+test("an artifact-supplied pattern name outside the server's map never reaches the swatch", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: [
+      {
+        id: "1",
+        label: "Prototype key",
+        index: 0,
+        color: { hex: "#0072B2", borderStyle: "solid", pattern: "constructor" },
+      },
+      { id: "2", label: "Unknown name", index: 1, color: { hex: "#009E73", borderStyle: "dotted", pattern: "url(x)" } },
+    ],
+  });
+
+  for (const style of swatchStyles(chrome.element("revisionLegendList").innerHTML)) {
+    assert.doesNotMatch(style, /background-image/);
+  }
+});
+
+test("revision legend caps token-valid artifact metadata before rendering", async () => {
+  const chrome = await createChromeHarness();
+  const revisions = Array.from({ length: 75 }, (_, index) => ({
+    id: `revision-${index}`,
+    label: "L".repeat(120),
+    timestamp: "2026-07-29T10:00:00.000Z",
+    summary: "S".repeat(700),
+    sections: Array.from({ length: 20 }, () => "T".repeat(100)),
+    index,
+    color: { hex: "#0072B2", borderStyle: "solid", pattern: "diagonal" },
+  }));
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions });
+
+  const html = chrome.element("revisionLegendList").innerHTML;
+  assert.equal(chrome.element("revisionLegendCount").textContent, "(50)");
+  assert.doesNotMatch(html, /L{81}/);
+  assert.doesNotMatch(html, /S{501}/);
+  assert.doesNotMatch(html, /T{81}/);
+  assert.equal((html.match(/revision-section-tag/g) || []).length, 50 * 12);
+});
+
+test("revision legend escapes agent-controlled text before inserting it as HTML", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: [
+      {
+        id: "1",
+        label: "<img src=x onerror=alert(1)>",
+        timestamp: "",
+        summary: "<script>alert(2)</script>",
+        sections: ["<b>bold</b>"],
+        index: 0,
+        color: { hex: "#0072B2", borderStyle: "solid", pattern: "diagonal" },
+      },
+    ],
+  });
+
+  const html = chrome.element("revisionLegendList").innerHTML;
+  assert.doesNotMatch(html, /<img/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /<b>bold/);
+  assert.match(html, /&lt;img/);
+  assert.match(html, /&lt;script&gt;/);
+});
+
+test("revision legend hides again and clears its list when the SDK reports an empty registry", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: sampleRevisions(),
+    artifact_load_token: chrome.artifactLoadToken(),
+  });
+  assert.equal(chrome.element("revisionWrap").hidden, false);
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: [] });
+  assert.equal(chrome.element("revisionWrap").hidden, true);
+  assert.equal(chrome.element("revisionLegendList").innerHTML, "");
+});
+
+test("revision reload resets stale legend content and visibility state before the replacement announces", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await flushPromises();
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: sampleRevisions(),
+    artifact_load_token: chrome.artifactLoadToken(),
+  });
+  chrome.element("revisionToggleAll").onclick();
+  assert.equal(chrome.element("revisionWrap").hidden, false);
+  assert.doesNotMatch(chrome.element("revisionLegendList").innerHTML, /checked>/);
+
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+
+  assert.equal(chrome.element("revisionWrap").hidden, true);
+  assert.equal(chrome.element("revisionLegendList").innerHTML, "");
+  assert.equal(chrome.element("revisionToggleAll")["aria-pressed"], "true");
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: sampleRevisions(),
+    artifact_load_token: chrome.artifactLoadToken(),
+  });
+  assert.match(chrome.element("revisionLegendList").innerHTML, /checked><span>Show highlights/);
+});
+
+test("revision legend toggle-all flips visibility, updates its accessible state, and re-renders checkboxes", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+
+  // The server-rendered aria-pressed="true" default isn't visible to this harness
+  // (it only reflects JS-driven attribute changes, not the initial static markup -
+  // server.test.js covers that starting attribute), so assert behavior from here.
+  assert.match(chrome.element("revisionLegendList").innerHTML, /checked><span>Show highlights/);
+
+  chrome.element("revisionToggleAll").onclick();
+
+  assert.equal(chrome.element("revisionToggleAll")["aria-pressed"], "false");
+  assert.equal(chrome.element("revisionToggleAll").textContent, "Show all highlights");
+  // postedToFrame message objects are built inside the vm-executed chrome-client.js
+  // source, so they live in a different vm realm than this test file; deepEqual is
+  // prototype-sensitive across realms (see the reference-equality note below), so
+  // compare fields individually instead of the whole object, matching how the rest
+  // of this file already reads chrome.postedToFrame.at(-1).<field>.
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setRevisionVisibility");
+  assert.equal(chrome.postedToFrame.at(-1).all, true);
+  assert.equal(chrome.postedToFrame.at(-1).id, undefined);
+  assert.equal(chrome.postedToFrame.at(-1).visible, false);
+  assert.doesNotMatch(chrome.element("revisionLegendList").innerHTML, /checked>/);
+
+  chrome.element("revisionToggleAll").onclick();
+  assert.equal(chrome.element("revisionToggleAll")["aria-pressed"], "true");
+  assert.equal(chrome.element("revisionToggleAll").textContent, "Hide all highlights");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setRevisionVisibility");
+  assert.equal(chrome.postedToFrame.at(-1).all, true);
+  assert.equal(chrome.postedToFrame.at(-1).visible, true);
+});
+
+test("a per-revision toggle never carries the all-revisions flag", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+
+  const changeHandler = chrome.element("revisionLegendList").listeners.get("change");
+  changeHandler({ target: { dataset: { revisionId: "1" }, checked: false } });
+
+  assert.equal(chrome.postedToFrame.at(-1).id, "1");
+  assert.equal(chrome.postedToFrame.at(-1).all, undefined);
+});
+
+test("revision legend drops an artifact-authored '*' id so it cannot masquerade as the all-revisions toggle", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    revisions: [
+      { id: "*", label: "Wildcard squatter", timestamp: "", summary: "", sections: [], index: 0, color: {} },
+      { id: "real", label: "Real revision", timestamp: "", summary: "", sections: [], index: 1, color: {} },
+    ],
+  });
+
+  const html = chrome.element("revisionLegendList").innerHTML;
+  assert.equal(chrome.element("revisionLegendCount").textContent, "(1)");
+  assert.doesNotMatch(html, /Wildcard squatter/);
+  assert.match(html, /Real revision/);
+  assert.doesNotMatch(html, /data-revision-id="\*"/);
+});
+
+test("revision legend stops examining raw entries at the raw cap, even when none is accepted", async () => {
+  const chrome = await createChromeHarness();
+  // Rejected entries never advance the accepted-entry cap, so a flood of them
+  // is what proves the raw cap exists: the renderable entries sit past it and
+  // must therefore never be reached.
+  const revisions = [
+    ...Array.from({ length: 500 }, () => ({ id: "unaddressable id", label: "Rejected", color: {} })),
+    ...Array.from({ length: 60 }, (_, i) => ({ id: `late-${i}`, label: `Late revision ${i}`, color: {} })),
+  ];
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions });
+
+  assert.equal(chrome.element("revisionWrap").hidden, true);
+  assert.equal(chrome.element("revisionLegendList").innerHTML, "");
+});
+
+test("a per-revision checkbox posts a scoped visibility toggle for just that revision", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+
+  const changeHandler = chrome.element("revisionLegendList").listeners.get("change");
+  assert.equal(typeof changeHandler, "function");
+
+  changeHandler({ target: { dataset: { revisionId: "2" }, checked: false } });
+
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setRevisionVisibility");
+  assert.equal(chrome.postedToFrame.at(-1).id, "2");
+  assert.equal(chrome.postedToFrame.at(-1).visible, false);
+});
+
+test("the change listener ignores events from controls outside the revision checkboxes", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  const before = chrome.postedToFrame.length;
+
+  const changeHandler = chrome.element("revisionLegendList").listeners.get("change");
+  changeHandler({ target: { dataset: {} } });
+
+  assert.equal(chrome.postedToFrame.length, before);
+});
+
+// The chrome's real server-rendered HTML starts every menu panel with the
+// `hidden` attribute, but this harness's generic element stub defaults
+// `hidden` to false (see createChromeHarness's element() factory) since it
+// never parses actual markup - only server.test.js's markup assertions cover
+// that starting attribute. Prime the stubs to match before exercising toggle
+// behavior here, the same gap the pre-existing more-menu tests never hit
+// because none of them asserted the pre-click state.
+function primeMenusClosed(chrome) {
+  chrome.element("moreMenu").hidden = true;
+  chrome.element("revisionLegendPanel").hidden = true;
+  chrome.element("whiteboardOverlay").hidden = true;
+  chrome.element("shareDialog").hidden = true;
+}
+
+test("the revision legend button toggles the panel and its own aria-expanded state", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  primeMenusClosed(chrome);
+
+  chrome.element("revisionLegendButton").onclick();
+  assert.equal(chrome.element("revisionLegendPanel").hidden, false);
+  assert.equal(chrome.element("revisionLegendButton")["aria-expanded"], "true");
+
+  chrome.element("revisionLegendButton").onclick();
+  assert.equal(chrome.element("revisionLegendPanel").hidden, true);
+  assert.equal(chrome.element("revisionLegendButton")["aria-expanded"], "false");
+});
+
+test("Escape closes an open revision legend panel", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  primeMenusClosed(chrome);
+
+  chrome.element("revisionLegendButton").onclick();
+  assert.equal(chrome.element("revisionLegendPanel").hidden, false);
+
+  chrome.dispatchDocumentKeydown({ key: "Escape" });
+
+  assert.equal(chrome.element("revisionLegendPanel").hidden, true);
+  assert.equal(chrome.element("revisionLegendButton")["aria-expanded"], "false");
+});
+
+test("opening the revision legend closes the overflow menu and vice versa", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });
+  primeMenusClosed(chrome);
+
+  chrome.element("moreButton").onclick();
+  assert.equal(chrome.element("moreMenu").hidden, false);
+
+  chrome.element("revisionLegendButton").onclick();
+  assert.equal(chrome.element("revisionLegendPanel").hidden, false);
+  assert.equal(chrome.element("moreMenu").hidden, true);
 });

@@ -111,6 +111,12 @@ const chatAttachmentNotice = /** @type {HTMLSpanElement} */ (document.getElement
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
+const revisionWrap = /** @type {HTMLDivElement} */ (document.getElementById("revisionWrap"));
+const revisionLegendButton = /** @type {HTMLButtonElement} */ (document.getElementById("revisionLegendButton"));
+const revisionLegendPanel = /** @type {HTMLDivElement} */ (document.getElementById("revisionLegendPanel"));
+const revisionLegendCount = /** @type {HTMLSpanElement} */ (document.getElementById("revisionLegendCount"));
+const revisionLegendList = /** @type {HTMLDivElement} */ (document.getElementById("revisionLegendList"));
+const revisionToggleAll = /** @type {HTMLButtonElement} */ (document.getElementById("revisionToggleAll"));
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
 const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("moreButton"));
 const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMenu"));
@@ -459,6 +465,169 @@ function pillAttachmentsHtml(prompt) {
 
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
 
+// The legend is absent (revisionWrap stays hidden) for any artifact without
+// a data-lavish-revisions registry, so legacy artifacts show no legend and
+// no controls - the SDK simply never posts this message for them.
+let lastRevisions = [];
+let allRevisionsVisible = true;
+const REVISION_MESSAGE_LIMITS = {
+  entries: 50,
+  // Rejected entries never advance `entries`, so a payload of a million
+  // duplicate or whitespace ids would otherwise walk the whole array in the
+  // chrome. Bound what we examine, not just what we accept.
+  rawEntries: 500,
+  id: 40,
+  label: 80,
+  timestamp: 80,
+  summary: 500,
+  sections: 12,
+  section: 80,
+};
+
+// Mirrors isAddressableRevisionId in artifact-sdk.js. The chrome cannot import
+// it (chrome-client.js is served as a raw file), and the SDK is untrusted, so
+// this side re-validates rather than trusting the message.
+const REVISION_WILDCARD_ID = "*";
+
+// REVISION_PATTERN_CSS, shipped by the server in the session JSON so the legend
+// swatch paints the exact texture the artifact highlight does. Looking a
+// pattern name up in this server-owned map is also the allowlist: an
+// artifact-supplied name that is not a own-property key resolves to nothing.
+const revisionPatterns =
+  sessionData.revisionPatterns && typeof sessionData.revisionPatterns === "object" ? sessionData.revisionPatterns : {};
+
+function revisionPatternCss(name) {
+  if (typeof name !== "string" || !Object.prototype.hasOwnProperty.call(revisionPatterns, name)) return null;
+  const pattern = revisionPatterns[name];
+  if (!pattern || typeof pattern.backgroundImage !== "string") return null;
+  return { backgroundImage: pattern.backgroundImage, backgroundSize: pattern.backgroundSize || "auto" };
+}
+
+function revisionMessageText(value, max) {
+  return typeof value === "string" || typeof value === "number" ? String(value).slice(0, max) : "";
+}
+
+function normalizeRevisionMessage(revisions) {
+  if (!Array.isArray(revisions)) return [];
+  const normalized = [];
+  const seen = new Set();
+  let examined = 0;
+  for (const entry of revisions) {
+    if (normalized.length >= REVISION_MESSAGE_LIMITS.entries) break;
+    if (examined >= REVISION_MESSAGE_LIMITS.rawEntries) break;
+    examined += 1;
+    const raw = entry && typeof entry === "object" ? entry : {};
+    const fallbackId = String(normalized.length + 1);
+    const id = revisionMessageText(raw.id, REVISION_MESSAGE_LIMITS.id) || fallbackId;
+    if (/\s/.test(id) || id === REVISION_WILDCARD_ID || seen.has(id)) continue;
+    const label = revisionMessageText(raw.label, REVISION_MESSAGE_LIMITS.label) || `Revision ${normalized.length + 1}`;
+    const timestamp = revisionMessageText(raw.timestamp, REVISION_MESSAGE_LIMITS.timestamp);
+    const summary = revisionMessageText(raw.summary, REVISION_MESSAGE_LIMITS.summary);
+    const sections = (Array.isArray(raw.sections) ? raw.sections : [])
+      .map((section) => revisionMessageText(section, REVISION_MESSAGE_LIMITS.section))
+      .filter(Boolean)
+      .slice(0, REVISION_MESSAGE_LIMITS.sections);
+    const color = raw.color && typeof raw.color === "object" ? raw.color : {};
+    normalized.push({
+      id,
+      label,
+      timestamp: Number.isFinite(Date.parse(timestamp)) ? timestamp : "",
+      summary,
+      sections,
+      index: normalized.length,
+      color: {
+        hex: /^#[0-9a-fA-F]{6}$/.test(String(color.hex || "")) ? color.hex : "#8c96aa",
+        borderStyle: ["solid", "dashed", "dotted"].includes(color.borderStyle) ? color.borderStyle : "solid",
+        pattern: revisionPatternCss(color.pattern) ? color.pattern : "",
+      },
+    });
+    seen.add(id);
+  }
+  return normalized;
+}
+
+function formatRevisionTimestamp(timestamp) {
+  if (!timestamp) return "";
+  try {
+    const formatted = new Date(timestamp).toLocaleString();
+    return formatted === "Invalid Date" ? "" : formatted;
+  } catch {
+    return "";
+  }
+}
+
+function renderRevisionRow(revision, visible) {
+  const id = String(revision.id || "");
+  const index = Number.isFinite(revision.index) ? revision.index : 0;
+  const label = escapeHtml(revision.label || `Revision ${index + 1}`);
+  const timestamp = formatRevisionTimestamp(revision.timestamp);
+  const color = revision.color || {};
+  const hex = /^#[0-9a-fA-F]{6}$/.test(String(color.hex)) ? color.hex : "#8c96aa";
+  const borderStyle = ["solid", "dashed", "dotted"].includes(color.borderStyle) ? color.borderStyle : "solid";
+  // The pattern is the swatch's second color-independent signal: six palette
+  // entries share three border styles, so without it the two entries in each
+  // pair are separated by hue alone.
+  const pattern = revisionPatternCss(color.pattern);
+  const patternStyle = pattern
+    ? ";background-image:" + pattern.backgroundImage + ";background-size:" + pattern.backgroundSize
+    : "";
+  const summary = revision.summary ? '<p class="revision-summary">' + escapeHtml(revision.summary) + "</p>" : "";
+  const sections = Array.isArray(revision.sections) ? revision.sections.filter(Boolean) : [];
+  const sectionsHtml = sections.length
+    ? '<div class="revision-sections"><span class="tooltip-label">Sections</span><div class="revision-section-list">' +
+      sections
+        .map((section) => '<span class="revision-section-tag">' + escapeHtml(String(section)) + "</span>")
+        .join("") +
+      "</div></div>"
+    : "";
+  return (
+    '<div class="revision-row">' +
+    '<div class="revision-row-head">' +
+    '<span class="revision-swatch" style="background-color:' +
+    hex +
+    ";border-style:" +
+    borderStyle +
+    patternStyle +
+    '" aria-hidden="true"></span>' +
+    '<span class="revision-name">' +
+    label +
+    "</span>" +
+    (timestamp ? '<span class="revision-time">' + escapeHtml(timestamp) + "</span>" : "") +
+    "</div>" +
+    summary +
+    sectionsHtml +
+    '<label class="revision-visibility"><input type="checkbox" data-revision-id="' +
+    escapeHtml(id) +
+    '"' +
+    (visible ? " checked" : "") +
+    "><span>Show highlights</span></label>" +
+    "</div>"
+  );
+}
+
+function renderRevisionLegend(revisions) {
+  lastRevisions = revisions;
+  if (!revisions.length) {
+    revisionWrap.hidden = true;
+    revisionLegendList.innerHTML = "";
+    return;
+  }
+  revisionWrap.hidden = false;
+  revisionLegendCount.textContent = "(" + revisions.length + ")";
+  revisionLegendList.innerHTML = revisions.map((revision) => renderRevisionRow(revision, allRevisionsVisible)).join("");
+}
+
+function resetRevisionLegend() {
+  lastRevisions = [];
+  allRevisionsVisible = true;
+  revisionWrap.hidden = true;
+  revisionLegendCount.textContent = "";
+  revisionLegendList.innerHTML = "";
+  revisionToggleAll.setAttribute("aria-pressed", "true");
+  revisionToggleAll.textContent = "Hide all highlights";
+  setMenuOpen(revisionLegendButton, revisionLegendPanel, false);
+}
+
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600) {
   sendHint.textContent = message;
   sendHint.hidden = false;
@@ -482,6 +651,7 @@ function setMenuOpen(button, menu, open) {
 
 function closeMenus() {
   setMenuOpen(moreButton, moreMenu, false);
+  setMenuOpen(revisionLegendButton, revisionLegendPanel, false);
 }
 
 function toggleMenu(button, menu) {
@@ -1771,6 +1941,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   if (!artifactSrc) {
     startLayoutGateCycle();
     const currentSrc = frame.src || "about:blank";
+    resetRevisionLegend();
     frame.src = currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now();
     return true;
   }
@@ -1885,6 +2056,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   inlineWhiteboardChannels.clear();
   setHandoffSuperseded(false);
   startLayoutGateCycle();
+  resetRevisionLegend();
   frame.src = artifactFrameSrcForLoad({ revision, token });
   return true;
 }
@@ -2588,6 +2760,9 @@ window.addEventListener("message", (event) => {
   // There is deliberately no attachment-delete message. See removeAttachment's
   // removal note below: the iframe cannot be trusted to decide a delete, and the
   // chrome cannot see every live reference, so reclamation is the sweeper's job.
+  if (msg.type === "lavish:revisions") {
+    renderRevisionLegend(normalizeRevisionMessage(msg.revisions));
+  }
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
@@ -2820,6 +2995,23 @@ chatAttachments.addEventListener("click", (event) => {
   const retry = /** @type {HTMLElement | null} */ (target?.closest?.("[data-chat-attachment-retry]") || null);
   if (retry) chatAttachmentController.retry(String(retry.dataset.chatAttachmentRetry || ""));
 });
+revisionLegendButton.onclick = () => {
+  closeWarningsDrawer();
+  toggleMenu(revisionLegendButton, revisionLegendPanel);
+};
+revisionToggleAll.onclick = () => {
+  allRevisionsVisible = !allRevisionsVisible;
+  revisionToggleAll.setAttribute("aria-pressed", String(allRevisionsVisible));
+  revisionToggleAll.textContent = allRevisionsVisible ? "Hide all highlights" : "Show all highlights";
+  postToFrame({ type: "lavish:setRevisionVisibility", all: true, visible: allRevisionsVisible });
+  renderRevisionLegend(lastRevisions);
+};
+revisionLegendList.addEventListener("change", (event) => {
+  const target = /** @type {HTMLInputElement} */ (event.target);
+  const id = target && target.dataset ? target.dataset.revisionId : undefined;
+  if (id === undefined) return;
+  postToFrame({ type: "lavish:setRevisionVisibility", id, visible: Boolean(target.checked) });
+});
 chatInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -2850,6 +3042,9 @@ if (outdatedDismissButton) outdatedDismissButton.onclick = () => setChromeOutdat
 document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
+  if (!revisionLegendPanel.hidden && !revisionWrap.contains(target)) {
+    setMenuOpen(revisionLegendButton, revisionLegendPanel, false);
+  }
   if (warningsDrawerOpen && !warningsWrap.contains(target)) closeWarningsDrawer();
 });
 // A non-modal popover closes when focus leaves it, so keyboard users are never stranded inside a

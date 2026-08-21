@@ -49,6 +49,7 @@ import {
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
+import { isAddressableRevisionId, parseRevisionRegistry, resolveElementRevisionId } from "../src/artifact-sdk.js";
 import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
 import { resolveVsCodeSettingsFile } from "../src/plugin.js";
 import { createSkillMarkdown } from "../src/skill.js";
@@ -434,6 +435,46 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
   assert.ok(output.help.some((item) => item.includes("combines several playbooks")));
   assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
+});
+
+test("input playbook teaches the revision registry convention, and its example is one Lavish actually accepts", () => {
+  const output = createPlaybookOutput(["input"]);
+  const guidance = [...output.playbook.design_rules, ...output.playbook.lavish_notes];
+
+  assert.ok(
+    output.playbook.design_rules.some(
+      (item) => /data-lavish-revisions/.test(item) && /data-lavish-revision=/.test(item),
+    ),
+    "input playbook must tell agents how to mark what a revision changed",
+  );
+
+  // The emitted guidance is the agent's only description of this convention, so
+  // run its markup example through the real consumers rather than trusting the
+  // prose: a drifted example would teach agents a registry that never renders.
+  const example = guidance.find((item) => /data-lavish-revisions>\[/.test(item));
+  assert.ok(example, "input playbook must show a concrete data-lavish-revisions registry");
+  const registryJson = example.match(/data-lavish-revisions>(\[[\s\S]*?\])<\/script>/)?.[1];
+  assert.ok(registryJson, "the registry example must contain a JSON array");
+  const markedId = example.match(/data-lavish-revision="([^"]+)"/)?.[1];
+  assert.ok(markedId, "the same example must tag an element with data-lavish-revision");
+
+  const parsed = parseRevisionRegistry({
+    querySelector: (selector) => (selector === "script[data-lavish-revisions]" ? { textContent: registryJson } : null),
+    querySelectorAll: () => [],
+  });
+  assert.ok(parsed.length > 0, "the documented registry parses into at least one revision");
+  assert.ok(
+    parsed.every((revision) => isAddressableRevisionId(revision.id)),
+    "every documented revision id must be addressable from a data-lavish-revision token list",
+  );
+  assert.equal(
+    resolveElementRevisionId(
+      markedId,
+      parsed.map((revision) => revision.id),
+    ),
+    parsed[0].id,
+    "the documented data-lavish-revision value must resolve to a revision in the documented registry",
+  );
 });
 
 test("diagram playbook names the hand-built flow anti-pattern", () => {

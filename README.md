@@ -217,6 +217,14 @@ pnpm link
   As a browser-side abuse guard, each chrome page allows 30 upload attempts per rolling minute, 4 uploads in flight at once, and 256 MiB of attempted image bytes over its lifetime; rejected uploads stay visible for retry or removal.
   Attachments are cleaned up by `LAVISH_AXI_ATTACHMENT_TTL_MS` (default 7 days; `0`/`off` disables) but only once no pending prompt still references them; `LAVISH_AXI_MAX_ATTACHMENT_DISK_MB` (default 512 MiB; `0`/`off` disables) caps total attachment disk.
   The cap is enforced when an image is uploaded, not just periodically: the upload first reclaims unreferenced files (oldest first, and never one added within the last hour), and if it still would not fit, that upload is refused with a storage-full error on its chip instead of discarding an image the user is about to send.
+- **Revision legend** - Agents can mark which elements they changed in an edit batch by embedding a JSON registry in the artifact - `<script type="application/json" data-lavish-revisions>[{ "id": "1", "label": "Initial draft", "timestamp": "2026-07-29T10:00:00Z", "summary": "First pass layout", "sections": ["Hero"] }]</script>` - and tagging the elements themselves with `data-lavish-revision="1"` (space-separated if an element was touched across several revisions; the most recent one wins the highlight).
+  An `id` has to be addressable from that space-separated list, so an entry whose id contains whitespace, repeats an earlier id, or is the reserved `*` is skipped and the rest of the registry still renders.
+  A registry renders at most 50 revisions, taken from at most its first 500 entries.
+  Lavish highlights each marked element with a color plus its own border style and background pattern - never color alone - and shows a **Revisions** button in the top bar once any are present.
+  Six such combinations exist and are assigned in registry order, so a seventh revision reuses the first one's appearance.
+  The panel lists every revision's color and label/time, plus any agent-supplied summary and affected sections, with a master **Hide/Show all highlights** toggle and a per-revision **Show highlights** checkbox. The panel button exposes `aria-expanded` and `aria-controls`, and all controls are fully keyboard-operable.
+  There is no diffing: the agent declares what changed, matching Lavish's existing `data-lavish-*` opt-in conventions.
+  The registry lives in the artifact file itself, so it persists across reloads and survives opening the file outside Lavish; artifacts without a registry render with no legend and no highlight, unchanged.
 - **Mermaid diagrams** - In the Lavish browser, every rendered Mermaid diagram in a `.mermaid` container becomes an embedded editable Excalidraw whiteboard.
   Click a diagram to unlock editing, and use its Fullscreen action to edit it over the whole viewport.
   Whiteboard scenes autosave locally.

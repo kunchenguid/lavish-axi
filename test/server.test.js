@@ -31,6 +31,7 @@ import {
   resolveWatchTarget,
   serve,
 } from "../src/server.js";
+import { REVISION_PATTERN_CSS } from "../src/artifact-sdk.js";
 import { canonicalFile, sessionKey, SessionStore } from "../src/session-store.js";
 
 async function chromeClientSource() {
@@ -512,6 +513,47 @@ test("artifact SDK script is valid JavaScript", () => {
   assert.doesNotThrow(() => new Function(js));
 });
 
+test("the generated SDK announces a revision registry at runtime", () => {
+  const messages = [];
+  const revisionScript = {
+    textContent: JSON.stringify([{ id: "1", label: "Draft", summary: "Initial layout", sections: ["Hero"] }]),
+  };
+  const markedElement = {
+    style: {},
+    getAttribute: (name) => (name === "data-lavish-revision" ? "1" : null),
+    hasAttribute: () => false,
+    setAttribute() {},
+  };
+  const document = {
+    readyState: "loading",
+    documentElement: {},
+    head: { appendChild() {} },
+    querySelector: (selector) => (selector === "script[data-lavish-revisions]" ? revisionScript : null),
+    querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? [markedElement] : []),
+    getElementById: () => null,
+    createElement: () => ({ style: {}, remove() {} }),
+    addEventListener() {},
+  };
+  const context = {
+    document,
+    parent: { postMessage: (message) => messages.push(message) },
+    window: { addEventListener() {}, clearTimeout() {}, setTimeout: () => 0 },
+    MutationObserver: class {
+      observe() {}
+    },
+  };
+
+  runInNewContext(createSdkJs("abc", 3, "revision-load-token"), context, { filename: "sdk-revision-legend.js" });
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "lavish:revisions");
+  assert.equal(messages[0].artifact_load_token, "revision-load-token");
+  assert.deepEqual(
+    Array.from(messages[0].revisions, (revision) => revision.id),
+    ["1"],
+  );
+});
+
 test("artifact SDK ignores Lavish-owned annotation UI", () => {
   const js = createSdkJs("abc");
 
@@ -792,6 +834,30 @@ test("chrome top bar follows the design mock wordmark and overflow menu treatmen
   assert.doesNotMatch(html, /class="file-input"/);
   assert.doesNotMatch(html, /class="divider"/);
   assert.doesNotMatch(html, /class="file-icon"/);
+});
+
+test("chrome ships a revision legend that starts hidden until the SDK proves the artifact has revisions", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /class="revision-wrap" id="revisionWrap" hidden/);
+  assert.match(
+    html,
+    /class="revision-button" id="revisionLegendButton"[^>]*aria-expanded="false"[^>]*aria-controls="revisionLegendPanel"/,
+  );
+  // aria-haspopup is defined as announcing a menu; the panel it controls is a
+  // region, so the button must not claim one that never appears.
+  const revisionButton = html.match(/<button class="revision-button"[^>]*>/)?.[0] || "";
+  assert.doesNotMatch(revisionButton, /aria-haspopup/);
+  assert.match(html, /id="revisionLegendPanel" hidden role="region" aria-label="Revision history"/);
+  // The legend swatch has to paint the artifact highlight's own texture, and
+  // the raw-served chrome client cannot import it - so the server ships the one
+  // definition in the session JSON it bootstraps from.
+  const sessionJson = JSON.parse(
+    html.match(/<script id="lavish-session" type="application\/json">([\s\S]*?)<\/script>/)[1],
+  );
+  assert.deepEqual(sessionJson.revisionPatterns, REVISION_PATTERN_CSS);
+  assert.match(html, /class="revision-toggle-all" id="revisionToggleAll"[^>]*aria-pressed="true"/);
+  assert.match(html, /id="revisionLegendList"/);
 });
 
 test("overflow menu shows the artifact path with a copy affordance", async () => {

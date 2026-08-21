@@ -450,6 +450,175 @@ export function deriveAttachmentNoticeState(state = {}) {
  * @param {string} [sessionKey]
  * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[] }} [options]
  */
+// ---------------------------------------------------------------------------
+// Revision legend
+//
+// Agents own revision history: they embed a JSON registry in the artifact
+// itself (<script type="application/json" data-lavish-revisions>) and mark
+// elements they changed with data-lavish-revision="<id>". There is no
+// diffing here - the agent already knows what it changed, so it just says
+// so. Absence of the script tag means an empty registry, which keeps every
+// legacy artifact rendering with no legend and no highlight, unchanged.
+// Color is deliberately paired with a distinct border-style per palette
+// entry (solid/dashed/dotted) so the highlight is never color-only.
+// ---------------------------------------------------------------------------
+
+// Okabe-Ito colorblind-safe palette. Every entry carries a
+// (border-style, pattern) pair that no other entry repeats, so revisions stay
+// distinguishable by shape/texture alone, not just hue. Only styles that
+// render distinctly at the 2px outline/swatch width belong here: `double`
+// collapses to a solid line below 3px, which would silently reduce an entry
+// to color alone.
+export const REVISION_PALETTE = [
+  { hex: "#0072B2", borderStyle: "solid", pattern: "diagonal" },
+  { hex: "#D55E00", borderStyle: "dashed", pattern: "dots" },
+  { hex: "#009E73", borderStyle: "dotted", pattern: "diagonal" },
+  { hex: "#CC79A7", borderStyle: "dotted", pattern: "dots" },
+  { hex: "#E69F00", borderStyle: "solid", pattern: "dots" },
+  { hex: "#56B4E9", borderStyle: "dashed", pattern: "diagonal" },
+];
+
+export const REVISION_PATTERN_CSS = {
+  diagonal: {
+    backgroundImage:
+      "repeating-linear-gradient(45deg, rgba(0,0,0,0.16) 0, rgba(0,0,0,0.16) 1px, transparent 1px, transparent 9px)",
+    backgroundSize: "auto",
+  },
+  dots: {
+    backgroundImage: "radial-gradient(rgba(0,0,0,0.24) 1.1px, transparent 1.6px)",
+    backgroundSize: "9px 9px",
+  },
+};
+
+export function revisionTruncate(value, max) {
+  const str = String(value == null ? "" : value);
+  return str.length > max ? str.slice(0, max) : str;
+}
+
+export function revisionIsValidTimestamp(value) {
+  if (typeof value !== "string" || !value) return false;
+  return Number.isFinite(Date.parse(value));
+}
+
+// Deterministic, order-based color assignment so the same registry always
+// renders the same colors regardless of how many revisions exist.
+export function revisionColorForIndex(index) {
+  const length = REVISION_PALETTE.length;
+  const normalized = ((Number(index) % length) + length) % length;
+  return REVISION_PALETTE[normalized] || REVISION_PALETTE[0];
+}
+
+// A low-alpha rgba() tint for the highlight background layer, or a fully
+// transparent fallback for a malformed color so a bad palette entry never
+// throws mid-render.
+export function revisionTintFromHex(hex, alpha = 0.14) {
+  const clean = String(hex || "").replace("#", "");
+  if (clean.length !== 6) return "rgba(0,0,0,0)";
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if (![r, g, b].every(Number.isFinite)) return "rgba(0,0,0,0)";
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Coerces one raw registry entry into the fixed shape the legend and SDK
+// rely on, capping every field so a hostile or malformed artifact can't grow
+// unbounded UI or leak huge strings into the chrome.
+export function normalizeRevisionEntry(entry, index) {
+  const raw = entry && typeof entry === "object" ? entry : {};
+  const fallbackId = String(index + 1);
+  const idSource = raw.id != null && raw.id !== "" ? raw.id : fallbackId;
+  const id = revisionTruncate(idSource, 40) || fallbackId;
+  const label = revisionTruncate(raw.label || `Revision ${index + 1}`, 80) || `Revision ${index + 1}`;
+  const timestamp = revisionIsValidTimestamp(raw.timestamp) ? raw.timestamp : "";
+  const summary = revisionTruncate(raw.summary || "", 500);
+  const sectionsSource = Array.isArray(raw.sections) ? raw.sections : [];
+  const sections = sectionsSource
+    .filter((section) => typeof section === "string" || typeof section === "number")
+    .map((section) => revisionTruncate(section, 80))
+    .filter(Boolean)
+    .slice(0, 12);
+  return { id, label, timestamp, summary, sections, index, color: revisionColorForIndex(index) };
+}
+
+export const MAX_REVISION_ENTRIES = 50;
+// Rejected entries still cost a normalization pass, so the raw payload needs a
+// bound of its own: capping only accepted entries lets a registry of a million
+// duplicate or whitespace ids run the loop a million times.
+export const MAX_REVISION_RAW_ENTRIES = 500;
+
+// The all-revisions wildcard is a visibility-message sentinel, so it can never
+// also be an addressable revision id - `data-lavish-revision="*"` would then
+// mean two different things at once.
+export const REVISION_WILDCARD_ID = "*";
+
+// An id has to be referenceable from a data-lavish-revision token list, which
+// whitespace-splits, and must not collide with the wildcard sentinel.
+export function isAddressableRevisionId(id) {
+  return typeof id === "string" && id !== "" && id !== REVISION_WILDCARD_ID && !/\s/.test(id);
+}
+
+// Parses the artifact-authored revision registry. Returns [] for a missing
+// script tag, invalid JSON, or a non-array payload - each of those is exactly
+// "no revision metadata" and must render identically to an artifact that never
+// had this feature. An entry whose normalized id is unaddressable or collides
+// with an earlier one is dropped individually; the rest of the registry still
+// renders.
+export function parseRevisionRegistry(doc) {
+  if (!doc || typeof doc.querySelector !== "function") return [];
+  const scriptEl = doc.querySelector("script[data-lavish-revisions]");
+  if (!scriptEl) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(scriptEl.textContent || "");
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const seen = new Set();
+  const out = [];
+  for (const [rawIndex, entry] of parsed.entries()) {
+    if (out.length >= MAX_REVISION_ENTRIES || rawIndex >= MAX_REVISION_RAW_ENTRIES) break;
+    const normalized = normalizeRevisionEntry(entry, rawIndex);
+    if (!isAddressableRevisionId(normalized.id)) continue;
+    if (seen.has(normalized.id)) continue;
+    seen.add(normalized.id);
+    out.push(normalized);
+  }
+  return out;
+}
+
+// An element may be touched across several revisions
+// (data-lavish-revision="1 2"); the most recent known revision wins so the
+// highlight always reflects the latest edit batch. Unknown tokens (typos,
+// stale ids after the agent trims the registry) are ignored rather than
+// crashing the highlight pass.
+export function resolveElementRevisionId(dataAttrValue, revisionOrder) {
+  const tokens = String(dataAttrValue || "")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!tokens.length) return null;
+  let best = null;
+  let bestIndex = -1;
+  for (const token of tokens) {
+    const idx = revisionOrder.indexOf(token);
+    if (idx > bestIndex) {
+      bestIndex = idx;
+      best = token;
+    }
+  }
+  return best;
+}
+
+// Every element the agent marked, anywhere in the document. Kept as its own
+// function (rather than inline in the closure) so the resolution logic above
+// is testable against a plain array instead of a live NodeList.
+export function collectRevisionMarkedElements(doc) {
+  if (!doc || typeof doc.querySelectorAll !== "function") return [];
+  return Array.from(doc.querySelectorAll("[data-lavish-revision]"));
+}
+
 export function createArtifactSdk(
   deriveQueueKey,
   isNativeInteractive = isNativeInteractiveControl,
@@ -1158,7 +1327,9 @@ export function createArtifactSdk(
   }
 
   function clearHighlight(el) {
-    if (el) el.style.outline = "";
+    if (!el) return;
+    if (restoreActiveRevisionOutline(el)) return;
+    el.style.outline = "";
   }
 
   function clearTextHighlight() {
@@ -1181,12 +1352,16 @@ export function createArtifactSdk(
     }
   }
 
+  // Lavish's own cursor sheet, appended and removed on every annotate/explore
+  // toggle. It sets only `cursor`, so it can never move an artifact background.
+  const LAVISH_CURSOR_STYLE_ID = "lavish-cursor-style";
+
   function setAnnotationMode(enabled) {
     annotationMode = !!enabled;
-    let style = document.getElementById("lavish-cursor-style");
+    let style = document.getElementById(LAVISH_CURSOR_STYLE_ID);
     if (annotationMode && !style) {
       style = document.createElement("style");
-      style.id = "lavish-cursor-style";
+      style.id = LAVISH_CURSOR_STYLE_ID;
       style.textContent =
         ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
       document.head.appendChild(style);
@@ -2458,6 +2633,7 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
+    if (msg.type === "lavish:setRevisionVisibility") setRevisionVisibility(msg);
   });
 
   // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
@@ -2579,6 +2755,332 @@ export function createArtifactSdk(
     true,
   );
 
+  // ---------------------------------------------------------------------
+  // Revision legend: highlights elements the agent marked with
+  // data-lavish-revision using the artifact's own registry. A no-op - no
+  // postMessage, no DOM style changes - when the artifact has none, so
+  // legacy artifacts render exactly as before.
+  // ---------------------------------------------------------------------
+  let revisionRegistry = [];
+  let revisionElements = []; // [{ el, id }]
+  const revisionVisibility = new Map(); // id -> boolean, default true
+  const revisionPresentation = new WeakMap();
+
+  function revisionById(id) {
+    return revisionRegistry.find((revision) => revision.id === id) || null;
+  }
+
+  function revisionStyleValue(style, property, fallback) {
+    if (typeof style.getPropertyValue === "function") {
+      return { value: style.getPropertyValue(property), priority: style.getPropertyPriority(property) };
+    }
+    return { value: style[fallback], priority: "" };
+  }
+
+  function restoreRevisionStyleValue(style, property, fallback, snapshot) {
+    if (typeof style.setProperty === "function") {
+      if (snapshot.value) style.setProperty(property, snapshot.value, snapshot.priority);
+      else style.removeProperty(property);
+      return;
+    }
+    style[fallback] = snapshot.value;
+  }
+
+  // Every per-layer background property takes a comma list, and a list shorter
+  // than the layer count cycles across all of them (CSS Backgrounds 3).
+  // Prepending two highlight layers to background-image therefore means
+  // re-declaring the whole family together: the artifact's own single
+  // `no-repeat` would otherwise govern the pattern layer, and a single
+  // `bg-clip-text` would clip the tint and pattern to the glyph shapes.
+  // The third entry is the value each highlight layer takes, which is the CSS
+  // initial value for that property in every case.
+  const REVISION_BACKGROUND_PROPERTIES = [
+    ["background-image", "backgroundImage", "none"],
+    ["background-size", "backgroundSize", "auto"],
+    ["background-repeat", "backgroundRepeat", "repeat"],
+    ["background-position", "backgroundPosition", "0% 0%"],
+    ["background-clip", "backgroundClip", "border-box"],
+    ["background-origin", "backgroundOrigin", "padding-box"],
+    ["background-attachment", "backgroundAttachment", "scroll"],
+    ["background-blend-mode", "backgroundBlendMode", "normal"],
+  ];
+
+  function saveRevisionPresentation(el) {
+    if (revisionPresentation.has(el)) return;
+    const style = el.style;
+    const snapshot = {
+      outline: revisionStyleValue(style, "outline", "outline"),
+      outlineOffset: revisionStyleValue(style, "outline-offset", "outlineOffset"),
+      hasTitle: el.hasAttribute("title"),
+      title: el.getAttribute("title"),
+    };
+    for (const [property, camel] of REVISION_BACKGROUND_PROPERTIES) {
+      snapshot[camel] = revisionStyleValue(style, property, camel);
+    }
+    Object.assign(snapshot, readRevisionBackgroundLayers(el));
+    revisionPresentation.set(el, snapshot);
+  }
+
+  // Comma-splits a background value at the top level only: gradients carry
+  // their own commas inside parentheses, and url() may carry them inside
+  // quotes, so a plain split would shred a single layer into several.
+  function splitTopLevelCssList(value) {
+    const parts = [];
+    let depth = 0;
+    let quote = "";
+    let current = "";
+    let escaped = false;
+    for (const char of String(value == null ? "" : value)) {
+      if (escaped) {
+        current += char;
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        current += char;
+        escaped = true;
+        continue;
+      }
+      if (quote) {
+        current += char;
+        if (char === quote) quote = "";
+        continue;
+      }
+      if (char === '"' || char === "'") quote = char;
+      else if (char === "(") depth += 1;
+      else if (char === ")") depth = depth > 0 ? depth - 1 : 0;
+      else if (char === "," && depth === 0) {
+        parts.push(current.trim());
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+    parts.push(current.trim());
+    return parts.filter(Boolean);
+  }
+
+  function expandRevisionLayerList(value, layerCount) {
+    const parts = splitTopLevelCssList(value);
+    if (!parts.length || parts.length >= layerCount) return value;
+    const expanded = [];
+    for (let index = 0; index < layerCount; index += 1) expanded.push(parts[index % parts.length]);
+    return expanded.join(", ");
+  }
+
+  // The artifact's own effective background, read with our inline declaration
+  // absent so a stylesheet that landed after parse is what we see.
+  function readRevisionBackgroundLayers(el) {
+    const computed = typeof getComputedStyle === "function" ? getComputedStyle(el) : null;
+    const layers = {};
+    for (const [, camel, fallback] of REVISION_BACKGROUND_PROPERTIES) {
+      layers[`${camel}Layer`] = computed?.[camel] || el.style[camel] || fallback;
+    }
+    // background-image alone decides the layer count, and the browser cycles
+    // every other list up to it. A captured list shorter than that count is
+    // therefore only correct in place: once our two layers are prepended, its
+    // entries would land on the artifact's own trailing layers instead. Expand
+    // each one to full length while it is still aligned.
+    const layerCount = splitTopLevelCssList(layers.backgroundImageLayer).length;
+    if (layerCount > 1) {
+      for (const [, camel] of REVISION_BACKGROUND_PROPERTIES) {
+        if (camel === "backgroundImage") continue;
+        layers[`${camel}Layer`] = expandRevisionLayerList(layers[`${camel}Layer`], layerCount);
+      }
+    }
+    return layers;
+  }
+
+  function restoreRevisionBackground(el, presentation) {
+    for (const [property, camel] of REVISION_BACKGROUND_PROPERTIES) {
+      restoreRevisionStyleValue(el.style, property, camel, presentation[camel]);
+    }
+  }
+
+  function applyRevisionHighlight(el, revision) {
+    saveRevisionPresentation(el);
+    const presentation = revisionPresentation.get(el);
+    const patternDef = REVISION_PATTERN_CSS[revision.color.pattern] || REVISION_PATTERN_CSS.diagonal;
+    const tint = revisionTintFromHex(revision.color.hex);
+    // Only image and size differ between the pattern layer and the tint layer;
+    // every other property takes its initial value on both of ours. Driving the
+    // whole family off one table is what keeps a newly added property from
+    // being left behind to cycle onto the highlight layers.
+    const highlightLayers = {
+      backgroundImage: [patternDef.backgroundImage, `linear-gradient(${tint}, ${tint})`],
+      backgroundSize: [patternDef.backgroundSize, "auto"],
+    };
+    applyRevisionOutline(el, revision);
+    for (const [property, camel, initial] of REVISION_BACKGROUND_PROPERTIES) {
+      const [pattern, overlay] = highlightLayers[camel] || [initial, initial];
+      const artifact = presentation?.[`${camel}Layer`] || initial;
+      applyRevisionStyle(el.style, property, camel, `${pattern}, ${overlay}, ${artifact}`);
+    }
+    el.setAttribute("data-lavish-revision-active", revision.id);
+    // A hover-only, non-color-dependent detail channel. The legend and the
+    // border-style/pattern are the primary always-visible signals.
+    el.title = revision.summary ? `${revision.label}: ${revision.summary}` : revision.label;
+  }
+
+  function applyRevisionOutline(el, revision) {
+    applyRevisionStyle(el.style, "outline", "outline", `2px ${revision.color.borderStyle} ${revision.color.hex}`);
+    applyRevisionStyle(el.style, "outline-offset", "outlineOffset", "1px");
+  }
+
+  function applyRevisionStyle(style, property, fallback, value) {
+    if (typeof style.setProperty === "function") {
+      style.setProperty(property, value, "important");
+      return;
+    }
+    style[fallback] = value;
+  }
+
+  function restoreActiveRevisionOutline(el) {
+    const id = el.getAttribute?.("data-lavish-revision-active");
+    const revision = id ? revisionById(id) : null;
+    if (!revision || !revisionPresentation.has(el)) return false;
+    applyRevisionOutline(el, revision);
+    return true;
+  }
+
+  function clearRevisionHighlight(el) {
+    const presentation = revisionPresentation.get(el);
+    if (presentation) {
+      const style = el.style;
+      restoreRevisionStyleValue(style, "outline", "outline", presentation.outline);
+      restoreRevisionStyleValue(style, "outline-offset", "outlineOffset", presentation.outlineOffset);
+      restoreRevisionBackground(el, presentation);
+      if (presentation.hasTitle) el.setAttribute("title", presentation.title || "");
+      else el.removeAttribute("title");
+      revisionPresentation.delete(el);
+    }
+    el.removeAttribute("data-lavish-revision-active");
+  }
+
+  function visibleRevisionElements() {
+    const visible = [];
+    for (const { el, id } of revisionElements) {
+      const revision = revisionById(id);
+      if (!revision) continue;
+      if (revisionVisibility.get(id) === false) continue;
+      visible.push({ el, revision });
+    }
+    return visible;
+  }
+
+  function applyRevisionVisibilityToElements() {
+    const show = visibleRevisionElements();
+    const hide = [];
+    for (const { el, id } of revisionElements) {
+      if (revisionById(id) && revisionVisibility.get(id) === false) hide.push(el);
+    }
+    // Every forced style read (saveRevisionPresentation's getComputedStyle)
+    // runs before the first write, so N marked elements cost one style
+    // recalculation instead of N read/write flushes.
+    for (const { el } of show) saveRevisionPresentation(el);
+    for (const { el, revision } of show) applyRevisionHighlight(el, revision);
+    for (const el of hide) clearRevisionHighlight(el);
+  }
+
+  // Stylesheets that arrive after this script runs (the Tailwind browser
+  // runtime compiles and injects asynchronously) would otherwise lose to our
+  // `!important` inline declaration forever, because the layer we captured
+  // underneath the tint was whatever the element had before that stylesheet
+  // existed. Drop back to the authored inline values, re-read, re-apply.
+  function refreshRevisionBackgroundLayers() {
+    const active = visibleRevisionElements().filter(({ el }) => revisionPresentation.has(el));
+    if (!active.length) return;
+    for (const { el } of active) restoreRevisionBackground(el, revisionPresentation.get(el));
+    const layers = active.map(({ el }) => readRevisionBackgroundLayers(el));
+    active.forEach(({ el, revision }, index) => {
+      Object.assign(revisionPresentation.get(el), layers[index]);
+      applyRevisionHighlight(el, revision);
+    });
+  }
+
+  let revisionRefreshScheduled = false;
+  function scheduleRevisionBackgroundRefresh() {
+    if (revisionRefreshScheduled || !revisionElements.length) return;
+    revisionRefreshScheduled = true;
+    const run = () => {
+      revisionRefreshScheduled = false;
+      refreshRevisionBackgroundLayers();
+    };
+    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(run);
+    else window.setTimeout(run, 50);
+  }
+
+  function isRevisionStyleSourceNode(node) {
+    const tag = node && node.tagName ? String(node.tagName).toLowerCase() : "";
+    if (tag !== "style" && tag !== "link") return false;
+    if (node.id === LAVISH_CURSOR_STYLE_ID || node.getAttribute?.("data-lavish-ui")) return false;
+    if (tag === "style") return true;
+    return String(node.getAttribute?.("rel") || "")
+      .toLowerCase()
+      .includes("stylesheet");
+  }
+
+  // A <style> injected into <head> shows up as an added node, a removed theme
+  // sheet as a removed one, and a runtime that rewrites an existing sheet's
+  // text as a mutation whose target is that <style>. All three mean the
+  // artifact's effective background may have moved out from under our snapshot.
+  function mutationsChangedStyleSources(records) {
+    for (const record of records || []) {
+      if (isRevisionStyleSourceNode(record.target)) return true;
+      for (const node of record.addedNodes || []) {
+        if (isRevisionStyleSourceNode(node)) return true;
+      }
+      for (const node of record.removedNodes || []) {
+        if (isRevisionStyleSourceNode(node)) return true;
+      }
+    }
+    return false;
+  }
+
+  function setRevisionVisibility(message) {
+    const visible = Boolean(message?.visible);
+    if (message?.all === true) {
+      for (const revision of revisionRegistry) revisionVisibility.set(revision.id, visible);
+    } else if (isAddressableRevisionId(message?.id)) {
+      revisionVisibility.set(message.id, visible);
+    } else {
+      return;
+    }
+    applyRevisionVisibilityToElements();
+  }
+
+  // The SDK's own script runs as the last node in <body>, so by the time it
+  // executes the artifact's own markup - including every data-lavish-revision
+  // element - is already parsed into the DOM; no DOMContentLoaded wait needed.
+  function initRevisionLegend() {
+    revisionRegistry = parseRevisionRegistry(document);
+    if (!revisionRegistry.length) return;
+    const order = revisionRegistry.map((revision) => revision.id);
+    revisionElements = [];
+    for (const el of collectRevisionMarkedElements(document)) {
+      const id = resolveElementRevisionId(el.getAttribute("data-lavish-revision"), order);
+      if (!id) continue;
+      revisionElements.push({ el, id });
+      revisionVisibility.set(id, true);
+    }
+    applyRevisionVisibilityToElements();
+    postArtifactMessage("lavish:revisions", {
+      revisions: revisionRegistry.map(({ id, label, timestamp, summary, sections, index, color }) => ({
+        id,
+        label,
+        timestamp,
+        summary,
+        sections,
+        index,
+        color,
+      })),
+    });
+  }
+
+  initRevisionLegend();
+  if (document.readyState === "complete") scheduleRevisionBackgroundRefresh();
+  else window.addEventListener("load", () => scheduleRevisionBackgroundRefresh(), { once: true });
+
   setAnnotationMode(annotationMode);
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });
@@ -2592,6 +3094,11 @@ export function createArtifactSdk(
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", enhanceMermaid, { once: true });
   }
-  const mermaidObserver = new MutationObserver(() => scheduleMermaidEnhance());
+  const mermaidObserver = new MutationObserver((records) => {
+    scheduleMermaidEnhance();
+    // An artifact with no revision registry must pay nothing for this feature,
+    // so the scan itself is behind the same guard as the refresh it schedules.
+    if (revisionElements.length && mutationsChangedStyleSources(records)) scheduleRevisionBackgroundRefresh();
+  });
   mermaidObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
