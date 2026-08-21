@@ -16,7 +16,8 @@ The release and dependency bots are exempt so their automation keeps working, bu
 
 ## Workflow
 
-Fork routing requires `no-mistakes` v1.30.1 or newer.
+Workflow requires `no-mistakes` v1.46.0 or newer.
+Earlier versions can route pushes to a fork, but they do not write the pipeline attestation required by this repository's PR gate.
 
 1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent repo (`git@github.com:kunchenguid/lavish-axi.git`).
 2. Create a branch and make your changes.
