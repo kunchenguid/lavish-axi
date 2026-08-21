@@ -1009,7 +1009,6 @@ export async function serve({
       });
       sseClients.set(res, String(req.params.key || ""));
       refreshIdleTimer();
-      const session = await store.findByKey(req.params.key);
       const sendReload = (key) => {
         if (key === req.params.key) {
           res.write("event: reload\ndata: {}\n\n");
@@ -1040,15 +1039,23 @@ export async function serve({
           res.write(`event: ended\ndata: ${JSON.stringify({ ended_by: endedBy || null })}\n\n`);
         }
       };
-      res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: session?.chat || [] })}\n\n`);
-      res.write(
-        `event: agent-presence\ndata: ${JSON.stringify({ state: computePresence(req.params.key, activePolls, deliveredFeedback) })}\n\n`,
-      );
+      // Listeners must be registered BEFORE the read below: an end that lands during that await
+      // would otherwise fire "ended" while nothing here is listening yet, and this connection
+      // would never learn the session ended (#171).
       events.on("reload", sendReload);
       events.on("agent-reply", sendAgentReply);
       events.on("agent-presence", sendPresence);
       events.on("layout-warnings", sendLayoutWarnings);
       events.on("ended", sendEnded);
+      const session = await store.findByKey(req.params.key);
+      res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: session?.chat || [] })}\n\n`);
+      res.write(
+        `event: agent-presence\ndata: ${JSON.stringify({ state: computePresence(req.params.key, activePolls, deliveredFeedback) })}\n\n`,
+      );
+      // A connection that attaches (or reconnects) to a session already ended - including one
+      // that misses the live "ended" event entirely by connecting after it fired - still needs to
+      // learn that on its own; `markSessionEnded()` is idempotent, so a duplicate is harmless.
+      if (session?.status === "ended") sendEnded(req.params.key, session.ended_by);
       req.on("close", () => {
         sseClients.delete(res);
         events.off("reload", sendReload);

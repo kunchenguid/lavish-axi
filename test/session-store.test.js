@@ -923,6 +923,38 @@ test("prompts queued after a session already ended are rejected, not silently st
   }
 });
 
+test("a Send & End that arrives after the session already ended is also rejected (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    // The agent already ended the session; a browser tab that has not learned that yet clicks
+    // Send & End. That request also asking to end is not enough to make it deliverable - no
+    // agent will ever poll for it either way, so it must be rejected the same as a plain Send.
+    await store.endSession(session.key, "agent");
+    const result = await store.queuePrompts(session.key, {
+      domSnapshot: 'uid=1 h1 "Hello"',
+      endSession: true,
+      prompts: [{ uid: "", prompt: "Parting feedback", selector: "", tag: "message", text: "Freeform message" }],
+    });
+    assert.equal(result.ended, true);
+    assert.equal(result.ended_by, "agent");
+
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.pending_prompts, 0);
+
+    const taken = await store.takeFeedback(session.key);
+    assert.equal(taken.status, "ended");
+    assert.equal(taken.ended_by, "agent");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("late layout diagnostics do not reopen ended sessions or become feedback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

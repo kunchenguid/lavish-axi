@@ -4808,6 +4808,52 @@ test("SSE forwards an ended event to an attached chrome when the agent ends the 
   }
 });
 
+// #171: a chrome whose EventSource reconnects (or attaches for the first time) after the session
+// already ended - without a full page reload, so its bootstrapped initialEnded is stale or never
+// ran - must not depend on catching a live "ended" emit it can no longer be attached in time for.
+test("SSE sends an immediate ended snapshot to a connection that attaches after the session already ended (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  // A second, still-open session keeps the server from self-shutting-down (it only does that
+  // once every session is ended), so it stays up long enough to attach the late connection below.
+  const otherArtifact = path.join(dir, "other.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  await writeFile(otherArtifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: otherArtifact }),
+    });
+
+    await fetch(`${base}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+
+    // Connect only now, well after the live "ended" event already fired and had no listener.
+    const stream = await startEventStream(base, key, "ended");
+    try {
+      const event = await stream.next();
+      assert.equal(event.ended_by, "agent");
+    } finally {
+      await stream.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // #171: without this, a browser that missed the SSE event (or had already queued a Send before it
 // arrived) got a 200 for a prompt no agent will ever poll for.
 test("POST /api/:key/prompts rejects a batch queued after the session already ended (#171)", async () => {

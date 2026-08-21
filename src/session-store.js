@@ -152,10 +152,13 @@ export class SessionStore {
     const alreadyEnded = session.status === "ended";
     // A session already ended by someone else (an agent's `lavish-axi end`, or the user in
     // another tab) must not accept a further batch as if it were queued for delivery: no agent
-    // will ever poll it again, so a 200 here would be a promise the server cannot keep. A batch
-    // that ends the session in this same call is unaffected, and `restore` never originated a new
-    // POST, so both are exempt.
-    if (alreadyEnded && !shouldEndSession && !restoring) {
+    // will ever poll it again, so a 200 here would be a promise the server cannot keep. This
+    // applies even to a batch that also requests `endSession` - a redundant end of an
+    // already-ended session is still a late batch nobody will read. Only `restore` is exempt,
+    // because it never originated a new POST: it replays a batch `takeFeedback` already
+    // accepted and removed, and its payload never sets `endSession`. A batch that ends a session
+    // that is not yet ended is unaffected, because `alreadyEnded` is false for that call.
+    if (alreadyEnded && !restoring) {
       return { ended: true, ended_by: session.ended_by };
     }
     const normalized = prompts.map(normalizePrompt);
