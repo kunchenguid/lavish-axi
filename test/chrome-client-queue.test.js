@@ -16,7 +16,7 @@ const servedChromeIds = new Set(
   ),
 );
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[] }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
@@ -3866,6 +3866,58 @@ test("chrome send and end during an in-flight submit still ends after the submit
   assert.equal(posts[1].body, null);
   assert.equal(chrome.queued().length, 0);
   assert.equal(chrome.element("chatInput").disabled, true);
+});
+
+// #171: a tab left open across `lavish-axi end` (or the browser's own End in another tab) must go
+// visibly read-only the moment the server tells it, instead of leaving Send enabled for feedback
+// nobody will ever poll for.
+test("chrome goes read-only when the server forwards an ended SSE event (#171)", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.equal(chrome.element("chatInput").disabled, false);
+
+  chrome.eventSource().listeners.get("ended")({ data: JSON.stringify({ ended_by: "agent" }) });
+
+  assert.equal(chrome.element("chatInput").disabled, true);
+  assert.equal(chrome.element("annotation").disabled, true);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+// #171: a page loaded (or reloaded) after the session already ended has no future `ended` SSE
+// event to wait for - it must start read-only, not wait for a Send to be silently refused.
+test("chrome boots read-only when the session already ended before this page load (#171)", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialEnded: true, initialEndedBy: "user" },
+  });
+
+  assert.equal(chrome.element("chatInput").disabled, true);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+// #171: a race between this tab's own in-flight Send and a session end elsewhere must not leave
+// the queue looking sent when the server actually refused it.
+test("a queued Send refused because the session already ended marks the chrome read-only (#171)", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ status: "ended", error: "session already ended", ended_by: "agent" }),
+    }),
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Too late", selector: "button#ship", tag: "choice", text: "Ship" },
+  });
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("chatInput").disabled, true);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+  // The rejected batch is not silently lost - it stays queued rather than looking delivered.
+  assert.equal(chrome.queued().length, 1);
 });
 
 test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of focus", async () => {

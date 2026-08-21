@@ -122,6 +122,42 @@ async function startPresenceStream(base, key) {
   };
 }
 
+// A generic version of startPresenceStream for events other than agent-presence, such as `ended`.
+async function startEventStream(base, key, eventName) {
+  const controller = new AbortController();
+  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const pattern = new RegExp(`^event: ${eventName}\\ndata: (.+)\\n\\n`, "m");
+
+  return {
+    async next() {
+      const deadline = Date.now() + 2000;
+      while (true) {
+        const match = buffer.match(pattern);
+        if (match) {
+          buffer = buffer.replace(match[0], "");
+          return JSON.parse(match[1]);
+        }
+        const remaining = Math.max(1, deadline - Date.now());
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`timed out waiting for a ${eventName} event`)), remaining),
+          ),
+        ]);
+        if (done) throw new Error(`${eventName} stream closed before the event arrived`);
+        buffer += decoder.decode(value, { stream: true });
+      }
+    },
+    async close() {
+      controller.abort();
+      await reader.cancel().catch(() => {});
+    },
+  };
+}
+
 test("server delegates artifact SDK generation to a dedicated source module", async () => {
   const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
 
@@ -4732,6 +4768,127 @@ test("SSE agent-presence resets to waiting after ending and reopening a session"
     } finally {
       await reopenedPresence.close();
     }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// #171: a browser tab left open across `lavish-axi end` must be told the session ended, instead
+// of silently keeping Send enabled for feedback nobody will ever poll for.
+test("SSE forwards an ended event to an attached chrome when the agent ends the session (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const stream = await startEventStream(base, key, "ended");
+    try {
+      const endResponse = await fetch(`${base}/api/end`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      });
+      assert.equal(endResponse.status, 200);
+      const event = await stream.next();
+      assert.equal(event.ended_by, "agent");
+    } finally {
+      await stream.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// #171: without this, a browser that missed the SSE event (or had already queued a Send before it
+// arrived) got a 200 for a prompt no agent will ever poll for.
+test("POST /api/:key/prompts rejects a batch queued after the session already ended (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    // Hold an SSE connection open so the agent end below does not self-shut the server down
+    // before the late prompt below is submitted.
+    const stream = await startEventStream(base, key, "ended");
+    try {
+      await fetch(`${base}/api/end`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      });
+      await stream.next();
+
+      const response = await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [{ prompt: "too late", tag: "message" }] }),
+      });
+      assert.equal(response.status, 409);
+      const body = await response.json();
+      assert.equal(body.status, "ended");
+      assert.equal(body.ended_by, "agent");
+
+      // No prompt was actually stored: a poll of the ended session reports plain `ended`,
+      // never `feedback` with `session_ended: true`.
+      const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      const polled = await poll.json();
+      assert.equal(polled.status, "ended");
+      assert.equal(polled.ended_by, "agent");
+    } finally {
+      await stream.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a chrome page served after the session already ended boots read-only (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const stream = await startEventStream(base, key, "ended");
+    try {
+      await fetch(`${base}/api/end`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      });
+      await stream.next();
+    } finally {
+      await stream.close();
+    }
+
+    const page = await fetch(`${base}/session/${key}`);
+    const html = await page.text();
+    const data = chromeSessionData(html);
+    assert.equal(data.initialEnded, true);
+    assert.equal(data.initialEndedBy, "agent");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

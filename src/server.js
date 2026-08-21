@@ -601,6 +601,13 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      // The session was already ended by someone else before this batch arrived - no agent will
+      // ever poll it again, so a 200 here would be a lie. Nothing was persisted; the chrome keeps
+      // its queue and goes read-only itself in case it missed the SSE `ended` event.
+      if (result.ended) {
+        res.status(409).json({ status: "ended", error: "session already ended", ended_by: result.ended_by });
+        return;
+      }
       // Atomic attachment rejection (C4): the batch resolved-and-persisted nothing
       // because one or more images could not be honored. Return 400 with the
       // rejected refs and the caps so the chrome keeps its queue and can surface
@@ -628,7 +635,7 @@ export async function serve({
         await syncOutstandingRepairs(req.params.key);
         events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(session.layout_warnings));
       }
-      events.emit(shouldEndSession ? "ended" : "feedback", req.params.key);
+      events.emit(shouldEndSession ? "ended" : "feedback", req.params.key, session.ended_by);
       res.json({ status: "queued", pending_prompts: session.pending_prompts });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
     } catch (error) {
@@ -729,9 +736,9 @@ export async function serve({
 
   app.post("/api/:key/end", async (req, res, next) => {
     try {
-      await store.endSession(req.params.key, "user");
+      const session = await store.endSession(req.params.key, "user");
       clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
-      events.emit("ended", req.params.key);
+      events.emit("ended", req.params.key, session?.ended_by);
       res.json({ status: "ended" });
       await shutdownIfNoLiveSessions();
     } catch (error) {
@@ -839,9 +846,9 @@ export async function serve({
     try {
       const file = await canonicalFile(req.body.file);
       const key = sessionKey(file);
-      await store.endSession(key, "agent");
+      const session = await store.endSession(key, "agent");
       clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
-      events.emit("ended", key);
+      events.emit("ended", key, session?.ended_by);
       res.json({ status: "ended" });
       await shutdownIfNoLiveSessions();
     } catch (error) {
@@ -1025,6 +1032,14 @@ export async function serve({
           res.write(`event: layout-warnings\ndata: ${JSON.stringify({ warnings })}\n\n`);
         }
       };
+      // A session end (`lavish-axi end` or the browser's own End/Send & End) must reach every
+      // attached chrome, not just a poll waiter - otherwise a tab left open keeps accepting Sends
+      // nobody will ever poll (#171).
+      const sendEnded = (key, endedBy) => {
+        if (key === req.params.key) {
+          res.write(`event: ended\ndata: ${JSON.stringify({ ended_by: endedBy || null })}\n\n`);
+        }
+      };
       res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: session?.chat || [] })}\n\n`);
       res.write(
         `event: agent-presence\ndata: ${JSON.stringify({ state: computePresence(req.params.key, activePolls, deliveredFeedback) })}\n\n`,
@@ -1033,12 +1048,14 @@ export async function serve({
       events.on("agent-reply", sendAgentReply);
       events.on("agent-presence", sendPresence);
       events.on("layout-warnings", sendLayoutWarnings);
+      events.on("ended", sendEnded);
       req.on("close", () => {
         sseClients.delete(res);
         events.off("reload", sendReload);
         events.off("agent-reply", sendAgentReply);
         events.off("agent-presence", sendPresence);
         events.off("layout-warnings", sendLayoutWarnings);
+        events.off("ended", sendEnded);
         refreshIdleTimer();
       });
     } catch (error) {
@@ -2053,6 +2070,11 @@ export function createChromeHtml(
   const sessionJson = jsonScript({
     key: session.key,
     file: session.file,
+    // A page loaded (or reloaded) after the session already ended has no future SSE `ended`
+    // event to wait for - it must start read-only instead of looking live until the user tries
+    // to send and gets refused (#171).
+    initialEnded: session.status === "ended",
+    initialEndedBy: session.ended_by || null,
     initialChat: session.chat || [],
     // Bootstrapping the inbox from the server is what makes it survive a browser refresh or a
     // reconnect: the chrome never owns warning state, it only renders it.

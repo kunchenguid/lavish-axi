@@ -1217,6 +1217,14 @@ async function submitQueuedOnce() {
   if (!response.ok) {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
+      // The session already ended before this batch arrived - most likely this chrome missed the
+      // SSE `ended` event (a dropped connection). Go read-only now instead of leaving Send enabled
+      // for another attempt that will be refused the same way.
+      if (data?.status === "ended") {
+        endAfterSubmit = false;
+        markSessionEnded();
+        return false;
+      }
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
       endAfterSubmit = false;
       return false;
@@ -3123,6 +3131,7 @@ events.addEventListener("agent-reply", (event) => {
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
 events.addEventListener("layout-warnings", (event) => setLayoutWarnings(JSON.parse(event.data).warnings || []));
+events.addEventListener("ended", () => markSessionEnded());
 // A reconnecting stream means this chrome may have missed updates while it was away.
 events.addEventListener("open", () => refreshLayoutWarnings());
 
@@ -3134,6 +3143,9 @@ renderWarnings();
 initialChat.forEach((item) => addChat(item.role, item.text));
 retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
+// The session already ended before this page (re)loaded, so there is no future SSE `ended` event
+// to wait for - start read-only instead of looking live until a Send gets silently refused.
+if (sessionData.initialEnded) markSessionEnded();
 
 // Reaching this line is the only proof that this file parsed and ran to completion. The page it
 // bootstraps ships with the layout-gate overlay already covering the artifact, and only this

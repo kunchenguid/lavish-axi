@@ -150,6 +150,14 @@ export class SessionStore {
     // because restore re-enters the same trust boundary.
     const restoring = options.restore === true;
     const alreadyEnded = session.status === "ended";
+    // A session already ended by someone else (an agent's `lavish-axi end`, or the user in
+    // another tab) must not accept a further batch as if it were queued for delivery: no agent
+    // will ever poll it again, so a 200 here would be a promise the server cannot keep. A batch
+    // that ends the session in this same call is unaffected, and `restore` never originated a new
+    // POST, so both are exempt.
+    if (alreadyEnded && !shouldEndSession && !restoring) {
+      return { ended: true, ended_by: session.ended_by };
+    }
     const normalized = prompts.map(normalizePrompt);
     const normalizedPrompts = normalized.map((entry) => entry.prompt);
     // Resolve every attachment BEFORE mutating anything. If any prompt's images
