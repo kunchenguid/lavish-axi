@@ -8,9 +8,90 @@ const queueStorageKey = "lavish-axi:queued:" + key;
 // Review-chrome state that must survive a browser refresh. Keyed per session so one review's
 // triage can never leak into another artifact's.
 const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
+// Unsent annotation-card text lives only in the sandboxed iframe, so a full page reload would
+// destroy it unless the chrome persists what the SDK reports. Keyed per session like the queue,
+// so a draft can never reappear over a different artifact.
+const reviewStateStorageKey = "lavish-axi:review-state:" + key;
+// Drafts Lavish could not replay. The text outlives the draft that carried it, so the user can
+// still read and copy it after the anchor it was written against is gone for good.
+const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
+/** @type {any[]} */
+const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
+const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
+const attachmentMaxCount = Number(sessionData.attachmentMaxCount) || 4;
+// Threaded from the server's single accepted-image list, which also drives the
+// file picker's accept attribute, so the two can never disagree. An unwired
+// list falls back to the same defaults as the SDK's acceptedImageTypes - an
+// empty Set would refuse every image while the card in the same session
+// accepts them, the exact divergence the single list exists to prevent.
+const CHAT_ATTACHMENT_MIME = new Set(
+  (Array.isArray(sessionData.attachmentAcceptedMime) && sessionData.attachmentAcceptedMime.length
+    ? sessionData.attachmentAcceptedMime
+    : ["image/png", "image/jpeg", "image/webp"]
+  ).map(String),
+);
+// Named in the rejection copy, so the message can never tell the user to use a
+// format this build does not accept.
+const CHAT_ATTACHMENT_LABELS = (() => {
+  const labels = [...CHAT_ATTACHMENT_MIME].map((mime) => mime.replace(/^image\//, "").toUpperCase());
+  if (labels.length < 2) return labels.join("");
+  return labels.slice(0, -1).join(", ") + (labels.length > 2 ? ", or " : " or ") + labels[labels.length - 1];
+})();
+
+// The chrome is the only path from the sandboxed (opaque-origin) artifact iframe to
+// the loopback server, so it is the sole place a same-origin confused-deputy can be
+// mediated: the frame's postMessage source check proves a message came from the
+// artifact frame but NOT that a user gesture (paste/drop/pick) drove it, so hostile
+// artifact script could otherwise drive unbounded uploads. Bound both the rate and
+// the cumulative bytes per chrome session here; the server keeps a bounded disk
+// quota as the durable backstop.
+const UPLOAD_RATE_WINDOW_MS = 60_000;
+const UPLOAD_RATE_MAX = 30;
+const UPLOAD_SESSION_BYTE_QUOTA = 256 * 1024 * 1024; // 256 MiB per chrome session
+// The rate and cumulative-byte guards bound uploads over time, but not how many run
+// AT ONCE: each accepted message starts fetch() immediately, so a hostile artifact
+// could post ~30 large bodies in one tick and hold hundreds of MiB of structured
+// clones + server body buffers concurrently before the cumulative quota trips (D8).
+// Cap the number in flight; the over-cap ones are refused with a retry hint (like the
+// rate guard) and a freed slot admits the next.
+const UPLOAD_MAX_IN_FLIGHT = 4;
+const uploadTimestamps = [];
+let uploadedBytesTotal = 0;
+let uploadsInFlight = 0;
+
+function formatByteLimit(bytes) {
+  if (bytes >= 1024 * 1024) return Math.round(bytes / (1024 * 1024)) + " MB";
+  if (bytes >= 1024) return Math.round(bytes / 1024) + " KB";
+  return bytes + " bytes";
+}
+
+// Turn the server's atomic-reject detail (C4) into one human line naming the cap
+// that was hit, so the user knows what to fix. Nothing was delivered - the queue is
+// preserved - so the wording is about correcting, not about a partial send.
+function describeAttachmentRejection(rejected, caps) {
+  const reasons = new Set(rejected.map((ref) => ref && ref.reason));
+  const parts = [];
+  if (reasons.has("prompt-bytes-exceeded") && caps && caps.maxPromptBytes) {
+    parts.push("images exceed the " + formatByteLimit(caps.maxPromptBytes) + " per-prompt limit");
+  }
+  if (reasons.has("too-many") && caps && caps.maxPerPrompt) {
+    parts.push("more than " + caps.maxPerPrompt + " images on one prompt");
+  }
+  if (reasons.has("too-many-in-request")) {
+    parts.push("too many images queued at once");
+  }
+  if (reasons.has("malformed")) {
+    parts.push("an image attachment was malformed");
+  }
+  if (reasons.has("not-found")) {
+    parts.push("an image is no longer available");
+  }
+  const detail = parts.length ? parts.join("; ") : "some attachments could not be delivered";
+  return "Not sent — " + detail + ". Remove or fix the image, then send again.";
+}
 
 function isModeToggleHotkeyEvent(event) {
   if (event.shiftKey || event.altKey) return false;
@@ -21,7 +102,12 @@ const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifac
 const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
 const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
 const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"));
+const chatComposer = /** @type {HTMLDivElement} */ (document.getElementById("chatComposer"));
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
+const chatAttachments = /** @type {HTMLDivElement} */ (document.getElementById("chatAttachments"));
+const chatAttachButton = /** @type {HTMLButtonElement} */ (document.getElementById("chatAttach"));
+const chatAttachInput = /** @type {HTMLInputElement} */ (document.getElementById("chatAttachInput"));
+const chatAttachmentNotice = /** @type {HTMLSpanElement} */ (document.getElementById("chatAttachmentNotice"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
@@ -51,6 +137,10 @@ const copyHintText = /** @type {HTMLSpanElement} */ (document.getElementById("co
 const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("presenceBanner"));
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
+const outdatedBanner = /** @type {HTMLDivElement} */ (document.getElementById("outdatedBanner"));
+const outdatedText = /** @type {HTMLSpanElement} */ (document.getElementById("outdatedText"));
+const outdatedReloadButton = /** @type {HTMLButtonElement} */ (document.getElementById("outdatedReload"));
+const outdatedDismissButton = /** @type {HTMLButtonElement} */ (document.getElementById("outdatedDismiss"));
 const endedOverlay = /** @type {HTMLDivElement} */ (document.getElementById("endedOverlay"));
 const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateOverlay"));
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
@@ -83,9 +173,20 @@ const layoutGateMaxHoldMs =
   Number.isFinite(configuredLayoutGateMaxHoldMs) && configuredLayoutGateMaxHoldMs > 0
     ? Math.min(configuredLayoutGateMaxHoldMs, 60_000)
     : 12_000;
+let chromeOutdatedReason = "";
+let chromeOutdatedGeneration = 0;
+let outdatedReloadInFlight = false;
+/** @type {{ selector: string, revision: number } | null} */
+let unrestorableDraftMiss = null;
+let retiredDrafts = loadRetiredDrafts();
 let layoutGateVisible = false;
 let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
+let layoutGateFailureActive = false;
+// A failure only the user can retire. The artifact-load card clears itself once a load succeeds;
+// the server-replacement card must not, because the page is still running the pre-upgrade client
+// against the replacement server and nothing else would tell the user that.
+let layoutGateFailureSticky = false;
 let layoutGateCycle = 0;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let layoutGateTimer;
@@ -102,10 +203,33 @@ let submitQueuedAgain = false;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
-// it as it changes and the chrome replays it once the new document is up.
-let lastReviewState = null;
+// it as it changes and the chrome replays it once the new document is up. It is persisted per
+// session so a full page reload replays it too.
+let lastReviewState = loadJsonState(reviewStateStorageKey, null);
+if (lastReviewState && typeof lastReviewState !== "object") lastReviewState = null;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
 const ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS = [100, 300];
+// Backoff for retrying a whole begin-load attempt after its in-call retries ran out. The
+// in-call retries span 400ms, which only covers a slow response - not the multi-second window
+// where the server is being replaced (a version-driven restart, or another `lavish-axi <file>`
+// invocation restarting the shared server). Without these the chrome abandons the artifact for
+// good: the frame is never navigated, `artifact_revision` never advances, and the page sits on
+// the layout gate and then on an empty frame with nothing to click.
+const ARTIFACT_LOAD_RECOVERY_DELAYS_MS = [1000, 3000, 8000, 20000];
+// How long a chrome told to reload after a server restart keeps probing /health before giving
+// up, and how long it waits for an outage to appear at all before treating a healthy answer as
+// "the server never went away".
+const CHROME_RESTART_SETTLE_MS = 5000;
+const CHROME_RESTART_WAIT_MS = 60000;
+// Probe fast while the replacement is expected to bind, then back off: a server that never comes
+// back would otherwise spend the whole wait filling the network log with refused connections.
+const CHROME_RESTART_PROBE_MS = 100;
+const CHROME_RESTART_SLOW_PROBE_MS = 500;
+// A probe must always settle, so the control that is waiting on it always comes back.
+const HEALTH_PROBE_TIMEOUT_MS = 4000;
+const HEALTH_NO_ANSWER_TITLE = "Lavish did not answer.";
+const HEALTH_NO_ANSWER_COPY =
+  "Lavish did not answer the check, so this page cannot tell whether it is running. Try again in a moment.";
 let artifactLoadToken = "";
 let artifactLoadRevision = Number(sessionData.initialArtifactRevision) || 0;
 let artifactLoadRequestSequence = Number(sessionData.initialArtifactLoadSequence) || 0;
@@ -114,6 +238,9 @@ artifactLoadToken = String(sessionData.initialArtifactLoadToken || "");
 let artifactSpokeToken = "";
 let artifactMessageSequence = 0;
 let layoutDiagnosticSequence = 0;
+let artifactLoadRecoveryAttempt = 0;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let artifactLoadRecoveryTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let artifactSilenceTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
@@ -159,15 +286,56 @@ function loadJsonState(storageKey, fallback) {
 function saveJsonState(storageKey, value) {
   try {
     sessionStorage.setItem(storageKey, JSON.stringify(value));
+    return true;
   } catch {
     // The in-memory state still works if browser storage is unavailable.
+    return false;
   }
+}
+
+// A queued prompt is authored by the untrusted artifact iframe, so its attachment
+// refs are validated at the single boundary every prompt crosses before it is
+// persisted or rendered. Anything that is not a well-formed `{id}` object is
+// dropped: the queue is written to sessionStorage BEFORE it renders, so one bad
+// entry would throw out of render(), stay on disk, and throw again on every
+// reload - wedging the tab permanently instead of failing once. The card's own
+// flow only ever produces `{id, name}`, so a malformed entry is fabricated and
+// there is no user image to preserve. The server re-validates independently.
+// Each surviving ref is PROJECTED onto a fresh primitives-only object rather than
+// kept by reference: postMessage delivers a structured clone, which faithfully
+// preserves BigInt values and cycles that `JSON.stringify` then refuses. Passing
+// the artifact's own object through would carry that junk into sessionStorage and
+// the POST body, where the throw makes the queue unsendable - the same wedge as a
+// poisoned entry, just one step later.
+function sanitizeAttachmentRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const refs = [];
+  for (const ref of value) {
+    if (!ref || typeof ref !== "object" || Array.isArray(ref)) continue;
+    if (typeof ref.id !== "string" || !ref.id) continue;
+    const projected = { id: ref.id };
+    if (typeof ref.name === "string" && ref.name) projected.name = ref.name;
+    refs.push(projected);
+  }
+  return refs;
+}
+
+function sanitizeQueuedPrompt(prompt) {
+  if (!prompt || typeof prompt !== "object") return null;
+  if (!("attachments" in prompt)) return prompt;
+  const clean = { ...prompt };
+  const refs = sanitizeAttachmentRefs(clean.attachments);
+  if (refs.length) clean.attachments = refs;
+  else delete clean.attachments;
+  return clean;
 }
 
 function loadQueuedPrompts() {
   try {
     const parsed = JSON.parse(sessionStorage.getItem(queueStorageKey) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((prompt) => prompt && typeof prompt === "object") : [];
+    // Also sanitize on restore: a tab poisoned before this guard existed still has
+    // the bad prompt on disk and would otherwise stay wedged after an upgrade.
+    return Array.isArray(parsed) ? parsed.map(sanitizeQueuedPrompt).filter(Boolean) : [];
   } catch {
     return [];
   }
@@ -185,24 +353,45 @@ function persistQueuedPrompts() {
   }
 }
 
+function promptTargetLabel(prompt) {
+  if (prompt?.target?.type === "table-cell") {
+    const semantic = [prompt.target.rowLabel, prompt.target.columnLabel].filter(Boolean).join(" → ");
+    if (semantic) return semantic;
+  }
+  return String(prompt?.selector || "");
+}
+
 function render() {
   annotationPills.innerHTML = queued
-    .map(
-      (prompt, index) =>
+    .map((prompt, index) => {
+      const targetLabel = promptTargetLabel(prompt);
+      const showLocator = targetLabel && prompt.selector && targetLabel !== prompt.selector;
+      return (
         '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
-        escapeHtml(prompt.prompt) +
-        '</span><button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
+        escapeHtml(
+          prompt.prompt ||
+            (attachmentCount(prompt) ? (prompt.tag === "message" ? "Image message" : "Image annotation") : ""),
+        ) +
+        "</span>" +
+        pillAttachmentsHtml(prompt) +
+        '<button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
         index +
         '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
-        (prompt.selector
+        (targetLabel
           ? '<div class="tooltip-label">Target</div><div class="pill-tooltip-target">' +
+            escapeHtml(targetLabel) +
+            "</div>"
+          : "") +
+        (showLocator
+          ? '<div class="tooltip-label">Locator</div><div class="pill-tooltip-target">' +
             escapeHtml(prompt.selector) +
             "</div>"
           : "") +
         '<div class="tooltip-label">Prompt</div><div class="pill-tooltip-prompt">' +
         escapeHtml(prompt.prompt) +
-        "</div></div></div>",
-    )
+        "</div></div></div>"
+      );
+    })
     .join("");
 
   for (const button of annotationPills.querySelectorAll(".pill-close")) {
@@ -214,17 +403,70 @@ function render() {
 }
 
 function updateSendState() {
-  sendButton.disabled = ended || agentPresence === "working";
+  sendButton.disabled = ended;
   sendAndEndButton.disabled = sendButton.disabled;
   if (warningsQueueButton) updateWarningSelectionState();
 }
 
-function showSendHint() {
+function attachmentCount(prompt) {
+  return Array.isArray(prompt.attachments) ? prompt.attachments.length : 0;
+}
+
+// How many thumbnails the compact pill shows before the rest collapse into a badge.
+const PILL_THUMBNAIL_LIMIT = 4;
+
+// Thumbnails for a queued prompt's images, served straight from the same-origin
+// attachment endpoint (the ids are already server-vetted at upload time). The pill
+// has room for only a few, but the per-prompt cap is configurable
+// (LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT), so a prompt can legitimately carry more
+// than fit: the remainder collapses into a +N badge rather than being dropped from
+// the preview, which would make the queue look like it lost the extra images (W-A).
+function pillAttachmentsHtml(prompt) {
+  const count = attachmentCount(prompt);
+  if (!count) return "";
+  const hidden = count - PILL_THUMBNAIL_LIMIT;
+  return (
+    '<span class="pill-attachments">' +
+    prompt.attachments
+      .slice(0, PILL_THUMBNAIL_LIMIT)
+      .map((attachment) => {
+        const alt = escapeHtml(attachment.name || "image");
+        return (
+          '<img class="pill-attachment" src="/api/' +
+          encodeURIComponent(key) +
+          "/attachments/" +
+          encodeURIComponent(attachment.id) +
+          '" alt="' +
+          alt +
+          '" title="' +
+          alt +
+          '">'
+        );
+      })
+      .join("") +
+    (hidden > 0
+      ? '<span class="pill-attachment-more" title="' +
+        hidden +
+        " more image" +
+        (hidden === 1 ? "" : "s") +
+        '">+' +
+        hidden +
+        "</span>"
+      : "") +
+    "</span>"
+  );
+}
+
+const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
+
+function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600) {
+  sendHint.textContent = message;
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);
   sendHintTimer = setTimeout(() => {
     sendHint.hidden = true;
-  }, 2600);
+    sendHint.textContent = DEFAULT_SEND_HINT;
+  }, holdMs);
   chatInput.focus();
 }
 
@@ -286,12 +528,13 @@ function syncChat(chat) {
 
   let lastChatBubble = null;
   for (const item of chat) lastChatBubble = addChat(item.role, item.text, false) || lastChatBubble;
-  if (workingBubble) {
-    chatLog.appendChild(workingBubble);
-    scrollElementIntoView(workingBubble);
-  } else if (lastChatBubble) {
-    scrollElementIntoView(lastChatBubble);
-  }
+  if (workingBubble) chatLog.appendChild(workingBubble);
+  // Handed-back drafts were written at the end of the conversation, and a rebuild re-appends the
+  // whole transcript - so without this they end up above it, where the scroll below would leave
+  // them off-screen. They are the one thing here the user cannot recover anywhere else.
+  for (const note of retiredDraftNodes) chatLog.appendChild(note);
+  const anchor = retiredDraftNodes[retiredDraftNodes.length - 1] || workingBubble || lastChatBubble;
+  if (anchor) scrollElementIntoView(anchor);
 }
 
 function setAgentPresence(state) {
@@ -316,6 +559,115 @@ function setAgentPresence(state) {
 
 function setHandoffSuperseded(visible) {
   if (handoffBanner) handoffBanner.hidden = ended || !visible;
+}
+
+// The server this page was connected to went away. What is true beyond that depends on why, so
+// the shutdown names its reason and each one gets its own line - a page told "Lavish was updated"
+// after a deliberate stop is being told something false. An unnamed reason (SIGTERM, or any
+// caller that names none) claims neither.
+// Both shutdown events carry the reason the same way, so both render from one rule.
+function shutdownEventReason(event) {
+  try {
+    return String(JSON.parse(event?.data || "{}").reason || "");
+  } catch {
+    return "";
+  }
+}
+
+function chromeOutdatedCopy(reason) {
+  if (reason === "upgrade") return "Lavish was updated. This page is running the previous version.";
+  if (reason === "local-build") {
+    return "Lavish was restarted to pick up a local build. This page is running the copy the previous server sent.";
+  }
+  if (reason === "stop") return "Lavish was stopped. Reload after you start it again.";
+  return "The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.";
+}
+
+// Say so where the user can dismiss it, and never reload on their behalf - a forced reload
+// interrupts whatever they were reading or writing.
+function setChromeOutdated(visible, reason = chromeOutdatedReason) {
+  chromeOutdatedReason = String(reason || "");
+  chromeOutdatedGeneration += 1;
+  if (outdatedText) outdatedText.textContent = chromeOutdatedCopy(chromeOutdatedReason);
+  outdatedReloadInFlight = false;
+  if (outdatedReloadButton) outdatedReloadButton.disabled = false;
+  if (outdatedBanner) outdatedBanner.hidden = ended || !visible;
+}
+
+function setReviewState(state) {
+  lastReviewState = state;
+  // The artifact reported a card, so its anchor exists: whatever miss was recorded is answered.
+  if (state?.card) unrestorableDraftMiss = null;
+  if (!state || (!state.card && !(Array.isArray(state.fields) && state.fields.length))) {
+    try {
+      sessionStorage.removeItem(reviewStateStorageKey);
+    } catch {
+      // The in-memory state still works if browser storage is unavailable.
+    }
+    return;
+  }
+  saveJsonState(reviewStateStorageKey, state);
+}
+
+function hasUnsentDraft() {
+  return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
+}
+
+// The SDK looked for this draft's anchor in a loaded artifact and did not find it. Retiring a
+// draft is itself data loss - the user may still be typing while the agent rewrites the element
+// they anchored to - so one miss only records the answer. The draft is retired only when a
+// SECOND artifact revision reports the same anchor missing: an element that is merely being
+// rewritten comes back, and a report on the revision already recorded is the same answer twice,
+// not two answers. Any report for a different draft, or for a draft that is no longer stored,
+// leaves the stored text alone.
+function discardUnrestorableDraft(selector) {
+  if (!selector || !lastReviewState || !lastReviewState.card) return;
+  if (String(lastReviewState.card.selector || "") !== selector) return;
+  const revision = artifactLoadRevision;
+  if (unrestorableDraftMiss?.selector !== selector) {
+    unrestorableDraftMiss = { selector, revision };
+    return;
+  }
+  if (unrestorableDraftMiss.revision === revision) return;
+  unrestorableDraftMiss = null;
+  keepRetiredDraft(String(lastReviewState.card.text || ""));
+  setReviewState({ ...lastReviewState, card: null });
+}
+
+// Retiring a draft ends Lavish's ability to replay it, so the text itself is handed back to the
+// user before it goes: it is written to the conversation panel verbatim, where it is selectable,
+// nothing overwrites what they may already be typing, and no control can discard it by accident.
+// It is persisted per session so a reload does not take the last copy with it.
+function loadRetiredDrafts() {
+  const stored = loadJsonState(retiredDraftStorageKey, []);
+  if (!Array.isArray(stored)) return [];
+  return stored.filter((entry) => typeof entry === "string" && entry.trim());
+}
+
+// No entry already handed back is ever dropped to make room for a new one. When browser storage
+// refuses the write, the note says so on the spot instead of an older one quietly disappearing at
+// the next page load - the text the user wrote is the thing being protected here.
+function keepRetiredDraft(text) {
+  if (!text.trim()) return;
+  retiredDrafts = [...retiredDrafts, text];
+  renderRetiredDraft(text, saveJsonState(retiredDraftStorageKey, retiredDrafts));
+}
+
+function renderRetiredDraft(text, stored = true) {
+  if (!chatLog) return;
+  const el = document.createElement("div");
+  el.className = "bubble note";
+  el.innerHTML =
+    "<small>Unsent annotation</small><div>The element this note was attached to is no longer in the artifact, so Lavish could not reopen the card. Your text is kept here:</div>" +
+    '<div class="note-draft">' +
+    escapeHtml(text) +
+    "</div>" +
+    (stored
+      ? ""
+      : '<div class="note-warning">This browser refused to store it, so copy it before you reload this page.</div>');
+  retiredDraftNodes.push(el);
+  chatLog.appendChild(el);
+  scrollElementIntoView(el);
 }
 
 async function refreshChromeLoadHandoff(requestSequence) {
@@ -354,8 +706,9 @@ function promptQueueKey(prompt) {
   return prompt && typeof prompt[internalQueueKeyField] === "string" ? prompt[internalQueueKeyField].trim() : "";
 }
 
-function enqueuePrompt(prompt) {
-  if (!prompt || typeof prompt !== "object") return;
+function enqueuePrompt(rawPrompt) {
+  const prompt = sanitizeQueuedPrompt(rawPrompt);
+  if (!prompt) return;
 
   const queueKey = promptQueueKey(prompt);
   if (queueKey) {
@@ -389,25 +742,237 @@ function requestSnapshot(action) {
   postToFrame({ type: "lavish:requestSnapshot" });
 }
 
+function createChatAttachmentsController() {
+  const items = [];
+  let nextId = 0;
+  let capRejected = false;
+  let sendBlocked = false;
+
+  function currentImageCount() {
+    return items.filter((item) => item.file && CHAT_ATTACHMENT_MIME.has(item.file.type)).length;
+  }
+
+  function renderAttachments() {
+    chatAttachments.innerHTML = items
+      .map((item) => {
+        const status = item.status === "uploading" ? "Uploading…" : item.status === "error" ? item.error : "";
+        const preview = item.preview
+          ? '<img class="chat-attachment-thumb" src="' + escapeHtml(item.preview) + '" alt="">'
+          : "";
+        const retry =
+          item.status === "error" && item.file
+            ? '<button type="button" aria-label="Retry ' +
+              escapeHtml(item.name) +
+              '" data-chat-attachment-retry="' +
+              item.localId +
+              '">Retry</button>'
+            : "";
+        const errorData = item.errorCode ? ' data-error="' + escapeHtml(item.errorCode) + '"' : "";
+        return (
+          '<div class="chat-attachment-chip chat-attachment-' +
+          item.status +
+          '"' +
+          errorData +
+          ">" +
+          preview +
+          '<span class="chat-attachment-copy"><strong>' +
+          escapeHtml(item.name) +
+          "</strong>" +
+          (status ? '<span class="chat-attachment-status" aria-live="polite">' + escapeHtml(status) + "</span>" : "") +
+          "</span>" +
+          retry +
+          '<button type="button" aria-label="Remove ' +
+          escapeHtml(item.name) +
+          '" title="Remove ' +
+          escapeHtml(item.name) +
+          '" data-chat-attachment-remove="' +
+          item.localId +
+          '">×</button></div>'
+        );
+      })
+      .join("");
+    syncNotice();
+  }
+
+  // The notice is DERIVED from the current item states on every render, never
+  // written imperatively by a caller: a blocked send that only stamped a string
+  // went stale the moment the pending upload it described failed, leaving the
+  // user waiting on an upload that was already over.
+  function syncNotice() {
+    if (currentImageCount() < attachmentMaxCount) capRejected = false;
+    const pending = items.some((item) => item.status === "uploading");
+    const errored = items.some((item) => item.status === "error");
+    if (!pending && !errored) sendBlocked = false;
+    chatAttachmentNotice.textContent =
+      sendBlocked && pending
+        ? "Waiting for an image to finish uploading…"
+        : sendBlocked && errored
+          ? "An image couldn't be attached. Retry or remove it before sending."
+          : capRejected
+            ? "You can attach up to " + attachmentMaxCount + " image" + (attachmentMaxCount === 1 ? "" : "s") + "."
+            : "";
+  }
+
+  async function startUpload(item) {
+    const abortController = new AbortController();
+    item.abortController = abortController;
+    item.status = "uploading";
+    item.error = "";
+    renderAttachments();
+    try {
+      const bytes = await item.file.arrayBuffer();
+      if (!items.includes(item)) return;
+      await uploadAttachment(
+        { localId: item.localId, bytes, mime: item.file.type },
+        (result) => {
+          if (!items.includes(item)) return;
+          if (result.ok && result.id) {
+            item.status = "ready";
+            item.id = result.id;
+          } else {
+            item.status = "error";
+            item.error = String(result.error || "Upload failed");
+          }
+          renderAttachments();
+        },
+        abortController.signal,
+      );
+    } catch (error) {
+      if (!items.includes(item)) return;
+      item.status = "error";
+      item.error = error instanceof Error ? error.message : String(error);
+      renderAttachments();
+    }
+  }
+
+  function addFiles(files) {
+    let added = false;
+    let imageCount = currentImageCount();
+    for (const file of Array.from(files || [])) {
+      if (!CHAT_ATTACHMENT_MIME.has(String(file.type || ""))) continue;
+      const tooLarge = attachmentMaxBytes > 0 && Number(file.size) > attachmentMaxBytes;
+      // The cap counts only chips that can upload, mirroring currentImageCount:
+      // if a size-refused chip (file: null) consumed a slot here, syncNotice
+      // would clear the cap notice on the same render tick and a valid image
+      // later in the batch would vanish with no chip and no explanation.
+      if (!tooLarge && imageCount >= attachmentMaxCount) {
+        capRejected = true;
+        continue;
+      }
+      const localId = String(nextId++);
+      const item = {
+        localId,
+        file: tooLarge ? null : file,
+        name: String(file.name || "image"),
+        preview: tooLarge ? "" : URL.createObjectURL(file),
+        status: tooLarge ? "error" : "uploading",
+        error: tooLarge ? "Image is larger than the " + formatByteLimit(attachmentMaxBytes) + " limit" : "",
+        errorCode: "",
+        id: "",
+        abortController: /** @type {AbortController | null} */ (null),
+      };
+      items.push(item);
+      if (!tooLarge) imageCount += 1;
+      added = true;
+      if (!tooLarge) startUpload(item);
+    }
+    renderAttachments();
+    return added;
+  }
+
+  function rejectUnsupported(files) {
+    for (const file of Array.from(files || [])) {
+      if (CHAT_ATTACHMENT_MIME.has(String(file.type || ""))) continue;
+      items.push({
+        localId: String(nextId++),
+        file: null,
+        name: String(file.name || "file"),
+        preview: "",
+        status: "error",
+        error: "Unsupported file type. Use " + CHAT_ATTACHMENT_LABELS + ".",
+        errorCode: "UNSUPPORTED_TYPE",
+        id: "",
+        abortController: /** @type {AbortController | null} */ (null),
+      });
+    }
+    renderAttachments();
+  }
+
+  function remove(localId) {
+    const index = items.findIndex((item) => item.localId === localId);
+    if (index < 0) return;
+    const [item] = items.splice(index, 1);
+    item.abortController?.abort();
+    if (item.preview) URL.revokeObjectURL(item.preview);
+    renderAttachments();
+  }
+
+  function reset() {
+    for (const item of items) {
+      item.abortController?.abort();
+      if (item.preview) URL.revokeObjectURL(item.preview);
+    }
+    items.length = 0;
+    capRejected = false;
+    sendBlocked = false;
+    renderAttachments();
+  }
+
+  return {
+    addFiles,
+    rejectUnsupported,
+    remove,
+    retry(localId) {
+      const item = items.find((candidate) => candidate.localId === localId);
+      if (item?.file) startUpload(item);
+    },
+    hasPending: () => items.some((item) => item.status === "uploading"),
+    hasErrors: () => items.some((item) => item.status === "error"),
+    noteSendBlocked() {
+      sendBlocked = true;
+      syncNotice();
+    },
+    collectReady: () =>
+      items.filter((item) => item.status === "ready").map((item) => ({ id: item.id, name: item.name })),
+    reset,
+  };
+}
+
+const chatAttachmentController = createChatAttachmentsController();
+
 function sendQueued(endAfter) {
-  if (ended || agentPresence === "working") return;
+  if (ended) return;
   closeMenus();
 
-  const text = chatInput.value.trim();
-  if (text) {
-    queued.push({ uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" });
-    persistQueuedPrompts();
-    addChat("user", text);
-    chatInput.value = "";
-    render();
+  // A pending or failed chip holds back only the COMPOSER message (and an
+  // explicit end, which would strand the chips) - queued annotation prompts
+  // still deliver, mirroring how the annotation card holds only its own card
+  // open. Gating the whole pipeline here made Send and Send & End silently
+  // deliver nothing while the only signal sat in the composer toolbar.
+  const chipsBlocked = chatAttachmentController.hasPending() || chatAttachmentController.hasErrors();
+  if (chipsBlocked) chatAttachmentController.noteSendBlocked();
+
+  if (!chipsBlocked) {
+    const text = chatInput.value.trim();
+    const attachments = chatAttachmentController.collectReady();
+    if (text || attachments.length) {
+      const prompt = { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
+      if (attachments.length) prompt.attachments = attachments;
+      queued.push(prompt);
+      persistQueuedPrompts();
+      addChat("user", text || "Image message");
+      chatInput.value = "";
+      chatAttachmentController.reset();
+      render();
+    }
   }
   if (!queued.length) {
-    showSendHint();
+    if (!chipsBlocked) showSendHint();
     return;
   }
   hideSendHint();
 
-  if (endAfter) endAfterSubmit = true;
+  if (endAfter && !chipsBlocked) endAfterSubmit = true;
   requestSnapshot("submit");
 }
 
@@ -431,7 +996,7 @@ async function submitQueued() {
       endAfterSubmit = false;
     } else if (!ended && shouldSubmitAgain) {
       if (queued.length) {
-        submitQueued();
+        submitQueued().catch(() => {});
       } else if (endAfterSubmit) {
         endAfterSubmit = false;
         endSession();
@@ -456,6 +1021,15 @@ async function submitQueuedOnce() {
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
       endAfterSubmit = false;
       return false;
+    }
+    // C4: the server persisted nothing (atomic reject) - the queue below is left
+    // intact because the splice only runs on success. Surface exactly what failed
+    // so the user can fix the offending attachment(s) rather than losing them.
+    if (response.status === 400) {
+      const detail = await response.json().catch(() => ({}));
+      if (Array.isArray(detail.rejected) && detail.rejected.length) {
+        showSendHint(describeAttachmentRejection(detail.rejected, detail.caps), 6000);
+      }
     }
     throw new Error("failed to submit queued prompts");
   }
@@ -504,7 +1078,88 @@ function setLayoutGateActive(active) {
   document.body?.classList?.toggle("layout-gate-active", active);
 }
 
+// Terminal, user-recoverable failure state for the one thing the chrome cannot work around on
+// its own: the artifact never loaded and retrying stopped helping. The overlay is reused because
+// it already covers the empty artifact area; without this the user is left looking at either a
+// spinner that never resolves or a blank frame, with nothing explaining it and nothing to click.
+// Bumping the cycle retires any pending reveal timer so a stale one cannot hide this card.
+function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { sticky = false } = {}) {
+  if (ended) return;
+  // A sticky card is the user's to retire, and that has to hold against being overwritten as
+  // well as against being cleared: the version-skew warning is the only thing telling this page
+  // it is running the pre-upgrade client, and a later ordinary load failure must not replace it.
+  if (layoutGateFailureActive && layoutGateFailureSticky && !sticky) return;
+  layoutGateFailureActive = true;
+  layoutGateFailureSticky = sticky;
+  layoutGateCycle += 1;
+  clearLayoutGateTimer();
+  layoutGateArmed = false;
+  if (layoutGateTitle) layoutGateTitle.textContent = title;
+  if (layoutGateCopy) layoutGateCopy.textContent = copy;
+  if (layoutGateAction) {
+    layoutGateAction.disabled = false;
+    layoutGateAction.textContent = actionLabel;
+    layoutGateAction.onclick = onAction || (() => location.reload());
+  }
+  setLayoutGateActive(true);
+}
+
+// Every failure card in this feature is raised in a state where the server may not be listening,
+// so none of them may navigate on trust: a reload into a dead port replaces a recoverable page
+// with the browser's own connection-error page. Ask first, and say so when nothing answers.
+// Title and body are written together: a probe that timed out establishes neither that the server
+// is running nor that it is gone, so a heading naming a definite cause may not stand over a line
+// saying the cause is unknown.
+function checkServerThenReload(failureTitle, stillDownCopy) {
+  let checking = false;
+  return async () => {
+    if (checking) return;
+    checking = true;
+    if (layoutGateAction) layoutGateAction.disabled = true;
+    // The card this click was made on. A probe can take until HEALTH_PROBE_TIMEOUT_MS, and the
+    // overlay may have moved on to a different card - or back to the checking gate - by then; its
+    // copy is not this probe's to overwrite.
+    const cycle = layoutGateCycle;
+    let outcome = "not-running";
+    let navigating = false;
+    try {
+      outcome = await probeChromeHealth();
+      if (outcome === "running") {
+        navigating = true;
+        await flushWhiteboardsBeforeChromeReload();
+        location.reload();
+      }
+    } finally {
+      // Every path that does not navigate hands the control back, including a probe that timed
+      // out or threw: a button that stays disabled is worse than the reload it was guarding.
+      if (!navigating) {
+        checking = false;
+        if (layoutGateAction) layoutGateAction.disabled = false;
+        if (cycle === layoutGateCycle) {
+          const answered = outcome !== "no-answer";
+          if (layoutGateTitle) layoutGateTitle.textContent = answered ? failureTitle : HEALTH_NO_ANSWER_TITLE;
+          if (layoutGateCopy) layoutGateCopy.textContent = answered ? stillDownCopy : HEALTH_NO_ANSWER_COPY;
+        }
+      }
+    }
+  };
+}
+
+// A load attempt that gets going again retires the failure card. This runs even when the gate is
+// disabled or the user already bypassed it, because otherwise the card would keep covering an
+// artifact that has since loaded.
+function clearLayoutGateFailure() {
+  if (!layoutGateFailureActive || layoutGateFailureSticky) return;
+  layoutGateFailureActive = false;
+  if (layoutGateAction) {
+    layoutGateAction.textContent = "Show anyway";
+    layoutGateAction.onclick = () => forceRevealLayoutGate("manual");
+  }
+  revealLayoutGate();
+}
+
 function revealLayoutGate() {
+  if (layoutGateFailureSticky) return;
   clearLayoutGateTimer();
   layoutGateArmed = false;
   setLayoutGateActive(false);
@@ -517,6 +1172,10 @@ function forceRevealLayoutGate(reason) {
 }
 
 function startLayoutGateCycle() {
+  clearLayoutGateFailure();
+  // A sticky failure owns the overlay until the user acts on it, so a later load must not repaint
+  // the checking card over the message it left there.
+  if (layoutGateFailureSticky) return;
   if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
 
   layoutGateCycle += 1;
@@ -809,7 +1468,7 @@ function updateWarningSelectionState() {
   warningsSelectAll.checked = selectable.length > 0 && selectedCount === selectable.length;
   warningsSelectAll.indeterminate = selectedCount > 0 && selectedCount < selectable.length;
   warningsSelected.textContent = selectedCount === 0 ? "None selected" : selectedCount + " selected";
-  warningsQueueButton.disabled = selectedCount === 0 || ended || agentPresence === "working";
+  warningsQueueButton.disabled = selectedCount === 0 || ended;
 }
 
 function toggleSelectAllWarnings() {
@@ -866,7 +1525,7 @@ async function dismissWarning(id) {
 // One queued batch = one ordinary queued prompt. The CLI cannot tell it apart from any other
 // feedback, which is exactly the point: no parallel agent protocol.
 async function queueSelectedWarningFixes() {
-  if (ended || agentPresence === "working") return;
+  if (ended) return;
   const ids = [...selectedWarningIds];
   if (ids.length === 0) return;
   warningsQueueButton.disabled = true;
@@ -918,6 +1577,7 @@ async function endSession() {
 function markSessionEnded() {
   if (ended) return;
   ended = true;
+  cancelArtifactLoadRecovery();
   closeMenus();
   closeWarningsDrawer();
   renderWarnings();
@@ -928,7 +1588,9 @@ function markSessionEnded() {
   updateSendState();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
+  if (outdatedBanner) outdatedBanner.hidden = true;
   layoutGateManuallyBypassed = true;
+  layoutGateFailureSticky = false;
   revealLayoutGate();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
@@ -1072,7 +1734,38 @@ async function publishShare(event) {
   }
 }
 
-async function replaceArtifactFrame() {
+function cancelArtifactLoadRecovery() {
+  if (artifactLoadRecoveryTimer) clearTimeout(artifactLoadRecoveryTimer);
+  artifactLoadRecoveryTimer = undefined;
+}
+
+// Retry a begin-load attempt that failed for a recoverable reason. Returns false once the
+// backoff is exhausted so the caller can surface the terminal failure. A `superseded` or
+// `out-of-order` outcome never lands here: another reviewer or a newer request in this same
+// chrome owns the artifact, and retrying would fight it.
+function scheduleArtifactLoadRecovery() {
+  if (ended) return false;
+  const delay = ARTIFACT_LOAD_RECOVERY_DELAYS_MS[artifactLoadRecoveryAttempt];
+  if (delay === undefined) return false;
+  artifactLoadRecoveryAttempt += 1;
+  const sequence = artifactLoadRequestSequence;
+  cancelArtifactLoadRecovery();
+  artifactLoadRecoveryTimer = setTimeout(() => {
+    artifactLoadRecoveryTimer = undefined;
+    if (ended || sequence !== artifactLoadRequestSequence) return;
+    replaceArtifactFrame({ recoveryRetry: true }).catch(() => {});
+  }, delay);
+  artifactLoadRecoveryTimer?.unref?.();
+  return true;
+}
+
+// The backoff budget belongs to the load attempt that started it, not to the page: anything
+// asking for a fresh load - a live reload, Reload artifact, a takeover - gets the whole budget
+// again, and only the recovery timer's own retries spend it down. A page that carried an
+// exhausted counter forward would have no retries left at all for the next outage.
+async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
+  cancelArtifactLoadRecovery();
+  if (!recoveryRetry) artifactLoadRecoveryAttempt = 0;
   clearTimeout(artifactSilenceTimer);
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
@@ -1095,6 +1788,29 @@ async function replaceArtifactFrame() {
     }
     return false;
   };
+  // Keep whatever is on screen, then try again later. A begin-load can fail for reasons that
+  // clear on their own - the shared server is mid-restart, or its handoff map was reset by that
+  // restart and this chrome's one re-handshake landed in the same outage window. Giving up here
+  // is what leaves the review permanently unloaded.
+  const recoverLater = () => {
+    preservePreviousLoad();
+    if (requestSequence !== artifactLoadRequestSequence || ended) return false;
+    if (scheduleArtifactLoadRecovery()) return false;
+    // Out of retries. Only say so when there is nothing on screen to say it over: a chrome that
+    // already shows an artifact keeps showing it rather than losing a usable review.
+    if (!artifactLoadToken) {
+      setLayoutGateFailure(
+        "Lavish could not load this artifact.",
+        "The Lavish server did not answer this review's load request. It usually restarted while this page was opening. Check and reload to reconnect.",
+        "Check and reload",
+        checkServerThenReload(
+          "Lavish could not load this artifact.",
+          "Lavish is still not answering. Start it again with your agent, then use Check and reload.",
+        ),
+      );
+    }
+    return false;
+  };
   let load;
   let transportAttempt = 0;
   let handoffRefreshAttempted = false;
@@ -1114,18 +1830,32 @@ async function replaceArtifactFrame() {
       if (!response.ok) {
         const status = String(candidate?.status || "");
         if (status === "no-handoff") {
-          if (handoffRefreshAttempted) return preservePreviousLoad();
+          // One re-handshake per attempt keeps a live reviewer from being ping-ponged; the
+          // retry that follows is a whole fresh attempt, so the rule still holds.
+          if (handoffRefreshAttempted) return recoverLater();
           handoffRefreshAttempted = true;
           try {
             const refreshed = await refreshChromeLoadHandoff(requestSequence);
             if (!refreshed) return false;
           } catch {
-            return preservePreviousLoad();
+            return recoverLater();
           }
           continue;
         }
         if (status === "superseded") {
           setHandoffSuperseded(true);
+          // The takeover banner sits in the conversation panel, which the layout gate overlay
+          // covers whenever the gate is enabled. A chrome that never loaded the artifact would
+          // otherwise show the checking spinner until the gate's max hold expires and then
+          // reveal an empty frame, with the only recovery control hidden the whole time. Say it
+          // on the overlay instead. Still no background retry: the reload is the user's to make.
+          if (!artifactLoadToken) {
+            setLayoutGateFailure(
+              "This review is already open in another tab.",
+              "Lavish loads an artifact in one tab at a time. Take over here to move the review into this tab, or switch back to the tab that already has it.",
+              "Take over here",
+            );
+          }
           return preservePreviousLoad();
         }
         if (status === "out-of-order") return preservePreviousLoad();
@@ -1140,14 +1870,15 @@ async function replaceArtifactFrame() {
       break;
     } catch {
       const delay = ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS[transportAttempt++];
-      if (delay === undefined) return preservePreviousLoad();
+      if (delay === undefined) return recoverLater();
       await new Promise((resolve) => window.setTimeout(resolve, delay));
     }
   }
   if (requestSequence !== artifactLoadRequestSequence || ended) return false;
   const revision = Number(load?.artifact_revision);
   const token = String(load?.artifact_load_token || "");
-  if (!Number.isSafeInteger(revision) || revision < 0 || !token) return preservePreviousLoad();
+  if (!Number.isSafeInteger(revision) || revision < 0 || !token) return recoverLater();
+  artifactLoadRecoveryAttempt = 0;
   artifactLoadRevision = revision;
   artifactLoadToken = token;
   artifactSpokeToken = "";
@@ -1293,7 +2024,8 @@ function showWhiteboardOverlay(index) {
   postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
   // A fresh document per open: the frame boots, posts ready, and receives its
   // init - no stale editor state can leak between opens.
-  whiteboardFrame.src = "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index));
+  whiteboardFrame.src =
+    "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index)) + "&key=" + encodeURIComponent(key);
 }
 
 function finishWhiteboardClose(index) {
@@ -1573,10 +2305,30 @@ function handleAuthenticatedWhiteboardMessage(index, message, mode) {
   if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(index, message, mode);
 }
 
+// Inline whiteboard frames are created by the SDK inside the artifact document,
+// so a genuine one is always a direct child of the *current* artifact window.
+// Descent - not the channel token - is what proves the sender is ours: the
+// frame page is framable by any origin, so a token is not a secret an attacker
+// cannot obtain. Without this, any window that could postMessage to this chrome
+// (a page that framed it, or one holding a window.open handle) could open a
+// channel and queue a fabricated prompt. Mirrors the artifact-message handler's
+// `event.source !== frame.contentWindow` guard.
+function isArtifactChildWindow(source) {
+  if (!source) return false;
+  try {
+    // Reading `parent` on a cross-origin WindowProxy is permitted; the frame's
+    // sandbox makes everything else about it opaque.
+    return source.parent === frame.contentWindow;
+  } catch {
+    return false;
+  }
+}
+
 function handleInlineWhiteboardMessage(event, message) {
   if (ended) return;
+  if (!isArtifactChildWindow(event.source)) return;
   const index = validWhiteboardIndex(message.diagramIndex);
-  if (index === null || !event.source) return;
+  if (index === null) return;
   if (message.type === "lavish-whiteboard:ready") {
     if (inlineWhiteboardChannels.has(index)) return;
     const channelId = String(message.channelToken || "");
@@ -1650,33 +2402,123 @@ function reloadArtifact() {
   });
 }
 
-async function reloadAfterServerRestart() {
+async function reloadAfterServerRestart(reason) {
   if (chromeRestartReloadPromise) return chromeRestartReloadPromise;
-  chromeRestartReloadPromise = reloadChromeAfterServerRestart();
+  chromeRestartReloadPromise = reloadChromeAfterServerRestart(reason);
   return chromeRestartReloadPromise;
 }
 
-async function reloadChromeAfterServerRestart() {
+// Three outcomes, not two: a port that accepts a connection and then says nothing proves neither
+// that the server is running nor that it is gone, and a probe that never settles would leave the
+// control the user is holding disabled for as long as the browser's own network timeout takes.
+async function probeChromeHealth() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch("/health", { cache: "no-store", signal: controller.signal });
+    return res.ok ? "running" : "not-running";
+  } catch {
+    return controller.signal.aborted ? "no-answer" : "not-running";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The replacement server usually binds within a second, but it is a fresh node process competing
+// with whatever else the machine is doing, and several `lavish-axi` invocations can be racing for
+// the same port. Reloading on a fixed short deadline regardless of whether anything is listening
+// trades a recoverable page for the browser's connection-error page, which no Lavish code can
+// recover from. So wait for the port to answer, and if it never does, say so instead.
+async function reloadChromeAfterServerRestart(reason = "") {
   let sawOutage = false;
-  const deadline = Date.now() + 5000;
+  let healthy = false;
+  let settled = false;
+  // Keep the pre-outage behavior: a server that never actually went away is reloaded promptly.
+  const settleDeadline = Date.now() + CHROME_RESTART_SETTLE_MS;
+  const deadline = Date.now() + CHROME_RESTART_WAIT_MS;
 
   while (Date.now() < deadline) {
-    try {
-      const res = await fetch("/health", { cache: "no-store" });
-      if (sawOutage && res.ok) {
-        await flushWhiteboardsBeforeChromeReload();
-        location.reload();
-        return;
-      }
-    } catch {
-      sawOutage = true;
+    // The bounded probe is what keeps this loop honest: a port that accepts and then says nothing
+    // would otherwise hold one iteration open past the deadline, and neither the reload nor the
+    // card below would ever happen.
+    const outcome = await probeChromeHealth();
+    healthy = outcome === "running";
+    if (!healthy) sawOutage = true;
+    if (healthy && (sawOutage || Date.now() >= settleDeadline)) {
+      settled = true;
+      break;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const probeDelay = Date.now() < settleDeadline ? CHROME_RESTART_PROBE_MS : CHROME_RESTART_SLOW_PROBE_MS;
+    await new Promise((resolve) => setTimeout(resolve, probeDelay));
+  }
+
+  // A loop that ended on the deadline carries whatever the last probe happened to see, and in a
+  // hidden tab the browser clamps these timers to seconds or minutes - so a single probe can be
+  // the only one that ran. Neither answer may be trusted then: a stale failure claims a running
+  // server is gone, and a stale success reloads into a port nothing is listening on.
+  if (!settled) healthy = (await probeChromeHealth()) === "running";
+
+  if (!healthy) {
+    chromeRestartReloadPromise = null;
+    setLayoutGateFailure(
+      "Lavish is not running.",
+      "The Lavish server restarted and did not come back. Start it again with your agent, then check and reload this page.",
+      "Check and reload",
+      checkServerThenReload(
+        "Lavish is not running.",
+        "Lavish is still not running. Start it again with your agent, then use Check and reload.",
+      ),
+      { sticky: true },
+    );
+    return;
+  }
+
+  // Unsent annotation text is the user's writing. A reload replays it, but it is still their
+  // call when to interrupt the card they are typing into, so offer the reload instead of taking
+  // it. The same applies to a page the user is only reading: the banner never reloads by itself.
+  if (hasUnsentDraft()) {
+    chromeRestartReloadPromise = null;
+    // The line this page shows comes from the same reason its siblings were sent. An event that
+    // named none leaves the branch that claims neither.
+    setChromeOutdated(true, reason);
+    return;
   }
 
   await flushWhiteboardsBeforeChromeReload();
   location.reload();
+}
+
+// The banner is shown at the moment a server goes away, and in the deliberate-stop case nothing
+// is coming to replace it, so this button probes before it navigates for the same reason the
+// not-running card does: a reload into a dead port lands on the browser's own error page.
+async function reloadChromeForOutdatedBanner() {
+  if (outdatedReloadInFlight) return;
+  outdatedReloadInFlight = true;
+  if (outdatedReloadButton) outdatedReloadButton.disabled = true;
+  // The banner this click was made on: a later one carries a newer reason, and that line stands.
+  const generation = chromeOutdatedGeneration;
+  let outcome = "not-running";
+  let navigating = false;
+  try {
+    outcome = await probeChromeHealth();
+    if (outcome === "running") {
+      navigating = true;
+      await flushWhiteboardsBeforeChromeReload();
+      location.reload();
+    }
+  } finally {
+    if (!navigating) {
+      outdatedReloadInFlight = false;
+      if (outdatedReloadButton) outdatedReloadButton.disabled = false;
+      if (outdatedText && generation === chromeOutdatedGeneration) {
+        outdatedText.textContent =
+          outcome === "no-answer"
+            ? HEALTH_NO_ANSWER_COPY
+            : "Lavish is still not running. Start it again, then use Check and reload.";
+      }
+    }
+  }
 }
 
 window.addEventListener("message", (event) => {
@@ -1721,14 +2563,20 @@ window.addEventListener("message", (event) => {
       copyText(msg.snapshot || "");
     } else {
       pendingSnapshot = msg.snapshot || "";
-      submitQueued();
+      // submitQueuedOnce throws to signal "nothing was delivered" - its own
+      // finally already reset the end intent and it left the queue intact for a
+      // retry, so the rejection has no remaining consumer here.
+      submitQueued().catch(() => {});
     }
   }
   if (msg.type === "lavish:scroll") {
     lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
   }
   if (msg.type === "lavish:reviewState") {
-    lastReviewState = msg.state && typeof msg.state === "object" ? msg.state : null;
+    setReviewState(msg.state && typeof msg.state === "object" ? msg.state : null);
+  }
+  if (msg.type === "lavish:reviewDraftUnrestorable") {
+    discardUnrestorableDraft(String(msg.selector || ""));
   }
   if (msg.type === "lavish:artifactAssetFailure") {
     reportArtifactFailures(
@@ -1736,10 +2584,139 @@ window.addEventListener("message", (event) => {
       messageToken,
     ).catch(() => {});
   }
+  if (msg.type === "lavish:uploadAttachment") uploadAttachment(msg);
+  // There is deliberately no attachment-delete message. See removeAttachment's
+  // removal note below: the iframe cannot be trusted to decide a delete, and the
+  // chrome cannot see every live reference, so reclamation is the sweeper's job.
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
 });
+
+// The sandboxed artifact iframe can't reach the loopback server (opaque origin),
+// so it hands captured image bytes here and the chrome performs the same-origin
+// upload, then reports the server-vetted id back to the card.
+async function uploadAttachment(message, reportResult = postToFrame, signal) {
+  const localId = String(message.localId || "");
+  if (!localId) return;
+  // Echoed verbatim on every result so the artifact can tell a reply to ITS upload
+  // from one still in flight for a previous document (E1). The chrome never
+  // interprets it; it only round-trips it.
+  const nonce = message.nonce;
+  const bytes = message.bytes;
+  let size;
+  if (ArrayBuffer.isView(bytes)) {
+    size = bytes.byteLength;
+  } else {
+    try {
+      const byteLengthGetter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+      size = byteLengthGetter ? byteLengthGetter.call(bytes) : NaN;
+    } catch {
+      size = NaN;
+    }
+  }
+  if (!Number.isFinite(size) || size < 0) {
+    reportResult({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "invalid upload payload",
+    });
+    return;
+  }
+  // Reject over-cap images before they hit the network: an over-cap upload aborts
+  // mid-stream, and the browser can hang or reset instead of surfacing the 413, so
+  // the chip would never leave "uploading". Catching it here guarantees the card
+  // reaches its error+retry state. The server still enforces the cap authoritatively.
+  if (attachmentMaxBytes > 0 && size > attachmentMaxBytes) {
+    reportResult({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Image is larger than the " + formatByteLimit(attachmentMaxBytes) + " limit",
+    });
+    return;
+  }
+  // Confused-deputy guard: rate + cumulative-byte ceiling before touching the network.
+  const now = Date.now();
+  while (uploadTimestamps.length && now - uploadTimestamps[0] > UPLOAD_RATE_WINDOW_MS) uploadTimestamps.shift();
+  if (uploadTimestamps.length >= UPLOAD_RATE_MAX) {
+    reportResult({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Too many uploads. Wait a moment and retry.",
+    });
+    return;
+  }
+  if (uploadedBytesTotal + size > UPLOAD_SESSION_BYTE_QUOTA) {
+    reportResult({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Upload limit reached for this session (" + formatByteLimit(UPLOAD_SESSION_BYTE_QUOTA) + ").",
+    });
+    return;
+  }
+  // In-flight ceiling: refuse rather than pile another large body onto the network
+  // while the bound is full. The card keeps its retry affordance, and a settled
+  // upload (below) frees a slot for the next.
+  if (uploadsInFlight >= UPLOAD_MAX_IN_FLIGHT) {
+    reportResult({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Too many uploads in flight. Wait a moment and retry.",
+    });
+    return;
+  }
+  uploadTimestamps.push(now);
+  uploadedBytesTotal += size;
+  uploadsInFlight += 1;
+  try {
+    const response = await fetch("/api/" + key + "/attachments", {
+      method: "POST",
+      headers: { "content-type": String(message.mime || "application/octet-stream") },
+      body: bytes,
+      signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Upload failed");
+    reportResult({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: true,
+      id: (data.attachment && data.attachment.id) || "",
+    });
+  } catch (error) {
+    reportResult({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    uploadsInFlight -= 1;
+  }
+}
+
+// There is intentionally no eager attachment delete here. Removing a chip used to
+// ask the chrome to DELETE the stored file once no queued prompt referenced it,
+// but that check is not authoritative: attachments are content-addressed, so two
+// tabs (or two cards) can hold the SAME id, and a chip that is ready but not yet
+// queued in another tab is invisible from here. The delete was also driven by the
+// untrusted iframe, making the chrome a confused deputy - a malicious artifact
+// could destroy bytes a live card still needed, which then failed as `not-found`
+// on send. Unreferenced files are reclaimed by the server's reference-aware TTL
+// sweeper and the disk-cap backstop, which see every session's pending prompts
+// at once. Deleting late is cheap; deleting bytes someone still needs is not.
 
 loadFrame();
 
@@ -1761,6 +2738,88 @@ moreButton.onclick = () => {
 warningsButton.onclick = toggleWarningsDrawer;
 warningsSelectAll.onchange = toggleSelectAllWarnings;
 warningsQueueButton.onclick = queueSelectedWarningFixes;
+chatAttachButton.onclick = () => chatAttachInput.click();
+chatAttachInput.addEventListener("change", () => {
+  chatAttachmentController.addFiles(chatAttachInput.files);
+  chatAttachmentController.rejectUnsupported(chatAttachInput.files);
+  chatAttachInput.value = "";
+});
+// The one place a paste or drop is turned into a file list, so both surfaces see
+// the same payload. Pasted screenshots arrive as items, not files, in some
+// browsers; `.files` alone silently attaches nothing there.
+function transferredFiles(dataTransfer) {
+  const files = Array.from(dataTransfer?.files || []).filter(Boolean);
+  if (files.length) return files;
+  return Array.from(dataTransfer?.items || [])
+    .filter((item) => item && item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+// Finder/Explorer file copies put the copied file's name or path in text/plain;
+// that placeholder must not land in the message beside the attached image. Real
+// captions (any line that is not a pasted file's name) keep the default paste.
+// Mirrors planClipboardPaste in artifact-sdk.js, which owns the same rule for
+// the annotation card - this file is served raw and cannot import it.
+function keepsClipboardText(text, files) {
+  const lines = String(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return false;
+  const names = files.map((file) => String(file?.name || "")).filter(Boolean);
+  if (!names.length) return true;
+  return !lines.every((line) =>
+    names.some((name) => line === name || line.endsWith("/" + name) || line.endsWith("\\" + name)),
+  );
+}
+chatInput.addEventListener("paste", (event) => {
+  const files = transferredFiles(event.clipboardData);
+  // Images only: Office and macOS pastes expose stray non-image file flavors
+  // beside their text, so unsupported entries raise no chip here (matching the
+  // annotation card) - a chip would block sending for a perceived text paste.
+  const added = chatAttachmentController.addFiles(files);
+  if (added && !keepsClipboardText(event.clipboardData?.getData("text/plain") || "", files)) event.preventDefault();
+});
+chatComposer.addEventListener("dragover", (event) => {
+  if (Array.from(event.dataTransfer?.types || []).includes("Files")) {
+    event.preventDefault();
+    chatComposer.classList.add("is-dropping");
+  }
+});
+chatComposer.addEventListener("dragleave", (event) => {
+  const entering = /** @type {Node | null} */ (event.relatedTarget);
+  if (!chatComposer.contains(entering)) chatComposer.classList.remove("is-dropping");
+});
+chatComposer.addEventListener("drop", (event) => {
+  chatComposer.classList.remove("is-dropping");
+  if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+  event.preventDefault();
+  const files = transferredFiles(event.dataTransfer);
+  if (!files.length) {
+    // A drag advertising Files with nothing enumerable: the default was already
+    // consumed, so refuse visibly (like the card) instead of swallowing it.
+    chatAttachmentController.rejectUnsupported([{ name: "file", type: "" }]);
+    return;
+  }
+  chatAttachmentController.addFiles(files);
+  chatAttachmentController.rejectUnsupported(files);
+});
+// A file drop that misses the composer must not navigate the chrome away from
+// the session (losing chips, uploads, and the SSE connection). Text drags stay
+// untouched so dropping text into the textarea keeps working.
+document.addEventListener("dragover", (event) => {
+  if (Array.from(event.dataTransfer?.types || []).includes("Files")) event.preventDefault();
+});
+document.addEventListener("drop", (event) => {
+  if (Array.from(event.dataTransfer?.types || []).includes("Files")) event.preventDefault();
+});
+chatAttachments.addEventListener("click", (event) => {
+  const target = /** @type {HTMLElement | null} */ (event.target);
+  const remove = /** @type {HTMLElement | null} */ (target?.closest?.("[data-chat-attachment-remove]") || null);
+  if (remove) chatAttachmentController.remove(String(remove.dataset.chatAttachmentRemove || ""));
+  const retry = /** @type {HTMLElement | null} */ (target?.closest?.("[data-chat-attachment-retry]") || null);
+  if (retry) chatAttachmentController.retry(String(retry.dataset.chatAttachmentRetry || ""));
+});
 chatInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -1786,6 +2845,8 @@ endButton.onclick = () => {
   endSession();
 };
 handoffTakeoverButton.onclick = () => location.reload();
+if (outdatedReloadButton) outdatedReloadButton.onclick = () => reloadChromeForOutdatedBanner();
+if (outdatedDismissButton) outdatedDismissButton.onclick = () => setChromeOutdated(false);
 document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
@@ -1842,7 +2903,10 @@ events.addEventListener("reload", () => {
     if (reloaded) refreshWhiteboardSource();
   });
 });
-events.addEventListener("chrome-reload", () => reloadAfterServerRestart());
+events.addEventListener("chrome-reload", (event) => reloadAfterServerRestart(shutdownEventReason(event)));
+// The replacement server serves a different artifact's review. This page keeps working against
+// it; it is only running the previous version of the chrome, which is the user's to act on.
+events.addEventListener("chrome-outdated", (event) => setChromeOutdated(true, shutdownEventReason(event)));
 events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
@@ -1851,7 +2915,16 @@ events.addEventListener("layout-warnings", (event) => setLayoutWarnings(JSON.par
 events.addEventListener("open", () => refreshLayoutWarnings());
 
 render();
+setChromeOutdated(false);
 setWarningsDrawerOpen(false);
 renderWarnings();
 initialChat.forEach((item) => addChat(item.role, item.text));
+retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
+
+// Reaching this line is the only proof that this file parsed and ran to completion. The page it
+// bootstraps ships with the layout-gate overlay already covering the artifact, and only this
+// script ever takes it down - so the inline failsafe in the page holds it up until here.
+const chromeBootWindow = /** @type {Record<string, any>} */ (/** @type {unknown} */ (window));
+chromeBootWindow.__lavishChromeReady = true;
+chromeBootWindow.__lavishCancelChromeBootFailsafe?.();

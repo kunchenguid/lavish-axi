@@ -27,6 +27,161 @@ export function sanitizeWhiteboardScene(scene) {
   return { ...scene, appState: sanitizeWhiteboardAppState(scene.appState) };
 }
 
+// Mermaid node labels use `<br>` / `<br/>` and a two-character `\n` sequence as
+// line breaks. parseMermaidToExcalidraw copies vertex.text onto skeleton
+// `label.text` unchanged, and convertToExcalidrawElements then treats those
+// characters as part of a single line - so "classify<br>checks" renders as the
+// fused "classifychecks" instead of two lines. Excalidraw stores multiline
+// labels as real `\n` in `text` / `originalText`.
+const MERMAID_HTML_BREAK_RE = /<br\s*\/?\s*>/gi;
+const MERMAID_ESCAPED_NEWLINE_RE = /\\n/g;
+const LABEL_CHAR_WIDTH_RATIO = 0.62;
+const LABEL_LINE_HEIGHT = 1.25;
+const BOUND_TEXT_PADDING_X = 16;
+const BOUND_TEXT_PADDING_Y = 16;
+const NODE_LABEL_CONTAINER_TYPES = new Set(["rectangle", "ellipse", "diamond"]);
+
+// Node boxes only. Labelled arrows keep independently placed path-midpoint
+// labels; growing or recentering those containers would move the arrow.
+function isNodeLabelContainer(element) {
+  return NODE_LABEL_CONTAINER_TYPES.has(element?.type);
+}
+
+export function normalizeMermaidLabelLineBreaks(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  return text.replace(MERMAID_HTML_BREAK_RE, "\n").replace(MERMAID_ESCAPED_NEWLINE_RE, "\n");
+}
+
+function splitLabelLines(text) {
+  return String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n");
+}
+
+function estimateMultilineLabelBox(text, fontSize) {
+  const size = Number(fontSize) || 16;
+  const lines = splitLabelLines(text);
+  const width = Math.max(
+    20,
+    ...lines.map((line) => Math.ceil(Math.max(String(line).length, 1) * size * LABEL_CHAR_WIDTH_RATIO)),
+  );
+  const height = Math.max(1, lines.length) * size * LABEL_LINE_HEIGHT;
+  return { width, height, lineCount: lines.length };
+}
+
+function expandBoxToFit(element, minWidth, minHeight) {
+  const width = Number(element.width) || 0;
+  const height = Number(element.height) || 0;
+  const nextWidth = Math.max(width, minWidth);
+  const nextHeight = Math.max(height, minHeight);
+  if (nextWidth === width && nextHeight === height) return element;
+  const next = { ...element, width: nextWidth, height: nextHeight };
+  if (nextWidth > width) next.x = (Number(element.x) || 0) - (nextWidth - width) / 2;
+  if (nextHeight > height) next.y = (Number(element.y) || 0) - (nextHeight - height) / 2;
+  return next;
+}
+
+function positionBoundTextInContainer(container, text) {
+  const align = String(text.textAlign || "center");
+  const valign = String(text.verticalAlign || "middle");
+  const cx = Number(container.x) || 0;
+  const cy = Number(container.y) || 0;
+  const cw = Number(container.width) || 0;
+  const ch = Number(container.height) || 0;
+  const tw = Number(text.width) || 0;
+  const th = Number(text.height) || 0;
+  const x = align === "left" ? cx : align === "right" ? cx + cw - tw : cx + (cw - tw) / 2;
+  const y = valign === "top" ? cy : valign === "bottom" ? cy + ch - th : cy + (ch - th) / 2;
+  if (x === (Number(text.x) || 0) && y === (Number(text.y) || 0)) return text;
+  return { ...text, x, y };
+}
+
+function fitContainersToBoundText(elements) {
+  if (!Array.isArray(elements)) return [];
+  const byId = new Map();
+  for (const element of elements) {
+    if (element?.id) byId.set(element.id, element);
+  }
+  for (const element of elements) {
+    if (!element || element.type !== "text" || element.isDeleted || !element.containerId) continue;
+    const container = byId.get(element.containerId);
+    if (!container || !isNodeLabelContainer(container)) continue;
+    const fitted = expandBoxToFit(
+      container,
+      (Number(element.width) || 0) + BOUND_TEXT_PADDING_X,
+      (Number(element.height) || 0) + BOUND_TEXT_PADDING_Y,
+    );
+    if (fitted !== container) byId.set(container.id, fitted);
+  }
+  // Bound text keeps its own x/y. Growing the container from the center (or
+  // growing the text box independently) leaves that label at the old coords,
+  // so it sits off-center until something like restore() recomputes it.
+  for (const element of elements) {
+    if (!element || element.type !== "text" || element.isDeleted || !element.containerId) continue;
+    const current = byId.get(element.id) ?? element;
+    const container = byId.get(current.containerId);
+    if (!container || !isNodeLabelContainer(container)) continue;
+    const positioned = positionBoundTextInContainer(container, current);
+    if (positioned !== current) byId.set(current.id, positioned);
+  }
+  return elements.map((element) => (element?.id && byId.has(element.id) ? byId.get(element.id) : element));
+}
+
+function withNormalizedLabelText(element) {
+  if (!element || typeof element !== "object") return element;
+  let next = element;
+  const write = (key, value) => {
+    if (next === element) next = { ...element };
+    next[key] = value;
+  };
+  if (typeof element.text === "string") {
+    const text = normalizeMermaidLabelLineBreaks(element.text);
+    if (text !== element.text) write("text", text);
+  }
+  if (typeof element.originalText === "string") {
+    const originalText = normalizeMermaidLabelLineBreaks(element.originalText);
+    if (originalText !== element.originalText) {
+      write("originalText", originalText);
+      // Drop leftover `<br>` from the wrapped `text` field; convertToExcalidrawElements
+      // can re-wrap from originalText on the next pass. Do not overwrite when
+      // originalText was already clean - that would discard legitimate wrapping.
+      if (typeof next.text === "string") write("text", originalText);
+    }
+  }
+  if (element.label && typeof element.label === "object" && typeof element.label.text === "string") {
+    const text = normalizeMermaidLabelLineBreaks(element.label.text);
+    if (text !== element.label.text) {
+      if (next === element) next = { ...element };
+      next.label = { ...element.label, text };
+    }
+  }
+  const labelText = next.label?.text || next.originalText || next.text;
+  if (typeof labelText === "string" && labelText.includes("\n") && isNodeLabelContainer(next)) {
+    const fontSize = next.label?.fontSize || next.fontSize;
+    const estimated = estimateMultilineLabelBox(labelText, fontSize);
+    next = expandBoxToFit(next, estimated.width + BOUND_TEXT_PADDING_X, estimated.height + BOUND_TEXT_PADDING_Y);
+  }
+  return next;
+}
+
+/**
+ * @param {any[]} elements
+ * @param {{ measure?: (element: any) => { width: number, height: number } }} [adapters]
+ * @returns {any[]}
+ */
+export function restoreMermaidLabelLineBreaks(elements, { measure } = {}) {
+  const restored = (Array.isArray(elements) ? elements : []).map((element) => withNormalizedLabelText(element));
+  const sized = measure
+    ? restored.map((element) => {
+        const candidate = /** @type {Record<string, any>} */ (element);
+        if (!candidate || candidate.type !== "text" || candidate.isDeleted) return element;
+        const metrics = measure(element);
+        return expandBoxToFit(element, Number(metrics?.width) || 0, Number(metrics?.height) || 0);
+      })
+    : restored;
+  return fitContainersToBoundText(sized);
+}
+
 // Only plain web/mail links may leave the whiteboard. Everything else -
 // javascript:, data:, file:, vbscript:, chrome:, about:, or relative noise
 // coming from untrusted Mermaid `click` directives - is dropped.
@@ -112,6 +267,86 @@ export function createWhiteboardPersistencePayload(state, scene) {
     scene: scene ?? null,
     baseline: { elements: Array.isArray(state?.baselineElements) ? state.baselineElements : [] },
   };
+}
+
+// Conversion always autosaves on view, so a sidecar's presence is not proof of
+// user edits. When the Mermaid source hash changes, prompt only if the saved
+// scene actually differs from its conversion baseline.
+const BENIGN_ELEMENT_CHANGE_KEYS = new Set([
+  "backgroundColor",
+  "fillStyle",
+  "fontFamily",
+  "fontSize",
+  "index",
+  "lineHeight",
+  "opacity",
+  "roughness",
+  "roundness",
+  "seed",
+  "strokeColor",
+  "strokeSharpness",
+  "strokeStyle",
+  "strokeWidth",
+  "textAlign",
+  "updated",
+  "version",
+  "versionNonce",
+  "verticalAlign",
+]);
+const JITTER_ELEMENT_KEYS = new Set(["height", "width", "x", "y"]);
+
+function valuesDiffer(before, after, key, elementProperty = false) {
+  if (elementProperty && BENIGN_ELEMENT_CHANGE_KEYS.has(key)) return false;
+  if (elementProperty && JITTER_ELEMENT_KEYS.has(key)) {
+    return Math.abs((Number(after) || 0) - (Number(before) || 0)) > SUMMARY_MOVE_EPSILON_PX;
+  }
+  if (Object.is(before, after)) return false;
+  if (!before || !after || typeof before !== "object" || typeof after !== "object") return true;
+  if (Array.isArray(before) || Array.isArray(after)) {
+    if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return true;
+    return before.some((value, index) => valuesDiffer(value, after[index], String(index)));
+  }
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const childKey of keys) {
+    if (valuesDiffer(before[childKey], after[childKey], childKey)) return true;
+  }
+  return false;
+}
+
+function elementHasMeaningfulDifference(before, after) {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (key === "isDeleted") continue;
+    if (valuesDiffer(before[key], after[key], key, true)) return true;
+  }
+  return false;
+}
+
+export function savedSceneHasPreservableEdits(saved) {
+  const sceneElements = saved?.scene?.elements;
+  const baselineElements = saved?.baseline?.elements;
+  if (!Array.isArray(baselineElements)) return Array.isArray(sceneElements);
+  if (!Array.isArray(sceneElements)) return true;
+  const baseline = byId(liveElements(baselineElements));
+  const scene = byId(liveElements(sceneElements));
+  if (baseline.size !== scene.size) return true;
+  for (const [id, element] of scene) {
+    const original = baseline.get(id);
+    if (!original || elementHasMeaningfulDifference(original, element)) return true;
+  }
+  return false;
+}
+
+/**
+ * @param {object | null | undefined} saved
+ * @param {string} currentSourceHash
+ * @returns {"convert" | "restore" | "prompt"}
+ */
+export function resolveWhiteboardInitAction(saved, currentSourceHash) {
+  const record = saved && typeof saved === "object" && saved.scene ? saved : null;
+  if (!record) return "convert";
+  if (String(record.source_hash || "") === String(currentSourceHash || "")) return "restore";
+  return savedSceneHasPreservableEdits(record) ? "prompt" : "convert";
 }
 
 function liveElements(elements) {

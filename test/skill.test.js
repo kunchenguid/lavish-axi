@@ -24,6 +24,8 @@ test("createSkillMarkdown emits standard Agent Skills metadata", () => {
   assert.deepEqual(frontmatter.metadata, {
     "argument-hint": "<what the artifact should show>",
     author: "Kun Chen (kunchenguid)",
+    "hermes-tags": "html, review, artifacts, visualization",
+    "hermes-category": "productivity",
     upstream: "https://github.com/kunchenguid/lavish-axi",
   });
   assert.equal(frontmatter.version, undefined, "version is omitted to avoid release churn");
@@ -123,7 +125,7 @@ test("createSkillMarkdown requires an observable wake path for every poll", () =
   assert.match(workflow, /Do not tell the user the artifact is being monitored until that wake path is live/i);
   assert.match(workflow, /`Send & End` ends the session.*final feedback is still delivered once.*polling stops/i);
   assert.match(workflow, /(?:do|must) not reopen (?:it|the session) uninvited/i);
-  assert.match(workflow, /queued feedback is never lost/);
+  assert.match(workflow, /feedback remains queued until delivery/);
   assert.doesNotMatch(md, /Codex detected/);
 });
 

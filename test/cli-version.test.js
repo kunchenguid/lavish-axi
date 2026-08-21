@@ -15,9 +15,9 @@ const execFileAsync = promisify(execFile);
 const BIN = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
 
 // A regression to the pre-fast-path behavior costs the full telemetry drain (up to
-// 1000ms) plus process startup. This budget sits far below that and far above the
-// ~60ms the fast path actually needs, so it catches the regression without flaking.
-const VERSION_BUDGET_MS = 500;
+// 1000ms) plus process startup. Windows process startup is substantially slower on
+// hosted runners, so give it more headroom while staying below the drain timeout.
+const VERSION_BUDGET_MS = process.platform === "win32" ? 750 : 500;
 
 // Accepts the telemetry connection and never answers, so a regression pays the whole
 // drain timeout instead of a fast connection refusal.

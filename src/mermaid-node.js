@@ -2,10 +2,10 @@
 
 // Pure Mermaid node-identity helpers shared by the injected artifact SDK and the
 // server-side session store. The SDK ships them to the browser by serializing
-// each one with `.toString()` (see `createSdkJs`), which drops the surrounding
-// module scope — so a helper may reference only its own arguments, browser
-// globals, or its sibling exports from this module. `createSdkJs` re-declares
-// every export here as a same-scope `const` before invoking the SDK, so
+// each one with `.toString()` via `serializeModuleHelpers` in `createSdkJs`, which
+// drops the surrounding module scope — so a helper may reference only its own
+// arguments, browser globals, or its sibling exports from this module. `createSdkJs`
+// re-declares every export here as a same-scope `const` before invoking the SDK, so
 // cross-helper calls (e.g. `mermaidNodeFrom` → `mermaidNodeElement`) resolve in
 // the browser exactly as they do here; never close over anything else. Keeping
 // the logic here — instead of inside the `createArtifactSdk` closure — lets us

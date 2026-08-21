@@ -1,9 +1,0 @@
-playbooks[7]{id,use_when}:
-  diagram,"Map relationships, flows, state, and architecture"
-  table,Turn dense records into scan-friendly review surfaces
-  comparison,"Show options, tradeoffs, and current vs target behavior"
-  plan,Explain a product or technical plan before implementation
-  diff,Present code or PR changes with evidence and findings
-  input,"Must be used when the agent needs to collect user input on decisions, choices, preferences, triage, scope, or other structured feedback from within the artifact"
-  slides,Create a deliberate presentation when slides are requested
-help[2]: Run `lavish-axi playbook <playbook_id>` for focused artifact guidance,"One artifact often combines several playbooks (for example a plan that includes a comparison and a diagram), so read every playbook relevant to the artifact, not just one, for the best quality"

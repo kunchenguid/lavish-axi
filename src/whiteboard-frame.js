@@ -34,6 +34,8 @@ import {
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
   repairSavedSceneTextMetrics,
+  resolveWhiteboardInitAction,
+  restoreMermaidLabelLineBreaks,
   sanitizeSceneLink,
   sanitizeWhiteboardAppState,
   sceneIsImageFallback,
@@ -425,9 +427,10 @@ async function loadSceneFonts(elements, files) {
 }
 
 async function convertSource(source) {
-  const { elements: skeletons, files } = await parseMermaidToExcalidraw(source, {
+  const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: "16px" },
   });
+  const skeletons = restoreMermaidLabelLineBreaks(parsedSkeletons);
   const materialize = (input) => {
     // Preserve Mermaid node/edge identity for edit summaries; regenerate only
     // when upstream emitted colliding ids (parallel edges), where uniqueness
@@ -438,12 +441,15 @@ async function convertSource(source) {
     }
     return elements;
   };
-  const elements = await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-    convert: materialize,
-    loadFonts: async (fallbackElements) => {
-      await loadSceneFonts(fallbackElements, files);
-    },
-  });
+  const elements = restoreMermaidLabelLineBreaks(
+    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+      convert: materialize,
+      loadFonts: async (fallbackElements) => {
+        await loadSceneFonts(fallbackElements, files);
+      },
+    }),
+    { measure: measureSceneText },
+  );
   return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
 }
 
@@ -457,20 +463,51 @@ function defaultAppState() {
   };
 }
 
+function restoreSceneData(elements, appState, files) {
+  return restore(
+    {
+      elements: Array.isArray(elements) ? elements : [],
+      appState: sanitizeWhiteboardAppState(appState),
+      files: files || {},
+    },
+    null,
+    null,
+    { repairBindings: true },
+  );
+}
+
+function normalizeSavedSceneForComparison(saved) {
+  const scene = restoreSceneData(saved.scene?.elements, saved.scene?.appState, saved.scene?.files);
+  const baseline = Array.isArray(saved.baseline?.elements)
+    ? restoreSceneData(saved.baseline.elements, defaultAppState(), saved.scene?.files)
+    : null;
+  return {
+    ...saved,
+    scene: { ...saved.scene, elements: scene.elements },
+    baseline: baseline ? { ...saved.baseline, elements: baseline.elements } : null,
+  };
+}
+
 async function startFromConversion(init) {
-  const { elements, files, imageFallback } = await convertSource(init.source);
+  const converted = await convertSource(init.source);
+  const restored = restoreSceneData(converted.elements, defaultAppState(), converted.files);
+  const elements = restored.elements;
+  const files = restored.files || converted.files;
   state.baselineElements = JSON.parse(JSON.stringify(elements));
   state.files = files;
-  state.imageFallback = imageFallback;
+  state.imageFallback = sceneIsImageFallback(elements);
   state.sceneSourceHash = init.sourceHash;
   state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
-  if (imageFallback) {
+  if (state.imageFallback) {
     setBanner(
       "wbFallbackBanner",
       "This diagram type is not natively editable, so it is shown as an image - draw, annotate, and add shapes on top.",
     );
   }
   mountEditor({ elements, appState: defaultAppState(), files, theme: init.theme });
+  // View-only conversion still autosaves so a same-hash reopen can restore.
+  // Hash mismatch does not treat that sidecar as user edits; see
+  // resolveWhiteboardInitAction.
   scheduleSave();
 }
 
@@ -480,16 +517,7 @@ async function startFromSavedScene(init) {
   // restore() is Excalidraw's defensive loader: it fills missing fields with
   // defaults and repairs bindings, so a stale or hand-edited sidecar cannot
   // crash the editor.
-  const restored = restore(
-    {
-      elements: Array.isArray(saved.scene?.elements) ? saved.scene.elements : [],
-      appState: savedAppState,
-      files: saved.scene?.files || {},
-    },
-    null,
-    null,
-    { repairBindings: true },
-  );
+  const restored = restoreSceneData(saved.scene?.elements, savedAppState, saved.scene?.files);
   let elements = restored.elements;
   let baselineElements = Array.isArray(saved.baseline?.elements)
     ? JSON.parse(JSON.stringify(saved.baseline.elements))
@@ -520,9 +548,9 @@ async function startFromSavedScene(init) {
   if (savedMetricsVersion < WHITEBOARD_TEXT_METRICS_VERSION) scheduleSave();
 }
 
-// The saved scene was converted from a different version of the diagram. Never
-// merge silently: the user explicitly picks between re-converting (discarding
-// edits) and continuing on the saved scene.
+// The saved scene has user edits and was converted from a different version of
+// the diagram. Never merge those silently: the reviewer explicitly picks
+// between re-converting (discarding edits) and continuing on the saved scene.
 function offerStaleChoice() {
   const staleBanner = document.getElementById("wbStaleBanner");
   staleBanner.textContent = "This diagram changed since these whiteboard edits were saved. ";
@@ -609,20 +637,19 @@ async function handleInit(init) {
 
   const saved = init.saved && typeof init.saved === "object" && init.saved.scene ? init.saved : null;
   try {
-    if (!saved) {
-      await startFromConversion({ ...init, theme });
-      return;
-    }
-    if (saved.source_hash === init.sourceHash) {
+    const action = resolveWhiteboardInitAction(saved ? normalizeSavedSceneForComparison(saved) : null, init.sourceHash);
+    if (action === "restore" && saved) {
       await startFromSavedScene({ ...init, saved, theme });
       return;
     }
-    const choice = await offerStaleChoice();
-    if (choice === "keep") {
-      await startFromSavedScene({ ...init, saved, theme });
-    } else {
-      await startFromConversion({ ...init, theme });
+    if (action === "prompt" && saved) {
+      const choice = await offerStaleChoice();
+      if (choice === "keep") {
+        await startFromSavedScene({ ...init, saved, theme });
+        return;
+      }
     }
+    await startFromConversion({ ...init, theme });
   } catch (error) {
     showStatus(`Could not open this diagram as a whiteboard: ${describeError(error)}`, { transient: false });
   }

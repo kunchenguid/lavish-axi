@@ -47,6 +47,8 @@ license: MIT
 metadata:
   argument-hint: <what the artifact should show>
   author: Kun Chen (kunchenguid)
+  hermes-tags: html, review, artifacts, visualization
+  hermes-category: productivity
   upstream: https://github.com/kunchenguid/lavish-axi
 ---
 

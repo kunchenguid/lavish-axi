@@ -943,6 +943,22 @@ body.lavish {
   background: transparent;
   border-color: var(--border-subtle);
 }
+.bubble.note {
+  align-self: stretch;
+  max-width: 100%;
+  background: transparent;
+  border-color: var(--border-strong);
+  border-style: dashed;
+}
+.bubble.note .note-draft {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.bubble.note .note-warning {
+  margin-top: 6px;
+  color: var(--danger);
+}
 .bubble.agent-working {
   display: flex;
   align-items: center;
@@ -1020,6 +1036,11 @@ body.lavish {
 .handoff-takeover:hover {
   color: var(--fg);
 }
+.outdated-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
 .annotation-pills {
   display: flex;
   flex-wrap: wrap;
@@ -1057,6 +1078,36 @@ body.lavish {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.pill-attachments {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.pill-attachment {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: cover;
+  background: var(--border);
+  border: 1px solid var(--border-strong);
+}
+.pill-attachment-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: var(--border);
+  border: 1px solid var(--border-strong);
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
 .pill-close {
   display: flex;
@@ -1131,6 +1182,77 @@ body.lavish {
 }
 .composer textarea::placeholder {
   color: var(--fg-label);
+}
+.composer.is-dropping {
+  background: var(--bg-elevated);
+}
+.chat-attachments {
+  display: grid;
+  gap: 6px;
+  /* W3 backstop, like the annotation card's chip list: unbounded chips must
+     scroll here, never push Send/Send & End or their own Remove off-frame. */
+  max-height: 176px;
+  overflow-y: auto;
+}
+.chat-attachments:empty {
+  display: none;
+}
+.chat-attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  padding: 6px;
+  font-size: 11px;
+}
+.chat-attachment-thumb {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  object-fit: cover;
+}
+.chat-attachment-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+.chat-attachment-copy strong,
+.chat-attachment-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attachment-status {
+  color: var(--fg-faint);
+}
+.chat-attachment-error,
+.chat-attachment-error .chat-attachment-status {
+  color: var(--danger);
+}
+.chat-attachment-chip button,
+.chat-attach {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 4px;
+}
+.chat-attachment-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chat-attachment-notice {
+  min-width: 0;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.35;
 }
 .actions {
   display: flex;

@@ -19,7 +19,7 @@ import { mermaidSourceHash } from "../src/mermaid-source.js";
 const ARTIFACT_HTML = `<!doctype html><html><body>
 <h1>Demo</h1>
 <pre class="mermaid">flowchart TD
-  A[Start] --&gt; B{Ready?}</pre>
+  A["OBJECTIVE:<br/>do the thing"] --&gt; B{Ready?}</pre>
 <pre class="mermaid">sequenceDiagram
   CLI-&gt;&gt;Server: poll</pre>
 </body></html>`;
@@ -93,23 +93,29 @@ test("whiteboard confirms sanitized links inside the frame", async () => {
   assert.match(css, /data-lavish-whiteboard-theme="dark"/);
 });
 
-test("whiteboard channel tokens are signed and short lived", () => {
+test("whiteboard channel tokens are signed, session bound, and short lived", () => {
   const secret = Buffer.from("whiteboard-test-secret");
   const now = 1_700_000_000_000;
-  const token = createWhiteboardChannelToken(secret, now);
-  assert.equal(isValidWhiteboardChannelToken(token, secret, now), true);
-  assert.equal(isValidWhiteboardChannelToken(`${token}x`, secret, now), false);
-  assert.equal(isValidWhiteboardChannelToken(token, secret, now + 5 * 60_000 + 1), false);
+  const sessionKey = "0123456789abcdef";
+  const token = createWhiteboardChannelToken(secret, sessionKey, now);
+  assert.equal(isValidWhiteboardChannelToken(token, secret, sessionKey, now), true);
+  assert.equal(isValidWhiteboardChannelToken(`${token}x`, secret, sessionKey, now), false);
+  assert.equal(isValidWhiteboardChannelToken(token, secret, sessionKey, now + 5 * 60_000 + 1), false);
+  // A token minted for one session must never authenticate another, and a
+  // token minted without a session must never authenticate anything.
+  assert.equal(isValidWhiteboardChannelToken(token, secret, "fedcba9876543210", now), false);
+  assert.equal(isValidWhiteboardChannelToken(createWhiteboardChannelToken(secret, "", now), secret, "", now), false);
 });
 
-test("GET /api/:key/mermaid-sources extracts ordered, entity-decoded sources with hashes", async () => {
+test("GET /api/:key/mermaid-sources preserves label breaks and returns ordered sources with hashes", async () => {
   const ctx = await startWhiteboardServer();
   try {
     const data = await fetch(`${ctx.base}/api/${ctx.key}/mermaid-sources`).then((res) => res.json());
     assert.equal(data.sources.length, 2);
     assert.equal(data.sources[0].index, 0);
-    assert.equal(data.sources[0].source, "flowchart TD\n  A[Start] --> B{Ready?}");
-    assert.equal(data.sources[0].hash, mermaidSourceHash("flowchart TD\n  A[Start] --> B{Ready?}"));
+    const expectedFlowchart = 'flowchart TD\n  A["OBJECTIVE:<br/>do the thing"] --> B{Ready?}';
+    assert.equal(data.sources[0].source, expectedFlowchart);
+    assert.equal(data.sources[0].hash, mermaidSourceHash(expectedFlowchart));
     assert.equal(data.sources[1].source, "sequenceDiagram\n  CLI->>Server: poll");
   } finally {
     await ctx.close();
@@ -173,11 +179,15 @@ test("whiteboard write routes reject cross-origin and unknown sessions", async (
   }
 });
 
+async function frameChannelToken(base, query = "") {
+  const frame = await fetch(`${base}/whiteboard-frame${query}`).then((res) => res.text());
+  return /__lavishWhiteboardChannelToken="([^"]+)"/.exec(frame)?.[1] || "";
+}
+
 test("whiteboard channel authentication accepts only the frame-issued token", async () => {
   const ctx = await startWhiteboardServer();
   try {
-    const frame = await fetch(`${ctx.base}/whiteboard-frame`).then((res) => res.text());
-    const token = /__lavishWhiteboardChannelToken="([^"]+)"/.exec(frame)?.[1] || "";
+    const token = await frameChannelToken(ctx.base, `?key=${ctx.key}`);
     assert.ok(token);
 
     const accepted = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard-channel`, {
@@ -193,6 +203,37 @@ test("whiteboard channel authentication accepts only the frame-issued token", as
       body: JSON.stringify({ token: "forged" }),
     });
     assert.equal(rejected.status, 403);
+  } finally {
+    await ctx.close();
+  }
+});
+
+// Regression: a channel token used to be signed over `${now}.${nonce}` alone,
+// so any token - including one minted by a request that named no session at
+// all - authenticated an arbitrary session's whiteboard channel.
+test("a whiteboard channel token minted for another session never authenticates this one", async () => {
+  const ctx = await startWhiteboardServer();
+  try {
+    const foreignToken = await frameChannelToken(ctx.base, "?key=ffffffffffffffff");
+    assert.ok(foreignToken);
+    const foreign = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard-channel`, {
+      method: "POST",
+      headers: ctx.sameOrigin,
+      body: JSON.stringify({ token: foreignToken }),
+    });
+    assert.equal(foreign.status, 403);
+
+    // A keyless frame request must not yield a usable token either.
+    const keyless = await fetch(`${ctx.base}/whiteboard-frame`);
+    assert.equal(keyless.status, 400);
+
+    const own = await frameChannelToken(ctx.base, `?key=${ctx.key}`);
+    const accepted = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard-channel`, {
+      method: "POST",
+      headers: ctx.sameOrigin,
+      body: JSON.stringify({ token: own }),
+    });
+    assert.equal(accepted.status, 200);
   } finally {
     await ctx.close();
   }
@@ -270,7 +311,7 @@ test("whiteboard assets are served with Access-Control-Allow-Origin: * and trave
 test("the whiteboard frame page is served with the sandboxed chrome overlay pointing at it", async () => {
   const ctx = await startWhiteboardServer();
   try {
-    const framePage = await fetch(`${ctx.base}/whiteboard-frame`);
+    const framePage = await fetch(`${ctx.base}/whiteboard-frame?key=${ctx.key}`);
     assert.equal(framePage.status, 200);
     assert.equal(framePage.headers.get("cache-control"), "no-store");
     assert.match(await framePage.text(), /whiteboard-assets\/whiteboard\.js/);
@@ -279,7 +320,11 @@ test("the whiteboard frame page is served with the sandboxed chrome overlay poin
     assert.match(chrome, /id="whiteboardFrame"[^>]*sandbox="allow-scripts allow-popups"/);
     assert.doesNotMatch(chrome, /whiteboardFrame[^>]*allow-same-origin/);
     // The artifact iframe's sandbox must be unchanged by this feature.
-    assert.match(chrome, /id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads"/);
+    assert.match(
+      chrome,
+      /id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"/,
+    );
+    assert.doesNotMatch(chrome, /id="artifact"[^>]*allow-same-origin/);
   } finally {
     await ctx.close();
   }

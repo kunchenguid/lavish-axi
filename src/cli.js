@@ -45,7 +45,7 @@ export const POLL_WAKE_PATH_RULES = Object.freeze([
   "Never use `nohup`, shell `&`, `disown`, redirected fire-and-forget processes, or a detached terminal without an explicit verified callback merely to keep polling alive.",
   "If the harness has no completion-aware background facility, use the foreground poll or first wire a verified wake callback into the surrounding supervisor.",
   "Do not tell the user the artifact is being monitored until that wake path is live.",
-  "If the poll gets killed or times out anyway, just re-run it - queued feedback is never lost.",
+  "If the poll gets killed or times out before feedback arrives, re-run it - feedback remains queued until delivery. Poll delivery consumes the response, so read it completely.",
 ]);
 export const POLL_SEND_AND_END_RULE =
   "`Send & End` ends the session. Its final feedback is still delivered once. After that response, polling stops, and the agent must not reopen the session uninvited.";
@@ -188,7 +188,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
       "Lavish serves the html file through a local express.js server. If your html needs to reference other filesystem assets such as images, CSS, fonts, and local scripts, copy them into the same directory as the HTML file, then reference them with relative paths from that directory. Never prepend `/` to those asset paths - root paths won't work",
       `Run \`lavish-axi poll <html-file>\` to wait for user feedback. It long-polls and stays silent until the user sends feedback or ends the session, so leave it running - never kill it. Detected layout issues never return this poll: the browser files them in the user's Layout issues inbox in the Lavish top bar, and they arrive as an ordinary tag "layout-warnings" prompt only when the user selects them and queues the fixes. Never edit the artifact to chase a layout issue the user has not queued. The only exception is a fatal artifact_failures response, which means the review surface itself could not be used. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}`,
-      'Rendered Mermaid diagrams in `.mermaid` containers become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; when a reload detects a changed Mermaid source, the reviewer explicitly chooses to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
+      'Rendered Mermaid diagrams in `.mermaid` containers become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; an unmodified autosave silently re-converts when a reload changes the Mermaid source. If the reviewer edited the scene, they choose to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
       "Only run `lavish-axi share <html-file> [--password <pw>] [--token <t>]` when the user explicitly asks to publish or share the artifact outside the local machine. It publishes on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and returns a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Local assets are inlined; remote refs load over the network. It returns the url plus a secret update_key for managing the page later. Use --token or LAVISH_AXI_HTML_APP_TOKEN only when you have an optional bearer token; it is never required. Users can also publish from the browser chrome's overflow menu",
@@ -251,7 +251,10 @@ async function openCommand(args) {
   const selfPaintWarning = await selfPaintWarningForFile(absolute);
   const noGate = args.includes("--no-gate");
   const reopen = args.includes("--reopen");
-  const baseUrl = await ensureServer({ forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || "") });
+  const baseUrl = await ensureServer({
+    forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || ""),
+    reloadKey: sessionKey(absolute),
+  });
   const response = await postJson(`${baseUrl}/api/sessions`, { file: absolute, noGate, reopen });
   if (response.status === "user-ended") {
     return createUserEndedOpenOutput({ file: absolute, url: response.url });
@@ -342,7 +345,7 @@ export function pollWaitBannerText(file) {
   return (
     `[lavish-axi] Long-polling for user feedback on ${file}. This stays silent until the user sends feedback or ends the session - leave it running. ` +
     `Detected layout issues do NOT return this poll: they wait in the user's Layout issues inbox until the user queues them as ordinary feedback. ` +
-    `If it gets killed or times out, re-run \`lavish-axi poll ${file}\` - queued feedback is never lost.`
+    `If it gets killed or times out before feedback arrives, re-run \`lavish-axi poll ${file}\` - feedback remains queued until delivery. Poll delivery consumes the response, so read it completely.`
   );
 }
 
@@ -354,7 +357,7 @@ export function pollWaitTickText(elapsedMs) {
 export function pollInterruptedText(file) {
   return (
     `[lavish-axi] Poll interrupted before user feedback arrived. The user may still be reviewing - ` +
-    `re-run \`lavish-axi poll ${file}\` to keep waiting; queued feedback is never lost.`
+    `re-run \`lavish-axi poll ${file}\` to keep waiting; feedback remains queued until delivery. Poll delivery consumes the response, so read it completely.`
   );
 }
 
@@ -380,10 +383,10 @@ export function startPollWaitReporter({
 /**
  * @returns {{
  *   session: { file: string, status: string, session_ended?: boolean, ended_by?: string },
- *   next_step?: string,
- *   dom_snapshot?: string,
  *   prompts?: any[],
  *   artifact_failures?: any[],
+ *   next_step?: string,
+ *   dom_snapshot?: string,
  * }}
  */
 export function createPollOutput({ file, response, agent = "generic" }) {
@@ -402,10 +405,10 @@ export function createPollOutput({ file, response, agent = "generic" }) {
         status: "feedback",
         ...(sessionEnded ? { session_ended: true, ...(endedBy ? { ended_by: endedBy } : {}) } : {}),
       },
-      dom_snapshot: response.dom_snapshot || "",
       prompts: response.prompts || [],
       ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
       next_step: createFeedbackNextStep(file, artifactFailures, sessionEnded, endedBy, response.prompts || [], agent),
+      dom_snapshot: response.dom_snapshot || "",
     };
   }
   if (response.status === "ended") {
@@ -416,7 +419,7 @@ export function createPollOutput({ file, response, agent = "generic" }) {
   }
   return {
     session: { file, status: response.status || "waiting" },
-    next_step: `No user feedback arrived before the optional timeout. Run \`lavish-axi poll ${file}\` without --timeout-ms to wait indefinitely - queued feedback is never lost, so re-running the poll is always safe.`,
+    next_step: `No user feedback arrived before the optional timeout. Run \`lavish-axi poll ${file}\` without --timeout-ms to wait indefinitely - feedback remains queued until delivery, so re-running the poll is safe while waiting. Poll delivery consumes the response, so read it completely.`,
   };
 }
 
@@ -427,6 +430,9 @@ function createFeedbackNextStep(file, artifactFailures, sessionEnded, endedBy, p
     : "";
   const layoutNote = prompts.some((prompt) => prompt && prompt.tag === "layout-warnings")
     ? `This feedback includes layout issues the user selected from the Lavish Layout issues inbox (tag "layout-warnings"): the target lists the exact warning ids and targets. Apply every listed fix in one pass before saving so the user's review refreshes once. Queueing is a repair request, not a resolution - Lavish only marks a warning resolved after a newer artifact load and a complete check at the same viewport no longer detects it. `
+    : "";
+  const attachmentNote = prompts.some((prompt) => Array.isArray(prompt?.attachments) && prompt.attachments.length)
+    ? `Some prompts carry image attachments the user added: each is an object in the prompt's \`attachments\` array with an absolute local \`path\` (plus id, mime, and dimensions). Open those image files to see what the user is referring to. `
     : "";
   if (sessionEnded) {
     const failureNote =
@@ -440,13 +446,13 @@ function createFeedbackNextStep(file, artifactFailures, sessionEnded, endedBy, p
         count > 0
           ? ""
           : ` Only run \`lavish-axi ${file} --reopen\` if the user explicitly asks for further review or something genuinely important needs their visual attention.`;
-      return `${failureNote}${layoutNote}${whiteboardNote}This was the last feedback before the user ended the session. Stop polling ${file} and do not reopen it - deliver any remaining updates directly in this conversation instead.${reopenNote}`;
+      return `${failureNote}${layoutNote}${whiteboardNote}${attachmentNote}This was the last feedback before the user ended the session. Stop polling ${file} and do not reopen it - deliver any remaining updates directly in this conversation instead.${reopenNote}`;
     }
-    return `${failureNote}${layoutNote}${whiteboardNote}This was the last feedback before the Lavish Editor session ended. Stop polling ${file}. Deliver any remaining updates directly in this conversation, or run \`lavish-axi ${file}\` to open a fresh session if the user needs further visual review.`;
+    return `${failureNote}${layoutNote}${whiteboardNote}${attachmentNote}This was the last feedback before the Lavish Editor session ended. Stop polling ${file}. Deliver any remaining updates directly in this conversation, or run \`lavish-axi ${file}\` to open a fresh session if the user needs further visual review.`;
   }
   const prefix =
     count > 0 ? artifactFailuresPrefix(file, artifactFailures) : `Apply the requested changes to ${file}. `;
-  return `${prefix}${layoutNote}${whiteboardNote}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms unless the user ended the session. The poll waits silently until the user sends more feedback or ends the session - never kill it. ${pollExecutionGuidance({ agent })}`;
+  return `${prefix}${layoutNote}${whiteboardNote}${attachmentNote}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms unless the user ended the session. The poll waits silently until the user sends more feedback or ends the session - never kill it. ${pollExecutionGuidance({ agent })}`;
 }
 
 // The narrow fatal path. Ordinary layout findings never reach the poll: they wait in the user's
@@ -652,7 +658,7 @@ export async function shutdownServerOnPort(
   if (!(await canControlServerOnPort(port, health, processMatchesLavish))) {
     return { server: { status: "not-lavish", port } };
   }
-  await shutdownRequester(baseUrl);
+  await shutdownRequester(baseUrl, { reason: "stop" });
   let freed = await portFreeWaiter(baseUrl, 3000);
   if (!freed && shouldKillProcessOnPort(currentVersion, health)) {
     portKiller(port);
@@ -1060,7 +1066,9 @@ function isHtmlPath(file) {
   return file.toLowerCase().endsWith(".html") || file.toLowerCase().endsWith(".htm");
 }
 
-async function ensureServer({ forceRestart = false } = {}) {
+// `reloadKey` names the session this invocation is about to open. A version-driven replacement
+// reloads that chrome only; every other open review page is told it is outdated and left alone.
+async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   const port = defaultPort();
   const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
   const existing = await fetchHealth(baseUrl);
@@ -1075,7 +1083,7 @@ async function ensureServer({ forceRestart = false } = {}) {
     }
     // Stale server from an older release is squatting on the port. Ask it to shut down
     // gracefully so the upgraded client doesn't keep handing users an old chrome.
-    await requestShutdown(baseUrl);
+    await requestShutdown(baseUrl, { reloadKey, reason: serverReplacementReason(VERSION, existing, forceRestart) });
     const freed = await waitForPortFree(baseUrl, 2000);
     if (!freed) {
       // Pre-handshake servers (any release older than this change) don't expose /shutdown
@@ -1112,6 +1120,18 @@ export function shouldRestartServer(currentVersion, healthBody, forceRestart = f
   return healthBody.version !== currentVersion;
 }
 
+// Which branch of `shouldRestartServer` actually fired, because that is what the other open
+// review pages are told. A local-build force replaces a server of the SAME version, so calling it
+// an upgrade would be false on both counts; only a version this CLI does not match is one.
+export function serverReplacementReason(currentVersion, healthBody, forceRestart = false) {
+  if (!shouldRestartServer(currentVersion, healthBody, forceRestart)) return "";
+  const runningVersion = healthBody.version;
+  if (typeof runningVersion !== "string" || runningVersion === "" || runningVersion !== currentVersion) {
+    return "upgrade";
+  }
+  return "local-build";
+}
+
 export function shouldForceRestartForLocalBuild(executablePath, sourceServerExists = localSourceServerExists()) {
   const localBuildEntry = fileURLToPath(new URL("../dist/cli.mjs", import.meta.url));
   return sourceServerExists && path.resolve(executablePath) === path.resolve(localBuildEntry);
@@ -1145,9 +1165,18 @@ async function fetchHealth(baseUrl) {
   }
 }
 
-async function requestShutdown(baseUrl) {
+// `reason` is what every other open review page is told: this CLI has exactly two callers, and
+// each knows which of them it is.
+async function requestShutdown(baseUrl, { reloadKey = "", reason = "" } = {}) {
+  const body = {};
+  if (reloadKey) body.reload_key = reloadKey;
+  if (reason) body.reason = reason;
   try {
-    await fetch(`${baseUrl}/shutdown`, { method: "POST" });
+    await fetch(`${baseUrl}/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
   } catch {
     // Best effort. If the server died before answering, the port will free up on its own.
   }

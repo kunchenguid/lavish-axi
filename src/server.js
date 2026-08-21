@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,12 +14,19 @@ import {
   classifySevereTextOverflow,
   classifyMaterialRectEscape,
   createArtifactSdk,
+  deriveAttachmentNoticeState,
   deriveLavishQueueKey,
   findStableLayoutFindings,
   isMaterialPageOverflow,
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
+  isTrustedAttachmentResult,
+  attachmentSizeError,
+  acceptedImageTypes,
+  classifyAttachmentBatch,
+  partitionDroppedFiles,
+  planClipboardPaste,
   MODE_TOGGLE_HOTKEY_KEY,
 } from "./artifact-sdk.js";
 import {
@@ -27,6 +35,7 @@ import {
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
 import * as mermaidNode from "./mermaid-node.js";
+import * as tableCellHelpers from "./table-cell.js";
 import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
 import {
   isValidDiagramIndex,
@@ -45,6 +54,16 @@ import { publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import {
+  ACCEPTED_IMAGE_MIME,
+  isValidAttachmentKey,
+  removeAttachment,
+  resolveAttachment,
+  resolveAttachmentConfig,
+  statAttachmentForServe,
+  sweepAttachments,
+  writeAttachment,
+} from "./attachment-store.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -68,6 +87,19 @@ const designAssetUrls = {
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
+// An escaped popup can navigate to an artifact-owned HTML or SVG asset on the
+// server origin. Keep every artifact response sandboxed at the response layer
+// so active documents stay opaque-origin even when they are top-level.
+const ARTIFACT_CONTENT_SECURITY_POLICY =
+  "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+// Sweep orphaned/expired attachments periodically, not just at startup: a
+// detached server can run for days, and an upload whose /prompts follow-up never
+// arrived would otherwise linger until the next restart.
+const ATTACHMENT_SWEEP_INTERVAL_MS = 60 * 60_000;
+// The reasons a caller may name for shutting this server down. Each one drives a different line
+// in the chrome's outdated banner, so an unknown value is dropped rather than passed through to
+// text the user would read as a fact.
+const SHUTDOWN_REASONS = new Set(["upgrade", "local-build", "stop"]);
 
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
 // layout-warning batch is outstanding, the agent is applying several related edits, so widen the
@@ -92,19 +124,95 @@ export function isWhiteboardWriteApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
 }
 
-export function createWhiteboardChannelToken(secret, now = Date.now()) {
-  const payload = `${now}.${crypto.randomBytes(24).toString("base64url")}`;
-  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
+// The attachment upload carries raw image bytes, not JSON, so it bypasses both
+// JSON body parsers and is read straight from the request stream by the route.
+export function isAttachmentUploadApiPath(pathname) {
+  return /^\/api\/[0-9a-f]{16}\/attachments$/.test(String(pathname || ""));
 }
 
-export function isValidWhiteboardChannelToken(token, secret, now = Date.now()) {
+// Read the raw upload body, buffering at most `maxBytes` but always draining the
+// stream to its end. If the body exceeds the cap it resolves `{ tooLarge: true }`
+// (bytes discarded) rather than aborting mid-stream, so the caller can send a clean
+// 413 the browser reliably receives even while it is still uploading a large file.
+export function readAttachmentUploadBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let overCap = false;
+    let settled = false;
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("aborted", onAborted);
+      req.off("close", onClose);
+    };
+    const onData = (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        // Stop buffering but keep consuming so the response is not sent while the
+        // request body is still in flight.
+        overCap = true;
+        chunks.length = 0;
+      } else {
+        chunks.push(chunk);
+      }
+    };
+    const onEnd = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(overCap ? { tooLarge: true, buffer: null } : { tooLarge: false, buffer: Buffer.concat(chunks) });
+    };
+    const onError = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAborted = () => onError(new Error("attachment upload aborted"));
+    // Safety net: if the socket closes before "end" (client aborted mid-upload),
+    // reject rather than leaving the route awaiting a promise that never settles.
+    const onClose = () => {
+      if (!settled) onError(new Error("attachment upload connection closed"));
+    };
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+    req.on("aborted", onAborted);
+    req.on("close", onClose);
+  });
+}
+
+// The signed payload carries the session key, so a token is a capability for
+// exactly one session. Without that binding any token - including one minted by
+// a request that named no session - authenticated an arbitrary session's
+// whiteboard channel. The wire format stays `${issuedAt}.${nonce}.${signature}`;
+// the key is signed over, never transmitted in the token.
+function whiteboardChannelPayload(issuedAt, nonce, sessionKey) {
+  return `${issuedAt}.${nonce}.${sessionKey}`;
+}
+
+export function createWhiteboardChannelToken(secret, sessionKey, now = Date.now()) {
+  const nonce = crypto.randomBytes(24).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(whiteboardChannelPayload(now, nonce, String(sessionKey || "")))
+    .digest("base64url");
+  return `${now}.${nonce}.${signature}`;
+}
+
+export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = Date.now()) {
+  if (!isValidWhiteboardKey(sessionKey)) return false;
   const [issuedAtText, nonce, signature, extra] = String(token || "").split(".");
   if (extra !== undefined || !/^\d{13}$/.test(issuedAtText) || !/^[A-Za-z0-9_-]{32}$/.test(nonce)) return false;
   const issuedAt = Number(issuedAtText);
   if (!Number.isSafeInteger(issuedAt) || issuedAt > now || now - issuedAt > WHITEBOARD_CHANNEL_TOKEN_TTL_MS)
     return false;
-  const expected = crypto.createHmac("sha256", secret).update(`${issuedAtText}.${nonce}`).digest("base64url");
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(whiteboardChannelPayload(issuedAtText, nonce, String(sessionKey)))
+    .digest("base64url");
   const actualBuffer = Buffer.from(signature || "", "utf8");
   const expectedBuffer = Buffer.from(expected, "utf8");
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
@@ -143,7 +251,9 @@ export async function serve({
   const watchers = new Map();
   const activePolls = new Map();
   const deliveredFeedback = new Set();
-  const sseClients = new Set();
+  // Keyed by session so a version-driven shutdown can reload the one chrome whose artifact is
+  // being reopened and leave every other open review page on screen.
+  const sseClients = new Map();
   const whiteboardChannelSecret = crypto.randomBytes(32);
   // Sessions with at least one warning the user queued that has not been re-checked yet.
   const outstandingRepairBatches = new Set();
@@ -153,6 +263,80 @@ export async function serve({
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   let publicPort = port;
 
+  function finishFeedbackDelivery(key, result) {
+    if (result.status !== "feedback") return;
+    const chat = result.chat;
+    delete result.chat;
+    markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
+    // A batch flagged `session_ended` is the last one this session will ever deliver, so no
+    // later poll or agent reply can retire the working state markFeedbackDelivered just set:
+    // release it here or presence reports an agent still working on a session that is over.
+    if (result.session_ended) clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+    if (Array.isArray(chat)) events.emit("chat-sync", key, chat);
+  }
+
+  // `takeFeedback` is destructive: it clears the batch from `state.json` before anything is
+  // written to the response. A client that disconnected while that take was in flight would
+  // otherwise lose the feedback for good, so put it back verbatim through the store's `restore`
+  // mode and leave delivery unmarked - nothing reached an agent. A restore that comes back short
+  // is logged, so a batch that could not be put back whole is visible instead of silently gone.
+  // A restore that THROWS (the state write failed) is the same loss with no return value to
+  // inspect, and the caller is a socket the client already closed, so it is logged and swallowed
+  // here rather than escaping into an error path that has no one left to tell.
+  // The re-queued batch also has to be announced: another poll can take "waiting" in the window
+  // between the destructive take and this restore, and it would then long-poll forever over
+  // feedback that is sitting in `state.json`. Emitting wakes it exactly like a fresh `/prompts`.
+  async function restoreClosedFeedback(key, result) {
+    if (result.status !== "feedback") return;
+    const prompts = Array.isArray(result.prompts) ? result.prompts : [];
+    let session = null;
+    let restoreError = null;
+    try {
+      session = await store.queuePrompts(
+        key,
+        {
+          dom_snapshot: result.dom_snapshot || "",
+          prompts,
+          ...(Array.isArray(result.artifact_failures) ? { artifact_failures: result.artifact_failures } : {}),
+        },
+        {
+          restore: true,
+          resolveAttachment: (sessionKeyValue, id) => resolveAttachment(attachmentStateRoot, sessionKeyValue, id),
+          maxPerPrompt: attachmentConfig.maxPerPrompt,
+          maxPromptBytes: attachmentConfig.maxPromptBytes,
+        },
+      );
+    } catch (error) {
+      restoreError = error;
+    }
+    const restoredPrompts =
+      prompts.length === 0
+        ? []
+        : session && !session.rejected && !session.conflict && Array.isArray(session.prompts)
+          ? session.prompts.slice(0, prompts.length)
+          : null;
+    const restoredFailures = session && Array.isArray(session.artifact_failures) ? session.artifact_failures : null;
+    const failuresRestored =
+      !Array.isArray(result.artifact_failures) ||
+      (Array.isArray(restoredFailures) &&
+        result.artifact_failures.every((failure) =>
+          restoredFailures.some((restoredFailure) => JSON.stringify(restoredFailure) === JSON.stringify(failure)),
+        ));
+    const persistedNothing = !session || Boolean(session.rejected) || Boolean(session.conflict);
+    if (restoreError) {
+      writeLog(
+        `[lavish] closed poll feedback restore failed; the batch was lost: ${restoreError?.message || restoreError}`,
+      );
+    } else if (persistedNothing) {
+      writeLog("[lavish] closed poll feedback restore was refused; nothing was persisted and the batch was lost");
+    } else if (!restoredPrompts || JSON.stringify(restoredPrompts) !== JSON.stringify(prompts) || !failuresRestored) {
+      writeLog("[lavish] closed poll feedback restore was incomplete; delivery was not marked");
+    }
+    const pendingAfterRestore =
+      (Array.isArray(restoredPrompts) && restoredPrompts.length > 0) ||
+      (Array.isArray(restoredFailures) && restoredFailures.length > 0);
+    if (pendingAfterRestore) events.emit("feedback", key);
+  }
   // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
   const whiteboardStateRoot = path.dirname(stateFile);
 
@@ -171,8 +355,13 @@ export async function serve({
   // LAVISH_AXI_ALLOWED_HOSTS; a lone "*" there disables the guard for operators
   // who front the server with their own authentication. When a reverse proxy sits
   // in front, X-Forwarded-Host is validated too (see isAllowedRequestHost).
+  //
+  // This guard is installed as the first middleware so every route - including the
+  // attachment upload/fetch/remove endpoints below - is behind the Host allowlist.
+  // The mutating-route origin/Referer guard is installed immediately after.
   const allowedHostnames = buildAllowedHostnames({ host, linkHost: linkHostName, allowedHosts });
-  if (!allowsAllHosts(allowedHosts)) {
+  const allowAnyHostname = allowsAllHosts(allowedHosts);
+  if (!allowAnyHostname) {
     app.use((req, res, next) => {
       const requestHost = { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] };
       if (isAllowedRequestHost(requestHost, allowedHostnames)) {
@@ -186,11 +375,47 @@ export async function serve({
     });
   }
 
+  // CSRF defense-in-depth on top of the Host allowlist. A foreign page that
+  // can reach 127.0.0.1 passes the Host check, but the browser attaches the
+  // real Origin, so mutating requests with a present, non-matching Origin or
+  // Referer are rejected. Header-less CLI control-channel requests have no
+  // Origin and are allowed; the Host allowlist remains their gate. Routes that
+  // already call isSameOriginRequest keep those checks - they also reject
+  // header-less callers, and this middleware does not replace them.
+  app.use((req, res, next) => {
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+      next();
+      return;
+    }
+    if (hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+      res.status(403).json({ error: "cross-origin request rejected" });
+      return;
+    }
+    next();
+  });
+
+  const attachmentConfig = resolveAttachmentConfig();
+  // Attachment bytes are content-addressed on disk alongside the whiteboard sidecars.
+  const attachmentStateRoot = path.dirname(stateFile);
+  // The store owns the ONE shared lock covering BOTH state consistency AND the
+  // attachment lifecycle. It serializes every state.json read-modify-write
+  // internally (E1); the server routes its attachment disk sections - upload
+  // finalize, delete, the reference-aware sweep - through the same lock via
+  // `store.runExclusive`, so a reference can never be acquired in the window between
+  // the sweeper's reference snapshot and its delete (D5), and `queuePrompts` cannot
+  // interleave with a concurrent poll.
+
   const defaultJsonParser = express.json({ limit: "2mb" });
   const whiteboardJsonParser = express.json({ limit: "20mb" });
-  app.use((req, res, next) =>
-    isWhiteboardWriteApiPath(req.path) ? whiteboardJsonParser(req, res, next) : defaultJsonParser(req, res, next),
-  );
+  app.use((req, res, next) => {
+    // The attachment upload reads the raw request stream itself (see the route),
+    // so no body parser runs for it - express.raw's limit aborts on Content-Length
+    // WITHOUT draining the body, which leaves the browser's in-flight upload to be
+    // reset mid-stream instead of receiving the 413.
+    if (req.method === "POST" && isAttachmentUploadApiPath(req.path)) return next();
+    if (isWhiteboardWriteApiPath(req.path)) return whiteboardJsonParser(req, res, next);
+    return defaultJsonParser(req, res, next);
+  });
 
   app.get("/health", (req, res) => {
     res.json({ ok: true, app: "lavish-axi", version });
@@ -202,9 +427,15 @@ export async function serve({
   });
 
   app.post("/shutdown", (req, res) => {
+    // The caller names the session it is about to reopen, and only that session's chrome is
+    // reloaded. A call that names none reloads nothing. It also names why it is shutting this
+    // server down, because the banner every other chrome shows has to be true for that reason;
+    // an unrecognized or absent reason claims nothing beyond "this server is gone".
+    const reloadKey = String(req.body?.reload_key || "");
+    const reason = SHUTDOWN_REASONS.has(String(req.body?.reason || "")) ? String(req.body.reason) : "";
     res.json({ status: "shutting-down" });
     // Defer until after the response flushes so the client gets confirmation.
-    setImmediate(shutdown);
+    setImmediate(() => shutdown(reloadKey, reason));
   });
 
   app.post("/api/sessions", async (req, res, next) => {
@@ -239,6 +470,18 @@ export async function serve({
   });
 
   app.get("/api/poll", async (req, res, next) => {
+    // `close` is subscribed before the first `await` and re-checked after the listeners are armed,
+    // because a client that disconnects while `takeFeedback` is in flight would otherwise arrive
+    // too late for its own cleanup: the handler marks the poll active afterwards and nothing left
+    // would clear it, leaving presence stuck on "listening" for an agent that is already gone.
+    let requestClosed = Boolean(req.destroyed);
+    let cleanupPoll = null;
+    const onRequestClose = () => {
+      requestClosed = true;
+      cleanupPoll?.();
+    };
+    const detachRequestClose = () => req.off("close", onRequestClose);
+    req.on("close", onRequestClose);
     try {
       const file = await canonicalFile(String(req.query.file || ""));
       const key = sessionKey(file);
@@ -246,8 +489,18 @@ export async function serve({
         req.query.timeoutMs === undefined ? null : Math.max(0, Math.min(Number(req.query.timeoutMs || 0), 2147483647));
       const immediate = await store.takeFeedback(key);
       if (immediate.status !== "waiting") {
-        if (immediate.status === "feedback") markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
+        if (requestClosed || req.destroyed || res.writableEnded) {
+          await restoreClosedFeedback(key, immediate);
+          detachRequestClose();
+          return;
+        }
+        finishFeedbackDelivery(key, immediate);
+        detachRequestClose();
         res.json(immediate);
+        return;
+      }
+      if (requestClosed || req.destroyed || res.writableEnded) {
+        detachRequestClose();
         return;
       }
       const streamHeartbeat = timeoutMs === null;
@@ -262,7 +515,7 @@ export async function serve({
       }
       setPollActive(key, activePolls, deliveredFeedback, events, true);
       refreshIdleTimer();
-      const timer = timeoutMs === null ? null : setTimeout(() => respond().catch(handleRespondError), timeoutMs);
+      let timer = null;
       let cleaned = false;
       let responding = false;
       const cleanup = () => {
@@ -274,13 +527,19 @@ export async function serve({
         events.off("ended", onFeedback);
         setPollActive(key, activePolls, deliveredFeedback, events, false);
         refreshIdleTimer();
+        cleanupPoll = null;
+        detachRequestClose();
       };
       const respond = async () => {
         if (responding || res.writableEnded) return;
         responding = true;
         try {
           const result = await store.takeFeedback(key);
-          if (result.status === "feedback") markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
+          if (requestClosed || req.destroyed || res.writableEnded) {
+            await restoreClosedFeedback(key, result);
+            return;
+          }
+          finishFeedbackDelivery(key, result);
           if (streamHeartbeat) {
             res.end(JSON.stringify(result));
           } else {
@@ -306,23 +565,55 @@ export async function serve({
       };
       events.on("feedback", onFeedback);
       events.on("ended", onFeedback);
-      req.on("close", cleanup);
+      cleanupPoll = cleanup;
+      if (requestClosed || req.destroyed || res.writableEnded) {
+        cleanup();
+        return;
+      }
+      timer = timeoutMs === null ? null : setTimeout(() => respond().catch(handleRespondError), timeoutMs);
     } catch (error) {
+      cleanupPoll?.();
+      detachRequestClose();
       next(error);
     }
   });
 
+  // The one route that puts words in the reviewer's mouth: whatever lands here
+  // reaches the agent as the user's own instructions. The session key is derived
+  // from the artifact path, not a secret, so knowing it must not be enough -
+  // only this server's own chrome may queue prompts.
   app.post("/api/:key/prompts", async (req, res, next) => {
     try {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+        res.status(403).json({ error: "cross-origin prompt submission rejected" });
+        return;
+      }
       const shouldEndSession = Boolean(req.body?.endSession || req.body?.end_session);
       const hasLayoutWarningPrompt = Array.isArray(req.body?.prompts)
         ? req.body.prompts.some((prompt) => prompt?.tag === "layout-warnings")
         : false;
-      const session = await store.queuePrompts(req.params.key, req.body || {});
-      if (!session) {
+      const result = await store.queuePrompts(req.params.key, req.body || {}, {
+        resolveAttachment: (sessionKeyValue, id) => resolveAttachment(attachmentStateRoot, sessionKeyValue, id),
+        maxPerPrompt: attachmentConfig.maxPerPrompt,
+        maxPromptBytes: attachmentConfig.maxPromptBytes,
+      });
+      if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
+      // Atomic attachment rejection (C4): the batch resolved-and-persisted nothing
+      // because one or more images could not be honored. Return 400 with the
+      // rejected refs and the caps so the chrome keeps its queue and can surface
+      // exactly what to fix, instead of silently dropping the images.
+      if (result.rejected) {
+        res.status(400).json({
+          error: "some attachments could not be delivered",
+          rejected: result.rejected,
+          caps: result.caps,
+        });
+        return;
+      }
+      const session = result;
       if (session.conflict) {
         res.status(409).json({
           status: "conflict",
@@ -458,9 +749,9 @@ export async function serve({
       }
       events.emit("agent-reply", req.params.key, text);
       // The reply concludes the delivered-feedback "working" state. Without this, a poll that
-      // drains feedback and then releases leaves presence stuck on "working" — the chrome keeps
-      // Send disabled — until some future poll happens to attach, even though the agent already
-      // answered. See "SSE agent-presence returns to waiting after an agent reply".
+      // drains feedback and then releases leaves presence stuck on "working" even after the agent
+      // answers. Human sends remain available while working because the server queues them for the
+      // next poll. See "SSE agent-presence returns to waiting after an agent reply".
       clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       res.json({ status: "sent" });
     } catch (error) {
@@ -486,6 +777,10 @@ export async function serve({
         resolveAbsolute: resolveDesignAssetPath,
       });
       const { unresolved, notices } = splitExportWarnings(warnings);
+      // Although this response downloads in normal chrome usage, an escaped artifact popup can
+      // navigate to it directly. Preserve the artifact's opaque-origin boundary if the browser
+      // renders the exported HTML instead of saving it.
+      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
       res.setHeader("content-disposition", exportContentDisposition(session.file));
       res.setHeader("x-lavish-export-warning-count", String(unresolved.length));
       res.setHeader("x-lavish-export-notice-count", String(notices.length));
@@ -504,7 +799,7 @@ export async function serve({
   // loopback server.
   app.post("/api/:key/share", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin share request rejected" });
         return;
       }
@@ -565,6 +860,15 @@ export async function serve({
       await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
+      // Nothing legitimately frames the review chrome - it is the top-level
+      // page, and shares/exports ship standalone HTML rather than embedding it.
+      // Refusing to be framed denies an attacker page both a window handle to
+      // this chrome and a clickjacking surface over Send. Scoped to this route:
+      // /artifact/* is framed by this page and /whiteboard-frame is framed by
+      // that artifact document, whose sandbox gives it an opaque origin no
+      // frame-ancestors expression can name.
+      res.setHeader("x-frame-options", "DENY");
+      res.setHeader("content-security-policy", "frame-ancestors 'none'");
       res.type("html").send(
         createChromeHtml(session, {
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
@@ -574,6 +878,8 @@ export async function serve({
           artifactLoadToken: chromeLoad.artifact_load_token,
           artifactLoadSequence: chromeLoad.artifact_load_sequence,
           chromeLoadToken: chromeLoad.chrome_load_token,
+          attachmentMaxBytes: attachmentConfig.maxBytes,
+          attachmentMaxCount: attachmentConfig.maxPerPrompt,
         }),
       );
     } catch (error) {
@@ -587,7 +893,7 @@ export async function serve({
 
   app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin chrome handoff rejected" });
         return;
       }
@@ -630,6 +936,7 @@ export async function serve({
 
   app.get(/^\/artifact\/([^/]+)\/index\.html$/, async (req, res, next) => {
     try {
+      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
       const key = req.params[0];
       const token = String(req.query.artifact_load_token || "");
       const revision = req.query.artifact_revision;
@@ -666,6 +973,7 @@ export async function serve({
 
   app.get(/^\/artifact\/([^/]+)\/(.+)$/, async (req, res, next) => {
     try {
+      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
       const key = req.params[0];
       const assetPath = req.params[1];
       const session = await store.findByKey(key);
@@ -674,7 +982,7 @@ export async function serve({
         return;
       }
       const root = path.dirname(session.file);
-      const file = resolveArtifactAsset(root, assetPath);
+      const file = await resolveArtifactAsset(root, assetPath);
       if (!file) {
         res.status(403).send("Forbidden");
         return;
@@ -692,7 +1000,7 @@ export async function serve({
         "cache-control": "no-cache",
         connection: "keep-alive",
       });
-      sseClients.add(res);
+      sseClients.set(res, String(req.params.key || ""));
       refreshIdleTimer();
       const session = await store.findByKey(req.params.key);
       const sendReload = (key) => {
@@ -782,9 +1090,12 @@ export async function serve({
         res.status(409).json({ status: "stale" });
         return;
       }
-      res
-        .type("application/javascript")
-        .send(createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token));
+      res.type("application/javascript").send(
+        createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token, {
+          maxAttachmentCount: attachmentConfig.maxPerPrompt,
+          maxAttachmentBytes: attachmentConfig.maxBytes,
+        }),
+      );
     } catch (error) {
       next(error);
     }
@@ -798,16 +1109,25 @@ export async function serve({
   // reports ready.
   app.get("/whiteboard-frame", (req, res) => {
     res.setHeader("cache-control", "no-store");
-    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret)));
+    // The frame's channel token is minted for one session, so the caller must
+    // name it. Both call sites (the chrome overlay and the artifact SDK's
+    // inline embed) know their own key; a request without one could only
+    // produce a token that authenticates nothing, so reject it outright.
+    const sessionKey = String(req.query.key || "");
+    if (!isValidWhiteboardKey(sessionKey)) {
+      res.status(400).type("text/plain").send("Missing session key");
+      return;
+    }
+    res.type("html").send(createWhiteboardFrameHtml(createWhiteboardChannelToken(whiteboardChannelSecret, sessionKey)));
   });
 
   // Whiteboard bundle, stylesheet, and vendored Excalidraw fonts. The frame
   // runs in an opaque origin, and font fetches from an opaque origin are
   // CORS-gated, so this static, public-content route must answer with
   // Access-Control-Allow-Origin: * or every canvas font falls back.
-  app.get(/^\/whiteboard-assets\/(.+)$/, (req, res, next) => {
+  app.get(/^\/whiteboard-assets\/(.+)$/, async (req, res, next) => {
     try {
-      const file = resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
+      const file = await resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
       if (!file) {
         res.status(403).send("Forbidden");
         return;
@@ -870,7 +1190,7 @@ export async function serve({
 
   app.post("/api/:key/whiteboard-channel", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard channel request rejected" });
         return;
       }
@@ -879,7 +1199,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret)) {
+      if (!isValidWhiteboardChannelToken(req.body?.token, whiteboardChannelSecret, req.params.key)) {
         res.status(403).json({ error: "invalid whiteboard channel" });
         return;
       }
@@ -895,7 +1215,7 @@ export async function serve({
   // loopback server.
   app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -922,7 +1242,7 @@ export async function serve({
   // target. Files stay on this machine; the prompt carries only the paths.
   app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard write rejected" });
         return;
       }
@@ -944,6 +1264,97 @@ export async function serve({
     }
   });
 
+  // Annotation image attachments. Upload writes raw bytes to the state dir and
+  // returns server-vetted metadata (content-hash id + absolute path); the prompt
+  // later references the id and the server re-resolves it (see queuePrompts).
+  // Upload and delete write/remove local files, so they are same-origin guarded
+  // like the whiteboard writes - a hostile cross-origin page must not drive them.
+  app.post("/api/:key/attachments", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin attachment upload rejected" });
+        return;
+      }
+      if (!isValidAttachmentKey(req.params.key) || !(await store.findByKey(req.params.key))) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      // Read the raw stream ourselves, draining past the cap to end-of-body before
+      // responding. That guarantees the browser receives the 413 for an over-cap
+      // upload instead of a mid-stream connection reset (only the same-origin chrome
+      // can reach this route, so draining a rejected body is bounded and trusted).
+      const { tooLarge, buffer } = await readAttachmentUploadBody(req, attachmentConfig.maxBytes);
+      if (tooLarge) {
+        res.status(413).json({ error: `attachment exceeds the ${attachmentConfig.maxBytes} byte limit` });
+        return;
+      }
+      // Finalize under the lifecycle lock so the dedup mtime refresh (B3), the dims
+      // sidecar write, AND the disk-cap admission (reference snapshot + reclaim +
+      // write) are one atomic critical section. Admission is a HARD cap: a new object
+      // that can't fit after reclaiming unreferenced files is refused with 507, so
+      // concurrent pages can never push committed storage past `maxDiskBytes` via
+      // queued references (the sweep alone never evicts referenced files). The
+      // eviction grace keeps a just-uploaded ready card off the reclaim list so it
+      // survives until the user sends it.
+      const attachment = await store.runExclusive(async () => {
+        const referenced = await store.referencedAttachmentIds();
+        return writeAttachment(attachmentStateRoot, req.params.key, buffer, {
+          maxBytes: attachmentConfig.maxBytes,
+          maxDiskBytes: attachmentConfig.maxDiskBytes,
+          maxObjects: attachmentConfig.maxObjects,
+          ttlMs: attachmentConfig.ttlMs,
+          referenced,
+          evictionGraceMs: attachmentConfig.evictionGraceMs,
+        });
+      });
+      res.json({ status: "stored", attachment });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/:key/attachments/:id", async (req, res, next) => {
+    try {
+      // D6: a render is one stat + one streamed read. `statAttachmentForServe`
+      // confirms existence and derives the mime from the validated id extension
+      // WITHOUT re-parsing the image to recover dimensions the route never uses.
+      const serve = await statAttachmentForServe(attachmentStateRoot, req.params.key, req.params.id);
+      if (!serve) {
+        res.status(404).json({ error: "attachment not found" });
+        return;
+      }
+      res.setHeader("cache-control", "private, max-age=300");
+      res.type(serve.mime);
+      res.sendFile(serve.file, { dotfiles: "allow" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/:key/attachments/:id", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req)) {
+        res.status(403).json({ error: "cross-origin attachment delete rejected" });
+        return;
+      }
+      // Reference-counted delete under the lifecycle lock: a content-addressed file
+      // shared by an already-queued prompt (the same image attached twice, deduped
+      // to one id) must survive a chip removal, or the queued prompt's thumbnail and
+      // path break. `referencedAttachmentIds` also covers attachments delivered
+      // within the read grace, so a poll's images are not deletable out from under
+      // the agent. The chrome never drives this route (see chrome-client's note on
+      // the removed eager delete); it remains a same-origin-guarded server API.
+      const status = await store.runExclusive(async () => {
+        const referenced = await store.referencedAttachmentIds();
+        if (referenced.has(`${req.params.key}/${req.params.id}`)) return "referenced";
+        return (await removeAttachment(attachmentStateRoot, req.params.key, req.params.id)) ? "removed" : "absent";
+      });
+      res.json({ status });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use((error, req, res, _next) => {
     // Body-parser errors carry a meaningful HTTP status (413 payload-too-large,
     // 400 malformed JSON); surface it instead of flattening everything to 500.
@@ -960,19 +1371,31 @@ export async function serve({
   publicPort = httpServer.address().port;
 
   let shuttingDown = false;
-  function shutdown() {
+  function shutdown(reloadKey = "", reason = "") {
     if (shuttingDown) return;
     shuttingDown = true;
     if (idleTimer) {
       clearTimeout(idleTimer);
       idleTimer = null;
     }
-    // Tell open browser chromes to reload before we drop their SSE connection. The new
-    // server adopts the session via state.json once it binds, so the reloaded chrome
-    // immediately gets the upgraded HTML/CSS/JS.
-    for (const res of sseClients) {
+    if (attachmentSweepTimer) {
+      clearInterval(attachmentSweepTimer);
+      attachmentSweepTimer = null;
+    }
+    // Only the chrome whose artifact is being reopened is reloaded: the replacement server
+    // adopts that session via state.json once it binds, and the caller named it. Every other
+    // open review page is told why this server went away and left alone - a forced reload of a
+    // page the user is reading or writing in is exactly what this avoids.
+    // Both events carry the same reason: the reloaded page can end up showing a line from it too,
+    // and two pages describing one shutdown differently is how a false claim gets in.
+    const shutdownData = JSON.stringify({ reason });
+    for (const [res, clientKey] of sseClients) {
       try {
-        res.write("event: chrome-reload\ndata: {}\n\n");
+        if (reloadKey && clientKey === reloadKey) {
+          res.write(`event: chrome-reload\ndata: ${shutdownData}\n\n`);
+        } else {
+          res.write(`event: chrome-outdated\ndata: ${shutdownData}\n\n`);
+        }
         res.end();
       } catch {
         // best effort
@@ -1046,6 +1469,42 @@ export async function serve({
     return outstandingRepairBatches.has(key) ? BATCH_RELOAD_DEBOUNCE_MS : RELOAD_DEBOUNCE_MS;
   }
 
+  // Reference-aware attachment cleanup: reap files that are both past their TTL
+  // and unreferenced, plus the optional disk-cap backstop. Runs once at startup
+  // and then on a fixed interval; skipped entirely when neither a TTL nor a disk
+  // cap is configured. Never touches attachments referenced by pending prompts.
+  const attachmentSweepEnabled = attachmentConfig.ttlMs != null || attachmentConfig.maxDiskBytes != null;
+  let attachmentSweepTimer = null;
+  async function sweepAttachmentsNow() {
+    try {
+      // The reference snapshot AND the enumerate/delete run as one critical section
+      // so a reference acquired mid-sweep (a concurrent upload finalize or /prompts
+      // resolve) can never point at a file this sweep is about to remove (D5).
+      const result = await store.runExclusive(async () => {
+        const referenced = await store.referencedAttachmentIds();
+        return sweepAttachments(attachmentStateRoot, {
+          ttlMs: attachmentConfig.ttlMs,
+          maxDiskBytes: attachmentConfig.maxDiskBytes,
+          maxObjects: attachmentConfig.maxObjects,
+          referenced,
+          evictionGraceMs: attachmentConfig.evictionGraceMs,
+        });
+      });
+      if (result.deleted > 0) {
+        logEvent?.(`attachment sweep removed ${result.deleted} file(s), freed ${result.freedBytes} bytes`);
+      }
+    } catch (error) {
+      logEvent?.(`attachment sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (attachmentSweepEnabled) {
+    sweepAttachmentsNow();
+    attachmentSweepTimer = setInterval(() => {
+      sweepAttachmentsNow();
+    }, ATTACHMENT_SWEEP_INTERVAL_MS);
+    attachmentSweepTimer.unref?.();
+  }
+
   // Arm the idle timer for a server that is spawned but never opens a session.
   refreshIdleTimer();
 
@@ -1105,8 +1564,9 @@ function encodeRfc5987Value(value) {
 
 // Wildcard bind addresses ("all interfaces") are not connectable hostnames, so
 // they never belong in the Host allowlist - and "0.0.0.0" as a Host is a known
-// loopback-reach trick, so it must stay rejected.
-const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::"]);
+// loopback-reach trick, so it must stay rejected. Both the bare ("::") and
+// bracketed ("[::]") IPv6 wildcard forms are excluded.
+const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
 
 // The set of Host header hostnames this server answers to: loopback names plus
 // the resolved bind and link host and any explicit LAVISH_AXI_ALLOWED_HOSTS
@@ -1130,25 +1590,40 @@ export function allowsAllHosts(allowedHosts = []) {
   return allowedHosts.some((value) => String(value).trim() === "*");
 }
 
+function parseHostAuthority(value) {
+  const raw = String(value).trim();
+  if (!raw || /[@/\\?#\s]/.test(raw)) return null;
+
+  let hostname;
+  let port;
+  let bracketed = false;
+  if (raw.startsWith("[")) {
+    const match = /^\[([0-9A-Fa-f:.]+)\](?::(\d+))?$/.exec(raw);
+    if (!match || isIP(match[1]) !== 6) return null;
+    [, hostname, port = ""] = match;
+    bracketed = true;
+  } else {
+    const match = /^([A-Za-z0-9._-]+)(?::(\d+))?$/.exec(raw);
+    if (!match) return null;
+    [, hostname, port = ""] = match;
+  }
+  if (port && Number(port) > 65535) return null;
+
+  hostname = hostname.toLowerCase();
+  const authority = `${bracketed ? `[${hostname}]` : hostname}${port ? `:${port}` : ""}`;
+  try {
+    const parsed = new URL(`http://${authority}`);
+    if (!parsed.origin || parsed.origin === "null") return null;
+  } catch {
+    return null;
+  }
+  return { hostname, port, authority };
+}
+
 // Extract the hostname (without port) from a Host header value, honoring
 // bracketed IPv6 literals ("[::1]:4387"). Returns null for a malformed authority.
 export function hostnameFromHostHeader(value) {
-  const raw = String(value).trim();
-  if (raw.startsWith("[")) {
-    const end = raw.indexOf("]");
-    if (end === -1) return null;
-    // Anything after the closing bracket must be a `:port` suffix; reject trailing
-    // garbage (e.g. "[::1]evil.com") instead of reading it as the bracketed host.
-    const rest = raw.slice(end + 1);
-    if (rest.length > 0 && !rest.startsWith(":")) return null;
-    return raw.slice(1, end).toLowerCase();
-  }
-  const colon = raw.indexOf(":");
-  const hostname = colon === -1 ? raw : raw.slice(0, colon);
-  // A bare, unbracketed IPv6 literal is not a valid authority; reject it rather
-  // than mistaking a hextet for a port.
-  if (hostname.includes(":")) return null;
-  return hostname.toLowerCase();
+  return parseHostAuthority(value)?.hostname ?? null;
 }
 
 // DNS-rebinding defense: a loopback-bound server answers only to its own known
@@ -1158,11 +1633,8 @@ export function hostnameFromHostHeader(value) {
 // fail open.
 export function isAllowedHostHeader(hostHeader, allowedHostnames) {
   if (hostHeader === undefined || hostHeader === null) return false;
-  const raw = String(hostHeader).trim();
-  if (raw === "") return false;
-  const hostname = hostnameFromHostHeader(raw);
-  if (hostname === null) return false;
-  return allowedHostnames.has(hostname);
+  const authority = parseHostAuthority(hostHeader);
+  return authority !== null && allowedHostnames.has(authority.hostname);
 }
 
 // Validate a request's effective host for DNS-rebinding protection. The Host
@@ -1183,10 +1655,43 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
   return isAllowedHostHeader(forwarded.split(",").pop(), allowedHostnames);
 }
 
+function hasPresentOriginOrReferer(req) {
+  return Boolean(req.get("origin") || req.get("referer"));
+}
+
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
-// browser attaches an Origin/Referer that must match this server's own origin.
-function isSameOriginRequest(req) {
-  const expectedOrigin = `${req.protocol}://${req.get("host")}`;
+// browser attaches an Origin/Referer that must match this server's own origin. The global
+// mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
+// middleware is lenient (absent headers pass) while per-route callers still reject header-less
+// requests.
+function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
+  const host = parseHostAuthority(req.headers.host);
+  if (!host) return false;
+
+  let protocol = req.protocol;
+  let authority = host;
+  const forwardedHost = String(req.get("x-forwarded-host") || "")
+    .split(",")
+    .pop()
+    .trim();
+  if (forwardedHost) {
+    const forwardedAuthority = parseHostAuthority(forwardedHost);
+    if (
+      !forwardedAuthority ||
+      (!allowAnyHostname &&
+        (!allowedHostnames.has(host.hostname) || !allowedHostnames.has(forwardedAuthority.hostname)))
+    )
+      return false;
+    protocol = String(req.get("x-forwarded-proto") || req.protocol)
+      .split(",")
+      .pop()
+      .trim()
+      .toLowerCase();
+    if (protocol !== "http" && protocol !== "https") return false;
+    authority = forwardedAuthority;
+  }
+  const expectedOrigin = normalizeOrigin(`${protocol}://${authority.authority}`);
+  if (!expectedOrigin) return false;
   const origin = req.get("origin");
   if (origin) {
     return normalizeOrigin(origin) === expectedOrigin;
@@ -1208,13 +1713,41 @@ function optionalBodyString(value) {
   return trimmed || undefined;
 }
 
-export function resolveArtifactAsset(root, assetPath) {
+// Confines an asset request lexically first, then - like export-bundle.js's guardedRead -
+// resolves the real (symlink-followed) path and refuses anything that escapes the artifact
+// directory, so a symlink placed beside the artifact can't make this route serve an outside
+// file (e.g. ~/.ssh/id_rsa).
+export async function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return null;
   }
-  return file;
+  let real;
+  try {
+    real = await realpath(file);
+  } catch (error) {
+    // Nonexistent path (e.g. an asset that hasn't been built yet): nothing to read, so the
+    // lexical confinement above is enough - the caller's existsSync/sendFile handles the 404.
+    // Every other realpath failure fails closed, like guardedRead.
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return file;
+    }
+    throw error;
+  }
+  let realRoot;
+  try {
+    realRoot = await realpath(root);
+  } catch {
+    realRoot = path.resolve(root);
+  }
+  const relativeReal = path.relative(realRoot, real);
+  if (relativeReal === ".." || relativeReal.startsWith(`..${path.sep}`) || path.isAbsolute(relativeReal)) {
+    return null;
+  }
+  // Hand back the resolved path, not the requested one: a real path contains no symlinks, so
+  // sendFile re-opening it cannot be redirected by a link swapped in after this check.
+  return real;
 }
 
 /**
@@ -1458,6 +1991,47 @@ export function extractArtifactHead(html) {
   return { faviconTag, title };
 }
 
+// The chrome page ships with the layout-gate overlay already covering the artifact area, and
+// only `chrome-client.js` ever takes it down - the "Show anyway" button's handler is wired by
+// that same script. So when the script never runs (the shared server shut down between serving
+// this page and serving the script, which is exactly what a version-driven restart does), the
+// page is stuck on a spinner with nothing to click and no way back. This inline failsafe is
+// armed before the script tag, so it survives even a request that hangs instead of erroring,
+// and `chrome-client.js` cancels it once it has run to completion.
+export const CHROME_BOOT_FAILSAFE_MS = 15000;
+// The failsafe's button is the only control on a page whose client script is dead, so its own
+// probe is bounded too: a port that accepts and never answers must not disable it for good.
+const CHROME_BOOT_FAILSAFE_PROBE_TIMEOUT_MS = 4000;
+const CHROME_BOOT_FAILSAFE_JS = `(function(){
+var t=setTimeout(fail,${CHROME_BOOT_FAILSAFE_MS});
+var o,h,c,a;
+window.__lavishCancelChromeBootFailsafe=function(){clearTimeout(t);};
+window.__lavishChromeBootFailed=function(){clearTimeout(t);fail();};
+function fail(){
+if(window.__lavishChromeReady)return;
+o=document.getElementById("layoutGateOverlay");
+h=document.getElementById("layoutGateTitle");
+c=document.getElementById("layoutGateCopy");
+a=document.getElementById("layoutGateAction");
+if(h)h.textContent="Lavish could not finish loading.";
+if(c)c.textContent="The Lavish editor script did not load. The server usually restarted while this page was opening. Check and reload to reconnect.";
+if(a){a.textContent="Check and reload";a.disabled=false;a.onclick=check;}
+if(o)o.hidden=false;
+if(document.body)document.body.classList.add("layout-gate-active");
+}
+function check(){
+if(a)a.disabled=true;
+var ctl=new AbortController();
+var pt=setTimeout(function(){ctl.abort();},${CHROME_BOOT_FAILSAFE_PROBE_TIMEOUT_MS});
+fetch("/health",{cache:"no-store",signal:ctl.signal}).then(function(r){return r&&r.ok?"running":"not-running";},function(){return ctl.signal.aborted?"no-answer":"not-running";}).then(function(outcome){
+clearTimeout(pt);
+if(outcome==="running"){location.reload();return;}
+if(a)a.disabled=false;
+if(c)c.textContent=outcome==="no-answer"?"Lavish did not answer the check, so this page cannot tell whether it is running. Try again in a moment.":"Lavish is still not running. Start it again with your agent, then use Check and reload.";
+});
+}
+})();`;
+
 export function createChromeHtml(
   session,
   {
@@ -1468,8 +2042,12 @@ export function createChromeHtml(
     artifactLoadToken = "",
     artifactLoadSequence = 0,
     chromeLoadToken = "",
+    attachmentMaxBytes = 0,
+    attachmentMaxCount = 0,
+    attachmentAcceptedMime = ACCEPTED_IMAGE_MIME,
   } = {},
 ) {
+  const acceptedMime = attachmentAcceptedMime.map(String);
   const sessionJson = jsonScript({
     key: session.key,
     file: session.file,
@@ -1483,6 +2061,9 @@ export function createChromeHtml(
     chromeLoadToken,
     layoutGateEnabled,
     modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
+    attachmentMaxBytes,
+    attachmentMaxCount,
+    attachmentAcceptedMime: acceptedMime,
   });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
   const bodyClass = layoutGateEnabled ? "lavish layout-gate-active" : "lavish";
@@ -1500,13 +2081,14 @@ ${faviconTag}
 </head>
 <body class="${bodyClass}">
 <div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><aside class="panel"><h2>Conversation</h2><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label>Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label>Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note">Keep the update key private. ht-ml.app returns it once and it is the only way to update or delete this page later.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
 <div class="whiteboard-overlay" id="whiteboardOverlay" hidden><div class="whiteboard-shell"><div class="whiteboard-error" id="whiteboardError" hidden></div><button class="whiteboard-close" id="whiteboardClose" type="button" aria-label="Close whiteboard"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><iframe id="whiteboardFrame" title="Excalidraw whiteboard" sandbox="allow-scripts allow-popups"></iframe></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>
-<script src="/chrome-client.js"></script>
+<script>${CHROME_BOOT_FAILSAFE_JS}</script>
+<script src="/chrome-client.js" onerror="window.__lavishChromeBootFailed()"></script>
 </body>
 </html>`;
 }
@@ -1527,20 +2109,55 @@ export function createWhiteboardFrameHtml(channelToken = "") {
 </html>`;
 }
 
-export function createSdkJs(key, artifactRevision = 0, artifactLoadToken = "") {
-  // Serialize every helper exported by mermaid-node.js as a same-scope const so
-  // cross-helper calls (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the
-  // browser. Deriving this from the module's exports — rather than a hand-kept
-  // list — means adding a helper can never silently ReferenceError at runtime.
-  const mermaidHelperEntries = Object.entries(mermaidNode).filter(([, value]) => typeof value === "function");
-  const mermaidHelperDecls = mermaidHelperEntries.map(([name, fn]) => `const ${name}=${fn.toString()};`).join("\n");
-  const mermaidHelperKeys = mermaidHelperEntries.map(([name]) => name).join(", ");
+// Serialize every helper a shared module exports as a same-scope const so cross-helper calls
+// (e.g. mermaidNodeFrom → mermaidNodeElement) resolve in the browser. Deriving these from the
+// module's exports — rather than a hand-kept list — means adding a helper can never silently
+// ReferenceError at runtime.
+// Only functions survive `toString()` round-tripping: a Set, Map, or RegExp would serialize to a
+// valid-looking `{}` and reach the browser semantically empty, which is far harder to find than
+// this throw. A shared module must therefore export nothing but helpers.
+function serializeModuleHelpers(module) {
+  const entries = Object.entries(module);
+  const unsupported = entries.filter(([, value]) => typeof value !== "function").map(([name]) => name);
+  if (unsupported.length > 0) {
+    throw new TypeError(
+      `Cannot serialize non-function SDK helper export(s) into the artifact bundle: ${unsupported.join(", ")}`,
+    );
+  }
+  return {
+    declarations: entries.map(([name, fn]) => `const ${name}=${fn.toString()};`).join("\n"),
+    names: entries.map(([name]) => name),
+  };
+}
+
+/**
+ * @param {string} key
+ * @param {number} [artifactRevision]
+ * @param {string} [artifactLoadToken]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[] }} [options]
+ */
+export function createSdkJs(
+  key,
+  artifactRevision = 0,
+  artifactLoadToken = "",
+  { maxAttachmentCount, maxAttachmentBytes, acceptedImageMime = ACCEPTED_IMAGE_MIME } = {},
+) {
+  const mermaidHelperSource = serializeModuleHelpers(mermaidNode);
+  const tableHelperSource = serializeModuleHelpers(tableCellHelpers);
   const revisionNumber = Number(artifactRevision);
   const revision = Number.isFinite(revisionNumber) && revisionNumber >= 0 ? Math.trunc(revisionNumber) : 0;
   const loadToken = String(artifactLoadToken || "").slice(0, 200);
+  // The per-prompt attachment cap is authoritative on the server (attachment-store.js);
+  // pass it to the SDK so the annotation card's local count guard matches the server
+  // limit instead of a hardcoded literal (W1). The card is still only a UX guide - the
+  // server re-enforces the cap on /prompts and rejects the whole batch on a mismatch.
+  const sdkOptions = {
+    maxAttachmentCount: Number.isFinite(maxAttachmentCount) ? maxAttachmentCount : undefined,
+    maxAttachmentBytes: Number.isFinite(maxAttachmentBytes) ? maxAttachmentBytes : undefined,
+    acceptedImageMime: acceptedImageMime.map(String),
+  };
   return `(() => {
 const key=${JSON.stringify(key)};
-void key;
 const artifactRevision=${revision};
 const artifactLoadToken=${JSON.stringify(loadToken)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
@@ -1552,9 +2169,17 @@ const classifyMaterialRectEscape=${classifyMaterialRectEscape.toString()};
 const isMaterialPageOverflow=${isMaterialPageOverflow.toString()};
 const findStableLayoutFindings=${findStableLayoutFindings.toString()};
 const isNearTotalOcclusion=${isNearTotalOcclusion.toString()};
-${mermaidHelperDecls}
-const mermaidHelpers={ ${mermaidHelperKeys} };
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken);
+const attachmentSizeError=${attachmentSizeError.toString()};
+const classifyAttachmentBatch=${classifyAttachmentBatch.toString()};
+const partitionDroppedFiles=${partitionDroppedFiles.toString()};
+const planClipboardPaste=${planClipboardPaste.toString()};
+const acceptedImageTypes=${acceptedImageTypes.toString()};
+const isTrustedAttachmentResult=${isTrustedAttachmentResult.toString()};
+const deriveAttachmentNoticeState=${deriveAttachmentNoticeState.toString()};
+${mermaidHelperSource.declarations}
+const mermaidHelpers={ ${mermaidHelperSource.names.join(", ")} };
+${tableHelperSource.declarations}
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key, ${JSON.stringify(sdkOptions)});
 })();`;
 }
 

@@ -65,7 +65,7 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
     return darkQuery.matches;
   }
 
-  const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.textContent }));
+  const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.innerHTML }));
   let applied;
   let rendering = false;
   let queued = false;
@@ -84,7 +84,7 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
         mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
         for (const { el, src } of diagrams) {
           el.removeAttribute("data-processed");
-          el.textContent = src;
+          el.innerHTML = src;
         }
         try {
           await mermaid.run({ nodes: diagrams.map((d) => d.el) });
