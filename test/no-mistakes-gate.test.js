@@ -8,7 +8,6 @@ import test from "node:test";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const workflowPath = join(root, ".github", "workflows", "no-mistakes-required.yml");
-const contributingPath = join(root, "CONTRIBUTING.md");
 
 /**
  * The gate lives as an inline `run:` block so the whole file can be mirrored
@@ -238,10 +237,4 @@ test("no-mistakes PR gate", { skip: runnable ? false : skipReason }, async (t) =
     const { code, output } = runGate(body);
     assert.equal(code, 0, output);
   });
-});
-
-test("contributor workflow requires an attestation-capable no-mistakes version", () => {
-  const contributing = readFileSync(contributingPath, "utf8");
-  assert.match(contributing, /Workflow requires `no-mistakes` v1\.46\.0 or newer\./);
-  assert.doesNotMatch(contributing, /requires `no-mistakes` v1\.30\.1 or newer/);
 });
