@@ -1001,6 +1001,7 @@ export async function serve({
   });
 
   app.get("/events/:key", async (req, res, next) => {
+    let cleanup = () => {};
     try {
       res.writeHead(200, {
         "content-type": "text/event-stream",
@@ -1047,7 +1048,25 @@ export async function serve({
       events.on("agent-presence", sendPresence);
       events.on("layout-warnings", sendLayoutWarnings);
       events.on("ended", sendEnded);
+      let cleanedUp = false;
+      cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        req.off("close", cleanup);
+        sseClients.delete(res);
+        events.off("reload", sendReload);
+        events.off("agent-reply", sendAgentReply);
+        events.off("agent-presence", sendPresence);
+        events.off("layout-warnings", sendLayoutWarnings);
+        events.off("ended", sendEnded);
+        refreshIdleTimer();
+      };
+      req.once("close", cleanup);
       const session = await store.findByKey(req.params.key);
+      if (req.destroyed || res.writableEnded) {
+        cleanup();
+        return;
+      }
       res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: session?.chat || [] })}\n\n`);
       res.write(
         `event: agent-presence\ndata: ${JSON.stringify({ state: computePresence(req.params.key, activePolls, deliveredFeedback) })}\n\n`,
@@ -1056,16 +1075,8 @@ export async function serve({
       // that misses the live "ended" event entirely by connecting after it fired - still needs to
       // learn that on its own; `markSessionEnded()` is idempotent, so a duplicate is harmless.
       if (session?.status === "ended") sendEnded(req.params.key, session.ended_by);
-      req.on("close", () => {
-        sseClients.delete(res);
-        events.off("reload", sendReload);
-        events.off("agent-reply", sendAgentReply);
-        events.off("agent-presence", sendPresence);
-        events.off("layout-warnings", sendLayoutWarnings);
-        events.off("ended", sendEnded);
-        refreshIdleTimer();
-      });
     } catch (error) {
+      cleanup();
       next(error);
     }
   });

@@ -4854,6 +4854,57 @@ test("SSE sends an immediate ended snapshot to a connection that attaches after 
   }
 });
 
+test("SSE disconnect during the initial session read releases the connection", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    idleTimeoutMs: 100,
+  });
+  const originalFindByKey = SessionStore.prototype.findByKey;
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const { promise: findReleased, resolve: releaseFind } = Promise.withResolvers();
+    const { promise: findPending, resolve: findStarted } = Promise.withResolvers();
+    SessionStore.prototype.findByKey = async function (sessionKey) {
+      if (sessionKey === key) {
+        findStarted();
+        await findReleased;
+      }
+      return originalFindByKey.call(this, sessionKey);
+    };
+
+    const socket = await new Promise((resolve, reject) => {
+      const client = netConnect(server.port, "127.0.0.1", () => {
+        client.write(`GET /events/${key} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`, () => resolve(client));
+      });
+      client.on("error", reject);
+    });
+    await findPending;
+    socket.on("error", () => {});
+    socket.destroy();
+    releaseFind();
+
+    await Promise.race([
+      server.done,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("server retained disconnected SSE client")), 1000)),
+    ]);
+  } finally {
+    SessionStore.prototype.findByKey = originalFindByKey;
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // #171: without this, a browser that missed the SSE event (or had already queued a Send before it
 // arrived) got a 200 for a prompt no agent will ever poll for.
 test("POST /api/:key/prompts rejects a batch queued after the session already ended (#171)", async () => {
