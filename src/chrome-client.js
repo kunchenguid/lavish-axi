@@ -481,6 +481,10 @@ const REVISION_MESSAGE_LIMITS = {
   timestamp: 80,
   summary: 500,
   sections: 12,
+  // `sections` counts accepted entries, so a nested flood of rejected ones is a
+  // per-revision amplifier the `rawEntries` cap does not reach. Mirrors
+  // MAX_REVISION_RAW_SECTIONS in artifact-sdk.js.
+  rawSections: 120,
   section: 80,
 };
 
@@ -523,10 +527,13 @@ function normalizeRevisionMessage(revisions) {
     const label = revisionMessageText(raw.label, REVISION_MESSAGE_LIMITS.label) || `Revision ${normalized.length + 1}`;
     const timestamp = revisionMessageText(raw.timestamp, REVISION_MESSAGE_LIMITS.timestamp);
     const summary = revisionMessageText(raw.summary, REVISION_MESSAGE_LIMITS.summary);
-    const sections = (Array.isArray(raw.sections) ? raw.sections : [])
-      .map((section) => revisionMessageText(section, REVISION_MESSAGE_LIMITS.section))
-      .filter(Boolean)
-      .slice(0, REVISION_MESSAGE_LIMITS.sections);
+    const sectionsSource = Array.isArray(raw.sections) ? raw.sections : [];
+    const sections = [];
+    const rawSectionCount = Math.min(sectionsSource.length, REVISION_MESSAGE_LIMITS.rawSections);
+    for (let i = 0; i < rawSectionCount && sections.length < REVISION_MESSAGE_LIMITS.sections; i += 1) {
+      const section = revisionMessageText(sectionsSource[i], REVISION_MESSAGE_LIMITS.section);
+      if (section) sections.push(section);
+    }
     const color = raw.color && typeof raw.color === "object" ? raw.color : {};
     normalized.push({
       id,

@@ -31,6 +31,7 @@ import {
   isAddressableRevisionId,
   MAX_REVISION_ENTRIES,
   MAX_REVISION_RAW_ENTRIES,
+  MAX_REVISION_RAW_SECTIONS,
   MODE_TOGGLE_HOTKEY_KEY,
   normalizeRevisionEntry,
   parseRevisionRegistry,
@@ -2203,6 +2204,7 @@ const revisionTintFromHex=${revisionTintFromHex.toString()};
 const normalizeRevisionEntry=${normalizeRevisionEntry.toString()};
 const MAX_REVISION_ENTRIES=${JSON.stringify(MAX_REVISION_ENTRIES)};
 const MAX_REVISION_RAW_ENTRIES=${JSON.stringify(MAX_REVISION_RAW_ENTRIES)};
+const MAX_REVISION_RAW_SECTIONS=${JSON.stringify(MAX_REVISION_RAW_SECTIONS)};
 const REVISION_WILDCARD_ID=${JSON.stringify(REVISION_WILDCARD_ID)};
 const isAddressableRevisionId=${isAddressableRevisionId.toString()};
 const parseRevisionRegistry=${parseRevisionRegistry.toString()};

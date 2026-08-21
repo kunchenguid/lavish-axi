@@ -5,6 +5,7 @@ import {
   collectRevisionMarkedElements,
   isAddressableRevisionId,
   MAX_REVISION_RAW_ENTRIES,
+  MAX_REVISION_RAW_SECTIONS,
   normalizeRevisionEntry,
   parseRevisionRegistry,
   resolveElementRevisionId,
@@ -235,6 +236,40 @@ test("normalizeRevisionEntry caps the sections array at 12 and drops non-string/
   );
   assert.equal(entry.sections.length, 12);
   assert.equal(entry.sections[0], "Section 0");
+});
+
+test("normalizeRevisionEntry stops examining raw sections at the raw cap, even when none is accepted", () => {
+  // The 12-section cap counts ACCEPTED sections, so a flood of rejected ones
+  // never advances it. Without a raw bound the whole nested array is walked,
+  // which is a per-entry amplifier on top of the raw-entry cap.
+  const entry = normalizeRevisionEntry(
+    {
+      sections: [...Array.from({ length: MAX_REVISION_RAW_SECTIONS }, () => null), "Late section"],
+    },
+    0,
+  );
+
+  assert.deepEqual(entry.sections, []);
+});
+
+test("normalizeRevisionEntry reads no more raw sections than the raw cap allows", () => {
+  let reads = 0;
+  const sections = new Proxy(
+    Array.from({ length: MAX_REVISION_RAW_SECTIONS * 4 }, () => null),
+    {
+      get(target, prop, receiver) {
+        if (typeof prop === "string" && /^\d+$/.test(prop)) reads += 1;
+        return Reflect.get(target, prop, receiver);
+      },
+    },
+  );
+
+  normalizeRevisionEntry({ sections }, 0);
+
+  assert.ok(
+    reads <= MAX_REVISION_RAW_SECTIONS,
+    `read ${reads} raw sections, expected at most ${MAX_REVISION_RAW_SECTIONS}`,
+  );
 });
 
 // ---------------------------------------------------------------------------

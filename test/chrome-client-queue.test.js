@@ -5063,6 +5063,46 @@ test("revision legend stops examining raw entries at the raw cap, even when none
   assert.equal(chrome.element("revisionLegendList").innerHTML, "");
 });
 
+test("revision legend stops examining raw sections at the raw cap, even when none is accepted", async () => {
+  const chrome = await createChromeHarness();
+  // The 12-section cap counts ACCEPTED sections, so rejected ones never advance
+  // it. A nested flood is a per-revision amplifier that the raw-entry cap alone
+  // does not bound, so the renderable section sits past the raw section cap.
+  const revisions = [
+    {
+      id: "1",
+      label: "Nested flood",
+      color: {},
+      sections: [...Array.from({ length: 120 }, () => null), "Late section"],
+    },
+  ];
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions });
+
+  const html = chrome.element("revisionLegendList").innerHTML;
+  assert.match(html, /Nested flood/);
+  assert.doesNotMatch(html, /Late section/);
+  assert.equal((html.match(/revision-section-tag/g) || []).length, 0);
+});
+
+test("revision legend reads no more raw sections than the raw cap allows", async () => {
+  const chrome = await createChromeHarness();
+  let reads = 0;
+  const sections = new Proxy(
+    Array.from({ length: 480 }, () => null),
+    {
+      get(target, prop, receiver) {
+        if (typeof prop === "string" && /^\d+$/.test(prop)) reads += 1;
+        return Reflect.get(target, prop, receiver);
+      },
+    },
+  );
+
+  chrome.sendFrameMessage({ type: "lavish:revisions", revisions: [{ id: "1", label: "Flood", color: {}, sections }] });
+
+  assert.ok(reads <= 120, `read ${reads} raw sections, expected at most 120`);
+});
+
 test("a per-revision checkbox posts a scoped visibility toggle for just that revision", async () => {
   const chrome = await createChromeHarness();
   chrome.sendFrameMessage({ type: "lavish:revisions", revisions: sampleRevisions() });

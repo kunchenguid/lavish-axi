@@ -533,11 +533,18 @@ export function normalizeRevisionEntry(entry, index) {
   const timestamp = revisionIsValidTimestamp(raw.timestamp) ? raw.timestamp : "";
   const summary = revisionTruncate(raw.summary || "", 500);
   const sectionsSource = Array.isArray(raw.sections) ? raw.sections : [];
-  const sections = sectionsSource
-    .filter((section) => typeof section === "string" || typeof section === "number")
-    .map((section) => revisionTruncate(section, 80))
-    .filter(Boolean)
-    .slice(0, 12);
+  // The 12-section cap counts ACCEPTED sections, so mapping the whole array
+  // first lets a nested flood of rejected entries walk unbounded work per
+  // revision - a multiplier on top of MAX_REVISION_RAW_ENTRIES. Bound what is
+  // examined too, and stop as soon as the accepted cap is full.
+  const sections = [];
+  const rawSectionCount = Math.min(sectionsSource.length, MAX_REVISION_RAW_SECTIONS);
+  for (let i = 0; i < rawSectionCount && sections.length < 12; i += 1) {
+    const section = sectionsSource[i];
+    if (typeof section !== "string" && typeof section !== "number") continue;
+    const text = revisionTruncate(section, 80);
+    if (text) sections.push(text);
+  }
   return { id, label, timestamp, summary, sections, index, color: revisionColorForIndex(index) };
 }
 
@@ -546,6 +553,10 @@ export const MAX_REVISION_ENTRIES = 50;
 // bound of its own: capping only accepted entries lets a registry of a million
 // duplicate or whitespace ids run the loop a million times.
 export const MAX_REVISION_RAW_ENTRIES = 500;
+// The same bound one level down. A registry that stays inside the entry caps
+// can still hand every accepted entry a huge `sections` array, so the nested
+// traversal needs its own ceiling rather than inheriting the outer one.
+export const MAX_REVISION_RAW_SECTIONS = 120;
 
 // The all-revisions wildcard is a visibility-message sentinel, so it can never
 // also be an addressable revision id - `data-lavish-revision="*"` would then
