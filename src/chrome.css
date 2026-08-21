@@ -1011,10 +1011,31 @@ body.lavish {
   padding: 10px;
   font: inherit;
 }
+/*
+ * As ações ficam PRESAS ao rodapé do painel, que rola.
+ *
+ * Sem isto, um descritor com vários campos empurra os botões para fora da área visível. Medido no Gate 4
+ * da CTB-1373 (viewport 1912x867): `scrollHeight 911` contra `clientHeight 533`, com só "Entregar"
+ * visível — "Solicitar ajustes" e "Abortar demanda" só existiam depois de rolar. Painel de decisão em que
+ * a ação de ABORTAR é invisível não é questão de estética.
+ *
+ * Vale para todos os gates porque o número de campos é escolhido pelo descritor, não pelo chrome: o
+ * Gate 1 hoje só escapa por declarar um campo, e passaria a falhar no dia em que ganhasse outro.
+ *
+ * As margens negativas fazem o bloco sangrar até as bordas do painel (que tem `padding: 16px 16px 24px`),
+ * para o fundo cobrir o conteúdo que passa por baixo ao rolar; `bottom: -24px` cancela o padding inferior
+ * do container, de modo que o bloco encoste no fim da área visível em vez de flutuar 24px acima.
+ */
 .action-panel-actions {
   display: grid;
   gap: 8px;
-  margin-top: 12px;
+  position: sticky;
+  bottom: -24px;
+  z-index: 1;
+  margin: 12px -16px -24px;
+  padding: 12px 16px 24px;
+  background: var(--bg-panel);
+  box-shadow: 0 -10px 14px -10px rgb(0 0 0 / 0.22);
 }
 .action-panel-button {
   width: 100%;
