@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.55](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.54...lavish-axi-v0.1.55) (2026-08-21)
+
+
+### Bug Fixes
+
+* **server:** restore taken feedback when a long-poll client disconnects ([#270](https://github.com/kunchenguid/lavish-axi/issues/270)) ([3b2c10f](https://github.com/kunchenguid/lavish-axi/commit/3b2c10f58dcbc95b81a8f17c48a960a9f5aee379))
+
 ## [0.1.54](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.53...lavish-axi-v0.1.54) (2026-08-20)
 
 
