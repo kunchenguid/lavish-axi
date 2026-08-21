@@ -354,9 +354,9 @@ test("no two palette entries share a non-color signal at the width they render a
  * A minimal artifact-document harness for the in-closure highlight code: one
  * marked element, a stylesheet whose declarations can change after the SDK has
  * already run, and hooks for the load / mutation passes.
- * @param {{ stylesheet?: Record<string, string> }} [options]
+ * @param {{ stylesheet?: Record<string, string>, attributes?: Record<string, string> }} [options]
  */
-function createRevisionSdkHarness({ stylesheet = {} } = {}) {
+function createRevisionSdkHarness({ stylesheet = {}, attributes: authored = {} } = {}) {
   const globals = /** @type {any} */ (globalThis);
   const originalGlobals = {
     document: globalThis.document,
@@ -380,7 +380,7 @@ function createRevisionSdkHarness({ stylesheet = {} } = {}) {
   const parentMessages = [];
   const timers = [];
   const styleValues = new Map();
-  const attributes = new Map([["data-lavish-revision", "1"]]);
+  const attributes = new Map([["data-lavish-revision", "1"], ...Object.entries(authored)]);
   let observerCallback = /** @type {(records: any[]) => void} */ (() => {});
 
   const parent = {
@@ -402,6 +402,15 @@ function createRevisionSdkHarness({ stylesheet = {} } = {}) {
       removeProperty(property) {
         styleValues.delete(property);
       },
+    },
+    // `title` is an attribute reflection on a real element, so writing the
+    // property has to be observable through getAttribute for a test to prove
+    // anything about the accessible name.
+    get title() {
+      return attributes.get("title") ?? "";
+    },
+    set title(value) {
+      attributes.set("title", String(value));
     },
     getAttribute(name) {
       return attributes.get(name) ?? null;
@@ -717,6 +726,42 @@ test("the all-revisions toggle travels in its own field, not as a '*' revision i
   }
 });
 
+test("an authored title survives the highlight, so a marked control keeps its accessible name", () => {
+  // Highlights are on by default, and `title` is the only accessible-name
+  // source an icon-only control has. Replacing it would rename the artifact's
+  // own control for the whole review session.
+  const harness = createRevisionSdkHarness({ attributes: { title: "Delete row" } });
+  try {
+    harness.start();
+    assert.match(harness.backgroundImage(), /repeating-linear-gradient/);
+    assert.equal(harness.element.getAttribute("title"), "Delete row");
+
+    // Still authored after a re-apply pass (a late stylesheet re-capture).
+    harness.triggerLoad();
+    harness.flushTimers();
+    assert.equal(harness.element.getAttribute("title"), "Delete row");
+
+    harness.sendToSdk({ type: "lavish:setRevisionVisibility", all: true, visible: false });
+    assert.equal(harness.element.getAttribute("title"), "Delete row");
+  } finally {
+    harness.restore();
+  }
+});
+
+test("an element with no authored title gets the revision detail as its tooltip", () => {
+  const harness = createRevisionSdkHarness();
+  try {
+    harness.start();
+    assert.equal(harness.element.getAttribute("title"), "Draft");
+
+    // Hiding the highlight retires a tooltip Lavish alone introduced.
+    harness.sendToSdk({ type: "lavish:setRevisionVisibility", all: true, visible: false });
+    assert.equal(harness.element.hasAttribute("title"), false);
+  } finally {
+    harness.restore();
+  }
+});
+
 test("revision visibility restores an element's authored inline presentation and title", () => {
   const globals = /** @type {any} */ (globalThis);
   const originalGlobals = {
@@ -763,6 +808,12 @@ test("revision visibility restores an element's authored inline presentation and
       removeProperty(property) {
         styleValues.delete(property);
       },
+    },
+    get title() {
+      return attributes.get("title") ?? "";
+    },
+    set title(value) {
+      attributes.set("title", String(value));
     },
     getAttribute(name) {
       return attributes.get(name) ?? null;

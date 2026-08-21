@@ -2928,9 +2928,17 @@ export function createArtifactSdk(
       applyRevisionStyle(el.style, property, camel, `${pattern}, ${overlay}, ${artifact}`);
     }
     el.setAttribute("data-lavish-revision-active", revision.id);
-    // A hover-only, non-color-dependent detail channel. The legend and the
-    // border-style/pattern are the primary always-visible signals.
-    el.title = revision.summary ? `${revision.label}: ${revision.summary}` : revision.label;
+    // A hover-only, non-color-dependent detail channel, and strictly additive:
+    // `title` is an icon-only control's ONLY accessible name, and highlights are
+    // on by default, so overwriting an authored one renames the artifact's own
+    // control for the whole review session. The legend row and the
+    // border-style/pattern carry the same detail as always-visible signals, so
+    // an element that already has a title simply keeps it. `hasTitle` is the
+    // authored snapshot rather than a live read, which is what keeps a re-apply
+    // pass from mistaking our own earlier tooltip for the author's.
+    if (!presentation?.hasTitle) {
+      el.title = revision.summary ? `${revision.label}: ${revision.summary}` : revision.label;
+    }
   }
 
   function applyRevisionOutline(el, revision) {
