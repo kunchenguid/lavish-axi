@@ -40,6 +40,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eu
           marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
@@ -166,7 +167,31 @@ jobs:
             exit 1
           fi
 
-          echo "Attestation head_sha: $(printf '%s' "$payload" | jq -r '.head_sha // "(absent)"')"
+          attested_head="$(printf '%s' "$payload" | jq -r '.head_sha // ""')"
+          echo "Attestation head_sha: ${attested_head:-(absent)}"
+
+          # Head binding. The attestation describes the commit no-mistakes ran
+          # its steps on; a later push moves the PR head without rewriting the
+          # body, so an attestation that does not name the current head proves
+          # nothing about the code being merged. A `synchronize` whose body was
+          # NOT rewritten by no-mistakes going red is the intended contract, not
+          # a false positive.
+          if [ -z "$attested_head" ] || [ -z "${PR_HEAD_SHA:-}" ] || [ "$attested_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::The no-mistakes pipeline attestation is STALE for the current head of PR #${PR_NUMBER}."
+            {
+              echo
+              echo "Attestation head_sha: ${attested_head:-(absent)}"
+              echo "PR head sha:          ${PR_HEAD_SHA:-(absent)}"
+              echo
+              echo "A commit was pushed after the no-mistakes run, so the attestation does not"
+              echo "describe the code this PR now proposes to merge."
+              echo
+              echo "Re-run 'git push no-mistakes' to refresh it."
+              echo
+              echo "PR author: ${PR_AUTHOR}"
+            } >&2
+            exit 1
+          fi
 
           tab="$(printf '\t')"
           gate_status=0

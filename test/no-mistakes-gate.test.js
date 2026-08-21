@@ -51,17 +51,21 @@ function hasCommand(command) {
 }
 
 // The gate is a bash script that parses JSON with jq, exactly as the
-// ubuntu-latest runner does. Never skip on CI: a silently skipped gate test is
-// worse than no test. Locally, skip when jq is absent rather than failing a
-// contributor's `pnpm test` over an unrelated missing tool.
-const runnable = hasCommand("bash") && hasCommand("jq");
-if (process.env.CI && !runnable) {
+// ubuntu-latest runner it runs on does. Windows is excluded on purpose: the
+// gate workflow never runs there, and Windows-native jq emits CRLF, which turns
+// every parsed verdict into a false failure that says nothing about CI. Never
+// skip on the platforms the gate does run on: on CI a silently skipped gate
+// test is worse than no test. Locally, skip when jq is absent rather than
+// failing a contributor's `pnpm test` over an unrelated missing tool.
+const onWindows = process.platform === "win32";
+const runnable = !onWindows && hasCommand("bash") && hasCommand("jq");
+if (process.env.CI && !onWindows && !runnable) {
   throw new Error("CI must provide bash and jq to exercise the no-mistakes gate");
 }
 
-function runGate(body) {
+function runGate(body, headSha = HEAD_SHA) {
   const result = spawnSync("bash", [scriptPath], {
-    env: { ...process.env, PR_BODY: body, PR_AUTHOR: "somedev", PR_NUMBER: "42" },
+    env: { ...process.env, PR_BODY: body, PR_AUTHOR: "somedev", PR_NUMBER: "42", PR_HEAD_SHA: headSha },
     encoding: "utf8",
   });
   return { code: result.status ?? -1, output: `${result.stdout}${result.stderr}` };
@@ -83,8 +87,8 @@ function prBody(attestationPayload) {
   ].join("\n");
 }
 
-function attestation(steps) {
-  return JSON.stringify({ head_sha: HEAD_SHA, steps: steps.map(([step, status]) => ({ step, status })) });
+function attestation(steps, headSha = HEAD_SHA) {
+  return JSON.stringify({ head_sha: headSha, steps: steps.map(([step, status]) => ({ step, status })) });
 }
 
 /** The step snapshot a healthy run produces when the PR body is written. */
@@ -104,7 +108,9 @@ function withStatus(step, status) {
   return HEALTHY_STEPS.map(([name, current]) => (name === step ? [name, status] : [name, current]));
 }
 
-test("no-mistakes PR gate", { skip: runnable ? false : "bash and jq are required" }, async (t) => {
+const skipReason = onWindows ? "the gate is a bash+jq script and never runs on Windows" : "bash and jq are required";
+
+test("no-mistakes PR gate", { skip: runnable ? false : skipReason }, async (t) => {
   await t.test("accepts a body whose attestation completes review, test, and document", () => {
     const { code, output } = runGate(prBody(attestation(HEALTHY_STEPS)));
     assert.equal(code, 0, output);
@@ -172,6 +178,40 @@ test("no-mistakes PR gate", { skip: runnable ? false : "bash and jq are required
       assert.ok(output.includes(`skip indicator(s) [${key}]`), output);
     });
   }
+
+  // Head binding: the attestation describes the commit no-mistakes ran on, so
+  // an attestation naming any other commit says nothing about what is being
+  // merged. A synchronize whose body was not rewritten by no-mistakes going red
+  // is the contract, not a false positive.
+  await t.test("accepts an attestation whose head_sha is the PR's current head", () => {
+    const { code, output } = runGate(prBody(attestation(HEALTHY_STEPS, HEAD_SHA)), HEAD_SHA);
+    assert.equal(code, 0, output);
+    assert.match(output, new RegExp(`Attestation head_sha: ${HEAD_SHA}`));
+  });
+
+  await t.test("rejects an attestation whose head_sha is not the PR's current head", () => {
+    const staleSha = "0000000000000000000000000000000000000000";
+    const { code, output } = runGate(prBody(attestation(HEALTHY_STEPS, staleSha)), HEAD_SHA);
+    assert.equal(code, 1, output);
+    assert.match(output, /attestation is STALE for the current head/);
+    assert.match(output, /Re-run 'git push no-mistakes' to refresh it/);
+    assert.ok(output.includes(staleSha) && output.includes(HEAD_SHA), output);
+  });
+
+  await t.test("fails closed when the attestation carries no head_sha at all", () => {
+    const payload = JSON.stringify({ steps: HEALTHY_STEPS.map(([step, status]) => ({ step, status })) });
+    const { code, output } = runGate(prBody(payload), HEAD_SHA);
+    assert.equal(code, 1, output);
+    assert.match(output, /attestation is STALE for the current head/);
+    assert.match(output, /Attestation head_sha: \(absent\)/);
+  });
+
+  await t.test("fails closed when the PR head sha is unavailable", () => {
+    const { code, output } = runGate(prBody(attestation(HEALTHY_STEPS)), "");
+    assert.equal(code, 1, output);
+    assert.match(output, /attestation is STALE for the current head/);
+    assert.match(output, /PR head sha: +\(absent\)/);
+  });
 
   await t.test("fails closed on an attestation payload that is not valid JSON", () => {
     const { code, output } = runGate(prBody('{"head_sha":"abc","steps":[{"step":"review",'));
