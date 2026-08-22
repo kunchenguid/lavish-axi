@@ -240,7 +240,6 @@ test("no-mistakes PR gate", { skip: runnable ? false : skipReason }, async (t) =
   });
 });
 
-// CONTRIBUTING.md owns the public contributor-workflow contract.
 test("contributor workflow requires an attestation-capable no-mistakes version", () => {
   const contributing = readFileSync(contributingPath, "utf8");
   assert.match(contributing, /Workflow requires `no-mistakes` v1\.46\.0 or newer\./);
