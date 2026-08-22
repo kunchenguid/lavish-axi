@@ -3882,6 +3882,9 @@ test("chrome goes read-only when the server forwards an ended SSE event (#171)",
 
   assert.equal(chrome.element("chatInput").disabled, true);
   assert.equal(chrome.element("annotation").disabled, true);
+  assert.equal(chrome.element("moreButton").disabled, true);
+  assert.equal(chrome.element("send").disabled, true);
+  assert.equal(chrome.element("sendAndEnd").disabled, true);
   assert.equal(chrome.element("shareDialog").hidden, true);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });
@@ -3894,6 +3897,10 @@ test("chrome boots read-only when the session already ended before this page loa
   });
 
   assert.equal(chrome.element("chatInput").disabled, true);
+  assert.equal(chrome.element("annotation").disabled, true);
+  assert.equal(chrome.element("moreButton").disabled, true);
+  assert.equal(chrome.element("send").disabled, true);
+  assert.equal(chrome.element("sendAndEnd").disabled, true);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });
 
