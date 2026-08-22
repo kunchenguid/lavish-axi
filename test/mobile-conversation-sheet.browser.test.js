@@ -288,7 +288,10 @@ test(
         ["send", g.send],
         ["sendAndEnd", g.sendAndEnd],
       ]) {
-        assert.ok(rect.top >= 0 && rect.bottom <= 240, `${name} stays inside the short visual viewport: ${JSON.stringify(rect)}`);
+        assert.ok(
+          rect.top >= 0 && rect.bottom <= 240,
+          `${name} stays inside the short visual viewport: ${JSON.stringify(rect)}`,
+        );
       }
       evaluate(`() => {
         document.documentElement.style.removeProperty("--vv-top");

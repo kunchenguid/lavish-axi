@@ -700,8 +700,9 @@ function scrollPanelToBottom() {
 
 // ---- Phone-width conversation sheet ----
 // Below this width chrome.css turns the conversation panel into a dock the user raises as a
-// bottom sheet over the artifact. The chrome owns only the open/closed intent and what the dock
-// says; every size is CSS. The query must match the one chrome.css lays the sheet out under.
+// bottom sheet over the artifact. This controller owns intent, accessibility state, gestures,
+// visual-viewport measurements, and the dock summary; CSS owns the geometry. The query must match
+// the one chrome.css lays the sheet out under.
 const MOBILE_SHEET_MEDIA = "(max-width: 860px)";
 // How far a drag on the dock must travel before it counts as a gesture rather than a tap.
 const SHEET_DRAG_THRESHOLD_PX = 48;
@@ -875,7 +876,9 @@ if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
       sheetOpen = false;
       try {
         sessionStorage.removeItem(sheetStorageKey);
-      } catch {}
+      } catch {
+        // Storage refusal only prevents persistence; the in-memory state is already reset.
+      }
     }
     applySheetState();
   });
