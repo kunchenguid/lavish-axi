@@ -3099,6 +3099,9 @@ export function createArtifactSdk(
   initRevisionLegend();
   if (document.readyState === "complete") scheduleRevisionBackgroundRefresh();
   else window.addEventListener("load", () => scheduleRevisionBackgroundRefresh(), { once: true });
+  window.addEventListener("resize", () => {
+    if (revisionElements.length) scheduleRevisionBackgroundRefresh();
+  });
 
   setAnnotationMode(annotationMode);
   if (document.readyState === "loading") {

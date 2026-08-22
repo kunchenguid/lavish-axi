@@ -502,6 +502,9 @@ function createRevisionSdkHarness({ stylesheet = {}, attributes: authored = {} }
     triggerLoad() {
       for (const listener of [...(windowListeners.get("load") || [])]) listener({});
     },
+    triggerResize() {
+      for (const listener of [...(windowListeners.get("resize") || [])]) listener({});
+    },
     mutate(records) {
       observerCallback(records);
     },
@@ -539,6 +542,28 @@ test("a stylesheet applied after SDK parse still paints through the revision tin
     assert.ok(
       harness.backgroundImage().includes(LATE_GRADIENT),
       `artifact gradient lost under the highlight: ${harness.backgroundImage()}`,
+    );
+  } finally {
+    harness.restore();
+  }
+});
+
+test("a responsive background change re-captures through the revision highlight after resize", () => {
+  const mobileGradient = "linear-gradient(180deg, rgb(255, 0, 0), rgb(0, 0, 255))";
+  const desktopGradient = "linear-gradient(90deg, rgb(0, 128, 0), rgb(255, 255, 0))";
+  const harness = createRevisionSdkHarness({ stylesheet: { backgroundImage: mobileGradient } });
+  try {
+    harness.start();
+    assert.ok(harness.backgroundImage().includes(mobileGradient));
+
+    // A media query changes the effective style without mutating the DOM.
+    harness.sheet.backgroundImage = desktopGradient;
+    harness.triggerResize();
+    harness.flushTimers();
+
+    assert.ok(
+      harness.backgroundImage().includes(desktopGradient),
+      `desktop background was suppressed by the revision highlight: ${harness.backgroundImage()}`,
     );
   } finally {
     harness.restore();
