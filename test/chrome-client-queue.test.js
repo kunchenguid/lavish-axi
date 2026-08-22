@@ -59,6 +59,7 @@ async function createChromeHarness({
   const beginRequests = [];
   const artifactBeginRequests = [];
   const focusLog = [];
+  let activeElement = null;
   let nextTimerId = 1;
   let reloadCount = 0;
   let artifactRevision = 0;
@@ -199,6 +200,7 @@ async function createChromeHarness({
       },
       focus() {
         this.focused = true;
+        activeElement = this;
         focusLog.push(this.id);
       },
       select() {},
@@ -233,6 +235,8 @@ async function createChromeHarness({
   for (const childId of ["chatInput", "chatAttachments", "chatAttachInput", "chatAttach"]) {
     element(childId).parentElement = element("chatComposer");
   }
+  element("chatComposer").parentElement = element("panel");
+  element("panelScroll").parentElement = element("panel");
   element("whiteboardOverlay").hidden = true;
   element("shareDialog").hidden = true;
   element("moreMenu").hidden = true;
@@ -301,6 +305,9 @@ async function createChromeHarness({
     },
     document: {
       body: element("body"),
+      get activeElement() {
+        return activeElement;
+      },
       getElementById(id) {
         // Answer only for ids the served page declares, so an id the client and the page disagree
         // on fails here the way it would go dead in a browser.
@@ -5005,9 +5012,12 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
   assert.equal(state.composerInert, false);
   assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
 
-  // Narrowing back docks it again.
+  // Narrowing back docks it again and moves focus out of the content becoming inert.
+  chrome.element("chatInput").focus();
   chrome.setMobile(true);
   state = sheetState(chrome);
   assert.equal(state.open, false);
   assert.equal(state.scrollInert, true);
+  assert.equal(chrome.focusLog.at(-1), "panelToggle");
+  assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
 });

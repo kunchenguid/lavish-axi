@@ -76,11 +76,13 @@ const GEOMETRY = `() => {
       ...rect(document.getElementById("chatComposer")),
       visible: document.getElementById("chatComposer").clientHeight,
       content: document.getElementById("chatComposer").scrollHeight,
+      scrollTop: document.getElementById("chatComposer").scrollTop,
     },
     attachments: {
       visible: document.getElementById("chatAttachments").clientHeight,
       content: document.getElementById("chatAttachments").scrollHeight,
     },
+    actions: rect(document.getElementById("sendActions")),
     send: rect(document.getElementById("send")),
     sendAndEnd: rect(document.getElementById("sendAndEnd")),
     textarea: rect(document.getElementById("chatInput")),
@@ -166,6 +168,44 @@ test(
       assert.equal(g.documentScrollable, false, "the page itself never scrolls");
     }
 
+    function populateComposer() {
+      evaluate(`() => {
+        document.getElementById("presenceBanner").hidden = false;
+        document.getElementById("chatAttachments").innerHTML = ${JSON.stringify(
+          Array.from(
+            { length: 4 },
+            (_, index) =>
+              `<div class="chat-attachment-chip"><span class="chat-attachment-thumb"></span><span class="chat-attachment-copy"><strong>Screenshot ${index + 1}</strong><span class="chat-attachment-status">Ready</span></span><button type="button">Remove</button></div>`,
+          ).join(""),
+        )};
+        document.getElementById("chatComposer").scrollTop = 0;
+        return "ok";
+      }`);
+      wait(300);
+    }
+
+    function assertPopulatedComposerUsable(g) {
+      assert.equal(g.open, true);
+      assert.equal(g.composer.scrollTop, 0, "send actions are visible before scrolling the composer");
+      assert.ok(g.chat.visible >= 56, `chat retains usable height: ${JSON.stringify(g.chat)}`);
+      assert.ok(g.composer.bottom <= g.viewport.height, `composer stays in viewport: ${JSON.stringify(g.composer)}`);
+      for (const [name, rect] of [
+        ["actions", g.actions],
+        ["send", g.send],
+        ["sendAndEnd", g.sendAndEnd],
+      ]) {
+        assert.ok(
+          rect.top >= g.panel.top && rect.bottom <= g.viewport.height,
+          `${name} stays visible: ${JSON.stringify(rect)}`,
+        );
+      }
+      assert.ok(
+        g.composer.content > g.composer.visible || g.attachments.content > g.attachments.visible,
+        `populated composer contains its overflow: ${JSON.stringify({ composer: g.composer, attachments: g.attachments })}`,
+      );
+      assert.equal(g.documentScrollable, false);
+    }
+
     function assertDocked(g) {
       assert.equal(g.open, false);
       assert.equal(g.panelPosition, "fixed");
@@ -227,33 +267,15 @@ test(
       // The open sheet survives a chrome reload on the same tab.
       open(url, 3000);
       assertSheetUsable(geometry());
+      populateComposer();
+      assertPopulatedComposerUsable(geometry());
 
       emulate("844x390x1,mobile,touch");
       open(url, 3000);
-      evaluate(`() => {
-        document.getElementById("presenceBanner").hidden = false;
-        document.getElementById("chatAttachments").innerHTML = ${JSON.stringify(
-          Array.from(
-            { length: 4 },
-            (_, index) =>
-              `<div class="chat-attachment-chip"><span class="chat-attachment-thumb"></span><span class="chat-attachment-copy"><strong>Screenshot ${index + 1}</strong><span class="chat-attachment-status">Ready</span></span><button type="button">Remove</button></div>`,
-          ).join(""),
-        )};
-        return "ok";
-      }`);
-      wait(300);
+      populateComposer();
       g = geometry();
-      assert.equal(g.open, true);
       assert.equal(g.panel.bottom, g.viewport.height);
-      assert.ok(g.chat.visible >= 56, `chat retains usable height: ${JSON.stringify(g.chat)}`);
-      assert.ok(g.composer.bottom <= g.viewport.height, `composer stays in viewport: ${JSON.stringify(g.composer)}`);
-      assert.ok(g.send.bottom <= g.viewport.height, `send stays in viewport: ${JSON.stringify(g.send)}`);
-      assert.ok(g.sendAndEnd.bottom <= g.viewport.height, `send and end stays in viewport: ${JSON.stringify(g.sendAndEnd)}`);
-      assert.ok(
-        g.composer.content > g.composer.visible || g.attachments.content > g.attachments.visible,
-        `populated composer contains its overflow: ${JSON.stringify({ composer: g.composer, attachments: g.attachments })}`,
-      );
-      assert.equal(g.documentScrollable, false);
+      assertPopulatedComposerUsable(g);
 
       // ---- Desktop: a side panel, never a sheet ----
       emulate("1440x1000x1");

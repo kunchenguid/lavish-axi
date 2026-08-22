@@ -742,12 +742,7 @@ function setSheetOpen(open) {
   if (sheetOpen) unreadAgentReply = "";
   applySheetState();
   if (!changed || !isMobileSheet()) return;
-  if (sheetOpen) {
-    scrollPanelToBottom();
-  } else if (document.activeElement && panel.contains(document.activeElement)) {
-    // Focus must not stay inside the part of the sheet that just became inert.
-    panelToggle.focus();
-  }
+  if (sheetOpen) scrollPanelToBottom();
 }
 
 // Re-derives every sheet attribute from the two facts that matter - whether the phone layout is
@@ -757,8 +752,13 @@ function applySheetState() {
   const mobile = isMobileSheet();
   const open = mobile && sheetOpen;
   document.body.classList.toggle("sheet-open", open);
-  panelScroll.inert = mobile && !open;
-  chatComposer.inert = mobile && !open;
+  const docked = mobile && !open;
+  panelScroll.inert = docked;
+  chatComposer.inert = docked;
+  const activeElement = document.activeElement;
+  if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
+    panelToggle.focus();
+  }
   panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
   panelToggle.setAttribute("aria-label", open ? "Hide conversation" : "Show conversation");
   renderSheetSummary();

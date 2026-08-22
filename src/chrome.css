@@ -1524,6 +1524,14 @@ body.layout-gate-active iframe#artifact {
   .chat-attachments {
     max-height: min(176px, 25dvh);
   }
+  .composer .actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    padding-top: 8px;
+    background: var(--bg-panel);
+    box-shadow: 0 -1px 0 var(--border-subtle);
+  }
   .panel-scrim {
     display: block;
     position: fixed;
