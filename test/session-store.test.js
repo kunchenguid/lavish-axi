@@ -1477,6 +1477,37 @@ test("restoring a taken batch preserves newer prompts, snapshot, chat, and artif
   });
 });
 
+test("restoring an accepted batch remains allowed when the session ends during delivery", async () => {
+  await withStore(async ({ store, session }) => {
+    const prompt = { uid: "A", prompt: "Accepted before end", selector: "", tag: "message", text: "" };
+    await store.queuePrompts(session.key, { domSnapshot: "accepted snapshot", prompts: [prompt] });
+    const taken = feedbackResult(await store.takeFeedback(session.key));
+
+    await store.endSession(session.key, "agent");
+    const restored = await store.queuePrompts(
+      session.key,
+      {
+        dom_snapshot: taken.dom_snapshot,
+        prompts: taken.prompts,
+        artifact_failures: taken.artifact_failures,
+      },
+      { restore: true },
+    );
+
+    assert.equal(restored.status, "ended");
+    assert.equal(restored.ended_by, "agent");
+    assert.equal(restored.pending_prompts, 1);
+
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.deepEqual(
+      feedback.prompts.map((item) => item.prompt),
+      ["Accepted before end"],
+    );
+    assert.equal(feedback.session_ended, true);
+    assert.equal(feedback.ended_by, "agent");
+  });
+});
+
 test("restoring a delivery larger than one request's attachment bound loses nothing", async () => {
   await withStore(async ({ store, session }) => {
     const resolveAttachment = async (_key, attachmentId) => ({
