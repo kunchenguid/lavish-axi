@@ -746,9 +746,9 @@ function setSheetOpen(open) {
   if (sheetOpen) scrollPanelToBottom();
 }
 
-// Re-derives every sheet attribute from the two facts that matter - whether the phone layout is
-// active and whether the sheet is open - so a viewport crossing the breakpoint in either direction
-// leaves nothing stale: a desktop panel is never inert, and a closed dock never traps focus.
+// Re-derives every sheet attribute from the phone layout, sheet-open, and session-ended state so a
+// viewport crossing the breakpoint in either direction cannot make an ended panel interactive or
+// leave a closed dock trapping focus.
 function applySheetState() {
   const mobile = isMobileSheet();
   const open = mobile && sheetOpen;
