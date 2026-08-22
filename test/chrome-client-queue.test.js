@@ -3876,6 +3876,7 @@ test("chrome goes read-only when the server forwards an ended SSE event (#171)",
 
   chrome.element("panelHead").dispatch("click");
   assert.equal(chrome.element("chatInput").disabled, false);
+  assert.equal(chrome.element("panelScroll").inert, false);
   assert.equal(chrome.element("chatComposer").inert, false);
   chrome.element("shareArtifact").onclick();
   assert.equal(chrome.element("shareDialog").hidden, false);
@@ -3887,11 +3888,13 @@ test("chrome goes read-only when the server forwards an ended SSE event (#171)",
   assert.equal(chrome.element("moreButton").disabled, true);
   assert.equal(chrome.element("send").disabled, true);
   assert.equal(chrome.element("sendAndEnd").disabled, true);
+  assert.equal(chrome.element("panelScroll").inert, true);
   assert.equal(chrome.element("chatComposer").inert, true);
   assert.equal(chrome.element("shareDialog").hidden, true);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 
   chrome.setMobile(false);
+  assert.equal(chrome.element("panelScroll").inert, true);
   assert.equal(chrome.element("chatComposer").inert, true);
 });
 
@@ -3907,6 +3910,7 @@ test("chrome boots read-only when the session already ended before this page loa
   assert.equal(chrome.element("moreButton").disabled, true);
   assert.equal(chrome.element("send").disabled, true);
   assert.equal(chrome.element("sendAndEnd").disabled, true);
+  assert.equal(chrome.element("panelScroll").inert, true);
   assert.equal(chrome.element("chatComposer").inert, true);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });

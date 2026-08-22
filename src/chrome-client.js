@@ -754,7 +754,7 @@ function applySheetState() {
   const open = mobile && sheetOpen;
   document.body.classList.toggle("sheet-open", open);
   const docked = mobile && !open;
-  panelScroll.inert = docked;
+  panelScroll.inert = ended || docked;
   chatComposer.inert = ended || docked;
   const activeElement = document.activeElement;
   if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
