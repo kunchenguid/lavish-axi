@@ -491,6 +491,12 @@ async function createChromeHarness({
       // A completed pointer sequence is followed by a click on the same target.
       head.dispatch("click", {});
     },
+    cancelDock(fromY, moveY, cancelY, { pointerId = 1 } = {}) {
+      const head = element("panelHead");
+      head.dispatch("pointerdown", { pointerId, clientY: fromY, button: 0 });
+      head.dispatch("pointermove", { pointerId, clientY: moveY });
+      head.dispatch("pointercancel", { pointerId, clientY: cancelY });
+    },
   };
 }
 
@@ -4969,6 +4975,20 @@ test("a swipe on the dock raises and lowers the sheet, and a tap after a swipe i
   const panel = chrome.element("panel");
   assert.equal(panel.style.transform, "");
   assert.equal(panel.classList.contains("is-dragging"), false);
+});
+
+test("a cancelled dock swipe leaves the sheet unchanged and the next tap active", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  const panel = chrome.element("panel");
+
+  chrome.cancelDock(800, 790, 0);
+
+  assert.equal(sheetState(chrome).open, false);
+  assert.equal(panel.style.transform, "");
+  assert.equal(panel.classList.contains("is-dragging"), false);
+
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
 });
 
 test("crossing the breakpoint in either direction leaves no sheet state behind", async () => {

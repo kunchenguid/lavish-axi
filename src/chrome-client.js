@@ -820,13 +820,17 @@ function sheetDragOffset(event) {
   return sheetDrag ? Number(event.clientY) - sheetDrag.startY : 0;
 }
 
+function clearSheetDrag() {
+  sheetDrag = null;
+  panel.classList.remove("is-dragging");
+  panel.style.transform = "";
+}
+
 function finishSheetDrag(event) {
   if (!sheetDrag || event.pointerId !== sheetDrag.pointerId) return;
   const offset = sheetDragOffset(event);
   const moved = sheetDrag.moved;
-  sheetDrag = null;
-  panel.classList.remove("is-dragging");
-  panel.style.transform = "";
+  clearSheetDrag();
   if (!moved) return;
   // The click that follows a completed drag must not undo what the drag decided.
   suppressSheetClick = true;
@@ -860,7 +864,11 @@ panelHead.addEventListener("pointermove", (event) => {
     : "translateY(calc(100% - var(--dock-h) - env(safe-area-inset-bottom, 0px) + " + Math.min(0, offset) + "px))";
 });
 panelHead.addEventListener("pointerup", finishSheetDrag);
-panelHead.addEventListener("pointercancel", finishSheetDrag);
+panelHead.addEventListener("pointercancel", (event) => {
+  if (!sheetDrag || event.pointerId !== sheetDrag.pointerId) return;
+  clearSheetDrag();
+  suppressSheetClick = false;
+});
 if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
   sheetMedia.addEventListener("change", applySheetState);
 }
