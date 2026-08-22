@@ -240,6 +240,8 @@ test("no-mistakes PR gate", { skip: runnable ? false : skipReason }, async (t) =
   });
 });
 
+// CONTRIBUTING.md is the canonical public contract for the contributor workflow,
+// including the minimum no-mistakes version contributors must run.
 test("contributor workflow requires an attestation-capable no-mistakes version", () => {
   const contributing = readFileSync(contributingPath, "utf8");
   assert.match(contributing, /Workflow requires `no-mistakes` v1\.46\.0 or newer\./);
