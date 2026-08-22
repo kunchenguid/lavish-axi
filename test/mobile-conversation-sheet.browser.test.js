@@ -268,7 +268,34 @@ test(
       open(url, 3000);
       assertSheetUsable(geometry());
       populateComposer();
-      assertPopulatedComposerUsable(geometry());
+      g = geometry();
+      assertPopulatedComposerUsable(g);
+      assert.ok(g.chat.visible >= 56, `normal visual viewport retains the chat minimum: ${JSON.stringify(g.chat)}`);
+
+      evaluate(`() => {
+        document.documentElement.style.setProperty("--vv-top", "0px");
+        document.documentElement.style.setProperty("--vv-height", "240px");
+        document.getElementById("chatComposer").scrollTop = 0;
+        return "ok";
+      }`);
+      wait(300);
+      g = geometry();
+      assert.equal(g.composer.scrollTop, 0);
+      assert.equal(g.panel.bottom, 240);
+      assert.equal(g.composer.bottom, 240);
+      assert.ok(g.chat.visible >= 0);
+      for (const [name, rect] of [
+        ["send", g.send],
+        ["sendAndEnd", g.sendAndEnd],
+      ]) {
+        assert.ok(rect.top >= 0 && rect.bottom <= 240, `${name} stays inside the short visual viewport: ${JSON.stringify(rect)}`);
+      }
+      evaluate(`() => {
+        document.documentElement.style.removeProperty("--vv-top");
+        document.documentElement.style.removeProperty("--vv-height");
+        return "ok";
+      }`);
+      wait(300);
 
       emulate("844x390x1,mobile,touch");
       open(url, 3000);

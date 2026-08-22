@@ -1371,6 +1371,7 @@ body.layout-gate-active iframe#artifact {
     --bar-h: calc(56px + env(safe-area-inset-top, 0px));
     --dock-h: 60px;
     --sheet-peek: 16px;
+    --composer-reserve: calc(1px + var(--space-4) + 34px + var(--space-6) + env(safe-area-inset-bottom, 0px));
     --sheet-top: max(var(--bar-h) + var(--sheet-peek) - var(--vv-top, 0px), var(--sheet-peek));
   }
   .bar {
@@ -1507,7 +1508,11 @@ body.layout-gate-active iframe#artifact {
   }
   .panel-scroll {
     flex: 1 1 56px;
-    min-height: 56px;
+    min-height: clamp(
+      0px,
+      calc(var(--vv-height, 100dvh) - var(--sheet-top) - var(--dock-h) - var(--composer-reserve)),
+      56px
+    );
     overscroll-behavior: contain;
   }
   .chat {
@@ -1515,7 +1520,10 @@ body.layout-gate-active iframe#artifact {
   }
   .composer {
     position: static;
-    min-height: 0;
+    min-height: min(
+      var(--composer-reserve),
+      max(0px, calc(var(--vv-height, 100dvh) - var(--sheet-top) - var(--dock-h)))
+    );
     flex: 0 1 auto;
     overflow-y: auto;
     overscroll-behavior: contain;
