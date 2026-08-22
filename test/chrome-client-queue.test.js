@@ -4993,7 +4993,9 @@ test("a cancelled dock swipe leaves the sheet unchanged and the next tap active"
 
 test("crossing the breakpoint in either direction leaves no sheet state behind", async () => {
   const chrome = await createChromeHarness({ mobile: true });
-  assert.equal(sheetState(chrome).scrollInert, true);
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+  assert.equal(chrome.storage.get("lavish-axi:sheet-open:abc"), "1");
 
   // Widening to desktop: the panel is a plain side panel again, never inert, never "open".
   chrome.setMobile(false);
@@ -5001,6 +5003,7 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
   assert.equal(state.open, false);
   assert.equal(state.scrollInert, false);
   assert.equal(state.composerInert, false);
+  assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
 
   // Narrowing back docks it again.
   chrome.setMobile(true);

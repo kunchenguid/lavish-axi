@@ -870,7 +870,15 @@ panelHead.addEventListener("pointercancel", (event) => {
   suppressSheetClick = false;
 });
 if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
-  sheetMedia.addEventListener("change", applySheetState);
+  sheetMedia.addEventListener("change", (event) => {
+    if (!event.matches) {
+      sheetOpen = false;
+      try {
+        sessionStorage.removeItem(sheetStorageKey);
+      } catch {}
+    }
+    applySheetState();
+  });
 }
 if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
   window.visualViewport.addEventListener("resize", syncVisualViewport);

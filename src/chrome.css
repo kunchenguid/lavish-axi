@@ -1506,6 +1506,8 @@ body.layout-gate-active iframe#artifact {
     animation: dock-pulse 700ms var(--ease);
   }
   .panel-scroll {
+    flex: 1 1 56px;
+    min-height: 56px;
     overscroll-behavior: contain;
   }
   .chat {
@@ -1513,7 +1515,14 @@ body.layout-gate-active iframe#artifact {
   }
   .composer {
     position: static;
+    min-height: 0;
+    flex: 0 1 auto;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+  .chat-attachments {
+    max-height: min(176px, 25dvh);
   }
   .panel-scrim {
     display: block;
@@ -1551,6 +1560,9 @@ body.layout-gate-active iframe#artifact {
   }
   .composer textarea {
     min-height: 48px;
+  }
+  .chat-attachments {
+    max-height: 44px;
   }
 }
 @media (max-width: 860px) and (prefers-reduced-motion: reduce) {
