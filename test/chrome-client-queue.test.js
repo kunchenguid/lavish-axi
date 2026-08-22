@@ -3872,9 +3872,11 @@ test("chrome send and end during an in-flight submit still ends after the submit
 // visibly read-only the moment the server tells it, instead of leaving Send enabled for feedback
 // nobody will ever poll for.
 test("chrome goes read-only when the server forwards an ended SSE event (#171)", async () => {
-  const chrome = await createChromeHarness();
+  const chrome = await createChromeHarness({ mobile: true });
 
+  chrome.element("panelHead").dispatch("click");
   assert.equal(chrome.element("chatInput").disabled, false);
+  assert.equal(chrome.element("chatComposer").inert, false);
   chrome.element("shareArtifact").onclick();
   assert.equal(chrome.element("shareDialog").hidden, false);
 
@@ -3885,8 +3887,12 @@ test("chrome goes read-only when the server forwards an ended SSE event (#171)",
   assert.equal(chrome.element("moreButton").disabled, true);
   assert.equal(chrome.element("send").disabled, true);
   assert.equal(chrome.element("sendAndEnd").disabled, true);
+  assert.equal(chrome.element("chatComposer").inert, true);
   assert.equal(chrome.element("shareDialog").hidden, true);
   assert.equal(chrome.element("endedOverlay").hidden, false);
+
+  chrome.setMobile(false);
+  assert.equal(chrome.element("chatComposer").inert, true);
 });
 
 // #171: a page loaded (or reloaded) after the session already ended has no future `ended` SSE
@@ -3901,6 +3907,7 @@ test("chrome boots read-only when the session already ended before this page loa
   assert.equal(chrome.element("moreButton").disabled, true);
   assert.equal(chrome.element("send").disabled, true);
   assert.equal(chrome.element("sendAndEnd").disabled, true);
+  assert.equal(chrome.element("chatComposer").inert, true);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });
 

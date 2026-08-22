@@ -755,7 +755,7 @@ function applySheetState() {
   document.body.classList.toggle("sheet-open", open);
   const docked = mobile && !open;
   panelScroll.inert = docked;
-  chatComposer.inert = docked;
+  chatComposer.inert = ended || docked;
   const activeElement = document.activeElement;
   if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
     panelToggle.focus();
@@ -1794,7 +1794,7 @@ function markSessionEnded() {
   moreButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
-  renderSheetSummary();
+  applySheetState();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
   if (outdatedBanner) outdatedBanner.hidden = true;
