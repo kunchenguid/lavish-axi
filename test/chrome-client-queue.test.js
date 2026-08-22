@@ -3875,11 +3875,14 @@ test("chrome goes read-only when the server forwards an ended SSE event (#171)",
   const chrome = await createChromeHarness();
 
   assert.equal(chrome.element("chatInput").disabled, false);
+  chrome.element("shareArtifact").onclick();
+  assert.equal(chrome.element("shareDialog").hidden, false);
 
   chrome.eventSource().listeners.get("ended")({ data: JSON.stringify({ ended_by: "agent" }) });
 
   assert.equal(chrome.element("chatInput").disabled, true);
   assert.equal(chrome.element("annotation").disabled, true);
+  assert.equal(chrome.element("shareDialog").hidden, true);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 });
 

@@ -1786,6 +1786,7 @@ function markSessionEnded() {
   ended = true;
   cancelArtifactLoadRecovery();
   closeMenus();
+  closeShareDialog();
   closeWarningsDrawer();
   renderWarnings();
   closeWhiteboard();
