@@ -108,6 +108,11 @@ const chatAttachments = /** @type {HTMLDivElement} */ (document.getElementById("
 const chatAttachButton = /** @type {HTMLButtonElement} */ (document.getElementById("chatAttach"));
 const chatAttachInput = /** @type {HTMLInputElement} */ (document.getElementById("chatAttachInput"));
 const chatAttachmentNotice = /** @type {HTMLSpanElement} */ (document.getElementById("chatAttachmentNotice"));
+const panel = /** @type {HTMLElement} */ (document.getElementById("panel"));
+const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelHead"));
+const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
+const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
+const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
@@ -400,6 +405,7 @@ function render() {
   }
   updateSendState();
   scrollPanelToBottom();
+  renderSheetSummary();
 }
 
 function updateSendState() {
@@ -540,6 +546,7 @@ function syncChat(chat) {
 function setAgentPresence(state) {
   agentPresence = state === "listening" || state === "working" ? state : "waiting";
   updateSendState();
+  renderSheetSummary();
   if (presenceBanner) presenceBanner.hidden = ended || agentPresence !== "waiting";
 
   if (agentPresence !== "working") {
@@ -690,6 +697,179 @@ async function refreshChromeLoadHandoff(requestSequence) {
 function scrollPanelToBottom() {
   panelScroll.scrollTop = panelScroll.scrollHeight;
 }
+
+// ---- Phone-width conversation sheet ----
+// Below this width chrome.css turns the conversation panel into a dock the user raises as a
+// bottom sheet over the artifact. The chrome owns only the open/closed intent and what the dock
+// says; every size is CSS. The query must match the one chrome.css lays the sheet out under.
+const MOBILE_SHEET_MEDIA = "(max-width: 860px)";
+// How far a drag on the dock must travel before it counts as a gesture rather than a tap.
+const SHEET_DRAG_THRESHOLD_PX = 48;
+const sheetStorageKey = "lavish-axi:sheet-open:" + key;
+const sheetMedia = typeof window.matchMedia === "function" ? window.matchMedia(MOBILE_SHEET_MEDIA) : null;
+// The user's intent, kept across a chrome reload so a live-reload or server upgrade does not drop
+// them back onto a closed dock mid-conversation.
+let sheetOpen = readSheetOpen();
+// The latest agent reply that landed while the sheet was closed: the dock previews it until the
+// user opens the sheet, so a reply never arrives silently behind the artifact.
+let unreadAgentReply = "";
+/** @type {{ pointerId: any, startY: number, moved: boolean } | null} */
+let sheetDrag = null;
+let suppressSheetClick = false;
+
+function readSheetOpen() {
+  try {
+    return sessionStorage.getItem(sheetStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function isMobileSheet() {
+  return Boolean(sheetMedia && sheetMedia.matches);
+}
+
+function setSheetOpen(open) {
+  const next = Boolean(open);
+  const changed = next !== sheetOpen;
+  sheetOpen = next;
+  try {
+    if (sheetOpen) sessionStorage.setItem(sheetStorageKey, "1");
+    else sessionStorage.removeItem(sheetStorageKey);
+  } catch {
+    // Storage refused is not worth a broken sheet: the state just stops surviving a reload.
+  }
+  if (sheetOpen) unreadAgentReply = "";
+  applySheetState();
+  if (!changed || !isMobileSheet()) return;
+  if (sheetOpen) {
+    scrollPanelToBottom();
+  } else if (document.activeElement && panel.contains(document.activeElement)) {
+    // Focus must not stay inside the part of the sheet that just became inert.
+    panelToggle.focus();
+  }
+}
+
+// Re-derives every sheet attribute from the two facts that matter - whether the phone layout is
+// active and whether the sheet is open - so a viewport crossing the breakpoint in either direction
+// leaves nothing stale: a desktop panel is never inert, and a closed dock never traps focus.
+function applySheetState() {
+  const mobile = isMobileSheet();
+  const open = mobile && sheetOpen;
+  document.body.classList.toggle("sheet-open", open);
+  panelScroll.inert = mobile && !open;
+  chatComposer.inert = mobile && !open;
+  panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  panelToggle.setAttribute("aria-label", open ? "Hide conversation" : "Show conversation");
+  renderSheetSummary();
+}
+
+// What the closed dock says. One line, most actionable state first: work the user has queued,
+// then a reply they have not seen, then whether the agent is there to receive a send.
+function sheetSummary() {
+  if (ended) return { text: "Session ended", accent: false, unread: false };
+  if (queued.length > 0) {
+    return { text: queued.length === 1 ? "1 queued" : queued.length + " queued", accent: true, unread: false };
+  }
+  if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true };
+  if (agentPresence === "working") return { text: "Agent is working…", accent: false, unread: false };
+  if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false };
+  return { text: "Agent not listening", accent: false, unread: false };
+}
+
+function renderSheetSummary() {
+  const summary = sheetSummary();
+  panelSummary.textContent = summary.text;
+  panelSummary.classList.toggle("is-accent", summary.accent);
+  panelSummary.classList.toggle("is-unread", summary.unread);
+}
+
+// A brief pulse on the dock when something the user should notice lands while the sheet is
+// closed: a prompt they queued from the artifact, or an agent reply.
+function pulseSheetDock() {
+  if (!isMobileSheet() || sheetOpen) return;
+  panelHead.classList.remove("is-fresh");
+  // Restart the animation even when the previous pulse is still running.
+  void panelHead.offsetWidth;
+  panelHead.classList.add("is-fresh");
+}
+
+function noteAgentReply(text) {
+  if (!isMobileSheet() || sheetOpen) return;
+  unreadAgentReply = String(text || "");
+  renderSheetSummary();
+  pulseSheetDock();
+}
+
+// The phone keyboard shrinks the visual viewport without touching the layout viewport on iOS, so
+// the sheet reads its height and offset from here; chrome.css consumes these only under the phone
+// breakpoint. Android reports the same numbers through the layout viewport thanks to the
+// `interactive-widget=resizes-content` viewport meta, which makes this a no-op there.
+function syncVisualViewport() {
+  const root = document.documentElement;
+  if (!root || !root.style || typeof root.style.setProperty !== "function") return;
+  const viewport = window.visualViewport;
+  const height = viewport ? viewport.height : window.innerHeight;
+  const top = viewport ? viewport.offsetTop : 0;
+  if (!(height > 0)) return;
+  root.style.setProperty("--vv-height", Math.round(height) + "px");
+  root.style.setProperty("--vv-top", Math.round(Math.max(0, top || 0)) + "px");
+}
+
+function sheetDragOffset(event) {
+  return sheetDrag ? Number(event.clientY) - sheetDrag.startY : 0;
+}
+
+function finishSheetDrag(event) {
+  if (!sheetDrag || event.pointerId !== sheetDrag.pointerId) return;
+  const offset = sheetDragOffset(event);
+  const moved = sheetDrag.moved;
+  sheetDrag = null;
+  panel.classList.remove("is-dragging");
+  panel.style.transform = "";
+  if (!moved) return;
+  // The click that follows a completed drag must not undo what the drag decided.
+  suppressSheetClick = true;
+  if (sheetOpen && offset > SHEET_DRAG_THRESHOLD_PX) setSheetOpen(false);
+  else if (!sheetOpen && offset < -SHEET_DRAG_THRESHOLD_PX) setSheetOpen(true);
+}
+
+panelHead.addEventListener("click", () => {
+  if (!isMobileSheet()) return;
+  if (suppressSheetClick) {
+    suppressSheetClick = false;
+    return;
+  }
+  setSheetOpen(!sheetOpen);
+});
+panelScrim.addEventListener("click", () => setSheetOpen(false));
+panelHead.addEventListener("pointerdown", (event) => {
+  if (!isMobileSheet() || event.button) return;
+  sheetDrag = { pointerId: event.pointerId, startY: Number(event.clientY), moved: false };
+  if (typeof panelHead.setPointerCapture === "function") panelHead.setPointerCapture(event.pointerId);
+});
+panelHead.addEventListener("pointermove", (event) => {
+  if (!sheetDrag || event.pointerId !== sheetDrag.pointerId) return;
+  const offset = sheetDragOffset(event);
+  if (Math.abs(offset) > 6) sheetDrag.moved = true;
+  if (!sheetDrag.moved) return;
+  panel.classList.add("is-dragging");
+  // Follow the finger: an open sheet only moves down, a closed dock only up.
+  panel.style.transform = sheetOpen
+    ? "translateY(" + Math.max(0, offset) + "px)"
+    : "translateY(calc(100% - var(--dock-h) - env(safe-area-inset-bottom, 0px) + " + Math.min(0, offset) + "px))";
+});
+panelHead.addEventListener("pointerup", finishSheetDrag);
+panelHead.addEventListener("pointercancel", finishSheetDrag);
+if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
+  sheetMedia.addEventListener("change", applySheetState);
+}
+if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
+  window.visualViewport.addEventListener("resize", syncVisualViewport);
+  window.visualViewport.addEventListener("scroll", syncVisualViewport);
+}
+window.addEventListener("resize", syncVisualViewport);
+syncVisualViewport();
 
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -1586,6 +1766,7 @@ function markSessionEnded() {
   moreButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
+  renderSheetSummary();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
   if (outdatedBanner) outdatedBanner.hidden = true;
@@ -2253,6 +2434,8 @@ async function queueWhiteboardFeedback(index, message, mode) {
       // earlier unsent prompt instead of stacking duplicates.
       [internalQueueKeyField]: "whiteboard:" + index,
     });
+    // Queued from the whiteboard inside the artifact, like any other in-artifact prompt.
+    pulseSheetDock();
     postToWhiteboard(index, mode, { type: "lavish-whiteboard:queueResult", ok: true });
     if (mode === "overlay") closeWhiteboard();
   } catch (error) {
@@ -2556,6 +2739,8 @@ window.addEventListener("message", (event) => {
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
+    // Queued from inside the artifact, where the closed dock is the only sign it landed.
+    pulseSheetDock();
   }
   if (msg.type === "lavish:snapshot") {
     const snapshotAction = snapshotRequests.shift() || "submit";
@@ -2867,6 +3052,10 @@ document.addEventListener("keydown", (event) => {
       closeShareDialog();
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
+    } else if (!moreMenu.hidden) {
+      closeMenus();
+    } else if (sheetOpen && isMobileSheet()) {
+      setSheetOpen(false);
     } else {
       closeMenus();
     }
@@ -2907,13 +3096,18 @@ events.addEventListener("chrome-reload", (event) => reloadAfterServerRestart(shu
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
 events.addEventListener("chrome-outdated", (event) => setChromeOutdated(true, shutdownEventReason(event)));
-events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
+events.addEventListener("agent-reply", (event) => {
+  const text = JSON.parse(event.data).text;
+  addChat("agent", text);
+  noteAgentReply(text);
+});
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
 events.addEventListener("layout-warnings", (event) => setLayoutWarnings(JSON.parse(event.data).warnings || []));
 // A reconnecting stream means this chrome may have missed updates while it was away.
 events.addEventListener("open", () => refreshLayoutWarnings());
 
+applySheetState();
 render();
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);

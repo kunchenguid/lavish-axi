@@ -771,12 +771,24 @@ test("chrome uses the annotation outline as the keyboard focus outline", async (
   assert.match(css, /--annotate-offset:2px/);
 });
 
-test("chrome keeps the editor usable on narrow screens", async () => {
-  const css = await chromeCssSource();
+test("chrome page ships the phone conversation dock and the viewport contract it relies on", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
-  assert.match(css, /@media \(max-width:860px\)/);
-  assert.match(css, /grid-template-columns:1fr/);
-  assert.match(css, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
+  // Safe-area insets are zero unless the page opts into the full screen, and an on-screen
+  // keyboard covers a bottom-anchored composer on Android unless the layout viewport resizes.
+  const viewport = html.match(/<meta name="viewport" content="([^"]+)">/)?.[1] || "";
+  assert.match(viewport, /\bviewport-fit=cover\b/);
+  assert.match(viewport, /\binteractive-widget=resizes-content\b/);
+
+  // The dock is a real disclosure control: a labelled button with expanded state over the
+  // panel it reveals, a live summary, and a scrim the sheet rises over.
+  assert.match(html, /<aside class="panel" id="panel">/);
+  assert.match(html, /<div class="panel-scrim" id="panelScrim"><\/div>/);
+  assert.match(
+    html,
+    /<button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">/,
+  );
+  assert.match(html, /<span class="panel-summary" id="panelSummary" role="status" aria-live="polite"><\/span>/);
 });
 
 test("chrome top bar follows the design mock wordmark and overflow menu treatment", async () => {

@@ -96,6 +96,7 @@
   --shadow-tooltip: 0 16px 44px rgba(0, 0, 0, 0.35);
   --shadow-floating: 0 20px 70px rgba(0, 0, 0, 0.35);
   --bar-h: 56px;
+  --bar-pad: var(--space-8);
   --panel-w: 360px;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
   --dur-fast: 120ms;
@@ -135,7 +136,7 @@ body.lavish {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 0 var(--space-8);
+  padding: 0 var(--bar-pad);
   background: var(--bg-bar);
   border-bottom: var(--hairline-subtle);
   box-sizing: border-box;
@@ -891,6 +892,18 @@ body.lavish {
   min-width: 0;
   min-height: 0;
 }
+/* Desktop keeps the panel's original flex children: the head wrappers exist only so the phone
+   layout can turn the heading into a dock, and they are transparent to layout everywhere else. */
+.panel-head,
+.panel-head-row {
+  display: contents;
+}
+.panel-handle,
+.panel-summary,
+.panel-toggle,
+.panel-scrim {
+  display: none;
+}
 .panel h2 {
   font-size: 15px;
   line-height: 1.3;
@@ -1331,7 +1344,7 @@ body.layout-gate-active iframe#artifact {
 @media (max-width: 640px) {
   .bar {
     gap: 10px;
-    padding: 0 var(--space-6);
+    --bar-pad: var(--space-6);
   }
   .brand-support {
     display: none;
@@ -1345,22 +1358,176 @@ body.layout-gate-active iframe#artifact {
     max-height: min(70vh, 460px);
   }
 }
+/* Phone-width chrome: the artifact takes the whole viewport above a persistent conversation dock,
+   and the conversation itself is a bottom sheet the dock raises over a scrim. A side-by-side or
+   stacked split leaves neither half usable on a phone - the composer alone is taller than the
+   strip a split gives the panel - so the two surfaces take turns owning the height instead.
+   The sheet is sized from the visual viewport (`--vv-top`/`--vv-height`, kept current by
+   chrome-client.js) rather than the layout viewport, so an on-screen keyboard shrinks it instead
+   of covering the composer, and every edge that can meet a notch or home indicator pads by the
+   matching safe-area inset. */
 @media (max-width: 860px) {
-  body {
-    overflow: auto;
+  :root {
+    --bar-h: calc(56px + env(safe-area-inset-top, 0px));
+    --dock-h: 60px;
+    --sheet-peek: 16px;
+    --sheet-top: max(var(--bar-h) + var(--sheet-peek) - var(--vv-top, 0px), var(--sheet-peek));
+  }
+  .bar {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-right: calc(var(--bar-pad) + env(safe-area-inset-right, 0px));
+    padding-left: calc(var(--bar-pad) + env(safe-area-inset-left, 0px));
   }
   .layout {
     height: calc(100vh - var(--bar-h));
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) min(42vh, 360px);
+    height: calc(100dvh - var(--bar-h));
+    grid-template-columns: minmax(0, 1fr);
+    /* The second row only reserves the dock's footprint so the artifact is never underneath it;
+       the panel itself is fixed. */
+    grid-template-rows: minmax(0, 1fr) calc(var(--dock-h) + env(safe-area-inset-bottom, 0px));
+  }
+  .frame {
+    padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    background: var(--bg-bar);
   }
   .panel {
-    width: 100%;
+    position: fixed;
+    z-index: 30;
+    top: calc(var(--vv-top, 0px) + var(--sheet-top));
+    right: 0;
+    left: 0;
+    width: auto;
+    height: calc(var(--vv-height, 100dvh) - var(--sheet-top));
+    padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
     border-left: 0;
-    border-top: var(--hairline-subtle);
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    /* The hairline is a shadow, not a border: a border would add to the sheet's box and push
+       the docked head one pixel past the viewport edge. */
+    box-shadow:
+      0 -1px 0 var(--border-subtle),
+      var(--shadow-floating);
+    /* Collapsed: slide everything but the dock below the viewport. The sheet keeps its full
+       height, so opening it is one transform and the chat never reflows mid-gesture. */
+    transform: translateY(calc(100% - var(--dock-h) - env(safe-area-inset-bottom, 0px)));
+    transition: transform var(--dur-slow) var(--ease);
+    will-change: transform;
+  }
+  body.sheet-open .panel {
+    transform: none;
+  }
+  .panel.is-dragging {
+    transition: none;
+  }
+  .panel-head {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    height: var(--dock-h);
+    padding: 6px 16px 0;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  body:not(.sheet-open) .panel-head {
+    height: calc(var(--dock-h) + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .panel-handle {
+    display: block;
+    width: 36px;
+    height: 4px;
+    margin: 0 auto 6px;
+    border-radius: var(--radius-pill);
+    background: var(--border-strong);
+  }
+  .panel-head-row {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .panel h2 {
+    flex: 0 0 auto;
+    margin: 0;
+  }
+  .panel-summary {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--fg-faint);
+    font-size: 12px;
+    line-height: 1.35;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .panel-summary:empty {
+    display: none;
+  }
+  .panel-summary.is-accent {
+    color: var(--accent);
+    font-weight: var(--w-semi);
+  }
+  .panel-summary.is-unread::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    vertical-align: 1px;
+  }
+  .panel-toggle {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: var(--bg-elevated);
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  .panel-toggle svg {
+    display: block;
+    transition: transform var(--dur) var(--ease);
+  }
+  body.sheet-open .panel-toggle svg {
+    transform: rotate(180deg);
+  }
+  .panel-head.is-fresh .panel-toggle {
+    animation: dock-pulse 700ms var(--ease);
+  }
+  .panel-scroll {
+    overscroll-behavior: contain;
   }
   .chat {
     padding-bottom: 10px;
+  }
+  .composer {
+    position: static;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+  .panel-scrim {
+    display: block;
+    position: fixed;
+    inset: var(--bar-h) 0 0 0;
+    z-index: 29;
+    background: rgba(15, 17, 21, 0.72);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-slow) var(--ease);
+  }
+  body.sheet-open .panel-scrim {
+    opacity: 1;
+    pointer-events: auto;
   }
   .pill-preview {
     max-width: min(220px, 70vw);
@@ -1371,6 +1538,37 @@ body.layout-gate-active iframe#artifact {
   }
   .share-copy-row {
     flex-direction: column;
+  }
+}
+/* A phone on its side has no height to share: the raised sheet covers the bar as well (the sheet
+   carries its own close control) and the composer gives up its tall default. */
+@media (max-width: 860px) and (max-height: 520px) {
+  :root {
+    --sheet-top: var(--sheet-peek);
+  }
+  .panel-scrim {
+    inset: 0;
+  }
+  .composer textarea {
+    min-height: 48px;
+  }
+}
+@media (max-width: 860px) and (prefers-reduced-motion: reduce) {
+  .panel,
+  .panel-scrim,
+  .panel-toggle svg {
+    transition: none;
+  }
+  .panel-head.is-fresh .panel-toggle {
+    animation: none;
+  }
+}
+@keyframes dock-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(244, 201, 93, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(244, 201, 93, 0);
   }
 }
 
