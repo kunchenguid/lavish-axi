@@ -8,7 +8,6 @@ import test from "node:test";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const workflowPath = join(root, ".github", "workflows", "no-mistakes-required.yml");
-// CONTRIBUTING.md owns the public contributor workflow contract.
 const contributingPath = join(root, "CONTRIBUTING.md");
 
 /**
