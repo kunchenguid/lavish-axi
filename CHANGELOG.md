@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.56](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.55...lavish-axi-v0.1.56) (2026-08-22)
+
+
+### Bug Fixes
+
+* replace clipped mobile conversation with bottom sheet ([#275](https://github.com/kunchenguid/lavish-axi/issues/275)) ([7d4e5a9](https://github.com/kunchenguid/lavish-axi/commit/7d4e5a9fe09dfa21e8edafb4252bc757ecf44a29))
+
 ## [0.1.55](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.54...lavish-axi-v0.1.55) (2026-08-21)
 
 
