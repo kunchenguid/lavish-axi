@@ -187,7 +187,6 @@ let outdatedReloadInFlight = false;
 let unrestorableDraftMiss = null;
 let retiredDrafts = loadRetiredDrafts();
 let layoutGateVisible = false;
-let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
 let layoutGateFailureActive = false;
 // A failure only the user can retire. The artifact-load card clears itself once a load succeeds;
@@ -1306,7 +1305,6 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
   // Failure copy must not disable the visual gate's own recovery paths. Keep a fresh hold timer
   // over the card so a server replacement or any other failure cannot strand the artifact behind
   // a sticky message forever.
-  layoutGateArmed = true;
   if (layoutGateTitle) layoutGateTitle.textContent = title;
   if (layoutGateCopy) layoutGateCopy.textContent = copy;
   if (layoutGateAction) {
@@ -1379,7 +1377,6 @@ function clearLayoutGateFailure() {
 
 function revealLayoutGate() {
   clearLayoutGateTimer();
-  layoutGateArmed = false;
   layoutGateEscape?.reveal?.();
   setLayoutGateActive(false);
 }
@@ -1412,7 +1409,6 @@ function startLayoutGateCycle() {
   if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
 
   layoutGateCycle += 1;
-  layoutGateArmed = true;
   setLayoutGateActive(true);
   // A sticky failure owns the card copy, but never the reveal. Do not repaint it as a checking
   // card, and do arm a fresh timer for reloads that happen while the sticky card is present.
@@ -3186,9 +3182,9 @@ setAgentPresence("waiting");
 // to wait for - start read-only instead of looking live until a Send gets silently refused.
 if (sessionData.initialEnded) markSessionEnded();
 
-// Reaching this line is the only proof that this file parsed and ran to completion. The page it
-// bootstraps ships with the layout-gate overlay already covering the artifact, and only this
-// script ever takes it down - so the inline failsafe in the page holds it up until here.
+// Reaching this line is the only proof that this file parsed and ran to completion. The inline
+// bootstrap already owns the gate's bounded escape if this script fails; retire only its separate
+// boot-failure timer now that the full client has taken over.
 const chromeBootWindow = /** @type {Record<string, any>} */ (/** @type {unknown} */ (window));
 chromeBootWindow.__lavishChromeReady = true;
 chromeBootWindow.__lavishCancelChromeBootFailsafe?.();

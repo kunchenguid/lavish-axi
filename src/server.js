@@ -2028,13 +2028,12 @@ export function extractArtifactHead(html) {
   return { faviconTag, title };
 }
 
-// The chrome page ships with the layout-gate overlay already covering the artifact area, and
-// only `chrome-client.js` ever takes it down - the "Show anyway" button's handler is wired by
-// that same script. So when the script never runs (the shared server shut down between serving
-// this page and serving the script, which is exactly what a version-driven restart does), the
-// page is stuck on a spinner with nothing to click and no way back. This inline failsafe is
-// armed before the script tag, so it survives even a request that hangs instead of erroring,
-// and `chrome-client.js` cancels it once it has run to completion.
+// The chrome page ships with the layout-gate overlay already covering the artifact area. Install
+// its bounded escape and manual bypass inline before `chrome-client.js`, so they still work if the
+// shared server shuts down between serving the page and serving that script. This block also arms
+// the boot-failure card before the external script tag, surviving a request that hangs instead of
+// erroring; `chrome-client.js` cancels that boot timer once it has run to completion and reuses the
+// gate escape for every later overlay state.
 export const CHROME_BOOT_FAILSAFE_MS = 15000;
 export const CHROME_LAYOUT_GATE_MAX_HOLD_MS = 12000;
 // The failsafe's button is the only control on a page whose client script is dead, so its own

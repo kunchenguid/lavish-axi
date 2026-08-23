@@ -1965,7 +1965,12 @@ export function createArtifactSdk(
       new Promise((resolve) => window.setTimeout(resolve, layoutAuditAnimationMaxWaitMs)),
     ]);
     if (!settled) {
-      for (const animation of finite) animation.finished.then(scheduleLayoutAudit, scheduleLayoutAudit);
+      for (const animation of finite) {
+        animation.finished.then(
+          () => scheduleLayoutAudit(),
+          () => scheduleLayoutAudit(),
+        );
+      }
     }
     return settled;
   }
@@ -2026,10 +2031,10 @@ export function createArtifactSdk(
 
   function startLayoutAudit() {
     scheduleLayoutAudit();
-    window.addEventListener("load", scheduleLayoutAudit, { once: true });
-    window.addEventListener("resize", scheduleLayoutAudit, { passive: true });
-    window.addEventListener("animationend", scheduleLayoutAudit, { passive: true });
-    window.addEventListener("transitionend", scheduleLayoutAudit, { passive: true });
+    window.addEventListener("load", () => scheduleLayoutAudit(), { once: true });
+    window.addEventListener("resize", () => scheduleLayoutAudit(), { passive: true });
+    window.addEventListener("animationend", () => scheduleLayoutAudit(), { passive: true });
+    window.addEventListener("transitionend", () => scheduleLayoutAudit(), { passive: true });
   }
 
   // The narrow fatal path. A local subresource the artifact declares but the server cannot serve

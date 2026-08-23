@@ -166,9 +166,9 @@ pnpm link
 - **Self-paint warning** - `lavish-axi <html-file>`, `export`, and `share` run a render-free check for artifacts missing an explicit page background and return a one-line `self_paint_warning`.
   The check fails open - any stylesheet link, `@import`, Tailwind runtime script, `color-scheme`, or `html`/`body`/`:root` background signal suppresses it - and it never blocks the open.
 - **Open-time layout gate** - The browser chrome masks an artifact only while the real in-iframe audit waits for fonts and final geometry.
-  The first completed check reveals the artifact, whatever it found, unless the mask is naming one of the failures below; the gate never holds the review hostage waiting for a repair.
-  The user can click **Show anyway**, and a bounded safety timeout fails open when no check has completed.
-  If the review cannot load at all - the chrome's own script never runs, or the server does not answer the artifact's load request after several retries - the mask is replaced by a message naming the problem and a **Check and reload** button, instead of holding the artifact behind a check that will never complete.
+  The first completed client-side check reveals the artifact, whatever it found and even if reporting that check to the server fails; the gate never holds the review hostage waiting for a repair or a network round-trip.
+  The user can click **Show anyway**, and a bounded safety timeout fails open from every gate state.
+  If the review cannot load at all - the chrome's own script never runs, or the server does not answer the artifact's load request after several retries - the mask names the problem and offers **Check and reload** without removing the independent **Show anyway** escape.
   A review already loaded in another browser tab is named the same way, with a **Take over here** button that moves it into the current tab, because Lavish loads an artifact in one tab at a time.
 - **Layout issues inbox** - Detection is passive. After fonts and finite animations settle, the injected SDK confirms severe failures from direct rendered evidence such as materially escaped meaningful content or required controls, clipped text fragments, viewport reachability, or near-total semantic occlusion.
   Explicit ellipsis and line clamp, standard visually hidden accessibility text, intentional scrollers or masks, parent overhang, generic element scroll geometry, decorative overlap, and uncertain motion do not produce findings by themselves.
