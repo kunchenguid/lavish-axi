@@ -136,7 +136,10 @@ test("home output teaches agents when and how to use Lavish Editor", () => {
   assert.ok(output.visual_guidance.length <= 6);
   assert.ok(output.visual_guidance.some((item) => item.includes("visual hierarchy")));
   assert.ok(
-    output.visual_guidance.some((item) => /screenshot/i.test(item) && /embed/i.test(item) && /prose/i.test(item)),
+    output.visual_guidance.some(
+      (item) =>
+        /show, don't tell/i.test(item) && /inline SVG/.test(item) && /screenshot/i.test(item) && /prose/i.test(item),
+    ),
   );
   assert.ok(output.visual_guidance.some((item) => item.includes("sections, cards, tables")));
   assert.ok(output.visual_guidance.some((item) => item.includes("horizontal overflow")));
@@ -191,11 +194,16 @@ test("design output is the sole emitted concise explicit-background guidance", (
   assert.match(output.design.summary, new RegExp(instruction.replaceAll(".", "\\.")));
   assert.equal(output.self_paint_rule, undefined);
 
+  // The diagram playbook owns the figure render-verify rule, so it is exempt from the
+  // render-verify exclusivity sweep but must still not restate the background instruction.
+  const diagramSurface = JSON.stringify(createPlaybookOutput(["diagram"]));
+  assert.ok(!diagramSurface.includes(instruction));
+  assert.match(diagramSurface, /render-verify/i);
   const otherAgentSurfaces = [
     JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
     getCommandHelp("design"),
     createSkillMarkdown(),
-    ...["diagram", "table", "comparison", "plan", "code", "input", "slides"].map((id) =>
+    ...["table", "comparison", "plan", "code", "input", "slides"].map((id) =>
       JSON.stringify(createPlaybookOutput([id])),
     ),
   ];
@@ -352,7 +360,7 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.equal(output.playbook_router.playbooks.length, 7);
   assert.equal(
     output.playbook_router.playbooks.find((playbook) => playbook.id === "diagram")?.use_when,
-    "Map relationships, flows, state, and architecture",
+    "Explain relationships, flows, state, architecture, and concepts with illustrations",
   );
   assert.ok(output.design.summary.includes(DESIGN_PRIORITY_RULE), "design summary embeds the single-sourced rule");
   assert.match(output.design.summary, /does not auto-inject/);
@@ -380,15 +388,16 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
     /^https:\/\/cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@\d+\.\d+\.\d+\/dist\/index\.global\.js$/,
   );
   assert.match(output.design.other_design_systems, /different design system|other design system/i);
-  assert.match(output.diagram_tooling.use_when, /flows \/ architecture \/ state \/ sequence diagrams/);
-  assert.match(output.diagram_tooling.use_when, /hand-built div\/flexbox boxes/);
-  assert.match(output.diagram_tooling.mermaid_cdn_snippet, /cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+/);
-  assert.match(output.diagram_tooling.mermaid_cdn_snippet, /mermaid\.initialize/);
+  assert.match(output.whiteboard_tooling.use_when, /^Opt-in only/);
+  assert.match(output.whiteboard_tooling.use_when, /asks for an editable whiteboard/);
+  assert.match(output.whiteboard_tooling.use_when, /hand-authored inline SVG per the diagram playbook/);
+  assert.match(output.whiteboard_tooling.mermaid_cdn_snippet, /cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+/);
+  assert.match(output.whiteboard_tooling.mermaid_cdn_snippet, /mermaid\.initialize/);
   assert.match(
-    output.diagram_tooling.cdn_urls.mermaid,
+    output.whiteboard_tooling.cdn_urls.mermaid,
     /^https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+\/dist\/mermaid\.esm\.min\.mjs$/,
   );
-  assert.equal(output.diagram_tooling.versions.mermaid, "11.15.0");
+  assert.equal(output.whiteboard_tooling.versions.mermaid, "11.15.0");
   assert.equal("opt_out" in output.design, false);
   assert.equal("rule" in output.design, false);
   assert.equal(output.design.latest_docs, "https://daisyui.com/components/");
@@ -436,28 +445,29 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
 });
 
-test("diagram playbook names the hand-built flow anti-pattern", () => {
+test("diagram playbook defaults to hand-authored SVG and names the anti-patterns", () => {
   const output = createPlaybookOutput(["diagram"]);
 
-  assert.ok(output.playbook.choose.some((item) => item.includes("Mermaid")));
+  assert.ok(output.playbook.choose.some((item) => /Default to hand-authored inline SVG/.test(item)));
+  assert.ok(output.playbook.choose.some((item) => /only when the user asks for an editable whiteboard/i.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => /hand-build boxes-and-arrows/i.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => /div\/flexbox/i.test(item)));
-  assert.ok(output.playbook.pitfalls.some((item) => /does not auto-route edges/i.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /reach for Mermaid to save authoring effort/i.test(item)));
 });
 
-test("diagram playbook tells agents to keep Mermaid theming in sync with the page theme", () => {
+test("diagram playbook routes whiteboard Mermaid through the theme-aware design snippet", () => {
   const output = createPlaybookOutput(["diagram"]);
 
   assert.ok(
     output.playbook.design_rules.some(
-      (item) => /mermaid/i.test(item) && /theme/i.test(item) && /re-render/i.test(item),
+      (item) => /mermaid/i.test(item) && /theme-aware/i.test(item) && /`lavish-axi design`/.test(item),
     ),
-    "diagram playbook must tell agents to theme Mermaid to the page and re-render on theme change",
+    "the whiteboard opt-in must still theme Mermaid through the design snippet instead of hardcoding one theme",
   );
 });
 
 test("design output emits a theme-aware Mermaid init that re-renders on page-theme change", () => {
-  const snippet = createDesignOutput().diagram_tooling.mermaid_cdn_snippet;
+  const snippet = createDesignOutput().whiteboard_tooling.mermaid_cdn_snippet;
 
   // The old bug: a single hardcoded Mermaid theme that ignores the page theme.
   assert.doesNotMatch(snippet, /theme:\s*["']base["']/);
@@ -485,7 +495,7 @@ test("design output emits a theme-aware Mermaid init that re-renders on page-the
 
 test("theme-aware Mermaid snippet serializes rapid theme-change renders", async () => {
   const snippet = createDesignOutput()
-    .diagram_tooling.mermaid_cdn_snippet.replace(/^<script type="module">\n/, "")
+    .whiteboard_tooling.mermaid_cdn_snippet.replace(/^<script type="module">\n/, "")
     .replace(/\n<\/script>$/, "")
     .replace(/^\s*import mermaid from "[^"]+";\n/m, "");
   let dark = false;
@@ -682,7 +692,7 @@ test("Mermaid after evidence embeds the shipped theme-aware snippet", async () =
   assert.notEqual(closingScript, -1);
   assert.equal(
     evidence.slice(start, closingScript + "    </script>".length).replace(/^ {4}/gm, ""),
-    createDesignOutput().diagram_tooling.mermaid_cdn_snippet,
+    createDesignOutput().whiteboard_tooling.mermaid_cdn_snippet,
   );
 });
 

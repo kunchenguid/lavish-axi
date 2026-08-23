@@ -7,11 +7,11 @@ export const PLAYBOOK_ROUTER_HELP =
 export const PLAYBOOKS = [
   {
     id: "diagram",
-    use_when: "Map relationships, flows, state, and architecture",
+    use_when: "Explain relationships, flows, state, architecture, and concepts with illustrations",
     choose: [
-      "Use Mermaid when automatic node placement and edge routing matter more than rich card content.",
-      "Use CSS grid, SVG, or positioned HTML when each item needs prose, code, controls, or detailed annotations.",
-      "Use a hybrid shape for large systems: a small overview diagram followed by detailed module cards.",
+      "Default to hand-authored inline SVG: it gives proportion, emphasis, spatial metaphor, and annotation-ready structure that generated layouts cannot.",
+      "Use Mermaid only when the user asks for an editable whiteboard: rendered Mermaid in a `.mermaid` container becomes an Excalidraw whiteboard in the Lavish browser.",
+      "For large systems, draw a small overview illustration and put detail in module cards below it, instead of one dense auto-laid graph.",
     ],
     structure: [
       "Lead with the question the diagram answers, not with the implementation detail that produced it.",
@@ -19,15 +19,18 @@ export const PLAYBOOKS = [
       "For complex systems, separate topology from detail so the overview stays readable.",
     ],
     design_rules: [
-      "Use page-scoped class names and avoid generic names like .node that can collide with diagram libraries.",
-      "Prefer top-down flow for multi-step diagrams unless the flow is genuinely linear and short.",
-      "Quote labels that contain punctuation or code-like names, and use explicit line breaks where the renderer supports them.",
-      "Initialize Mermaid to match the page theme and re-render when the theme changes: pick the Mermaid theme from the effective page appearance (light or dark) at render time, and use the theme-aware `lavish-axi design` Mermaid snippet rather than hardcoding a single theme, since Mermaid does not restyle an already-rendered SVG when the viewer toggles the page theme.",
+      "Size with viewBox plus width:100%; never fixed pixel dimensions, and keep every element inside the viewBox.",
+      "Color through currentColor and the page's CSS custom properties so figures follow the artifact's light and dark themes.",
+      "Give every meaningful node, edge, and region a stable id and a <title> so reviewers can annotate precisely.",
+      "Keep labels to a few words and put prose beside the figure in HTML - SVG text does not wrap, so short labels are also the overflow discipline.",
+      "Keep figures self-contained: no external images, fonts, or scripts, so exports render offline.",
+      "Render-verify before serving: screenshot the artifact in light, dark, and a narrow viewport - the layout audit deliberately skips SVG interiors.",
+      "When the user asked for a whiteboard, initialize Mermaid theme-aware with the `lavish-axi design` snippet rather than hardcoding one theme.",
     ],
     pitfalls: [
-      "Do not cram every file or function into one diagram when a layered explanation would be clearer.",
-      "Do not hand-build boxes-and-arrows from div/flexbox for a flow: it does not auto-route edges and reads worse than Mermaid; reach for Mermaid or SVG for richly annotated nodes.",
-      "Do not let default diagram colors clash with the page palette or dark mode.",
+      "Do not cram every file or function into one figure when a layered explanation would be clearer.",
+      "Do not hand-build boxes-and-arrows from div/flexbox: inline SVG owns figures, HTML owns the prose around them.",
+      "Do not reach for Mermaid to save authoring effort - it surrenders position, size, and emphasis to the engine.",
       "Do not present unverified architecture claims as facts. Cite the files or commands that support them.",
     ],
     lavish_notes: [

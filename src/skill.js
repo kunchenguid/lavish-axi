@@ -100,7 +100,7 @@ ${bullets(home.visual_guidance)}
 
 Run \`npx -y lavish-axi playbook <id>\` for focused, detailed guidance on any of these.
 ${PLAYBOOK_ROUTER_HELP}
-For flows, architecture, state, or sequence diagrams, do not hand-build boxes-and-arrows from div/flexbox; open the diagram playbook and use the theme-aware Mermaid snippet from \`npx -y lavish-axi design\` unless SVG is needed for richly annotated nodes.
+Figures are hand-authored inline SVG by default - open the diagram playbook before drawing, and never build boxes-and-arrows from div/flexbox. Use the Mermaid whiteboard snippet from \`npx -y lavish-axi design\` only when the user asks for an editable whiteboard.
 
 ${playbookList(home.playbooks)}
 

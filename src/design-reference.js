@@ -148,7 +148,7 @@ export const DESIGN_PRIORITY_RULE =
 export const DESIGN_SYSTEM_HINT =
   "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Before writing any HTML: " +
   DESIGN_PRIORITY_RULE +
-  " Run `lavish-axi design` for a content-to-playbook router, a copy-pasteable CDN snippet, a Mermaid CDN snippet/init for diagrams, and the DaisyUI component reference. When you deliver the artifact, state which of the three design sources you used and why.";
+  " Run `lavish-axi design` for a content-to-playbook router, a copy-pasteable CDN snippet, the whiteboard (Mermaid) opt-in snippet, and the DaisyUI component reference. When you deliver the artifact, state which of the three design sources you used and why.";
 
 export const DAISYUI_THEMES = [
   "light",
@@ -211,9 +211,9 @@ export function createDesignOutput() {
       other_design_systems:
         "If the user asks for a different design system (Bootstrap, custom CSS, plain HTML, etc.), use that instead - Lavish does not require DaisyUI.",
     },
-    diagram_tooling: {
+    whiteboard_tooling: {
       use_when:
-        "Use this for flows / architecture / state / sequence diagrams after opening the diagram playbook; Mermaid handles layout and edge routing better than hand-built div/flexbox boxes.",
+        "Opt-in only: author a diagram as Mermaid in a `.mermaid` container solely when the user asks for an editable whiteboard - Lavish turns it into an Excalidraw whiteboard whose edits come back as feedback. Every other figure is hand-authored inline SVG per the diagram playbook.",
       mermaid_cdn_snippet: MERMAID_CDN_SNIPPET,
       cdn_urls: { mermaid: MERMAID_CDN_URL },
       versions: { mermaid: MERMAID_VERSION },
