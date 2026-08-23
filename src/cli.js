@@ -1611,11 +1611,6 @@ function flagValue(args, flag) {
   return null;
 }
 
-function optionalFlagString(value) {
-  const trimmed = String(value ?? "").trim();
-  return trimmed || undefined;
-}
-
 function isValueFlagToken(arg, flags) {
   for (const flag of flags) {
     if (arg === flag || arg.startsWith(`${flag}=`)) return true;
