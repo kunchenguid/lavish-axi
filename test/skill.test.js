@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHomeOutput } from "../src/cli.js";
+import { POLL_SEND_AND_END_RULE, POLL_WAKE_PATH_RULES, createHomeOutput } from "../src/cli.js";
+import { DESIGN_PRIORITY_RULE } from "../src/design-reference.js";
+import { PLAYBOOK_ROUTER_HELP } from "../src/playbooks.js";
 import {
   ALLOWED_SKILL_FRONTMATTER_KEYS,
+  MAX_SKILL_MARKDOWN_CHARS,
   SKILL_DESCRIPTION,
   createSkillMarkdown,
   parseSkillFrontmatter,
   validateSkillMarkdown,
 } from "../src/skill.js";
-
-function skillCommandText(text) {
-  return text.replaceAll("`lavish-axi", "`npx -y lavish-axi");
-}
 
 test("createSkillMarkdown emits valid frontmatter naming the lavish skill", () => {
   const { frontmatter, errors } = parseSkillFrontmatter(createSkillMarkdown());
@@ -79,81 +78,41 @@ test("createSkillMarkdown handles explicit /lavish invocation arguments", () => 
   assert.match(body, /empty/i, "explains the model-invoked case where no arguments are passed");
 });
 
-test("createSkillMarkdown mirrors the no-args home output", () => {
+test("createSkillMarkdown stays a short stub that defers to the CLI", () => {
+  const md = createSkillMarkdown();
+
+  assert.ok(md.length <= MAX_SKILL_MARKDOWN_CHARS, "the generated skill stays drastically smaller than CLI guidance");
+  assert.match(md, /Lavish Editor/);
+  assert.match(md, /`npx -y lavish-axi --help`/);
+  assert.match(md, /`npx -y lavish-axi design`/);
+  assert.match(md, /`npx -y lavish-axi playbook <id>`/);
+  assert.match(md, /stale/i);
+});
+
+test("createSkillMarkdown does not bake CLI-owned guidance into the skill", () => {
   const md = createSkillMarkdown();
   const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false, agent: "static" });
 
-  assert.ok(md.includes(skillCommandText(home.description)), "includes the product description");
-
   for (const item of home.visual_guidance) {
-    assert.ok(md.includes(item), `includes visual guidance: ${item.slice(0, 32)}...`);
+    assert.ok(!md.includes(item), `must not copy visual guidance: ${item.slice(0, 48)}...`);
   }
 
   for (const playbook of home.playbooks) {
-    assert.ok(md.includes(playbook.id), `includes playbook id: ${playbook.id}`);
-    assert.ok(md.includes(playbook.use_when), `includes playbook use_when: ${playbook.id}`);
+    assert.ok(!md.includes(playbook.use_when), `must not copy playbook use_when: ${playbook.id}`);
   }
 
-  for (const item of home.help) {
-    const skillItem = skillCommandText(item);
-    assert.ok(md.includes(skillItem), `includes help: ${skillItem.slice(0, 32)}...`);
+  for (const item of POLL_WAKE_PATH_RULES) {
+    assert.ok(!md.includes(item), `must not copy poll wake-path rule: ${item.slice(0, 48)}...`);
   }
-});
 
-test("createSkillMarkdown explains the open-time self-paint warning", () => {
-  const md = createSkillMarkdown();
-  const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Visual guidance"));
-
-  const openIndex = workflow.indexOf("to open or resume a review session");
-  const pollIndex = workflow.indexOf("to long-poll");
-  assert.ok(openIndex > 0 && openIndex < pollIndex, "opening comes before polling");
-  assert.match(workflow, /self_paint_warning/, "the workflow explains the open-time warning");
-});
-
-test("createSkillMarkdown requires an observable wake path for every poll", () => {
-  const md = createSkillMarkdown();
-  const workflow = md.slice(md.indexOf("## Workflow"), md.indexOf("## Visual guidance"));
-
-  assert.match(workflow, /Keep .*poll in the foreground by default.*return the feedback directly to the agent/i);
-  assert.match(workflow, /harness-native tracked background-job facility/i);
-  assert.match(workflow, /completion result is guaranteed to resume or notify the same agent/i);
-  assert.match(workflow, /Never use `nohup`/);
-  assert.match(workflow, /shell `&`/);
-  assert.match(workflow, /`disown`/);
-  assert.match(workflow, /redirected fire-and-forget processes/);
-  assert.match(workflow, /detached terminal without an explicit verified callback/);
-  assert.match(
-    workflow,
-    /If the harness has no completion-aware background facility, use the foreground poll or first wire a verified wake callback into the surrounding supervisor/i,
-  );
-  assert.match(workflow, /Do not tell the user the artifact is being monitored until that wake path is live/i);
-  assert.match(workflow, /`Send & End` ends the session.*final feedback is still delivered once.*polling stops/i);
-  assert.match(workflow, /(?:do|must) not reopen (?:it|the session) uninvited/i);
-  assert.match(workflow, /feedback remains queued until delivery/);
-  assert.doesNotMatch(md, /Codex detected/);
-});
-
-test("createSkillMarkdown keeps layout detection passive", () => {
-  const md = createSkillMarkdown();
-
-  assert.match(md, /layout issues are filed passively/);
-  assert.match(md, /ordinary `layout-warnings` prompt only when the user selects and queues them/);
-  assert.doesNotMatch(md, /returned as `layout_warnings`/);
-  assert.doesNotMatch(md, /If poll returns `layout_warnings`/);
-});
-
-test("createSkillMarkdown requires opening every matching playbook", () => {
-  const md = createSkillMarkdown();
-  const playbooksSection = md.slice(md.indexOf("## Playbooks"), md.indexOf("## Commands & rules"));
-
-  assert.ok(playbooksSection.includes("combines several playbooks"), "explains artifacts span playbooks");
-  assert.ok(playbooksSection.includes("MUST open each matching playbook"), "requires opening matching playbooks");
-  assert.ok(playbooksSection.includes("hand-authored inline SVG by default"), "names the SVG-first default");
-  assert.ok(playbooksSection.includes("never build boxes-and-arrows"), "names the diagram anti-pattern");
-  assert.ok(
-    playbooksSection.includes("only when the user asks for an editable whiteboard"),
-    "scopes Mermaid to the whiteboard opt-in",
-  );
+  assert.ok(!md.includes(POLL_SEND_AND_END_RULE), "must not copy the Send & End rule");
+  assert.ok(!md.includes(PLAYBOOK_ROUTER_HELP), "must not copy playbook-router help");
+  assert.ok(!md.includes(DESIGN_PRIORITY_RULE), "must not copy the design-priority rule");
+  assert.doesNotMatch(md, /self_paint_warning/);
+  assert.doesNotMatch(md, /## Workflow/);
+  assert.doesNotMatch(md, /## Visual guidance/);
+  assert.doesNotMatch(md, /## Playbooks/);
+  assert.doesNotMatch(md, /## Commands & rules/);
 });
 
 test("createSkillMarkdown does not leak live session state", () => {

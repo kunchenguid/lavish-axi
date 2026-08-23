@@ -47,7 +47,7 @@ Work a capable agent already does is not rebuilt inside Lavish and then explaine
 
 Lavish is a CLI an agent discovers by running it, so its output is an interface and not documentation.
 Every behavior contract has exactly one owner surface, and every other surface points at it instead of restating it.
-The installable skill is generated from the same runtime guidance, and the build fails when the two drift apart.
+The installable skill is a generated stub that points at the CLI for all actual guidance, and the build fails when that stub drifts from its generator.
 When agents behave badly, changing what Lavish tells them is a real fix and is preferred over new machinery.
 Guidance steers the agent's judgment and stops short of rigid rules it can satisfy without thinking.
 Lavish keeps its own files in its own places and never modifies a file the user or another tool owns without being asked, because that trust is spent once.

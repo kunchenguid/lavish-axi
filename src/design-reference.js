@@ -139,9 +139,9 @@ export const LAYOUT_SAFETY_CSS_SNIPPET = `<style>
 </style>`;
 
 // Single source for how agents choose an artifact's design direction. It flows into the
-// no-args home output, top-level --help, the generated skill (all via DESIGN_SYSTEM_HINT),
-// the `lavish-axi design` summary, and the design command help. Edit the rule here only;
-// other surfaces embed it or point at it instead of restating it.
+// no-args home output, top-level --help (via DESIGN_SYSTEM_HINT), the `lavish-axi design`
+// summary, and the design command help. The installable skill does not embed this rule;
+// it points at `lavish-axi design`. Edit the rule here only.
 export const DESIGN_PRIORITY_RULE =
   "Decide the design direction in this strict priority order, and only move to the next step when the current one truly yields nothing: (1) if the user asked for a specific look or named design system, use that; (2) otherwise you must first inspect the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and match that project's design system: Tailwind or theme config, shared CSS variables or design tokens, component library, brand assets, or existing styled pages. If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo; (3) only when both steps come up empty, use the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, available via CDN, and prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.";
 

@@ -181,7 +181,7 @@ test("the design-priority rule is single-sourced and keeps its three-step semant
   assert.match(DESIGN_PRIORITY_RULE, /unless explicitly instructed/);
   assert.doesNotMatch(DESIGN_PRIORITY_RULE, /inspect the current project/i);
 
-  assert.ok(DESIGN_SYSTEM_HINT.includes(DESIGN_PRIORITY_RULE), "the home/skill hint embeds the rule");
+  assert.ok(DESIGN_SYSTEM_HINT.includes(DESIGN_PRIORITY_RULE), "the home hint embeds the rule");
   assert.match(DESIGN_SYSTEM_HINT, /does not auto-inject/);
   assert.match(DESIGN_SYSTEM_HINT, /portable/);
   assert.match(DESIGN_SYSTEM_HINT, /lavish-axi design/);
