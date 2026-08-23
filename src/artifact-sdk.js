@@ -1045,6 +1045,7 @@ export function createArtifactSdk(
       const target = whiteboardEntryByIndex(msg.diagramIndex);
       if (target) target.iframe.src = whiteboardFrameSrc(target);
     }
+    if (msg.type === "lavish:requestLayoutDiagnostics") scheduleLayoutAudit();
   });
 
   function enhanceMermaid() {

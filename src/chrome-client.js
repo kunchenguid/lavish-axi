@@ -1289,7 +1289,8 @@ function setLayoutGateActive(active) {
 // its own: the artifact never loaded and retrying stopped helping. The overlay is reused because
 // it already covers the empty artifact area; without this the user is left looking at either a
 // spinner that never resolves or a blank frame, with nothing explaining it and nothing to click.
-// Bumping the cycle retires any pending reveal timer so a stale one cannot hide this card.
+// Bumping the cycle invalidates the previous timer; setLayoutGateFailure immediately replaces it
+// with a fresh hold timer so the card cannot strand the visual gate.
 function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { sticky = false } = {}) {
   if (ended) return;
   // A sticky card is the user's to retire, and that has to hold against being overwritten as
@@ -1299,8 +1300,10 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
   layoutGateFailureActive = true;
   layoutGateFailureSticky = sticky;
   layoutGateCycle += 1;
-  clearLayoutGateTimer();
-  layoutGateArmed = false;
+  // Failure copy must not disable the visual gate's own recovery paths. Keep a fresh hold timer
+  // over the card so a server replacement or any other failure cannot strand the artifact behind
+  // a sticky message forever.
+  layoutGateArmed = layoutGateEnabled;
   if (layoutGateTitle) layoutGateTitle.textContent = title;
   if (layoutGateCopy) layoutGateCopy.textContent = copy;
   if (layoutGateAction) {
@@ -1309,6 +1312,7 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
     layoutGateAction.onclick = onAction || (() => location.reload());
   }
   setLayoutGateActive(true);
+  if (layoutGateEnabled) armLayoutGateTimer();
 }
 
 // Every failure card in this feature is raised in a state where the server may not be listening,
@@ -1366,7 +1370,6 @@ function clearLayoutGateFailure() {
 }
 
 function revealLayoutGate() {
-  if (layoutGateFailureSticky) return;
   clearLayoutGateTimer();
   layoutGateArmed = false;
   setLayoutGateActive(false);
@@ -1378,25 +1381,27 @@ function forceRevealLayoutGate(reason) {
   revealLayoutGate();
 }
 
-function startLayoutGateCycle() {
-  clearLayoutGateFailure();
-  // A sticky failure owns the overlay until the user acts on it, so a later load must not repaint
-  // the checking card over the message it left there.
-  if (layoutGateFailureSticky) return;
-  if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
-
-  layoutGateCycle += 1;
-  layoutGateArmed = true;
-  setLayoutGateCard("checking");
-  setLayoutGateActive(true);
+function armLayoutGateTimer() {
   clearLayoutGateTimer();
-
   const cycle = layoutGateCycle;
   layoutGateTimer = setTimeout(() => {
     if (cycle !== layoutGateCycle || !layoutGateVisible || ended) return;
     forceRevealLayoutGate("timeout");
   }, layoutGateMaxHoldMs);
   layoutGateTimer?.unref?.();
+}
+
+function startLayoutGateCycle() {
+  clearLayoutGateFailure();
+  if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
+
+  layoutGateCycle += 1;
+  layoutGateArmed = true;
+  setLayoutGateActive(true);
+  // A sticky failure owns the card copy, but never the reveal. Do not repaint it as a checking
+  // card, and do arm a fresh timer for reloads that happen while the sticky card is present.
+  if (!layoutGateFailureSticky) setLayoutGateCard("checking");
+  armLayoutGateTimer();
 }
 
 // The gate only waits for fonts and final geometry now. It never holds the artifact hostage
@@ -2737,14 +2742,24 @@ window.addEventListener("message", (event) => {
 
   const msg = event.data || {};
   const messageToken = String(msg.artifact_load_token || "");
-  if (messageToken !== artifactLoadToken) return;
+  if (messageToken !== artifactLoadToken) {
+    // A pass can be stamped by the load that just lost a token race. Ask the current artifact
+    // document to run the audit again instead of consuming the only pass for this cycle.
+    if (msg.type === "lavish:layoutDiagnostics") postToFrame({ type: "lavish:requestLayoutDiagnostics" });
+    return;
+  }
   const messageSequence = ++artifactMessageSequence;
   artifactSpokeToken = messageToken;
   clearTimeout(artifactSilenceTimer);
   if (msg.type === "lavish:layoutDiagnostics") {
     const diagnosticSequence = ++layoutDiagnosticSequence;
+    const complete = msg.complete !== false;
+    // The gate is visual, so the client-side settled pass is the release signal. Reporting the
+    // pass is deliberately fire-and-forget: a server restart or a diagnostics 4xx/5xx must not
+    // hold a rendered artifact hostage to a network round-trip.
+    if (complete) handleLayoutGatePass();
     submitLayoutDiagnostics({
-      complete: msg.complete !== false,
+      complete,
       targetPresenceComplete: msg.target_presence_complete === true,
       artifactRevision: msg.artifact_revision,
       artifactLoadToken: msg.artifact_load_token,
@@ -2759,9 +2774,14 @@ window.addEventListener("message", (event) => {
           if (messageSequence === artifactMessageSequence) armArtifactAvailabilityProbe(messageToken);
           return;
         }
-        if (msg.complete !== false) handleLayoutGatePass();
       })
-      .catch(() => {});
+      .catch(() => {
+        // A failed report is still a completed client-side pass. Keep this fallback explicit so a
+        // future change cannot accidentally make the network request the gate's release path.
+        if (complete && messageToken === artifactLoadToken && diagnosticSequence === layoutDiagnosticSequence) {
+          handleLayoutGatePass();
+        }
+      });
     return;
   }
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
