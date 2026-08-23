@@ -2569,18 +2569,17 @@ test("resolveShareRequest requires both halves of the republish credential", () 
   assert.throws(() => resolveShareRequest(["--site", "abc123", "--update-key", "uk_secret"]), /HTML file/);
 });
 
-test("resolveShareRequest clears a password only on republish", () => {
-  const request = resolveShareRequest([
-    "report.html",
-    "--site",
-    "abc123",
-    "--update-key",
-    "uk_secret",
-    "--clear-password",
-  ]);
-
-  assert.equal(request.password, "");
-  assert.throws(() => resolveShareRequest(["report.html", "--clear-password"]), /--clear-password/);
+test("resolveShareRequest never asks the host to clear a password it silently ignores", () => {
+  // The live host answers 200 to an empty password and leaves the page gated, so no argument
+  // shape may produce one - a "" here would report a still-private page as public.
+  for (const args of [
+    ["report.html"],
+    ["report.html", "--site", "abc123", "--update-key", "uk_secret"],
+    ["report.html", "--private"],
+    ["report.html", "--password", "hunter2"],
+  ]) {
+    assert.notEqual(resolveShareRequest(args).password, "", `${args.join(" ")} must not clear the password`);
+  }
 });
 
 test("resolveShareRequest treats unpublish as a credentialed republish with no file", () => {
@@ -2647,7 +2646,7 @@ test("createShareUpdateOutput reports a replaced page and stays silent about an 
   assert.match(output.next_step, /same URL/i);
 });
 
-test("createShareUpdateOutput surfaces a rotated or cleared password", () => {
+test("createShareUpdateOutput surfaces a rotated password and never claims a page went public", () => {
   const rotated = createShareUpdateOutput({
     source: "/tmp/report.html",
     site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
@@ -2658,14 +2657,14 @@ test("createShareUpdateOutput surfaces a rotated or cleared password", () => {
   assert.equal(rotated.share.password, "xk4t-9rmb-2wqz");
   assert.equal(rotated.share.visibility, "private");
 
-  const cleared = createShareUpdateOutput({
+  const untouched = createShareUpdateOutput({
     source: "/tmp/report.html",
     site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
     warnings: [],
-    passwordCleared: true,
   });
-  assert.equal(cleared.share.visibility, "public");
-  assert.match(cleared.next_step, /anyone with the link/i);
+  assert.equal(untouched.share.visibility, "unchanged");
+  assert.doesNotMatch(untouched.next_step, /anyone with the link/i);
+  assert.doesNotMatch(untouched.next_step, /CLEARED|now public/i);
 });
 
 test("createShareUpdateOutput says the host reported no URL rather than naming one", () => {
@@ -2698,5 +2697,8 @@ test("createShareUnpublishOutput says the page still exists and how to bring it 
   assert.equal(output.share.unpublished, true);
   assert.match(output.next_step, /not deleted|no delete/i);
   assert.match(output.next_step, /update_key/);
+  // The recovery instruction has to be one the host actually honors: clearing is ignored.
+  assert.doesNotMatch(output.next_step, /--clear-password/);
+  assert.match(output.next_step, /--private/);
   assert.doesNotMatch(JSON.stringify(output), /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/);
 });

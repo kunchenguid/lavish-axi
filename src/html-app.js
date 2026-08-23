@@ -8,9 +8,9 @@
 //
 // `PUT /v1/sites/{site_id}` republishes an existing page and authenticates with that secret
 // `update_key` as the bearer credential. Omitting `password` there preserves whatever the page
-// already had, so set/clear is deliberate rather than implied by every update. The service has
-// no delete endpoint at all, which is why unpublishing is a republish of a placeholder page
-// rather than a removal.
+// already had, so setting or rotating one is deliberate rather than implied by every update. The
+// service has no delete endpoint at all, which is why unpublishing is a republish of a placeholder
+// page rather than a removal.
 
 const DEFAULT_API_URL = "https://api.ht-ml.app";
 const PUBLISH_TIMEOUT_MS = 30_000;
@@ -28,13 +28,23 @@ export function createHtmlAppPayload(html, options = {}) {
 }
 
 /**
- * Update payload. An absent password preserves the site's current one; an empty string clears it.
+ * Update payload. An absent password preserves the site's current one; a present one sets or
+ * rotates it. There is no way to remove a page's password, so this never sends an empty one.
+ *
+ * Probed against the live ht-ml.app host, republishing one real private page three ways:
+ * - No `password` key: the page still refused an uncredentialed request and still opened with the
+ *   ORIGINAL password, while serving the new HTML. Preservation is observed, not assumed.
+ * - `password: "<new>"`: the old password stopped working and the new one opened the page.
+ * - `password: ""`: answered 200 and changed nothing - the original password still opened the
+ *   page. The host silently ignores a clear despite documenting one, which is why Lavish has no
+ *   clear-password path: reporting a page as public while it is still gated is the worse failure.
  * @param {string} html
  * @param {{ password?: string | null }} [options]
  */
 export function createHtmlAppUpdatePayload(html, options = {}) {
   const body = { html_content: String(html ?? "") };
-  if (options.password !== undefined && options.password !== null) body.password = optionalString(options.password);
+  const password = optionalString(options.password);
+  if (password) body.password = password;
   return body;
 }
 
@@ -120,7 +130,8 @@ export async function publishToHtmlApp(html, options = {}) {
  * @param {string} html The replacement HTML.
  * @param {object} [options]
  * @param {string} [options.updateKey] Required secret write credential for the site.
- * @param {string|null} [options.password] Set a password, `""` to clear it, or omit to preserve it.
+ * @param {string|null} [options.password] Set or rotate the password, or omit it to preserve the
+ *   page's current one. The host has no way to remove a password (see createHtmlAppUpdatePayload).
  * @param {string} [options.url] The known site URL, used when the response omits one. When neither
  *   supplies one the returned `url` is empty rather than guessed: the API base is configurable, so
  *   a synthesized host would name somewhere the page was never published.

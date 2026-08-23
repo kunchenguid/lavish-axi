@@ -170,16 +170,33 @@ test("updateHtmlApp never PUTs to a path a dot segment resolves away from the si
   assert.equal(calls.length, 0);
 });
 
-test("createHtmlAppUpdatePayload omits the password to preserve it and sends an empty string to clear it", () => {
+test("createHtmlAppUpdatePayload omits the password to preserve it and sends one to rotate it", () => {
   assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>"), { html_content: "<h1>Hi</h1>" });
   assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>", { password: "secret" }), {
     html_content: "<h1>Hi</h1>",
     password: "secret",
   });
-  assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>", { password: "" }), {
-    html_content: "<h1>Hi</h1>",
-    password: "",
+});
+
+test("createHtmlAppUpdatePayload never sends an empty password the host accepts and ignores", () => {
+  // Probed live: PUT with password "" answers 200 and leaves the original password working, so
+  // sending one would make Lavish report a page as public while it is still gated.
+  for (const password of ["", "   ", null, undefined]) {
+    assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>", { password }), { html_content: "<h1>Hi</h1>" });
+  }
+});
+
+test("updateHtmlApp omits the password from the wire body on a plain republish", async () => {
+  const { fetchImpl, calls } = recordingFetch(jsonResponse(200, { url: "https://x.example/", site_id: "abc123" }));
+
+  await updateHtmlApp("abc123", "<h1>Newer</h1>", {
+    updateKey: "uk",
+    apiUrl: "https://api.example",
+    fetch: fetchImpl,
+    env: {},
   });
+
+  assert.deepEqual(JSON.parse(calls[0].init.body), { html_content: "<h1>Newer</h1>" });
 });
 
 test("updateHtmlApp replaces the site HTML with the update key as the bearer credential", async () => {
