@@ -1008,7 +1008,14 @@ test("the share dialog hands back the site id alongside the update key it tells 
   assert.match(html, /id="shareSiteIdResult"[^>]*\shidden/);
   assert.match(html, /id="shareSiteId" readonly/);
   assert.match(html, /id="copyShareSiteId"/);
-  assert.match(html, /--site &lt;site id&gt; --update-key &lt;key&gt;/);
+  // A plain republish deliberately leaves the password alone, so the dialog must not offer that
+  // command as a way to lock a page - only --private sets one.
+  assert.match(
+    html,
+    /Republish this page&#39;s HTML with <code>lavish-axi share &lt;file&gt; --site &lt;site id&gt; --update-key &lt;key&gt;<\/code>/,
+  );
+  assert.match(html, /add <code>--private<\/code> to also lock it/);
+  assert.doesNotMatch(html, /Republish or lock this page/);
 
   // Order is part of the contract: URL, then the site id, then the secret.
   const order = ['id="shareUrl"', 'id="shareSiteId"', 'id="shareUpdateKey"'].map((id) => html.indexOf(id));
