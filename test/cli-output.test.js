@@ -41,6 +41,7 @@ import {
   resolveHookHomeDir,
   resolveServerEntry,
   serverReplacementReason,
+  shareCommand,
   shutdownServerOnPort,
   shouldForceRestartForLocalBuild,
   shouldKillProcessOnPort,
@@ -1025,6 +1026,85 @@ test("password-protected share output with unresolved assets still mentions the 
   assert.match(output.next_step, /viewers also need the password/);
   assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
   assert.doesNotMatch(output.next_step, /anyone with the link can view/);
+});
+
+test("share dispatches create, republish, and unpublish to the right host request", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-dispatch-`);
+  const artifact = `${dir}/report.html`;
+  const marker = "SECRET-ARTIFACT-BODY";
+  await writeFile(artifact, `<!doctype html><html><body><h1>${marker}</h1></body></html>`, "utf8");
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+  try {
+    await shareCommand([artifact]);
+    await shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret"]);
+    await shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret", "--private"]);
+    await shareCommand(["--unpublish", "--site", "abc123", "--update-key", "uk_secret"]);
+
+    const [create, republish, locked, unpublish] = requests;
+
+    assert.equal(create.method, "POST");
+    assert.equal(create.url, "/v1/sites");
+    assert.match(create.body.html_content, new RegExp(marker));
+    assert.equal("password" in create.body, false, "a plain publish stays public");
+
+    assert.equal(republish.method, "PUT");
+    assert.equal(republish.url, "/v1/sites/abc123");
+    assert.equal(republish.headers.authorization, "Bearer uk_secret");
+    assert.match(republish.body.html_content, new RegExp(marker), "a republish sends the artifact");
+    assert.equal("password" in republish.body, false, "a plain republish must not touch the password");
+
+    assert.equal(locked.method, "PUT");
+    assert.match(String(locked.body.password), /^[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/, "--private rotates");
+
+    assert.equal(unpublish.method, "PUT");
+    assert.equal(unpublish.url, "/v1/sites/abc123");
+    assert.equal(unpublish.headers.authorization, "Bearer uk_secret");
+    // The regression this guards: sending the artifact instead of the placeholder would republish
+    // the very content the user asked to take down.
+    assert.doesNotMatch(unpublish.body.html_content, new RegExp(marker));
+    assert.match(unpublish.body.html_content, /has been unpublished/);
+    assert.ok(unpublish.body.password, "the placeholder must be locked behind a password");
+  } finally {
+    await htmlApp.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("share reports a bad --site as a usage error before reading the artifact", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-siteid-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+  try {
+    // Pasting the share URL is the likeliest mistake here, since the URL is what the user holds.
+    for (const site of ["https://abc123.ht-ml.app/", "not a site id", ".."]) {
+      await assert.rejects(
+        () => shareCommand([artifact, "--site", site, "--update-key", "k"]),
+        (error) => {
+          assert.ok(error instanceof AxiError, `${site} must raise an AxiError`);
+          assert.equal(error.code, "VALIDATION_ERROR", `${site} must read as bad usage`);
+          assert.match(error.message, /site_id/);
+          return true;
+        },
+      );
+    }
+    assert.equal(requests.length, 0, "a rejected site id must never reach the host");
+  } finally {
+    await htmlApp.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("share command publishes the artifact to ht-ml.app and returns the public url", async () => {
@@ -2405,7 +2485,7 @@ async function startFakeHtmlApp(requests) {
       raw += chunk;
     });
     req.on("end", () => {
-      requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
+      requests.push({ method: req.method, url: req.url, headers: req.headers, body: raw ? JSON.parse(raw) : null });
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({

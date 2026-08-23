@@ -14,7 +14,7 @@ import {
   exportWarningSummaries,
   splitExportWarnings,
 } from "./export-bundle.js";
-import { createUnpublishedPageHtml, publishToHtmlApp, updateHtmlApp } from "./html-app.js";
+import { createUnpublishedPageHtml, normalizeSiteId, publishToHtmlApp, updateHtmlApp } from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import {
   computeVsCodePluginLocationsUpdate,
@@ -193,7 +193,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       'Mermaid is the whiteboard opt-in, not the diagram default: only when the user asks for an editable whiteboard, author that diagram as Mermaid in a `.mermaid` container. Rendered Mermaid diagrams there become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; an unmodified autosave silently re-converts when a reload changes the Mermaid source. If the reviewer edited the scene, they choose to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
-      "Run `lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]` to publish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and get back a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --private to publish a PRIVATE page behind a password Lavish generates and returns - hand the user that password with the URL and say it is a shared secret anyone they give it to can use; --password <pw> uses one you were already given instead. Local assets are inlined; remote refs load over the network. It returns the url plus a secret update_key: keep it to republish the same URL later with `--site <site_id> --update-key <key>`. ht-ml.app has no delete, so `--unpublish --site <site_id> --update-key <key>` replaces the page with a placeholder and locks it rather than removing it; republishing with --private brings it back behind a new password, since ht-ml.app cannot clear a page's password. Use --token or LAVISH_AXI_HTML_APP_TOKEN only when you have an optional bearer token, and only when creating a page; it is never required, and a republish or --unpublish rejects it because the update_key is the credential there. Users can also publish from the browser chrome's overflow menu",
+      "Run `lavish-axi share <html-file> [--private | --password <pw>]` to publish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and get back a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --private to publish a PRIVATE page behind a password Lavish generates and returns - hand the user that password with the URL and say it is a shared secret anyone they give it to can use; --password <pw> uses one you were already given instead. Local assets are inlined; remote refs load over the network. It also returns a secret update_key: with `--site <site_id> --update-key <key>` it republishes the same URL, and `--unpublish` replaces the page with a locked placeholder (ht-ml.app has no delete). Run `lavish-axi share --help` before using either. Users can also publish from the browser chrome's overflow menu",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
       DESIGN_SYSTEM_HINT,
@@ -557,7 +557,7 @@ function assetWarningSummaries(warnings) {
 // returns the share URL plus the secret update_key. Republishing and unpublishing instead PUT to
 // `/v1/sites/{site_id}` authorized by that update_key and mint no new one; unpublish reads no file
 // at all and sends a placeholder page. Server-independent.
-async function shareCommand(args) {
+export async function shareCommand(args) {
   const request = resolveShareRequest(args);
   if (request.mode === "unpublish") {
     // ht-ml.app has no delete endpoint, so the closest honest thing is a republish: replace the
@@ -648,7 +648,15 @@ export function resolveShareRequest(args) {
       );
     }
     assertSiteCredential(siteId, updateKey);
-    return { mode: "unpublish", file: null, siteId, updateKey, password: undefined, generatedPassword: false, token };
+    return {
+      mode: "unpublish",
+      file: null,
+      siteId: assertShareSiteId(siteId),
+      updateKey,
+      password: undefined,
+      generatedPassword: false,
+      token,
+    };
   }
 
   if (siteId || updateKey) {
@@ -657,7 +665,7 @@ export function resolveShareRequest(args) {
     return {
       mode: "update",
       file,
-      siteId,
+      siteId: assertShareSiteId(siteId),
       updateKey,
       ...resolveSharePassword({ generate, explicitPassword }),
       token,
@@ -730,6 +738,21 @@ function checkedShareFlagValue(flag, value, { swallows = false }) {
     throw new AxiError(`${flag} was given an empty value`, "VALIDATION_ERROR", [hint]);
   }
   return trimmed;
+}
+
+// normalizeSiteId is the library-level guard and throws a plain Error for direct callers. At the
+// CLI boundary a bad --site is a usage mistake like any other, and pasting the share URL is the
+// likeliest one, so it gets the same VALIDATION_ERROR shape and a hint about where the id comes
+// from - raised here rather than inside updateHtmlApp, which only runs after the whole artifact
+// has been read and bundled.
+function assertShareSiteId(siteId) {
+  try {
+    return normalizeSiteId(siteId);
+  } catch (error) {
+    throw new AxiError(error instanceof Error ? error.message : String(error), "VALIDATION_ERROR", [
+      "The site_id is in the share output from when the page was published, and in the browser publish dialog's Site ID row",
+    ]);
+  }
 }
 
 function assertShareFile(file) {
