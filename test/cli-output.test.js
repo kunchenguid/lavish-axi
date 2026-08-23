@@ -2672,6 +2672,30 @@ test("createShareUpdateOutput surfaces a rotated password and never claims a pag
   assert.doesNotMatch(untouched.next_step, /CLEARED|now public|is PUBLIC/i);
 });
 
+test("createShareUpdateOutput does not present a newly set password as an instant gate", () => {
+  // Probed live: locking a page that was public left it answering uncredentialed CDN requests for
+  // minutes, and Lavish persists no site state, so it cannot know the page was not public.
+  const locked = createShareUpdateOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
+    warnings: [],
+    password: "xk4t-9rmb-2wqz",
+    passwordProtected: true,
+  });
+
+  assert.match(locked.next_step, /NOT instant/i);
+  assert.match(locked.next_step, /cach/i);
+  assert.match(locked.next_step, /already private/i);
+
+  // A plain republish sets no password, so it must not raise the caveat at all.
+  const untouched = createShareUpdateOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
+    warnings: [],
+  });
+  assert.doesNotMatch(untouched.next_step, /NOT instant/i);
+});
+
 test("createShareUpdateOutput says the host reported no URL rather than naming one", () => {
   const output = createShareUpdateOutput({
     source: "/tmp/report.html",

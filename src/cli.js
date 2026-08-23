@@ -801,7 +801,7 @@ export function createShareUpdateOutput({
     : "";
   const visibilityNote =
     visibility === "private"
-      ? " It is PASSWORD-PROTECTED; viewers also need the password."
+      ? " It is PASSWORD-PROTECTED; viewers also need the password. That gate is NOT instant: if the page had been public, it was observed still answering uncredentialed requests from ht-ml.app's CDN cache for minutes afterwards, so do not tell the user it is gated right away; a page that was already private has no such cached copy and leaks nothing."
       : " This republish did not touch the page's password, so whatever it had when it was last published still applies. Lavish stores nothing about a published page, so this output cannot tell you whether that is a password or none - and a page published without one stays readable by anyone who has the link.";
   result.next_step = url
     ? `Republished ${source} to the same URL: ${url} - viewers see the new version immediately and no new link is needed.${visibilityNote}${unresolvedNote}${noticeNote} ` +

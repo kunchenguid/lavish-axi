@@ -40,14 +40,18 @@ export function createHtmlAppPayload(html, options = {}) {
  *   clear-password path: reporting a page as public while it is still gated is the worse failure.
  *
  * The none -> set transition was probed separately, on a page published with NO password, because
- * `--unpublish`'s lock depends on it:
+ * both `--unpublish`'s lock and a `--private`/`--password` republish depend on it:
  * - `password: "<new>"` on a page that had none takes effect at the ORIGIN - the site's details
  *   GET answered 404 uncredentialed and 200 with the update_key, matching a known-private site.
  * - But it is not instant at the EDGE: that page's viewer subdomain kept answering uncredentialed
  *   requests from CloudFront for at least ~3 minutes afterwards (cache age climbing, no
- *   cache-control on the response), serving the new HTML without asking for the password. Only a
- *   page that was PUBLIC has such a cached copy, so locking one is not an immediate takedown and
- *   no surface may describe it as one.
+ *   cache-control on the response), serving the new HTML without asking for the password.
+ *
+ * That last one is a property of the public -> private TRANSITION, not of the command that
+ * performs it: `--unpublish` and a `--private`/`--password` republish both hit it, so EVERY
+ * surface reporting a page as newly gated carries the caveat. It is also no wider than that - a
+ * page that was already private has no publicly cached copy, so rotating its password leaks
+ * nothing, and Lavish cannot tell the two apart because it persists no site state.
  * @param {string} html
  * @param {{ password?: string | null }} [options]
  */
