@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.57](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.56...lavish-axi-v0.1.57) (2026-08-23)
+
+
+### Bug Fixes
+
+* make ended review sessions read-only ([#273](https://github.com/kunchenguid/lavish-axi/issues/273)) ([bafce3d](https://github.com/kunchenguid/lavish-axi/commit/bafce3d56eb8d9ed9853783da543ee0844182ac2))
+
 ## [0.1.56](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.55...lavish-axi-v0.1.56) (2026-08-22)
 
 
