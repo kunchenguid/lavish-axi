@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.59](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.58...lavish-axi-v0.1.59) (2026-08-23)
+
+
+### Bug Fixes
+
+* **chrome:** prevent layout gate sticky failure traps ([#284](https://github.com/kunchenguid/lavish-axi/issues/284)) ([7024bc4](https://github.com/kunchenguid/lavish-axi/commit/7024bc464f63f117767adf8ab6e680e6f06f2aa2))
+
 ## [0.1.58](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.57...lavish-axi-v0.1.58) (2026-08-23)
 
 
