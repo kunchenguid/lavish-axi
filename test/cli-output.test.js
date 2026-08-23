@@ -2633,7 +2633,9 @@ test("createShareOutput never echoes a password the caller chose", () => {
   assert.equal(output.share.password, undefined);
 });
 
-test("createShareUpdateOutput reports a replaced page and stays silent about an unchanged password", () => {
+test("createShareUpdateOutput reports what a plain republish did, not a password state it cannot know", () => {
+  // Lavish persists no site state, so a republish of a page created without a password would be
+  // misreported by any claim that "the password was left unchanged".
   const output = createShareUpdateOutput({
     source: "/tmp/report.html",
     site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
@@ -2644,6 +2646,10 @@ test("createShareUpdateOutput reports a replaced page and stays silent about an 
   assert.equal(output.share.visibility, "unchanged");
   assert.equal(output.share.password, undefined);
   assert.match(output.next_step, /same URL/i);
+  assert.match(output.next_step, /did not touch the page's password/i);
+  assert.match(output.next_step, /cannot tell you whether that is a password or none/i);
+  assert.doesNotMatch(output.next_step, /password was left unchanged/i);
+  assert.doesNotMatch(output.next_step, /it is password-protected/i);
 });
 
 test("createShareUpdateOutput surfaces a rotated password and never claims a page went public", () => {
@@ -2663,8 +2669,7 @@ test("createShareUpdateOutput surfaces a rotated password and never claims a pag
     warnings: [],
   });
   assert.equal(untouched.share.visibility, "unchanged");
-  assert.doesNotMatch(untouched.next_step, /anyone with the link/i);
-  assert.doesNotMatch(untouched.next_step, /CLEARED|now public/i);
+  assert.doesNotMatch(untouched.next_step, /CLEARED|now public|is PUBLIC/i);
 });
 
 test("createShareUpdateOutput says the host reported no URL rather than naming one", () => {

@@ -762,8 +762,10 @@ export function createShareOutput({
   return result;
 }
 
-// Republish output. Visibility is "unchanged" unless this call set or cleared a password, because
-// the host never reports a page's current password and a guess here would read as authoritative.
+// Republish output. Visibility is "unchanged" unless this call set a password, because Lavish
+// persists nothing about a published page and the host never reports its current password. So a
+// plain republish reports what Lavish DID, never what the page IS: it cannot know whether the page
+// is gated, and an authoritative guess either way is one the user would act on.
 export function createShareUpdateOutput({
   source,
   site,
@@ -799,7 +801,7 @@ export function createShareUpdateOutput({
   const visibilityNote =
     visibility === "private"
       ? " It is PASSWORD-PROTECTED; viewers also need the password."
-      : " Its password was left unchanged.";
+      : " This republish did not touch the page's password, so whatever it had when it was last published still applies. Lavish stores nothing about a published page, so this output cannot tell you whether that is a password or none - and a page published without one stays readable by anyone who has the link.";
   result.next_step = url
     ? `Republished ${source} to the same URL: ${url} - viewers see the new version immediately and no new link is needed.${visibilityNote}${unresolvedNote}${noticeNote} ` +
       `Keep the same update_key; it is still the only credential for this page.`
