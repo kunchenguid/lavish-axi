@@ -40,7 +40,8 @@ errors if either is missing:
 
 - `url` — where the published artifact is viewable. Your backend owns this; it can be any URL on your domain.
 - `update_key` — an opaque secret returned to the user for managing the page later.
-- `site_id`, `status` — optional; surfaced if present.
+- `site_id` — optional, but it is what the user passes back as `--site` to republish or unpublish, so a backend that omits it supports creation only. It is interpolated into the `PUT` path, so `share` accepts only `A-Za-z0-9._-` and refuses an all-dots id; pick ids from that set.
+- `status` — optional; surfaced if present.
 
 ### Republishing
 
