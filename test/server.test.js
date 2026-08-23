@@ -1000,6 +1000,29 @@ test("overflow menu offers publishing an ht-ml.app link via a share dialog", asy
   assert.match(html, /id="sharePasswordResult"/);
 });
 
+test("the share dialog hands back the site id alongside the update key it tells the user to keep", async () => {
+  // The dialog's own copy points at `share --site <id> --update-key <key>`, so withholding the
+  // site id would leave guessing it out of the URL as the user's only route.
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /id="shareSiteIdResult"[^>]*\shidden/);
+  assert.match(html, /id="shareSiteId" readonly/);
+  assert.match(html, /id="copyShareSiteId"/);
+  assert.match(html, /--site &lt;site id&gt; --update-key &lt;key&gt;/);
+
+  // Order is part of the contract: URL, then the site id, then the secret.
+  const order = ['id="shareUrl"', 'id="shareSiteId"', 'id="shareUpdateKey"'].map((id) => html.indexOf(id));
+  assert.ok(
+    order.every((index) => index >= 0),
+    "every share result field must render",
+  );
+  assert.deepEqual(
+    order,
+    [...order].sort((a, b) => a - b),
+    "site id must sit between the URL and the update key",
+  );
+});
+
 test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
   const js = await chromeClientSource();
 

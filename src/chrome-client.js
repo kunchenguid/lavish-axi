@@ -135,10 +135,13 @@ const shareUrlInput = /** @type {HTMLInputElement} */ (document.getElementById("
 const shareUpdateKeyInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUpdateKey"));
 const shareGenerateInput = /** @type {HTMLInputElement} */ (document.getElementById("shareGenerate"));
 const sharePasswordResult = /** @type {HTMLLabelElement} */ (document.getElementById("sharePasswordResult"));
+const shareSiteIdResult = /** @type {HTMLLabelElement} */ (document.getElementById("shareSiteIdResult"));
+const shareSiteIdInput = /** @type {HTMLInputElement} */ (document.getElementById("shareSiteId"));
 const sharePasswordOutput = /** @type {HTMLInputElement} */ (document.getElementById("sharePasswordOut"));
 const copySharePasswordButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySharePassword"));
 const copyShareUrlButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareUrl"));
 const copyUpdateKeyButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyUpdateKey"));
+const copyShareSiteIdButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareSiteId"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
@@ -1910,6 +1913,8 @@ function openShareDialog() {
   shareResult.hidden = true;
   sharePasswordResult.hidden = true;
   sharePasswordOutput.value = "";
+  shareSiteIdResult.hidden = true;
+  shareSiteIdInput.value = "";
   shareGenerateInput.checked = false;
   sharePasswordInput.value = "";
   syncSharePasswordInput();
@@ -1960,6 +1965,10 @@ async function publishShare(event) {
     shareUpdateKeyInput.value = data.update_key || "";
     sharePasswordOutput.value = data.password || "";
     sharePasswordResult.hidden = !data.password;
+    // A self-hosted backend may not return one, and an empty box with a copy button is worse
+    // than no row. Never derive it from the URL: that shape belongs to the backend, not Lavish.
+    shareSiteIdInput.value = data.site_id || "";
+    shareSiteIdResult.hidden = !data.site_id;
     const unresolvedAssets = Array.isArray(data.unresolved_local_assets) ? data.unresolved_local_assets : [];
     const notices = Array.isArray(data.notices) ? data.notices : [];
     const warningCount = unresolvedAssets.length;
@@ -3114,6 +3123,7 @@ copyShareUrlButton.onclick = () => copyToButton(shareUrlInput.value, copyShareUr
 copyUpdateKeyButton.onclick = () => copyToButton(shareUpdateKeyInput.value, copyUpdateKeyButton, "Copy key");
 copySharePasswordButton.onclick = () =>
   copyToButton(sharePasswordOutput.value, copySharePasswordButton, "Copy password");
+copyShareSiteIdButton.onclick = () => copyToButton(shareSiteIdInput.value, copyShareSiteIdButton, "Copy site ID");
 shareGenerateInput.onchange = syncSharePasswordInput;
 endButton.onclick = () => {
   closeMenus();
