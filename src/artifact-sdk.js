@@ -1045,7 +1045,7 @@ export function createArtifactSdk(
       const target = whiteboardEntryByIndex(msg.diagramIndex);
       if (target) target.iframe.src = whiteboardFrameSrc(target);
     }
-    if (msg.type === "lavish:requestLayoutDiagnostics") scheduleLayoutAudit();
+    if (msg.type === "lavish:requestLayoutDiagnostics") scheduleLayoutAudit(true);
   });
 
   function enhanceMermaid() {
@@ -1263,6 +1263,7 @@ export function createArtifactSdk(
   let layoutAuditTimer = 0;
   let layoutAuditRun = 0;
   let lastLayoutAuditSignature = null;
+  let layoutAuditPublishRequested = false;
   let layoutAuditPassSequence = 0;
 
   function toPixelNumber(value) {
@@ -1976,7 +1977,8 @@ export function createArtifactSdk(
     const severe = findings.filter((finding) => finding?.severity === "error");
     const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
     const signature = JSON.stringify({ complete, targetPresenceComplete, viewportWidth, severe });
-    if (signature === lastLayoutAuditSignature) return;
+    if (!layoutAuditPublishRequested && signature === lastLayoutAuditSignature) return;
+    layoutAuditPublishRequested = false;
     lastLayoutAuditSignature = signature;
     postArtifactMessage("lavish:layoutDiagnostics", {
       complete,
@@ -2011,7 +2013,8 @@ export function createArtifactSdk(
     );
   }
 
-  function scheduleLayoutAudit() {
+  function scheduleLayoutAudit(publishRequested = false) {
+    if (publishRequested) layoutAuditPublishRequested = true;
     if (layoutAuditTimer) window.clearTimeout(layoutAuditTimer);
     const runId = ++layoutAuditRun;
     layoutAuditTimer = window.setTimeout(() => {

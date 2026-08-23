@@ -104,7 +104,7 @@ function cell(tag, text) {
   return element;
 }
 
-function bootSdk() {
+function bootSdk({ runAnimationFrames = false } = {}) {
   const posted = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
@@ -144,7 +144,7 @@ function bootSdk() {
     getComputedStyle: () => ({}),
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
-    requestAnimationFrame: () => 0,
+    requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
     document: {
       readyState: "complete",
       documentElement,
@@ -167,7 +167,7 @@ function bootSdk() {
     removeEventListener() {},
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
-    requestAnimationFrame: () => 0,
+    requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
     innerWidth: 1280,
     innerHeight: 800,
     scrollX: 0,
@@ -196,6 +196,22 @@ function bootSdk() {
       for (const timer of pending) {
         if (!timer.cancelled) timer.fn();
       }
+    },
+    async runAllTimers() {
+      for (let round = 0; round < 100; round += 1) {
+        await Promise.resolve();
+        await Promise.resolve();
+        const pending = timers.splice(0, timers.length);
+        if (pending.length === 0) {
+          await Promise.resolve();
+          if (timers.length === 0) return;
+          continue;
+        }
+        for (const timer of pending) {
+          if (!timer.cancelled) timer.fn();
+        }
+      }
+      assert.fail("the SDK timer queue did not settle");
     },
     // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
     sendChromeMessage(data) {
@@ -237,6 +253,21 @@ function buildTable(sdk) {
   const badge = appendTo(evidence, cell("code", "Drive"));
   return { evidence, badge };
 }
+
+test("a requested layout diagnostic publishes even when the result is unchanged", async () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+
+  await sdk.runAllTimers();
+  const first = sdk.posted.filter((message) => message.type === "lavish:layoutDiagnostics");
+  assert.equal(first.length, 1);
+
+  sdk.sendChromeMessage({ type: "lavish:requestLayoutDiagnostics" });
+  await sdk.runAllTimers();
+  const diagnostics = sdk.posted.filter((message) => message.type === "lavish:layoutDiagnostics");
+  assert.equal(diagnostics.length, 2);
+  assert.equal(diagnostics[1].artifact_pass_sequence, diagnostics[0].artifact_pass_sequence + 1);
+  assert.deepEqual(diagnostics[1].findings, diagnostics[0].findings);
+});
 
 test("the served SDK bundle queues a table-cell annotation without a missing-helper ReferenceError", () => {
   const sdk = bootSdk();

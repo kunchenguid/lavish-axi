@@ -151,6 +151,7 @@ const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
+const layoutGateBypass = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateBypass"));
 const warningsWrap = /** @type {HTMLDivElement} */ (document.getElementById("warningsWrap"));
 const warningsButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsButton"));
 const warningsCount = /** @type {HTMLSpanElement} */ (document.getElementById("warningsCount"));
@@ -1311,6 +1312,10 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
     layoutGateAction.textContent = actionLabel;
     layoutGateAction.onclick = onAction || (() => location.reload());
   }
+  if (layoutGateBypass) {
+    layoutGateBypass.hidden = false;
+    layoutGateBypass.onclick = () => forceRevealLayoutGate("manual");
+  }
   setLayoutGateActive(true);
   if (layoutGateEnabled) armLayoutGateTimer();
 }
@@ -1366,6 +1371,7 @@ function clearLayoutGateFailure() {
     layoutGateAction.textContent = "Show anyway";
     layoutGateAction.onclick = () => forceRevealLayoutGate("manual");
   }
+  if (layoutGateBypass) layoutGateBypass.hidden = true;
   revealLayoutGate();
 }
 
@@ -1420,6 +1426,7 @@ function initializeLayoutGate() {
   }
 
   if (layoutGateAction) layoutGateAction.onclick = () => forceRevealLayoutGate("manual");
+  if (layoutGateBypass) layoutGateBypass.onclick = () => forceRevealLayoutGate("manual");
   startLayoutGateCycle();
 }
 

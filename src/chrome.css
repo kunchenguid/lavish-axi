@@ -1328,6 +1328,9 @@ body.lavish {
 .ended-action {
   margin-top: var(--space-8);
 }
+.layout-gate-bypass {
+  margin-left: var(--space-4);
+}
 iframe {
   width: 100%;
   height: 100%;

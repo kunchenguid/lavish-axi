@@ -238,6 +238,7 @@ async function createChromeHarness({
   element("chatComposer").parentElement = element("panel");
   element("panelScroll").parentElement = element("panel");
   element("whiteboardOverlay").hidden = true;
+  element("layoutGateBypass").hidden = true;
   element("shareDialog").hidden = true;
   element("moreMenu").hidden = true;
   element("warningsDrawer").hidden = true;
@@ -2705,6 +2706,14 @@ test("the not-running card survives a later successful artifact load", async () 
   });
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
   assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+  assert.equal(chrome.element("layoutGateBypass").hidden, false);
+  chrome.element("layoutGateBypass").click();
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
 });
 
 test("a sticky failure cannot outlive the layout gate timeout", async () => {
