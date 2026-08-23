@@ -1304,7 +1304,7 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
   // Failure copy must not disable the visual gate's own recovery paths. Keep a fresh hold timer
   // over the card so a server replacement or any other failure cannot strand the artifact behind
   // a sticky message forever.
-  layoutGateArmed = layoutGateEnabled;
+  layoutGateArmed = true;
   if (layoutGateTitle) layoutGateTitle.textContent = title;
   if (layoutGateCopy) layoutGateCopy.textContent = copy;
   if (layoutGateAction) {
@@ -1317,7 +1317,7 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
     layoutGateBypass.onclick = () => forceRevealLayoutGate("manual");
   }
   setLayoutGateActive(true);
-  if (layoutGateEnabled) armLayoutGateTimer();
+  armLayoutGateTimer();
 }
 
 // Every failure card in this feature is raised in a state where the server may not be listening,
@@ -1382,7 +1382,7 @@ function revealLayoutGate() {
 }
 
 function forceRevealLayoutGate(reason) {
-  if (!layoutGateEnabled || ended) return;
+  if (ended) return;
   if (reason === "manual") layoutGateManuallyBypassed = true;
   revealLayoutGate();
 }
@@ -1414,8 +1414,7 @@ function startLayoutGateCycle() {
 // pending an agent repair: findings are the user's to triage, so a completed pass always reveals
 // and hands the result to the passive inbox.
 function handleLayoutGatePass() {
-  if (!layoutGateEnabled || layoutGateManuallyBypassed) return;
-  if (!layoutGateArmed && !layoutGateVisible) return;
+  if (ended || !layoutGateVisible) return;
   revealLayoutGate();
 }
 
