@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.58](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.57...lavish-axi-v0.1.58) (2026-08-23)
+
+
+### Features
+
+* default diagram guidance to hand-authored SVG, Mermaid becomes the whiteboard opt-in ([#282](https://github.com/kunchenguid/lavish-axi/issues/282)) ([ea7e0ad](https://github.com/kunchenguid/lavish-axi/commit/ea7e0ad5f0ed9548c57c3ff9ef808928f1e465bc))
+
 ## [0.1.57](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.56...lavish-axi-v0.1.57) (2026-08-23)
 
 
