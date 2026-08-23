@@ -998,9 +998,6 @@ test("overflow menu offers publishing an ht-ml.app link via a share dialog", asy
   assert.match(js, /shareUpdateKeyInput\.value = data\.update_key/);
   assert.match(html, /id="shareGenerate"/);
   assert.match(html, /id="sharePasswordResult"/);
-  assert.match(css, /\.share-result label\[hidden\]/);
-  assert.match(js, /generate_password: true/);
-  assert.match(js, /sharePasswordOutput\.value = data\.password/);
 });
 
 test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {

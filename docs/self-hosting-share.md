@@ -6,10 +6,10 @@ This page documents the contract that backend must implement.
 
 ## Configuration
 
-| Env var                       | Purpose                                                                                                |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `LAVISH_AXI_HTML_APP_API_URL` | Base URL of your share backend. Defaults to `https://api.ht-ml.app`; trailing slashes are stripped.    |
-| `LAVISH_AXI_HTML_APP_TOKEN`   | Optional bearer token, sent as `Authorization: Bearer <token>`. Also settable per call with `--token`. |
+| Env var                       | Purpose                                                                                                                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LAVISH_AXI_HTML_APP_API_URL` | Base URL of your share backend. Defaults to `https://api.ht-ml.app`; trailing slashes are stripped.                                                                              |
+| `LAVISH_AXI_HTML_APP_TOKEN`   | Optional bearer token for `POST /v1/sites`, sent as `Authorization: Bearer <token>`. Also settable per call with `--token`. Republishes authorize with the `update_key` instead. |
 
 ## Contract
 
@@ -58,9 +58,10 @@ Authorization: Bearer <update_key>
 }
 ```
 
-The response may repeat `url`, `site_id`, and `status`; `share` falls back to the site's known URL
-when the body omits one. Reject the request with `401` when the `update_key` does not match: that
-key is the page's only credential, so treating a bad one as a no-op silently loses the update.
+The response may repeat `url`, `site_id`, and `status`. Return `url`: when the body omits one,
+`share` reports the republish without a URL rather than guessing a host, since the API base is
+yours. Reject the request with `401` when the `update_key` does not match: that key is the page's
+only credential, so treating a bad one as a no-op silently loses the update.
 
 `share` never issues a `DELETE`. ht-ml.app has no delete endpoint, and `--unpublish` is a `PUT` of a
 placeholder page behind a fresh password, so a backend implementing this contract needs no delete

@@ -2596,6 +2596,18 @@ test("resolveShareRequest treats unpublish as a credentialed republish with no f
   );
 });
 
+test("resolveShareRequest rejects a bearer token on a republish or unpublish", () => {
+  assert.equal(resolveShareRequest(["report.html", "--token", "tok_123"]).token, "tok_123");
+  assert.throws(
+    () => resolveShareRequest(["report.html", "--site", "abc123", "--update-key", "uk_secret", "--token", "tok_123"]),
+    /--token only applies when creating a page/,
+  );
+  assert.throws(
+    () => resolveShareRequest(["--unpublish", "--site", "abc123", "--update-key", "uk_secret", "--token", "tok_123"]),
+    /--token only applies when creating a page/,
+  );
+});
+
 test("createShareOutput hands back a generated password and tells the agent it is a shared secret", () => {
   const output = createShareOutput({
     source: "/tmp/report.html",
@@ -2654,6 +2666,27 @@ test("createShareUpdateOutput surfaces a rotated or cleared password", () => {
   });
   assert.equal(cleared.share.visibility, "public");
   assert.match(cleared.next_step, /anyone with the link/i);
+});
+
+test("createShareUpdateOutput says the host reported no URL rather than naming one", () => {
+  const output = createShareUpdateOutput({
+    source: "/tmp/report.html",
+    site: { url: "", site_id: "abc123", status: "active" },
+    warnings: [],
+  });
+
+  assert.equal(output.share.url, "");
+  assert.match(output.next_step, /did not report a URL/i);
+  assert.match(output.next_step, /abc123/);
+  assert.doesNotMatch(JSON.stringify(output), /ht-ml\.app/);
+});
+
+test("createShareUnpublishOutput says the host reported no URL rather than naming one", () => {
+  const output = createShareUnpublishOutput({ site: { url: "", site_id: "abc123", status: "active" } });
+
+  assert.equal(output.share.url, "");
+  assert.match(output.next_step, /did not report a URL/i);
+  assert.doesNotMatch(output.next_step, /Replaced the page at /);
 });
 
 test("createShareUnpublishOutput says the page still exists and how to bring it back", () => {

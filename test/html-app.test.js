@@ -149,6 +149,27 @@ test("normalizeSiteId accepts an id and explains that a URL is not one", () => {
   assert.throws(() => normalizeSiteId(""), /site_id/);
 });
 
+test("normalizeSiteId refuses a dot segment that would resolve away from the site path", () => {
+  // `..` survives encodeURIComponent, so /v1/sites/.. would collapse to the collection root and
+  // PUT the artifact there instead of at a site.
+  assert.throws(() => normalizeSiteId("."), /not a valid site_id/);
+  assert.throws(() => normalizeSiteId(".."), /not a valid site_id/);
+  assert.throws(() => normalizeSiteId(" .. "), /not a valid site_id/);
+  assert.throws(() => normalizeSiteId("..."), /not a valid site_id/);
+  assert.equal(normalizeSiteId("..abc"), "..abc");
+});
+
+test("updateHtmlApp never PUTs to a path a dot segment resolves away from the site", async () => {
+  const { fetchImpl, calls } = recordingFetch(jsonResponse(200, {}));
+
+  await assert.rejects(
+    () =>
+      updateHtmlApp("..", "<h1>Hi</h1>", { updateKey: "uk", apiUrl: "https://api.example", fetch: fetchImpl, env: {} }),
+    /not a valid site_id/,
+  );
+  assert.equal(calls.length, 0);
+});
+
 test("createHtmlAppUpdatePayload omits the password to preserve it and sends an empty string to clear it", () => {
   assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>"), { html_content: "<h1>Hi</h1>" });
   assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>", { password: "secret" }), {
@@ -187,12 +208,27 @@ test("updateHtmlApp falls back to the known site url when the response omits one
 
   const result = await updateHtmlApp("abc123", "<h1>Hi</h1>", {
     updateKey: "uk",
+    url: "https://plans.example.com/abc123",
     apiUrl: "https://api.example",
     fetch: fetchImpl,
     env: {},
   });
 
-  assert.equal(result.url, "https://abc123.ht-ml.app/");
+  assert.equal(result.url, "https://plans.example.com/abc123");
+  assert.equal(result.site_id, "abc123");
+});
+
+test("updateHtmlApp reports no url rather than guessing one the backend never published", async () => {
+  const { fetchImpl } = recordingFetch(jsonResponse(200, {}));
+
+  const result = await updateHtmlApp("abc123", "<h1>Hi</h1>", {
+    updateKey: "uk",
+    apiUrl: "https://share.example.com",
+    fetch: fetchImpl,
+    env: {},
+  });
+
+  assert.equal(result.url, "", "a self-hosted backend's pages do not live on ht-ml.app");
   assert.equal(result.site_id, "abc123");
 });
 

@@ -51,7 +51,7 @@ export function normalizeSiteId(value) {
   if (/^[a-z]+:\/\//i.test(siteId)) {
     throw new Error(`expected a site_id (such as abc123) rather than a URL: ${siteId}`);
   }
-  if (!SITE_ID_RE.test(siteId)) {
+  if (!SITE_ID_RE.test(siteId) || /^\.+$/.test(siteId)) {
     throw new Error(`not a valid site_id: ${siteId}`);
   }
   return siteId;
@@ -121,7 +121,9 @@ export async function publishToHtmlApp(html, options = {}) {
  * @param {object} [options]
  * @param {string} [options.updateKey] Required secret write credential for the site.
  * @param {string|null} [options.password] Set a password, `""` to clear it, or omit to preserve it.
- * @param {string} [options.url] The known site URL, used when the response omits one.
+ * @param {string} [options.url] The known site URL, used when the response omits one. When neither
+ *   supplies one the returned `url` is empty rather than guessed: the API base is configurable, so
+ *   a synthesized host would name somewhere the page was never published.
  * @param {string} [options.apiUrl]
  * @param {typeof fetch} [options.fetch]
  * @param {NodeJS.ProcessEnv} [options.env]
@@ -146,7 +148,7 @@ export async function updateHtmlApp(siteId, html, options = {}) {
   });
 
   return {
-    url: optionalString(data.url) || optionalString(options.url) || `https://${site}.ht-ml.app/`,
+    url: optionalString(data.url) || optionalString(options.url),
     site_id: String(data.site_id || site),
     status: String(data.status || ""),
   };
