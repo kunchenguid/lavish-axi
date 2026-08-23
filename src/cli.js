@@ -581,10 +581,7 @@ export async function shareCommand(args) {
   const selfPaintWarning = analyzeSelfPaint(source).painted ? undefined : SELF_PAINT_WARNING;
 
   if (request.mode === "update") {
-    const site = await updateHtmlApp(request.siteId, html, {
-      updateKey: request.updateKey,
-      password: request.password,
-    });
+    const site = await updateShareSite(request, html);
     return createShareUpdateOutput({
       source: absolute,
       site,
@@ -604,6 +601,26 @@ export async function shareCommand(args) {
     password: request.generatedPassword ? request.password : undefined,
     selfPaintWarning,
   });
+}
+
+// A generated password only reaches the user through the success output, so a failure AFTER the
+// request went out would take it with it - and the host may already have applied the rotation,
+// leaving the page gated by a secret nobody holds. Carry the password into the error instead.
+async function updateShareSite(request, html) {
+  try {
+    return await updateHtmlApp(request.siteId, html, {
+      updateKey: request.updateKey,
+      password: request.password,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!request.generatedPassword || !request.password) throw error;
+    throw new AxiError(message, "UNKNOWN", [
+      `The password Lavish generated for this republish is ${request.password} - give it to the user.`,
+      "ht-ml.app may have applied the change before the failure, in which case the page already requires that password and nothing else records it.",
+      `Re-run with \`--site ${request.siteId} --update-key <key> --private\` to set a fresh one you can see.`,
+    ]);
+  }
 }
 
 // Resolve which of `share`'s three shapes the arguments describe - publish, republish, or

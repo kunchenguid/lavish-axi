@@ -52,6 +52,11 @@ export function createHtmlAppPayload(html, options = {}) {
  * surface reporting a page as newly gated carries the caveat. It is also no wider than that - a
  * page that was already private has no publicly cached copy, so rotating its password leaks
  * nothing, and Lavish cannot tell the two apart because it persists no site state.
+ *
+ * The PUT response shape was observed in the same probes: a successful update answers 200 with
+ * `url`, `site_id`, `status`, and `update_key`, so the republish and unpublish surfaces get a real
+ * URL from the host on the default base. `options.url` stays as the defensive fallback for a
+ * response that omits one; nothing synthesizes a URL, because the API base is configurable.
  * @param {string} html
  * @param {{ password?: string | null }} [options]
  */
