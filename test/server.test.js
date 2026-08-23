@@ -15,6 +15,7 @@ import {
   allowsAllHosts,
   buildAllowedHostnames,
   CHROME_BOOT_FAILSAFE_MS,
+  CHROME_LAYOUT_GATE_MAX_HOLD_MS,
   createChromeHtml,
   createSdkJs,
   displayPathParts,
@@ -196,8 +197,8 @@ function parseChromeElements(html) {
 // really serves, so the assertions below are about what the shipped script does rather than what
 // it says - and an id the page stopped declaring makes the script a no-op here exactly as it
 // would in a browser.
-function bootChromeFailsafe(options = {}) {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, options);
+function bootChromeFailsafe(options = {}, session = {}) {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html", ...session }, options);
   const inline = html.match(/<script>([\s\S]*?)<\/script>\s*<script src="\/chrome-client\.js"/);
   assert.ok(inline, "the chrome page must inline a boot failsafe before its client script");
 
@@ -221,7 +222,12 @@ function bootChromeFailsafe(options = {}) {
       return serverRunning ? Promise.resolve({ ok: true }) : Promise.reject(new Error("connection refused"));
     },
     document: {
-      body: { classList: { add: (name) => bodyClasses.add(name) } },
+      body: {
+        classList: {
+          add: (name) => bodyClasses.add(name),
+          remove: (name) => bodyClasses.delete(name),
+        },
+      },
       getElementById(id) {
         return elements.get(id) || null;
       },
@@ -254,7 +260,8 @@ function bootChromeFailsafe(options = {}) {
     bodyClasses,
     pendingDelays: () => [...timers.values()].map((timer) => timer.ms),
     runTimers() {
-      for (const [id, timer] of [...timers]) {
+      for (const [id, timer] of [...timers].sort((left, right) => left[1].ms - right[1].ms)) {
+        if (!timers.has(id)) continue;
         timers.delete(id);
         timer.fn();
       }
@@ -280,7 +287,10 @@ test("the chrome boot failsafe turns the layout gate into a reloadable failure w
   assert.ok(failsafeIndex > -1);
   assert.ok(scriptIndex > failsafeIndex);
 
-  assert.deepEqual(boot.pendingDelays(), [CHROME_BOOT_FAILSAFE_MS]);
+  assert.deepEqual(
+    boot.pendingDelays().sort((left, right) => left - right),
+    [CHROME_LAYOUT_GATE_MAX_HOLD_MS, CHROME_BOOT_FAILSAFE_MS],
+  );
   assert.match(boot.element("layoutGateTitle").textContent, /Checking layout/);
 
   boot.runTimers();
@@ -295,6 +305,43 @@ test("the chrome boot failsafe turns the layout gate into a reloadable failure w
   boot.element("layoutGateAction").onclick();
   await flushMicrotasks();
   assert.equal(boot.reloadCount(), 1);
+});
+
+test("the chrome boot failsafe Show anyway reveals without a server", () => {
+  const boot = bootChromeFailsafe();
+
+  boot.runTimers();
+  assert.equal(boot.element("layoutGateOverlay").hidden, false);
+  assert.equal(boot.element("layoutGateBypass").hidden, false);
+
+  boot.element("layoutGateBypass").onclick();
+  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.bodyClasses.has("layout-gate-active"), false);
+});
+
+test("the chrome boot failsafe failure card reveals after a bounded timeout", () => {
+  const boot = bootChromeFailsafe();
+
+  boot.runTimers();
+  assert.equal(boot.element("layoutGateOverlay").hidden, false);
+  assert.deepEqual(boot.pendingDelays(), [CHROME_LAYOUT_GATE_MAX_HOLD_MS]);
+
+  boot.runTimers();
+  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.bodyClasses.has("layout-gate-active"), false);
+});
+
+test("the chrome boot failsafe preserves the ended-session guard", () => {
+  const boot = bootChromeFailsafe({}, { status: "ended", ended_by: "user" });
+
+  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.element("endedOverlay").hidden, false);
+  assert.equal(boot.element("layoutGateAction").onclick, null);
+  assert.deepEqual(boot.pendingDelays(), [CHROME_BOOT_FAILSAFE_MS]);
+
+  boot.runTimers();
+  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.element("endedOverlay").hidden, false);
 });
 
 test("the chrome boot failsafe reveals a gate the page shipped hidden", () => {
@@ -315,7 +362,7 @@ test("the chrome client cancels the boot failsafe once it has run", () => {
   boot.context.window.__lavishChromeReady = true;
   boot.context.window.__lavishCancelChromeBootFailsafe();
 
-  assert.deepEqual(boot.pendingDelays(), [], "a cancelled failsafe leaves no timer behind");
+  assert.deepEqual(boot.pendingDelays(), [CHROME_LAYOUT_GATE_MAX_HOLD_MS]);
   boot.runTimers();
   assert.equal(boot.element("layoutGateAction").textContent, "Show anyway");
   assert.equal(boot.element("layoutGateCopy").textContent, gateCopy);
@@ -343,7 +390,7 @@ test("a chrome client script that fails to load raises the failure card immediat
   assert.equal(boot.element("layoutGateOverlay").hidden, false);
   assert.match(boot.element("layoutGateTitle").textContent, /could not finish loading/);
   assert.equal(boot.element("layoutGateAction").textContent, "Check and reload");
-  assert.deepEqual(boot.pendingDelays(), [], "the immediate failure retires the pending timer");
+  assert.deepEqual(boot.pendingDelays(), [CHROME_LAYOUT_GATE_MAX_HOLD_MS]);
 });
 
 // The failsafe's own copy says the server most likely went away between serving this page and

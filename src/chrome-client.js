@@ -152,6 +152,7 @@ const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
 const layoutGateBypass = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateBypass"));
+const layoutGateEscape = /** @type {any} */ (window).__lavishLayoutGateEscape;
 const warningsWrap = /** @type {HTMLDivElement} */ (document.getElementById("warningsWrap"));
 const warningsButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsButton"));
 const warningsCount = /** @type {HTMLSpanElement} */ (document.getElementById("warningsCount"));
@@ -1262,6 +1263,7 @@ function normalizeLayoutFindings(value) {
 }
 
 function clearLayoutGateTimer() {
+  layoutGateEscape?.cancel?.();
   if (layoutGateTimer) clearTimeout(layoutGateTimer);
   layoutGateTimer = undefined;
 }
@@ -1378,17 +1380,25 @@ function clearLayoutGateFailure() {
 function revealLayoutGate() {
   clearLayoutGateTimer();
   layoutGateArmed = false;
+  layoutGateEscape?.reveal?.();
   setLayoutGateActive(false);
 }
 
 function forceRevealLayoutGate(reason) {
   if (ended) return;
-  if (reason === "manual") layoutGateManuallyBypassed = true;
+  if (reason === "manual") {
+    layoutGateManuallyBypassed = true;
+    layoutGateEscape?.manualReveal?.();
+  }
   revealLayoutGate();
 }
 
 function armLayoutGateTimer() {
   clearLayoutGateTimer();
+  if (layoutGateEscape?.arm) {
+    layoutGateEscape.arm(layoutGateMaxHoldMs, () => forceRevealLayoutGate("timeout"));
+    return;
+  }
   const cycle = layoutGateCycle;
   layoutGateTimer = setTimeout(() => {
     if (cycle !== layoutGateCycle || !layoutGateVisible || ended) return;
@@ -1419,6 +1429,7 @@ function handleLayoutGatePass() {
 }
 
 function initializeLayoutGate() {
+  if (layoutGateEscape?.isManuallyBypassed?.()) layoutGateManuallyBypassed = true;
   if (!layoutGateEnabled) {
     setLayoutGateActive(false);
     return;
@@ -1812,6 +1823,7 @@ function markSessionEnded() {
   layoutGateManuallyBypassed = true;
   layoutGateFailureSticky = false;
   revealLayoutGate();
+  layoutGateEscape?.end?.();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
 }

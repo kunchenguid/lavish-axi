@@ -2036,25 +2036,38 @@ export function extractArtifactHead(html) {
 // armed before the script tag, so it survives even a request that hangs instead of erroring,
 // and `chrome-client.js` cancels it once it has run to completion.
 export const CHROME_BOOT_FAILSAFE_MS = 15000;
+export const CHROME_LAYOUT_GATE_MAX_HOLD_MS = 12000;
 // The failsafe's button is the only control on a page whose client script is dead, so its own
 // probe is bounded too: a port that accepts and never answers must not disable it for good.
 const CHROME_BOOT_FAILSAFE_PROBE_TIMEOUT_MS = 4000;
 const CHROME_BOOT_FAILSAFE_JS = `(function(){
 var t=setTimeout(fail,${CHROME_BOOT_FAILSAFE_MS});
-var o,h,c,a;
+var o=document.getElementById("layoutGateOverlay"),h,c,a,b,gt=0,manual=false,ended=false;
+try{ended=JSON.parse(document.getElementById("lavish-session").textContent).initialEnded===true;}catch(e){}
+function cancelGate(){if(gt)clearTimeout(gt);gt=0;}
+function reveal(){cancelGate();if(o)o.hidden=true;if(document.body)document.body.classList.remove("layout-gate-active");}
+function manualReveal(){if(ended)return false;manual=true;reveal();return true;}
+function armGate(ms,onTimeout){cancelGate();if(!ended)gt=setTimeout(function(){if(ended)return;if(onTimeout)onTimeout();else reveal();},ms);}
+function showBypass(){b=document.getElementById("layoutGateBypass");if(b){b.hidden=false;b.onclick=manualReveal;}}
+window.__lavishLayoutGateEscape={arm:armGate,cancel:cancelGate,reveal:reveal,manualReveal:manualReveal,showBypass:showBypass,end:function(){ended=true;cancelGate();},isEnded:function(){return ended;},isManuallyBypassed:function(){return manual;}};
+a=document.getElementById("layoutGateAction");
+if(ended){reveal();b=document.getElementById("endedOverlay");if(b)b.hidden=false;}
+if(a&&!ended)a.onclick=manualReveal;
+if(o&&!o.hidden&&!ended)armGate(${CHROME_LAYOUT_GATE_MAX_HOLD_MS});
 window.__lavishCancelChromeBootFailsafe=function(){clearTimeout(t);};
 window.__lavishChromeBootFailed=function(){clearTimeout(t);fail();};
 function fail(){
-if(window.__lavishChromeReady)return;
-o=document.getElementById("layoutGateOverlay");
+if(window.__lavishChromeReady||ended)return;
 h=document.getElementById("layoutGateTitle");
 c=document.getElementById("layoutGateCopy");
 a=document.getElementById("layoutGateAction");
 if(h)h.textContent="Lavish could not finish loading.";
 if(c)c.textContent="The Lavish editor script did not load. The server usually restarted while this page was opening. Check and reload to reconnect.";
 if(a){a.textContent="Check and reload";a.disabled=false;a.onclick=check;}
+showBypass();
 if(o)o.hidden=false;
 if(document.body)document.body.classList.add("layout-gate-active");
+armGate(${CHROME_LAYOUT_GATE_MAX_HOLD_MS});
 }
 function check(){
 if(a)a.disabled=true;
