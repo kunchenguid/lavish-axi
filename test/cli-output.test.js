@@ -1079,7 +1079,7 @@ test("share command publishes the artifact to ht-ml.app and returns the public u
   }
 });
 
-test("share command treats a whitespace-only password as public", async () => {
+test("share command refuses a whitespace-only password instead of quietly publishing a public page", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
   const artifact = `${dir}/report.html`;
   await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
@@ -1110,12 +1110,13 @@ test("share command treats a whitespace-only password as public", async () => {
     });
     const code = await new Promise((resolve) => child.on("close", resolve));
 
-    assert.equal(code, 0, stderr);
-    assert.match(stdout, /PUBLIC/);
-    assert.match(stdout, /anyone with the link can view/);
-    assert.doesNotMatch(stdout, /PASSWORD-PROTECTED/);
-    assert.equal(requests.length, 1);
-    assert.equal("password" in requests[0].body, false);
+    // Asking for a password and getting an unprotected page is the surprise worth refusing: the
+    // user meant to gate the artifact, and nothing downstream can tell that intent was dropped.
+    assert.notEqual(code, 0);
+    const output = `${stdout}${stderr}`;
+    assert.match(output, /--password was given an empty value/);
+    assert.match(output, /--private/);
+    assert.equal(requests.length, 0, "nothing may be published when the arguments are refused");
   } finally {
     await htmlApp.close();
     await rm(dir, { force: true, recursive: true });
@@ -2593,6 +2594,38 @@ test("resolveShareRequest treats unpublish as a credentialed republish with no f
     () => resolveShareRequest(["report.html", "--unpublish", "--site", "abc123", "--update-key", "uk"]),
     /--unpublish/,
   );
+});
+
+test("resolveShareRequest refuses a value flag that swallowed the next flag", () => {
+  // An empty unquoted $PW in `share r.html --password $PW --site abc --update-key k` used to make
+  // "--site" the password and silently ROTATE a live page to a literal nobody could recover.
+  assert.throws(
+    () => resolveShareRequest(["r.html", "--password", "--site", "abc", "--update-key", "k"]),
+    /--password was given no value.*--site/s,
+  );
+  assert.throws(() => resolveShareRequest(["r.html", "--site", "--update-key", "k"]), /--site was given no value/);
+  assert.throws(
+    () => resolveShareRequest(["r.html", "--site", "abc", "--update-key", "--private"]),
+    /--update-key was given no value/,
+  );
+  assert.throws(() => resolveShareRequest(["r.html", "--token", "--private"]), /--token was given no value/);
+});
+
+test("resolveShareRequest refuses an explicitly empty value flag", () => {
+  for (const args of [
+    ["r.html", "--password", ""],
+    ["r.html", "--password="],
+    ["r.html", "--password"],
+    ["r.html", "--password", "   "],
+  ]) {
+    assert.throws(() => resolveShareRequest(args), /--password was given an empty value/, args.join(" "));
+  }
+  assert.throws(() => resolveShareRequest(["r.html", "--site=", "--update-key", "k"]), /--site was given an empty/);
+});
+
+test("resolveShareRequest still accepts a value that legitimately starts with dashes via the = form", () => {
+  // The = form cannot swallow a following token, so it stays the escape hatch for such a value.
+  assert.equal(resolveShareRequest(["r.html", "--password=--dashes--"]).password, "--dashes--");
 });
 
 test("resolveShareRequest rejects a bearer token on a republish or unpublish", () => {
