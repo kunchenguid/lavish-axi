@@ -73,6 +73,21 @@
     target.style.width = "240px";
     result.afterLayoutShift = await settledDrift(target);
 
+    for (let i = 0; i < 45; i += 1) await frame();
+
+    // Replace the annotated element outright with a new node matching the same selector, as a
+    // dynamic artifact re-rendering a list row would. The old element goes detached with no resize
+    // or scroll event firing at all - only re-resolving through the selector catches this.
+    const replacement = document.createElement("div");
+    replacement.id = "target";
+    replacement.textContent = "Replaced";
+    replacement.style.margin = "0 120px";
+    replacement.style.padding = "24px";
+    replacement.style.background = "#cfe";
+    replacement.style.border = "1px solid #391";
+    target.replaceWith(replacement);
+    result.afterReplace = await settledDrift(replacement);
+
     result.pass = true;
   }
 

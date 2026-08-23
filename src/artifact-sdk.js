@@ -454,7 +454,7 @@ export function dedupeAnnotationTargets(targets, resolve) {
     const el = resolve(selector);
     if (!el || seen.has(el)) continue;
     seen.add(el);
-    result.push({ id, el });
+    result.push({ id, el, selector });
   }
   return result;
 }
@@ -487,11 +487,12 @@ export function createArtifactSdk(
   let ignoreNextClick = false;
   let shadow = null;
   let annotationTargets = [];
-  /** @type {Array<{ id: string, el: Element, node: HTMLDivElement }>} */
+  /** @type {Array<{ id: string, el: Element, node: HTMLDivElement, selector: string }>} */
   let annotationBadges = [];
   let annotationBadgeFrame = 0;
   let annotationBadgeSettleFrames = 0;
   let annotationBadgeObserver = null;
+  let annotationBadgeMutationObserver = null;
   // A scroll or resize keeps arriving while a smooth scroll or a CSS transition is still running,
   // so each trigger re-arms a short settle window rather than a single frame.
   const ANNOTATION_BADGE_SETTLE_FRAMES = 20;
@@ -504,7 +505,7 @@ export function createArtifactSdk(
   function renderAnnotationBadges() {
     const root = ensureShadow();
     for (const badge of annotationBadges) badge.node.remove();
-    annotationBadges = dedupeAnnotationTargets(annotationTargets, safeQuerySelector).map(({ id, el }) => {
+    annotationBadges = dedupeAnnotationTargets(annotationTargets, safeQuerySelector).map(({ id, el, selector }) => {
       const node = document.createElement("div");
       node.className = "lavish-annotation-badge";
       node.addEventListener("click", (event) => {
@@ -512,11 +513,26 @@ export function createArtifactSdk(
         postArtifactMessage("lavish:openAnnotation", { id });
       });
       root.appendChild(node);
-      return { id, el, node };
+      return { id, el, node, selector };
     });
     observeAnnotationBadgeTargets();
+    observeAnnotationBadgeMutations();
     syncAnnotationBadgeInteractivity();
     positionAnnotationBadges();
+  }
+
+  // A tracked element can be replaced outright (removed and re-inserted as a new node matching
+  // the same selector) with no resize at all, which the ResizeObserver above never sees. Watching
+  // for childList changes catches that swap too, so a badge re-resolves and repositions promptly
+  // instead of sitting on a detached element until the next scroll or resize happens to fire.
+  function observeAnnotationBadgeMutations() {
+    if (typeof MutationObserver === "undefined" || !document.documentElement) return;
+    if (!annotationBadgeMutationObserver) {
+      annotationBadgeMutationObserver = new MutationObserver(() => scheduleAnnotationBadgeSync());
+    }
+    annotationBadgeMutationObserver.disconnect();
+    if (!annotationBadges.length) return;
+    annotationBadgeMutationObserver.observe(document.documentElement, { childList: true, subtree: true });
   }
 
   // Badges only hit-test while annotating: in explore mode a dot pinned to an element's top-right
@@ -538,8 +554,25 @@ export function createArtifactSdk(
     for (const badge of annotationBadges) annotationBadgeObserver.observe(badge.el);
   }
 
+  // A dynamic artifact can replace an annotated element with a new node matching the same
+  // selector (e.g. a re-rendered list row): the old element goes detached but its badge would
+  // otherwise keep tracking that dead node's last-known geometry forever. Re-resolve through the
+  // stored selector whenever the tracked element is no longer in the document, so the badge
+  // follows the replacement; if nothing resolves, hide the badge rather than draw it at a stale
+  // position.
   function positionAnnotationBadges() {
     for (const badge of annotationBadges) {
+      if (!badge.el.isConnected) {
+        const replacement = badge.selector ? safeQuerySelector(badge.selector) : null;
+        if (replacement) {
+          if (annotationBadgeObserver) annotationBadgeObserver.observe(replacement);
+          badge.el = replacement;
+        } else {
+          badge.node.style.display = "none";
+          continue;
+        }
+      }
+      badge.node.style.display = "";
       const rect = badge.el.getBoundingClientRect();
       badge.node.style.left = rect.right - 6 + "px";
       badge.node.style.top = rect.top - 6 + "px";

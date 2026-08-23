@@ -127,7 +127,7 @@ test(
       assert.equal(result.pass, true, result.error);
       assert.equal(result.badgeCount, 1, "one badge is drawn for one annotated element");
 
-      for (const stage of ["initial", "afterScroll", "afterLayoutShift"]) {
+      for (const stage of ["initial", "afterScroll", "afterLayoutShift", "afterReplace"]) {
         assert.ok(result[stage], `no badge position was measured ${stage}`);
         assert.ok(
           result[stage].dx <= 1 && result[stage].dy <= 1,

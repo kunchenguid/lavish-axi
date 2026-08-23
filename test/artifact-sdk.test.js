@@ -341,8 +341,8 @@ test("dedupeAnnotationTargets keeps the earliest id per resolved element", () =>
   );
 
   assert.deepEqual(result, [
-    { id: "1", el: elA },
-    { id: "3", el: elB },
+    { id: "1", el: elA, selector: "sel-a" },
+    { id: "3", el: elB, selector: "sel-b" },
   ]);
 });
 
@@ -360,5 +360,5 @@ test("dedupeAnnotationTargets drops entries with no id, no selector, or an unres
     resolve,
   );
 
-  assert.deepEqual(result, [{ id: "3", el: elA }]);
+  assert.deepEqual(result, [{ id: "3", el: elA, selector: "sel-a" }]);
 });
