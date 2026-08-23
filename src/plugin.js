@@ -309,12 +309,10 @@ export function linkCursorLocalPlugin(localPluginsDir, pluginRoot, pluginName, o
         movedPrevious = true;
       }
       rename(replacement, target);
-      // recursive: Node on Darwin throws EISDIR for rmSync(symlink-to-dir) without it;
-      // with it, a symlink is still unlinked and the target directory is left intact.
-      if (movedPrevious) remove(previous, { force: true, recursive: true });
+      if (movedPrevious) remove(previous, { force: true });
     } catch (error) {
       try {
-        remove(replacement, { force: true, recursive: true });
+        remove(replacement, { force: true });
         if (movedPrevious) rename(previous, target);
       } catch {
         // Preserve the original replacement error.
