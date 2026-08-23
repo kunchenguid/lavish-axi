@@ -551,11 +551,12 @@ function assetWarningSummaries(warnings) {
   return exportWarningSummaries(warnings);
 }
 
-// Publish the artifact as a visitable page on third-party ht-ml.app. Builds the same local-inlined
-// HTML as `export` (remote refs left as links), then POSTs it to ht-ml.app's `/v1/sites` API,
-// sending the artifact to ht-ml.app's servers. The service is not part of Lavish, needs no
-// account or API key, and returns the share URL plus the secret update_key for
-// managing the page later. Server-independent.
+// Publish, republish, or unpublish a page on third-party ht-ml.app; `resolveShareRequest` owns
+// which of the three the arguments describe. Creating POSTs the local-inlined HTML - built the same
+// way as `export`, remote refs left as links - to `/v1/sites`, needs no account or API key, and
+// returns the share URL plus the secret update_key. Republishing and unpublishing instead PUT to
+// `/v1/sites/{site_id}` authorized by that update_key and mint no new one; unpublish reads no file
+// at all and sends a placeholder page. Server-independent.
 async function shareCommand(args) {
   const request = resolveShareRequest(args);
   if (request.mode === "unpublish") {
@@ -832,6 +833,7 @@ export function createShareUnpublishOutput({ site }) {
     },
     next_step:
       `${target} and locked it behind a fresh random password that was discarded, so no visitor can read the old content. ` +
+      `The lock is NOT an instant takedown: a page that was public was observed still answering uncredentialed requests from ht-ml.app's CDN cache for minutes afterwards, so do not tell the user the page is unreachable right away. ` +
       `ht-ml.app has NO delete endpoint: the page is not deleted, the URL still resolves, and the host still holds whatever was published. Tell the user that rather than saying it was deleted. ` +
       `The update_key is still the only credential for this page - republish with \`lavish-axi share <html-file> --site ${site.site_id} --update-key <key> --private\` to bring it back, then give the user the new password it returns. ` +
       `ht-ml.app cannot remove a page's password once it has one, so a republished page stays private.`,

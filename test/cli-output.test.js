@@ -2707,3 +2707,14 @@ test("createShareUnpublishOutput says the page still exists and how to bring it 
   assert.match(output.next_step, /--private/);
   assert.doesNotMatch(JSON.stringify(output), /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/);
 });
+
+test("createShareUnpublishOutput does not present the lock as an instant takedown", () => {
+  // Probed live: a page that was public kept answering uncredentialed CDN requests for minutes
+  // after it was locked, so the agent must not relay "unreachable now".
+  const output = createShareUnpublishOutput({
+    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
+  });
+
+  assert.match(output.next_step, /not an instant takedown/i);
+  assert.match(output.next_step, /cach/i);
+});
