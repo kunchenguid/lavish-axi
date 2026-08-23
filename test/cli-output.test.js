@@ -26,11 +26,14 @@ import {
   createPlaybookOutput,
   createServerSpawnOptions,
   createShareOutput,
+  createShareUnpublishOutput,
+  createShareUpdateOutput,
   createUserEndedOpenOutput,
   detectInvokingAgent,
   fetchJson,
   getCommandHelp,
   normalizeArgv,
+  resolveShareRequest,
   pollInterruptedText,
   pollWaitBannerText,
   pollWaitTickText,
@@ -1149,14 +1152,16 @@ test("share help distinguishes public default from password-protected shares", (
   const homeShareHelp = home.help.find((item) => item.includes("lavish-axi share <html-file>"));
 
   assert.match(help, /PUBLIC by default/);
-  assert.match(help, /Pass --password to publish a PRIVATE password-protected page/);
-  assert.match(help, /viewers must supply the password to view/);
+  assert.match(help, /Pass --private to publish a PRIVATE page behind a generated password/);
+  assert.match(help, /--password <pw> instead when the user chose the password/);
+  assert.match(help, /shared secret/);
   assert.match(help, /not blocked by CSP on ht-ml\.app/);
   assert.match(help, /load over the viewer's network/);
   assert.doesNotMatch(help, /EVERYTHING PUBLISHED IS PUBLIC/);
   assert.doesNotMatch(help, /load fine/);
   assert.match(homeShareHelp, /PUBLIC by default/);
-  assert.match(homeShareHelp, /Pass --password to publish a PRIVATE password-protected page/);
+  assert.match(homeShareHelp, /Pass --private to publish a PRIVATE page behind a password Lavish generates/);
+  assert.match(homeShareHelp, /shared secret/);
   assert.doesNotMatch(homeShareHelp, /Everything published is public/);
 });
 
@@ -2523,4 +2528,142 @@ test("opening an artifact names that session as the one to reload across a versi
     recorder.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("resolveShareRequest publishes a public page by default", () => {
+  const request = resolveShareRequest(["report.html"]);
+
+  assert.equal(request.mode, "create");
+  assert.equal(request.file, "report.html");
+  assert.equal(request.password, undefined);
+  assert.equal(request.generatedPassword, false);
+});
+
+test("resolveShareRequest --private mints a password instead of asking the agent for one", () => {
+  const request = resolveShareRequest(["report.html", "--private"]);
+
+  assert.equal(request.mode, "create");
+  assert.equal(request.generatedPassword, true);
+  assert.match(String(request.password), /^[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/);
+});
+
+test("resolveShareRequest keeps an explicit password verbatim and refuses to also generate one", () => {
+  assert.equal(resolveShareRequest(["report.html", "--password", "hunter2"]).password, "hunter2");
+  assert.throws(() => resolveShareRequest(["report.html", "--password", "hunter2", "--private"]), /--private/);
+});
+
+test("resolveShareRequest reads the file path even when a password flag precedes it", () => {
+  assert.equal(resolveShareRequest(["--password", "hunter2", "report.html"]).file, "report.html");
+  assert.equal(resolveShareRequest(["--private", "report.html"]).file, "report.html");
+});
+
+test("resolveShareRequest requires both halves of the republish credential", () => {
+  const request = resolveShareRequest(["report.html", "--site", "abc123", "--update-key", "uk_secret"]);
+
+  assert.equal(request.mode, "update");
+  assert.equal(request.siteId, "abc123");
+  assert.equal(request.updateKey, "uk_secret");
+  assert.equal(request.password, undefined, "an omitted password preserves the page's current one");
+  assert.throws(() => resolveShareRequest(["report.html", "--site", "abc123"]), /--update-key/);
+  assert.throws(() => resolveShareRequest(["report.html", "--update-key", "uk_secret"]), /--site/);
+  assert.throws(() => resolveShareRequest(["--site", "abc123", "--update-key", "uk_secret"]), /HTML file/);
+});
+
+test("resolveShareRequest clears a password only on republish", () => {
+  const request = resolveShareRequest([
+    "report.html",
+    "--site",
+    "abc123",
+    "--update-key",
+    "uk_secret",
+    "--clear-password",
+  ]);
+
+  assert.equal(request.password, "");
+  assert.throws(() => resolveShareRequest(["report.html", "--clear-password"]), /--clear-password/);
+});
+
+test("resolveShareRequest treats unpublish as a credentialed republish with no file", () => {
+  const request = resolveShareRequest(["--unpublish", "--site", "abc123", "--update-key", "uk_secret"]);
+
+  assert.equal(request.mode, "unpublish");
+  assert.equal(request.siteId, "abc123");
+  assert.equal(request.file, null);
+  assert.throws(() => resolveShareRequest(["--unpublish", "--site", "abc123"]), /--update-key/);
+  assert.throws(
+    () => resolveShareRequest(["report.html", "--unpublish", "--site", "abc123", "--update-key", "uk"]),
+    /--unpublish/,
+  );
+});
+
+test("createShareOutput hands back a generated password and tells the agent it is a shared secret", () => {
+  const output = createShareOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
+    warnings: [],
+    passwordProtected: true,
+    password: "xk4t-9rmb-2wqz",
+  });
+
+  assert.equal(output.share.password, "xk4t-9rmb-2wqz");
+  assert.equal(output.share.visibility, "private");
+  assert.match(output.next_step, /xk4t-9rmb-2wqz/);
+  assert.match(output.next_step, /shared secret/i);
+});
+
+test("createShareOutput never echoes a password the caller chose", () => {
+  const output = createShareOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
+    warnings: [],
+    passwordProtected: true,
+  });
+
+  assert.equal(output.share.password, undefined);
+});
+
+test("createShareUpdateOutput reports a replaced page and stays silent about an unchanged password", () => {
+  const output = createShareUpdateOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
+    warnings: [],
+  });
+
+  assert.equal(output.share.url, "https://x.ht-ml.app/");
+  assert.equal(output.share.visibility, "unchanged");
+  assert.equal(output.share.password, undefined);
+  assert.match(output.next_step, /same URL/i);
+});
+
+test("createShareUpdateOutput surfaces a rotated or cleared password", () => {
+  const rotated = createShareUpdateOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
+    warnings: [],
+    password: "xk4t-9rmb-2wqz",
+    passwordProtected: true,
+  });
+  assert.equal(rotated.share.password, "xk4t-9rmb-2wqz");
+  assert.equal(rotated.share.visibility, "private");
+
+  const cleared = createShareUpdateOutput({
+    source: "/tmp/report.html",
+    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
+    warnings: [],
+    passwordCleared: true,
+  });
+  assert.equal(cleared.share.visibility, "public");
+  assert.match(cleared.next_step, /anyone with the link/i);
+});
+
+test("createShareUnpublishOutput says the page still exists and how to bring it back", () => {
+  const output = createShareUnpublishOutput({
+    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
+  });
+
+  assert.equal(output.share.site_id, "x");
+  assert.equal(output.share.unpublished, true);
+  assert.match(output.next_step, /not deleted|no delete/i);
+  assert.match(output.next_step, /update_key/);
+  assert.doesNotMatch(JSON.stringify(output), /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/);
 });

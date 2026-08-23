@@ -803,6 +803,23 @@ body.lavish {
 .share-grid input::placeholder {
   color: var(--fg-label);
 }
+.share-grid .share-check {
+  grid-template-columns: auto 1fr;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--w-regular);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.share-grid .share-check input {
+  width: auto;
+  padding: 0;
+  accent-color: var(--accent);
+}
 .share-status {
   min-height: 20px;
   margin-top: var(--space-8);
@@ -822,6 +839,9 @@ body.lavish {
   padding: var(--space-8);
 }
 .share-result[hidden] {
+  display: none;
+}
+.share-result label[hidden] {
   display: none;
 }
 .share-copy-row {

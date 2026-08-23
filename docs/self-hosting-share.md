@@ -13,7 +13,7 @@ This page documents the contract that backend must implement.
 
 ## Contract
 
-`share` makes a single request:
+`share` creates a page with one request, and republishes an existing one with a second:
 
 ```
 POST {LAVISH_AXI_HTML_APP_API_URL}/v1/sites
@@ -22,7 +22,7 @@ Authorization: Bearer <token>          # only when a token is configured
 
 {
   "html_content": "<full inlined HTML>",
-  "password": "<optional>"             # present when --password is used
+  "password": "<optional>"             # present when --password or --private is used
 }
 ```
 
@@ -42,7 +42,31 @@ errors if either is missing:
 - `update_key` — an opaque secret returned to the user for managing the page later.
 - `site_id`, `status` — optional; surfaced if present.
 
-The request times out after 30 seconds.
+### Republishing
+
+`share --site <site_id> --update-key <key>` (and `--unpublish`, which sends a placeholder page)
+replaces an existing page in place:
+
+```
+PUT {LAVISH_AXI_HTML_APP_API_URL}/v1/sites/{site_id}
+Content-Type: application/json
+Authorization: Bearer <update_key>
+
+{
+  "html_content": "<full inlined HTML>",
+  "password": "<optional>"             # absent preserves the current password, "" clears it
+}
+```
+
+The response may repeat `url`, `site_id`, and `status`; `share` falls back to the site's known URL
+when the body omits one. Reject the request with `401` when the `update_key` does not match: that
+key is the page's only credential, so treating a bad one as a no-op silently loses the update.
+
+`share` never issues a `DELETE`. ht-ml.app has no delete endpoint, and `--unpublish` is a `PUT` of a
+placeholder page behind a fresh password, so a backend implementing this contract needs no delete
+route either.
+
+Both requests time out after 30 seconds.
 
 ## Minimal reference (Cloudflare Worker)
 

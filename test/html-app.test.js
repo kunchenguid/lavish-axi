@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHtmlAppPayload, htmlAppApiUrl, publishToHtmlApp } from "../src/html-app.js";
+import {
+  createHtmlAppPayload,
+  createHtmlAppUpdatePayload,
+  createUnpublishedPageHtml,
+  htmlAppApiUrl,
+  normalizeSiteId,
+  publishToHtmlApp,
+  updateHtmlApp,
+} from "../src/html-app.js";
 
 function jsonResponse(status, body) {
   return {
@@ -132,4 +140,83 @@ test("publishToHtmlApp keeps the timeout active while reading the response body"
 
   await assert.rejects(() => publishToHtmlApp("<h1>Hi</h1>", { fetch: fetchImpl, env: {}, timeoutMs: 1 }), /timed out/);
   assert.equal(textStarted, true);
+});
+
+test("normalizeSiteId accepts an id and explains that a URL is not one", () => {
+  assert.equal(normalizeSiteId(" abc123 "), "abc123");
+  assert.throws(() => normalizeSiteId("https://abc123.ht-ml.app/"), /site_id/);
+  assert.throws(() => normalizeSiteId("abc/../123"), /site_id/);
+  assert.throws(() => normalizeSiteId(""), /site_id/);
+});
+
+test("createHtmlAppUpdatePayload omits the password to preserve it and sends an empty string to clear it", () => {
+  assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>"), { html_content: "<h1>Hi</h1>" });
+  assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>", { password: "secret" }), {
+    html_content: "<h1>Hi</h1>",
+    password: "secret",
+  });
+  assert.deepEqual(createHtmlAppUpdatePayload("<h1>Hi</h1>", { password: "" }), {
+    html_content: "<h1>Hi</h1>",
+    password: "",
+  });
+});
+
+test("updateHtmlApp replaces the site HTML with the update key as the bearer credential", async () => {
+  const { fetchImpl, calls } = recordingFetch(
+    jsonResponse(200, { site_id: "abc123", url: "https://abc123.ht-ml.app/", status: "active" }),
+  );
+
+  const result = await updateHtmlApp("abc123", "<h1>Newer</h1>", {
+    updateKey: "uk_secret",
+    password: "hunter2",
+    apiUrl: "https://api.example",
+    fetch: fetchImpl,
+    env: {},
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.example/v1/sites/abc123");
+  assert.equal(calls[0].init.method, "PUT");
+  assert.equal(calls[0].init.headers.authorization, "Bearer uk_secret");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { html_content: "<h1>Newer</h1>", password: "hunter2" });
+  assert.deepEqual(result, { url: "https://abc123.ht-ml.app/", site_id: "abc123", status: "active" });
+});
+
+test("updateHtmlApp falls back to the known site url when the response omits one", async () => {
+  const { fetchImpl } = recordingFetch(jsonResponse(200, {}));
+
+  const result = await updateHtmlApp("abc123", "<h1>Hi</h1>", {
+    updateKey: "uk",
+    apiUrl: "https://api.example",
+    fetch: fetchImpl,
+    env: {},
+  });
+
+  assert.equal(result.url, "https://abc123.ht-ml.app/");
+  assert.equal(result.site_id, "abc123");
+});
+
+test("updateHtmlApp requires an update key", async () => {
+  const { fetchImpl, calls } = recordingFetch(jsonResponse(200, {}));
+
+  await assert.rejects(() => updateHtmlApp("abc123", "<h1>Hi</h1>", { fetch: fetchImpl, env: {} }), /update_key/);
+  assert.equal(calls.length, 0);
+});
+
+test("updateHtmlApp explains a rejected update key", async () => {
+  const { fetchImpl } = recordingFetch(jsonResponse(401, {}));
+
+  await assert.rejects(
+    () => updateHtmlApp("abc123", "<h1>Hi</h1>", { updateKey: "wrong", fetch: fetchImpl, env: {} }),
+    /unauthorized/,
+  );
+});
+
+test("the unpublished placeholder is a self-contained page that says the content is gone", () => {
+  const html = createUnpublishedPageHtml();
+
+  assert.match(html, /<!doctype html>/i);
+  assert.match(html, /unpublished/i);
+  assert.doesNotMatch(html, /<script/i);
+  assert.doesNotMatch(html, /https?:\/\//i);
 });

@@ -133,6 +133,10 @@ const shareStatus = /** @type {HTMLDivElement} */ (document.getElementById("shar
 const shareResult = /** @type {HTMLDivElement} */ (document.getElementById("shareResult"));
 const shareUrlInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUrl"));
 const shareUpdateKeyInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUpdateKey"));
+const shareGenerateInput = /** @type {HTMLInputElement} */ (document.getElementById("shareGenerate"));
+const sharePasswordResult = /** @type {HTMLLabelElement} */ (document.getElementById("sharePasswordResult"));
+const sharePasswordOutput = /** @type {HTMLInputElement} */ (document.getElementById("sharePasswordOut"));
+const copySharePasswordButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySharePassword"));
 const copyShareUrlButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareUrl"));
 const copyUpdateKeyButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyUpdateKey"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
@@ -1904,8 +1908,23 @@ function openShareDialog() {
   shareStatus.textContent = "";
   shareStatus.classList.remove("error");
   shareResult.hidden = true;
+  sharePasswordResult.hidden = true;
+  sharePasswordOutput.value = "";
+  shareGenerateInput.checked = false;
   sharePasswordInput.value = "";
+  syncSharePasswordInput();
   sharePasswordInput.focus();
+}
+
+// A generated password and a typed one are the same field to the server, so the checkbox owns
+// the input rather than the two racing to decide what gets published.
+function syncSharePasswordInput() {
+  const generating = shareGenerateInput.checked;
+  sharePasswordInput.disabled = generating;
+  sharePasswordInput.placeholder = generating
+    ? "Lavish will generate one when you publish"
+    : "Leave blank for a public page";
+  if (generating) sharePasswordInput.value = "";
 }
 
 function closeShareDialog() {
@@ -1926,18 +1945,21 @@ async function publishShare(event) {
   shareStatus.classList.remove("error");
   shareStatus.textContent = "Publishing to ht-ml.app...";
   shareResult.hidden = true;
-  const password = sharePasswordInput.value.trim();
-  const passwordProtected = Boolean(password);
+  const generating = shareGenerateInput.checked;
+  const password = generating ? "" : sharePasswordInput.value.trim();
+  const passwordProtected = generating || Boolean(password);
   try {
     const response = await fetch("/api/" + key + "/share", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(password ? { password } : {}),
+      body: JSON.stringify(generating ? { generate_password: true } : password ? { password } : {}),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "publish failed");
     shareUrlInput.value = data.url || "";
     shareUpdateKeyInput.value = data.update_key || "";
+    sharePasswordOutput.value = data.password || "";
+    sharePasswordResult.hidden = !data.password;
     const unresolvedAssets = Array.isArray(data.unresolved_local_assets) ? data.unresolved_local_assets : [];
     const notices = Array.isArray(data.notices) ? data.notices : [];
     const warningCount = unresolvedAssets.length;
@@ -1951,6 +1973,9 @@ async function publishShare(event) {
           : passwordProtected
             ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
             : "Published. Anyone with the link can view this page.";
+    if (data.password) {
+      shareStatus.textContent += " Copy the password now - it is shown once here and Lavish does not store it.";
+    }
     shareResult.hidden = false;
     shareUrlInput.focus();
     shareUrlInput.select();
@@ -3087,6 +3112,9 @@ shareDialog.addEventListener("click", (event) => {
 });
 copyShareUrlButton.onclick = () => copyToButton(shareUrlInput.value, copyShareUrlButton, "Copy URL");
 copyUpdateKeyButton.onclick = () => copyToButton(shareUpdateKeyInput.value, copyUpdateKeyButton, "Copy key");
+copySharePasswordButton.onclick = () =>
+  copyToButton(sharePasswordOutput.value, copySharePasswordButton, "Copy password");
+shareGenerateInput.onchange = syncSharePasswordInput;
 endButton.onclick = () => {
   closeMenus();
   endSession();

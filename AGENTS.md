@@ -175,6 +175,8 @@ What matters architecturally is that creating a site needs no account or API key
 The user-facing contract - third-party disclosure, public by default, private with a password - lives in README's Export and sharing bullet and the runtime share output.
 The browser's **Publish link** flow `POST`s `/api/:key/share`; the route is **same-origin guarded** (`isSameOriginRequest`) because publishing is a state-changing, outward-facing action - a cross-origin page must not drive a publish through the loopback server.
 ht-ml.app serves hosted pages with no CSP and no sandbox header, so remote CDN/font references load over the viewer's network; hosted shares never include the annotation SDK.
+Share passwords are **generated in one place** (`src/share-password.js`) and reach the browser through the `/api/:key/share` response, because `src/chrome-client.js` is served as a raw file and cannot import modules: a browser-side generator would be a second copy of the alphabet and length rules, free to drift from the CLI's. That route echoes a password only when it minted one - a password the user typed is never sent back - and Lavish persists neither it nor the `update_key` anywhere, so `state.json` never becomes a store of hosting credentials.
+The host has **no delete endpoint** (`GET`/`PUT` only on a site), so `--unpublish` is a `PUT` of a placeholder page behind a discarded random password. It is not a deletion, the URL still resolves, and every surface has to say so; a flag or a next_step that claims a published page was removed is a lie the user acts on.
 
 ### AXI integration
 
