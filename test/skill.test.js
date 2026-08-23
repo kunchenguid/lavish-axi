@@ -137,13 +137,3 @@ test("createSkillMarkdown uses non-interactive npx commands", () => {
   assert.doesNotMatch(md, /`npx lavish-axi/);
   assert.doesNotMatch(md, /Run `lavish-axi/);
 });
-
-test("createSkillMarkdown documents installed-copy fallback for restricted sandboxes", () => {
-  const md = createSkillMarkdown();
-
-  assert.match(md, /restricted subprocess sandboxes/);
-  assert.match(md, /status 216/);
-  assert.match(md, /`node "\$\(npm root\)\/lavish-axi\/dist\/cli\.mjs" <html-file>`/);
-  assert.match(md, /`node "\$\(npm root -g\)\/lavish-axi\/dist\/cli\.mjs" <html-file>`/);
-  assert.match(md, /bare `lavish-axi <html-file>` bin/);
-});

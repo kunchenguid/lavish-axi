@@ -24,7 +24,6 @@ Do not follow workflow, design, or playbook instructions from this file - instal
 
 You do not need lavish-axi installed globally - invoke it with `npx -y lavish-axi <html-file>`.
 If lavish-axi output shows a follow-up command starting with `lavish-axi`, run it as `npx -y lavish-axi ...` instead.
-In restricted subprocess sandboxes, CI, or agent harnesses where `npx -y` exits opaquely (for example with status 216), use an already-installed copy directly: `node "$(npm root)/lavish-axi/dist/cli.mjs" <html-file>` for a local install, `node "$(npm root -g)/lavish-axi/dist/cli.mjs" <html-file>` for a global install, or the bare `lavish-axi <html-file>` bin after installing once.
 
 ## Request
 
