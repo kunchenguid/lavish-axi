@@ -3,7 +3,14 @@ run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ git
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    # The verdict is a pure function of pull_request.body, so a push carries no
+    # new body to judge but does move the head SHA. The pipeline pushes before
+    # it writes the deterministic Pipeline section, so a synchronize trigger
+    # pinned a FAILURE check run to the new head for a body the same run was
+    # about to fix. GitHub keeps that failure next to the later edited SUCCESS,
+    # and gh pr checks collapses same-named check runs by startedAt alone, so the
+    # CI monitor could park the run red forever.
+    types: [opened, edited, reopened]
     branches:
       - main
     # Never create a run for a release-please PR. The job-level author exemption
@@ -21,7 +28,7 @@ permissions:
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events
 # an immutable per-event group so first-time-fork approvals can never collapse
-# opened/edited checks. Keep synchronize/reopened coalescing as before.
+# opened/edited checks. Keep reopened coalescing as before.
 concurrency:
   group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
   cancel-in-progress: true
@@ -30,219 +37,27 @@ jobs:
   check:
     name: PR must be raised via no-mistakes
     runs-on: ubuntu-latest
+    # Known automation accounts are exempt so automation keeps working:
+    # - github-actions[bot] opens PRs via GITHUB_TOKEN
+    # - dependabot[bot] and release-please[bot] open automated PRs
+    # Other authors (human or bot) must raise PRs through `git push no-mistakes`.
+    #
+    # These stay job-level rather than moving to the action's `exempt-authors`
+    # input on purpose: an in-job exemption still requires the run to start, and
+    # a GITHUB_TOKEN PR's run is created in action_required and never starts.
+    # Keeping the condition here preserves the exact verdict shape this
+    # repository's gate already produces for those authors.
     if: >-
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       github.event.pull_request.user.login != 'release-please[bot]'
     steps:
+      # The enforcement itself now lives in the shared composite action in the
+      # no-mistakes repository, so this repository no longer carries its own
+      # copy of the script to drift.
+      #
+      # Pinned to an immutable commit, never @main: main is editable by the very
+      # pull request this gate is judging. Bumping the pin is a separate,
+      # deliberate pull request.
       - name: Verify no-mistakes signature and pipeline attestation in PR body
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -eu
-          marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
-          if printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
-            echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
-          else
-            {
-              echo "::error::This PR was not raised through no-mistakes."
-              echo
-              echo "Contributions to this repository must be submitted via 'git push no-mistakes'."
-              echo "That pipeline runs the required review/test/lint/CI steps and writes a"
-              echo "deterministic '## Pipeline' section into the PR body containing:"
-              echo
-              echo "    $marker"
-              echo
-              echo "See CONTRIBUTING.md for setup and the full workflow."
-              echo
-              echo "PR author: ${PR_AUTHOR}"
-            } >&2
-            exit 1
-          fi
-
-          # The signature alone only proves the pipeline wrote the body. no-mistakes
-          # >= 1.46.0 also emits a machine-readable step attestation next to it; parse
-          # that to prove review, test, and document actually ran to completion.
-          # Contract: docs/reference/pipeline-steps.md#pipeline-step-attestation in
-          # kunchenguid/no-mistakes.
-          attestation_prefix='<!-- no-mistakes-pipeline-attestation:v1 '
-          attestation_suffix=' -->'
-
-          if ! printf '%s' "${PR_BODY:-}" | grep -qF -- "$attestation_prefix"; then
-            echo "::error::This PR carries the no-mistakes signature but no pipeline attestation."
-            {
-              echo
-              echo "no-mistakes >= 1.46.0 is required (PR 670). That release writes a"
-              echo "machine-readable comment next to the signature:"
-              echo
-              echo "    ${attestation_prefix}{\"head_sha\":\"...\",\"steps\":[...]}${attestation_suffix}"
-              echo
-              echo "Upgrade no-mistakes ('no-mistakes update'), then re-run"
-              echo "'git push no-mistakes' so the PR body is rewritten with the attestation."
-              echo
-              echo "PR author: ${PR_AUTHOR}"
-            } >&2
-            exit 1
-          fi
-
-          # Exact-substring extraction (no regex): first prefix, then the first
-          # closing token after it, mirroring how no-mistakes' own consumer test
-          # slices the payload.
-          payload="$(
-            printf '%s' "${PR_BODY:-}" | tr -d '\r' | awk -v pre="$attestation_prefix" -v suf="$attestation_suffix" '
-              found { next }
-              {
-                p = index($0, pre)
-                if (p == 0) next
-                rest = substr($0, p + length(pre))
-                s = index(rest, suf)
-                if (s == 0) next
-                print substr(rest, 1, s - 1)
-                found = 1
-              }
-            '
-          )"
-
-          if [ -z "$payload" ]; then
-            echo "::error::The no-mistakes pipeline attestation comment is malformed: no JSON payload could be extracted."
-            {
-              echo
-              echo "The '${attestation_prefix}' marker is present but is not closed by"
-              echo "'${attestation_suffix}' on the same line, or the payload is empty."
-              echo "This gate fails closed on an unreadable attestation."
-              echo
-              echo "PR author: ${PR_AUTHOR}"
-            } >&2
-            exit 1
-          fi
-
-          # Real JSON parsing. Emits one "<step>\t<verdict>\t<detail>" line per
-          # required step. A step recorded more than once must be completed in
-          # every record. Any skip-shaped sibling key (a future 'skipped',
-          # 'skip_reason', 'quota_...', '..._unavailable' field) with a meaningful
-          # value is rejected outright, so a skip can never ride along on a
-          # 'completed' status.
-          if ! report="$(
-            printf '%s' "$payload" | jq -r --argjson required '["review","test","document"]' '
-              if type != "object" then error("attestation payload is not a JSON object") else . end
-              | if (.steps | type) != "array" then error("attestation payload has no \"steps\" array") else . end
-              | . as $attestation
-              | $required[]
-              | . as $name
-              | [ $attestation.steps[] | select((type == "object") and ((.step? | tostring) == $name)) ] as $records
-              | if ($records | length) == 0 then
-                  "\($name)\tmissing\tno record in attestation"
-                else
-                  ([ $records[] | (.status? // null) | tostring ] | unique) as $statuses
-                  | ([ $records[]
-                       | to_entries[]
-                       | select((.key | ascii_downcase) | test("skip|quota|unavailable"))
-                       | select(.value != null and .value != false and .value != "")
-                       | .key ] | unique) as $skip_markers
-                  | if ($skip_markers | length) > 0 then
-                      "\($name)\tskip-marker\t\($skip_markers | join(","))"
-                    elif $statuses == ["completed"] then
-                      "\($name)\tok\tcompleted"
-                    else
-                      "\($name)\tbad\t\($statuses | join(","))"
-                    end
-                end
-            ' 2>&1
-          )"; then
-            echo "::error::The no-mistakes pipeline attestation payload could not be parsed as JSON."
-            {
-              echo
-              echo "jq reported:"
-              echo "$report"
-              echo
-              echo "Payload: $payload"
-              echo
-              echo "This gate fails closed on an unparseable attestation."
-              echo
-              echo "PR author: ${PR_AUTHOR}"
-            } >&2
-            exit 1
-          fi
-
-          attested_head="$(printf '%s' "$payload" | jq -r '.head_sha // ""')"
-          echo "Attestation head_sha: ${attested_head:-(absent)}"
-
-          # Head binding. The attestation describes the commit no-mistakes ran
-          # its steps on; a later push moves the PR head without rewriting the
-          # body, so an attestation that does not name the current head proves
-          # nothing about the code being merged. A `synchronize` whose body was
-          # NOT rewritten by no-mistakes going red is the intended contract, not
-          # a false positive.
-          if [ -z "$attested_head" ] || [ -z "${PR_HEAD_SHA:-}" ] || [ "$attested_head" != "$PR_HEAD_SHA" ]; then
-            echo "::error::The no-mistakes pipeline attestation is STALE for the current head of PR #${PR_NUMBER}."
-            {
-              echo
-              echo "Attestation head_sha: ${attested_head:-(absent)}"
-              echo "PR head sha:          ${PR_HEAD_SHA:-(absent)}"
-              echo
-              echo "A commit was pushed after the no-mistakes run, so the attestation does not"
-              echo "describe the code this PR now proposes to merge."
-              echo
-              echo "Re-run 'git push no-mistakes' to refresh it."
-              echo
-              echo "PR author: ${PR_AUTHOR}"
-            } >&2
-            exit 1
-          fi
-
-          tab="$(printf '\t')"
-          gate_status=0
-          checked=0
-          while IFS="$tab" read -r name verdict detail; do
-            [ -n "$name" ] || continue
-            checked=$((checked + 1))
-            case "$verdict" in
-              ok)
-                echo "  ok: ${name} = completed"
-                ;;
-              missing)
-                echo "::error::The no-mistakes pipeline attestation has no '${name}' step record; '${name}' must be recorded as completed."
-                gate_status=1
-                ;;
-              skip-marker)
-                echo "::error::The no-mistakes pipeline attestation marks '${name}' with skip indicator(s) [${detail}]; quota-exhaustion and agent-unavailability skips are not accepted."
-                gate_status=1
-                ;;
-              *)
-                echo "::error::The no-mistakes pipeline attestation records '${name}' as '${detail}', not 'completed'."
-                gate_status=1
-                ;;
-            esac
-          done <<REPORT
-          $report
-          REPORT
-
-          # A verdict per required step is the only shape jq can emit for a payload
-          # it accepted. Assert it anyway so an unexpected empty report fails closed
-          # instead of reporting nothing and passing.
-          if [ "$checked" -ne 3 ]; then
-            echo "::error::The no-mistakes attestation gate reached a verdict for ${checked} of the 3 required steps (review, test, document); failing closed."
-            gate_status=1
-          fi
-
-          if [ "$gate_status" -ne 0 ]; then
-            {
-              echo
-              echo "The no-mistakes review, test, and document steps must all be recorded as"
-              echo "'completed'. A step that was skipped (pre-skipped with --skip, skipped at a"
-              echo "gate, or skipped because the agent was unavailable or out of quota), failed,"
-              echo "or never finished is not accepted."
-              echo
-              echo "Re-run 'git push no-mistakes' and let review, test, and document run."
-              echo
-              echo "Attestation payload: $payload"
-              echo
-              echo "PR author: ${PR_AUTHOR}"
-            } >&2
-            exit 1
-          fi
-
-          echo "no-mistakes pipeline attestation verified for PR #${PR_NUMBER}: review, test, and document all completed."
+        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
