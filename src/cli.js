@@ -603,9 +603,11 @@ export async function shareCommand(args) {
   });
 }
 
-// A generated password only reaches the user through the success output, so a failure AFTER the
-// request went out would take it with it - and the host may already have applied the rotation,
-// leaving the page gated by a secret nobody holds. Carry the password into the error instead.
+// A generated password only reaches the user through the success output, so a failure after the
+// request went out would take it with it. Whether that matters depends on the failure: a 4xx the
+// host answered means it wrote nothing, so the password gates nothing and handing it over would be
+// a lie. Only an indeterminate outcome - no answer at all, or a 5xx - can leave the page rotated to
+// a secret nobody holds, and only there is the password worth carrying into the error.
 async function updateShareSite(request, html) {
   try {
     return await updateHtmlApp(request.siteId, html, {
@@ -613,20 +615,23 @@ async function updateShareSite(request, html) {
       password: request.password,
     });
   } catch (error) {
+    const status = error instanceof Error ? Number(/** @type {any} */ (error).status) : Number.NaN;
+    const rejected = Number.isInteger(status) && status >= 400 && status < 500;
+    if (rejected || !request.generatedPassword || !request.password) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    if (!request.generatedPassword || !request.password) throw error;
     throw new AxiError(message, "UNKNOWN", [
-      `The password Lavish generated for this republish is ${request.password} - give it to the user.`,
-      "ht-ml.app may have applied the change before the failure, in which case the page already requires that password and nothing else records it.",
-      `Re-run with \`--site ${request.siteId} --update-key <key> --private\` to set a fresh one you can see.`,
+      `ht-ml.app may or may not have applied this republish, so treat the outcome as unknown.`,
+      `If it landed, the page now requires the password Lavish generated for it: ${request.password}`,
+      `Re-run with \`--site ${request.siteId} --update-key <key> --private\` to set a password you can see either way.`,
     ]);
   }
 }
 
 // Resolve which of `share`'s three shapes the arguments describe - publish, republish, or
 // unpublish - and which password the host should be sent. Pure, so the conflict rules are
-// testable without a network call or a file on disk. A password is only ever generated here,
-// never accepted from the artifact or the browser.
+// testable without a network call or a file on disk. A password is never accepted from the artifact
+// or the browser; this is the only place one is generated for a request, the sole exception being
+// `--unpublish`, which mints its own directly because that value is discarded rather than reported.
 export function resolveShareRequest(args) {
   const unpublish = args.includes("--unpublish");
   const generate = args.includes("--private");

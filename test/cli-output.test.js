@@ -1076,27 +1076,35 @@ test("share dispatches create, republish, and unpublish to the right host reques
   }
 });
 
-test("a failed --private republish still hands back the password it may have already set", async () => {
+async function startFailingHtmlApp(status, detail) {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify({ detail }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : 0,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+const PASSWORD_SHAPE = /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/;
+
+test("an indeterminate --private republish failure hands back the password it may have already set", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-rotate-fail-`);
   const artifact = `${dir}/report.html`;
   await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
 
-  // A 5xx after the origin committed the PUT is the case that matters: the rotation may have
-  // landed, and a generated password that dies with the error leaves the page gated by a secret
+  // A 5xx can come back after the origin already committed the PUT, so the rotation may have
+  // landed and a generated password that dies with the error leaves the page gated by a secret
   // nobody holds.
-  const failing = createServer((req, res) => {
-    req.resume();
-    req.on("end", () => {
-      res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ detail: "upstream exploded" }));
-    });
-  });
-  await new Promise((resolve) => failing.listen(0, "127.0.0.1", () => resolve()));
-  const address = failing.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-
+  const failing = await startFailingHtmlApp(503, "upstream exploded");
   const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${port}`;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${failing.port}`;
   try {
     await assert.rejects(
       () => shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret", "--private"]),
@@ -1104,8 +1112,8 @@ test("a failed --private republish still hands back the password it may have alr
         assert.ok(error instanceof AxiError);
         assert.match(error.message, /upstream exploded/, "the original failure must survive");
         const hints = (error.suggestions || []).join(" ");
-        assert.match(hints, /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/, "the generated password must be recoverable");
-        assert.match(hints, /already requires that password/i);
+        assert.match(hints, PASSWORD_SHAPE, "the generated password must be recoverable");
+        assert.match(hints, /may or may not have applied/i, "the outcome must read as unknown");
         assert.match(hints, /--private/);
         return true;
       },
@@ -1116,12 +1124,43 @@ test("a failed --private republish still hands back the password it may have alr
       () => shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret"]),
       (error) => {
         assert.ok(error instanceof Error);
-        assert.doesNotMatch(error.message, /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/);
+        assert.doesNotMatch(error.message, PASSWORD_SHAPE);
         return true;
       },
     );
   } finally {
-    await new Promise((resolve) => failing.close(() => resolve()));
+    await failing.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a republish the host rejected never offers the generated password as if it applied", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-rejected-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  // A mistyped update_key is the likeliest failure here. The host wrote nothing, so the generated
+  // password gates nothing, and relaying it would send the user chasing a page that never changed.
+  const rejecting = await startFailingHtmlApp(401, "");
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${rejecting.port}`;
+  try {
+    await assert.rejects(
+      () => shareCommand([artifact, "--site", "abc123", "--update-key", "WRONG", "--private"]),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /unauthorized/i, "the host's reason must survive");
+        const suggestions = error instanceof AxiError ? error.suggestions || [] : [];
+        const reported = `${error.message} ${suggestions.join(" ")}`;
+        assert.doesNotMatch(reported, PASSWORD_SHAPE, "a rejected republish must not surface the password");
+        assert.doesNotMatch(reported, /may or may not have applied/i);
+        return true;
+      },
+    );
+  } finally {
+    await rejecting.close();
     if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
     else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
     await rm(dir, { recursive: true, force: true });

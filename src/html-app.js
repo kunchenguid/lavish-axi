@@ -184,6 +184,20 @@ export async function updateHtmlApp(siteId, html, options = {}) {
   };
 }
 
+// A caller that changes a live page needs to tell "the host refused, nothing was written" from
+// "the outcome is unknown". Only a response the host actually returned proves the former, so the
+// status rides on the error: absent means no answer reached us (transport failure or timeout).
+/**
+ * @param {string} message
+ * @param {{ status?: number, cause?: unknown }} [details]
+ */
+function htmlAppRequestError(message, details = {}) {
+  const { status, cause } = details;
+  const error = new Error(message, cause ? { cause } : undefined);
+  if (status !== undefined) Object.defineProperty(error, "status", { value: status, enumerable: true });
+  return error;
+}
+
 async function requestHtmlApp({ method, path, body, bearer, options, env, action = "publish" }) {
   const apiUrl = (options.apiUrl ? String(options.apiUrl).replace(/\/+$/, "") : "") || htmlAppApiUrl(env);
   const fetchImpl = options.fetch || fetch;
@@ -205,9 +219,9 @@ async function requestHtmlApp({ method, path, body, bearer, options, env, action
     text = await response.text();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`ht-ml.app ${action} timed out`, { cause: error });
+      throw htmlAppRequestError(`ht-ml.app ${action} timed out`, { cause: error });
     }
-    throw new Error(`ht-ml.app ${action} failed: ${error instanceof Error ? error.message : String(error)}`, {
+    throw htmlAppRequestError(`ht-ml.app ${action} failed: ${error instanceof Error ? error.message : String(error)}`, {
       cause: error,
     });
   } finally {
@@ -216,7 +230,9 @@ async function requestHtmlApp({ method, path, body, bearer, options, env, action
 
   const data = text ? parseJson(text) : {};
   if (!response.ok) {
-    throw new Error(`ht-ml.app ${action} failed: ${describeError(response.status, data, text)}`);
+    throw htmlAppRequestError(`ht-ml.app ${action} failed: ${describeError(response.status, data, text)}`, {
+      status: response.status,
+    });
   }
   return data;
 }
