@@ -60,6 +60,7 @@ import {
   IPV6_LOOPBACK_HOST,
   isWildcardHost,
   LOOPBACK_HOST,
+  resolveConcreteListenHosts,
   resolveLinkHost,
   resolveListenHosts,
   sanitizeListenHosts,
@@ -263,6 +264,7 @@ export async function serve({
   linkHost: linkHostName,
   allowedHosts,
   detectTailscale: detectTailscaleFn,
+  lookupHost,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 } = {}) {
   const extraHosts = allowedHosts ?? extraAllowedHosts(env);
@@ -270,8 +272,13 @@ export async function serve({
   const autoTailscale = !envHost || isWildcardHost(envHost);
   const detect = detectTailscaleFn === undefined ? detectTailscale : detectTailscaleFn;
   const tailscale = !hosts?.length && autoTailscale && typeof detect === "function" ? await detect() : null;
-  const initialTailscaleNetwork = tailscaleNetworkKey(tailscale);
-  const listenHosts = sanitizeListenHosts(hosts?.length ? hosts : resolveListenHosts({ host, env, tailscale }));
+  const requestedListenHosts = sanitizeListenHosts(
+    hosts?.length ? hosts : resolveListenHosts({ host, env, tailscale }),
+  );
+  const listenHosts = await resolveConcreteListenHosts(requestedListenHosts, {
+    ...(lookupHost ? { lookup: lookupHost } : {}),
+  });
+  let activeTailscaleNetwork = "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
   const store = new SessionStore(stateFile);
@@ -290,6 +297,7 @@ export async function serve({
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   let publicPort = port;
+  let serverReady = false;
   let networkReconcileCheckedAt = 0;
   let cachedNetworkStale = false;
   /** @type {Promise<boolean> | null} */
@@ -300,9 +308,9 @@ export async function serve({
     if (networkReconcilePromise) return networkReconcilePromise;
     networkReconcilePromise = (async () => {
       try {
-        return tailscaleNetworkKey(await detect()) !== initialTailscaleNetwork;
+        return tailscaleNetworkKey(await detect()) !== activeTailscaleNetwork;
       } catch {
-        return initialTailscaleNetwork !== "";
+        return activeTailscaleNetwork !== "";
       }
     })();
     try {
@@ -411,8 +419,8 @@ export async function serve({
   // attachment upload/fetch/remove endpoints below - is behind the Host allowlist.
   // The mutating-route origin/Referer guard is installed immediately after.
   const allowedHostnames = buildAllowedHostnames({
-    host: listenHosts[0],
-    hosts: listenHosts,
+    host: requestedListenHosts[0],
+    hosts: [...requestedListenHosts, ...listenHosts],
     linkHost: resolvedLinkHost,
     allowedHosts: extraHosts,
   });
@@ -515,6 +523,10 @@ export async function serve({
   });
 
   app.get("/health", async (req, res) => {
+    if (!serverReady) {
+      res.status(503).json({ ok: false, app: "lavish-axi", version });
+      return;
+    }
     const networkStale =
       req.query.reconcile_network === "1" && autoTailscale && typeof detect === "function"
         ? await reconcileTailscaleNetwork()
@@ -1554,11 +1566,13 @@ export async function serve({
   if (httpServers.length === 0) {
     throw new Error("Lavish server failed to bind any address");
   }
-  if (tailscale?.ipv4 && !boundHosts.includes(tailscale.ipv4)) {
+  if (tailscale?.ipv4 && boundHosts.includes(tailscale.ipv4)) {
+    activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
+  } else if (tailscale?.ipv4) {
     resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale: null, fallbackHost: host });
     const fallbackAllowedHostnames = buildAllowedHostnames({
-      host: boundHosts[0],
-      hosts: boundHosts,
+      host: requestedListenHosts[0],
+      hosts: [...requestedListenHosts.filter((requestedHost) => requestedHost !== tailscale.ipv4), ...boundHosts],
       linkHost: resolvedLinkHost,
       allowedHosts: extraHosts,
     });
@@ -1566,6 +1580,7 @@ export async function serve({
     for (const allowedHostname of fallbackAllowedHostnames) allowedHostnames.add(allowedHostname);
   }
   publicPort = httpServers[0].address().port;
+  serverReady = true;
 
   let shuttingDown = false;
   function shutdown(reloadKey = "", reason = "") {
@@ -1733,6 +1748,11 @@ function listenHttp(app, port, host) {
     };
     const onListening = () => {
       server.off("error", onError);
+      const address = server.address();
+      if (address && typeof address === "object" && isWildcardHost(address.address)) {
+        server.close(() => reject(new Error(`Refusing all-interfaces listener at ${address.address}`)));
+        return;
+      }
       resolve(server);
     };
     server.once("error", onError);

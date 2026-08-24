@@ -75,7 +75,8 @@ export async function detectTailscale({
         maxBuffer: 2_000_000,
         encoding: "utf8",
       });
-      return parseTailscaleStatus(String(stdout || ""));
+      const status = parseTailscaleStatus(String(stdout || ""));
+      if (status) return status;
     } catch {
       continue;
     }

@@ -1525,11 +1525,19 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     }
   }
   await startServer(port);
-  const deadline = Date.now() + 5000;
+  let networkRestarted = false;
+  let deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const health = await fetchHealth(baseUrl, { reconcileNetwork: true });
-    if (health && !shouldRestartServer(VERSION, health)) {
-      return baseUrl;
+    if (health && !shouldRestartServer(VERSION, health)) return baseUrl;
+    if (health?.network_stale === true && health.app === "lavish-axi") {
+      if (networkRestarted) return baseUrl;
+      await requestShutdown(baseUrl, { reloadKey, reason: "" });
+      if (!(await waitForPortFree(baseUrl, 3000))) break;
+      await startServer(port);
+      networkRestarted = true;
+      deadline = Date.now() + 5000;
+      continue;
     }
     await delay(100);
   }

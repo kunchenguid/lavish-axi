@@ -1437,6 +1437,29 @@ function availableConcreteIpv4() {
   return null;
 }
 
+test("resolved all-interfaces aliases are rejected before listening", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-wildcard-alias-"));
+  try {
+    for (const alias of ["0", "0x00000000"]) {
+      await assert.rejects(
+        () =>
+          serve({
+            port: 0,
+            stateFile: path.join(dir, `${alias}.json`),
+            version: "9.9.9-test",
+            env: { LAVISH_AXI_HOST: alias },
+            detectTailscale: async () => null,
+            lookupHost: async () => [{ address: "0.0.0.0", family: 4 }],
+            idleTimeoutMs: null,
+          }),
+        /all-interfaces address/,
+      );
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a down Tailscale detector keeps the server loopback-only without a phone link", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-no-tailscale-"));
   const artifact = path.join(dir, "artifact.html");
@@ -1528,6 +1551,10 @@ test("a failed Tailscale listener falls back without advertising MagicDNS", asyn
       host: `unreachable.tailnet.ts.net:${server.port}`,
     });
     assert.equal(staleHost.status, 403);
+    const reconciliation = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+      response.json(),
+    );
+    assert.equal(reconciliation.network_stale, true);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

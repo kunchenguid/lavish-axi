@@ -1,3 +1,4 @@
+import { lookup as dnsLookup } from "node:dns/promises";
 import { mkdir } from "node:fs/promises";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -13,7 +14,13 @@ export function isWildcardHost(host) {
   const unbracketed = value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
   const family = isIP(unbracketed);
   if (family === 4) return unbracketed === "0.0.0.0";
-  return family === 6 && /^[0:]+$/.test(unbracketed);
+  if (family !== 6) return false;
+  try {
+    const normalized = new URL(`http://[${unbracketed}]/`).hostname.slice(1, -1);
+    return normalized === "::" || normalized === "::ffff:0:0";
+  } catch {
+    return false;
+  }
 }
 
 // Address the server binds to (LAVISH_AXI_HOST). Defaults to loopback. A wildcard value
@@ -53,6 +60,28 @@ export function sanitizeListenHosts(hosts) {
     if (!out.includes(host)) out.push(host);
   }
   return out.length ? out : [LOOPBACK_HOST];
+}
+
+/**
+ * @param {string[]} hosts
+ * @param {{ lookup?: typeof dnsLookup }} [options]
+ * @returns {Promise<string[]>}
+ */
+export async function resolveConcreteListenHosts(hosts, { lookup = dnsLookup } = {}) {
+  const resolved = [];
+  for (const host of hosts) {
+    const addresses = await lookup(host, { all: true, verbatim: true });
+    if (!Array.isArray(addresses) || addresses.length === 0) {
+      throw new Error(`Listen host did not resolve: ${host}`);
+    }
+    if (addresses.some(({ address }) => isWildcardHost(address))) {
+      throw new Error(`Listen host resolves to an all-interfaces address: ${host}`);
+    }
+    const address = addresses[0]?.address;
+    if (!address || !isIP(address)) throw new Error(`Listen host did not resolve to an IP address: ${host}`);
+    if (!resolved.includes(address)) resolved.push(address);
+  }
+  return resolved;
 }
 
 /**

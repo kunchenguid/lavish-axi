@@ -40,7 +40,7 @@ test("Tailscale detection falls back to the macOS application bundle", async () 
     commands: ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"],
     execFile: /** @type {any} */ (async (command) => {
       attempted.push(command);
-      if (command === "tailscale") throw new Error("not on PATH");
+      if (command === "tailscale") return { stdout: JSON.stringify({ BackendState: "Stopped" }) };
       return {
         stdout: JSON.stringify({
           BackendState: "Running",
