@@ -5,15 +5,6 @@ import path from "node:path";
 export const LOOPBACK_HOST = "127.0.0.1";
 export const IPV6_LOOPBACK_HOST = "::1";
 
-// Binding to a wildcard address means "all interfaces" - it is not itself a connectable
-// target, so the CLI's local control channel falls back to the matching-family loopback.
-// :: must fold to ::1 (not 127.0.0.1) because on macOS/BSD IPV6_V6ONLY defaults on, so a
-// ::-bound socket rejects IPv4 loopback connections.
-const WILDCARD_BIND_LOOPBACK = new Map([
-  ["0.0.0.0", LOOPBACK_HOST],
-  ["::", IPV6_LOOPBACK_HOST],
-]);
-
 export const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
 
 export function isWildcardHost(host) {
@@ -79,8 +70,7 @@ export function resolveLinkHost({ env = process.env, tailscale = null, fallbackH
 // Host the CLI uses to reach the server it spawned. A wildcard bind address can't be
 // dialed directly, so the local control channel falls back to loopback.
 export function clientHost(env = process.env) {
-  const host = bindHost(env);
-  return WILDCARD_BIND_LOOPBACK.get(host) ?? host;
+  return resolveListenHosts({ env })[0];
 }
 
 // Hostname written into the session URLs the server generates (LAVISH_AXI_LINK_HOST).
