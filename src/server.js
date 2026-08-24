@@ -280,6 +280,7 @@ export async function serve({
     ...(lookupHost ? { lookup: lookupHost } : {}),
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
+  let tailscalePhoneReady = false;
   let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
@@ -477,8 +478,9 @@ export async function serve({
         status: 403,
         error: "forbidden host",
         title: "Wrong address",
-        message:
-          "This Lavish review server does not accept that host. Open the working URL below on this computer or your phone (Tailscale).",
+        message: tailscalePhoneReady
+          ? "This Lavish review server does not accept that host. Open the working URL below on this computer or your phone through Tailscale."
+          : "This Lavish review server does not accept that host. Open the working URL below on this computer. Phone access is unavailable.",
       });
     });
   }
@@ -1608,7 +1610,8 @@ export async function serve({
   if (httpServers.length === 0) {
     throw new Error("Lavish server failed to bind any address");
   }
-  if (tailscale?.ipv4 && !boundHosts.includes(tailscale.ipv4)) {
+  tailscalePhoneReady = Boolean(tailscale?.ipv4 && boundHosts.includes(tailscale.ipv4));
+  if (tailscale?.ipv4 && !tailscalePhoneReady) {
     resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale: null, fallbackHost: host });
     const fallbackAllowedHostnames = buildAllowedHostnames({
       host: requestedListenHosts[0],

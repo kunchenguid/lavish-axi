@@ -1508,6 +1508,14 @@ test("a down Tailscale detector keeps the server loopback-only without a phone l
       body: JSON.stringify({ file: artifact }),
     });
     assert.match(JSON.parse(opened.body).url, new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/session/`));
+    const rejected = await rawRequest(server.port, "/health", {
+      host: `attacker.example:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(rejected.status, 403);
+    assert.match(rejected.body, /Open the working URL below on this computer/);
+    assert.match(rejected.body, /Phone access is unavailable/);
+    assert.doesNotMatch(rejected.body, /phone through Tailscale/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1615,8 +1623,11 @@ test("a failed Tailscale listener warns and falls back without advertising Magic
     assert.match(openedBody.network_warning, /Tailscale binding failed.*no phone access/);
     const staleHost = await rawRequest(server.port, "/health", {
       host: `unreachable.tailnet.ts.net:${server.port}`,
+      headers: { accept: "text/html" },
     });
     assert.equal(staleHost.status, 403);
+    assert.match(staleHost.body, /Phone access is unavailable/);
+    assert.doesNotMatch(staleHost.body, /phone through Tailscale/);
     const reconciliation = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
       response.json(),
     );
@@ -1661,6 +1672,8 @@ test("Tailscale mode binds concrete listeners, serves the MagicDNS link, and tea
     });
     assert.equal(rejected.status, 403);
     assert.match(rejected.body, new RegExp(`http://${magicDnsName}:${server.port}/`));
+    assert.match(rejected.body, /phone through Tailscale/);
+    assert.doesNotMatch(rejected.body, /Phone access is unavailable/);
     assert.doesNotMatch(rejected.body, /forbidden host/);
 
     const artifact = path.join(dir, "artifact.html");
