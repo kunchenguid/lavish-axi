@@ -469,6 +469,46 @@ test("diagram playbook defaults to hand-authored SVG and names the anti-patterns
   assert.ok(output.playbook.pitfalls.some((item) => /reach for Mermaid to save authoring effort/i.test(item)));
 });
 
+test("diagram playbook owns assume-nothing and one-concept-per-diagram guidance", async () => {
+  const output = createPlaybookOutput(["diagram"]);
+  assert.ok(
+    output.playbook.structure.some((item) => /knows nothing/i.test(item) && /from zero/i.test(item)),
+    "the diagram playbook must tell agents to explain from zero",
+  );
+  assert.ok(
+    output.playbook.structure.some((item) => /one concept per diagram/i.test(item)),
+    "the diagram playbook must prefer one concept per diagram",
+  );
+
+  const otherSurfaces = [
+    JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
+    JSON.stringify(createDesignOutput()),
+    createSkillMarkdown(),
+  ];
+  for (const surface of otherSurfaces) {
+    assert.doesNotMatch(surface, /one concept per diagram/i);
+    assert.doesNotMatch(surface, /knows nothing/i);
+  }
+
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-playbook-diagram-`);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "playbook", "diagram"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /knows nothing/i);
+    assert.match(result.stdout, /one concept per diagram/i);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
 test("diagram playbook routes whiteboard Mermaid through the theme-aware design snippet", () => {
   const output = createPlaybookOutput(["diagram"]);
 

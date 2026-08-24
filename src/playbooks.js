@@ -14,6 +14,8 @@ export const PLAYBOOKS = [
       "For large systems, draw a small overview illustration and put detail in module cards below it, instead of one dense auto-laid graph.",
     ],
     structure: [
+      "Assume the reader knows nothing about the system or concept: explain from zero; do not presume prior familiarity.",
+      "Prefer one concept per diagram: a sequence of simple single-concept illustrations over one dense figure that combines several; layer understanding step by step.",
       "Lead with the question the diagram answers, not with the implementation detail that produced it.",
       "Keep the first visual to the core relationship, then put dense evidence or file references below it.",
       "For complex systems, separate topology from detail so the overview stays readable.",
