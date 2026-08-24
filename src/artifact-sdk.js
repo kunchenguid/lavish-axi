@@ -2417,6 +2417,12 @@ export function createArtifactSdk(
         const queued = tryQueue();
         // postMessage delivery is ordered, so the queued prompt lands before the send.
         if (queued && sendNow) sendQueuedPrompts();
+      } else if (event.key === "Escape" && !event.isComposing) {
+        // Close only when there is nothing to lose; excludes isComposing since mid-IME text isn't in textarea.value yet.
+        if (textarea.value.trim() || attachments.hasPending() || attachments.hasErrors() || attachments.hasReady())
+          return;
+        event.preventDefault();
+        closeCard();
       }
     });
     // Unsent annotation text is review context Lavish owns, so it is reported to the chrome and
