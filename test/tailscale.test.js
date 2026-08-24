@@ -53,6 +53,26 @@ test("Tailscale detection falls back to the macOS application bundle", async () 
   assert.deepEqual(result, { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" });
 });
 
+test("Tailscale detection shares one timeout budget across candidates", async () => {
+  let now = 0;
+  const attempts = [];
+  const result = await detectTailscale({
+    timeoutMs: 50,
+    commands: ["one", "two", "three"],
+    now: () => now,
+    execFile: /** @type {any} */ (async (command, _args, options) => {
+      attempts.push({ command, timeout: options.timeout });
+      now += 30;
+      throw new Error("unavailable");
+    }),
+  });
+  assert.equal(result, null);
+  assert.deepEqual(attempts, [
+    { command: "one", timeout: 50 },
+    { command: "two", timeout: 20 },
+  ]);
+});
+
 test("parseTailscaleStatus ignores malformed or non-running status", () => {
   assert.equal(parseTailscaleStatus("not json"), null);
   assert.equal(

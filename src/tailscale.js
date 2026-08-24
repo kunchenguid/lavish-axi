@@ -60,18 +60,22 @@ export function parseTailscaleStatus(raw) {
 /**
  * Detect a running Tailscale node on this machine. Missing binary, a stopped
  * tailnet, or any error returns null - never throws.
- * @param {{ execFile?: typeof execFileAsync, timeoutMs?: number, commands?: string[] }} [options]
+ * @param {{ execFile?: typeof execFileAsync, timeoutMs?: number, commands?: string[], now?: () => number }} [options]
  * @returns {Promise<TailscaleNet | null>}
  */
 export async function detectTailscale({
   execFile = execFileAsync,
   timeoutMs = 2000,
   commands = tailscaleCommandCandidates(),
+  now = Date.now,
 } = {}) {
+  const deadline = now() + timeoutMs;
   for (const command of commands) {
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) break;
     try {
       const { stdout } = await execFile(command, ["status", "--json"], {
-        timeout: timeoutMs,
+        timeout: remainingMs,
         maxBuffer: 2_000_000,
         encoding: "utf8",
       });

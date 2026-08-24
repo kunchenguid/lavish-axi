@@ -1527,9 +1527,10 @@ test("network reconciliation coalesces concurrent checks and briefly caches the 
   }
 });
 
-test("a failed Tailscale listener falls back without advertising MagicDNS", async () => {
+test("a failed Tailscale listener warns and falls back without advertising MagicDNS", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-bind-fallback-"));
   const artifact = path.join(dir, "artifact.html");
+  const logs = [];
   await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
   const server = await serve({
     port: 0,
@@ -1537,10 +1538,12 @@ test("a failed Tailscale listener falls back without advertising MagicDNS", asyn
     version: "9.9.9-test",
     env: {},
     detectTailscale: async () => ({ ipv4: "192.0.2.1", magicDnsName: "unreachable.tailnet.ts.net" }),
+    log: (line) => logs.push(line),
     idleTimeoutMs: null,
   });
   try {
     assert.deepEqual(server.hosts, ["127.0.0.1"]);
+    assert.ok(logs.some((line) => line.includes("Tailscale binding failed") && line.includes("no phone access")));
     const opened = await rawRequest(server.port, "/api/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },

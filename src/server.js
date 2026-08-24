@@ -102,6 +102,7 @@ const designAssetUrls = {
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
 const NETWORK_RECONCILE_CACHE_MS = 1_000;
+const TAILSCALE_BIND_RETRY_DELAYS_MS = [100, 250, 500];
 // An escaped popup can navigate to an artifact-owned HTML or SVG asset on the
 // server origin. Keep every artifact response sandboxed at the response layer
 // so active documents stay opaque-origin even when they are top-level.
@@ -1553,14 +1554,31 @@ export async function serve({
   const boundHosts = [];
   let boundPort = port;
   for (const listenHost of listenHosts) {
-    try {
-      const httpServer = await listenHttp(app, boundPort, listenHost);
-      if (boundPort === 0) boundPort = httpServer.address().port;
-      httpServers.push(httpServer);
-      boundHosts.push(listenHost);
-    } catch (error) {
-      if (httpServers.length === 0) throw error;
-      logEvent?.(`failed to bind ${listenHost}:${boundPort}: ${error instanceof Error ? error.message : error}`);
+    const retryDelays = listenHost === tailscale?.ipv4 ? TAILSCALE_BIND_RETRY_DELAYS_MS : [];
+    let retryIndex = 0;
+    while (true) {
+      try {
+        const httpServer = await listenHttp(app, boundPort, listenHost);
+        if (boundPort === 0) boundPort = httpServer.address().port;
+        httpServers.push(httpServer);
+        boundHosts.push(listenHost);
+        break;
+      } catch (error) {
+        if (httpServers.length === 0) throw error;
+        if (retryIndex < retryDelays.length) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelays[retryIndex]));
+          retryIndex += 1;
+          continue;
+        }
+        if (listenHost === tailscale?.ipv4) {
+          writeLog(
+            `[lavish] WARNING: Tailscale binding failed for ${listenHost}:${boundPort}; there is no phone access. Lavish remains available on loopback.`,
+          );
+        } else {
+          logEvent?.(`failed to bind ${listenHost}:${boundPort}: ${error instanceof Error ? error.message : error}`);
+        }
+        break;
+      }
     }
   }
   if (httpServers.length === 0) {
