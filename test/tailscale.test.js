@@ -34,6 +34,25 @@ test("Tailscale detection fails closed when the command is unavailable or not ru
   assert.equal(stopped, null);
 });
 
+test("Tailscale detection falls back to the macOS application bundle", async () => {
+  const attempted = [];
+  const result = await detectTailscale({
+    commands: ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"],
+    execFile: /** @type {any} */ (async (command) => {
+      attempted.push(command);
+      if (command === "tailscale") throw new Error("not on PATH");
+      return {
+        stdout: JSON.stringify({
+          BackendState: "Running",
+          Self: { TailscaleIPs: ["100.64.12.34"], DNSName: "review.tailnet.ts.net." },
+        }),
+      };
+    }),
+  });
+  assert.deepEqual(attempted, ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]);
+  assert.deepEqual(result, { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" });
+});
+
 test("parseTailscaleStatus ignores malformed or non-running status", () => {
   assert.equal(parseTailscaleStatus("not json"), null);
   assert.equal(

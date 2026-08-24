@@ -1,18 +1,19 @@
 import { mkdir } from "node:fs/promises";
+import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
 export const LOOPBACK_HOST = "127.0.0.1";
 export const IPV6_LOOPBACK_HOST = "::1";
 
-export const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
-
 export function isWildcardHost(host) {
-  return WILDCARD_BIND_HOSTS.has(
-    String(host || "")
-      .trim()
-      .toLowerCase(),
-  );
+  const value = String(host || "")
+    .trim()
+    .toLowerCase();
+  const unbracketed = value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
+  const family = isIP(unbracketed);
+  if (family === 4) return unbracketed === "0.0.0.0";
+  return family === 6 && /^[0:]+$/.test(unbracketed);
 }
 
 // Address the server binds to (LAVISH_AXI_HOST). Defaults to loopback. A wildcard value

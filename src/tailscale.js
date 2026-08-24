@@ -4,6 +4,24 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+export function tailscaleCommandCandidates(platform = process.platform, env = process.env) {
+  const candidates = ["tailscale"];
+  if (platform === "darwin") {
+    candidates.push(
+      "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+      "/Applications/Tailscale.app/Contents/MacOS/tailscale",
+      "/opt/homebrew/bin/tailscale",
+      "/usr/local/bin/tailscale",
+    );
+  } else if (platform === "win32") {
+    const programFiles = env.ProgramFiles || "C:\\Program Files";
+    candidates.push(`${programFiles}\\Tailscale\\tailscale.exe`);
+  } else {
+    candidates.push("/usr/bin/tailscale", "/usr/local/bin/tailscale");
+  }
+  return [...new Set(candidates)];
+}
+
 /**
  * @typedef {{ ipv4: string, magicDnsName: string | null }} TailscaleNet
  */
@@ -42,18 +60,25 @@ export function parseTailscaleStatus(raw) {
 /**
  * Detect a running Tailscale node on this machine. Missing binary, a stopped
  * tailnet, or any error returns null - never throws.
- * @param {{ execFile?: typeof execFileAsync, timeoutMs?: number }} [options]
+ * @param {{ execFile?: typeof execFileAsync, timeoutMs?: number, commands?: string[] }} [options]
  * @returns {Promise<TailscaleNet | null>}
  */
-export async function detectTailscale({ execFile = execFileAsync, timeoutMs = 2000 } = {}) {
-  try {
-    const { stdout } = await execFile("tailscale", ["status", "--json"], {
-      timeout: timeoutMs,
-      maxBuffer: 2_000_000,
-      encoding: "utf8",
-    });
-    return parseTailscaleStatus(String(stdout || ""));
-  } catch {
-    return null;
+export async function detectTailscale({
+  execFile = execFileAsync,
+  timeoutMs = 2000,
+  commands = tailscaleCommandCandidates(),
+} = {}) {
+  for (const command of commands) {
+    try {
+      const { stdout } = await execFile(command, ["status", "--json"], {
+        timeout: timeoutMs,
+        maxBuffer: 2_000_000,
+        encoding: "utf8",
+      });
+      return parseTailscaleStatus(String(stdout || ""));
+    } catch {
+      continue;
+    }
   }
+  return null;
 }

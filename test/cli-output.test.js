@@ -2692,6 +2692,12 @@ test("shouldRestartServer reuses a server running the same version", () => {
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.4" }), false);
 });
 
+test("shouldRestartServer restarts a same-version server after a Tailscale transition", () => {
+  const health = { ok: true, app: "lavish-axi", version: "0.1.4", network_stale: true };
+  assert.equal(shouldRestartServer("0.1.4", health), true);
+  assert.equal(serverReplacementReason("0.1.4", health), "");
+});
+
 test("shouldRestartServer restarts same-version Lavish servers when forced", () => {
   assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }, true), true);
   assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "other", version: "0.1.4" }, true), false);

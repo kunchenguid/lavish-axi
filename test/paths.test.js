@@ -24,6 +24,8 @@ test("clientHost dials the concrete primary listener for wildcard binds", () => 
   assert.equal(clientHost({ LAVISH_AXI_HOST: "0.0.0.0" }), LOOPBACK_HOST);
   assert.equal(clientHost({ LAVISH_AXI_HOST: "::" }), LOOPBACK_HOST);
   assert.equal(clientHost({ LAVISH_AXI_HOST: "[::]" }), LOOPBACK_HOST);
+  assert.equal(clientHost({ LAVISH_AXI_HOST: "0:0:0:0:0:0:0:0" }), LOOPBACK_HOST);
+  assert.equal(clientHost({ LAVISH_AXI_HOST: "[0:0:0:0:0:0:0:0]" }), LOOPBACK_HOST);
 });
 
 test("extraAllowedHosts parses the whitespace-separated opt-in list", () => {

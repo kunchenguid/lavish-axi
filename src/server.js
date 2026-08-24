@@ -269,8 +269,9 @@ export async function serve({
   const autoTailscale = !envHost || isWildcardHost(envHost);
   const detect = detectTailscaleFn === undefined ? detectTailscale : detectTailscaleFn;
   const tailscale = !hosts?.length && autoTailscale && typeof detect === "function" ? await detect() : null;
+  const initialTailscaleNetwork = tailscaleNetworkKey(tailscale);
   const listenHosts = sanitizeListenHosts(hosts?.length ? hosts : resolveListenHosts({ host, env, tailscale }));
-  const resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
+  let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
@@ -485,8 +486,20 @@ export async function serve({
     return defaultJsonParser(req, res, next);
   });
 
-  app.get("/health", (req, res) => {
-    res.json({ ok: true, app: "lavish-axi", version });
+  app.get("/", (_req, res) => {
+    res.type("html").send(createLandingHtml());
+  });
+
+  app.get("/health", async (req, res) => {
+    let networkStale = false;
+    if (req.query.reconcile_network === "1" && autoTailscale && typeof detect === "function") {
+      try {
+        networkStale = tailscaleNetworkKey(await detect()) !== initialTailscaleNetwork;
+      } catch {
+        networkStale = initialTailscaleNetwork !== "";
+      }
+    }
+    res.json({ ok: true, app: "lavish-axi", version, ...(networkStale ? { network_stale: true } : {}) });
   });
 
   let shutdownResolve;
@@ -1521,6 +1534,17 @@ export async function serve({
   if (httpServers.length === 0) {
     throw new Error("Lavish server failed to bind any address");
   }
+  if (tailscale?.ipv4 && !boundHosts.includes(tailscale.ipv4)) {
+    resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale: null, fallbackHost: host });
+    const fallbackAllowedHostnames = buildAllowedHostnames({
+      host: boundHosts[0],
+      hosts: boundHosts,
+      linkHost: resolvedLinkHost,
+      allowedHosts: extraHosts,
+    });
+    allowedHostnames.clear();
+    for (const allowedHostname of fallbackAllowedHostnames) allowedHostnames.add(allowedHostname);
+  }
   publicPort = httpServers[0].address().port;
 
   let shuttingDown = false;
@@ -1700,9 +1724,18 @@ function listenHttp(app, port, host) {
   });
 }
 
+function tailscaleNetworkKey(tailscale) {
+  if (!tailscale?.ipv4) return "";
+  return `${tailscale.ipv4}\n${tailscale.magicDnsName || ""}`;
+}
+
 function wantsHtml(req) {
   const accept = String(req.get("accept") || "");
   return accept.toLowerCase().includes("text/html");
+}
+
+function createLandingHtml() {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lavish Editor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ef;color:#25221f;font:16px/1.5 system-ui,sans-serif}.card{width:min(560px,calc(100% - 40px));padding:32px;border:1px solid #d9d0c5;border-radius:16px;background:#fffdf9;box-shadow:0 12px 40px #25221f18}h1{margin:0 0 12px;font-size:26px}p{margin:0}</style></head><body><main class="card"><h1>Lavish Editor is running</h1><p>Open the review session URL printed by your agent.</p></main></body></html>`;
 }
 
 function createDeniedHtml({ title, message, workingUrl }) {

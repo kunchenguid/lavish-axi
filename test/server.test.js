@@ -1461,6 +1461,61 @@ test("a down Tailscale detector keeps the server loopback-only without a phone l
   }
 });
 
+test("network reconciliation reports Tailscale transitions only when requested", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-reconcile-"));
+  let detected = null;
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: {},
+    detectTailscale: async () => detected,
+    idleTimeoutMs: null,
+  });
+  try {
+    detected = { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" };
+    const ordinary = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json());
+    assert.equal(ordinary.network_stale, undefined);
+    const reconciled = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+      response.json(),
+    );
+    assert.equal(reconciled.network_stale, true);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed Tailscale listener falls back without advertising MagicDNS", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-bind-fallback-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: {},
+    detectTailscale: async () => ({ ipv4: "192.0.2.1", magicDnsName: "unreachable.tailnet.ts.net" }),
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.deepEqual(server.hosts, ["127.0.0.1"]);
+    const opened = await rawRequest(server.port, "/api/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.match(JSON.parse(opened.body).url, new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/session/`));
+    const staleHost = await rawRequest(server.port, "/health", {
+      host: `unreachable.tailnet.ts.net:${server.port}`,
+    });
+    assert.equal(staleHost.status, 403);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("Tailscale mode binds concrete listeners, serves the MagicDNS link, and tears down every listener", async (t) => {
   const tailscaleIpv4 = availableConcreteIpv4();
   if (!tailscaleIpv4) {
@@ -1514,6 +1569,12 @@ test("Tailscale mode binds concrete listeners, serves the MagicDNS link, and tea
     assert.equal(missing.status, 404);
     assert.match(missing.body, new RegExp(`http://${magicDnsName}:${server.port}/`));
     assert.doesNotMatch(missing.body, /Session not found$/);
+    const landing = await rawRequest(server.port, "/", {
+      host: `${magicDnsName}:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(landing.status, 200);
+    assert.match(landing.body, /Lavish Editor is running/);
 
     const shutdown = await rawRequest(server.port, "/shutdown", {
       method: "POST",
