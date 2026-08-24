@@ -279,7 +279,7 @@ export async function serve({
   const listenHosts = await resolveConcreteListenHosts(requestedListenHosts, {
     ...(lookupHost ? { lookup: lookupHost } : {}),
   });
-  let activeTailscaleNetwork = "";
+  const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
   let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
@@ -311,9 +311,13 @@ export async function serve({
     if (networkReconcilePromise) return networkReconcilePromise;
     networkReconcilePromise = (async () => {
       try {
-        return tailscaleNetworkKey(await detect()) !== activeTailscaleNetwork;
+        const detectedTailscale = await detect();
+        const detectedNetwork = tailscaleNetworkKey(detectedTailscale);
+        const stale = detectedNetwork !== activeTailscaleNetwork;
+        if (stale) networkWarning = typeof detectedTailscale?.warning === "string" ? detectedTailscale.warning : "";
+        return stale;
       } catch {
-        return activeTailscaleNetwork !== "";
+        return false;
       }
     })();
     try {
@@ -566,6 +570,7 @@ export async function serve({
       const key = sessionKey(file);
       const reopen = Boolean(req.body.reopen);
       const existing = await store.findByKey(key);
+      const sessionUrl = `http://${hostForUrl(resolvedLinkHost)}:${publicPort}/session/${key}`;
       // A user-initiated end (ending or send-and-ending from the browser) means the human
       // deliberately closed the review surface. Silently reopening it on the next
       // `lavish-axi <file>` is the exact behavior this route exists to prevent - require an
@@ -576,13 +581,12 @@ export async function serve({
         res.json({
           key,
           file,
-          url: existing.url,
+          url: sessionUrl,
           status: "user-ended",
           ...(networkWarning ? { network_warning: networkWarning } : {}),
         });
         return;
       }
-      const sessionUrl = `http://${hostForUrl(resolvedLinkHost)}:${publicPort}/session/${key}`;
       const url = shouldDisableLayoutGateOpen(req.body || {}) ? appendNoGateParam(sessionUrl) : sessionUrl;
       const session = await store.upsertSession(file, sessionUrl);
       if (existing?.status === "ended") {
@@ -1604,9 +1608,7 @@ export async function serve({
   if (httpServers.length === 0) {
     throw new Error("Lavish server failed to bind any address");
   }
-  if (tailscale?.ipv4 && boundHosts.includes(tailscale.ipv4)) {
-    activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
-  } else if (tailscale?.ipv4) {
+  if (tailscale?.ipv4 && !boundHosts.includes(tailscale.ipv4)) {
     resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale: null, fallbackHost: host });
     const fallbackAllowedHostnames = buildAllowedHostnames({
       host: requestedListenHosts[0],
@@ -1803,8 +1805,10 @@ function listenHttp(app, port, host) {
 }
 
 function tailscaleNetworkKey(tailscale) {
-  if (!tailscale?.ipv4) return "";
-  return `${tailscale.ipv4}\n${tailscale.magicDnsName || ""}`;
+  if (!tailscale) return "down";
+  if (tailscale.warning) return "incomplete";
+  if (!tailscale.ipv4 || !tailscale.magicDnsName) return "incomplete";
+  return `up\n${tailscale.ipv4}\n${tailscale.magicDnsName}`;
 }
 
 function wantsHtml(req) {

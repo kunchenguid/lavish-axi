@@ -1531,7 +1531,11 @@ test("network reconciliation coalesces concurrent checks and briefly caches the 
     idleTimeoutMs: null,
   });
   try {
-    detected = { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" };
+    detected = {
+      ipv4: null,
+      magicDnsName: null,
+      warning: "Tailscale is running but MagicDNS is unavailable; there is no phone access.",
+    };
     const ordinary = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json());
     assert.equal(ordinary.network_stale, undefined);
     const checks = await Promise.all(
@@ -1540,12 +1544,44 @@ test("network reconciliation coalesces concurrent checks and briefly caches the 
       ),
     );
     assert.ok(checks.every((body) => body.network_stale === true));
+    assert.ok(checks.every((body) => body.network_warning.includes("MagicDNS is unavailable")));
     assert.equal(detectionCalls, 2);
     const cached = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
       response.json(),
     );
     assert.equal(cached.network_stale, true);
+    assert.match(cached.network_warning, /MagicDNS is unavailable/);
     assert.equal(detectionCalls, 2);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reconciliation distinguishes incomplete Tailscale from down state", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-incomplete-"));
+  /** @type {any} */
+  let detected = {
+    ipv4: null,
+    magicDnsName: null,
+    warning: "Tailscale is running but MagicDNS is unavailable; there is no phone access.",
+  };
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: {},
+    detectTailscale: async () => detected,
+    log: () => {},
+    idleTimeoutMs: null,
+  });
+  try {
+    detected = null;
+    const health = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+      response.json(),
+    );
+    assert.equal(health.network_stale, true);
+    assert.equal(health.network_warning, undefined);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1584,7 +1620,7 @@ test("a failed Tailscale listener warns and falls back without advertising Magic
     const reconciliation = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
       response.json(),
     );
-    assert.equal(reconciliation.network_stale, true);
+    assert.equal(reconciliation.network_stale, undefined);
     assert.match(reconciliation.network_warning, /Tailscale binding failed.*no phone access/);
   } finally {
     await server.close();
@@ -4292,6 +4328,49 @@ test("a user-initiated end via the keyed route blocks a plain reopen but honors 
 
     const afterReopen = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     assert.equal((await afterReopen.json()).status, "waiting");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a blocked user-ended open returns the current listener URL", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-user-ended-current-url-"));
+  const artifact = path.join(dir, "artifact.html");
+  const statePath = path.join(dir, "state.json");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  let server = await serve({
+    port: 0,
+    stateFile: statePath,
+    version: "9.9.9-test",
+    host: "127.0.0.1",
+    linkHost: "old.example",
+    idleTimeoutMs: null,
+  });
+  try {
+    const opened = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    await fetch(`http://127.0.0.1:${server.port}/api/${opened.key}/end`, { method: "POST" });
+    await server.close();
+
+    server = await serve({
+      port: 0,
+      stateFile: statePath,
+      version: "9.9.9-test",
+      host: "127.0.0.1",
+      linkHost: "current.example",
+      idleTimeoutMs: null,
+    });
+    const blocked = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    assert.equal(blocked.status, "user-ended");
+    assert.equal(blocked.url, `http://current.example:${server.port}/session/${opened.key}`);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
