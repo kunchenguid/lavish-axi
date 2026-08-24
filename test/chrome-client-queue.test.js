@@ -2079,6 +2079,107 @@ test("chrome client does not count share notices as unresolved assets", async ()
   assert.equal(chrome.element("shareResult").hidden, false);
 });
 
+test("a publish that succeeds after a failed one still shows the url and the once-only update key", async () => {
+  // The regression: an indeterminate failure hid the url/update-key rows, only the dialog-open
+  // path un-hid them, and the natural retry is a second Publish click without reopening. The
+  // update_key is issued once and ht-ml.app has no delete, so a "Published" panel with that row
+  // still hidden leaves a live, public-by-default page nobody can ever change or take down.
+  let attempt = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        return {
+          ok: false,
+          json: async () => ({ error: "upstream exploded", outcome: "indeterminate", public: true }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          url: "https://abc123.ht-ml.app/",
+          site_id: "abc123",
+          update_key: "uk_secret",
+        }),
+      };
+    },
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+  assert.match(chrome.element("shareStatus").textContent, /may or may not have published/i);
+  assert.equal(chrome.element("shareUrlResult").hidden, true, "there is no url to show yet");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.equal(chrome.element("shareStatus").textContent, "Published. Anyone with the link can view this page.");
+  assert.equal(chrome.element("shareResult").hidden, false);
+  assert.equal(chrome.element("shareUrlResult").hidden, false, "the URL of the page that landed");
+  assert.equal(chrome.element("shareUrl").value, "https://abc123.ht-ml.app/");
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, false, "the update key is issued once");
+  assert.equal(chrome.element("shareUpdateKey").value, "uk_secret");
+  assert.equal(chrome.element("shareUpdateKeyNote").hidden, false);
+  assert.equal(chrome.element("shareSiteIdResult").hidden, false);
+});
+
+test("an indeterminate publish keeps the password it minted and shows no credentials it does not have", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      json: async () => ({
+        error: "upstream exploded",
+        outcome: "indeterminate",
+        public: false,
+        password: "xk4t-9rmb-2wqz",
+      }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.equal(chrome.element("sharePasswordOut").value, "xk4t-9rmb-2wqz", "minted here, so shown here");
+  assert.equal(chrome.element("sharePasswordResult").hidden, false);
+  assert.equal(chrome.element("shareResult").hidden, false, "the panel opens for the password alone");
+  assert.equal(chrome.element("shareUrlResult").hidden, true, "no url came back");
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, true, "no update key came back");
+  assert.equal(chrome.element("shareUpdateKeyNote").hidden, true, "and no advice about keeping one");
+  assert.match(chrome.element("shareStatus").textContent, /SECOND page/);
+});
+
+test("an incomplete 200 reports a landed publish and shows the fields the host did return", async () => {
+  // The host answered 200, so the page IS live. Hedging that as "may or may not have published"
+  // also threw away the url Lavish was holding for a page that is public by default.
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      json: async () => ({
+        error: "ht-ml.app published the page but its response did not include an update_key",
+        outcome: "published-incomplete",
+        public: true,
+        url: "https://abc123.ht-ml.app/",
+        site_id: "abc123",
+      }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  const status = chrome.element("shareStatus").textContent;
+  assert.match(status, /the page IS live/i);
+  assert.doesNotMatch(status, /may or may not/i, "a 200 is not an unknown outcome");
+  assert.match(status, /never be republished or unpublished/i, "the update key is gone for good");
+  assert.equal(chrome.element("shareUrlResult").hidden, false, "the address must reach the user");
+  assert.equal(chrome.element("shareUrl").value, "https://abc123.ht-ml.app/");
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, true, "there is no key to show");
+  assert.equal(chrome.element("shareUpdateKeyNote").hidden, true);
+});
+
 test("chrome client clears stale share passwords when opening a fresh dialog", async () => {
   const chrome = await createChromeHarness();
 

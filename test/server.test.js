@@ -994,8 +994,9 @@ test("overflow menu offers publishing an ht-ml.app link via a share dialog", asy
   assert.match(js, /const shareArtifactButton/);
   assert.match(js, /async function publishShare/);
   assert.match(js, /fetch\("\/api\/" \+ key \+ "\/share"/);
-  assert.match(js, /shareUrlInput\.value = data\.url/);
-  assert.match(js, /shareUpdateKeyInput\.value = data\.update_key/);
+  // What the client DOES with data.url/data.update_key is asserted by driving a real publish in
+  // test/chrome-client-queue.test.js, including the retry-after-failure path; matching the
+  // assignment lines here only pinned one spelling of it.
   assert.match(html, /id="shareGenerate"/);
   assert.match(html, /id="sharePasswordResult"/);
 });
@@ -3399,6 +3400,49 @@ test("POST /api/:key/share reports an indeterminate publish and keeps the passwo
     assert.equal(plain.body.password, undefined, "nothing was minted, so nothing to hand back");
     assert.equal(plain.body.public, true, "a default publish that landed is readable by anyone");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share reports an incomplete 200 as published, not as an unknown outcome", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Ship</h1></body></html>");
+
+  // The host answered 200, so the page landed. Classifying it as indeterminate contradicted the
+  // error text beside it AND dropped the url Lavish was holding for a page that is public by
+  // default and, without the update_key, unmanageable forever.
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests, { site_id: "abc123", url: "https://abc123.ht-ml.app/" });
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({}),
+    });
+    const body = await shareRes.json();
+
+    assert.equal(body.outcome, "published-incomplete");
+    assert.equal(body.url, "https://abc123.ht-ml.app/", "the address the host did return must survive");
+    assert.equal(body.site_id, "abc123");
+    assert.equal(body.update_key, undefined, "none came back, so none is claimed");
+    assert.equal(body.public, true);
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
     await rm(dir, { recursive: true, force: true });
   }
 });

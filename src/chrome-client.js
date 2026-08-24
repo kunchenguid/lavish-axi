@@ -1908,19 +1908,32 @@ async function exportArtifact() {
   }
 }
 
+// ONE owner for the whole result panel. Every path that renders an outcome - dialog open, a
+// successful publish, a retry after any failure, an indeterminate report, an incomplete 200 -
+// routes through here, because a row shown or hidden by one path and reset by another is how a
+// retry after a failed publish came to display "Published" with the once-only update_key still
+// hidden. Each row is derived from the value it would show, so nothing can be half-rendered.
+function renderShareResult({ url = "", siteId = "", password = "", updateKey = "" } = {}) {
+  shareUrlInput.value = url;
+  shareUrlResult.hidden = !url;
+  // A self-hosted backend may not return one, and an empty box with a copy button is worse than
+  // no row. Never derive it from the URL: that shape belongs to the backend, not Lavish.
+  shareSiteIdInput.value = siteId;
+  shareSiteIdResult.hidden = !siteId;
+  sharePasswordOutput.value = password;
+  sharePasswordResult.hidden = !password;
+  shareUpdateKeyInput.value = updateKey;
+  shareUpdateKeyResult.hidden = !updateKey;
+  shareUpdateKeyNote.hidden = !updateKey;
+  shareResult.hidden = !(url || siteId || password || updateKey);
+}
+
 function openShareDialog() {
   closeMenus();
   shareDialog.hidden = false;
   shareStatus.textContent = "";
   shareStatus.classList.remove("error");
-  shareResult.hidden = true;
-  sharePasswordResult.hidden = true;
-  shareUrlResult.hidden = false;
-  shareUpdateKeyResult.hidden = false;
-  shareUpdateKeyNote.hidden = false;
-  sharePasswordOutput.value = "";
-  shareSiteIdResult.hidden = true;
-  shareSiteIdInput.value = "";
+  renderShareResult();
   shareGenerateInput.checked = false;
   sharePasswordInput.value = "";
   syncSharePasswordInput();
@@ -1951,13 +1964,7 @@ async function copyToButton(value, button, label) {
 }
 
 function reportIndeterminatePublish(data) {
-  shareUrlResult.hidden = true;
-  shareUpdateKeyResult.hidden = true;
-  shareSiteIdResult.hidden = true;
-  shareUpdateKeyNote.hidden = true;
-  sharePasswordOutput.value = data.password || "";
-  sharePasswordResult.hidden = !data.password;
-  shareResult.hidden = !data.password;
+  renderShareResult({ password: data.password || "" });
   shareStatus.classList.add("error");
   const reason = data.error ? data.error + " " : "";
   const visibility = data.public
@@ -1971,12 +1978,37 @@ function reportIndeterminatePublish(data) {
     (data.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
 }
 
+// An incomplete 200 is NOT an unknown outcome: the host answered, so the page landed. Whatever
+// fields did arrive are rendered, because a url with no update_key names a live, public-by-default
+// page whose only write credential is gone - and saying "may or may not" there would throw away
+// the address Lavish is holding.
+function reportIncompletePublish(data) {
+  renderShareResult({
+    url: data.url || "",
+    siteId: data.site_id || "",
+    password: data.password || "",
+    updateKey: data.update_key || "",
+  });
+  shareStatus.classList.add("error");
+  const visibility = data.public ? "PUBLIC - anyone with the link can read it" : "behind the password below";
+  shareStatus.textContent =
+    "ht-ml.app accepted this publish, so the page IS live and " +
+    visibility +
+    ", but its response was malformed and Lavish could not read the whole result back. " +
+    (data.url ? "Its address is below. " : "The response carried no URL, so Lavish cannot show the address. ") +
+    (data.update_key
+      ? "Copy the update key below - it is issued once. "
+      : "No update key came back, and ht-ml.app issues one only once and has no delete, so this page can never be republished or unpublished. ") +
+    "Publishing again creates a SECOND page rather than replacing it." +
+    (data.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
+}
+
 async function publishShare(event) {
   event.preventDefault();
   sharePublishButton.disabled = true;
   shareStatus.classList.remove("error");
   shareStatus.textContent = "Publishing to ht-ml.app...";
-  shareResult.hidden = true;
+  renderShareResult();
   const generating = shareGenerateInput.checked;
   const password = generating ? "" : sharePasswordInput.value.trim();
   const passwordProtected = generating || Boolean(password);
@@ -1991,20 +2023,22 @@ async function publishShare(event) {
       // Only a host rejection proves nothing was published. On anything else the page may already
       // be live, and a password minted for this request is the one thing that could still open it,
       // so it is shown here rather than dying with the failed response.
+      if (data.outcome === "published-incomplete") {
+        reportIncompletePublish(data);
+        return;
+      }
       if (data.outcome === "indeterminate") {
         reportIndeterminatePublish(data);
         return;
       }
       throw new Error(data.error || "publish failed");
     }
-    shareUrlInput.value = data.url || "";
-    shareUpdateKeyInput.value = data.update_key || "";
-    sharePasswordOutput.value = data.password || "";
-    sharePasswordResult.hidden = !data.password;
-    // A self-hosted backend may not return one, and an empty box with a copy button is worse
-    // than no row. Never derive it from the URL: that shape belongs to the backend, not Lavish.
-    shareSiteIdInput.value = data.site_id || "";
-    shareSiteIdResult.hidden = !data.site_id;
+    renderShareResult({
+      url: data.url || "",
+      siteId: data.site_id || "",
+      password: data.password || "",
+      updateKey: data.update_key || "",
+    });
     const unresolvedAssets = Array.isArray(data.unresolved_local_assets) ? data.unresolved_local_assets : [];
     const notices = Array.isArray(data.notices) ? data.notices : [];
     const warningCount = unresolvedAssets.length;
@@ -2021,10 +2055,10 @@ async function publishShare(event) {
     if (data.password) {
       shareStatus.textContent += " Copy the password now - it is shown once here and Lavish does not store it.";
     }
-    shareResult.hidden = false;
     shareUrlInput.focus();
     shareUrlInput.select();
   } catch (error) {
+    renderShareResult();
     shareStatus.classList.add("error");
     shareStatus.textContent = error instanceof Error ? error.message : String(error);
   } finally {

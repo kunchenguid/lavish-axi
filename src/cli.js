@@ -915,11 +915,16 @@ export function createShareOutput({
   const allWarnings = Array.isArray(warnings) ? warnings : [];
   const { unresolved, notices } = splitExportWarnings(allWarnings);
   const isPasswordProtected = Boolean(passwordProtected);
+  // The host either returned no site_id or returned one `normalizeSiteId` refuses, which is the
+  // same thing for the user: `--site` is half the republish credential, so without a usable one
+  // the page can never be changed again even though its update_key is in hand. Emitting an empty
+  // string beside guidance that says to keep it would hide that until `--site` rejected it.
+  const republishableSiteId = String(site.site_id ?? "").trim();
   const result = {
     share: {
       source,
       url: site.url,
-      site_id: site.site_id,
+      ...(republishableSiteId ? { site_id: republishableSiteId } : {}),
       update_key: site.update_key,
       status: site.status || "active",
       public: !isPasswordProtected,
@@ -937,23 +942,26 @@ export function createShareOutput({
   const noticeNote = notices.length ? " Export notices are available in notices." : "";
   const hostNote =
     "ht-ml.app (https://ht-ml.app), a third-party host not part of Lavish, hosts the page, so it needs no Lavish server.";
+  const updateKeyNote = republishableSiteId
+    ? "The update_key is a secret shown only once; keep it to republish the page later with --site and --update-key (there is no recovery, and ht-ml.app has no delete). "
+    : "The host did not return a site_id Lavish can use, and --site is half the republish credential, so this page can NEVER be republished or unpublished even though its update_key is in hand. Tell the user that now rather than letting them discover it later. ";
   if (unresolved.length) {
     result.next_step =
       `Published ${isPasswordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote}${noticeNote} ` +
       `Remote CDN/font references are intentionally left as links and render where there is network access. ` +
-      `The update_key is a secret shown only once; keep it to republish the page later with --site and --update-key (there is no recovery, and ht-ml.app has no delete). ` +
+      updateKeyNote +
       hostNote;
   } else if (isPasswordProtected) {
     result.next_step =
       `Published a PASSWORD-PROTECTED page: ${site.url} - share this URL with the user and provide the password separately; viewers also need the password. ` +
       `${noticeNote ? `${noticeNote} ` : ""}` +
-      `The update_key is a secret shown only once; keep it to republish the page later with --site and --update-key (there is no recovery, and ht-ml.app has no delete). ` +
+      updateKeyNote +
       hostNote;
   } else {
     result.next_step =
       `Published a PUBLIC page that anyone with the link can view: ${site.url} - share this URL with the user. ` +
       `${noticeNote ? `${noticeNote} ` : ""}` +
-      `The update_key is a secret shown only once; keep it to republish the page later with --site and --update-key (there is no recovery, and ht-ml.app has no delete). ` +
+      updateKeyNote +
       hostNote;
   }
   if (password) result.next_step = `${generatedPasswordNote(password)} ${result.next_step}`;

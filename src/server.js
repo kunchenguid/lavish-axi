@@ -50,7 +50,7 @@ import {
   exportWarningSummaries,
   splitExportWarnings,
 } from "./export-bundle.js";
-import { hostRejectedShareWrite, publishToHtmlApp } from "./html-app.js";
+import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { injectLavishSdk } from "./html-transform.js";
 import { bindHost, extraAllowedHosts, hostForUrl, IPV6_LOOPBACK_HOST, linkHost, LOOPBACK_HOST } from "./paths.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
@@ -833,12 +833,29 @@ export async function serve({
       try {
         site = await publishToHtmlApp(html, { password });
       } catch (error) {
-        // Same split the CLI makes, for the same reason, and the stakes here are higher: the
-        // password was minted in this request, so a failure that discards it can leave the page
-        // live behind a secret nobody was ever shown. Only a 4xx proves nothing was published.
+        // Same three-way split the CLI makes, from the same shared classifiers, and the stakes
+        // here are higher: the password was minted in this request, so a failure that discards it
+        // can leave the page live behind a secret nobody was ever shown.
+        const message = error instanceof Error ? error.message : String(error);
+        // A 200 the host answered with an unreadable body is not an unknown outcome - the page
+        // landed - so whatever fields did arrive go back rather than being hedged away.
+        const landed = publishedDespiteError(error);
+        if (landed) {
+          res.status(502).json({
+            error: message,
+            outcome: "published-incomplete",
+            public: !password,
+            ...(landed.url ? { url: landed.url } : {}),
+            ...(landed.siteId ? { site_id: landed.siteId } : {}),
+            ...(landed.updateKey ? { update_key: landed.updateKey } : {}),
+            ...(generatePassword ? { password } : {}),
+          });
+          return;
+        }
+        // Only a 4xx proves nothing was published.
         const rejected = hostRejectedShareWrite(error);
         res.status(502).json({
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
           outcome: rejected ? "rejected" : "indeterminate",
           ...(rejected
             ? {}

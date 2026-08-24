@@ -1400,6 +1400,38 @@ test("a 200 with a malformed body is reported as published, not as an unknown ou
   }
 });
 
+test("a create whose host returns no usable site_id says the page can never be republished", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-nosite-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  // A site_id that fails validation must never be propagated - that is the injection boundary -
+  // but an empty field beside "keep it to republish later" is worse than useless: --site is half
+  // the republish credential, so the user needs to learn now, not when --site rejects the value.
+  const hostile = await startIncompleteHtmlApp({
+    site_id: "abc123 --password evil",
+    url: "https://abc123.ht-ml.app/",
+    update_key: "uk_secret",
+    status: "active",
+  });
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${hostile.port}`;
+  try {
+    const output = await shareCommand([artifact]);
+    const share = /** @type {any} */ (output.share);
+
+    assert.equal("site_id" in share, false, "an unusable id is omitted, never emitted empty");
+    assert.equal(share.update_key, "uk_secret", "the page still published");
+    assert.match(output.next_step, /never be republished or unpublished/i);
+    assert.doesNotMatch(output.next_step, /--password/, "and no flag may ride in through the echo");
+  } finally {
+    await hostile.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a site_id the host echoes cannot inject flags into the suggested republish command", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-echo-`);
   try {
