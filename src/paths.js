@@ -14,10 +14,66 @@ const WILDCARD_BIND_LOOPBACK = new Map([
   ["::", IPV6_LOOPBACK_HOST],
 ]);
 
+export const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
+
+export function isWildcardHost(host) {
+  return WILDCARD_BIND_HOSTS.has(
+    String(host || "")
+      .trim()
+      .toLowerCase(),
+  );
+}
+
 // Address the server binds to (LAVISH_AXI_HOST). Defaults to loopback. A wildcard value
-// (0.0.0.0 or ::) binds every interface.
+// (0.0.0.0 or ::) is never listened on; resolveListenHosts maps it to loopback (+ Tailscale).
 export function bindHost(env = process.env) {
   return env.LAVISH_AXI_HOST?.trim() || LOOPBACK_HOST;
+}
+
+/**
+ * Concrete listen addresses. Never includes 0.0.0.0 / ::.
+ * When LAVISH_AXI_HOST is unset or a wildcard, bind loopback plus Tailscale IPv4 if present.
+ * An explicit non-wildcard LAVISH_AXI_HOST (as used by tests) stays that single address.
+ * @param {{ host?: string, env?: NodeJS.ProcessEnv, tailscale?: { ipv4?: string } | null }} [options]
+ * @returns {string[]}
+ */
+export function resolveListenHosts({ host, env = process.env, tailscale = null } = {}) {
+  const envHost = env.LAVISH_AXI_HOST?.trim() || "";
+  const autoTailscale = !envHost || isWildcardHost(envHost);
+  const requested = host || bindHost(env);
+  const primary = isWildcardHost(requested) ? LOOPBACK_HOST : requested || LOOPBACK_HOST;
+  const hosts = [primary];
+  if (autoTailscale && tailscale?.ipv4 && tailscale.ipv4 !== primary && !isWildcardHost(tailscale.ipv4)) {
+    hosts.push(tailscale.ipv4);
+  }
+  return sanitizeListenHosts(hosts);
+}
+
+/**
+ * @param {string[] | undefined} hosts
+ * @returns {string[]}
+ */
+export function sanitizeListenHosts(hosts) {
+  const out = [];
+  for (const value of hosts || []) {
+    const host = String(value || "").trim();
+    if (!host || isWildcardHost(host)) continue;
+    if (!out.includes(host)) out.push(host);
+  }
+  return out.length ? out : [LOOPBACK_HOST];
+}
+
+/**
+ * Hostname written into session URLs. A running Tailscale MagicDNS name is the
+ * phone-ready headline host; an explicit link host is used only without MagicDNS.
+ * @param {{ env?: NodeJS.ProcessEnv, tailscale?: { magicDnsName?: string | null, ipv4?: string } | null, fallbackHost?: string }} [options]
+ */
+export function resolveLinkHost({ env = process.env, tailscale = null, fallbackHost = LOOPBACK_HOST } = {}) {
+  if (tailscale?.magicDnsName) return tailscale.magicDnsName;
+  const explicit = env.LAVISH_AXI_LINK_HOST?.trim();
+  if (explicit) return explicit;
+  if (tailscale?.ipv4) return tailscale.ipv4;
+  return isWildcardHost(fallbackHost) ? LOOPBACK_HOST : fallbackHost || LOOPBACK_HOST;
 }
 
 // Host the CLI uses to reach the server it spawned. A wildcard bind address can't be

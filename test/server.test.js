@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { homedir, networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
@@ -1422,6 +1422,129 @@ test("session URLs use the same IPv4 loopback host the server binds", async () =
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+function availableConcreteIpv4() {
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family === "IPv4" && !entry.internal && entry.address !== "127.0.0.1") return entry.address;
+    }
+  }
+  return null;
+}
+
+test("a down Tailscale detector keeps the server loopback-only without a phone link", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-no-tailscale-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: {},
+    detectTailscale: async () => null,
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.deepEqual(
+      server.addresses.map((address) => address.address),
+      ["127.0.0.1"],
+    );
+    const opened = await rawRequest(server.port, "/api/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.match(JSON.parse(opened.body).url, new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/session/`));
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Tailscale mode binds concrete listeners, serves the MagicDNS link, and tears down every listener", async (t) => {
+  const tailscaleIpv4 = availableConcreteIpv4();
+  if (!tailscaleIpv4) {
+    t.skip("host has no non-loopback IPv4 address for the second listener");
+    return;
+  }
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-"));
+  const magicDnsName = "review-phone.example.ts.net";
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: {},
+    detectTailscale: async () => ({ ipv4: tailscaleIpv4, magicDnsName }),
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.deepEqual(
+      server.addresses.map((address) => address.address),
+      ["127.0.0.1", tailscaleIpv4],
+    );
+    assert.ok(server.addresses.every((address) => address.address !== "0.0.0.0"));
+
+    const health = await rawRequest(server.port, "/health", { host: `${tailscaleIpv4}:${server.port}` });
+    assert.equal(health.status, 200);
+    const magicDnsHealth = await rawRequest(server.port, "/health", { host: `${magicDnsName}:${server.port}` });
+    assert.equal(magicDnsHealth.status, 200);
+    const rejected = await rawRequest(server.port, "/health", {
+      host: `attacker.example:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(rejected.status, 403);
+    assert.match(rejected.body, new RegExp(`http://${magicDnsName}:${server.port}/`));
+    assert.doesNotMatch(rejected.body, /forbidden host/);
+
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+    const opened = await rawRequest(server.port, "/api/sessions", {
+      method: "POST",
+      host: `${tailscaleIpv4}:${server.port}`,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const openedBody = JSON.parse(opened.body);
+    assert.match(openedBody.url, new RegExp(`^http://${magicDnsName}:${server.port}/session/`));
+
+    const missing = await rawRequest(server.port, "/session/0000000000000000", {
+      host: `${magicDnsName}:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(missing.status, 404);
+    assert.match(missing.body, new RegExp(`http://${magicDnsName}:${server.port}/`));
+    assert.doesNotMatch(missing.body, /Session not found$/);
+
+    const shutdown = await rawRequest(server.port, "/shutdown", {
+      method: "POST",
+      host: `${tailscaleIpv4}:${server.port}`,
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(shutdown.status, 200);
+    await server.done;
+    for (const address of server.addresses) {
+      await assert.doesNotReject(() => connectTo(address.address, address.port));
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function connectTo(host, port) {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect({ host, port });
+    socket.once("connect", () => {
+      socket.destroy();
+      reject(new Error(`listener still open at ${host}:${port}`));
+    });
+    socket.once("error", (error) => {
+      socket.destroy();
+      resolve(error);
+    });
+  });
+}
 
 test("session URLs use the configured linkHost while binding to loopback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
