@@ -270,7 +270,7 @@ export async function serve({
 } = {}) {
   const extraHosts = allowedHosts ?? extraAllowedHosts(env);
   const envHost = env.LAVISH_AXI_HOST?.trim();
-  const autoTailscale = !envHost || isWildcardHost(envHost);
+  const autoTailscale = !envHost;
   const detect = detectTailscaleFn === undefined ? detectTailscale : detectTailscaleFn;
   const tailscale = !hosts?.length && autoTailscale && typeof detect === "function" ? await detect() : null;
   const requestedListenHosts = sanitizeListenHosts(
@@ -280,6 +280,7 @@ export async function serve({
     ...(lookupHost ? { lookup: lookupHost } : {}),
   });
   let activeTailscaleNetwork = "";
+  let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
   const store = new SessionStore(stateFile);
@@ -297,6 +298,7 @@ export async function serve({
   const verbose = debug || env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
+  if (networkWarning) writeLog(`[lavish] WARNING: ${networkWarning}`);
   let publicPort = port;
   let serverReady = false;
   let networkReconcileCheckedAt = 0;
@@ -532,7 +534,13 @@ export async function serve({
       req.query.reconcile_network === "1" && autoTailscale && typeof detect === "function"
         ? await reconcileTailscaleNetwork()
         : false;
-    res.json({ ok: true, app: "lavish-axi", version, ...(networkStale ? { network_stale: true } : {}) });
+    res.json({
+      ok: true,
+      app: "lavish-axi",
+      version,
+      ...(networkStale ? { network_stale: true } : {}),
+      ...(networkWarning ? { network_warning: networkWarning } : {}),
+    });
   });
 
   let shutdownResolve;
@@ -565,7 +573,13 @@ export async function serve({
       // (`lavish-axi end`) keep reviving on the next open, same as before this change.
       if (existing?.status === "ended" && existing.ended_by === "user" && !reopen) {
         logEvent?.(`session open blocked (user-ended) key=${key} file=${file}`);
-        res.json({ key, file, url: existing.url, status: "user-ended" });
+        res.json({
+          key,
+          file,
+          url: existing.url,
+          status: "user-ended",
+          ...(networkWarning ? { network_warning: networkWarning } : {}),
+        });
         return;
       }
       const sessionUrl = `http://${hostForUrl(resolvedLinkHost)}:${publicPort}/session/${key}`;
@@ -577,7 +591,13 @@ export async function serve({
       logEvent?.(`session opened key=${key} file=${file}`);
       await syncOutstandingRepairs(key);
       await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
-      res.json({ key, file, url, status: "opened" });
+      res.json({
+        key,
+        file,
+        url,
+        status: "opened",
+        ...(networkWarning ? { network_warning: networkWarning } : {}),
+      });
     } catch (error) {
       next(error);
     }
@@ -1571,9 +1591,9 @@ export async function serve({
           continue;
         }
         if (listenHost === tailscale?.ipv4) {
-          writeLog(
-            `[lavish] WARNING: Tailscale binding failed for ${listenHost}:${boundPort}; there is no phone access. Lavish remains available on loopback.`,
-          );
+          networkWarning =
+            "Tailscale binding failed; there is no phone access. Lavish remains available on loopback.";
+          writeLog(`[lavish] WARNING: ${networkWarning} Address: ${listenHost}:${boundPort}.`);
         } else {
           logEvent?.(`failed to bind ${listenHost}:${boundPort}: ${error instanceof Error ? error.message : error}`);
         }

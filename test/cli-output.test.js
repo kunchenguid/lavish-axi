@@ -239,6 +239,16 @@ test("open output flags an artifact that never paints its own page surface", () 
   assert.match(clean.next_step, /^Do not respond to the user just yet\./);
 });
 
+test("open output surfaces unavailable Tailscale phone access", () => {
+  const output = createOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://127.0.0.1:4387/session/abc123",
+    status: "opened",
+    networkWarning: "Tailscale binding failed; there is no phone access.",
+  });
+  assert.equal(output.network_warning, "Tailscale binding failed; there is no phone access.");
+});
+
 test("export and share outputs flag an unpainted page surface before it reaches a host", () => {
   const exported = createExportOutput({
     source: "/tmp/report.html",

@@ -24,21 +24,21 @@ export function isWildcardHost(host) {
 }
 
 // Address the server binds to (LAVISH_AXI_HOST). Defaults to loopback. A wildcard value
-// (0.0.0.0 or ::) is never listened on; resolveListenHosts maps it to loopback (+ Tailscale).
+// (0.0.0.0 or ::) is never listened on; resolveListenHosts maps it to loopback.
 export function bindHost(env = process.env) {
   return env.LAVISH_AXI_HOST?.trim() || LOOPBACK_HOST;
 }
 
 /**
  * Concrete listen addresses. Never includes 0.0.0.0 / ::.
- * When LAVISH_AXI_HOST is unset or a wildcard, bind loopback plus Tailscale IPv4 if present.
- * An explicit non-wildcard LAVISH_AXI_HOST (as used by tests) stays that single address.
+ * When LAVISH_AXI_HOST is unset, bind loopback plus Tailscale IPv4 if present.
+ * An explicit LAVISH_AXI_HOST stays that single safe concrete address.
  * @param {{ host?: string, env?: NodeJS.ProcessEnv, tailscale?: { ipv4?: string } | null }} [options]
  * @returns {string[]}
  */
 export function resolveListenHosts({ host, env = process.env, tailscale = null } = {}) {
   const envHost = env.LAVISH_AXI_HOST?.trim() || "";
-  const autoTailscale = !envHost || isWildcardHost(envHost);
+  const autoTailscale = !envHost;
   const requested = host || bindHost(env);
   const primary = isWildcardHost(requested) ? LOOPBACK_HOST : requested || LOOPBACK_HOST;
   const hosts = [primary];
@@ -93,7 +93,6 @@ export function resolveLinkHost({ env = process.env, tailscale = null, fallbackH
   if (tailscale?.magicDnsName) return tailscale.magicDnsName;
   const explicit = env.LAVISH_AXI_LINK_HOST?.trim();
   if (explicit) return explicit;
-  if (tailscale?.ipv4) return tailscale.ipv4;
   return isWildcardHost(fallbackHost) ? LOOPBACK_HOST : fallbackHost || LOOPBACK_HOST;
 }
 

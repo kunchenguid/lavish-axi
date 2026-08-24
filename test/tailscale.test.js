@@ -40,7 +40,11 @@ test("Tailscale detection falls back to the macOS application bundle", async () 
     commands: ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"],
     execFile: /** @type {any} */ (async (command) => {
       attempted.push(command);
-      if (command === "tailscale") return { stdout: JSON.stringify({ BackendState: "Stopped" }) };
+      if (command === "tailscale") {
+        return {
+          stdout: JSON.stringify({ BackendState: "Running", Self: { TailscaleIPs: ["100.64.12.34"] } }),
+        };
+      }
       return {
         stdout: JSON.stringify({
           BackendState: "Running",
@@ -51,6 +55,21 @@ test("Tailscale detection falls back to the macOS application bundle", async () 
   });
   assert.deepEqual(attempted, ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]);
   assert.deepEqual(result, { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" });
+});
+
+test("Tailscale detection reports missing MagicDNS when no complete candidate exists", async () => {
+  const result = await detectTailscale({
+    commands: ["tailscale"],
+    execFile: /** @type {any} */ (async () => ({
+      stdout: JSON.stringify({ BackendState: "Running", Self: { TailscaleIPs: ["100.64.12.34"] } }),
+    })),
+  });
+  assert.deepEqual(result, {
+    ipv4: null,
+    magicDnsName: null,
+    warning:
+      "Tailscale is running but MagicDNS is unavailable; there is no phone access. Lavish remains available on loopback.",
+  });
 });
 
 test("Tailscale detection shares one timeout budget across candidates", async () => {
@@ -75,6 +94,12 @@ test("Tailscale detection shares one timeout budget across candidates", async ()
 
 test("parseTailscaleStatus ignores malformed or non-running status", () => {
   assert.equal(parseTailscaleStatus("not json"), null);
+  assert.equal(
+    parseTailscaleStatus(
+      JSON.stringify({ BackendState: "Running", Self: { TailscaleIPs: ["100.64.12.34"], DNSName: "bad host" } }),
+    ),
+    null,
+  );
   assert.equal(
     parseTailscaleStatus(JSON.stringify({ BackendState: "Running", Self: { TailscaleIPs: ["999.1.1.1"] } })),
     null,

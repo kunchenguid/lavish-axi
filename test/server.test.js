@@ -1460,6 +1460,31 @@ test("resolved all-interfaces aliases are rejected before listening", async () =
   }
 });
 
+test("an explicit bind host overrides automatic Tailscale detection", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-explicit-host-"));
+  let detections = 0;
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: { LAVISH_AXI_HOST: "127.0.0.1" },
+    detectTailscale: async () => {
+      detections += 1;
+      return { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" };
+    },
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.equal(detections, 0);
+    assert.deepEqual(server.hosts, ["127.0.0.1"]);
+    const health = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json());
+    assert.equal(health.network_warning, undefined);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a down Tailscale detector keeps the server loopback-only without a phone link", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-no-tailscale-"));
   const artifact = path.join(dir, "artifact.html");
@@ -1549,7 +1574,9 @@ test("a failed Tailscale listener warns and falls back without advertising Magic
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ file: artifact }),
     });
-    assert.match(JSON.parse(opened.body).url, new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/session/`));
+    const openedBody = JSON.parse(opened.body);
+    assert.match(openedBody.url, new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/session/`));
+    assert.match(openedBody.network_warning, /Tailscale binding failed.*no phone access/);
     const staleHost = await rawRequest(server.port, "/health", {
       host: `unreachable.tailnet.ts.net:${server.port}`,
     });
@@ -1558,6 +1585,7 @@ test("a failed Tailscale listener warns and falls back without advertising Magic
       response.json(),
     );
     assert.equal(reconciliation.network_stale, true);
+    assert.match(reconciliation.network_warning, /Tailscale binding failed.*no phone access/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
