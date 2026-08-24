@@ -1924,8 +1924,27 @@ function renderShareResult({ url = "", siteId = "", password = "", updateKey = "
   sharePasswordResult.hidden = !password;
   shareUpdateKeyInput.value = updateKey;
   shareUpdateKeyResult.hidden = !updateKey;
-  shareUpdateKeyNote.hidden = !updateKey;
+  // The note's own copy tells the user to republish with `--site <site id> --update-key <key>`,
+  // so it may only appear when BOTH halves of that credential are on screen. An update key with
+  // no usable site id cannot update anything, and the status line says so instead.
+  shareUpdateKeyNote.hidden = !(updateKey && siteId);
   shareResult.hidden = !(url || siteId || password || updateKey);
+  // Returned so every sentence in the status line is derived from what was actually rendered.
+  // Copy stamped from the request instead has promised rows the panel does not contain.
+  return { url, siteId, password, updateKey };
+}
+
+// Wording shared with the CLI's next_step for the same condition, so the two surfaces cannot
+// drift into describing the same dead end differently.
+const NO_SITE_ID_WARNING =
+  " The host did not return a site id Lavish can use, and --site is half the republish credential, so this page can NEVER be republished or unpublished even though its update key is in hand.";
+
+// What the page is gated behind, said only in terms of what the panel can show. A password the
+// user typed is never echoed by the server, so pointing at a row that was not rendered is the
+// same confidently-wrong sentence this feature exists to avoid.
+function publishedVisibilityText(isPublic, rendered, publicText) {
+  if (isPublic) return publicText;
+  return rendered.password ? "behind the password below" : "behind the password you supplied";
 }
 
 function openShareDialog() {
@@ -1964,18 +1983,16 @@ async function copyToButton(value, button, label) {
 }
 
 function reportIndeterminatePublish(data) {
-  renderShareResult({ password: data.password || "" });
+  const rendered = renderShareResult({ password: data.password || "" });
   shareStatus.classList.add("error");
   const reason = data.error ? data.error + " " : "";
-  const visibility = data.public
-    ? "live and PUBLIC - anyone with the link could read it"
-    : "live behind the password below";
+  const visibility = publishedVisibilityText(data.public, rendered, "PUBLIC - anyone with the link could read it");
   shareStatus.textContent =
     reason +
-    "ht-ml.app may or may not have published this page, so treat the outcome as unknown. If it did publish, the page is " +
+    "ht-ml.app may or may not have published this page, so treat the outcome as unknown. If it did publish, the page is live " +
     visibility +
     ", and its URL and update key were lost with the failed response, so it can never be republished or unpublished. Publishing again creates a SECOND page rather than replacing it." +
-    (data.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
+    (rendered.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
 }
 
 // An incomplete 200 is NOT an unknown outcome: the host answered, so the page landed. Whatever
@@ -1983,24 +2000,27 @@ function reportIndeterminatePublish(data) {
 // page whose only write credential is gone - and saying "may or may not" there would throw away
 // the address Lavish is holding.
 function reportIncompletePublish(data) {
-  renderShareResult({
+  const rendered = renderShareResult({
     url: data.url || "",
     siteId: data.site_id || "",
     password: data.password || "",
     updateKey: data.update_key || "",
   });
   shareStatus.classList.add("error");
-  const visibility = data.public ? "PUBLIC - anyone with the link can read it" : "behind the password below";
+  const visibility = publishedVisibilityText(data.public, rendered, "PUBLIC - anyone with the link can read it");
+  const updateKeyNote = !rendered.updateKey
+    ? "No update key came back, and ht-ml.app issues one only once and has no delete, so this page can never be republished or unpublished. "
+    : rendered.siteId
+      ? "Copy the update key below - it is issued once. "
+      : "Copy the update key below - it is issued once, though" + NO_SITE_ID_WARNING.slice(1) + " ";
   shareStatus.textContent =
     "ht-ml.app accepted this publish, so the page IS live and " +
     visibility +
     ", but its response was malformed and Lavish could not read the whole result back. " +
-    (data.url ? "Its address is below. " : "The response carried no URL, so Lavish cannot show the address. ") +
-    (data.update_key
-      ? "Copy the update key below - it is issued once. "
-      : "No update key came back, and ht-ml.app issues one only once and has no delete, so this page can never be republished or unpublished. ") +
+    (rendered.url ? "Its address is below. " : "The response carried no URL, so Lavish cannot show the address. ") +
+    updateKeyNote +
     "Publishing again creates a SECOND page rather than replacing it." +
-    (data.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
+    (rendered.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
 }
 
 async function publishShare(event) {
@@ -2033,7 +2053,7 @@ async function publishShare(event) {
       }
       throw new Error(data.error || "publish failed");
     }
-    renderShareResult({
+    const rendered = renderShareResult({
       url: data.url || "",
       siteId: data.site_id || "",
       password: data.password || "",
@@ -2052,13 +2072,16 @@ async function publishShare(event) {
           : passwordProtected
             ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
             : "Published. Anyone with the link can view this page.";
-    if (data.password) {
+    if (rendered.updateKey && !rendered.siteId) shareStatus.textContent += NO_SITE_ID_WARNING;
+    if (rendered.password) {
       shareStatus.textContent += " Copy the password now - it is shown once here and Lavish does not store it.";
     }
     shareUrlInput.focus();
     shareUrlInput.select();
   } catch (error) {
-    renderShareResult();
+    // Deliberately does NOT clear the panel. It is already cleared before the fetch, so the only
+    // thing this could reach is a result the success path already rendered - and wiping that
+    // destroys the once-issued update_key of a page that definitely published.
     shareStatus.classList.add("error");
     shareStatus.textContent = error instanceof Error ? error.message : String(error);
   } finally {
