@@ -1736,7 +1736,7 @@ test("poll feedback and the next step are emitted before the bulky DOM snapshot"
     dom_snapshot: "large snapshot",
   };
   const server = createServer((req, res) => {
-    if (req.url === "/health") {
+    if (new URL(req.url || "/", "http://localhost").pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION }));
       return;
@@ -2978,7 +2978,7 @@ async function startFakeHtmlApp(requests) {
 async function startShutdownRecorder(version = "0.0.0-previous") {
   const bodies = [];
   const server = createServer((req, res) => {
-    if (req.url === "/health") {
+    if (new URL(req.url || "/", "http://localhost").pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, app: "lavish-axi", version }));
       return;

@@ -5846,7 +5846,7 @@ test("concurrent same-session opens create only one file watcher", async () => {
   }
 });
 
-test("/health and / stay responsive after opening two back-to-back sessions", async () => {
+test("/health and the landing page stay responsive after opening two back-to-back sessions", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-back-to-back-"));
   const a = path.join(dir, "a.html");
   const b = path.join(dir, "b.html");
@@ -5882,8 +5882,8 @@ test("/health and / stay responsive after opening two back-to-back sessions", as
       fetch(`${base}/`),
       new Promise((_, reject) => setTimeout(() => reject(new Error("/ timed out")), 1000)),
     ]);
-    assert.equal(rootRes.status, 404);
-    await rootRes.text().catch(() => {});
+    assert.equal(rootRes.status, 200);
+    assert.match(await rootRes.text(), /Lavish Editor/);
 
     assert.ok(Date.now() - start < 1000, "both probes should return well under one second");
   } finally {
