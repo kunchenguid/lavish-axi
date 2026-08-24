@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.61](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.60...lavish-axi-v0.1.61) (2026-08-24)
+
+
+### Features
+
+* teach diagrams from zero, one concept at a time ([#290](https://github.com/kunchenguid/lavish-axi/issues/290)) ([21737a6](https://github.com/kunchenguid/lavish-axi/commit/21737a63a296a4c856b7b4fb7bdfe16e94b132d3))
+
 ## [0.1.60](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.59...lavish-axi-v0.1.60) (2026-08-24)
 
 
