@@ -1094,6 +1094,16 @@ async function startFailingHtmlApp(status, detail) {
 
 const PASSWORD_SHAPE = /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/;
 
+// A recovery hint is only recovery if the CLI accepts it. Pull the command Lavish printed out of
+// the text it printed and run it back through the real argument parser, so a hint that drifts into
+// a usage error - `--site`/`--update-key` with no HTML file was one - fails here instead of on the
+// user's next paste.
+function parseSuggestedShareCommand(text) {
+  const match = /`lavish-axi share ([^`]+)`/.exec(String(text));
+  assert.ok(match, `expected a suggested share command in: ${text}`);
+  return resolveShareRequest(match[1].trim().split(/\s+/));
+}
+
 test("an indeterminate --private republish failure hands back the password it may have already set", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-rotate-fail-`);
   const artifact = `${dir}/report.html`;
@@ -1115,6 +1125,9 @@ test("an indeterminate --private republish failure hands back the password it ma
         assert.match(hints, PASSWORD_SHAPE, "the generated password must be recoverable");
         assert.match(hints, /may or may not have applied/i, "the outcome must read as unknown");
         assert.match(hints, /--private/);
+        const suggested = parseSuggestedShareCommand(hints);
+        assert.equal(suggested.mode, "update", "the suggested recovery command must be a republish");
+        assert.equal(suggested.generatedPassword, true, "it must be the shape that mints a visible password");
         return true;
       },
     );
@@ -1164,6 +1177,57 @@ test("a republish the host rejected never offers the generated password as if it
     if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
     else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an indeterminate --unpublish failure says the takedown may already have landed", async () => {
+  // Same window as a republish: a 5xx can follow a PUT the origin already committed, so reporting
+  // a flat failure tells the user the old content is still readable when it may already be gone.
+  const failing = await startFailingHtmlApp(503, "upstream exploded");
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${failing.port}`;
+  try {
+    await assert.rejects(
+      () => shareCommand(["--unpublish", "--site", "abc123", "--update-key", "uk_secret"]),
+      (error) => {
+        assert.ok(error instanceof AxiError);
+        assert.match(error.message, /upstream exploded/, "the original failure must survive");
+        const hints = (error.suggestions || []).join(" ");
+        assert.match(hints, /may or may not have applied/i, "the outcome must read as unknown");
+        assert.match(hints, /safe and converges/i, "re-running must be described as safe");
+        // The lock password is discarded by design, so there is nothing to hand back and echoing
+        // one would suggest the user could still open the page.
+        assert.doesNotMatch(hints, PASSWORD_SHAPE);
+        assert.equal(parseSuggestedShareCommand(hints).mode, "unpublish");
+        return true;
+      },
+    );
+  } finally {
+    await failing.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+  }
+});
+
+test("an --unpublish the host rejected reports a plain failure, not an unknown outcome", async () => {
+  const rejecting = await startFailingHtmlApp(401, "");
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${rejecting.port}`;
+  try {
+    await assert.rejects(
+      () => shareCommand(["--unpublish", "--site", "abc123", "--update-key", "WRONG"]),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /unauthorized/i, "the host's reason must survive");
+        const suggestions = error instanceof AxiError ? error.suggestions || [] : [];
+        assert.doesNotMatch(`${error.message} ${suggestions.join(" ")}`, /may or may not have applied/i);
+        return true;
+      },
+    );
+  } finally {
+    await rejecting.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
   }
 });
 
@@ -1335,6 +1399,25 @@ test("share help distinguishes public default from password-protected shares", (
   assert.match(homeShareHelp, /Pass --private to publish a PRIVATE page behind a password Lavish generates/);
   assert.match(homeShareHelp, /shared secret/);
   assert.doesNotMatch(homeShareHelp, /Everything published is public/);
+});
+
+test("share help announces that an empty password value is refused rather than published public", () => {
+  // Deliberate behavior change: `--password "$PW"` with an unset $PW used to publish a PUBLIC page.
+  // The help is where an agent or user learns that before hitting the error.
+  const help = getCommandHelp("share");
+  assert.match(help, /empty or whitespace-only value is REFUSED/);
+  assert.match(help, /PUBLIC page/);
+
+  assert.throws(
+    () => resolveShareRequest(["report.html", "--password", ""]),
+    (error) => {
+      assert.ok(error instanceof AxiError);
+      assert.equal(error.code, "VALIDATION_ERROR");
+      assert.match(error.message, /PUBLIC page/, "the error must name what it prevented");
+      assert.match((error.suggestions || []).join(" "), /--private/, "and how to get a generated password");
+      return true;
+    },
+  );
 });
 
 test("home share guidance defers republish and unpublish mechanics to share --help", () => {
@@ -2949,6 +3032,7 @@ test("createShareUnpublishOutput says the page still exists and how to bring it 
   // The recovery instruction has to be one the host actually honors: clearing is ignored.
   assert.doesNotMatch(output.next_step, /--clear-password/);
   assert.match(output.next_step, /--private/);
+  assert.equal(parseSuggestedShareCommand(output.next_step).mode, "update");
   assert.doesNotMatch(JSON.stringify(output), /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/);
 });
 

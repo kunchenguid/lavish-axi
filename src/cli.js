@@ -560,12 +560,7 @@ function assetWarningSummaries(warnings) {
 export async function shareCommand(args) {
   const request = resolveShareRequest(args);
   if (request.mode === "unpublish") {
-    // ht-ml.app has no delete endpoint, so the closest honest thing is a republish: replace the
-    // content and lock the URL behind a password nobody is given. The update_key is the way back.
-    const site = await updateHtmlApp(request.siteId, createUnpublishedPageHtml(), {
-      updateKey: request.updateKey,
-      password: generateSharePassword(),
-    });
+    const site = await unpublishShareSite(request);
     return createShareUnpublishOutput({ site });
   }
 
@@ -603,6 +598,25 @@ export async function shareCommand(args) {
   });
 }
 
+// A write to a live page either provably did not happen or is unknown, and the two need different
+// copy. A 4xx is an answer the host returned, so it wrote nothing; anything else - a 5xx, a
+// transport failure, a timeout - can come back after the origin already committed the PUT.
+function hostRejectedShareWrite(error) {
+  const status = error instanceof Error ? Number(/** @type {any} */ (error).status) : Number.NaN;
+  return Number.isInteger(status) && status >= 400 && status < 500;
+}
+
+// Every surface that tells the user how to republish prints this one command, because a hint the
+// CLI itself rejects is worse than no hint: `--site`/`--update-key` alone parse to a usage error,
+// and the HTML file positional is what makes the shape a command that runs.
+function republishPrivateCommand(siteId) {
+  return `lavish-axi share <html-file> --site ${siteId} --update-key <key> --private`;
+}
+
+function unpublishCommand(siteId) {
+  return `lavish-axi share --unpublish --site ${siteId} --update-key <key>`;
+}
+
 // A generated password only reaches the user through the success output, so a failure after the
 // request went out would take it with it. Whether that matters depends on the failure: a 4xx the
 // host answered means it wrote nothing, so the password gates nothing and handing it over would be
@@ -615,14 +629,35 @@ async function updateShareSite(request, html) {
       password: request.password,
     });
   } catch (error) {
-    const status = error instanceof Error ? Number(/** @type {any} */ (error).status) : Number.NaN;
-    const rejected = Number.isInteger(status) && status >= 400 && status < 500;
-    if (rejected || !request.generatedPassword || !request.password) throw error;
+    if (hostRejectedShareWrite(error) || !request.generatedPassword || !request.password) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new AxiError(message, "UNKNOWN", [
       `ht-ml.app may or may not have applied this republish, so treat the outcome as unknown.`,
       `If it landed, the page now requires the password Lavish generated for it: ${request.password}`,
-      `Re-run with \`--site ${request.siteId} --update-key <key> --private\` to set a password you can see either way.`,
+      `Re-run \`${republishPrivateCommand(request.siteId)}\` to set a password you can see either way.`,
+    ]);
+  }
+}
+
+// ht-ml.app has no delete endpoint, so the closest honest thing is a republish: replace the content
+// and lock the URL behind a password nobody is given. The update_key is the way back. The same
+// indeterminate-outcome rule as a republish applies - a 5xx or a timeout can follow a PUT the
+// origin already committed - so reporting a flat failure would tell the user the page is still
+// readable when it may already be the locked placeholder. No password is offered here: the lock
+// password is discarded by design, so there is nothing recoverable to hand back.
+async function unpublishShareSite(request) {
+  try {
+    return await updateHtmlApp(request.siteId, createUnpublishedPageHtml(), {
+      updateKey: request.updateKey,
+      password: generateSharePassword(),
+    });
+  } catch (error) {
+    if (hostRejectedShareWrite(error)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new AxiError(message, "UNKNOWN", [
+      `ht-ml.app may or may not have applied this unpublish, so treat the outcome as unknown: the page may already be the locked placeholder.`,
+      `Re-running \`${unpublishCommand(request.siteId)}\` is safe and converges on the same result either way.`,
+      `The update_key still works, so \`${republishPrivateCommand(request.siteId)}\` brings the page back behind a password you can see.`,
     ]);
   }
 }
@@ -746,7 +781,7 @@ function shareFlagValue(args, flag) {
 function checkedShareFlagValue(flag, value, { swallows = false }) {
   const hint =
     flag === "--password"
-      ? `Quote the value as ${flag} "<pw>", or pass --private to have Lavish generate one`
+      ? `Quote the value as ${flag} "<pw>" - an unquoted shell variable that is unset expands to nothing - or pass --private to have Lavish generate one`
       : `Quote the value as ${flag} "<value>"`;
   if (swallows && typeof value === "string" && value.startsWith("--")) {
     throw new AxiError(
@@ -757,7 +792,11 @@ function checkedShareFlagValue(flag, value, { swallows = false }) {
   }
   const trimmed = String(value ?? "").trim();
   if (!trimmed) {
-    throw new AxiError(`${flag} was given an empty value`, "VALIDATION_ERROR", [hint]);
+    const consequence =
+      flag === "--password"
+        ? ", and publishing a PUBLIC page while you believed it was gated is the worse failure"
+        : "";
+    throw new AxiError(`${flag} was given an empty value${consequence}`, "VALIDATION_ERROR", [hint]);
   }
   return trimmed;
 }
@@ -915,7 +954,7 @@ export function createShareUnpublishOutput({ site }) {
       `${target} and locked it behind a fresh random password that was discarded, so no visitor can read the old content. ` +
       `The lock is NOT an instant takedown: a page that was public was observed still answering uncredentialed requests from ht-ml.app's CDN cache for minutes afterwards, so do not tell the user the page is unreachable right away. ` +
       `ht-ml.app has NO delete endpoint: the page is not deleted, the URL still resolves, and the host still holds whatever was published. Tell the user that rather than saying it was deleted. ` +
-      `The update_key is still the only credential for this page - republish with \`lavish-axi share <html-file> --site ${site.site_id} --update-key <key> --private\` to bring it back, then give the user the new password it returns. ` +
+      `The update_key is still the only credential for this page - republish with \`${republishPrivateCommand(site.site_id)}\` to bring it back, then give the user the new password it returns. ` +
       `ht-ml.app cannot remove a page's password once it has one, so a republished page stays private.`,
   };
 }
@@ -1681,7 +1720,7 @@ function createCommandHelp({ agent = "generic" } = {}) {
     poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again. ${POLL_SEND_AND_END_RULE}\n`,
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
-    share: `Usage:\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --private to publish a PRIVATE page behind a generated password, returned once in the output - give it to the user with the URL and tell them it is a shared secret. Pass --password <pw> instead when the user chose the password; it is never echoed back. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for changing the page later.\n\n--site <site_id> with --update-key <key> republishes an existing page in place: same URL, new HTML. On a republish the password is left alone unless you pass --private (rotate to a new generated one) or --password <pw> (set one). There is no way to make a private page public again: ht-ml.app accepts a request to clear a password and silently ignores it, so Lavish does not offer one rather than reporting a page as public while it is still gated. Locking a page that was PUBLIC is also not instant at ht-ml.app's CDN: it was observed still answering uncredentialed requests for minutes after the password was set, so do not tell the user a newly gated page is unreachable right away (a page that was already private has no such cached copy).\n\n--unpublish takes the same credentials and no file. ht-ml.app has NO delete endpoint, so this replaces the page with a short placeholder and locks it behind a random password that is immediately discarded; the URL still resolves and the host still holds what was published. Say that to the user rather than calling it deleted. The update_key still works, so republishing with --private brings the page back behind a new password.\n\nSet LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token when CREATING a page; it is never required. A republish (--site/--update-key) or --unpublish rejects --token, because the update_key is what the Authorization header carries there. The annotation SDK is never included.\n`,
+    share: `Usage:\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --private to publish a PRIVATE page behind a generated password, returned once in the output - give it to the user with the URL and tell them it is a shared secret. Pass --password <pw> instead when the user chose the password; it is never echoed back. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for changing the page later.\n\n--site <site_id> with --update-key <key> republishes an existing page in place: same URL, new HTML. On a republish the password is left alone unless you pass --private (rotate to a new generated one) or --password <pw> (set one). There is no way to make a private page public again: ht-ml.app accepts a request to clear a password and silently ignores it, so Lavish does not offer one rather than reporting a page as public while it is still gated. Locking a page that was PUBLIC is also not instant at ht-ml.app's CDN: it was observed still answering uncredentialed requests for minutes after the password was set, so do not tell the user a newly gated page is unreachable right away (a page that was already private has no such cached copy).\n\n--unpublish takes the same credentials and no file. ht-ml.app has NO delete endpoint, so this replaces the page with a short placeholder and locks it behind a random password that is immediately discarded; the URL still resolves and the host still holds what was published. Say that to the user rather than calling it deleted. The update_key still works, so republishing with --private brings the page back behind a new password.\n\nA value flag given an empty or whitespace-only value is REFUSED rather than acted on: an unquoted shell variable that is unset makes \`--password $PW\` an empty password, which the host treats as none and would publish a PUBLIC page while you believed it was gated. Quote the value, or pass --private to have Lavish generate one.\n\nSet LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token when CREATING a page; it is never required. A republish (--site/--update-key) or --unpublish rejects --token, because the update_key is what the Authorization header carries there. The annotation SDK is never included.\n`,
     stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
     design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, the whiteboard (Mermaid) opt-in snippet, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
