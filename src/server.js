@@ -1597,8 +1597,7 @@ export async function serve({
           continue;
         }
         if (listenHost === tailscale?.ipv4) {
-          networkWarning =
-            "Tailscale binding failed; there is no phone access. Lavish remains available on loopback.";
+          networkWarning = "Tailscale binding failed; there is no phone access. Lavish remains available on loopback.";
           writeLog(`[lavish] WARNING: ${networkWarning} Address: ${listenHost}:${boundPort}.`);
         } else {
           logEvent?.(`failed to bind ${listenHost}:${boundPort}: ${error instanceof Error ? error.message : error}`);

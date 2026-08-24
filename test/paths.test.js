@@ -1,14 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  bindHost,
-  clientHost,
-  extraAllowedHosts,
-  hostForUrl,
-  LOOPBACK_HOST,
-  linkHost,
-} from "../src/paths.js";
+import { bindHost, clientHost, extraAllowedHosts, hostForUrl, LOOPBACK_HOST, linkHost } from "../src/paths.js";
 
 test("bindHost defaults to loopback and honors LAVISH_AXI_HOST", () => {
   assert.equal(bindHost({}), LOOPBACK_HOST);
