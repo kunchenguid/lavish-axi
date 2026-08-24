@@ -1461,25 +1461,38 @@ test("a down Tailscale detector keeps the server loopback-only without a phone l
   }
 });
 
-test("network reconciliation reports Tailscale transitions only when requested", async () => {
+test("network reconciliation coalesces concurrent checks and briefly caches the result", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-reconcile-"));
   let detected = null;
+  let detectionCalls = 0;
   const server = await serve({
     port: 0,
     stateFile: path.join(dir, "state.json"),
     version: "9.9.9-test",
     env: {},
-    detectTailscale: async () => detected,
+    detectTailscale: async () => {
+      detectionCalls += 1;
+      if (detectionCalls > 1) await new Promise((resolve) => setTimeout(resolve, 30));
+      return detected;
+    },
     idleTimeoutMs: null,
   });
   try {
     detected = { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" };
     const ordinary = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json());
     assert.equal(ordinary.network_stale, undefined);
-    const reconciled = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+    const checks = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) => response.json()),
+      ),
+    );
+    assert.ok(checks.every((body) => body.network_stale === true));
+    assert.equal(detectionCalls, 2);
+    const cached = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
       response.json(),
     );
-    assert.equal(reconciled.network_stale, true);
+    assert.equal(cached.network_stale, true);
+    assert.equal(detectionCalls, 2);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

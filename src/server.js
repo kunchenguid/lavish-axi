@@ -100,6 +100,7 @@ const designAssetUrls = {
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
+const NETWORK_RECONCILE_CACHE_MS = 1_000;
 // An escaped popup can navigate to an artifact-owned HTML or SVG asset on the
 // server origin. Keep every artifact response sandboxed at the response layer
 // so active documents stay opaque-origin even when they are top-level.
@@ -289,6 +290,29 @@ export async function serve({
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   let publicPort = port;
+  let networkReconcileCheckedAt = 0;
+  let cachedNetworkStale = false;
+  /** @type {Promise<boolean> | null} */
+  let networkReconcilePromise = null;
+
+  async function reconcileTailscaleNetwork() {
+    if (Date.now() - networkReconcileCheckedAt < NETWORK_RECONCILE_CACHE_MS) return cachedNetworkStale;
+    if (networkReconcilePromise) return networkReconcilePromise;
+    networkReconcilePromise = (async () => {
+      try {
+        return tailscaleNetworkKey(await detect()) !== initialTailscaleNetwork;
+      } catch {
+        return initialTailscaleNetwork !== "";
+      }
+    })();
+    try {
+      cachedNetworkStale = await networkReconcilePromise;
+      networkReconcileCheckedAt = Date.now();
+      return cachedNetworkStale;
+    } finally {
+      networkReconcilePromise = null;
+    }
+  }
 
   function finishFeedbackDelivery(key, result) {
     if (result.status !== "feedback") return;
@@ -491,14 +515,10 @@ export async function serve({
   });
 
   app.get("/health", async (req, res) => {
-    let networkStale = false;
-    if (req.query.reconcile_network === "1" && autoTailscale && typeof detect === "function") {
-      try {
-        networkStale = tailscaleNetworkKey(await detect()) !== initialTailscaleNetwork;
-      } catch {
-        networkStale = initialTailscaleNetwork !== "";
-      }
-    }
+    const networkStale =
+      req.query.reconcile_network === "1" && autoTailscale && typeof detect === "function"
+        ? await reconcileTailscaleNetwork()
+        : false;
     res.json({ ok: true, app: "lavish-axi", version, ...(networkStale ? { network_stale: true } : {}) });
   });
 
