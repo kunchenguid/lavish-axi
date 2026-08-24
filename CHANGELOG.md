@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.60](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.59...lavish-axi-v0.1.60) (2026-08-24)
+
+
+### Features
+
+* add automatic Tailscale phone access ([#289](https://github.com/kunchenguid/lavish-axi/issues/289)) ([443aaa9](https://github.com/kunchenguid/lavish-axi/commit/443aaa99c381851ea4e01d27b86af979166e7a28))
+* **share:** publish a private link with a generated password ([#287](https://github.com/kunchenguid/lavish-axi/issues/287)) ([c9a9a8e](https://github.com/kunchenguid/lavish-axi/commit/c9a9a8e99d68acb15e78bc5fc1d15c5d53f5a357))
+
+
+### Bug Fixes
+
+* keep the shipped skill as a minimal CLI-deferring stub ([#286](https://github.com/kunchenguid/lavish-axi/issues/286)) ([f658fb8](https://github.com/kunchenguid/lavish-axi/commit/f658fb83a59441fc7da31f4a0b3bed18b0f73ff3))
+
 ## [0.1.59](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.58...lavish-axi-v0.1.59) (2026-08-23)
 
 
