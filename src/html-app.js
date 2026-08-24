@@ -132,19 +132,42 @@ export async function publishToHtmlApp(html, options = {}) {
   });
 
   const url = optionalString(data.url);
-  if (!url) {
-    throw new Error("ht-ml.app publish failed: response did not include a url");
-  }
   const updateKey = optionalString(data.update_key);
-  if (!updateKey) {
-    throw new Error("ht-ml.app publish failed: response did not include an update_key");
+  const siteId = echoedSiteId(data.site_id, "");
+  if (!url || !updateKey) {
+    const missing = [!url && "a url", !updateKey && "an update_key"].filter(Boolean).join(" or ");
+    throw htmlAppIncompleteResponseError(`ht-ml.app published the page but its response did not include ${missing}`, {
+      url,
+      siteId,
+      updateKey,
+      status: String(data.status || ""),
+    });
   }
   return {
     url,
-    site_id: String(data.site_id || ""),
+    site_id: siteId,
     update_key: updateKey,
     status: String(data.status || ""),
   };
+}
+
+/**
+ * A site_id the HOST echoed is untrusted input: it reaches prose and, for a republish hint, a
+ * backticked command an agent may run, where `abc123 --password evil` would parse as extra flags
+ * and gate the page behind a value nobody chose. The id is a path segment, so anything
+ * `normalizeSiteId` refuses could not have addressed a real site anyway; fall back to the locally
+ * validated id the request was sent to.
+ * @param {unknown} echoed
+ * @param {string} fallback
+ */
+function echoedSiteId(echoed, fallback) {
+  const value = optionalString(echoed);
+  if (!value) return fallback;
+  try {
+    return normalizeSiteId(value);
+  } catch {
+    return fallback;
+  }
 }
 
 /**
@@ -183,7 +206,7 @@ export async function updateHtmlApp(siteId, html, options = {}) {
 
   return {
     url: optionalString(data.url) || optionalString(options.url),
-    site_id: String(data.site_id || site),
+    site_id: echoedSiteId(data.site_id, site),
     status: String(data.status || ""),
   };
 }
@@ -191,6 +214,40 @@ export async function updateHtmlApp(siteId, html, options = {}) {
 // A caller that changes a live page needs to tell "the host refused, nothing was written" from
 // "the outcome is unknown". Only a response the host actually returned proves the former, so the
 // status rides on the error: absent means no answer reached us (transport failure or timeout).
+/**
+ * Every caller that changes hosted state splits its reporting here. A 4xx is an answer the host
+ * returned, so nothing was written; anything else can follow a request the origin already
+ * committed and must be reported as an outcome that may already be live.
+ * @param {unknown} error
+ */
+export function hostRejectedShareWrite(error) {
+  const status = error instanceof Error ? Number(/** @type {any} */ (error).status) : Number.NaN;
+  return Number.isInteger(status) && status >= 400 && status < 500;
+}
+
+/**
+ * A 200 whose body is missing required fields is NOT an unknown outcome: the page landed. The
+ * caller needs to say so and to surface whatever fields did arrive, because a url with no
+ * update_key is a live (public by default) page whose only write credential is gone for good.
+ * @param {string} message
+ * @param {{ url?: string, siteId?: string, updateKey?: string, status?: string }} received
+ */
+export function htmlAppIncompleteResponseError(message, received = {}) {
+  const error = new Error(message);
+  const present = Object.fromEntries(Object.entries(received).filter(([, value]) => value));
+  Object.defineProperty(error, "published", { value: true, enumerable: true });
+  Object.defineProperty(error, "received", { value: present, enumerable: true });
+  return error;
+}
+
+/**
+ * @param {unknown} error
+ * @returns {{ url?: string, siteId?: string, updateKey?: string, status?: string } | null}
+ */
+export function publishedDespiteError(error) {
+  if (!(error instanceof Error) || /** @type {any} */ (error).published !== true) return null;
+  return /** @type {any} */ (error).received || {};
+}
 /**
  * @param {string} message
  * @param {{ status?: number, cause?: unknown }} [details]

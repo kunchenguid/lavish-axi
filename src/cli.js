@@ -14,7 +14,14 @@ import {
   exportWarningSummaries,
   splitExportWarnings,
 } from "./export-bundle.js";
-import { createUnpublishedPageHtml, normalizeSiteId, publishToHtmlApp, updateHtmlApp } from "./html-app.js";
+import {
+  createUnpublishedPageHtml,
+  hostRejectedShareWrite,
+  normalizeSiteId,
+  publishedDespiteError,
+  publishToHtmlApp,
+  updateHtmlApp,
+} from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import {
   computeVsCodePluginLocationsUpdate,
@@ -561,7 +568,7 @@ export async function shareCommand(args) {
   const request = resolveShareRequest(args);
   if (request.mode === "unpublish") {
     const site = await unpublishShareSite(request);
-    return createShareUnpublishOutput({ site });
+    return createShareUnpublishOutput({ site, siteId: request.siteId });
   }
 
   await assertHtmlFile(request.file);
@@ -598,14 +605,6 @@ export async function shareCommand(args) {
   });
 }
 
-// A write to a live page either provably did not happen or is unknown, and the two need different
-// copy. A 4xx is an answer the host returned, so it wrote nothing; anything else - a 5xx, a
-// transport failure, a timeout - can come back after the origin already committed the PUT.
-function hostRejectedShareWrite(error) {
-  const status = error instanceof Error ? Number(/** @type {any} */ (error).status) : Number.NaN;
-  return Number.isInteger(status) && status >= 400 && status < 500;
-}
-
 // Every surface that tells the user how to republish prints this one command, because a hint the
 // CLI itself rejects is worse than no hint: `--site`/`--update-key` alone parse to a usage error,
 // and the HTML file positional is what makes the shape a command that runs.
@@ -628,6 +627,38 @@ function unpublishCommand(siteId) {
   return `lavish-axi share --unpublish --site ${siteId} --update-key <key>`;
 }
 
+// A 200 the host answered with an unreadable body is not an unknown outcome - the page landed - and
+// hedging it away discards the strongest honest report available. Whatever fields did arrive are
+// handed over, because a url with no update_key names a live page whose write credential is gone.
+function incompletePublishError(request, message, received) {
+  const url = String(received.url || "").trim();
+  const updateKey = String(received.updateKey || "").trim();
+  const siteId = String(received.siteId || "").trim();
+  const visibility = request.password
+    ? `behind the password this run sent`
+    : `PUBLICLY, readable by anyone who has the link`;
+  const suggestions = [
+    `ht-ml.app accepted this publish - the page IS live, hosted ${visibility} - but its response was malformed, so Lavish could not read the whole result back. Do not report this as a failed publish.`,
+    url
+      ? `Its address is ${url} - give the user that URL.`
+      : `The response carried no url, so Lavish cannot name the page's address.`,
+  ];
+  if (updateKey) {
+    suggestions.push(
+      `Its update_key is ${updateKey}${siteId ? ` and its site_id is ${siteId}` : ""} - keep it, because ht-ml.app issues one only once and it is the only credential for changing or unpublishing the page.`,
+    );
+  } else {
+    suggestions.push(
+      `No update_key reached Lavish, and ht-ml.app issues one only once and has no delete endpoint, so this page can never be republished or unpublished. There is no recovery for it.`,
+    );
+  }
+  suggestions.push(`Re-running this command publishes a SECOND page at a new URL; it does not replace the first.`);
+  if (request.generatedPassword && request.password) {
+    suggestions.push(`That page requires the password Lavish generated for it: ${request.password}`);
+  }
+  return new AxiError(message, "UNKNOWN", suggestions);
+}
+
 // Creating is the highest-consequence instance of the same split, because it is the one write with
 // no way back. A 4xx means nothing was published. Anything else can follow a POST the origin
 // already committed, and the response that was lost is the ONLY copy of the update_key - issued
@@ -640,6 +671,8 @@ async function createShareSite(request, html) {
   } catch (error) {
     if (hostRejectedShareWrite(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
+    const landed = publishedDespiteError(error);
+    if (landed) throw incompletePublishError(request, message, landed);
     const hosting = request.password
       ? `the artifact is now hosted on ht-ml.app behind the password this run sent`
       : `the artifact is now hosted PUBLICLY on ht-ml.app, readable by anyone who has the link`;
@@ -986,8 +1019,12 @@ export function createShareUpdateOutput({
 
 // Unpublish output. The page is replaced and locked, never removed, and saying otherwise would
 // leave the user believing content is gone from a URL that still resolves.
-export function createShareUnpublishOutput({ site }) {
+// `siteId` is the locally validated id the request was addressed to, and it - never the host's
+// echo - is what the suggested republish command interpolates: that string is text an agent may
+// run, so a host answering with `abc123 --password evil` must not be able to append flags to it.
+export function createShareUnpublishOutput({ site, siteId = undefined }) {
   const url = String(site.url ?? "").trim();
+  const commandSiteId = siteId || site.site_id;
   const target = url
     ? `Replaced the page at ${url} with an "unpublished" placeholder`
     : `Replaced the page published as site_id ${site.site_id} with an "unpublished" placeholder (the host did not report a URL for it, so use the one from when it was published rather than guessing)`;
@@ -1003,7 +1040,7 @@ export function createShareUnpublishOutput({ site }) {
       `${target} and locked it behind a fresh random password that was discarded. The replacement itself is immediate: the previous content is gone from that URL, not merely hidden. ` +
       `The LOCK is what is not instant for a page that was public - its CDN copy was observed serving the new placeholder to uncredentialed requests for minutes afterwards - so the placeholder may be readable without the password until the edge cache turns over. Do not tell the user the URL is unreachable right away. ` +
       `ht-ml.app has NO delete endpoint: the page is not deleted, the URL still resolves, and the host still holds whatever was published. Tell the user that rather than saying it was deleted. ` +
-      `The update_key is still the only credential for this page - republish with \`${republishPrivateCommand(site.site_id)}\` to bring it back, then give the user the new password it returns. ` +
+      `The update_key is still the only credential for this page - republish with \`${republishPrivateCommand(commandSiteId)}\` to bring it back, then give the user the new password it returns. ` +
       `ht-ml.app cannot remove a page's password once it has one, so a republished page stays private.`,
   };
 }

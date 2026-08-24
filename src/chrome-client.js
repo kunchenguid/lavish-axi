@@ -135,6 +135,9 @@ const shareUrlInput = /** @type {HTMLInputElement} */ (document.getElementById("
 const shareUpdateKeyInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUpdateKey"));
 const shareGenerateInput = /** @type {HTMLInputElement} */ (document.getElementById("shareGenerate"));
 const sharePasswordResult = /** @type {HTMLLabelElement} */ (document.getElementById("sharePasswordResult"));
+const shareUrlResult = /** @type {HTMLLabelElement} */ (document.getElementById("shareUrlResult"));
+const shareUpdateKeyResult = /** @type {HTMLLabelElement} */ (document.getElementById("shareUpdateKeyResult"));
+const shareUpdateKeyNote = /** @type {HTMLParagraphElement} */ (document.getElementById("shareUpdateKeyNote"));
 const shareSiteIdResult = /** @type {HTMLLabelElement} */ (document.getElementById("shareSiteIdResult"));
 const shareSiteIdInput = /** @type {HTMLInputElement} */ (document.getElementById("shareSiteId"));
 const sharePasswordOutput = /** @type {HTMLInputElement} */ (document.getElementById("sharePasswordOut"));
@@ -1912,6 +1915,9 @@ function openShareDialog() {
   shareStatus.classList.remove("error");
   shareResult.hidden = true;
   sharePasswordResult.hidden = true;
+  shareUrlResult.hidden = false;
+  shareUpdateKeyResult.hidden = false;
+  shareUpdateKeyNote.hidden = false;
   sharePasswordOutput.value = "";
   shareSiteIdResult.hidden = true;
   shareSiteIdInput.value = "";
@@ -1944,6 +1950,27 @@ async function copyToButton(value, button, label) {
   }, 1200);
 }
 
+function reportIndeterminatePublish(data) {
+  shareUrlResult.hidden = true;
+  shareUpdateKeyResult.hidden = true;
+  shareSiteIdResult.hidden = true;
+  shareUpdateKeyNote.hidden = true;
+  sharePasswordOutput.value = data.password || "";
+  sharePasswordResult.hidden = !data.password;
+  shareResult.hidden = !data.password;
+  shareStatus.classList.add("error");
+  const reason = data.error ? data.error + " " : "";
+  const visibility = data.public
+    ? "live and PUBLIC - anyone with the link could read it"
+    : "live behind the password below";
+  shareStatus.textContent =
+    reason +
+    "ht-ml.app may or may not have published this page, so treat the outcome as unknown. If it did publish, the page is " +
+    visibility +
+    ", and its URL and update key were lost with the failed response, so it can never be republished or unpublished. Publishing again creates a SECOND page rather than replacing it." +
+    (data.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
+}
+
 async function publishShare(event) {
   event.preventDefault();
   sharePublishButton.disabled = true;
@@ -1960,7 +1987,16 @@ async function publishShare(event) {
       body: JSON.stringify(generating ? { generate_password: true } : password ? { password } : {}),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "publish failed");
+    if (!response.ok) {
+      // Only a host rejection proves nothing was published. On anything else the page may already
+      // be live, and a password minted for this request is the one thing that could still open it,
+      // so it is shown here rather than dying with the failed response.
+      if (data.outcome === "indeterminate") {
+        reportIndeterminatePublish(data);
+        return;
+      }
+      throw new Error(data.error || "publish failed");
+    }
     shareUrlInput.value = data.url || "";
     shareUpdateKeyInput.value = data.update_key || "";
     sharePasswordOutput.value = data.password || "";

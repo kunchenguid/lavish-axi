@@ -3336,6 +3336,90 @@ test("POST /api/:key/share generates a password on request and hands it back onc
   }
 });
 
+async function startFailingHtmlApp(status) {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify({ detail: "host said no" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : 0,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+async function publishThroughShareRoute(dir, status, body) {
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Ship</h1></body></html>");
+  const htmlApp = await startFailingHtmlApp(status);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify(body),
+    });
+    return { status: shareRes.status, body: await shareRes.json() };
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
+  }
+}
+
+test("POST /api/:key/share reports an indeterminate publish and keeps the password it minted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  try {
+    // A 5xx can follow a POST the origin already committed. The password was minted for THIS
+    // request, so discarding it with the failed response would leave the page live behind a secret
+    // nobody was ever shown, at a URL nobody was told, with its update_key gone.
+    const generated = await publishThroughShareRoute(dir, 503, { generate_password: true });
+
+    assert.equal(generated.status, 502);
+    assert.equal(generated.body.outcome, "indeterminate");
+    assert.match(generated.body.password, /^[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/);
+    assert.equal(generated.body.public, false, "a generated password means it is not public");
+
+    const plain = await publishThroughShareRoute(dir, 503, {});
+    assert.equal(plain.status, 502);
+    assert.equal(plain.body.outcome, "indeterminate");
+    assert.equal(plain.body.password, undefined, "nothing was minted, so nothing to hand back");
+    assert.equal(plain.body.public, true, "a default publish that landed is readable by anyone");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share reports a host rejection as a plain failure with no password", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  try {
+    // The host answered, so nothing was published: a minted password gates nothing and relaying it
+    // would send the user chasing a page that does not exist.
+    const rejected = await publishThroughShareRoute(dir, 400, { generate_password: true });
+
+    assert.equal(rejected.status, 502);
+    assert.equal(rejected.body.outcome, "rejected");
+    assert.equal(rejected.body.password, undefined, "a rejected publish must never carry the password");
+    assert.equal(rejected.body.public, undefined);
+    assert.ok(rejected.body.error, "the host's reason must still reach the dialog");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/:key/share never echoes a password the user typed", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

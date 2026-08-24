@@ -1328,6 +1328,109 @@ test("an indeterminate create failure says the page may be live and unreclaimabl
   }
 });
 
+async function startIncompleteHtmlApp(body) {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : 0,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+test("a 200 with a malformed body is reported as published, not as an unknown outcome", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-incomplete-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  // The host answered 200, so the page definitely landed. Hedging that into "may or may not have
+  // published" throws away the one thing worth saying: here is the live URL, and its write
+  // credential is gone forever.
+  const noKey = await startIncompleteHtmlApp({ site_id: "abc123", url: "https://abc123.ht-ml.app/" });
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${noKey.port}`;
+  try {
+    await assert.rejects(
+      () => shareCommand([artifact]),
+      (error) => {
+        assert.ok(error instanceof AxiError);
+        const hints = (error.suggestions || []).join(" ");
+        assert.doesNotMatch(hints, /may or may not have published/i, "a 200 is not an unknown outcome");
+        assert.match(hints, /the page IS live/i);
+        assert.match(hints, /https:\/\/abc123\.ht-ml\.app\//, "the URL Lavish knows must be handed over");
+        assert.match(hints, /no recovery/i, "the lost update_key has none");
+        assert.match(hints, /SECOND page/);
+        return true;
+      },
+    );
+  } finally {
+    await noKey.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+  }
+
+  // The mirror case: no url came back, but the update_key did, so the page IS still changeable and
+  // saying "no recovery" would be the opposite error.
+  const noUrl = await startIncompleteHtmlApp({ site_id: "abc123", update_key: "uk_secret" });
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${noUrl.port}`;
+  try {
+    await assert.rejects(
+      () => shareCommand([artifact, "--private"]),
+      (error) => {
+        assert.ok(error instanceof AxiError);
+        const hints = (error.suggestions || []).join(" ");
+        assert.match(hints, /uk_secret/, "a surviving update_key must reach the user");
+        assert.match(hints, /carried no url/i);
+        assert.doesNotMatch(hints, /no recovery/i, "the page is still changeable with that key");
+        assert.match(hints, PASSWORD_SHAPE, "the generated password still gates it");
+        return true;
+      },
+    );
+  } finally {
+    await noUrl.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a site_id the host echoes cannot inject flags into the suggested republish command", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-echo-`);
+  try {
+    // next_step is text an agent may run. A backend reached through LAVISH_AXI_HTML_APP_API_URL
+    // answering with `abc123 --password evil` would otherwise append a flag that gates the page
+    // behind a value nobody chose, and ht-ml.app cannot clear a password.
+    const hostile = await startIncompleteHtmlApp({
+      site_id: "abc123 --password evil",
+      url: "https://abc123.ht-ml.app/",
+      update_key: "uk_secret",
+      status: "active",
+    });
+    const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+    process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${hostile.port}`;
+    try {
+      const output = await shareCommand(["--unpublish", "--site", "abc123", "--update-key", "uk_secret"]);
+
+      assert.doesNotMatch(output.next_step, /--password/, "no flag may be smuggled in through the echo");
+      const suggested = parseSuggestedShareCommand(output.next_step);
+      assert.equal(suggested.siteId, "abc123", "the command names the id the request was addressed to");
+      assert.equal(suggested.generatedPassword, true, "only --private, whose password Lavish mints and reports");
+    } finally {
+      await hostile.close();
+      if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+      else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a create the host rejected reports a plain failure, not an unknown outcome", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-create-rejected-`);
   const artifact = `${dir}/report.html`;
