@@ -1337,6 +1337,22 @@ test("share help distinguishes public default from password-protected shares", (
   assert.doesNotMatch(homeShareHelp, /Everything published is public/);
 });
 
+test("home share guidance defers republish and unpublish mechanics to share --help", () => {
+  // Home output is paid on every no-argument invocation, so it may name the update_key and point
+  // at the command that owns it, but must not restate that command's flag mechanics.
+  const help = getCommandHelp("share");
+  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
+  const homeShareHelp = home.help.find((item) => item.includes("lavish-axi share <html-file>"));
+
+  assert.match(homeShareHelp, /run `lavish-axi share --help` before using it/);
+  assert.doesNotMatch(homeShareHelp, /--site/);
+  assert.doesNotMatch(homeShareHelp, /--update-key/);
+  assert.doesNotMatch(homeShareHelp, /--unpublish/);
+  assert.match(help, /--site <site_id> with --update-key <key> republishes an existing page in place/);
+  assert.match(help, /--unpublish takes the same credentials and no file/);
+  assert.match(help, /NO delete endpoint/);
+});
+
 test("feedback next step keeps the next poll completion observable", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
