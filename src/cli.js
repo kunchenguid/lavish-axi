@@ -609,19 +609,25 @@ function hostRejectedShareWrite(error) {
 // Every surface that tells the user how to republish prints this one command, because a hint the
 // CLI itself rejects is worse than no hint: `--site`/`--update-key` alone parse to a usage error,
 // and the HTML file positional is what makes the shape a command that runs.
+function republishCommand(siteId, passwordFlag = "") {
+  return `lavish-axi share <html-file> --site ${siteId} --update-key <key>${passwordFlag ? ` ${passwordFlag}` : ""}`;
+}
+
 function republishPrivateCommand(siteId) {
-  return `lavish-axi share <html-file> --site ${siteId} --update-key <key> --private`;
+  return republishCommand(siteId, "--private");
 }
 
 function unpublishCommand(siteId) {
   return `lavish-axi share --unpublish --site ${siteId} --update-key <key>`;
 }
 
-// A generated password only reaches the user through the success output, so a failure after the
-// request went out would take it with it. Whether that matters depends on the failure: a 4xx the
-// host answered means it wrote nothing, so the password gates nothing and handing it over would be
-// a lie. Only an indeterminate outcome - no answer at all, or a 5xx - can leave the page rotated to
-// a secret nobody holds, and only there is the password worth carrying into the error.
+// Whether the outcome is unknown is a property of the FAILURE, not of what the request carried: a
+// 4xx the host answered means it wrote nothing, while a 5xx or no answer at all can follow a PUT
+// the origin already committed, leaving the hosted page showing content Lavish reported as never
+// sent. So every indeterminate republish reports that and names a re-run that converges.
+// A generated password is an ADDITIONAL layer on that report, not its trigger: it only ever reaches
+// the user through the success output, so an indeterminate failure could otherwise leave the page
+// rotated to a secret nobody holds. A rejection must never carry it, because it gates nothing.
 async function updateShareSite(request, html) {
   try {
     return await updateHtmlApp(request.siteId, html, {
@@ -629,13 +635,22 @@ async function updateShareSite(request, html) {
       password: request.password,
     });
   } catch (error) {
-    if (hostRejectedShareWrite(error) || !request.generatedPassword || !request.password) throw error;
+    if (hostRejectedShareWrite(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    throw new AxiError(message, "UNKNOWN", [
-      `ht-ml.app may or may not have applied this republish, so treat the outcome as unknown.`,
-      `If it landed, the page now requires the password Lavish generated for it: ${request.password}`,
-      `Re-run \`${republishPrivateCommand(request.siteId)}\` to set a password you can see either way.`,
-    ]);
+    const generated = Boolean(request.generatedPassword && request.password);
+    const retry = generated
+      ? republishPrivateCommand(request.siteId)
+      : republishCommand(request.siteId, request.password ? "--password <pw>" : "");
+    const suggestions = [
+      `ht-ml.app may or may not have applied this republish, so treat the outcome as unknown: the hosted page may already show the new content.`,
+      `Re-running \`${retry}\` is safe and converges on the same result either way.`,
+    ];
+    if (generated) {
+      suggestions.push(
+        `If it landed, the page now requires the password Lavish generated for it: ${request.password} - the re-run above rotates it to a fresh one Lavish reports on success.`,
+      );
+    }
+    throw new AxiError(message, "UNKNOWN", suggestions);
   }
 }
 

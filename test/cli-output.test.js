@@ -1104,7 +1104,7 @@ function parseSuggestedShareCommand(text) {
   return resolveShareRequest(match[1].trim().split(/\s+/));
 }
 
-test("an indeterminate --private republish failure hands back the password it may have already set", async () => {
+test("an indeterminate republish failure reads as unknown, with the generated password only when there is one", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-rotate-fail-`);
   const artifact = `${dir}/report.html`;
   await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
@@ -1132,12 +1132,40 @@ test("an indeterminate --private republish failure hands back the password it ma
       },
     );
 
-    // A plain republish sends no password, so there is nothing to recover and no hint to add.
+    // A plain republish mints no password, but the outcome is just as unknown: the page may
+    // already show the new HTML, so reporting a flat failure tells the user the old version is
+    // still up when it may not be. The password hint is the only part that is conditional.
     await assert.rejects(
       () => shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret"]),
       (error) => {
-        assert.ok(error instanceof Error);
-        assert.doesNotMatch(error.message, PASSWORD_SHAPE);
+        assert.ok(error instanceof AxiError);
+        assert.match(error.message, /upstream exploded/, "the original failure must survive");
+        const hints = (error.suggestions || []).join(" ");
+        assert.match(hints, /may or may not have applied/i, "the outcome must read as unknown");
+        assert.match(hints, /may already show the new content/i);
+        assert.match(hints, /safe and converges/i, "re-running must be described as safe");
+        assert.doesNotMatch(`${error.message} ${hints}`, PASSWORD_SHAPE, "there is no password to hand back");
+        const suggested = parseSuggestedShareCommand(hints);
+        assert.equal(suggested.mode, "update");
+        assert.equal(suggested.generatedPassword, false, "a plain republish must not be told to rotate");
+        assert.equal(suggested.password, undefined);
+        return true;
+      },
+    );
+
+    // An explicit --password republish is the same: no generated secret to recover, but the retry
+    // has to carry the flag or it would converge on a different page state than the one asked for.
+    await assert.rejects(
+      () => shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret", "--password", "hunter2"]),
+      (error) => {
+        assert.ok(error instanceof AxiError);
+        const hints = (error.suggestions || []).join(" ");
+        assert.match(hints, /may or may not have applied/i);
+        assert.doesNotMatch(hints, /hunter2/, "a password the user chose is never echoed back");
+        const suggested = parseSuggestedShareCommand(hints);
+        assert.equal(suggested.mode, "update");
+        assert.equal(suggested.generatedPassword, false);
+        assert.ok(suggested.password, "the retry must keep setting a password");
         return true;
       },
     );
