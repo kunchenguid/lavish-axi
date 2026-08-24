@@ -1406,7 +1406,12 @@ test("session URLs use the same IPv4 loopback host the server binds", async () =
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    detectTailscale: async () => null,
+  });
   try {
     const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       method: "POST",
