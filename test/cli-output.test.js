@@ -1101,7 +1101,17 @@ const PASSWORD_SHAPE = /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/;
 function parseSuggestedShareCommand(text) {
   const match = /`lavish-axi share ([^`]+)`/.exec(String(text));
   assert.ok(match, `expected a suggested share command in: ${text}`);
-  return resolveShareRequest(match[1].trim().split(/\s+/));
+  const argv = match[1].trim().split(/\s+/);
+  const request = resolveShareRequest(argv);
+  // `<html-file>` and `<key>` fail loudly when pasted literally - one is not a file, the other
+  // earns a 401 - but ANY non-empty string is a valid password, so a placeholder that reaches the
+  // parser as a password value would be accepted and would rotate a live page to a secret nobody
+  // was told, which ht-ml.app cannot clear. A suggested command must never carry one.
+  assert.ok(
+    request.generatedPassword || request.password === undefined,
+    `a suggested command must not dictate a password value, got ${request.password} from: ${argv.join(" ")}`,
+  );
+  return request;
 }
 
 test("an indeterminate republish failure reads as unknown, with the generated password only when there is one", async () => {
@@ -1162,10 +1172,13 @@ test("an indeterminate republish failure reads as unknown, with the generated pa
         const hints = (error.suggestions || []).join(" ");
         assert.match(hints, /may or may not have applied/i);
         assert.doesNotMatch(hints, /hunter2/, "a password the user chose is never echoed back");
+        // The retry still has to set the same password, but the command may not spell a value:
+        // pasted literally, a `<pw>` placeholder is accepted and locks the page to that string.
+        assert.match(hints, /same --password value you supplied/i);
         const suggested = parseSuggestedShareCommand(hints);
         assert.equal(suggested.mode, "update");
         assert.equal(suggested.generatedPassword, false);
-        assert.ok(suggested.password, "the retry must keep setting a password");
+        assert.equal(suggested.password, undefined, "no password value may appear in the command");
         return true;
       },
     );
@@ -1256,6 +1269,92 @@ test("an --unpublish the host rejected reports a plain failure, not an unknown o
     await rejecting.close();
     if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
     else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+  }
+});
+
+test("a literal password placeholder would be accepted, which is why no suggestion prints one", () => {
+  // The hazard `parseSuggestedShareCommand` guards against, proven against the real parser: unlike
+  // `<html-file>` and `<key>`, a `<pw>` left literal does not fail - it is a valid password, so it
+  // would reach the host and gate a live page behind that string with no way to clear it.
+  const parsed = resolveShareRequest(["report.html", "--site", "abc123", "--update-key", "k", "--password", "<pw>"]);
+  assert.equal(parsed.password, "<pw>", "a bracketed placeholder is a perfectly valid password value");
+  assert.equal(parsed.generatedPassword, false);
+});
+
+test("an indeterminate create failure says the page may be live and unreclaimable", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-create-fail-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  // The worst window in the feature: a 5xx after the origin committed the POST leaves the artifact
+  // publicly hosted while the only copy of its update_key dies with the response, so the page can
+  // never be republished or unpublished. Reporting a flat failure hides a permanent public page.
+  const failing = await startFailingHtmlApp(503, "upstream exploded");
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${failing.port}`;
+  try {
+    await assert.rejects(
+      () => shareCommand([artifact]),
+      (error) => {
+        assert.ok(error instanceof AxiError);
+        assert.equal(error.code, "UNKNOWN");
+        assert.match(error.message, /upstream exploded/, "the original failure must survive");
+        const hints = (error.suggestions || []).join(" ");
+        assert.match(hints, /may or may not have published/i, "the outcome must read as unknown");
+        assert.match(hints, /PUBLICLY/, "a default share that landed is readable by anyone");
+        assert.match(hints, /update_key/, "the lost credential must be named");
+        assert.match(hints, /no recovery/i, "and the absence of a way back stated plainly");
+        assert.match(hints, /SECOND page/, "re-running must not read as a retry that replaces it");
+        return true;
+      },
+    );
+
+    // --private mints a password that also dies with the response, so it is worth handing back.
+    await assert.rejects(
+      () => shareCommand([artifact, "--private"]),
+      (error) => {
+        assert.ok(error instanceof AxiError);
+        const hints = (error.suggestions || []).join(" ");
+        assert.match(hints, PASSWORD_SHAPE, "the generated password must be recoverable");
+        assert.doesNotMatch(hints, /PUBLICLY/, "a --private page that landed is not public");
+        return true;
+      },
+    );
+  } finally {
+    await failing.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a create the host rejected reports a plain failure, not an unknown outcome", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-create-rejected-`);
+  const artifact = `${dir}/report.html`;
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+
+  // A 400 is an answer: nothing was published, so claiming a page might be live would send the
+  // user hunting for a URL that does not exist.
+  const rejecting = await startFailingHtmlApp(400, "bad request");
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${rejecting.port}`;
+  try {
+    await assert.rejects(
+      () => shareCommand([artifact, "--private"]),
+      (error) => {
+        assert.ok(error instanceof Error);
+        const suggestions = error instanceof AxiError ? error.suggestions || [] : [];
+        const reported = `${error.message} ${suggestions.join(" ")}`;
+        assert.doesNotMatch(reported, /may or may not have published/i);
+        assert.doesNotMatch(reported, PASSWORD_SHAPE, "a rejected create gates nothing");
+        return true;
+      },
+    );
+  } finally {
+    await rejecting.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -3064,13 +3163,17 @@ test("createShareUnpublishOutput says the page still exists and how to bring it 
   assert.doesNotMatch(JSON.stringify(output), /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/);
 });
 
-test("createShareUnpublishOutput does not present the lock as an instant takedown", () => {
-  // Probed live: a page that was public kept answering uncredentialed CDN requests for minutes
-  // after it was locked, so the agent must not relay "unreachable now".
+test("createShareUnpublishOutput separates the immediate content swap from the lagging lock", () => {
+  // Probed live: the PUT invalidated the CDN copy and the edge then served the NEW placeholder to
+  // uncredentialed requests for minutes. So the old content is gone at once and what lingers is an
+  // unlocked placeholder. Saying "no visitor can read the old content" while also saying the CDN
+  // kept answering was self-contradictory, and the report may not imply the old page stays up.
   const output = createShareUnpublishOutput({
     site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
   });
 
-  assert.match(output.next_step, /not an instant takedown/i);
-  assert.match(output.next_step, /cach/i);
+  assert.match(output.next_step, /previous content is gone/i, "the swap must read as immediate");
+  assert.match(output.next_step, /cach/i, "the lagging lock must still be disclosed");
+  assert.match(output.next_step, /readable without the password/i);
+  assert.doesNotMatch(output.next_step, /no visitor can read the old content/i);
 });

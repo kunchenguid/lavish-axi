@@ -587,7 +587,7 @@ export async function shareCommand(args) {
     });
   }
 
-  const site = await publishToHtmlApp(html, { password: request.password, token: request.token });
+  const site = await createShareSite(request, html);
   return createShareOutput({
     source: absolute,
     site,
@@ -609,16 +609,51 @@ function hostRejectedShareWrite(error) {
 // Every surface that tells the user how to republish prints this one command, because a hint the
 // CLI itself rejects is worse than no hint: `--site`/`--update-key` alone parse to a usage error,
 // and the HTML file positional is what makes the shape a command that runs.
-function republishCommand(siteId, passwordFlag = "") {
-  return `lavish-axi share <html-file> --site ${siteId} --update-key <key>${passwordFlag ? ` ${passwordFlag}` : ""}`;
+//
+// A suggested command may never carry a password PLACEHOLDER. Every other placeholder here fails
+// loudly when an agent substitutes the real values and leaves one literal - `<html-file>` is not a
+// file, `<key>` earns a 401 - but any non-empty string is a valid password, so a literal `<pw>`
+// would be accepted and would rotate a live page to a secret nobody was told, with no way to clear
+// it afterwards. `--private` is safe to name because it takes no value and Lavish reports what it
+// minted; an explicit password is described in words instead.
+function republishCommand(siteId, { privatePage = false } = {}) {
+  return `lavish-axi share <html-file> --site ${siteId} --update-key <key>${privatePage ? " --private" : ""}`;
 }
 
 function republishPrivateCommand(siteId) {
-  return republishCommand(siteId, "--private");
+  return republishCommand(siteId, { privatePage: true });
 }
 
 function unpublishCommand(siteId) {
   return `lavish-axi share --unpublish --site ${siteId} --update-key <key>`;
+}
+
+// Creating is the highest-consequence instance of the same split, because it is the one write with
+// no way back. A 4xx means nothing was published. Anything else can follow a POST the origin
+// already committed, and the response that was lost is the ONLY copy of the update_key - issued
+// once, and the sole credential for a host with no delete endpoint - so a page that landed this way
+// can never be republished or unpublished by anyone. Nothing here may suggest a recovery, because
+// there is none: re-running mints a second page rather than replacing the first.
+async function createShareSite(request, html) {
+  try {
+    return await publishToHtmlApp(html, { password: request.password, token: request.token });
+  } catch (error) {
+    if (hostRejectedShareWrite(error)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    const hosting = request.password
+      ? `the artifact is now hosted on ht-ml.app behind the password this run sent`
+      : `the artifact is now hosted PUBLICLY on ht-ml.app, readable by anyone who has the link`;
+    const suggestions = [
+      `ht-ml.app may or may not have published this page, so treat the outcome as unknown.`,
+      `If it landed, ${hosting}, and the response carrying its url, site_id, and update_key was lost.`,
+      `An update_key is issued once and ht-ml.app has no delete endpoint, so such a page can never be republished or unpublished - there is no recovery for it. Tell the user rather than implying the publish simply failed.`,
+      `Re-running this command publishes a SECOND page at a new URL; it does not replace or reclaim the first.`,
+    ];
+    if (request.generatedPassword && request.password) {
+      suggestions.push(`If it landed, that page requires the password Lavish generated for it: ${request.password}`);
+    }
+    throw new AxiError(message, "UNKNOWN", suggestions);
+  }
 }
 
 // Whether the outcome is unknown is a property of the FAILURE, not of what the request carried: a
@@ -638,12 +673,11 @@ async function updateShareSite(request, html) {
     if (hostRejectedShareWrite(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     const generated = Boolean(request.generatedPassword && request.password);
-    const retry = generated
-      ? republishPrivateCommand(request.siteId)
-      : republishCommand(request.siteId, request.password ? "--password <pw>" : "");
+    const retry = generated ? republishPrivateCommand(request.siteId) : republishCommand(request.siteId);
+    const samePassword = !generated && request.password ? `, passing the same --password value you supplied` : "";
     const suggestions = [
       `ht-ml.app may or may not have applied this republish, so treat the outcome as unknown: the hosted page may already show the new content.`,
-      `Re-running \`${retry}\` is safe and converges on the same result either way.`,
+      `Re-running \`${retry}\`${samePassword} is safe and converges on the same result either way.`,
     ];
     if (generated) {
       suggestions.push(
@@ -966,8 +1000,8 @@ export function createShareUnpublishOutput({ site }) {
       visibility: "private",
     },
     next_step:
-      `${target} and locked it behind a fresh random password that was discarded, so no visitor can read the old content. ` +
-      `The lock is NOT an instant takedown: a page that was public was observed still answering uncredentialed requests from ht-ml.app's CDN cache for minutes afterwards, so do not tell the user the page is unreachable right away. ` +
+      `${target} and locked it behind a fresh random password that was discarded. The replacement itself is immediate: the previous content is gone from that URL, not merely hidden. ` +
+      `The LOCK is what is not instant for a page that was public - its CDN copy was observed serving the new placeholder to uncredentialed requests for minutes afterwards - so the placeholder may be readable without the password until the edge cache turns over. Do not tell the user the URL is unreachable right away. ` +
       `ht-ml.app has NO delete endpoint: the page is not deleted, the URL still resolves, and the host still holds whatever was published. Tell the user that rather than saying it was deleted. ` +
       `The update_key is still the only credential for this page - republish with \`${republishPrivateCommand(site.site_id)}\` to bring it back, then give the user the new password it returns. ` +
       `ht-ml.app cannot remove a page's password once it has one, so a republished page stays private.`,

@@ -45,7 +45,11 @@ export function createHtmlAppPayload(html, options = {}) {
  *   GET answered 404 uncredentialed and 200 with the update_key, matching a known-private site.
  * - But it is not instant at the EDGE: that page's viewer subdomain kept answering uncredentialed
  *   requests from CloudFront for at least ~3 minutes afterwards (cache age climbing, no
- *   cache-control on the response), serving the new HTML without asking for the password.
+ *   cache-control on the response). WHICH body it served matters and was observed: the PUT
+ *   invalidated the cached copy, so the edge served the NEW post-PUT HTML without asking for the
+ *   password. It did not keep serving the pre-PUT content. So the content swap is immediate and
+ *   only the GATE lags, which is why the surfaces say a newly locked page may still be readable
+ *   rather than that the old page stays visible.
  *
  * That last one is a property of the public -> private TRANSITION, not of the command that
  * performs it: `--unpublish` and a `--private`/`--password` republish both hit it, so EVERY
