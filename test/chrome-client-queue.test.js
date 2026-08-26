@@ -16,7 +16,7 @@ const servedChromeIds = new Set(
   ),
 );
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[] }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
@@ -38,6 +38,10 @@ async function createChromeHarness({
   // Opt-in frozen clock. `reloadChromeAfterServerRestart` waits on wall-clock deadlines, so a
   // test that needs one to expire has to own `Date.now()` rather than sleep through it.
   fakeClock = false,
+  // Opt-in phone-width viewport: installs a `window.matchMedia` whose single query answers the
+  // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
+  // window has no matchMedia at all, which is the desktop the other tests run against.
+  mobile = false,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -55,6 +59,7 @@ async function createChromeHarness({
   const beginRequests = [];
   const artifactBeginRequests = [];
   const focusLog = [];
+  let activeElement = null;
   let nextTimerId = 1;
   let reloadCount = 0;
   let artifactRevision = 0;
@@ -195,6 +200,7 @@ async function createChromeHarness({
       },
       focus() {
         this.focused = true;
+        activeElement = this;
         focusLog.push(this.id);
       },
       select() {},
@@ -229,7 +235,10 @@ async function createChromeHarness({
   for (const childId of ["chatInput", "chatAttachments", "chatAttachInput", "chatAttach"]) {
     element(childId).parentElement = element("chatComposer");
   }
+  element("chatComposer").parentElement = element("panel");
+  element("panelScroll").parentElement = element("panel");
   element("whiteboardOverlay").hidden = true;
+  element("layoutGateBypass").hidden = true;
   element("shareDialog").hidden = true;
   element("moreMenu").hidden = true;
   element("warningsDrawer").hidden = true;
@@ -297,6 +306,9 @@ async function createChromeHarness({
     },
     document: {
       body: element("body"),
+      get activeElement() {
+        return activeElement;
+      },
       getElementById(id) {
         // Answer only for ids the served page declares, so an id the client and the page disagree
         // on fails here the way it would go dead in a browser.
@@ -336,6 +348,21 @@ async function createChromeHarness({
       },
     },
   };
+  const mediaQueries = [];
+  if (mobile) {
+    context.window.matchMedia = (query) => {
+      const list = {
+        media: query,
+        matches: true,
+        changeHandlers: [],
+        addEventListener(type, handler) {
+          if (type === "change") this.changeHandlers.push(handler);
+        },
+      };
+      mediaQueries.push(list);
+      return list;
+    };
+  }
 
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
   await flushPromises();
@@ -454,6 +481,30 @@ async function createChromeHarness({
     beginRequests,
     artifactBeginRequests,
     artifactLoadToken: frameLoadToken,
+    mediaQueries,
+    setMobile(matches) {
+      for (const list of mediaQueries) {
+        list.matches = matches;
+        for (const handler of list.changeHandlers) handler({ matches });
+      }
+    },
+    // A pointer gesture on the conversation dock, as the browser would deliver it: one pointer
+    // id from down to up, with the y travel the test names.
+    dragDock(fromY, toY, { pointerId = 1 } = {}) {
+      const head = element("panelHead");
+      head.dispatch("pointerdown", { pointerId, clientY: fromY, button: 0 });
+      head.dispatch("pointermove", { pointerId, clientY: fromY + (toY - fromY) / 2 });
+      head.dispatch("pointermove", { pointerId, clientY: toY });
+      head.dispatch("pointerup", { pointerId, clientY: toY });
+      // A completed pointer sequence is followed by a click on the same target.
+      head.dispatch("click", {});
+    },
+    cancelDock(fromY, moveY, cancelY, { pointerId = 1 } = {}) {
+      const head = element("panelHead");
+      head.dispatch("pointerdown", { pointerId, clientY: fromY, button: 0 });
+      head.dispatch("pointermove", { pointerId, clientY: moveY });
+      head.dispatch("pointercancel", { pointerId, clientY: cancelY });
+    },
   };
 }
 
@@ -1986,6 +2037,7 @@ test("chrome client surfaces share warnings from the server response", async () 
       ok: true,
       json: async () => ({
         url: "https://abc123.ht-ml.app/",
+        site_id: "abc123",
         update_key: "uk_secret",
         warnings: [
           { kind: "load-failed", ref: "missing.png" },
@@ -2012,6 +2064,7 @@ test("chrome client does not count share notices as unresolved assets", async ()
       ok: true,
       json: async () => ({
         url: "https://abc123.ht-ml.app/",
+        site_id: "abc123",
         update_key: "uk_secret",
         warnings: [{ kind: "csp-meta", ref: "script-src 'self'" }],
         notices: [{ kind: "csp-meta", ref: "script-src 'self'" }],
@@ -2026,6 +2079,212 @@ test("chrome client does not count share notices as unresolved assets", async ()
 
   assert.equal(chrome.element("shareStatus").textContent, "Published with 1 notice.");
   assert.equal(chrome.element("shareResult").hidden, false);
+});
+
+test("a publish that succeeds after a failed one still shows the url and the once-only update key", async () => {
+  // The regression: an indeterminate failure hid the url/update-key rows, only the dialog-open
+  // path un-hid them, and the natural retry is a second Publish click without reopening. The
+  // update_key is issued once and ht-ml.app has no delete, so a "Published" panel with that row
+  // still hidden leaves a live, public-by-default page nobody can ever change or take down.
+  let attempt = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        return {
+          ok: false,
+          json: async () => ({ error: "upstream exploded", outcome: "indeterminate", public: true }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          url: "https://abc123.ht-ml.app/",
+          site_id: "abc123",
+          update_key: "uk_secret",
+        }),
+      };
+    },
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+  assert.match(chrome.element("shareStatus").textContent, /may or may not have published/i);
+  assert.equal(chrome.element("shareUrlResult").hidden, true, "there is no url to show yet");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.equal(chrome.element("shareStatus").textContent, "Published. Anyone with the link can view this page.");
+  assert.equal(chrome.element("shareResult").hidden, false);
+  assert.equal(chrome.element("shareUrlResult").hidden, false, "the URL of the page that landed");
+  assert.equal(chrome.element("shareUrl").value, "https://abc123.ht-ml.app/");
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, false, "the update key is issued once");
+  assert.equal(chrome.element("shareUpdateKey").value, "uk_secret");
+  assert.equal(chrome.element("shareUpdateKeyNote").hidden, false);
+  assert.equal(chrome.element("shareSiteIdResult").hidden, false);
+});
+
+test("an indeterminate publish keeps the password it minted and shows no credentials it does not have", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      json: async () => ({
+        error: "upstream exploded",
+        outcome: "indeterminate",
+        public: false,
+        password: "xk4t-9rmb-2wqz",
+      }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.equal(chrome.element("sharePasswordOut").value, "xk4t-9rmb-2wqz", "minted here, so shown here");
+  assert.equal(chrome.element("sharePasswordResult").hidden, false);
+  assert.equal(chrome.element("shareResult").hidden, false, "the panel opens for the password alone");
+  assert.equal(chrome.element("shareUrlResult").hidden, true, "no url came back");
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, true, "no update key came back");
+  assert.equal(chrome.element("shareUpdateKeyNote").hidden, true, "and no advice about keeping one");
+  assert.match(chrome.element("shareStatus").textContent, /SECOND page/);
+});
+
+test("an incomplete 200 reports a landed publish and shows the fields the host did return", async () => {
+  // The host answered 200, so the page IS live. Hedging that as "may or may not have published"
+  // also threw away the url Lavish was holding for a page that is public by default.
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      json: async () => ({
+        error: "ht-ml.app published the page but its response did not include an update_key",
+        outcome: "published-incomplete",
+        public: true,
+        url: "https://abc123.ht-ml.app/",
+        site_id: "abc123",
+      }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  const status = chrome.element("shareStatus").textContent;
+  assert.match(status, /the page IS live/i);
+  assert.doesNotMatch(status, /may or may not/i, "a 200 is not an unknown outcome");
+  assert.match(status, /never be republished or unpublished/i, "the update key is gone for good");
+  assert.equal(chrome.element("shareUrlResult").hidden, false, "the address must reach the user");
+  assert.equal(chrome.element("shareUrl").value, "https://abc123.ht-ml.app/");
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, true, "there is no key to show");
+  assert.equal(chrome.element("shareUpdateKeyNote").hidden, true);
+});
+
+test("an incomplete publish explains an unusable update key without garbling the warning", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      json: async () => ({
+        error: "ht-ml.app published the page but its response did not include a site_id",
+        outcome: "published-incomplete",
+        public: true,
+        url: "https://abc123.ht-ml.app/",
+        update_key: "uk_secret",
+      }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  const status = chrome.element("shareStatus").textContent;
+  assert.match(status, /issued once, though the host did not return a site id/i);
+  assert.doesNotMatch(status, /thoughThe/);
+  assert.match(status, /can NEVER be republished or unpublished/);
+  assert.equal(chrome.element("shareUpdateKey").value, "uk_secret");
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, false);
+  assert.equal(chrome.element("shareSiteIdResult").hidden, true);
+});
+
+test("a throw after a successful render leaves the url and update key on screen", async () => {
+  // The panel is already cleared before the fetch, so a clear in the catch could only ever reach a
+  // result the success path had already rendered. The update_key is issued once and ht-ml.app has
+  // no delete, so wiping it on a late throw is unrecoverable.
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        url: "https://abc123.ht-ml.app/",
+        site_id: "abc123",
+        update_key: "uk_secret",
+        // Read after the result is rendered, so this models any late failure in the status-text
+        // work that follows it.
+        get notices() {
+          throw new Error("boom after render");
+        },
+      }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.match(chrome.element("shareStatus").textContent, /boom after render/, "the failure is still reported");
+  assert.equal(chrome.element("shareResult").hidden, false, "but the credentials survive it");
+  assert.equal(chrome.element("shareUrl").value, "https://abc123.ht-ml.app/");
+  assert.equal(chrome.element("shareUpdateKey").value, "uk_secret");
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, false);
+});
+
+test("a failed publish of a user-typed password never points at a password row it did not render", async () => {
+  // The server echoes a password only when it minted one, so a typed password never comes back.
+  // "behind the password below" then named a row - and, on the indeterminate path, a whole panel -
+  // that was not on screen.
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      json: async () => ({ error: "upstream exploded", outcome: "indeterminate", public: false }),
+    }),
+  });
+  chrome.element("sharePassword").value = "hunter2";
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  const status = chrome.element("shareStatus").textContent;
+  assert.equal(chrome.element("shareResult").hidden, true, "nothing came back, so no panel");
+  assert.match(status, /behind the password you supplied/, "the user's own password, not a row");
+  assert.doesNotMatch(status, /password below/, "there is no password below");
+  assert.doesNotMatch(status, /hunter2/, "and it is never echoed back");
+});
+
+test("a publish with no usable site id says the page can never be republished", async () => {
+  // --site is half the republish credential, so an update key without one updates nothing. The
+  // dialog is where that key is actually being copied, so it has to carry the CLI's warning.
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({ url: "https://abc123.ht-ml.app/", update_key: "uk_secret" }),
+    }),
+  });
+  const submit = chrome.element("shareForm").listeners.get("submit");
+
+  await submit({ preventDefault() {} });
+  await flushPromises();
+
+  assert.match(chrome.element("shareStatus").textContent, /NEVER be republished or unpublished/);
+  assert.equal(chrome.element("shareSiteIdResult").hidden, true);
+  assert.equal(
+    chrome.element("shareUpdateKeyNote").hidden,
+    true,
+    "the note tells the user to republish with --site, which is exactly what is impossible",
+  );
+  assert.equal(chrome.element("shareUpdateKeyResult").hidden, false, "the key itself is still shown");
 });
 
 test("chrome client clears stale share passwords when opening a fresh dialog", async () => {
@@ -2063,6 +2322,7 @@ test("chrome client says password-protected shares also require the password", a
       ok: true,
       json: async () => ({
         url: "https://abc123.ht-ml.app/",
+        site_id: "abc123",
         update_key: "uk_secret",
       }),
     }),
@@ -2089,6 +2349,7 @@ test("chrome client treats a whitespace-only share password as public", async ()
         ok: true,
         json: async () => ({
           url: "https://abc123.ht-ml.app/",
+          site_id: "abc123",
           update_key: "uk_secret",
         }),
       };
@@ -2645,18 +2906,117 @@ test("the not-running card survives a later successful artifact load", async () 
   assert.equal(chrome.element("layoutGateAction").textContent, "Check and reload");
   assert.equal(chrome.element("layoutGateOverlay").hidden, false);
 
-  // A completed diagnostic pass from the replacement server reaches the overlay by a second
-  // route, and must not take the card down either.
+  // A completed diagnostic pass from the replacement server must release the visual gate even
+  // while the sticky card copy remains in state. The card is not allowed to trap the artifact.
   chrome.sendFrameMessage({
     artifact_load_token: chrome.artifactLoadToken(),
     type: "lavish:layoutDiagnostics",
     complete: true,
     findings: [],
   });
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+  assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+
+  chrome.eventSource().listeners.get("reload")();
   await flushPromises();
   await flushPromises();
   assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+  assert.equal(chrome.element("layoutGateBypass").hidden, false);
+  chrome.element("layoutGateBypass").click();
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+});
+
+test("a sticky failure cannot outlive the layout gate timeout", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fakeClock: true,
+    fetchImpl: async (url) => {
+      if (String(url) === "/health") throw new Error("connection refused");
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.eventSource().listeners.get("chrome-reload")();
+  await flushPromises();
+  chrome.advanceClock(61000);
+  for (let i = 0; i < 3; i += 1) {
+    chrome.runTimers(100);
+    await flushPromises();
+  }
   assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+
+  // setLayoutGateFailure() is sticky here; its hold timer must still release the visual gate.
+  chrome.runTimers(12000);
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+});
+
+test("a no-gate sticky failure reveals by pass, manual bypass, or timeout", async () => {
+  async function createFailedChrome() {
+    const chrome = await createChromeHarness({
+      artifactSrc: "/artifact/abc/index.html",
+      fakeClock: true,
+      sessionData: { ...defaultSessionData, layoutGateEnabled: false },
+      fetchImpl: async (url) => {
+        if (String(url) === "/health") throw new Error("connection refused");
+        return { ok: true, json: async () => ({}) };
+      },
+    });
+
+    assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+    chrome.eventSource().listeners.get("chrome-reload")();
+    await flushPromises();
+    chrome.advanceClock(61000);
+    for (let i = 0; i < 3; i += 1) {
+      chrome.runTimers(100);
+      await flushPromises();
+    }
+    assert.equal(chrome.element("layoutGateTitle").textContent, "Lavish is not running.");
+    assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+    return chrome;
+  }
+
+  const completed = await createFailedChrome();
+  completed.sendFrameMessage({
+    artifact_load_token: completed.artifactLoadToken(),
+    type: "lavish:layoutDiagnostics",
+    complete: true,
+    findings: [],
+  });
+  assert.equal(completed.element("layoutGateOverlay").hidden, true);
+
+  const bypassed = await createFailedChrome();
+  bypassed.element("layoutGateBypass").click();
+  assert.equal(bypassed.element("layoutGateOverlay").hidden, true);
+
+  const timedOut = await createFailedChrome();
+  timedOut.runTimers(12000);
+  assert.equal(timedOut.element("layoutGateOverlay").hidden, true);
+});
+
+test("a diagnostics network failure does not hold the visual gate", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).includes("/layout-diagnostics")) throw new Error("server replaced");
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: true, findings: [] });
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+});
+
+test("a layout pass lost to a token race requests a fresh pass", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  const oldToken = "stale-load-token";
+
+  chrome.sendFrameMessage({
+    artifact_load_token: oldToken,
+    type: "lavish:layoutDiagnostics",
+    complete: true,
+    findings: [],
+  });
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:requestLayoutDiagnostics");
 });
 
 function sendChromeOutdated(chrome, reason) {
@@ -3818,6 +4178,79 @@ test("chrome send and end during an in-flight submit still ends after the submit
   assert.equal(chrome.element("chatInput").disabled, true);
 });
 
+// #171: a tab left open across `lavish-axi end` (or the browser's own End in another tab) must go
+// visibly read-only the moment the server tells it, instead of leaving Send enabled for feedback
+// nobody will ever poll for.
+test("chrome goes read-only when the server forwards an ended SSE event (#171)", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+
+  chrome.element("panelHead").dispatch("click");
+  assert.equal(chrome.element("chatInput").disabled, false);
+  assert.equal(chrome.element("panelScroll").inert, false);
+  assert.equal(chrome.element("chatComposer").inert, false);
+  chrome.element("shareArtifact").onclick();
+  assert.equal(chrome.element("shareDialog").hidden, false);
+
+  chrome.eventSource().listeners.get("ended")({ data: JSON.stringify({ ended_by: "agent" }) });
+
+  assert.equal(chrome.element("chatInput").disabled, true);
+  assert.equal(chrome.element("annotation").disabled, true);
+  assert.equal(chrome.element("moreButton").disabled, true);
+  assert.equal(chrome.element("send").disabled, true);
+  assert.equal(chrome.element("sendAndEnd").disabled, true);
+  assert.equal(chrome.element("panelScroll").inert, true);
+  assert.equal(chrome.element("chatComposer").inert, true);
+  assert.equal(chrome.element("shareDialog").hidden, true);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+
+  chrome.setMobile(false);
+  assert.equal(chrome.element("panelScroll").inert, true);
+  assert.equal(chrome.element("chatComposer").inert, true);
+});
+
+// #171: a page loaded (or reloaded) after the session already ended has no future `ended` SSE
+// event to wait for - it must start read-only, not wait for a Send to be silently refused.
+test("chrome boots read-only when the session already ended before this page load (#171)", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialEnded: true, initialEndedBy: "user" },
+  });
+
+  assert.equal(chrome.element("chatInput").disabled, true);
+  assert.equal(chrome.element("annotation").disabled, true);
+  assert.equal(chrome.element("moreButton").disabled, true);
+  assert.equal(chrome.element("send").disabled, true);
+  assert.equal(chrome.element("sendAndEnd").disabled, true);
+  assert.equal(chrome.element("panelScroll").inert, true);
+  assert.equal(chrome.element("chatComposer").inert, true);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+});
+
+// #171: a race between this tab's own in-flight Send and a session end elsewhere must not leave
+// the queue looking sent when the server actually refused it.
+test("a queued Send refused because the session already ended marks the chrome read-only (#171)", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ status: "ended", error: "session already ended", ended_by: "agent" }),
+    }),
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Too late", selector: "button#ship", tag: "choice", text: "Ship" },
+  });
+  chrome.element("send").onclick();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("chatInput").disabled, true);
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+  // The rejected batch is not silently lost - it stays queued rather than looking delivered.
+  assert.equal(chrome.queued().length, 1);
+});
+
 test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of focus", async () => {
   const chrome = await createChromeHarness();
 
@@ -4759,4 +5192,215 @@ test("a load that recovers after the failure card retires it even when the gate 
   assert.match(chrome.frame.src, /artifact_load_token=/);
   assert.equal(chrome.element("layoutGateOverlay").hidden, true);
   assert.equal(chrome.element("layoutGateAction").textContent, "Show anyway");
+});
+
+// ---- Phone-width conversation sheet ----
+
+function sheetState(chrome) {
+  const toggle = chrome.element("panelToggle");
+  return {
+    open: chrome.element("body").classList.contains("sheet-open"),
+    scrollInert: Boolean(chrome.element("panelScroll").inert),
+    composerInert: Boolean(chrome.element("chatComposer").inert),
+    expanded: toggle["aria-expanded"],
+    label: toggle["aria-label"],
+    summary: chrome.element("panelSummary").textContent,
+    summaryClass: String(chrome.element("panelSummary").classList),
+    stored: chrome.storage.get("lavish-axi:sheet-open:abc") || null,
+  };
+}
+
+test("desktop chrome never turns the conversation panel into a sheet", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.deepEqual(chrome.mediaQueries, []);
+  const before = sheetState(chrome);
+  assert.equal(before.open, false);
+  assert.equal(before.scrollInert, false);
+  assert.equal(before.composerInert, false);
+
+  // The heading is plain text on desktop: clicking it must not start hiding the panel.
+  chrome.element("panelHead").dispatch("click", {});
+  const after = sheetState(chrome);
+  assert.equal(after.open, false);
+  assert.equal(after.scrollInert, false);
+  assert.equal(after.stored, null);
+});
+
+test("phone chrome boots with the conversation docked and raises it on tap", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+
+  assert.equal(chrome.mediaQueries.length, 1);
+  assert.match(chrome.mediaQueries[0].media, /max-width/);
+  const docked = sheetState(chrome);
+  assert.equal(docked.open, false);
+  // The hidden part of the sheet must be unreachable: a focus landing in the off-screen
+  // composer would scroll the page into a state the layout cannot recover from.
+  assert.equal(docked.scrollInert, true);
+  assert.equal(docked.composerInert, true);
+  assert.equal(docked.expanded, "false");
+  assert.equal(docked.label, "Show conversation");
+
+  chrome.element("panelHead").dispatch("click", {});
+  const raised = sheetState(chrome);
+  assert.equal(raised.open, true);
+  assert.equal(raised.scrollInert, false);
+  assert.equal(raised.composerInert, false);
+  assert.equal(raised.expanded, "true");
+  assert.equal(raised.label, "Hide conversation");
+  assert.equal(raised.stored, "1");
+
+  // The scrim behind the sheet is a tap-to-dismiss surface.
+  chrome.element("panelScrim").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, false);
+  assert.equal(sheetState(chrome).stored, null);
+
+  // Escape also lowers it, after the menus and dialogs that sit above it have had their turn.
+  chrome.element("panelToggle").dispatch("click", {});
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+  chrome.dispatchDocumentKeydown({ key: "Escape" });
+  assert.equal(sheetState(chrome).open, false);
+});
+
+test("phone chrome restores an open sheet across a chrome reload", async () => {
+  const storage = new Map([["lavish-axi:sheet-open:abc", "1"]]);
+  const chrome = await createChromeHarness({ mobile: true, storage });
+
+  const state = sheetState(chrome);
+  assert.equal(state.open, true);
+  assert.equal(state.scrollInert, false);
+  assert.equal(state.expanded, "true");
+});
+
+test("the dock summarizes what the user should know while the sheet is down", async () => {
+  const chrome = await createChromeHarness({
+    mobile: true,
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+
+  assert.equal(sheetState(chrome).summary, "Agent not listening");
+
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  assert.equal(sheetState(chrome).summary, "Agent listening");
+
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
+  assert.equal(sheetState(chrome).summary, "Agent is working…");
+
+  // A reply that lands behind the artifact is previewed on the dock until the sheet comes up.
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Renamed the payment step." }) });
+  let state = sheetState(chrome);
+  assert.equal(state.summary, "Renamed the payment step.");
+  assert.match(state.summaryClass, /is-unread/);
+
+  // Work the user queued from the artifact outranks the unread preview: it is the thing they
+  // still have to send.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  state = sheetState(chrome);
+  assert.equal(state.summary, "1 queued");
+  assert.match(state.summaryClass, /is-accent/);
+  assert.doesNotMatch(state.summaryClass, /is-unread/);
+  assert.match(String(chrome.element("panelHead").classList), /is-fresh/);
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Drop the map preview", selector: "p", tag: "element", text: "Autofill" },
+  });
+  assert.equal(sheetState(chrome).summary, "2 queued");
+
+  // Raising the sheet shows the reply itself, so the preview is no longer owed; once the queue
+  // is sent the dock is back to reporting the agent.
+  chrome.element("panelHead").dispatch("click", {});
+  chrome.element("send").click();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(sheetState(chrome).summary, "Agent is working…");
+  assert.doesNotMatch(sheetState(chrome).summaryClass, /is-unread/);
+
+  // A reply that arrives while the sheet is up was seen, so lowering it previews nothing.
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Done." }) });
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).summary, "Agent is working…");
+});
+
+test("the dock reports an ended session", async () => {
+  const chrome = await createChromeHarness({
+    mobile: true,
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+
+  chrome.element("chatInput").value = "Ship it";
+  chrome.element("sendAndEnd").click();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.element("sendAndEnd").disabled, true, "the session ended");
+  assert.equal(sheetState(chrome).summary, "Session ended");
+});
+
+test("a swipe on the dock raises and lowers the sheet, and a tap after a swipe is not a second toggle", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+
+  // Upward travel past the threshold raises it; the click that ends the gesture is swallowed.
+  chrome.dragDock(800, 700);
+  assert.equal(sheetState(chrome).open, true);
+
+  // A nudge short of the threshold is not a decision either way.
+  chrome.dragDock(100, 130, { pointerId: 2 });
+  assert.equal(sheetState(chrome).open, true);
+
+  chrome.dragDock(100, 220, { pointerId: 3 });
+  assert.equal(sheetState(chrome).open, false);
+
+  // A pure tap (no travel) still toggles.
+  chrome.dragDock(300, 300, { pointerId: 4 });
+  assert.equal(sheetState(chrome).open, true);
+
+  // Nothing the gesture set on the panel survives its end.
+  const panel = chrome.element("panel");
+  assert.equal(panel.style.transform, "");
+  assert.equal(panel.classList.contains("is-dragging"), false);
+});
+
+test("a cancelled dock swipe leaves the sheet unchanged and the next tap active", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  const panel = chrome.element("panel");
+
+  chrome.cancelDock(800, 790, 0);
+
+  assert.equal(sheetState(chrome).open, false);
+  assert.equal(panel.style.transform, "");
+  assert.equal(panel.classList.contains("is-dragging"), false);
+
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+});
+
+test("crossing the breakpoint in either direction leaves no sheet state behind", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+  assert.equal(chrome.storage.get("lavish-axi:sheet-open:abc"), "1");
+
+  // Widening to desktop: the panel is a plain side panel again, never inert, never "open".
+  chrome.setMobile(false);
+  let state = sheetState(chrome);
+  assert.equal(state.open, false);
+  assert.equal(state.scrollInert, false);
+  assert.equal(state.composerInert, false);
+  assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
+
+  // Narrowing back docks it again and moves focus out of the content becoming inert.
+  chrome.element("chatInput").focus();
+  chrome.setMobile(true);
+  state = sheetState(chrome);
+  assert.equal(state.open, false);
+  assert.equal(state.scrollInert, true);
+  assert.equal(chrome.focusLog.at(-1), "panelToggle");
+  assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
 });

@@ -1,6 +1,3 @@
-import { POLL_SEND_AND_END_RULE, POLL_WAKE_PATH_RULES, createHomeOutput } from "./cli.js";
-import { PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
-
 // Trigger string Claude Code (and other agents) match against to auto-load the skill.
 // Kept terse and outcome-focused so it fires on "about to show something visual" intents.
 export const SKILL_DESCRIPTION =
@@ -8,13 +5,9 @@ export const SKILL_DESCRIPTION =
   "annotate and send feedback on, using the lavish-axi CLI. Use when about to give a plan, " +
   "comparison, diagram, table, code diff, report, or anything easier to grasp visually than as prose.";
 
-function bullets(items) {
-  return items.map((item) => `- ${item}`).join("\n");
-}
-
-function playbookList(playbooks) {
-  return playbooks.map((p) => `- \`${p.id}\` - ${p.use_when}`).join("\n");
-}
+// Hard cap so a future regeneration cannot silently re-inflate the stub with CLI-owned
+// instructions. The CLI (`lavish-axi --help`, `design`, `playbook`) is the source of truth.
+export const MAX_SKILL_MARKDOWN_CHARS = 4000;
 
 // Agent Skills allows only these top-level frontmatter keys; the reference validator
 // (skills-ref) rejects anything else outright, and an Agent Plugins client skips a skill
@@ -27,26 +20,29 @@ export const ALLOWED_SKILL_FRONTMATTER_KEYS = Object.freeze([
   "metadata",
   "name",
 ]);
+
 /**
- * Render the installable SKILL.md for the lavish skill. The body mirrors what
- * `lavish-axi` prints with no arguments (minus live session state), while the
- * frontmatter stays within the Agent Skills standard for shared harnesses.
+ * Render the installable SKILL.md for the lavish skill.
+ *
+ * This is a discovery stub, not a copy of CLI guidance. Installed skills go stale;
+ * `lavish-axi --help`, `lavish-axi design`, and `lavish-axi playbook <id>` do not.
+ * Keep the body to what Lavish is, when to reach for it, how to invoke the CLI,
+ * slash-command request handling, and pointers at those commands.
  *
  * The frontmatter is deliberately plain: block-style YAML only (the reference
- * validator rejects `[a, b]` flow collections) and string-valued `metadata`.
+ * validator rejects `[a, b]` flow collections) and string-valued `metadata`,
+ * which is why the Hermes fields are flattened rather than nested.
  *
  * @returns {string} full SKILL.md contents including YAML frontmatter
  */
 export function createSkillMarkdown() {
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [], includeSessions: false, agent: "static" });
-
-  return `---
+  const markdown = `---
 name: lavish
 description: ${SKILL_DESCRIPTION}
 license: MIT
 metadata:
-  argument-hint: <what the artifact should show>
   author: Kun Chen (kunchenguid)
+  argument-hint: <what the artifact should show>
   hermes-tags: html, review, artifacts, visualization
   hermes-category: productivity
   upstream: https://github.com/kunchenguid/lavish-axi
@@ -54,54 +50,36 @@ metadata:
 
 # Lavish Editor
 
-${home.description}
+Lavish Editor opens agent-generated HTML in the browser so a human can annotate it and send feedback back to the agent.
+Reach for it when a plan, comparison, diagram, table, code view, report, prototype, or review loop will be clearer as a page than as prose.
 
-Use the \`lavish-axi\` command available on PATH. A managed environment may provide this command as a pinned wrapper around a reviewed package version.
+## Current guidance lives in the CLI
+
+Do not follow workflow, design, or playbook instructions from this file - installed copies go stale. Get the current source of truth from the CLI:
+
+- \`lavish-axi --help\` for commands and the review-loop workflow
+- \`lavish-axi design\` for design-direction priority and current snippets
+- \`lavish-axi playbook <id>\` for focused artifact guidance (\`lavish-axi playbook\` lists ids)
+
+Use the \`lavish-axi\` command available on PATH. A managed environment may provide it as a pinned wrapper around a reviewed package version.
 If \`lavish-axi\` is missing, stop and tell the user the local Lavish CLI is not installed; do not fall back to \`npx -y lavish-axi\` unless the user explicitly asks to run an unpinned package.
+Open an artifact with \`lavish-axi <html-file>\` and follow the CLI's returned instructions.
 
 ## Request
 
 $ARGUMENTS
 
-If the request above is non-empty, the user invoked \`/lavish\` explicitly - build an HTML artifact for that request now, following the workflow below.
+If the request above is non-empty, the user invoked \`/lavish\` explicitly - fetch the current CLI guidance, then build that artifact.
 If it is empty, infer what to visualize from the conversation.
-
-## When to use
-
-${home.help[home.help.length - 1]}
-
-## Workflow
-
-1. Create the HTML artifact (default location \`.lavish/<name>.html\` in the working directory).
-2. Run \`lavish-axi <html-file>\` to open or resume a review session in the browser.
-   If the output carries a \`self_paint_warning\`, fix the unpainted page surface and save before polling - Lavish live-reloads the artifact.
-3. Run \`lavish-axi poll <html-file>\` to long-poll for the user's annotations and queued prompts.
-   On the first poll, prefer \`--agent-reply "<one-line summary of what you built and what to review first>"\` so the conversation panel opens with context.
-   Browser-detected layout issues are filed passively in the user's Layout issues inbox and arrive as an ordinary \`layout-warnings\` prompt only when the user selects and queues them. Never edit an issue the user has not queued. The only response that arrives without user action is \`artifact_failures\`, when the review surface itself is unusable.
-   The poll stays silent until the user acts or a fatal artifact failure makes the review surface unusable - leave it running, never kill it.
-   Cosmetic, intentional, transient, tiny, and uncertain observations remain silent.
-${POLL_WAKE_PATH_RULES.map((rule) => `   ${rule}`).join("\n")}
-4. If poll returns feedback, apply the user's prompts. A \`layout-warnings\` prompt is an explicit repair request; apply every listed fix in one pass before saving, and let Lavish re-check it after a newer artifact load.
-5. Apply human feedback, then poll again with \`--agent-reply "<message>"\` to reply in the browser and keep the loop going under the same foreground-or-verified-wake-path rule.
-6. Run \`lavish-axi end <html-file>\` when the review is finished.
-7. ${POLL_SEND_AND_END_RULE} Deliver any remaining updates directly in this conversation.
-
-## Visual guidance
-
-${bullets(home.visual_guidance)}
-
-## Playbooks
-
-Run \`lavish-axi playbook <id>\` for focused, detailed guidance on any of these.
-${PLAYBOOK_ROUTER_HELP}
-For flows, architecture, state, or sequence diagrams, do not hand-build boxes-and-arrows from div/flexbox; open the diagram playbook and use the theme-aware Mermaid snippet from \`lavish-axi design\` unless SVG is needed for richly annotated nodes.
-
-${playbookList(home.playbooks)}
-
-## Commands & rules
-
-${bullets(home.help)}
 `;
+
+  if (markdown.length > MAX_SKILL_MARKDOWN_CHARS) {
+    throw new Error(
+      `generated SKILL.md is ${markdown.length} chars; keep it a stub under ${MAX_SKILL_MARKDOWN_CHARS} and defer guidance to the CLI`,
+    );
+  }
+
+  return markdown;
 }
 
 /**

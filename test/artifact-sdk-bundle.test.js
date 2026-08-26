@@ -104,7 +104,7 @@ function cell(tag, text) {
   return element;
 }
 
-function bootSdk() {
+function bootSdk({ runAnimationFrames = false } = {}) {
   const posted = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
@@ -144,7 +144,7 @@ function bootSdk() {
     getComputedStyle: () => ({}),
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
-    requestAnimationFrame: () => 0,
+    requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
     document: {
       readyState: "complete",
       documentElement,
@@ -167,7 +167,7 @@ function bootSdk() {
     removeEventListener() {},
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
-    requestAnimationFrame: () => 0,
+    requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
     innerWidth: 1280,
     innerHeight: 800,
     scrollX: 0,
@@ -196,6 +196,22 @@ function bootSdk() {
       for (const timer of pending) {
         if (!timer.cancelled) timer.fn();
       }
+    },
+    async runAllTimers() {
+      for (let round = 0; round < 100; round += 1) {
+        await Promise.resolve();
+        await Promise.resolve();
+        const pending = timers.splice(0, timers.length);
+        if (pending.length === 0) {
+          await Promise.resolve();
+          if (timers.length === 0) return;
+          continue;
+        }
+        for (const timer of pending) {
+          if (!timer.cancelled) timer.fn();
+        }
+      }
+      assert.fail("the SDK timer queue did not settle");
     },
     // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
     sendChromeMessage(data) {
@@ -237,6 +253,21 @@ function buildTable(sdk) {
   const badge = appendTo(evidence, cell("code", "Drive"));
   return { evidence, badge };
 }
+
+test("a requested layout diagnostic publishes even when the result is unchanged", async () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+
+  await sdk.runAllTimers();
+  const first = sdk.posted.filter((message) => message.type === "lavish:layoutDiagnostics");
+  assert.equal(first.length, 1);
+
+  sdk.sendChromeMessage({ type: "lavish:requestLayoutDiagnostics" });
+  await sdk.runAllTimers();
+  const diagnostics = sdk.posted.filter((message) => message.type === "lavish:layoutDiagnostics");
+  assert.equal(diagnostics.length, 2);
+  assert.equal(diagnostics[1].artifact_pass_sequence, diagnostics[0].artifact_pass_sequence + 1);
+  assert.deepEqual(diagnostics[1].findings, diagnostics[0].findings);
+});
 
 test("the served SDK bundle queues a table-cell annotation without a missing-helper ReferenceError", () => {
   const sdk = bootSdk();
@@ -311,6 +342,72 @@ test("the served SDK bundle annotates elements outside tables with no table targ
 
   assert.equal(message.prompt.tag, "p");
   assert.equal(message.prompt.target, undefined);
+});
+
+// closeCard() clears the element highlight, so that highlight standing or gone is the observable proof of close.
+function pressEscape(textarea) {
+  const listener = textarea.listeners.find((entry) => entry.type === "keydown");
+  assert.ok(listener, "the annotation textarea registers a keydown listener");
+  listener.handler({ key: "Escape", preventDefault() {} });
+}
+
+test("Escape closes an annotation card with no text and no attachment", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.click(paragraph);
+  const textarea = sdk.card().querySelector("textarea");
+  textarea.value = "   "; // whitespace-only counts as empty
+  pressEscape(textarea);
+
+  assert.equal(paragraph.style.outline, "", "the highlight is cleared, proving the card closed");
+});
+
+test("Escape during IME composition leaves an empty annotation card open", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.click(paragraph);
+  const textarea = sdk.card().querySelector("textarea");
+  const listener = textarea.listeners.find((entry) => entry.type === "keydown");
+  listener.handler({ key: "Escape", isComposing: true, preventDefault() {} });
+
+  assert.notEqual(paragraph.style.outline, "", "a composing Escape belongs to the IME, not the card");
+});
+
+test("Escape leaves an annotation card with typed text open and untouched", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.click(paragraph);
+  const textarea = sdk.card().querySelector("textarea");
+  textarea.value = "keep this note";
+  pressEscape(textarea);
+
+  assert.notEqual(paragraph.style.outline, "", "the card is still open, so the highlight remains");
+  assert.equal(textarea.value, "keep this note", "Escape never discards the typed text");
+});
+
+test("Escape leaves an annotation card with an in-flight attachment open, even with no text", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.click(paragraph);
+  const card = sdk.card();
+  const attachInput = card.querySelector(".lavish-attach-input");
+  // Never resolves - only the synchronous "uploading" status addFiles sets is needed here.
+  attachInput.files = [{ name: "shot.png", type: "image/png", size: 10, arrayBuffer: () => new Promise(() => {}) }];
+  const changeListener = attachInput.listeners.find((entry) => entry.type === "change");
+  assert.ok(changeListener, "the attach input registers a change listener");
+  changeListener.handler();
+
+  pressEscape(card.querySelector("textarea"));
+
+  assert.notEqual(
+    paragraph.style.outline,
+    "",
+    "an attachment mid-upload is unsent content, so Escape must not close the card",
+  );
 });
 
 // The chrome cannot see into this document, so a draft whose anchor is gone is only ever retired

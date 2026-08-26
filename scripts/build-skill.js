@@ -1,5 +1,5 @@
-// Generates skills/lavish/SKILL.md from the shared no-args home output so the
-// installable skill never drifts from what `lavish-axi` (and the SessionStart hook) print.
+// Generates skills/lavish/SKILL.md from createSkillMarkdown() so the committed
+// stub cannot drift from the generator. The stub defers to the CLI for guidance.
 //
 //   node scripts/build-skill.js          # write the file
 //   node scripts/build-skill.js --check  # fail (exit 1) if the committed file is stale

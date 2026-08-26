@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { homedir, networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
@@ -15,6 +15,7 @@ import {
   allowsAllHosts,
   buildAllowedHostnames,
   CHROME_BOOT_FAILSAFE_MS,
+  CHROME_LAYOUT_GATE_MAX_HOLD_MS,
   createChromeHtml,
   createSdkJs,
   displayPathParts,
@@ -122,6 +123,42 @@ async function startPresenceStream(base, key) {
   };
 }
 
+// A generic version of startPresenceStream for events other than agent-presence, such as `ended`.
+async function startEventStream(base, key, eventName) {
+  const controller = new AbortController();
+  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const pattern = new RegExp(`^event: ${eventName}\\ndata: (.+)\\n\\n`, "m");
+
+  return {
+    async next() {
+      const deadline = Date.now() + 2000;
+      while (true) {
+        const match = buffer.match(pattern);
+        if (match) {
+          buffer = buffer.replace(match[0], "");
+          return JSON.parse(match[1]);
+        }
+        const remaining = Math.max(1, deadline - Date.now());
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`timed out waiting for a ${eventName} event`)), remaining),
+          ),
+        ]);
+        if (done) throw new Error(`${eventName} stream closed before the event arrived`);
+        buffer += decoder.decode(value, { stream: true });
+      }
+    },
+    async close() {
+      controller.abort();
+      await reader.cancel().catch(() => {});
+    },
+  };
+}
+
 test("server delegates artifact SDK generation to a dedicated source module", async () => {
   const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
 
@@ -160,8 +197,8 @@ function parseChromeElements(html) {
 // really serves, so the assertions below are about what the shipped script does rather than what
 // it says - and an id the page stopped declaring makes the script a no-op here exactly as it
 // would in a browser.
-function bootChromeFailsafe(options = {}) {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, options);
+function bootChromeFailsafe(options = {}, session = {}) {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html", ...session }, options);
   const inline = html.match(/<script>([\s\S]*?)<\/script>\s*<script src="\/chrome-client\.js"/);
   assert.ok(inline, "the chrome page must inline a boot failsafe before its client script");
 
@@ -185,7 +222,12 @@ function bootChromeFailsafe(options = {}) {
       return serverRunning ? Promise.resolve({ ok: true }) : Promise.reject(new Error("connection refused"));
     },
     document: {
-      body: { classList: { add: (name) => bodyClasses.add(name) } },
+      body: {
+        classList: {
+          add: (name) => bodyClasses.add(name),
+          remove: (name) => bodyClasses.delete(name),
+        },
+      },
       getElementById(id) {
         return elements.get(id) || null;
       },
@@ -218,7 +260,8 @@ function bootChromeFailsafe(options = {}) {
     bodyClasses,
     pendingDelays: () => [...timers.values()].map((timer) => timer.ms),
     runTimers() {
-      for (const [id, timer] of [...timers]) {
+      for (const [id, timer] of [...timers].sort((left, right) => left[1].ms - right[1].ms)) {
+        if (!timers.has(id)) continue;
         timers.delete(id);
         timer.fn();
       }
@@ -244,7 +287,10 @@ test("the chrome boot failsafe turns the layout gate into a reloadable failure w
   assert.ok(failsafeIndex > -1);
   assert.ok(scriptIndex > failsafeIndex);
 
-  assert.deepEqual(boot.pendingDelays(), [CHROME_BOOT_FAILSAFE_MS]);
+  assert.deepEqual(
+    boot.pendingDelays().sort((left, right) => left - right),
+    [CHROME_LAYOUT_GATE_MAX_HOLD_MS, CHROME_BOOT_FAILSAFE_MS],
+  );
   assert.match(boot.element("layoutGateTitle").textContent, /Checking layout/);
 
   boot.runTimers();
@@ -259,6 +305,43 @@ test("the chrome boot failsafe turns the layout gate into a reloadable failure w
   boot.element("layoutGateAction").onclick();
   await flushMicrotasks();
   assert.equal(boot.reloadCount(), 1);
+});
+
+test("the chrome boot failsafe Show anyway reveals without a server", () => {
+  const boot = bootChromeFailsafe();
+
+  boot.runTimers();
+  assert.equal(boot.element("layoutGateOverlay").hidden, false);
+  assert.equal(boot.element("layoutGateBypass").hidden, false);
+
+  boot.element("layoutGateBypass").onclick();
+  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.bodyClasses.has("layout-gate-active"), false);
+});
+
+test("the chrome boot failsafe failure card reveals after a bounded timeout", () => {
+  const boot = bootChromeFailsafe();
+
+  boot.runTimers();
+  assert.equal(boot.element("layoutGateOverlay").hidden, false);
+  assert.deepEqual(boot.pendingDelays(), [CHROME_LAYOUT_GATE_MAX_HOLD_MS]);
+
+  boot.runTimers();
+  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.bodyClasses.has("layout-gate-active"), false);
+});
+
+test("the chrome boot failsafe preserves the ended-session guard", () => {
+  const boot = bootChromeFailsafe({}, { status: "ended", ended_by: "user" });
+
+  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.element("endedOverlay").hidden, false);
+  assert.equal(boot.element("layoutGateAction").onclick, null);
+  assert.deepEqual(boot.pendingDelays(), [CHROME_BOOT_FAILSAFE_MS]);
+
+  boot.runTimers();
+  assert.equal(boot.element("layoutGateOverlay").hidden, true);
+  assert.equal(boot.element("endedOverlay").hidden, false);
 });
 
 test("the chrome boot failsafe reveals a gate the page shipped hidden", () => {
@@ -279,7 +362,7 @@ test("the chrome client cancels the boot failsafe once it has run", () => {
   boot.context.window.__lavishChromeReady = true;
   boot.context.window.__lavishCancelChromeBootFailsafe();
 
-  assert.deepEqual(boot.pendingDelays(), [], "a cancelled failsafe leaves no timer behind");
+  assert.deepEqual(boot.pendingDelays(), [CHROME_LAYOUT_GATE_MAX_HOLD_MS]);
   boot.runTimers();
   assert.equal(boot.element("layoutGateAction").textContent, "Show anyway");
   assert.equal(boot.element("layoutGateCopy").textContent, gateCopy);
@@ -307,7 +390,7 @@ test("a chrome client script that fails to load raises the failure card immediat
   assert.equal(boot.element("layoutGateOverlay").hidden, false);
   assert.match(boot.element("layoutGateTitle").textContent, /could not finish loading/);
   assert.equal(boot.element("layoutGateAction").textContent, "Check and reload");
-  assert.deepEqual(boot.pendingDelays(), [], "the immediate failure retires the pending timer");
+  assert.deepEqual(boot.pendingDelays(), [CHROME_LAYOUT_GATE_MAX_HOLD_MS]);
 });
 
 // The failsafe's own copy says the server most likely went away between serving this page and
@@ -771,12 +854,24 @@ test("chrome uses the annotation outline as the keyboard focus outline", async (
   assert.match(css, /--annotate-offset:2px/);
 });
 
-test("chrome keeps the editor usable on narrow screens", async () => {
-  const css = await chromeCssSource();
+test("chrome page ships the phone conversation dock and the viewport contract it relies on", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
-  assert.match(css, /@media \(max-width:860px\)/);
-  assert.match(css, /grid-template-columns:1fr/);
-  assert.match(css, /grid-template-rows:minmax\(0,1fr\) min\(42vh,360px\)/);
+  // Safe-area insets are zero unless the page opts into the full screen, and an on-screen
+  // keyboard covers a bottom-anchored composer on Android unless the layout viewport resizes.
+  const viewport = html.match(/<meta name="viewport" content="([^"]+)">/)?.[1] || "";
+  assert.match(viewport, /\bviewport-fit=cover\b/);
+  assert.match(viewport, /\binteractive-widget=resizes-content\b/);
+
+  // The dock is a real disclosure control: a labelled button with expanded state over the
+  // panel it reveals, a live summary, and a scrim the sheet rises over.
+  assert.match(html, /<aside class="panel" id="panel">/);
+  assert.match(html, /<div class="panel-scrim" id="panelScrim"><\/div>/);
+  assert.match(
+    html,
+    /<button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">/,
+  );
+  assert.match(html, /<span class="panel-summary" id="panelSummary" role="status" aria-live="polite"><\/span>/);
 });
 
 test("chrome top bar follows the design mock wordmark and overflow menu treatment", async () => {
@@ -899,8 +994,41 @@ test("overflow menu offers publishing an ht-ml.app link via a share dialog", asy
   assert.match(js, /const shareArtifactButton/);
   assert.match(js, /async function publishShare/);
   assert.match(js, /fetch\("\/api\/" \+ key \+ "\/share"/);
-  assert.match(js, /shareUrlInput\.value = data\.url/);
-  assert.match(js, /shareUpdateKeyInput\.value = data\.update_key/);
+  // What the client DOES with data.url/data.update_key is asserted by driving a real publish in
+  // test/chrome-client-queue.test.js, including the retry-after-failure path; matching the
+  // assignment lines here only pinned one spelling of it.
+  assert.match(html, /id="shareGenerate"/);
+  assert.match(html, /id="sharePasswordResult"/);
+});
+
+test("the share dialog hands back the site id alongside the update key it tells the user to keep", async () => {
+  // The dialog's own copy points at `share --site <id> --update-key <key>`, so withholding the
+  // site id would leave guessing it out of the URL as the user's only route.
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /id="shareSiteIdResult"[^>]*\shidden/);
+  assert.match(html, /id="shareSiteId" readonly/);
+  assert.match(html, /id="copyShareSiteId"/);
+  // A plain republish deliberately leaves the password alone, so the dialog must not offer that
+  // command as a way to lock a page - only --private sets one.
+  assert.match(
+    html,
+    /Republish this page&#39;s HTML with <code>lavish-axi share &lt;file&gt; --site &lt;site id&gt; --update-key &lt;key&gt;<\/code>/,
+  );
+  assert.match(html, /add <code>--private<\/code> to also lock it/);
+  assert.doesNotMatch(html, /Republish or lock this page/);
+
+  // Order is part of the contract: URL, then the site id, then the secret.
+  const order = ['id="shareUrl"', 'id="shareSiteId"', 'id="shareUpdateKey"'].map((id) => html.indexOf(id));
+  assert.ok(
+    order.every((index) => index >= 0),
+    "every share result field must render",
+  );
+  assert.deepEqual(
+    order,
+    [...order].sort((a, b) => a - b),
+    "site id must sit between the URL and the update key",
+  );
 });
 
 test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
@@ -1278,7 +1406,12 @@ test("session URLs use the same IPv4 loopback host the server binds", async () =
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    detectTailscale: async () => null,
+  });
   try {
     const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       method: "POST",
@@ -1294,6 +1427,337 @@ test("session URLs use the same IPv4 loopback host the server binds", async () =
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+function availableConcreteIpv4() {
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family === "IPv4" && !entry.internal && entry.address !== "127.0.0.1") return entry.address;
+    }
+  }
+  return null;
+}
+
+test("resolved all-interfaces aliases are rejected before listening", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-wildcard-alias-"));
+  try {
+    for (const alias of ["0", "0x00000000"]) {
+      await assert.rejects(
+        () =>
+          serve({
+            port: 0,
+            stateFile: path.join(dir, `${alias}.json`),
+            version: "9.9.9-test",
+            env: { LAVISH_AXI_HOST: alias },
+            detectTailscale: async () => null,
+            lookupHost: async () => [{ address: "0.0.0.0", family: 4 }],
+            idleTimeoutMs: null,
+          }),
+        /all-interfaces address/,
+      );
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an explicit bind host overrides opted-in Tailscale detection", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-explicit-host-"));
+  let detections = 0;
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: { LAVISH_AXI_HOST: "127.0.0.1", LAVISH_AXI_TAILSCALE: "1" },
+    detectTailscale: async () => {
+      detections += 1;
+      return { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" };
+    },
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.equal(detections, 0);
+    assert.deepEqual(server.hosts, ["127.0.0.1"]);
+    const health = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json());
+    assert.equal(health.network_warning, undefined);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Tailscale phone access stays disabled until the operator opts in", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-opt-in-"));
+  let detections = 0;
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: {},
+    detectTailscale: async () => {
+      detections += 1;
+      return { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" };
+    },
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.equal(detections, 0);
+    assert.deepEqual(server.hosts, ["127.0.0.1"]);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a down Tailscale detector keeps the server loopback-only without a phone link", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-no-tailscale-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: { LAVISH_AXI_TAILSCALE: "1" },
+    detectTailscale: async () => null,
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.deepEqual(
+      server.addresses.map((address) => address.address),
+      ["127.0.0.1"],
+    );
+    const opened = await rawRequest(server.port, "/api/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.match(JSON.parse(opened.body).url, new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/session/`));
+    const rejected = await rawRequest(server.port, "/health", {
+      host: `attacker.example:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(rejected.status, 403);
+    assert.match(rejected.body, /Open the working URL below on this computer/);
+    assert.match(rejected.body, /Phone access is unavailable/);
+    assert.doesNotMatch(rejected.body, /phone through Tailscale/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("network reconciliation coalesces concurrent checks and briefly caches the result", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-reconcile-"));
+  let detected = null;
+  let detectionCalls = 0;
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: { LAVISH_AXI_TAILSCALE: "1" },
+    detectTailscale: async () => {
+      detectionCalls += 1;
+      if (detectionCalls > 1) await new Promise((resolve) => setTimeout(resolve, 30));
+      return detected;
+    },
+    idleTimeoutMs: null,
+  });
+  try {
+    detected = {
+      ipv4: null,
+      magicDnsName: null,
+      warning: "Tailscale is running but MagicDNS is unavailable; there is no phone access.",
+    };
+    const ordinary = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json());
+    assert.equal(ordinary.network_stale, undefined);
+    const checks = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) => response.json()),
+      ),
+    );
+    assert.ok(checks.every((body) => body.network_stale === true));
+    assert.ok(checks.every((body) => body.network_warning.includes("MagicDNS is unavailable")));
+    assert.equal(detectionCalls, 2);
+    const cached = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+      response.json(),
+    );
+    assert.equal(cached.network_stale, true);
+    assert.match(cached.network_warning, /MagicDNS is unavailable/);
+    assert.equal(detectionCalls, 2);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reconciliation distinguishes incomplete Tailscale from down state", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-incomplete-"));
+  /** @type {any} */
+  let detected = {
+    ipv4: null,
+    magicDnsName: null,
+    warning: "Tailscale is running but MagicDNS is unavailable; there is no phone access.",
+  };
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: { LAVISH_AXI_TAILSCALE: "1" },
+    detectTailscale: async () => detected,
+    log: () => {},
+    idleTimeoutMs: null,
+  });
+  try {
+    detected = null;
+    const health = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+      response.json(),
+    );
+    assert.equal(health.network_stale, true);
+    assert.equal(health.network_warning, undefined);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed Tailscale listener warns and falls back without advertising MagicDNS", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-bind-fallback-"));
+  const artifact = path.join(dir, "artifact.html");
+  const logs = [];
+  await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: { LAVISH_AXI_TAILSCALE: "1" },
+    detectTailscale: async () => ({ ipv4: "192.0.2.1", magicDnsName: "unreachable.tailnet.ts.net" }),
+    log: (line) => logs.push(line),
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.deepEqual(server.hosts, ["127.0.0.1"]);
+    assert.ok(logs.some((line) => line.includes("Tailscale binding failed") && line.includes("no phone access")));
+    const opened = await rawRequest(server.port, "/api/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const openedBody = JSON.parse(opened.body);
+    assert.match(openedBody.url, new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/session/`));
+    assert.match(openedBody.network_warning, /Tailscale binding failed.*no phone access/);
+    const staleHost = await rawRequest(server.port, "/health", {
+      host: `unreachable.tailnet.ts.net:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(staleHost.status, 403);
+    assert.match(staleHost.body, /Phone access is unavailable/);
+    assert.doesNotMatch(staleHost.body, /phone through Tailscale/);
+    const reconciliation = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+      response.json(),
+    );
+    assert.equal(reconciliation.network_stale, undefined);
+    assert.match(reconciliation.network_warning, /Tailscale binding failed.*no phone access/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Tailscale mode binds concrete listeners, serves the MagicDNS link, and tears down every listener", async (t) => {
+  const tailscaleIpv4 = availableConcreteIpv4();
+  if (!tailscaleIpv4) {
+    t.skip("host has no non-loopback IPv4 address for the second listener");
+    return;
+  }
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-tailscale-"));
+  const magicDnsName = "review-phone.example.ts.net";
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: { LAVISH_AXI_TAILSCALE: "1" },
+    detectTailscale: async () => ({ ipv4: tailscaleIpv4, magicDnsName }),
+    idleTimeoutMs: null,
+  });
+  try {
+    assert.deepEqual(
+      server.addresses.map((address) => address.address),
+      ["127.0.0.1", tailscaleIpv4],
+    );
+    assert.ok(server.addresses.every((address) => address.address !== "0.0.0.0"));
+
+    const health = await rawRequest(server.port, "/health", { host: `${tailscaleIpv4}:${server.port}` });
+    assert.equal(health.status, 200);
+    const magicDnsHealth = await rawRequest(server.port, "/health", { host: `${magicDnsName}:${server.port}` });
+    assert.equal(magicDnsHealth.status, 200);
+    const rejected = await rawRequest(server.port, "/health", {
+      host: `attacker.example:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(rejected.status, 403);
+    assert.match(rejected.body, new RegExp(`http://${magicDnsName}:${server.port}/`));
+    assert.match(rejected.body, /phone through Tailscale/);
+    assert.doesNotMatch(rejected.body, /Phone access is unavailable/);
+    assert.doesNotMatch(rejected.body, /forbidden host/);
+
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+    const opened = await rawRequest(server.port, "/api/sessions", {
+      method: "POST",
+      host: `${tailscaleIpv4}:${server.port}`,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const openedBody = JSON.parse(opened.body);
+    assert.match(openedBody.url, new RegExp(`^http://${magicDnsName}:${server.port}/session/`));
+
+    const missing = await rawRequest(server.port, "/session/0000000000000000", {
+      host: `${magicDnsName}:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(missing.status, 404);
+    assert.match(missing.body, new RegExp(`http://${magicDnsName}:${server.port}/`));
+    assert.doesNotMatch(missing.body, /Session not found$/);
+    const landing = await rawRequest(server.port, "/", {
+      host: `${magicDnsName}:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(landing.status, 200);
+    assert.match(landing.body, /Lavish Editor is running/);
+
+    const shutdown = await rawRequest(server.port, "/shutdown", {
+      method: "POST",
+      host: `${tailscaleIpv4}:${server.port}`,
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(shutdown.status, 200);
+    await server.done;
+    for (const address of server.addresses) {
+      await assert.doesNotReject(() => connectTo(address.address, address.port));
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function connectTo(host, port) {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect({ host, port });
+    socket.setTimeout(1000, () => {
+      socket.destroy();
+      resolve(new Error(`connection attempt timed out at ${host}:${port}`));
+    });
+    socket.once("connect", () => {
+      socket.destroy();
+      reject(new Error(`listener still open at ${host}:${port}`));
+    });
+    socket.once("error", (error) => {
+      socket.destroy();
+      resolve(error);
+    });
+  });
+}
 
 test("session URLs use the configured linkHost while binding to loopback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
@@ -3171,6 +3635,208 @@ test("POST /api/:key/share publishes the local-inlined artifact to ht-ml.app", a
   }
 });
 
+test("POST /api/:key/share generates a password on request and hands it back once", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Ship</h1></body></html>");
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ generate_password: true }),
+    });
+    const body = await shareRes.json();
+
+    assert.equal(shareRes.status, 200);
+    assert.match(body.password, /^[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/);
+    assert.equal(requests[0].body.password, body.password, "the published page uses the password shown to the user");
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function startFailingHtmlApp(status) {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify({ detail: "host said no" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : 0,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+async function publishThroughShareRoute(dir, status, body) {
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Ship</h1></body></html>");
+  const htmlApp = await startFailingHtmlApp(status);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify(body),
+    });
+    return { status: shareRes.status, body: await shareRes.json() };
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
+  }
+}
+
+test("POST /api/:key/share reports an indeterminate publish and keeps the password it minted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  try {
+    // A 5xx can follow a POST the origin already committed. The password was minted for THIS
+    // request, so discarding it with the failed response would leave the page live behind a secret
+    // nobody was ever shown, at a URL nobody was told, with its update_key gone.
+    const generated = await publishThroughShareRoute(dir, 503, { generate_password: true });
+
+    assert.equal(generated.status, 502);
+    assert.equal(generated.body.outcome, "indeterminate");
+    assert.match(generated.body.password, /^[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/);
+    assert.equal(generated.body.public, false, "a generated password means it is not public");
+
+    const plain = await publishThroughShareRoute(dir, 503, {});
+    assert.equal(plain.status, 502);
+    assert.equal(plain.body.outcome, "indeterminate");
+    assert.equal(plain.body.password, undefined, "nothing was minted, so nothing to hand back");
+    assert.equal(plain.body.public, true, "a default publish that landed is readable by anyone");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share reports an incomplete 200 as published, not as an unknown outcome", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Ship</h1></body></html>");
+
+  // The host answered 200, so the page landed. Classifying it as indeterminate contradicted the
+  // error text beside it AND dropped the url Lavish was holding for a page that is public by
+  // default and, without the update_key, unmanageable forever.
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests, { site_id: "abc123", url: "https://abc123.ht-ml.app/" });
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({}),
+    });
+    const body = await shareRes.json();
+
+    assert.equal(body.outcome, "published-incomplete");
+    assert.equal(body.url, "https://abc123.ht-ml.app/", "the address the host did return must survive");
+    assert.equal(body.site_id, "abc123");
+    assert.equal(body.update_key, undefined, "none came back, so none is claimed");
+    assert.equal(body.public, true);
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share reports a host rejection as a plain failure with no password", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  try {
+    // The host answered, so nothing was published: a minted password gates nothing and relaying it
+    // would send the user chasing a page that does not exist.
+    const rejected = await publishThroughShareRoute(dir, 400, { generate_password: true });
+
+    assert.equal(rejected.status, 502);
+    assert.equal(rejected.body.outcome, "rejected");
+    assert.equal(rejected.body.password, undefined, "a rejected publish must never carry the password");
+    assert.equal(rejected.body.public, undefined);
+    assert.ok(rejected.body.error, "the host's reason must still reach the dialog");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/:key/share never echoes a password the user typed", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Ship</h1></body></html>");
+
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+
+    const shareRes = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ password: "hunter2" }),
+    });
+    const body = await shareRes.json();
+
+    assert.equal(body.password, undefined);
+    assert.equal(requests[0].body.password, "hunter2");
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/:key/share returns unresolved local asset warnings", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
@@ -3702,6 +4368,49 @@ test("a user-initiated end via the keyed route blocks a plain reopen but honors 
 
     const afterReopen = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     assert.equal((await afterReopen.json()).status, "waiting");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a blocked user-ended open returns the current listener URL", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-user-ended-current-url-"));
+  const artifact = path.join(dir, "artifact.html");
+  const statePath = path.join(dir, "state.json");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  let server = await serve({
+    port: 0,
+    stateFile: statePath,
+    version: "9.9.9-test",
+    host: "127.0.0.1",
+    linkHost: "old.example",
+    idleTimeoutMs: null,
+  });
+  try {
+    const opened = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    await fetch(`http://127.0.0.1:${server.port}/api/${opened.key}/end`, { method: "POST" });
+    await server.close();
+
+    server = await serve({
+      port: 0,
+      stateFile: statePath,
+      version: "9.9.9-test",
+      host: "127.0.0.1",
+      linkHost: "current.example",
+      idleTimeoutMs: null,
+    });
+    const blocked = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    assert.equal(blocked.status, "user-ended");
+    assert.equal(blocked.url, `http://current.example:${server.port}/session/${opened.key}`);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -4726,6 +5435,224 @@ test("SSE agent-presence resets to waiting after ending and reopening a session"
   }
 });
 
+// #171: a browser tab left open across `lavish-axi end` must be told the session ended, instead
+// of silently keeping Send enabled for feedback nobody will ever poll for.
+test("SSE forwards an ended event to an attached chrome when the agent ends the session (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const stream = await startEventStream(base, key, "ended");
+    try {
+      const endResponse = await fetch(`${base}/api/end`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      });
+      assert.equal(endResponse.status, 200);
+      const event = await stream.next();
+      assert.equal(event.ended_by, "agent");
+    } finally {
+      await stream.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// #171: a chrome whose EventSource reconnects (or attaches for the first time) after the session
+// already ended - without a full page reload, so its bootstrapped initialEnded is stale or never
+// ran - must not depend on catching a live "ended" emit it can no longer be attached in time for.
+test("SSE sends an immediate ended snapshot to a connection that attaches after the session already ended (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  // A second, still-open session keeps the server from self-shutting-down (it only does that
+  // once every session is ended), so it stays up long enough to attach the late connection below.
+  const otherArtifact = path.join(dir, "other.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  await writeFile(otherArtifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: otherArtifact }),
+    });
+
+    await fetch(`${base}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+
+    // Connect only now, well after the live "ended" event already fired and had no listener.
+    const stream = await startEventStream(base, key, "ended");
+    try {
+      const event = await stream.next();
+      assert.equal(event.ended_by, "agent");
+    } finally {
+      await stream.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SSE disconnect during the initial session read releases the connection", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    idleTimeoutMs: 100,
+  });
+  const originalFindByKey = SessionStore.prototype.findByKey;
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const { promise: findReleased, resolve: releaseFind } = Promise.withResolvers();
+    const { promise: findPending, resolve: findStarted } = Promise.withResolvers();
+    SessionStore.prototype.findByKey = async function (sessionKey) {
+      if (sessionKey === key) {
+        findStarted();
+        await findReleased;
+      }
+      return originalFindByKey.call(this, sessionKey);
+    };
+
+    const socket = await new Promise((resolve, reject) => {
+      const client = netConnect(server.port, "127.0.0.1", () => {
+        client.write(`GET /events/${key} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`, () => resolve(client));
+      });
+      client.on("error", reject);
+    });
+    await findPending;
+    socket.on("error", () => {});
+    socket.destroy();
+    releaseFind();
+
+    await Promise.race([
+      server.done,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("server retained disconnected SSE client")), 1000)),
+    ]);
+  } finally {
+    SessionStore.prototype.findByKey = originalFindByKey;
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// #171: without this, a browser that missed the SSE event (or had already queued a Send before it
+// arrived) got a 200 for a prompt no agent will ever poll for.
+test("POST /api/:key/prompts rejects a batch queued after the session already ended (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    // Hold an SSE connection open so the agent end below does not self-shut the server down
+    // before the late prompt below is submitted.
+    const stream = await startEventStream(base, key, "ended");
+    try {
+      await fetch(`${base}/api/end`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      });
+      await stream.next();
+
+      const response = await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [{ prompt: "too late", tag: "message" }] }),
+      });
+      assert.equal(response.status, 409);
+      const body = await response.json();
+      assert.equal(body.status, "ended");
+      assert.equal(body.ended_by, "agent");
+
+      // No prompt was actually stored: a poll of the ended session reports plain `ended`,
+      // never `feedback` with `session_ended: true`.
+      const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      const polled = await poll.json();
+      assert.equal(polled.status, "ended");
+      assert.equal(polled.ended_by, "agent");
+    } finally {
+      await stream.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a chrome page served after the session already ended boots read-only (#171)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const stream = await startEventStream(base, key, "ended");
+    try {
+      await fetch(`${base}/api/end`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      });
+      await stream.next();
+    } finally {
+      await stream.close();
+    }
+
+    const page = await fetch(`${base}/session/${key}`);
+    const html = await page.text();
+    const data = chromeSessionData(html);
+    assert.equal(data.initialEnded, true);
+    assert.equal(data.initialEndedBy, "agent");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("immediate send-and-end delivery clears working presence without an active poll", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
@@ -4946,7 +5873,7 @@ test("concurrent same-session opens create only one file watcher", async () => {
   }
 });
 
-test("/health and / stay responsive after opening two back-to-back sessions", async () => {
+test("/health and the landing page stay responsive after opening two back-to-back sessions", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-back-to-back-"));
   const a = path.join(dir, "a.html");
   const b = path.join(dir, "b.html");
@@ -4982,8 +5909,8 @@ test("/health and / stay responsive after opening two back-to-back sessions", as
       fetch(`${base}/`),
       new Promise((_, reject) => setTimeout(() => reject(new Error("/ timed out")), 1000)),
     ]);
-    assert.equal(rootRes.status, 404);
-    await rootRes.text().catch(() => {});
+    assert.equal(rootRes.status, 200);
+    assert.match(await rootRes.text(), /Lavish Editor/);
 
     assert.ok(Date.now() - start < 1000, "both probes should return well under one second");
   } finally {

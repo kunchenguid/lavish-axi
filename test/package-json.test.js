@@ -17,7 +17,7 @@ test("check script runs all verification commands", async () => {
   ]);
 });
 
-test("installable skill stays in sync with the no-args home output", async () => {
+test("committed skill matches the generator stub", async () => {
   const { createSkillMarkdown } = await import("../src/skill.js");
   const committed = await readFile(new URL("../skills/lavish/SKILL.md", import.meta.url), "utf8");
 

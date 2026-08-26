@@ -14,7 +14,14 @@ import {
   exportWarningSummaries,
   splitExportWarnings,
 } from "./export-bundle.js";
-import { publishToHtmlApp } from "./html-app.js";
+import {
+  createUnpublishedPageHtml,
+  hostRejectedShareWrite,
+  normalizeSiteId,
+  publishedDespiteError,
+  publishToHtmlApp,
+  updateHtmlApp,
+} from "./html-app.js";
 import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
 import {
   computeVsCodePluginLocationsUpdate,
@@ -30,8 +37,10 @@ import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
+import { generateSharePassword } from "./share-password.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
+const SHARE_VALUE_FLAGS = ["--password", "--token", "--site", "--update-key"];
 const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
@@ -177,10 +186,10 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       : {}),
     visual_guidance: [
       "Use visual hierarchy to make the most important decisions, risks, tradeoffs, and next actions obvious at a glance",
-      "Use visual structure such as sections, cards, tables, diagrams, annotated snippets, and side-by-side comparisons instead of long prose",
+      "Show, don't tell: explain concepts, flows, relationships, and comparisons with labeled illustrations - hand-authored inline SVG, per the diagram playbook - and show existing UI or state with screenshots of the real pages (run the app read-only if needed); reserve prose for what cannot be shown, such as rationale, trade-offs, and open questions",
+      "Structure the prose that remains with sections, cards, tables, annotated snippets, and side-by-side comparisons instead of long paragraphs",
       "Choose typography, spacing, color, and layout deliberately so the artifact has a clear point of view",
       "Prevent horizontal overflow at every nesting level: nested grid/flex children also need minmax(0, 1fr) tracks and min-width: 0, especially when badges, labels, or status text use wide pixel or monospace fonts; wrap, truncate, or contain long unbreakable text deliberately",
-      "When the artifact would describe existing or current UI or state, show it instead: capture screenshots of the real pages (run the app read-only if needed) and embed them, rather than explaining the current look in prose; reserve prose for what cannot be shown such as rationale, trade-offs, and open questions",
     ],
     playbooks: listPlaybooks(),
     help: [
@@ -188,10 +197,10 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
       "Lavish serves the html file through a local express.js server. If your html needs to reference other filesystem assets such as images, CSS, fonts, and local scripts, copy them into the same directory as the HTML file, then reference them with relative paths from that directory. Never prepend `/` to those asset paths - root paths won't work",
       `Run \`lavish-axi poll <html-file>\` to wait for user feedback. It long-polls and stays silent until the user sends feedback or ends the session, so leave it running - never kill it. Detected layout issues never return this poll: the browser files them in the user's Layout issues inbox in the Lavish top bar, and they arrive as an ordinary tag "layout-warnings" prompt only when the user selects them and queues the fixes. Never edit the artifact to chase a layout issue the user has not queued. The only exception is a fatal artifact_failures response, which means the review surface itself could not be used. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}`,
-      'Rendered Mermaid diagrams in `.mermaid` containers become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; an unmodified autosave silently re-converts when a reload changes the Mermaid source. If the reviewer edited the scene, they choose to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
+      'Mermaid is the whiteboard opt-in, not the diagram default: only when the user asks for an editable whiteboard, author that diagram as Mermaid in a `.mermaid` container. Rendered Mermaid diagrams there become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; an unmodified autosave silently re-converts when a reload changes the Mermaid source. If the reviewer edited the scene, they choose to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
-      "Only run `lavish-axi share <html-file> [--password <pw>] [--token <t>]` when the user explicitly asks to publish or share the artifact outside the local machine. It publishes on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and returns a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Local assets are inlined; remote refs load over the network. It returns the url plus a secret update_key for managing the page later. Use --token or LAVISH_AXI_HTML_APP_TOKEN only when you have an optional bearer token; it is never required. Users can also publish from the browser chrome's overflow menu",
+      "Only run `lavish-axi share <html-file> [--private | --password <pw>]` when the user explicitly asks to publish or share the artifact outside the local machine. It publishes the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and returns a visitable URL. Shares are PUBLIC by default, so anyone with the link can open them. Pass --private to publish a PRIVATE page behind a password Lavish generates and returns - hand the user that password with the URL and say it is a shared secret anyone they give it to can use; --password <pw> uses one you were already given instead. Local assets are inlined; remote refs load over the network. It also returns a secret update_key that can republish or lock the same URL later - run `lavish-axi share --help` before using it. Users can also publish from the browser chrome's overflow menu",
       "Run `lavish-axi stop` to shut down the background server (it also self-stops when idle or after the last session ends with nothing connected)",
       `Run \`lavish-axi playbook <playbook_id>\` for focused artifact guidance. ${PLAYBOOK_ROUTER_HELP}`,
       DESIGN_SYSTEM_HINT,
@@ -219,12 +228,20 @@ export function createPlaybookOutput(args) {
   return { playbook };
 }
 
-export function createOpenOutput({ file, url, status, agent = "generic", selfPaintWarning = undefined }) {
+export function createOpenOutput({
+  file,
+  url,
+  status,
+  agent = "generic",
+  selfPaintWarning = undefined,
+  networkWarning = undefined,
+}) {
   const selfPaintPrefix = selfPaintWarning
     ? `First fix the unpainted page surface flagged in self_paint_warning and save - Lavish live-reloads the artifact automatically, so you do not need to re-run \`lavish-axi ${file}\`. `
     : "";
   return {
     session: { file, url, status },
+    ...(networkWarning ? { network_warning: networkWarning } : {}),
     ...(selfPaintWarning ? { self_paint_warning: selfPaintWarning } : {}),
     next_step: `${selfPaintPrefix}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback or ends the session, and it stays silent the whole time - that is normal, never kill it. Layout issues the browser detects do not return this poll; they wait in the user's Layout issues inbox until the user queues them, then arrive as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use. ${pollExecutionGuidance({ agent })} After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show your response in Lavish Editor and wait for more feedback. If the user ends the session, stop polling and do not reopen it by re-running \`lavish-axi ${file}\` unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-axi ${file} --reopen\`.`,
   };
@@ -234,9 +251,10 @@ export function createOpenOutput({ file, url, status, agent = "generic", selfPai
 // browser. Reviving it silently would reopen a browser window the human deliberately closed, so
 // this refuses and requires the explicit --reopen opt-in instead of erroring - the session
 // staying closed is the correct, idempotent outcome unless the agent has a real reason to reopen.
-export function createUserEndedOpenOutput({ file, url }) {
+export function createUserEndedOpenOutput({ file, url, networkWarning = undefined }) {
   return {
     session: { file, url, status: "user-ended" },
+    ...(networkWarning ? { network_warning: networkWarning } : {}),
     next_step: `The user explicitly ended this Lavish Editor session from the browser, so \`lavish-axi ${file}\` did not reopen it. Do not reopen unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-axi ${file} --reopen\`.`,
   };
 }
@@ -257,7 +275,11 @@ async function openCommand(args) {
   });
   const response = await postJson(`${baseUrl}/api/sessions`, { file: absolute, noGate, reopen });
   if (response.status === "user-ended") {
-    return createUserEndedOpenOutput({ file: absolute, url: response.url });
+    return createUserEndedOpenOutput({
+      file: absolute,
+      url: response.url,
+      networkWarning: response.network_warning,
+    });
   }
   if (shouldOpenBrowser(args, process.env)) {
     try {
@@ -273,6 +295,7 @@ async function openCommand(args) {
     status: response.status || "opened",
     agent: detectInvokingAgent(process.env),
     selfPaintWarning,
+    networkWarning: response.network_warning,
   });
 }
 
@@ -549,20 +572,21 @@ function assetWarningSummaries(warnings) {
   return exportWarningSummaries(warnings);
 }
 
-// Publish the artifact as a visitable page on third-party ht-ml.app. Builds the same local-inlined
-// HTML as `export` (remote refs left as links), then POSTs it to ht-ml.app's `/v1/sites` API,
-// sending the artifact to ht-ml.app's servers. The service is not part of Lavish, needs no
-// account or API key, and returns the share URL plus the secret update_key for
-// managing the page later. Server-independent.
-async function shareCommand(args) {
-  const file = firstPositionalArg(args, ["--password", "--token"]);
-  if (!file) {
-    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi share <html-file>`"]);
+// Publish, republish, or unpublish a page on third-party ht-ml.app; `resolveShareRequest` owns
+// which of the three the arguments describe. Creating POSTs the local-inlined HTML - built the same
+// way as `export`, remote refs left as links - to `/v1/sites`, needs no account or API key, and
+// returns the share URL plus the secret update_key. Republishing and unpublishing instead PUT to
+// `/v1/sites/{site_id}` authorized by that update_key and mint no new one; unpublish reads no file
+// at all and sends a placeholder page. Server-independent.
+export async function shareCommand(args) {
+  const request = resolveShareRequest(args);
+  if (request.mode === "unpublish") {
+    const site = await unpublishShareSite(request);
+    return createShareUnpublishOutput({ site, siteId: request.siteId });
   }
-  await assertHtmlFile(file);
-  const absolute = await canonicalFile(file);
-  const password = optionalFlagString(flagValue(args, "--password"));
-  const token = optionalFlagString(flagValue(args, "--token"));
+
+  await assertHtmlFile(request.file);
+  const absolute = await canonicalFile(request.file);
   const root = path.dirname(absolute);
   const source = await readFile(absolute, "utf8");
   const { html, warnings } = await buildSelfContainedHtml(source, {
@@ -570,30 +594,357 @@ async function shareCommand(args) {
     confineDir: root,
     resolveAbsolute: resolveDesignAssetPath,
   });
-  const site = await publishToHtmlApp(html, { password, token });
+  const selfPaintWarning = analyzeSelfPaint(source).painted ? undefined : SELF_PAINT_WARNING;
+
+  if (request.mode === "update") {
+    const site = await updateShareSite(request, html);
+    return createShareUpdateOutput({
+      source: absolute,
+      site,
+      warnings,
+      password: request.generatedPassword ? request.password : undefined,
+      passwordProtected: Boolean(request.password),
+      selfPaintWarning,
+    });
+  }
+
+  const site = await createShareSite(request, html);
   return createShareOutput({
     source: absolute,
     site,
     warnings,
-    passwordProtected: Boolean(password),
-    selfPaintWarning: analyzeSelfPaint(source).painted ? undefined : SELF_PAINT_WARNING,
+    passwordProtected: Boolean(request.password),
+    password: request.generatedPassword ? request.password : undefined,
+    selfPaintWarning,
   });
 }
 
-export function createShareOutput({ source, site, warnings, passwordProtected = false, selfPaintWarning = undefined }) {
+// Every surface that tells the user how to republish prints this one command, because a hint the
+// CLI itself rejects is worse than no hint: `--site`/`--update-key` alone parse to a usage error,
+// and the HTML file positional is what makes the shape a command that runs.
+//
+// A suggested command may never carry a password PLACEHOLDER. Every other placeholder here fails
+// loudly when an agent substitutes the real values and leaves one literal - `<html-file>` is not a
+// file, `<key>` earns a 401 - but any non-empty string is a valid password, so a literal `<pw>`
+// would be accepted and would rotate a live page to a secret nobody was told, with no way to clear
+// it afterwards. `--private` is safe to name because it takes no value and Lavish reports what it
+// minted; an explicit password is described in words instead.
+function republishCommand(siteId, { privatePage = false } = {}) {
+  return `lavish-axi share <html-file> --site ${siteId} --update-key <key>${privatePage ? " --private" : ""}`;
+}
+
+function republishPrivateCommand(siteId) {
+  return republishCommand(siteId, { privatePage: true });
+}
+
+function unpublishCommand(siteId) {
+  return `lavish-axi share --unpublish --site ${siteId} --update-key <key>`;
+}
+
+// A 200 the host answered with an unreadable body is not an unknown outcome - the page landed - and
+// hedging it away discards the strongest honest report available. Whatever fields did arrive are
+// handed over, because a url with no update_key names a live page whose write credential is gone.
+function incompletePublishError(request, message, received) {
+  const url = String(received.url || "").trim();
+  const updateKey = String(received.updateKey || "").trim();
+  const siteId = String(received.siteId || "").trim();
+  const visibility = request.password
+    ? `behind the password this run sent`
+    : `PUBLICLY, readable by anyone who has the link`;
+  const suggestions = [
+    `ht-ml.app accepted this publish - the page IS live, hosted ${visibility} - but its response was malformed, so Lavish could not read the whole result back. Do not report this as a failed publish.`,
+    url
+      ? `Its address is ${url} - give the user that URL.`
+      : `The response carried no url, so Lavish cannot name the page's address.`,
+  ];
+  if (updateKey) {
+    suggestions.push(
+      `Its update_key is ${updateKey}${siteId ? ` and its site_id is ${siteId}` : ""} - keep it, because ht-ml.app issues one only once and it is the only credential for changing or unpublishing the page.`,
+    );
+  } else {
+    suggestions.push(
+      `No update_key reached Lavish, and ht-ml.app issues one only once and has no delete endpoint, so this page can never be republished or unpublished. There is no recovery for it.`,
+    );
+  }
+  suggestions.push(`Re-running this command publishes a SECOND page at a new URL; it does not replace the first.`);
+  if (request.generatedPassword && request.password) {
+    suggestions.push(`That page requires the password Lavish generated for it: ${request.password}`);
+  }
+  return new AxiError(message, "UNKNOWN", suggestions);
+}
+
+// Creating is the highest-consequence instance of the same split, because it is the one write with
+// no way back. A 4xx means nothing was published. Anything else can follow a POST the origin
+// already committed, and the response that was lost is the ONLY copy of the update_key - issued
+// once, and the sole credential for a host with no delete endpoint - so a page that landed this way
+// can never be republished or unpublished by anyone. Nothing here may suggest a recovery, because
+// there is none: re-running mints a second page rather than replacing the first.
+async function createShareSite(request, html) {
+  try {
+    return await publishToHtmlApp(html, { password: request.password, token: request.token });
+  } catch (error) {
+    if (hostRejectedShareWrite(error)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    const landed = publishedDespiteError(error);
+    if (landed) throw incompletePublishError(request, message, landed);
+    const hosting = request.password
+      ? `the artifact is now hosted on ht-ml.app behind the password this run sent`
+      : `the artifact is now hosted PUBLICLY on ht-ml.app, readable by anyone who has the link`;
+    const suggestions = [
+      `ht-ml.app may or may not have published this page, so treat the outcome as unknown.`,
+      `If it landed, ${hosting}, and the response carrying its url, site_id, and update_key was lost.`,
+      `An update_key is issued once and ht-ml.app has no delete endpoint, so such a page can never be republished or unpublished - there is no recovery for it. Tell the user rather than implying the publish simply failed.`,
+      `Re-running this command publishes a SECOND page at a new URL; it does not replace or reclaim the first.`,
+    ];
+    if (request.generatedPassword && request.password) {
+      suggestions.push(`If it landed, that page requires the password Lavish generated for it: ${request.password}`);
+    }
+    throw new AxiError(message, "UNKNOWN", suggestions);
+  }
+}
+
+// Whether the outcome is unknown is a property of the FAILURE, not of what the request carried: a
+// 4xx the host answered means it wrote nothing, while a 5xx or no answer at all can follow a PUT
+// the origin already committed, leaving the hosted page showing content Lavish reported as never
+// sent. So every indeterminate republish reports that and names a re-run that converges.
+// A generated password is an ADDITIONAL layer on that report, not its trigger: it only ever reaches
+// the user through the success output, so an indeterminate failure could otherwise leave the page
+// rotated to a secret nobody holds. A rejection must never carry it, because it gates nothing.
+async function updateShareSite(request, html) {
+  try {
+    return await updateHtmlApp(request.siteId, html, {
+      updateKey: request.updateKey,
+      password: request.password,
+    });
+  } catch (error) {
+    if (hostRejectedShareWrite(error)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    const generated = Boolean(request.generatedPassword && request.password);
+    const retry = generated ? republishPrivateCommand(request.siteId) : republishCommand(request.siteId);
+    const samePassword = !generated && request.password ? `, passing the same --password value you supplied` : "";
+    const suggestions = [
+      `ht-ml.app may or may not have applied this republish, so treat the outcome as unknown: the hosted page may already show the new content.`,
+      `Re-running \`${retry}\`${samePassword} is safe and converges on the same result either way.`,
+    ];
+    if (generated) {
+      suggestions.push(
+        `If it landed, the page now requires the password Lavish generated for it: ${request.password} - the re-run above rotates it to a fresh one Lavish reports on success.`,
+      );
+    }
+    throw new AxiError(message, "UNKNOWN", suggestions);
+  }
+}
+
+// ht-ml.app has no delete endpoint, so the closest honest thing is a republish: replace the content
+// and lock the URL behind a password nobody is given. The update_key is the way back. The same
+// indeterminate-outcome rule as a republish applies - a 5xx or a timeout can follow a PUT the
+// origin already committed - so reporting a flat failure would tell the user the page is still
+// readable when it may already be the locked placeholder. No password is offered here: the lock
+// password is discarded by design, so there is nothing recoverable to hand back.
+async function unpublishShareSite(request) {
+  try {
+    return await updateHtmlApp(request.siteId, createUnpublishedPageHtml(), {
+      updateKey: request.updateKey,
+      password: generateSharePassword(),
+    });
+  } catch (error) {
+    if (hostRejectedShareWrite(error)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new AxiError(message, "UNKNOWN", [
+      `ht-ml.app may or may not have applied this unpublish, so treat the outcome as unknown: the page may already be the locked placeholder.`,
+      `Re-running \`${unpublishCommand(request.siteId)}\` is safe and converges on the same result either way.`,
+      `The update_key still works, so \`${republishPrivateCommand(request.siteId)}\` brings the page back behind a password you can see.`,
+    ]);
+  }
+}
+
+// Resolve which of `share`'s three shapes the arguments describe - publish, republish, or
+// unpublish - and which password the host should be sent. Pure, so the conflict rules are
+// testable without a network call or a file on disk. A password is never accepted from the artifact
+// or the browser; this is the only place one is generated for a request, the sole exception being
+// `--unpublish`, which mints its own directly because that value is discarded rather than reported.
+export function resolveShareRequest(args) {
+  const unpublish = args.includes("--unpublish");
+  const generate = args.includes("--private");
+  const explicitPassword = shareFlagValue(args, "--password");
+  const siteId = shareFlagValue(args, "--site");
+  const updateKey = shareFlagValue(args, "--update-key");
+  const token = shareFlagValue(args, "--token");
+  const file = firstPositionalArg(args, SHARE_VALUE_FLAGS);
+
+  if (generate && explicitPassword) {
+    throw new AxiError("--private generates a password, so it cannot be combined with --password", "VALIDATION_ERROR", [
+      "Pass --private to have Lavish mint one, or --password <pw> to choose it yourself",
+    ]);
+  }
+  // A republish authenticates as the page itself: the Authorization header carries the update_key,
+  // so there is no room for a bearer token and silently accepting one would look like it applied.
+  if (token && (unpublish || siteId || updateKey)) {
+    throw new AxiError(
+      "--token only applies when creating a page: a republish authenticates with the update_key, which is what the Authorization header carries",
+      "VALIDATION_ERROR",
+      ["Drop --token and keep --site <site_id> --update-key <key>"],
+    );
+  }
+
+  if (unpublish) {
+    if (file) {
+      throw new AxiError("--unpublish replaces a published page and takes no HTML file", "VALIDATION_ERROR", [
+        "Run `lavish-axi share --unpublish --site <site_id> --update-key <key>`",
+      ]);
+    }
+    if (generate || explicitPassword) {
+      throw new AxiError(
+        "--unpublish locks the page with its own password and takes no password flag",
+        "VALIDATION_ERROR",
+        ["Run `lavish-axi share --unpublish --site <site_id> --update-key <key>`"],
+      );
+    }
+    assertSiteCredential(siteId, updateKey);
+    return {
+      mode: "unpublish",
+      file: null,
+      siteId: assertShareSiteId(siteId),
+      updateKey,
+      password: undefined,
+      generatedPassword: false,
+      token,
+    };
+  }
+
+  if (siteId || updateKey) {
+    assertSiteCredential(siteId, updateKey);
+    assertShareFile(file);
+    return {
+      mode: "update",
+      file,
+      siteId: assertShareSiteId(siteId),
+      updateKey,
+      ...resolveSharePassword({ generate, explicitPassword }),
+      token,
+    };
+  }
+
+  assertShareFile(file);
+  return {
+    mode: "create",
+    file,
+    siteId: null,
+    updateKey: null,
+    ...resolveSharePassword({ generate, explicitPassword }),
+    token,
+  };
+}
+
+// An absent password preserves whatever the page already has. There is no "clear" value: the host
+// accepts an empty password and ignores it, so offering one would report a page as public while it
+// is still gated.
+function resolveSharePassword({ generate, explicitPassword }) {
+  if (generate) return { password: generateSharePassword(), generatedPassword: true };
+  if (explicitPassword) return { password: explicitPassword, generatedPassword: false };
+  return { password: undefined, generatedPassword: false };
+}
+
+function assertSiteCredential(siteId, updateKey) {
+  if (!siteId) {
+    throw new AxiError("--site <site_id> is required to change a published page", "VALIDATION_ERROR", [
+      "The site_id is in the share output from when the page was published",
+    ]);
+  }
+  if (!updateKey) {
+    throw new AxiError("--update-key <key> is required to change a published page", "VALIDATION_ERROR", [
+      "The update_key was returned once when the page was published; there is no way to recover it",
+    ]);
+  }
+}
+
+// Read one of share's value-taking flags. `flagValue` takes the next token unconditionally, which
+// every other command tolerates because its blast radius is a bad argument; here an empty unquoted
+// shell variable makes `--password $PW --site abc` read "--site" as the password and ROTATE a live
+// page to a literal nobody knows, and the host cannot clear a password afterwards. So share refuses
+// the shapes that would be guesses rather than values. The `--password=<pw>` form stays permissive
+// past the leading `--` because nothing can be swallowed there.
+function shareFlagValue(args, flag) {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg === flag) return checkedShareFlagValue(flag, args[i + 1], { swallows: true });
+    if (arg.startsWith(`${flag}=`)) return checkedShareFlagValue(flag, arg.slice(flag.length + 1), {});
+  }
+  return undefined;
+}
+
+function checkedShareFlagValue(flag, value, { swallows = false }) {
+  const hint =
+    flag === "--password"
+      ? `Quote the value as ${flag} "<pw>" - an unquoted shell variable that is unset expands to nothing - or pass --private to have Lavish generate one`
+      : `Quote the value as ${flag} "<value>"`;
+  if (swallows && typeof value === "string" && value.startsWith("--")) {
+    throw new AxiError(
+      `${flag} was given no value: the next argument ${value} is another flag, so it would have been used as the value`,
+      "VALIDATION_ERROR",
+      [hint, `Use ${flag}=<value> if the value itself starts with --`],
+    );
+  }
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) {
+    const consequence =
+      flag === "--password"
+        ? ", and publishing a PUBLIC page while you believed it was gated is the worse failure"
+        : "";
+    throw new AxiError(`${flag} was given an empty value${consequence}`, "VALIDATION_ERROR", [hint]);
+  }
+  return trimmed;
+}
+
+// normalizeSiteId is the library-level guard and throws a plain Error for direct callers. At the
+// CLI boundary a bad --site is a usage mistake like any other, and pasting the share URL is the
+// likeliest one, so it gets the same VALIDATION_ERROR shape and a hint about where the id comes
+// from - raised here rather than inside updateHtmlApp, which only runs after the whole artifact
+// has been read and bundled.
+function assertShareSiteId(siteId) {
+  try {
+    return normalizeSiteId(siteId);
+  } catch (error) {
+    throw new AxiError(error instanceof Error ? error.message : String(error), "VALIDATION_ERROR", [
+      "The site_id is in the share output from when the page was published, and in the browser publish dialog's Site ID row",
+    ]);
+  }
+}
+
+function assertShareFile(file) {
+  if (!file) {
+    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi share <html-file>`"]);
+  }
+}
+
+export function createShareOutput({
+  source,
+  site,
+  warnings,
+  passwordProtected = false,
+  password = undefined,
+  selfPaintWarning = undefined,
+}) {
   const allWarnings = Array.isArray(warnings) ? warnings : [];
   const { unresolved, notices } = splitExportWarnings(allWarnings);
   const isPasswordProtected = Boolean(passwordProtected);
+  // The host either returned no site_id or returned one `normalizeSiteId` refuses, which is the
+  // same thing for the user: `--site` is half the republish credential, so without a usable one
+  // the page can never be changed again even though its update_key is in hand. Emitting an empty
+  // string beside guidance that says to keep it would hide that until `--site` rejected it.
+  const republishableSiteId = String(site.site_id ?? "").trim();
   const result = {
     share: {
       source,
       url: site.url,
-      site_id: site.site_id,
+      ...(republishableSiteId ? { site_id: republishableSiteId } : {}),
       update_key: site.update_key,
       status: site.status || "active",
       public: !isPasswordProtected,
       visibility: isPasswordProtected ? "private" : "public",
       password_protected: isPasswordProtected,
+      ...(password ? { password } : {}),
       unresolved_local_assets: unresolved.length,
       notices: notices.length,
     },
@@ -605,30 +956,122 @@ export function createShareOutput({ source, site, warnings, passwordProtected = 
   const noticeNote = notices.length ? " Export notices are available in notices." : "";
   const hostNote =
     "ht-ml.app (https://ht-ml.app), a third-party host not part of Lavish, hosts the page, so it needs no Lavish server.";
+  const updateKeyNote = republishableSiteId
+    ? "The update_key is a secret shown only once; keep it to republish the page later with --site and --update-key (there is no recovery, and ht-ml.app has no delete). "
+    : "The host did not return a site_id Lavish can use, and --site is half the republish credential, so this page can NEVER be republished or unpublished even though its update_key is in hand. Tell the user that now rather than letting them discover it later. ";
   if (unresolved.length) {
     result.next_step =
       `Published ${isPasswordProtected ? "a PASSWORD-PROTECTED page at " : ""}${site.url}, but some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page and fix missing local assets before sharing it.${passwordNote}${noticeNote} ` +
       `Remote CDN/font references are intentionally left as links and render where there is network access. ` +
-      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
+      updateKeyNote +
       hostNote;
   } else if (isPasswordProtected) {
     result.next_step =
       `Published a PASSWORD-PROTECTED page: ${site.url} - share this URL with the user and provide the password separately; viewers also need the password. ` +
       `${noticeNote ? `${noticeNote} ` : ""}` +
-      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
+      updateKeyNote +
       hostNote;
   } else {
     result.next_step =
       `Published a PUBLIC page that anyone with the link can view: ${site.url} - share this URL with the user. ` +
       `${noticeNote ? `${noticeNote} ` : ""}` +
-      `The update_key is a secret shown only once; keep it to update or delete the page later (there is no recovery). ` +
+      updateKeyNote +
       hostNote;
   }
+  if (password) result.next_step = `${generatedPasswordNote(password)} ${result.next_step}`;
   if (selfPaintWarning) {
     result.self_paint_warning = selfPaintWarning;
     result.next_step = `Fix the unpainted page surface flagged in self_paint_warning, then re-run the share command and share only its replacement URL - the hosted page renders over ht-ml.app's own surface. ${result.next_step}`;
   }
   return result;
+}
+
+// Republish output. Visibility is "unchanged" unless this call set a password, because Lavish
+// persists nothing about a published page and the host never reports its current password. So a
+// plain republish reports what Lavish DID, never what the page IS: it cannot know whether the page
+// is gated, and an authoritative guess either way is one the user would act on.
+export function createShareUpdateOutput({
+  source,
+  site,
+  warnings,
+  password = undefined,
+  passwordProtected = false,
+  selfPaintWarning = undefined,
+}) {
+  const allWarnings = Array.isArray(warnings) ? warnings : [];
+  const { unresolved, notices } = splitExportWarnings(allWarnings);
+  const visibility = passwordProtected ? "private" : "unchanged";
+  const url = String(site.url ?? "").trim();
+  const result = {
+    share: {
+      source,
+      url,
+      site_id: site.site_id,
+      status: site.status || "active",
+      updated: true,
+      visibility,
+      ...(password ? { password } : {}),
+      unresolved_local_assets: unresolved.length,
+      notices: notices.length,
+    },
+  };
+  if (allWarnings.length) result.warnings = exportWarningSummaries(allWarnings);
+  if (unresolved.length) result.unresolved_local_assets = assetWarningSummaries(unresolved);
+  if (notices.length) result.notices = assetWarningSummaries(notices);
+  const noticeNote = notices.length ? " Export notices are available in notices." : "";
+  const unresolvedNote = unresolved.length
+    ? " Some LOCAL assets could not be inlined and were left as references (see unresolved_local_assets); inspect the hosted page."
+    : "";
+  const visibilityNote =
+    visibility === "private"
+      ? " It is PASSWORD-PROTECTED; viewers also need the password. That gate is NOT instant: if the page had been public, it was observed still answering uncredentialed requests from ht-ml.app's CDN cache for minutes afterwards, so do not tell the user it is gated right away; a page that was already private has no such cached copy and leaks nothing."
+      : " This republish did not touch the page's password, so whatever it had when it was last published still applies. Lavish stores nothing about a published page, so this output cannot tell you whether that is a password or none - and a page published without one stays readable by anyone who has the link.";
+  result.next_step = url
+    ? `Republished ${source} to the same URL: ${url} - viewers see the new version immediately and no new link is needed.${visibilityNote}${unresolvedNote}${noticeNote} ` +
+      `Keep the same update_key; it is still the only credential for this page.`
+    : `Republished ${source} in place as site_id ${site.site_id} - viewers see the new version immediately and no new link is needed, but the host did not report a URL for the page, so use the one from when it was published rather than guessing.${visibilityNote}${unresolvedNote}${noticeNote} ` +
+      `Keep the same update_key; it is still the only credential for this page.`;
+  if (password) result.next_step = `${generatedPasswordNote(password)} ${result.next_step}`;
+  if (selfPaintWarning) {
+    result.self_paint_warning = selfPaintWarning;
+    result.next_step = `Fix the unpainted page surface flagged in self_paint_warning, then republish - the hosted page renders over ht-ml.app's own surface. ${result.next_step}`;
+  }
+  return result;
+}
+
+// Unpublish output. The page is replaced and locked, never removed, and saying otherwise would
+// leave the user believing content is gone from a URL that still resolves.
+// `siteId` is the locally validated id the request was addressed to, and it - never the host's
+// echo - is what the suggested republish command interpolates: that string is text an agent may
+// run, so a host answering with `abc123 --password evil` must not be able to append flags to it.
+export function createShareUnpublishOutput({ site, siteId = undefined }) {
+  const url = String(site.url ?? "").trim();
+  const commandSiteId = siteId || site.site_id;
+  const target = url
+    ? `Replaced the page at ${url} with an "unpublished" placeholder`
+    : `Replaced the page published as site_id ${site.site_id} with an "unpublished" placeholder (the host did not report a URL for it, so use the one from when it was published rather than guessing)`;
+  return {
+    share: {
+      url,
+      site_id: site.site_id,
+      status: site.status || "active",
+      unpublished: true,
+      visibility: "private",
+    },
+    next_step:
+      `${target} and locked it behind a fresh random password that was discarded. The replacement itself is immediate: the previous content is gone from that URL, not merely hidden. ` +
+      `The LOCK is what is not instant for a page that was public - its CDN copy was observed serving the new placeholder to uncredentialed requests for minutes afterwards - so the placeholder may be readable without the password until the edge cache turns over. Do not tell the user the URL is unreachable right away. ` +
+      `ht-ml.app has NO delete endpoint: the page is not deleted, the URL still resolves, and the host still holds whatever was published. Tell the user that rather than saying it was deleted. ` +
+      `The update_key is still the only credential for this page - republish with \`${republishPrivateCommand(commandSiteId)}\` to bring it back, then give the user the new password it returns. ` +
+      `ht-ml.app cannot remove a page's password once it has one, so a republished page stays private.`,
+  };
+}
+
+function generatedPasswordNote(password) {
+  return (
+    `The password is ${password} - Lavish generated it and does not store it anywhere. ` +
+    `Give it to the user with the URL and tell them it is a SHARED SECRET: anyone they pass it to can read the page.`
+  );
 }
 
 // Explicitly shut down the running Lavish Editor server. Unlike `end` (which closes a single
@@ -1071,7 +1514,7 @@ function isHtmlPath(file) {
 async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   const port = defaultPort();
   const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
-  const existing = await fetchHealth(baseUrl);
+  const existing = await fetchHealth(baseUrl, { reconcileNetwork: true });
   if (existing && !shouldRestartServer(VERSION, existing, forceRestart)) {
     return baseUrl;
   }
@@ -1096,11 +1539,19 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     }
   }
   await startServer(port);
-  const deadline = Date.now() + 5000;
+  let networkRestarted = false;
+  let deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const health = await fetchHealth(baseUrl);
-    if (health && !shouldRestartServer(VERSION, health)) {
-      return baseUrl;
+    const health = await fetchHealth(baseUrl, { reconcileNetwork: true });
+    if (health && !shouldRestartServer(VERSION, health)) return baseUrl;
+    if (health?.network_stale === true && health.app === "lavish-axi") {
+      if (networkRestarted) return baseUrl;
+      await requestShutdown(baseUrl, { reloadKey, reason: "" });
+      if (!(await waitForPortFree(baseUrl, 3000))) break;
+      await startServer(port);
+      networkRestarted = true;
+      deadline = Date.now() + 5000;
+      continue;
     }
     await delay(100);
   }
@@ -1116,6 +1567,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
 export function shouldRestartServer(currentVersion, healthBody, forceRestart = false) {
   if (!healthBody || typeof healthBody !== "object") return false;
   if (forceRestart && healthBody.app === "lavish-axi") return true;
+  if (healthBody.network_stale === true && healthBody.app === "lavish-axi") return true;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
   return healthBody.version !== currentVersion;
 }
@@ -1129,7 +1581,7 @@ export function serverReplacementReason(currentVersion, healthBody, forceRestart
   if (typeof runningVersion !== "string" || runningVersion === "" || runningVersion !== currentVersion) {
     return "upgrade";
   }
-  return "local-build";
+  return forceRestart ? "local-build" : "";
 }
 
 export function shouldForceRestartForLocalBuild(executablePath, sourceServerExists = localSourceServerExists()) {
@@ -1155,9 +1607,10 @@ async function canControlServerOnPort(port, healthBody, processMatchesLavish) {
   return processMatchesLavish(port);
 }
 
-async function fetchHealth(baseUrl) {
+async function fetchHealth(baseUrl, { reconcileNetwork = false } = {}) {
   try {
-    const response = await fetch(`${baseUrl}/health`);
+    const suffix = reconcileNetwork ? "?reconcile_network=1" : "";
+    const response = await fetch(`${baseUrl}/health${suffix}`);
     if (!response.ok) return null;
     return await response.json();
   } catch {
@@ -1360,11 +1813,6 @@ function flagValue(args, flag) {
   return null;
 }
 
-function optionalFlagString(value) {
-  const trimmed = String(value ?? "").trim();
-  return trimmed || undefined;
-}
-
 function isValueFlagToken(arg, flags) {
   for (const flag of flags) {
     if (arg === flag || arg.startsWith(`${flag}=`)) return true;
@@ -1381,7 +1829,7 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--password <pw>] [--token <t>]\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
@@ -1390,12 +1838,12 @@ function createCommandHelp({ agent = "generic" } = {}) {
     poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again. ${POLL_SEND_AND_END_RULE}\n`,
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
-    share: `Usage: lavish-axi share <html-file> [--password <pw>] [--token <t>]\n\nPublish only when the user explicitly asks to share or publish the artifact outside the local machine. This command sends the artifact to ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and prints a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --password to publish a PRIVATE password-protected page; viewers must supply the password to view. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for updating or deleting the page later. Set LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token; it is never required. The annotation SDK is never included.\n`,
+    share: `Usage:\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n\nOnly run this command when the user explicitly asks to publish or share the artifact outside the local machine. It publishes the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and prints a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --private to publish a PRIVATE page behind a generated password, returned once in the output - give it to the user with the URL and tell them it is a shared secret. Pass --password <pw> instead when the user chose the password; it is never echoed back. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for changing the page later.\n\n--site <site_id> with --update-key <key> republishes an existing page in place: same URL, new HTML. On a republish the password is left alone unless you pass --private (rotate to a new generated one) or --password <pw> (set one). There is no way to make a private page public again: ht-ml.app accepts a request to clear a password and silently ignores it, so Lavish does not offer one rather than reporting a page as public while it is still gated. Locking a page that was PUBLIC is also not instant at ht-ml.app's CDN: it was observed still answering uncredentialed requests for minutes after the password was set, so do not tell the user a newly gated page is unreachable right away (a page that was already private has no such cached copy).\n\n--unpublish takes the same credentials and no file. ht-ml.app has NO delete endpoint, so this replaces the page with a short placeholder and locks it behind a random password that is immediately discarded; the URL still resolves and the host still holds what was published. Say that to the user rather than calling it deleted. The update_key still works, so republishing with --private brings the page back behind a new password.\n\nA value flag given an empty or whitespace-only value is REFUSED rather than acted on: an unquoted shell variable that is unset makes \`--password $PW\` an empty password, which the host treats as none and would publish a PUBLIC page while you believed it was gated. Quote the value, or pass --private to have Lavish generate one.\n\nSet LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token when CREATING a page; it is never required. A republish (--site/--update-key) or --unpublish rejects --token, because the update_key is what the Authorization header carries there. The annotation SDK is never included.\n`,
     stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
-    design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, Mermaid diagram tooling, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
+    design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, the whiteboard (Mermaid) opt-in snippet, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
     setup: `Usage: lavish-axi setup hooks\n       lavish-axi setup plugin\n\nhooks: install or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context. This is the primary integration - it carries live session state.\n\nplugin: register the installed lavish-axi package as an Agent Plugin (agent-plugins.org) in VS Code, Cursor, and GitHub Copilot CLI. The installed package directory is itself the plugin root, so nothing is downloaded and no marketplace is involved. Reload each client afterward. Codex users should use \`setup hooks\` instead.\n\nBoth actions are explicit opt-in, idempotent, and repair a stale path after a reinstall.\n`,
-    server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n\nLAVISH_AXI_HOST sets the bind address (default 127.0.0.1; a wildcard 0.0.0.0 or :: binds every interface). Binding beyond loopback exposes an unauthenticated server that can read and serve arbitrary local files to anything that can reach it, so only do so on a trusted network. LAVISH_AXI_LINK_HOST sets the hostname written into generated session links (default: the bind address, or loopback when bound to a wildcard). See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
+    server: `Usage: lavish-axi server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n\nLavish is loopback-only by default and binds to 127.0.0.1. Set LAVISH_AXI_TAILSCALE=1 to also bind this machine's Tailscale IPv4 and use its MagicDNS name in generated session links. Tailscale access exposes an unauthenticated server that can read and serve arbitrary local files to devices on the tailnet, so enable it only on a trusted tailnet. Any explicit LAVISH_AXI_HOST overrides Tailscale binding; wildcard values such as 0.0.0.0 or :: are restricted to loopback. An explicit non-wildcard LAVISH_AXI_HOST sets one bind address. LAVISH_AXI_LINK_HOST can set the link hostname when Tailscale access is disabled. See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
   };
 }
 

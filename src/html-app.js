@@ -2,12 +2,19 @@
 // (https://ht-ml.app), a third-party hosting service not part of Lavish, and return a visitable
 // share URL. Creation needs no account or API key - `POST /v1/sites` sends the HTML to
 // ht-ml.app's servers with an optional password, then returns a `url` plus a secret
-// `update_key` (the only credential, returned once, used later to update or delete the page).
+// `update_key` (the only credential, returned once, used later to update the page).
 // Shares are public by default; when a password is supplied, viewers must enter it before viewing.
 // An optional bearer token is supported for callers who have one but is never required.
+//
+// `PUT /v1/sites/{site_id}` republishes an existing page and authenticates with that secret
+// `update_key` as the bearer credential. Omitting `password` there preserves whatever the page
+// already had, so setting or rotating one is deliberate rather than implied by every update. The
+// service has no delete endpoint at all, which is why unpublishing is a republish of a placeholder
+// page rather than a removal.
 
 const DEFAULT_API_URL = "https://api.ht-ml.app";
 const PUBLISH_TIMEOUT_MS = 30_000;
+const SITE_ID_RE = /^[A-Za-z0-9._-]+$/;
 
 export function htmlAppApiUrl(env = process.env) {
   return String(env.LAVISH_AXI_HTML_APP_API_URL || DEFAULT_API_URL).replace(/\/+$/, "");
@@ -18,6 +25,86 @@ export function createHtmlAppPayload(html, options = {}) {
   const password = optionalString(options.password);
   if (password) body.password = password;
   return body;
+}
+
+/**
+ * Update payload. An absent password preserves the site's current one; a present one sets or
+ * rotates it. There is no way to remove a page's password, so this never sends an empty one.
+ *
+ * Probed against the live ht-ml.app host, republishing one real private page three ways:
+ * - No `password` key: the page still refused an uncredentialed request and still opened with the
+ *   ORIGINAL password, while serving the new HTML. Preservation is observed, not assumed.
+ * - `password: "<new>"`: the old password stopped working and the new one opened the page.
+ * - `password: ""`: answered 200 and changed nothing - the original password still opened the
+ *   page. The host silently ignores a clear despite documenting one, which is why Lavish has no
+ *   clear-password path: reporting a page as public while it is still gated is the worse failure.
+ *
+ * The none -> set transition was probed separately, on a page published with NO password, because
+ * both `--unpublish`'s lock and a `--private`/`--password` republish depend on it:
+ * - `password: "<new>"` on a page that had none takes effect at the ORIGIN - the site's details
+ *   GET answered 404 uncredentialed and 200 with the update_key, matching a known-private site.
+ * - But it is not instant at the EDGE: that page's viewer subdomain kept answering uncredentialed
+ *   requests from CloudFront for at least ~3 minutes afterwards (cache age climbing, no
+ *   cache-control on the response). WHICH body it served matters and was observed: the PUT
+ *   invalidated the cached copy, so the edge served the NEW post-PUT HTML without asking for the
+ *   password. It did not keep serving the pre-PUT content. So the content swap is immediate and
+ *   only the GATE lags, which is why the surfaces say a newly locked page may still be readable
+ *   rather than that the old page stays visible.
+ *
+ * That last one is a property of the public -> private TRANSITION, not of the command that
+ * performs it: `--unpublish` and a `--private`/`--password` republish both hit it, so EVERY
+ * surface reporting a page as newly gated carries the caveat. It is also no wider than that - a
+ * page that was already private has no publicly cached copy, so rotating its password leaks
+ * nothing, and Lavish cannot tell the two apart because it persists no site state.
+ *
+ * The PUT response shape was observed in the same probes: a successful update answers 200 with
+ * `url`, `site_id`, `status`, and `update_key`, so the republish and unpublish surfaces get a real
+ * URL from the host on the default base. `options.url` stays as the defensive fallback for a
+ * response that omits one; nothing synthesizes a URL, because the API base is configurable.
+ * @param {string} html
+ * @param {{ password?: string | null }} [options]
+ */
+export function createHtmlAppUpdatePayload(html, options = {}) {
+  const body = { html_content: String(html ?? "") };
+  const password = optionalString(options.password);
+  if (password) body.password = password;
+  return body;
+}
+
+/**
+ * Validate the site identifier the host returned at create time. A URL is the thing users have
+ * in hand and the thing that is not a site_id, so it gets its own message instead of a generic
+ * rejection; everything else is refused because it would be interpolated into the request path.
+ * @param {string} value
+ * @returns {string}
+ */
+export function normalizeSiteId(value) {
+  const siteId = optionalString(value);
+  if (!siteId) throw new Error("a site_id is required");
+  if (/^[a-z]+:\/\//i.test(siteId)) {
+    throw new Error(`expected a site_id (such as abc123) rather than a URL: ${siteId}`);
+  }
+  if (!SITE_ID_RE.test(siteId) || /^\.+$/.test(siteId)) {
+    throw new Error(`not a valid site_id: ${siteId}`);
+  }
+  return siteId;
+}
+
+/**
+ * The page an unpublished share is replaced with. ht-ml.app has no delete endpoint, so the page
+ * keeps existing at its URL; this is what a visitor finds there afterwards.
+ */
+export function createUnpublishedPageHtml() {
+  return (
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<meta name="robots" content="noindex">' +
+    "<title>Unpublished</title>" +
+    "<style>html{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;" +
+    "font:16px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText}" +
+    "p{max-width:30rem;padding:2rem;text-align:center}</style>" +
+    "</head><body><p>This page has been unpublished. Its contents are no longer available.</p></body></html>"
+  );
 }
 
 /**
@@ -34,30 +121,168 @@ export function createHtmlAppPayload(html, options = {}) {
  */
 export async function publishToHtmlApp(html, options = {}) {
   const env = options.env || process.env;
+  const token = optionalString(options.token ?? env.LAVISH_AXI_HTML_APP_TOKEN);
+  const data = await requestHtmlApp({
+    method: "POST",
+    path: "/v1/sites",
+    body: createHtmlAppPayload(html, options),
+    bearer: token,
+    options,
+    env,
+  });
+
+  const url = optionalString(data.url);
+  const updateKey = optionalString(data.update_key);
+  const siteId = echoedSiteId(data.site_id, "");
+  if (!url || !updateKey) {
+    const missing = [!url && "a url", !updateKey && "an update_key"].filter(Boolean).join(" or ");
+    throw htmlAppIncompleteResponseError(`ht-ml.app published the page but its response did not include ${missing}`, {
+      url,
+      siteId,
+      updateKey,
+      status: String(data.status || ""),
+    });
+  }
+  return {
+    url,
+    site_id: siteId,
+    update_key: updateKey,
+    status: String(data.status || ""),
+  };
+}
+
+/**
+ * A site_id the HOST echoed is untrusted input: it reaches prose and, for a republish hint, a
+ * backticked command an agent may run, where `abc123 --password evil` would parse as extra flags
+ * and gate the page behind a value nobody chose. The id is a path segment, so anything
+ * `normalizeSiteId` refuses could not have addressed a real site anyway; fall back to the locally
+ * validated id the request was sent to.
+ * @param {unknown} echoed
+ * @param {string} fallback
+ */
+function echoedSiteId(echoed, fallback) {
+  const value = optionalString(echoed);
+  if (!value) return fallback;
+  try {
+    return normalizeSiteId(value);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Republish an existing ht-ml.app page with new HTML. The secret update_key is the credential.
+ * @param {string} siteId The site_id returned when the page was created.
+ * @param {string} html The replacement HTML.
+ * @param {object} [options]
+ * @param {string} [options.updateKey] Required secret write credential for the site.
+ * @param {string|null} [options.password] Set or rotate the password, or omit it to preserve the
+ *   page's current one. The host has no way to remove a password (see createHtmlAppUpdatePayload).
+ * @param {string} [options.url] The known site URL, used when the response omits one. When neither
+ *   supplies one the returned `url` is empty rather than guessed: the API base is configurable, so
+ *   a synthesized host would name somewhere the page was never published.
+ * @param {string} [options.apiUrl]
+ * @param {typeof fetch} [options.fetch]
+ * @param {NodeJS.ProcessEnv} [options.env]
+ * @param {number} [options.timeoutMs]
+ * @returns {Promise<{ url: string, site_id: string, status: string }>}
+ */
+export async function updateHtmlApp(siteId, html, options = {}) {
+  const env = options.env || process.env;
+  const site = normalizeSiteId(siteId);
+  const updateKey = optionalString(options.updateKey);
+  if (!updateKey) {
+    throw new Error("ht-ml.app update failed: an update_key is required to change a published page");
+  }
+  const data = await requestHtmlApp({
+    method: "PUT",
+    path: `/v1/sites/${encodeURIComponent(site)}`,
+    body: createHtmlAppUpdatePayload(html, options),
+    bearer: updateKey,
+    options,
+    env,
+    action: "update",
+  });
+
+  return {
+    url: optionalString(data.url) || optionalString(options.url),
+    site_id: echoedSiteId(data.site_id, site),
+    status: String(data.status || ""),
+  };
+}
+
+// A caller that changes a live page needs to tell "the host refused, nothing was written" from
+// "the outcome is unknown". Only a response the host actually returned proves the former, so the
+// status rides on the error: absent means no answer reached us (transport failure or timeout).
+/**
+ * Every caller that changes hosted state splits its reporting here. A 4xx is an answer the host
+ * returned, so nothing was written; anything else can follow a request the origin already
+ * committed and must be reported as an outcome that may already be live.
+ * @param {unknown} error
+ */
+export function hostRejectedShareWrite(error) {
+  const status = error instanceof Error ? Number(/** @type {any} */ (error).status) : Number.NaN;
+  return Number.isInteger(status) && status >= 400 && status < 500;
+}
+
+/**
+ * A 200 whose body is missing required fields is NOT an unknown outcome: the page landed. The
+ * caller needs to say so and to surface whatever fields did arrive, because a url with no
+ * update_key is a live (public by default) page whose only write credential is gone for good.
+ * @param {string} message
+ * @param {{ url?: string, siteId?: string, updateKey?: string, status?: string }} received
+ */
+export function htmlAppIncompleteResponseError(message, received = {}) {
+  const error = new Error(message);
+  const present = Object.fromEntries(Object.entries(received).filter(([, value]) => value));
+  Object.defineProperty(error, "published", { value: true, enumerable: true });
+  Object.defineProperty(error, "received", { value: present, enumerable: true });
+  return error;
+}
+
+/**
+ * @param {unknown} error
+ * @returns {{ url?: string, siteId?: string, updateKey?: string, status?: string } | null}
+ */
+export function publishedDespiteError(error) {
+  if (!(error instanceof Error) || /** @type {any} */ (error).published !== true) return null;
+  return /** @type {any} */ (error).received || {};
+}
+/**
+ * @param {string} message
+ * @param {{ status?: number, cause?: unknown }} [details]
+ */
+function htmlAppRequestError(message, details = {}) {
+  const { status, cause } = details;
+  const error = new Error(message, cause ? { cause } : undefined);
+  if (status !== undefined) Object.defineProperty(error, "status", { value: status, enumerable: true });
+  return error;
+}
+
+async function requestHtmlApp({ method, path, body, bearer, options, env, action = "publish" }) {
   const apiUrl = (options.apiUrl ? String(options.apiUrl).replace(/\/+$/, "") : "") || htmlAppApiUrl(env);
   const fetchImpl = options.fetch || fetch;
-  const token = optionalString(options.token ?? env.LAVISH_AXI_HTML_APP_TOKEN);
 
   const headers = { "content-type": "application/json", "user-agent": "lavish-axi" };
-  if (token) headers.authorization = `Bearer ${token}`;
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs || PUBLISH_TIMEOUT_MS);
   let response;
   let text;
   try {
-    response = await fetchImpl(`${apiUrl}/v1/sites`, {
-      method: "POST",
+    response = await fetchImpl(`${apiUrl}${path}`, {
+      method,
       headers,
-      body: JSON.stringify(createHtmlAppPayload(html, options)),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     text = await response.text();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("ht-ml.app publish timed out", { cause: error });
+      throw htmlAppRequestError(`ht-ml.app ${action} timed out`, { cause: error });
     }
-    throw new Error(`ht-ml.app publish failed: ${error instanceof Error ? error.message : String(error)}`, {
+    throw htmlAppRequestError(`ht-ml.app ${action} failed: ${error instanceof Error ? error.message : String(error)}`, {
       cause: error,
     });
   } finally {
@@ -66,23 +291,11 @@ export async function publishToHtmlApp(html, options = {}) {
 
   const data = text ? parseJson(text) : {};
   if (!response.ok) {
-    throw new Error(`ht-ml.app publish failed: ${describeError(response.status, data, text)}`);
+    throw htmlAppRequestError(`ht-ml.app ${action} failed: ${describeError(response.status, data, text)}`, {
+      status: response.status,
+    });
   }
-
-  const url = optionalString(data.url);
-  if (!url) {
-    throw new Error("ht-ml.app publish failed: response did not include a url");
-  }
-  const updateKey = optionalString(data.update_key);
-  if (!updateKey) {
-    throw new Error("ht-ml.app publish failed: response did not include an update_key");
-  }
-  return {
-    url,
-    site_id: String(data.site_id || ""),
-    update_key: updateKey,
-    status: String(data.status || ""),
-  };
+  return data;
 }
 
 function describeError(status, data, text) {

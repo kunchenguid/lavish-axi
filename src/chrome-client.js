@@ -108,6 +108,11 @@ const chatAttachments = /** @type {HTMLDivElement} */ (document.getElementById("
 const chatAttachButton = /** @type {HTMLButtonElement} */ (document.getElementById("chatAttach"));
 const chatAttachInput = /** @type {HTMLInputElement} */ (document.getElementById("chatAttachInput"));
 const chatAttachmentNotice = /** @type {HTMLSpanElement} */ (document.getElementById("chatAttachmentNotice"));
+const panel = /** @type {HTMLElement} */ (document.getElementById("panel"));
+const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelHead"));
+const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
+const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
+const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
@@ -128,8 +133,18 @@ const shareStatus = /** @type {HTMLDivElement} */ (document.getElementById("shar
 const shareResult = /** @type {HTMLDivElement} */ (document.getElementById("shareResult"));
 const shareUrlInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUrl"));
 const shareUpdateKeyInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUpdateKey"));
+const shareGenerateInput = /** @type {HTMLInputElement} */ (document.getElementById("shareGenerate"));
+const sharePasswordResult = /** @type {HTMLLabelElement} */ (document.getElementById("sharePasswordResult"));
+const shareUrlResult = /** @type {HTMLLabelElement} */ (document.getElementById("shareUrlResult"));
+const shareUpdateKeyResult = /** @type {HTMLLabelElement} */ (document.getElementById("shareUpdateKeyResult"));
+const shareUpdateKeyNote = /** @type {HTMLParagraphElement} */ (document.getElementById("shareUpdateKeyNote"));
+const shareSiteIdResult = /** @type {HTMLLabelElement} */ (document.getElementById("shareSiteIdResult"));
+const shareSiteIdInput = /** @type {HTMLInputElement} */ (document.getElementById("shareSiteId"));
+const sharePasswordOutput = /** @type {HTMLInputElement} */ (document.getElementById("sharePasswordOut"));
+const copySharePasswordButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySharePassword"));
 const copyShareUrlButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareUrl"));
 const copyUpdateKeyButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyUpdateKey"));
+const copyShareSiteIdButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareSiteId"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
@@ -146,6 +161,8 @@ const layoutGateOverlay = /** @type {HTMLDivElement} */ (document.getElementById
 const layoutGateTitle = /** @type {HTMLDivElement} */ (document.getElementById("layoutGateTitle"));
 const layoutGateCopy = /** @type {HTMLParagraphElement} */ (document.getElementById("layoutGateCopy"));
 const layoutGateAction = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateAction"));
+const layoutGateBypass = /** @type {HTMLButtonElement} */ (document.getElementById("layoutGateBypass"));
+const layoutGateEscape = /** @type {any} */ (window).__lavishLayoutGateEscape;
 const warningsWrap = /** @type {HTMLDivElement} */ (document.getElementById("warningsWrap"));
 const warningsButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsButton"));
 const warningsCount = /** @type {HTMLSpanElement} */ (document.getElementById("warningsCount"));
@@ -180,7 +197,6 @@ let outdatedReloadInFlight = false;
 let unrestorableDraftMiss = null;
 let retiredDrafts = loadRetiredDrafts();
 let layoutGateVisible = false;
-let layoutGateArmed = false;
 let layoutGateManuallyBypassed = !layoutGateEnabled;
 let layoutGateFailureActive = false;
 // A failure only the user can retire. The artifact-load card clears itself once a load succeeds;
@@ -400,6 +416,7 @@ function render() {
   }
   updateSendState();
   scrollPanelToBottom();
+  renderSheetSummary();
 }
 
 function updateSendState() {
@@ -540,6 +557,7 @@ function syncChat(chat) {
 function setAgentPresence(state) {
   agentPresence = state === "listening" || state === "working" ? state : "waiting";
   updateSendState();
+  renderSheetSummary();
   if (presenceBanner) presenceBanner.hidden = ended || agentPresence !== "waiting";
 
   if (agentPresence !== "working") {
@@ -690,6 +708,198 @@ async function refreshChromeLoadHandoff(requestSequence) {
 function scrollPanelToBottom() {
   panelScroll.scrollTop = panelScroll.scrollHeight;
 }
+
+// ---- Phone-width conversation sheet ----
+// Below this width chrome.css turns the conversation panel into a dock the user raises as a
+// bottom sheet over the artifact. This controller owns intent, accessibility state, gestures,
+// visual-viewport measurements, and the dock summary; CSS owns the geometry. The query must match
+// the one chrome.css lays the sheet out under.
+const MOBILE_SHEET_MEDIA = "(max-width: 860px)";
+// How far a drag on the dock must travel before it counts as a gesture rather than a tap.
+const SHEET_DRAG_THRESHOLD_PX = 48;
+const sheetStorageKey = "lavish-axi:sheet-open:" + key;
+const sheetMedia = typeof window.matchMedia === "function" ? window.matchMedia(MOBILE_SHEET_MEDIA) : null;
+// The user's intent, kept across a chrome reload so a live-reload or server upgrade does not drop
+// them back onto a closed dock mid-conversation.
+let sheetOpen = readSheetOpen();
+// The latest agent reply that landed while the sheet was closed: the dock previews it until the
+// user opens the sheet, so a reply never arrives silently behind the artifact.
+let unreadAgentReply = "";
+/** @type {{ pointerId: any, startY: number, moved: boolean } | null} */
+let sheetDrag = null;
+let suppressSheetClick = false;
+
+function readSheetOpen() {
+  try {
+    return sessionStorage.getItem(sheetStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function isMobileSheet() {
+  return Boolean(sheetMedia && sheetMedia.matches);
+}
+
+function setSheetOpen(open) {
+  const next = Boolean(open);
+  const changed = next !== sheetOpen;
+  sheetOpen = next;
+  try {
+    if (sheetOpen) sessionStorage.setItem(sheetStorageKey, "1");
+    else sessionStorage.removeItem(sheetStorageKey);
+  } catch {
+    // Storage refused is not worth a broken sheet: the state just stops surviving a reload.
+  }
+  if (sheetOpen) unreadAgentReply = "";
+  applySheetState();
+  if (!changed || !isMobileSheet()) return;
+  if (sheetOpen) scrollPanelToBottom();
+}
+
+// Re-derives every sheet attribute from the phone layout, sheet-open, and session-ended state so a
+// viewport crossing the breakpoint in either direction cannot make an ended panel interactive or
+// leave a closed dock trapping focus.
+function applySheetState() {
+  const mobile = isMobileSheet();
+  const open = mobile && sheetOpen;
+  document.body.classList.toggle("sheet-open", open);
+  const docked = mobile && !open;
+  panelScroll.inert = ended || docked;
+  chatComposer.inert = ended || docked;
+  const activeElement = document.activeElement;
+  if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
+    panelToggle.focus();
+  }
+  panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  panelToggle.setAttribute("aria-label", open ? "Hide conversation" : "Show conversation");
+  renderSheetSummary();
+}
+
+// What the closed dock says. One line, most actionable state first: work the user has queued,
+// then a reply they have not seen, then whether the agent is there to receive a send.
+function sheetSummary() {
+  if (ended) return { text: "Session ended", accent: false, unread: false };
+  if (queued.length > 0) {
+    return { text: queued.length === 1 ? "1 queued" : queued.length + " queued", accent: true, unread: false };
+  }
+  if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true };
+  if (agentPresence === "working") return { text: "Agent is working…", accent: false, unread: false };
+  if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false };
+  return { text: "Agent not listening", accent: false, unread: false };
+}
+
+function renderSheetSummary() {
+  const summary = sheetSummary();
+  panelSummary.textContent = summary.text;
+  panelSummary.classList.toggle("is-accent", summary.accent);
+  panelSummary.classList.toggle("is-unread", summary.unread);
+}
+
+// A brief pulse on the dock when something the user should notice lands while the sheet is
+// closed: a prompt they queued from the artifact, or an agent reply.
+function pulseSheetDock() {
+  if (!isMobileSheet() || sheetOpen) return;
+  panelHead.classList.remove("is-fresh");
+  // Restart the animation even when the previous pulse is still running.
+  void panelHead.offsetWidth;
+  panelHead.classList.add("is-fresh");
+}
+
+function noteAgentReply(text) {
+  if (!isMobileSheet() || sheetOpen) return;
+  unreadAgentReply = String(text || "");
+  renderSheetSummary();
+  pulseSheetDock();
+}
+
+// The phone keyboard shrinks the visual viewport without touching the layout viewport on iOS, so
+// the sheet reads its height and offset from here; chrome.css consumes these only under the phone
+// breakpoint. Android reports the same numbers through the layout viewport thanks to the
+// `interactive-widget=resizes-content` viewport meta, which makes this a no-op there.
+function syncVisualViewport() {
+  const root = document.documentElement;
+  if (!root || !root.style || typeof root.style.setProperty !== "function") return;
+  const viewport = window.visualViewport;
+  const height = viewport ? viewport.height : window.innerHeight;
+  const top = viewport ? viewport.offsetTop : 0;
+  if (!(height > 0)) return;
+  root.style.setProperty("--vv-height", Math.round(height) + "px");
+  root.style.setProperty("--vv-top", Math.round(Math.max(0, top || 0)) + "px");
+}
+
+function sheetDragOffset(event) {
+  return sheetDrag ? Number(event.clientY) - sheetDrag.startY : 0;
+}
+
+function clearSheetDrag() {
+  sheetDrag = null;
+  panel.classList.remove("is-dragging");
+  panel.style.transform = "";
+}
+
+function finishSheetDrag(event) {
+  if (!sheetDrag || event.pointerId !== sheetDrag.pointerId) return;
+  const offset = sheetDragOffset(event);
+  const moved = sheetDrag.moved;
+  clearSheetDrag();
+  if (!moved) return;
+  // The click that follows a completed drag must not undo what the drag decided.
+  suppressSheetClick = true;
+  if (sheetOpen && offset > SHEET_DRAG_THRESHOLD_PX) setSheetOpen(false);
+  else if (!sheetOpen && offset < -SHEET_DRAG_THRESHOLD_PX) setSheetOpen(true);
+}
+
+panelHead.addEventListener("click", () => {
+  if (!isMobileSheet()) return;
+  if (suppressSheetClick) {
+    suppressSheetClick = false;
+    return;
+  }
+  setSheetOpen(!sheetOpen);
+});
+panelScrim.addEventListener("click", () => setSheetOpen(false));
+panelHead.addEventListener("pointerdown", (event) => {
+  if (!isMobileSheet() || event.button) return;
+  sheetDrag = { pointerId: event.pointerId, startY: Number(event.clientY), moved: false };
+  if (typeof panelHead.setPointerCapture === "function") panelHead.setPointerCapture(event.pointerId);
+});
+panelHead.addEventListener("pointermove", (event) => {
+  if (!sheetDrag || event.pointerId !== sheetDrag.pointerId) return;
+  const offset = sheetDragOffset(event);
+  if (Math.abs(offset) > 6) sheetDrag.moved = true;
+  if (!sheetDrag.moved) return;
+  panel.classList.add("is-dragging");
+  // Follow the finger: an open sheet only moves down, a closed dock only up.
+  panel.style.transform = sheetOpen
+    ? "translateY(" + Math.max(0, offset) + "px)"
+    : "translateY(calc(100% - var(--dock-h) - env(safe-area-inset-bottom, 0px) + " + Math.min(0, offset) + "px))";
+});
+panelHead.addEventListener("pointerup", finishSheetDrag);
+panelHead.addEventListener("pointercancel", (event) => {
+  if (!sheetDrag || event.pointerId !== sheetDrag.pointerId) return;
+  clearSheetDrag();
+  suppressSheetClick = false;
+});
+if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
+  sheetMedia.addEventListener("change", (event) => {
+    if (!event.matches) {
+      sheetOpen = false;
+      try {
+        sessionStorage.removeItem(sheetStorageKey);
+      } catch {
+        // Storage refusal only prevents persistence; the in-memory state is already reset.
+      }
+    }
+    applySheetState();
+  });
+}
+if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
+  window.visualViewport.addEventListener("resize", syncVisualViewport);
+  window.visualViewport.addEventListener("scroll", syncVisualViewport);
+}
+window.addEventListener("resize", syncVisualViewport);
+syncVisualViewport();
 
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -1018,6 +1228,14 @@ async function submitQueuedOnce() {
   if (!response.ok) {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
+      // The session already ended before this batch arrived - most likely this chrome missed the
+      // SSE `ended` event (a dropped connection). Go read-only now instead of leaving Send enabled
+      // for another attempt that will be refused the same way.
+      if (data?.status === "ended") {
+        endAfterSubmit = false;
+        markSessionEnded();
+        return false;
+      }
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
       endAfterSubmit = false;
       return false;
@@ -1054,6 +1272,7 @@ function normalizeLayoutFindings(value) {
 }
 
 function clearLayoutGateTimer() {
+  layoutGateEscape?.cancel?.();
   if (layoutGateTimer) clearTimeout(layoutGateTimer);
   layoutGateTimer = undefined;
 }
@@ -1082,7 +1301,8 @@ function setLayoutGateActive(active) {
 // its own: the artifact never loaded and retrying stopped helping. The overlay is reused because
 // it already covers the empty artifact area; without this the user is left looking at either a
 // spinner that never resolves or a blank frame, with nothing explaining it and nothing to click.
-// Bumping the cycle retires any pending reveal timer so a stale one cannot hide this card.
+// Bumping the cycle invalidates the previous timer; setLayoutGateFailure immediately replaces it
+// with a fresh hold timer so the card cannot strand the visual gate.
 function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { sticky = false } = {}) {
   if (ended) return;
   // A sticky card is the user's to retire, and that has to hold against being overwritten as
@@ -1092,8 +1312,9 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
   layoutGateFailureActive = true;
   layoutGateFailureSticky = sticky;
   layoutGateCycle += 1;
-  clearLayoutGateTimer();
-  layoutGateArmed = false;
+  // Failure copy must not disable the visual gate's own recovery paths. Keep a fresh hold timer
+  // over the card so a server replacement or any other failure cannot strand the artifact behind
+  // a sticky message forever.
   if (layoutGateTitle) layoutGateTitle.textContent = title;
   if (layoutGateCopy) layoutGateCopy.textContent = copy;
   if (layoutGateAction) {
@@ -1101,7 +1322,12 @@ function setLayoutGateFailure(title, copy, actionLabel = "Reload", onAction, { s
     layoutGateAction.textContent = actionLabel;
     layoutGateAction.onclick = onAction || (() => location.reload());
   }
+  if (layoutGateBypass) {
+    layoutGateBypass.hidden = false;
+    layoutGateBypass.onclick = () => forceRevealLayoutGate("manual");
+  }
   setLayoutGateActive(true);
+  armLayoutGateTimer();
 }
 
 // Every failure card in this feature is raised in a state where the server may not be listening,
@@ -1155,35 +1381,31 @@ function clearLayoutGateFailure() {
     layoutGateAction.textContent = "Show anyway";
     layoutGateAction.onclick = () => forceRevealLayoutGate("manual");
   }
+  if (layoutGateBypass) layoutGateBypass.hidden = true;
   revealLayoutGate();
 }
 
 function revealLayoutGate() {
-  if (layoutGateFailureSticky) return;
   clearLayoutGateTimer();
-  layoutGateArmed = false;
+  layoutGateEscape?.reveal?.();
   setLayoutGateActive(false);
 }
 
 function forceRevealLayoutGate(reason) {
-  if (!layoutGateEnabled || ended) return;
-  if (reason === "manual") layoutGateManuallyBypassed = true;
+  if (ended) return;
+  if (reason === "manual") {
+    layoutGateManuallyBypassed = true;
+    layoutGateEscape?.manualReveal?.();
+  }
   revealLayoutGate();
 }
 
-function startLayoutGateCycle() {
-  clearLayoutGateFailure();
-  // A sticky failure owns the overlay until the user acts on it, so a later load must not repaint
-  // the checking card over the message it left there.
-  if (layoutGateFailureSticky) return;
-  if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
-
-  layoutGateCycle += 1;
-  layoutGateArmed = true;
-  setLayoutGateCard("checking");
-  setLayoutGateActive(true);
+function armLayoutGateTimer() {
   clearLayoutGateTimer();
-
+  if (layoutGateEscape?.arm) {
+    layoutGateEscape.arm(layoutGateMaxHoldMs, () => forceRevealLayoutGate("timeout"));
+    return;
+  }
   const cycle = layoutGateCycle;
   layoutGateTimer = setTimeout(() => {
     if (cycle !== layoutGateCycle || !layoutGateVisible || ended) return;
@@ -1192,22 +1414,35 @@ function startLayoutGateCycle() {
   layoutGateTimer?.unref?.();
 }
 
+function startLayoutGateCycle() {
+  clearLayoutGateFailure();
+  if (!layoutGateEnabled || layoutGateManuallyBypassed || ended) return;
+
+  layoutGateCycle += 1;
+  setLayoutGateActive(true);
+  // A sticky failure owns the card copy, but never the reveal. Do not repaint it as a checking
+  // card, and do arm a fresh timer for reloads that happen while the sticky card is present.
+  if (!layoutGateFailureSticky) setLayoutGateCard("checking");
+  armLayoutGateTimer();
+}
+
 // The gate only waits for fonts and final geometry now. It never holds the artifact hostage
 // pending an agent repair: findings are the user's to triage, so a completed pass always reveals
 // and hands the result to the passive inbox.
 function handleLayoutGatePass() {
-  if (!layoutGateEnabled || layoutGateManuallyBypassed) return;
-  if (!layoutGateArmed && !layoutGateVisible) return;
+  if (ended || !layoutGateVisible) return;
   revealLayoutGate();
 }
 
 function initializeLayoutGate() {
+  if (layoutGateEscape?.isManuallyBypassed?.()) layoutGateManuallyBypassed = true;
   if (!layoutGateEnabled) {
     setLayoutGateActive(false);
     return;
   }
 
   if (layoutGateAction) layoutGateAction.onclick = () => forceRevealLayoutGate("manual");
+  if (layoutGateBypass) layoutGateBypass.onclick = () => forceRevealLayoutGate("manual");
   startLayoutGateCycle();
 }
 
@@ -1579,6 +1814,7 @@ function markSessionEnded() {
   ended = true;
   cancelArtifactLoadRecovery();
   closeMenus();
+  closeShareDialog();
   closeWarningsDrawer();
   renderWarnings();
   closeWhiteboard();
@@ -1586,12 +1822,14 @@ function markSessionEnded() {
   moreButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
+  applySheetState();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
   if (outdatedBanner) outdatedBanner.hidden = true;
   layoutGateManuallyBypassed = true;
   layoutGateFailureSticky = false;
   revealLayoutGate();
+  layoutGateEscape?.end?.();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
 }
@@ -1670,14 +1908,66 @@ async function exportArtifact() {
   }
 }
 
+// ONE owner for the whole result panel. Every path that renders an outcome - dialog open, a
+// successful publish, a retry after any failure, an indeterminate report, an incomplete 200 -
+// routes through here, because a row shown or hidden by one path and reset by another is how a
+// retry after a failed publish came to display "Published" with the once-only update_key still
+// hidden. Each row is derived from the value it would show, so nothing can be half-rendered.
+function renderShareResult({ url = "", siteId = "", password = "", updateKey = "" } = {}) {
+  shareUrlInput.value = url;
+  shareUrlResult.hidden = !url;
+  // A self-hosted backend may not return one, and an empty box with a copy button is worse than
+  // no row. Never derive it from the URL: that shape belongs to the backend, not Lavish.
+  shareSiteIdInput.value = siteId;
+  shareSiteIdResult.hidden = !siteId;
+  sharePasswordOutput.value = password;
+  sharePasswordResult.hidden = !password;
+  shareUpdateKeyInput.value = updateKey;
+  shareUpdateKeyResult.hidden = !updateKey;
+  // The note's own copy tells the user to republish with `--site <site id> --update-key <key>`,
+  // so it may only appear when BOTH halves of that credential are on screen. An update key with
+  // no usable site id cannot update anything, and the status line says so instead.
+  shareUpdateKeyNote.hidden = !(updateKey && siteId);
+  shareResult.hidden = !(url || siteId || password || updateKey);
+  // Returned so every sentence in the status line is derived from what was actually rendered.
+  // Copy stamped from the request instead has promised rows the panel does not contain.
+  return { url, siteId, password, updateKey };
+}
+
+// Wording shared with the CLI's next_step for the same condition, so the two surfaces cannot
+// drift into describing the same dead end differently.
+const NO_SITE_ID_WARNING =
+  " The host did not return a site id Lavish can use, and --site is half the republish credential, so this page can NEVER be republished or unpublished even though its update key is in hand.";
+
+// What the page is gated behind, said only in terms of what the panel can show. A password the
+// user typed is never echoed by the server, so pointing at a row that was not rendered is the
+// same confidently-wrong sentence this feature exists to avoid.
+function publishedVisibilityText(isPublic, rendered, publicText) {
+  if (isPublic) return publicText;
+  return rendered.password ? "behind the password below" : "behind the password you supplied";
+}
+
 function openShareDialog() {
   closeMenus();
   shareDialog.hidden = false;
   shareStatus.textContent = "";
   shareStatus.classList.remove("error");
-  shareResult.hidden = true;
+  renderShareResult();
+  shareGenerateInput.checked = false;
   sharePasswordInput.value = "";
+  syncSharePasswordInput();
   sharePasswordInput.focus();
+}
+
+// A generated password and a typed one are the same field to the server, so the checkbox owns
+// the input rather than the two racing to decide what gets published.
+function syncSharePasswordInput() {
+  const generating = shareGenerateInput.checked;
+  sharePasswordInput.disabled = generating;
+  sharePasswordInput.placeholder = generating
+    ? "Lavish will generate one when you publish"
+    : "Leave blank for a public page";
+  if (generating) sharePasswordInput.value = "";
 }
 
 function closeShareDialog() {
@@ -1692,24 +1982,83 @@ async function copyToButton(value, button, label) {
   }, 1200);
 }
 
+function reportIndeterminatePublish(data) {
+  const rendered = renderShareResult({ password: data.password || "" });
+  shareStatus.classList.add("error");
+  const reason = data.error ? data.error + " " : "";
+  const visibility = publishedVisibilityText(data.public, rendered, "PUBLIC - anyone with the link could read it");
+  shareStatus.textContent =
+    reason +
+    "ht-ml.app may or may not have published this page, so treat the outcome as unknown. If it did publish, the page is live " +
+    visibility +
+    ", and its URL and update key were lost with the failed response, so it can never be republished or unpublished. Publishing again creates a SECOND page rather than replacing it." +
+    (rendered.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
+}
+
+// An incomplete 200 is NOT an unknown outcome: the host answered, so the page landed. Whatever
+// fields did arrive are rendered, because a url with no update_key names a live, public-by-default
+// page whose only write credential is gone - and saying "may or may not" there would throw away
+// the address Lavish is holding.
+function reportIncompletePublish(data) {
+  const rendered = renderShareResult({
+    url: data.url || "",
+    siteId: data.site_id || "",
+    password: data.password || "",
+    updateKey: data.update_key || "",
+  });
+  shareStatus.classList.add("error");
+  const visibility = publishedVisibilityText(data.public, rendered, "PUBLIC - anyone with the link can read it");
+  const updateKeyNote = !rendered.updateKey
+    ? "No update key came back, and ht-ml.app issues one only once and has no delete, so this page can never be republished or unpublished. "
+    : rendered.siteId
+      ? "Copy the update key below - it is issued once. "
+      : "Copy the update key below - it is issued once, though the" + NO_SITE_ID_WARNING.slice(" The".length) + " ";
+  shareStatus.textContent =
+    "ht-ml.app accepted this publish, so the page IS live and " +
+    visibility +
+    ", but its response was malformed and Lavish could not read the whole result back. " +
+    (rendered.url ? "Its address is below. " : "The response carried no URL, so Lavish cannot show the address. ") +
+    updateKeyNote +
+    "Publishing again creates a SECOND page rather than replacing it." +
+    (rendered.password ? " Copy the password now - it is shown once here and Lavish does not store it." : "");
+}
+
 async function publishShare(event) {
   event.preventDefault();
   sharePublishButton.disabled = true;
   shareStatus.classList.remove("error");
   shareStatus.textContent = "Publishing to ht-ml.app...";
-  shareResult.hidden = true;
-  const password = sharePasswordInput.value.trim();
-  const passwordProtected = Boolean(password);
+  renderShareResult();
+  const generating = shareGenerateInput.checked;
+  const password = generating ? "" : sharePasswordInput.value.trim();
+  const passwordProtected = generating || Boolean(password);
   try {
     const response = await fetch("/api/" + key + "/share", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(password ? { password } : {}),
+      body: JSON.stringify(generating ? { generate_password: true } : password ? { password } : {}),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "publish failed");
-    shareUrlInput.value = data.url || "";
-    shareUpdateKeyInput.value = data.update_key || "";
+    if (!response.ok) {
+      // Only a host rejection proves nothing was published. On anything else the page may already
+      // be live, and a password minted for this request is the one thing that could still open it,
+      // so it is shown here rather than dying with the failed response.
+      if (data.outcome === "published-incomplete") {
+        reportIncompletePublish(data);
+        return;
+      }
+      if (data.outcome === "indeterminate") {
+        reportIndeterminatePublish(data);
+        return;
+      }
+      throw new Error(data.error || "publish failed");
+    }
+    const rendered = renderShareResult({
+      url: data.url || "",
+      siteId: data.site_id || "",
+      password: data.password || "",
+      updateKey: data.update_key || "",
+    });
     const unresolvedAssets = Array.isArray(data.unresolved_local_assets) ? data.unresolved_local_assets : [];
     const notices = Array.isArray(data.notices) ? data.notices : [];
     const warningCount = unresolvedAssets.length;
@@ -1723,10 +2072,16 @@ async function publishShare(event) {
           : passwordProtected
             ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
             : "Published. Anyone with the link can view this page.";
-    shareResult.hidden = false;
+    if (rendered.updateKey && !rendered.siteId) shareStatus.textContent += NO_SITE_ID_WARNING;
+    if (rendered.password) {
+      shareStatus.textContent += " Copy the password now - it is shown once here and Lavish does not store it.";
+    }
     shareUrlInput.focus();
     shareUrlInput.select();
   } catch (error) {
+    // Deliberately does NOT clear the panel. It is already cleared before the fetch, so the only
+    // thing this could reach is a result the success path already rendered - and wiping that
+    // destroys the once-issued update_key of a page that definitely published.
     shareStatus.classList.add("error");
     shareStatus.textContent = error instanceof Error ? error.message : String(error);
   } finally {
@@ -2253,6 +2608,8 @@ async function queueWhiteboardFeedback(index, message, mode) {
       // earlier unsent prompt instead of stacking duplicates.
       [internalQueueKeyField]: "whiteboard:" + index,
     });
+    // Queued from the whiteboard inside the artifact, like any other in-artifact prompt.
+    pulseSheetDock();
     postToWhiteboard(index, mode, { type: "lavish-whiteboard:queueResult", ok: true });
     if (mode === "overlay") closeWhiteboard();
   } catch (error) {
@@ -2526,14 +2883,24 @@ window.addEventListener("message", (event) => {
 
   const msg = event.data || {};
   const messageToken = String(msg.artifact_load_token || "");
-  if (messageToken !== artifactLoadToken) return;
+  if (messageToken !== artifactLoadToken) {
+    // A pass can be stamped by the load that just lost a token race. Ask the current artifact
+    // document to run the audit again instead of consuming the only pass for this cycle.
+    if (msg.type === "lavish:layoutDiagnostics") postToFrame({ type: "lavish:requestLayoutDiagnostics" });
+    return;
+  }
   const messageSequence = ++artifactMessageSequence;
   artifactSpokeToken = messageToken;
   clearTimeout(artifactSilenceTimer);
   if (msg.type === "lavish:layoutDiagnostics") {
     const diagnosticSequence = ++layoutDiagnosticSequence;
+    const complete = msg.complete !== false;
+    // The gate is visual, so the client-side settled pass is the release signal. Reporting the
+    // pass is deliberately fire-and-forget: a server restart or a diagnostics 4xx/5xx must not
+    // hold a rendered artifact hostage to a network round-trip.
+    if (complete) handleLayoutGatePass();
     submitLayoutDiagnostics({
-      complete: msg.complete !== false,
+      complete,
       targetPresenceComplete: msg.target_presence_complete === true,
       artifactRevision: msg.artifact_revision,
       artifactLoadToken: msg.artifact_load_token,
@@ -2548,14 +2915,21 @@ window.addEventListener("message", (event) => {
           if (messageSequence === artifactMessageSequence) armArtifactAvailabilityProbe(messageToken);
           return;
         }
-        if (msg.complete !== false) handleLayoutGatePass();
       })
-      .catch(() => {});
+      .catch(() => {
+        // A failed report is still a completed client-side pass. Keep this fallback explicit so a
+        // future change cannot accidentally make the network request the gate's release path.
+        if (complete && messageToken === artifactLoadToken && diagnosticSequence === layoutDiagnosticSequence) {
+          handleLayoutGatePass();
+        }
+      });
     return;
   }
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
+    // Queued from inside the artifact, where the closed dock is the only sign it landed.
+    pulseSheetDock();
   }
   if (msg.type === "lavish:snapshot") {
     const snapshotAction = snapshotRequests.shift() || "submit";
@@ -2840,6 +3214,10 @@ shareDialog.addEventListener("click", (event) => {
 });
 copyShareUrlButton.onclick = () => copyToButton(shareUrlInput.value, copyShareUrlButton, "Copy URL");
 copyUpdateKeyButton.onclick = () => copyToButton(shareUpdateKeyInput.value, copyUpdateKeyButton, "Copy key");
+copySharePasswordButton.onclick = () =>
+  copyToButton(sharePasswordOutput.value, copySharePasswordButton, "Copy password");
+copyShareSiteIdButton.onclick = () => copyToButton(shareSiteIdInput.value, copyShareSiteIdButton, "Copy site ID");
+shareGenerateInput.onchange = syncSharePasswordInput;
 endButton.onclick = () => {
   closeMenus();
   endSession();
@@ -2867,6 +3245,10 @@ document.addEventListener("keydown", (event) => {
       closeShareDialog();
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
+    } else if (!moreMenu.hidden) {
+      closeMenus();
+    } else if (sheetOpen && isMobileSheet()) {
+      setSheetOpen(false);
     } else {
       closeMenus();
     }
@@ -2907,13 +3289,19 @@ events.addEventListener("chrome-reload", (event) => reloadAfterServerRestart(shu
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
 events.addEventListener("chrome-outdated", (event) => setChromeOutdated(true, shutdownEventReason(event)));
-events.addEventListener("agent-reply", (event) => addChat("agent", JSON.parse(event.data).text));
+events.addEventListener("agent-reply", (event) => {
+  const text = JSON.parse(event.data).text;
+  addChat("agent", text);
+  noteAgentReply(text);
+});
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
 events.addEventListener("layout-warnings", (event) => setLayoutWarnings(JSON.parse(event.data).warnings || []));
+events.addEventListener("ended", () => markSessionEnded());
 // A reconnecting stream means this chrome may have missed updates while it was away.
 events.addEventListener("open", () => refreshLayoutWarnings());
 
+applySheetState();
 render();
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);
@@ -2921,10 +3309,13 @@ renderWarnings();
 initialChat.forEach((item) => addChat(item.role, item.text));
 retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
+// The session already ended before this page (re)loaded, so there is no future SSE `ended` event
+// to wait for - start read-only instead of looking live until a Send gets silently refused.
+if (sessionData.initialEnded) markSessionEnded();
 
-// Reaching this line is the only proof that this file parsed and ran to completion. The page it
-// bootstraps ships with the layout-gate overlay already covering the artifact, and only this
-// script ever takes it down - so the inline failsafe in the page holds it up until here.
+// Reaching this line is the only proof that this file parsed and ran to completion. The inline
+// bootstrap already owns the gate's bounded escape if this script fails; retire only its separate
+// boot-failure timer now that the full client has taken over.
 const chromeBootWindow = /** @type {Record<string, any>} */ (/** @type {unknown} */ (window));
 chromeBootWindow.__lavishChromeReady = true;
 chromeBootWindow.__lavishCancelChromeBootFailsafe?.();

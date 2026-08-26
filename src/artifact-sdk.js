@@ -1045,6 +1045,7 @@ export function createArtifactSdk(
       const target = whiteboardEntryByIndex(msg.diagramIndex);
       if (target) target.iframe.src = whiteboardFrameSrc(target);
     }
+    if (msg.type === "lavish:requestLayoutDiagnostics") scheduleLayoutAudit(true);
   });
 
   function enhanceMermaid() {
@@ -1262,6 +1263,7 @@ export function createArtifactSdk(
   let layoutAuditTimer = 0;
   let layoutAuditRun = 0;
   let lastLayoutAuditSignature = null;
+  let layoutAuditPublishRequested = false;
   let layoutAuditPassSequence = 0;
 
   function toPixelNumber(value) {
@@ -1963,7 +1965,12 @@ export function createArtifactSdk(
       new Promise((resolve) => window.setTimeout(resolve, layoutAuditAnimationMaxWaitMs)),
     ]);
     if (!settled) {
-      for (const animation of finite) animation.finished.then(scheduleLayoutAudit, scheduleLayoutAudit);
+      for (const animation of finite) {
+        animation.finished.then(
+          () => scheduleLayoutAudit(),
+          () => scheduleLayoutAudit(),
+        );
+      }
     }
     return settled;
   }
@@ -1975,7 +1982,8 @@ export function createArtifactSdk(
     const severe = findings.filter((finding) => finding?.severity === "error");
     const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
     const signature = JSON.stringify({ complete, targetPresenceComplete, viewportWidth, severe });
-    if (signature === lastLayoutAuditSignature) return;
+    if (!layoutAuditPublishRequested && signature === lastLayoutAuditSignature) return;
+    layoutAuditPublishRequested = false;
     lastLayoutAuditSignature = signature;
     postArtifactMessage("lavish:layoutDiagnostics", {
       complete,
@@ -2010,7 +2018,8 @@ export function createArtifactSdk(
     );
   }
 
-  function scheduleLayoutAudit() {
+  function scheduleLayoutAudit(publishRequested = false) {
+    if (publishRequested) layoutAuditPublishRequested = true;
     if (layoutAuditTimer) window.clearTimeout(layoutAuditTimer);
     const runId = ++layoutAuditRun;
     layoutAuditTimer = window.setTimeout(() => {
@@ -2022,10 +2031,10 @@ export function createArtifactSdk(
 
   function startLayoutAudit() {
     scheduleLayoutAudit();
-    window.addEventListener("load", scheduleLayoutAudit, { once: true });
-    window.addEventListener("resize", scheduleLayoutAudit, { passive: true });
-    window.addEventListener("animationend", scheduleLayoutAudit, { passive: true });
-    window.addEventListener("transitionend", scheduleLayoutAudit, { passive: true });
+    window.addEventListener("load", () => scheduleLayoutAudit(), { once: true });
+    window.addEventListener("resize", () => scheduleLayoutAudit(), { passive: true });
+    window.addEventListener("animationend", () => scheduleLayoutAudit(), { passive: true });
+    window.addEventListener("transitionend", () => scheduleLayoutAudit(), { passive: true });
   }
 
   // The narrow fatal path. A local subresource the artifact declares but the server cannot serve
@@ -2408,6 +2417,12 @@ export function createArtifactSdk(
         const queued = tryQueue();
         // postMessage delivery is ordered, so the queued prompt lands before the send.
         if (queued && sendNow) sendQueuedPrompts();
+      } else if (event.key === "Escape" && !event.isComposing) {
+        // Close only when there is nothing to lose; excludes isComposing since mid-IME text isn't in textarea.value yet.
+        if (textarea.value.trim() || attachments.hasPending() || attachments.hasErrors() || attachments.hasReady())
+          return;
+        event.preventDefault();
+        closeCard();
       }
     });
     // Unsent annotation text is review context Lavish owns, so it is reported to the chrome and

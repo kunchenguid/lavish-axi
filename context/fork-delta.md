@@ -1,7 +1,7 @@
 # Fork delta
 
-This fork was reviewed against `upstream/main` at `3b2c10f` on 2026-08-21.
-The upstream merge retains three intentional differences. Other historical fork
+This fork was reviewed against `upstream/main` at `a7ddbba` on 2026-08-26.
+The upstream sync retains four intentional differences. Other historical fork
 commits no longer change the effective tree.
 
 ## Retained policies
@@ -32,7 +32,22 @@ and creates a public page by default unless the user supplies a password.
 
 Keep this policy unless the publication boundary changes. Its owner is the
 runtime guidance in `src/cli.js`; `test/cli-output.test.js` verifies both home
-and command-help output. The generated skill inherits the same guidance.
+and command-help output. The generated skill points at that live CLI guidance
+instead of copying it.
+
+### Require an explicit opt-in for Tailscale access
+
+Upstream `443aaa9` automatically detects Tailscale and exposes the review
+server on the machine's tailnet address whenever Tailscale is running. This
+fork retains upstream's concrete-listener, MagicDNS, reconciliation, fallback,
+and teardown implementation but enables it only when
+`LAVISH_AXI_TAILSCALE=1` is set.
+
+The default stays loopback-only because the review server is unauthenticated
+and can read and serve local artifact files. Its owner is the activation gate
+in `src/server.js`; `test/server.test.js` verifies both the disabled default and
+the opted-in server behavior. `src/cli.js`, `README.md`, and `AGENTS.md` own the
+matching runtime, user, and architecture guidance.
 
 ### Keep release metadata on the fork's release line
 
@@ -71,9 +86,12 @@ is now part of the retained PATH-only policy tests and needs no separate port.
 
 Before each upstream merge:
 
-1. Compare the effective fork diff from the previous upstream merge or tag.
-2. Recheck whether upstream now satisfies either retained policy.
+1. Compare the effective fork diff from the previous reviewed upstream commit,
+   not the raw ahead/behind count after a squash merge.
+2. Recheck whether upstream now satisfies any retained policy.
 3. Merge the source owners first and regenerate `skills/lavish/SKILL.md` with
    `pnpm run build:skill`.
 4. Restore the fork's four release-owned files from its target branch.
 5. Run `pnpm run check` before committing or pushing the sync.
+6. After the sync has a durable published commit, advance any deployment that
+   pins this fork by commit SHA and verify the installed runtime separately.
