@@ -910,11 +910,18 @@ function normalizeArtifactFailures(failures) {
     .filter((failure) => failure && typeof failure === "object" && !Array.isArray(failure))
     .map((failure) => ({
       kind: String(failure.kind || ""),
-      detail: String(failure.detail || "").slice(0, 300),
+      detail: sanitizeArtifactFailureDetail(failure.detail),
       severity: "fatal",
     }))
     .filter((failure) => ARTIFACT_FAILURE_KINDS.has(failure.kind))
     .slice(0, MAX_ARTIFACT_FAILURES);
+}
+
+function sanitizeArtifactFailureDetail(detail) {
+  return String(detail || "")
+    .replace(/file:\/\/\/[^\s)'"]+/gi, "file://[redacted]")
+    .replace(/(?:[A-Za-z]:)?[\\/](?:[^\s)'"]+[\\/]){2,}[^\s)'"]+/g, "[local path redacted]")
+    .slice(0, 300);
 }
 
 function normalizeTarget(target) {
