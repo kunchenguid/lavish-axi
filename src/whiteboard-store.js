@@ -145,7 +145,10 @@ export function decodePngDataUrl(dataUrl) {
   const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ""));
   if (!match) return null;
   try {
-    return Buffer.from(match[1], "base64");
+    const png = Buffer.from(match[1], "base64");
+    if (png.length < 8) return null;
+    const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    return signature.every((byte, index) => png[index] === byte) ? png : null;
   } catch {
     return null;
   }

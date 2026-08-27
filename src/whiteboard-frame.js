@@ -406,8 +406,8 @@ function measureSceneText(element) {
     .replace(/\r\n?/g, "\n")
     .replace(/\t/g, "        ")
     .split("\n");
-  const width = Math.max(...lines.map((line) => textMetricsContext.measureText(line || " ").width));
-  const height = lines.length * (Number(element.fontSize) || 20) * (Number(element.lineHeight) || 1.25);
+  const width = lines.reduce((max, line) => Math.max(max, textMetricsContext.measureText(line || " ").width), 0);
+  const height = Math.max(1, lines.length) * (Number(element.fontSize) || 20) * (Number(element.lineHeight) || 1.25);
   return { width, height };
 }
 
