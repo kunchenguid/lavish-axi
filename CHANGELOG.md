@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.63](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.62...lavish-axi-v0.1.63) (2026-08-29)
+
+
+### Bug Fixes
+
+* **server:** keep agent-working presence across overlapping polls ([#301](https://github.com/kunchenguid/lavish-axi/issues/301)) ([0e77263](https://github.com/kunchenguid/lavish-axi/commit/0e77263cf20a95da49ab08c71c4176b38050fe73))
+
 ## [0.1.62](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.61...lavish-axi-v0.1.62) (2026-08-24)
 
 
