@@ -1,8 +1,9 @@
 import { lookup as dnsLookup } from "node:dns/promises";
-import { mkdir } from "node:fs/promises";
+import { cp, mkdir, rename, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { existsSync } from "node:fs";
 
 export const LOOPBACK_HOST = "127.0.0.1";
 export const IPV6_LOOPBACK_HOST = "::1";
@@ -123,8 +124,27 @@ export function hostForUrl(host) {
   return host;
 }
 
-export function stateDir() {
-  return process.env.LAVISH_AXI_STATE_DIR || path.join(os.homedir(), ".lavish-axi");
+// Pre-XDG default state location. Session state, attachments, whiteboards, and
+// server logs used to live directly under this dotfile in $HOME; migrateLegacyStateDir
+// moves it into the XDG data directory once, the first time a server starts without an
+// explicit LAVISH_AXI_STATE_DIR override.
+export function legacyStateDir(homeDir = os.homedir()) {
+  return path.join(homeDir, ".lavish-axi");
+}
+
+// XDG Base Directory data home: $XDG_DATA_HOME, falling back to ~/.local/share per
+// https://specifications.freedesktop.org/basedir-spec/latest/. An empty/whitespace
+// value is treated as unset, matching the spec's "MUST be considered absent" wording.
+export function xdgDataHome(env = process.env, homeDir = os.homedir()) {
+  const explicit = env.XDG_DATA_HOME?.trim();
+  return explicit ? explicit : path.join(homeDir, ".local", "share");
+}
+
+// State (session state, attachments, whiteboards, server logs) is data that should
+// persist across reinstalls, so it lives under $XDG_DATA_HOME rather than
+// $XDG_CONFIG_HOME or $XDG_CACHE_HOME.
+export function stateDir(env = process.env, homeDir = os.homedir()) {
+  return env.LAVISH_AXI_STATE_DIR || path.join(xdgDataHome(env, homeDir), "lavish-axi");
 }
 
 export function stateFile() {
@@ -135,7 +155,33 @@ export function serverLogFile() {
   return path.join(stateDir(), "server.log");
 }
 
+// One-time migration of the pre-XDG ~/.lavish-axi directory into the new XDG data
+// location. Runs only when the caller did not override the location explicitly, the
+// legacy directory exists, and the new location does not yet exist, so existing user
+// state is never silently dropped or clobbered.
+export async function migrateLegacyStateDir(env = process.env, { log = console.error, homeDir = os.homedir() } = {}) {
+  if (env.LAVISH_AXI_STATE_DIR) return false;
+  const legacy = legacyStateDir(homeDir);
+  const target = stateDir(env, homeDir);
+  if (legacy === target) return false;
+  if (!existsSync(legacy) || existsSync(target)) return false;
+  await mkdir(path.dirname(target), { recursive: true });
+  try {
+    await rename(legacy, target);
+  } catch (err) {
+    if (err?.code !== "EXDEV") throw err;
+    // Cross-device (different filesystem/mount): rename() can't do this atomically, so
+    // fall back to a recursive copy-then-remove of the legacy directory.
+    await mkdir(target, { recursive: true });
+    await cp(legacy, target, { recursive: true });
+    await rm(legacy, { recursive: true, force: true });
+  }
+  log(`lavish-axi: migrated state from ${legacy} to ${target} (XDG Base Directory Specification)`);
+  return true;
+}
+
 export async function ensureStateDir() {
+  await migrateLegacyStateDir();
   await mkdir(stateDir(), { recursive: true });
 }
 
