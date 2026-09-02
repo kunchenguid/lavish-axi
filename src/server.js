@@ -259,6 +259,7 @@ export async function serve({
   debug = false,
   log = null,
   pollHeartbeatMs = 15_000,
+  feedbackLeaseMs,
   idleTimeoutMs = resolveIdleTimeoutMs(),
   host = bindHost(env),
   hosts,
@@ -284,7 +285,7 @@ export async function serve({
   let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
-  const store = new SessionStore(stateFile);
+  const store = new SessionStore(stateFile, { feedbackLeaseMs });
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();
@@ -342,68 +343,6 @@ export async function serve({
     if (Array.isArray(chat)) events.emit("chat-sync", key, chat);
   }
 
-  // `takeFeedback` is destructive: it clears the batch from `state.json` before anything is
-  // written to the response. A client that disconnected while that take was in flight would
-  // otherwise lose the feedback for good, so put it back verbatim through the store's `restore`
-  // mode and leave delivery unmarked - nothing reached an agent. A restore that comes back short
-  // is logged, so a batch that could not be put back whole is visible instead of silently gone.
-  // A restore that THROWS (the state write failed) is the same loss with no return value to
-  // inspect, and the caller is a socket the client already closed, so it is logged and swallowed
-  // here rather than escaping into an error path that has no one left to tell.
-  // The re-queued batch also has to be announced: another poll can take "waiting" in the window
-  // between the destructive take and this restore, and it would then long-poll forever over
-  // feedback that is sitting in `state.json`. Emitting wakes it exactly like a fresh `/prompts`.
-  async function restoreClosedFeedback(key, result) {
-    if (result.status !== "feedback") return;
-    const prompts = Array.isArray(result.prompts) ? result.prompts : [];
-    let session = null;
-    let restoreError = null;
-    try {
-      session = await store.queuePrompts(
-        key,
-        {
-          dom_snapshot: result.dom_snapshot || "",
-          prompts,
-          ...(Array.isArray(result.artifact_failures) ? { artifact_failures: result.artifact_failures } : {}),
-        },
-        {
-          restore: true,
-          resolveAttachment: (sessionKeyValue, id) => resolveAttachment(attachmentStateRoot, sessionKeyValue, id),
-          maxPerPrompt: attachmentConfig.maxPerPrompt,
-          maxPromptBytes: attachmentConfig.maxPromptBytes,
-        },
-      );
-    } catch (error) {
-      restoreError = error;
-    }
-    const restoredPrompts =
-      prompts.length === 0
-        ? []
-        : session && !session.rejected && !session.conflict && Array.isArray(session.prompts)
-          ? session.prompts.slice(0, prompts.length)
-          : null;
-    const restoredFailures = session && Array.isArray(session.artifact_failures) ? session.artifact_failures : null;
-    const failuresRestored =
-      !Array.isArray(result.artifact_failures) ||
-      (Array.isArray(restoredFailures) &&
-        result.artifact_failures.every((failure) =>
-          restoredFailures.some((restoredFailure) => JSON.stringify(restoredFailure) === JSON.stringify(failure)),
-        ));
-    const persistedNothing = !session || Boolean(session.rejected) || Boolean(session.conflict);
-    if (restoreError) {
-      writeLog(
-        `[lavish] closed poll feedback restore failed; the batch was lost: ${restoreError?.message || restoreError}`,
-      );
-    } else if (persistedNothing) {
-      writeLog("[lavish] closed poll feedback restore was refused; nothing was persisted and the batch was lost");
-    } else if (!restoredPrompts || JSON.stringify(restoredPrompts) !== JSON.stringify(prompts) || !failuresRestored) {
-      writeLog("[lavish] closed poll feedback restore was incomplete; delivery was not marked");
-    }
-    const pendingAfterRestore =
-      (Array.isArray(restoredPrompts) && restoredPrompts.length > 0) ||
-      (Array.isArray(restoredFailures) && restoredFailures.length > 0);
-    if (pendingAfterRestore) events.emit("feedback", key);
-  }
   // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
   const whiteboardStateRoot = path.dirname(stateFile);
 
@@ -630,7 +569,6 @@ export async function serve({
       const immediate = await store.takeFeedback(key);
       if (immediate.status !== "waiting") {
         if (requestClosed || req.destroyed || res.writableEnded) {
-          await restoreClosedFeedback(key, immediate);
           detachRequestClose();
           return;
         }
@@ -644,6 +582,7 @@ export async function serve({
         return;
       }
       const streamHeartbeat = timeoutMs === null;
+      const pollDeadline = timeoutMs === null ? null : Date.now() + timeoutMs;
       let heartbeat = null;
       if (streamHeartbeat) {
         res.status(200).type("application/json");
@@ -673,10 +612,20 @@ export async function serve({
       const respond = async () => {
         if (responding || res.writableEnded) return;
         responding = true;
+        let keepWaiting = false;
         try {
           const result = await store.takeFeedback(key);
           if (requestClosed || req.destroyed || res.writableEnded) {
-            await restoreClosedFeedback(key, result);
+            return;
+          }
+          const retryAfterMs = Number(result.retry_after_ms || 0);
+          const remainingMs = pollDeadline === null ? Infinity : Math.max(0, pollDeadline - Date.now());
+          if (result.status === "waiting" && retryAfterMs > 0 && retryAfterMs < remainingMs) {
+            responding = false;
+            keepWaiting = true;
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => respond().catch(handleRespondError), retryAfterMs);
+            timer.unref?.();
             return;
           }
           finishFeedbackDelivery(key, result);
@@ -686,7 +635,7 @@ export async function serve({
             res.json(result);
           }
         } finally {
-          cleanup();
+          if (!keepWaiting) cleanup();
         }
       };
       function handleRespondError(error) {
@@ -710,7 +659,11 @@ export async function serve({
         cleanup();
         return;
       }
-      timer = timeoutMs === null ? null : setTimeout(() => respond().catch(handleRespondError), timeoutMs);
+      const initialRetryMs = Number(immediate.retry_after_ms || 0);
+      const initialWaitMs =
+        initialRetryMs > 0 && (timeoutMs === null || initialRetryMs < timeoutMs) ? initialRetryMs : timeoutMs;
+      timer = initialWaitMs === null ? null : setTimeout(() => respond().catch(handleRespondError), initialWaitMs);
+      timer?.unref?.();
     } catch (error) {
       cleanupPoll?.();
       detachRequestClose();
@@ -778,6 +731,32 @@ export async function serve({
       events.emit(shouldEndSession ? "ended" : "feedback", req.params.key, session.ended_by);
       res.json({ status: "queued", pending_prompts: session.pending_prompts });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/ack", async (req, res, next) => {
+    try {
+      const deliveryId = String(req.body?.delivery_id || "");
+      if (!/^[0-9a-f]{16}$/.test(deliveryId)) {
+        res.status(400).json({ code: "INVALID_DELIVERY_ID", error: "delivery_id must be 16 lowercase hex characters" });
+        return;
+      }
+      const result = await store.acknowledgeFeedback(req.params.key, deliveryId);
+      if (result.status === "not_found") {
+        res.status(404).json({ code: "SESSION_NOT_FOUND", error: "No session found for this file" });
+        return;
+      }
+      if (result.status === "mismatch") {
+        res.status(409).json({ code: "STALE_DELIVERY_ID", error: "delivery_id does not match pending feedback" });
+        return;
+      }
+      if (result.status === "acknowledged") {
+        clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+        if (result.has_pending_feedback) events.emit("feedback", req.params.key);
+      }
+      res.json({ status: result.status, delivery_id: deliveryId });
     } catch (error) {
       next(error);
     }
@@ -889,18 +868,23 @@ export async function serve({
   app.post("/api/:key/agent-reply", async (req, res, next) => {
     try {
       const text = String(req.body?.text || "");
-      const session = await store.addAgentReply(req.params.key, text);
-      if (!session) {
+      const deliveryId = String(req.body?.delivery_id || "");
+      if (deliveryId && !/^[0-9a-f]{16}$/.test(deliveryId)) {
+        res.status(400).json({ code: "INVALID_DELIVERY_ID", error: "delivery_id must be 16 lowercase hex characters" });
+        return;
+      }
+      const result = await store.addAgentReply(req.params.key, text, deliveryId);
+      if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
-      events.emit("agent-reply", req.params.key, text);
+      if (result.added) events.emit("agent-reply", req.params.key, text);
       // The reply concludes the delivered-feedback "working" state. Without this, a poll that
       // drains feedback and then releases leaves presence stuck on "working" even after the agent
       // answers. Human sends remain available while working because the server queues them for the
       // next poll. See "SSE agent-presence returns to waiting after an agent reply".
-      clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
-      res.json({ status: "sent" });
+      if (result.added) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      res.json({ status: result.added ? "sent" : "already_sent" });
     } catch (error) {
       next(error);
     }
