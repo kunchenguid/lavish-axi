@@ -51,11 +51,15 @@ const AGENT_REPLY_TONE = Object.freeze([
   { frequency: 880, start: 0.12, duration: 0.14 },
 ]);
 let replyAudioContext = null;
+let replyAudioResume = null;
 
 function resumeAgentReplyTone() {
   try {
     const resumed = replyAudioContext?.resume?.();
-    if (resumed && typeof resumed.catch === "function") resumed.catch(() => {});
+    if (resumed && typeof resumed.then === "function") {
+      replyAudioResume = Promise.resolve(resumed);
+      replyAudioResume.catch(() => {});
+    }
   } catch {
     // Audio is an enhancement. A browser may still reject a gesture it does not trust.
   }
@@ -78,7 +82,19 @@ function prepareAgentReplyTone() {
 
 function playAgentReplyTone() {
   const context = replyAudioContext;
-  if (!context || context.state === "suspended" || document.hasFocus()) return;
+  if (!context || document.hasFocus()) return;
+  if (context.state === "suspended") {
+    // A gesture may have already resumed the context while the browser still reports it as
+    // suspended. Preserve this reply by starting its tone once that gesture's resume completes.
+    replyAudioResume
+      ?.then(() => {
+        if (replyAudioContext === context && context.state !== "suspended" && !document.hasFocus()) {
+          playAgentReplyTone();
+        }
+      })
+      .catch(() => {});
+    return;
+  }
   try {
     const now = context.currentTime;
     for (const tone of AGENT_REPLY_TONE) {

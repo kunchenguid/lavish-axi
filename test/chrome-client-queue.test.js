@@ -5296,6 +5296,9 @@ test("an agent reply chimes only after interaction while its window is unfocused
   const calls = [];
   /** @type {{ state: string } | null} */
   let context = null;
+  let deferResume = false;
+  /** @type {(() => void) | null} */
+  let finishResume = null;
   class FakeAudioContext {
     constructor() {
       this.currentTime = 10;
@@ -5306,9 +5309,17 @@ test("an agent reply chimes only after interaction while its window is unfocused
     }
 
     resume() {
-      this.state = "running";
       calls.push("resume");
-      return Promise.resolve();
+      if (!deferResume) {
+        this.state = "running";
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        finishResume = () => {
+          this.state = "running";
+          resolve();
+        };
+      });
     }
 
     createOscillator() {
@@ -5358,11 +5369,17 @@ test("an agent reply chimes only after interaction while its window is unfocused
 
   assert.ok(context, "the user gesture creates an audio context");
   context.state = "suspended";
+  deferResume = true;
   chrome.dispatchDocumentKeydown({ key: "a" });
   assert.equal(calls.filter((call) => call === "resume").length, 2, "a later gesture resumes suspended audio");
 
   chrome.setFocused(false);
   chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Ready for review" }) });
+  assert.equal(calls.filter((call) => call === "start").length, 0, "the pending resume delays the chime");
+
+  assert.ok(finishResume, "the suspended context has a pending resume");
+  finishResume();
+  await flushPromises();
 
   assert.deepEqual(
     calls.filter((call) => Array.isArray(call) && call[0] === "frequency"),
