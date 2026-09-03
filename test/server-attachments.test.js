@@ -18,9 +18,9 @@ const PNG_2x1 = Buffer.from(
 
 /**
  * @param {(ctx: { base: string, key: string, artifact: string }) => Promise<void>} run
- * @param {{ env?: Record<string, string> }} [options]
+ * @param {{ env?: Record<string, string>, allowedHosts?: string[] }} [options]
  */
-async function withSession(run, { env } = {}) {
+async function withSession(run, { env, allowedHosts } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-attach-srv-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -31,7 +31,12 @@ async function withSession(run, { env } = {}) {
       process.env[name] = value;
     }
   }
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    ...(allowedHosts ? { allowedHosts } : {}),
+  });
   const base = `http://127.0.0.1:${server.port}`;
   try {
     const open = await fetch(`${base}/api/sessions`, {
@@ -162,6 +167,64 @@ test("upload and delete reject cross-origin requests", async () => {
     });
     assert.equal(del.status, 403);
   });
+});
+
+// Non-regression: attachment upload/delete used to call isSameOriginRequest(req)
+// without the Host-allowlist set, so a reverse proxy forwarding x-forwarded-host
+// threw "Cannot read properties of undefined (reading 'has')" and the route 500'd.
+test("proxied attachment upload/delete work behind an allowlisted x-forwarded-host", async () => {
+  await withSession(
+    async ({ base, key }) => {
+      // A proxied upload whose Origin matches the allowlisted forwarded host succeeds.
+      const upload = await fetch(`${base}/api/${key}/attachments`, {
+        method: "POST",
+        headers: {
+          "content-type": "image/png",
+          origin: "https://review.example",
+          "x-forwarded-host": "review.example",
+          "x-forwarded-proto": "https",
+        },
+        body: PNG_2x1,
+      });
+      assert.equal(upload.status, 200);
+      const { attachment } = await upload.json();
+      assert.equal(attachment.type, "image");
+
+      // Proxied delete of that same id succeeds (not a 500) and removes the bytes.
+      const del = await fetch(`${base}/api/${key}/attachments/${attachment.id}`, {
+        method: "DELETE",
+        headers: {
+          origin: "https://review.example",
+          "x-forwarded-host": "review.example",
+          "x-forwarded-proto": "https",
+        },
+      });
+      assert.equal(del.status, 200);
+      assert.deepEqual(await del.json(), { status: "removed" });
+    },
+    { allowedHosts: ["review.example"] },
+  );
+});
+
+// A forwarded host that is not allowlisted must still be refused (403), not blow up
+// with a 500 now that the guard has the allowlist in hand.
+test("proxied attachment upload rejects a non-allowlisted x-forwarded-host with 403", async () => {
+  await withSession(
+    async ({ base, key }) => {
+      const rejected = await fetch(`${base}/api/${key}/attachments`, {
+        method: "POST",
+        headers: {
+          "content-type": "image/png",
+          origin: "https://evil.example",
+          "x-forwarded-host": "evil.example",
+          "x-forwarded-proto": "https",
+        },
+        body: PNG_2x1,
+      });
+      assert.equal(rejected.status, 403);
+    },
+    { allowedHosts: ["review.example"] },
+  );
 });
 
 // Issue a raw HTTP request so we can forge the Host header - browser `fetch`
