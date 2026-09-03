@@ -42,6 +42,7 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  audioContext = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -340,6 +341,7 @@ async function createChromeHarness({
       },
     },
     window: {
+      AudioContext: audioContext,
       clearTimeout: fakeClearTimeout,
       setTimeout: fakeSetTimeout,
       addEventListener(type, handler) {
@@ -5281,6 +5283,76 @@ test("phone chrome restores an open sheet across a chrome reload", async () => {
   assert.equal(state.open, true);
   assert.equal(state.scrollInert, false);
   assert.equal(state.expanded, "true");
+});
+
+test("an agent reply plays Lavish's distinct ready chime after user interaction", async () => {
+  const calls = [];
+  class FakeAudioContext {
+    constructor() {
+      this.currentTime = 10;
+      this.destination = {};
+      this.state = "running";
+      calls.push("context");
+    }
+
+    resume() {
+      calls.push("resume");
+      return Promise.resolve();
+    }
+
+    createOscillator() {
+      const oscillator = {
+        frequency: {
+          setValueAtTime(frequency) {
+            calls.push(["frequency", frequency]);
+          },
+        },
+        connect() {
+          calls.push("oscillator-connect");
+        },
+        start() {
+          calls.push("start");
+        },
+        stop() {
+          calls.push("stop");
+        },
+      };
+      return oscillator;
+    }
+
+    createGain() {
+      return {
+        gain: {
+          setValueAtTime() {
+            calls.push("gain-start");
+          },
+          exponentialRampToValueAtTime() {
+            calls.push("gain-ramp");
+          },
+        },
+        connect() {
+          calls.push("gain-connect");
+        },
+      };
+    }
+  }
+
+  const chrome = await createChromeHarness({ audioContext: FakeAudioContext });
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Before interaction" }) });
+  assert.deepEqual(calls, [], "the browser must not initialize audio outside a user gesture");
+
+  chrome.dispatchDocumentEvent("pointerdown");
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Ready for review" }) });
+
+  assert.deepEqual(
+    calls.filter((call) => Array.isArray(call) && call[0] === "frequency"),
+    [
+      ["frequency", 659.25],
+      ["frequency", 880],
+    ],
+  );
+  assert.equal(calls.filter((call) => call === "start").length, 2);
+  assert.equal(calls.filter((call) => call === "stop").length, 2);
 });
 
 test("the dock summarizes what the user should know while the sheet is down", async () => {
