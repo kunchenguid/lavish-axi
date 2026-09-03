@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.64](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.63...lavish-axi-v0.1.64) (2026-09-03)
+
+
+### Bug Fixes
+
+* attachment upload 500s behind a reverse proxy (x-forwarded-host) ([#319](https://github.com/kunchenguid/lavish-axi/issues/319)) ([19a0800](https://github.com/kunchenguid/lavish-axi/commit/19a0800809c469d7924daf5cee1d80dbbef3175f))
+
 ## [0.1.63](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.62...lavish-axi-v0.1.63) (2026-08-29)
 
 
