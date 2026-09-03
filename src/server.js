@@ -1485,7 +1485,7 @@ export async function serve({
   // like the whiteboard writes - a hostile cross-origin page must not drive them.
   app.post("/api/:key/attachments", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin attachment upload rejected" });
         return;
       }
@@ -1547,7 +1547,7 @@ export async function serve({
 
   app.delete("/api/:key/attachments/:id", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req)) {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin attachment delete rejected" });
         return;
       }
