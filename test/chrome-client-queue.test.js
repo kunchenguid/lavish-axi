@@ -43,6 +43,7 @@ async function createChromeHarness({
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
   audioContext = null,
+  focused = true,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -310,6 +311,9 @@ async function createChromeHarness({
       get activeElement() {
         return activeElement;
       },
+      hasFocus() {
+        return focused;
+      },
       getElementById(id) {
         // Answer only for ids the served page declares, so an id the client and the page disagree
         // on fails here the way it would go dead in a browser.
@@ -484,6 +488,9 @@ async function createChromeHarness({
     artifactBeginRequests,
     artifactLoadToken: frameLoadToken,
     mediaQueries,
+    setFocused(value) {
+      focused = value;
+    },
     setMobile(matches) {
       for (const list of mediaQueries) {
         list.matches = matches;
@@ -5285,17 +5292,21 @@ test("phone chrome restores an open sheet across a chrome reload", async () => {
   assert.equal(state.expanded, "true");
 });
 
-test("an agent reply plays Lavish's distinct ready chime after user interaction", async () => {
+test("an agent reply chimes only after interaction while its window is unfocused and resumes suspended audio", async () => {
   const calls = [];
+  /** @type {{ state: string } | null} */
+  let context = null;
   class FakeAudioContext {
     constructor() {
       this.currentTime = 10;
       this.destination = {};
       this.state = "running";
+      context = this;
       calls.push("context");
     }
 
     resume() {
+      this.state = "running";
       calls.push("resume");
       return Promise.resolve();
     }
@@ -5342,6 +5353,15 @@ test("an agent reply plays Lavish's distinct ready chime after user interaction"
   assert.deepEqual(calls, [], "the browser must not initialize audio outside a user gesture");
 
   chrome.dispatchDocumentEvent("pointerdown");
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Visible reply" }) });
+  assert.equal(calls.filter((call) => call === "start").length, 0, "focused windows stay quiet");
+
+  assert.ok(context, "the user gesture creates an audio context");
+  context.state = "suspended";
+  chrome.dispatchDocumentKeydown({ key: "a" });
+  assert.equal(calls.filter((call) => call === "resume").length, 2, "a later gesture resumes suspended audio");
+
+  chrome.setFocused(false);
   chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Ready for review" }) });
 
   assert.deepEqual(

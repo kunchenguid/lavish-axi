@@ -41,24 +41,36 @@ const CHAT_ATTACHMENT_LABELS = (() => {
   return labels.slice(0, -1).join(", ") + (labels.length > 2 ? ", or " : " or ") + labels[labels.length - 1];
 })();
 
-// Agent replies are worth noticing even while the artifact has focus. This is deliberately a
-// short, paired rising chime rather than a terminal bell, so it remains recognizable next to Pi
-// or WezTerm's completion sound. Audio is only initialized from a user gesture to honor browser
-// autoplay rules; unsupported or muted browsers simply keep the visual reply notification.
+// An agent reply is worth noticing only after the person has left this exact browser window.
+// This is deliberately a short, paired rising chime rather than a terminal bell, so it remains
+// recognizable next to Pi or WezTerm's completion sound. Audio is only initialized or resumed
+// from a user gesture to honor browser autoplay rules; unsupported or muted browsers simply keep
+// the visual reply notification.
 const AGENT_REPLY_TONE = Object.freeze([
   { frequency: 659.25, start: 0, duration: 0.09 },
   { frequency: 880, start: 0.12, duration: 0.14 },
 ]);
 let replyAudioContext = null;
 
+function resumeAgentReplyTone() {
+  try {
+    const resumed = replyAudioContext?.resume?.();
+    if (resumed && typeof resumed.catch === "function") resumed.catch(() => {});
+  } catch {
+    // Audio is an enhancement. A browser may still reject a gesture it does not trust.
+  }
+}
+
 function prepareAgentReplyTone() {
-  if (replyAudioContext) return;
+  if (replyAudioContext) {
+    if (replyAudioContext.state === "suspended") resumeAgentReplyTone();
+    return;
+  }
   const AudioContext = window.AudioContext || /** @type {any} */ (window).webkitAudioContext;
   if (typeof AudioContext !== "function") return;
   try {
     replyAudioContext = new AudioContext();
-    const resumed = replyAudioContext.resume?.();
-    if (resumed && typeof resumed.catch === "function") resumed.catch(() => {});
+    resumeAgentReplyTone();
   } catch {
     // Audio is an enhancement. A browser may still reject a gesture it does not trust.
   }
@@ -66,7 +78,7 @@ function prepareAgentReplyTone() {
 
 function playAgentReplyTone() {
   const context = replyAudioContext;
-  if (!context || context.state === "suspended") return;
+  if (!context || context.state === "suspended" || document.hasFocus()) return;
   try {
     const now = context.currentTime;
     for (const tone of AGENT_REPLY_TONE) {
