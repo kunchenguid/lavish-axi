@@ -8,6 +8,7 @@ coverage/
 !/.omc/skills/
 .DS_Store
 *.log
+.superpowers/
 package-lock.json
 .no-mistakes/evidence/
 /.planning/

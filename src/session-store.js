@@ -187,6 +187,24 @@ export class SessionStore {
       };
     }
 
+    // Message ids and reply targets are server-owned: mint the id for every message prompt and
+    // strip a client-supplied one from every other prompt, so the unauthenticated local API can
+    // neither forge nor duplicate one, and drop a reply_to that does not point at a
+    // message already in this session's transcript so a thread cannot be spoofed. A restore is
+    // exempt - it replays an already-accepted batch verbatim and must keep the ids minted the
+    // first time, or the chrome's optimistic bubbles reconcile against ids that changed.
+    // This runs AFTER attachment resolution so `isTranscriptMessage` reads the same prompt here
+    // as the transcript entry below does: resolution is the only step that rewrites the fields it
+    // reads, and an id with no chat entry - or a chat entry with no id - is worse than either.
+    if (!restoring) {
+      const knownMessageIds = new Set((session.chat || []).map((entry) => entry.id).filter(Boolean));
+      for (const prompt of normalizedPrompts) {
+        if (isTranscriptMessage(prompt)) prompt.id = newMessageId();
+        else delete prompt.id;
+        if (prompt.reply_to && !knownMessageIds.has(prompt.reply_to)) delete prompt.reply_to;
+      }
+    }
+
     const revision = normalizeRevision(session.artifact_revision);
     const at = new Date().toISOString();
     let warnings = normalizeStoredWarnings(session.layout_warnings);
@@ -236,8 +254,14 @@ export class SessionStore {
     const userMessages = restoring
       ? []
       : acceptedPrompts
-          .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-          .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+          .filter((prompt) => isTranscriptMessage(prompt))
+          .map((prompt) => ({
+            role: "user",
+            text: prompt.prompt || IMAGE_ONLY_MESSAGE_TEXT,
+            at: new Date().toISOString(),
+            ...(prompt.id ? { id: prompt.id } : {}),
+            ...(prompt.reply_to ? { reply_to: prompt.reply_to } : {}),
+          }));
     const existingPrompts = Array.isArray(session.prompts) ? session.prompts : [];
     session.prompts = restoring ? [...acceptedPrompts, ...existingPrompts] : [...existingPrompts, ...acceptedPrompts];
     session.chat = [...(session.chat || []), ...userMessages];
@@ -611,20 +635,29 @@ export class SessionStore {
     });
   }
 
-  async addAgentReply(key, text) {
+  async addAgentReply(key, text, options = {}) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
       if (!session) {
         return null;
       }
-      session.chat = [
-        ...(session.chat || []),
-        { role: "agent", text: String(text || ""), at: new Date().toISOString() },
-      ];
+      const id = options.id || newMessageId();
+      // Only thread under a reply target that already exists in this session; ignore an unknown
+      // or forged reply_to rather than render a misleading thread.
+      const knownMessageIds = new Set((session.chat || []).map((entry) => entry.id).filter(Boolean));
+      const replyTo = options.reply_to && knownMessageIds.has(String(options.reply_to)) ? String(options.reply_to) : "";
+      const message = {
+        role: "agent",
+        text: String(text || ""),
+        at: new Date().toISOString(),
+        id,
+        ...(replyTo ? { reply_to: replyTo } : {}),
+      };
+      session.chat = [...(session.chat || []), message];
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
-      return session;
+      return { session, message };
     });
   }
 
@@ -688,8 +721,30 @@ export async function canonicalFile(file) {
   return realpath(absolute);
 }
 
+export function newMessageId() {
+  return crypto.randomUUID();
+}
+
 export function sessionKey(file) {
   return crypto.createHash("sha256").update(file).digest("hex").slice(0, 16);
+}
+
+// The transcript label for a message the user sent as images alone. The chrome renders the same
+// string on that send's optimistic bubble (src/chrome-client.js, sendQueued's
+// `text: text || "Image message"`), so the two surfaces change together. It is display copy, and
+// deliberately never reaches an agent: a delivery record carrying it could not be told apart from
+// a user who typed those words, so `/api/stream` and `streamMessageRecord` leave `text` empty.
+const IMAGE_ONLY_MESSAGE_TEXT = "Image message";
+
+// A message prompt earns a transcript entry, and the server-minted id that goes with it, when it
+// carries something the user can see afterwards: typed text, or images alone. This is the one
+// predicate that answers "is this a user message": both queuePrompts sites read it so an id and
+// its chat entry can never be minted apart, and the stream's per-message split (src/server.js) and
+// `streamMessageRecord` (src/cli.js) read it so the message the transcript records is the message
+// the agent is handed.
+export function isTranscriptMessage(prompt) {
+  if (prompt.tag !== "message") return false;
+  return Boolean(prompt.prompt || (Array.isArray(prompt.attachments) && prompt.attachments.length > 0));
 }
 
 // Returns `{ prompt, malformed }`: `malformed` is non-empty when the payload's
@@ -703,6 +758,11 @@ function normalizePrompt(prompt) {
     tag: String(prompt.tag || ""),
     text: String(prompt.text || ""),
   };
+  // Carried through so a restore replays a server-minted id and its thread verbatim. On a fresh
+  // queue queuePrompts mints `id` for every message prompt and strips it from every other prompt,
+  // so a client cannot forge one.
+  if (prompt.id) normalized.id = String(prompt.id);
+  if (prompt.reply_to) normalized.reply_to = String(prompt.reply_to);
   const target = normalizeTarget(prompt.target);
   if (target) normalized.target = target;
   const { refs, malformed } = normalizeAttachmentRefs(prompt.attachments);

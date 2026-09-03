@@ -1099,12 +1099,6 @@ test("chrome bootstraps persisted chat history so missed replies still appear", 
   assert.match(html, /Persisted reply/);
 });
 
-test("chrome client renders persisted chat history", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /initialChat\.forEach/);
-});
-
 test("chrome can sync persisted chat after the event stream reconnects", async () => {
   const js = await chromeClientSource();
 
@@ -4234,6 +4228,51 @@ test("an open SSE connection keeps the server alive past the idle timeout", asyn
   }
 });
 
+test("an /events SSE that disconnects during its setup await frees its slot and lets the server idle-shut-down (pre-await leak regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-events-preawait-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const stateFile = path.join(dir, "state.json");
+  const server = await serve({
+    port: 0,
+    stateFile,
+    version: "9.9.9-test",
+    idleTimeoutMs: 1000,
+  });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+
+    // Bloat state.json so the handler's findByKey await is wide enough to disconnect inside it.
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    state.sessions[key].chat = Array.from({ length: 120000 }, (_, i) => ({
+      id: `m${i}`,
+      role: "agent",
+      text: `padding message ${i} that widens the state parse window for this regression test`,
+      ts: i,
+    }));
+    await writeFile(stateFile, JSON.stringify(state));
+
+    // Open the chrome SSE and drop it while its findByKey await is still in flight. The buggy path
+    // registered req.on("close") only after that await, so the sseClients slot and its listeners
+    // leaked and pinned the server alive forever (sseClients.size never returns to 0).
+    const sse = fetch(`${base}/events/${key}`, { signal: controller.signal }).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+    await sse;
+
+    // A leaked sseClients entry keeps sseClients.size > 0, so the idle timer can never arm; the fix
+    // frees the slot on the early disconnect so the server idles down as expected.
+    await expectDoneWithin(server, 4000);
+    await assert.rejects(() => fetch(`${base}/health`), /fetch failed|ECONNREFUSED/);
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ending the last open session shuts the server down", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
@@ -5256,7 +5295,17 @@ test("a disconnect during event-driven feedback take requeues the batch without 
       const feedback = await next.json();
       assert.equal(feedback.status, "feedback");
       assert.equal(feedback.dom_snapshot, queued.domSnapshot);
-      assert.deepEqual(feedback.prompts, [queued.prompts[0]]);
+      // Prompts now carry a server-minted message id (reply threading), so compare the
+      // client-supplied fields separately from the id.
+      assert.deepEqual(
+        feedback.prompts.map(({ id: _id, ...rest }) => rest),
+        [queued.prompts[0]],
+      );
+      // The restore must replay the batch verbatim: ids are preserved, never re-minted.
+      assert.deepEqual(
+        feedback.prompts.map((prompt) => prompt.id),
+        beforeState.prompts.map((prompt) => prompt.id),
+      );
       assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat, beforeState.chat);
     } finally {
       await presence.close();
@@ -6092,6 +6141,29 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   assert.match(noGateHtml, /"layoutGateEnabled":false/);
 });
 
+// Whether an open thread actually covers the chat composer is a paint-order question no fake DOM
+// can answer, so it is measured against a real browser in test/mobile-conversation-sheet.browser.test.js
+// ("the thread pane owns the composer's pixels"), on both the phone sheet and the desktop panel.
+
+test("layout gate overlay is scoped to the artifact frame so it never covers the chat composer", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  // The gate overlay must be nested INSIDE the artifact .frame, not a viewport-level sibling
+  // that sits on top of the side panel where the composer (Send / chat input) lives. Otherwise
+  // the curtain that flags a broken layout also blocks the human from telling the agent about it.
+  const frameStart = html.indexOf('<div class="frame">');
+  const panelStart = html.indexOf('<aside class="panel"');
+  assert.ok(frameStart !== -1 && panelStart !== -1 && frameStart < panelStart);
+  const frameRegion = html.slice(frameStart, panelStart);
+  assert.ok(
+    frameRegion.includes('id="layoutGateOverlay"'),
+    "layoutGateOverlay must be nested inside the artifact .frame",
+  );
+  // The composer controls live in the panel, never inside the frame region.
+  assert.ok(!frameRegion.includes('id="chatInput"'), "chatInput must stay outside the frame");
+  assert.ok(!frameRegion.includes('id="send"'), "send button must stay outside the frame");
+});
+
 test("annotation card queues prompt on Enter and inserts newline on Shift+Enter", () => {
   const js = createSdkJs("abc");
 
@@ -6119,6 +6191,883 @@ test("chrome client chat input sends on Enter and inserts newline on Shift+Enter
   assert.match(js, /event\.key === ["']Enter["'] && !event\.shiftKey/);
   assert.match(js, /event\.preventDefault\(\)/);
   assert.match(js, /sendQueued\(\)/);
+});
+
+async function openSession(base, artifact) {
+  const res = await fetch(`${base}/api/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ file: artifact }),
+  });
+  return res.json();
+}
+
+// Reads SSE frames from a fetch body stream until `predicate(frames)` is satisfied or it times out.
+async function collectSseFrames(body, predicate, timeoutMs = 2000) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const frames = [];
+  let buffer = "";
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1, deadline - Date.now());
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise((resolve) => setTimeout(() => resolve({ value: undefined, done: false }), remaining)),
+      ]);
+      if (done) break;
+      if (value) buffer += decoder.decode(value, { stream: true });
+      const parsed = parseSseFrames(buffer);
+      buffer = parsed.rest;
+      frames.push(...parsed.frames);
+      if (predicate(frames)) break;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return frames;
+}
+
+// Splits every complete frame out of an SSE buffer and returns the trailing partial bytes, so an
+// incremental reader can carry them into the next read and a whole-body reader can ignore them.
+function parseSseFrames(buffer) {
+  const frames = [];
+  let rest = buffer;
+  let boundary;
+  while ((boundary = rest.indexOf("\n\n")) !== -1) {
+    const raw = rest.slice(0, boundary);
+    rest = rest.slice(boundary + 2);
+    let event = "message";
+    const dataLines = [];
+    for (const line of raw.split("\n")) {
+      if (line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (dataLines.length > 0) frames.push({ event, data: JSON.parse(dataLines.join("\n")) });
+  }
+  return { frames, rest };
+}
+
+// Reads a stream response to completion. The body only completes once the server ENDS the
+// response, so `null` means the connection was still open at the deadline - which is what a
+// single-shot `--once` harness experiences as a hang, and is invisible in the frames themselves.
+async function readSseFramesUntilResponseEnd(response, timeoutMs = 3000) {
+  const stillOpen = Symbol("still-open");
+  const settled = await Promise.race([
+    response.text().catch(() => ""),
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(stillOpen), timeoutMs);
+      if (typeof timer.unref === "function") timer.unref();
+    }),
+  ]);
+  if (settled === stillOpen) return null;
+  return parseSseFrames(String(settled)).frames;
+}
+
+// A 2x1 PNG - the smallest body the upload route's magic-byte check accepts as a real image.
+const STREAM_PNG_2x1 = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR42mP8z8BQz0BkYGAAADAAA/8W1p0AAAAASUVORK5CYII=",
+  "base64",
+);
+
+// Uploads through the real route: the store re-derives every attachment from disk, so a prompt
+// referencing a fabricated id would be rejected as a whole batch instead of queuing.
+async function uploadStreamImage(base, key) {
+  const res = await fetch(`${base}/api/${key}/attachments`, {
+    method: "POST",
+    headers: { "content-type": "image/png", origin: base },
+    body: STREAM_PNG_2x1,
+  });
+  assert.equal(res.status, 200);
+  return (await res.json()).attachment;
+}
+
+async function queueStreamPrompts(base, key, prompts) {
+  const res = await fetch(`${base}/api/${key}/prompts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: base },
+    body: JSON.stringify({ prompts }),
+  });
+  assert.equal(res.status, 200);
+  return res.json();
+}
+
+test("GET /api/stream pushes each queued user message as its own SSE frame (change #1)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+    assert.match(streamRes.headers.get("content-type") || "", /text\/event-stream/);
+
+    // Send two messages; each must arrive as a separate `message` frame without re-requesting.
+    for (const text of ["first message", "second message"]) {
+      await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [{ tag: "message", prompt: text }] }),
+      });
+    }
+
+    const frames = await collectSseFrames(
+      streamRes.body,
+      (all) => all.filter((f) => f.event === "message").length >= 2,
+    );
+    const messages = frames.filter((f) => f.event === "message");
+    assert.ok(messages.length >= 2, `expected >= 2 message frames, got ${messages.length}`);
+    const texts = messages.map((f) => f.data.prompts.find((p) => p.tag === "message")?.prompt);
+    assert.ok(texts.includes("first message"));
+    assert.ok(texts.includes("second message"));
+    // Each delivered message carries a stable id for threading (change #3).
+    assert.ok(messages.every((f) => typeof f.data.id === "string" && f.data.id.length > 0));
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// The take that feeds the stream is destructive, so a batch the drain declines to write a frame
+// for is gone from state.json for good. A fatal artifact failure arrives with no prompts at all,
+// which is exactly the batch shape a message-only drain writes nothing for - and it is the one
+// signal saying the review surface the human is meant to use never loaded.
+test("GET /api/stream delivers a fatal artifact failure that arrives with no user message", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-failure-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const load = await beginArtifactLoad(base, key);
+
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+
+    const recorded = await fetch(`${base}/api/${key}/artifact-failures`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...artifactMutation(load),
+        failures: [{ kind: "artifact-unavailable", detail: "artifact route answered 500" }],
+      }),
+    });
+    assert.equal(recorded.status, 200);
+
+    const frames = await collectSseFrames(streamRes.body, (all) => all.some((f) => f.event === "message"));
+    const failureFrame = frames.find((f) => f.event === "message");
+    assert.ok(failureFrame, "a batch carrying only artifact failures must still get a frame");
+    assert.deepEqual(failureFrame.data.prompts, []);
+    assert.equal(failureFrame.data.artifact_failures.length, 1);
+    assert.equal(failureFrame.data.artifact_failures[0].kind, "artifact-unavailable");
+    assert.equal(failureFrame.data.artifact_failures[0].severity, "fatal");
+
+    // And it really was delivered, not silently left behind: the store no longer holds it.
+    const state = JSON.parse(await readFile(path.join(dir, "state.json"), "utf8"));
+    assert.deepEqual(state.sessions[key].artifact_failures, []);
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an open /api/stream connection reports presence as listening (folds in change #2)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-presence-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const presence = await startPresenceStream(base, key);
+    assert.equal(await presence.next(), "waiting");
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+    assert.equal(await presence.next(), "listening");
+    await presence.close();
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a fresh stream attaching alone retires the previous round's working presence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-retire-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+    });
+    const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    assert.equal((await delivered.json()).status, "feedback");
+
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "working");
+
+      // `stream` is a peer consumer of the same delivery contract, so it shares the poll's presence
+      // refcount rather than keeping one of its own: a stream attaching with nothing else in flight
+      // is the agent starting a new round, and must retire the previous round's delivery exactly as
+      // a fresh poll does. A stream counted separately would attach on its own zero, leave `working`
+      // standing over a round nobody is serving, and hide the "agent is not listening" banner.
+      const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+        headers: { accept: "text/event-stream" },
+        signal: controller.signal,
+      });
+      assert.equal(streamRes.status, 200);
+      assert.equal(await presence.next(), "listening");
+
+      // And releasing it is the other half of the shared refcount: the stream going away with
+      // nothing else attached returns presence to waiting instead of stranding `listening`.
+      controller.abort();
+      assert.equal(await presence.next(), "waiting");
+    } finally {
+      await presence.close();
+    }
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a poll attaching beside a live stream leaves the stream's delivery marker alone", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-beside-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "waiting");
+      const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+        headers: { accept: "text/event-stream" },
+        signal: controller.signal,
+      });
+      assert.equal(streamRes.status, 200);
+      assert.equal(await presence.next(), "listening");
+
+      // Read this stream incrementally rather than through collectSseFrames, which cancels the
+      // reader when it returns - the connection has to stay attached for the sibling attach below.
+      const reader = streamRes.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const nextStreamFrame = async (eventName) => {
+        const deadline = Date.now() + 2000;
+        while (true) {
+          const parsed = parseSseFrames(buffer);
+          buffer = parsed.rest;
+          const found = parsed.frames.find((frame) => frame.event === eventName);
+          if (found) return found;
+          const remaining = Math.max(1, deadline - Date.now());
+          const { value, done } = await Promise.race([
+            reader.read(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`timed out waiting for a ${eventName} frame`)), remaining),
+            ),
+          ]);
+          if (done) throw new Error("stream closed before its frame arrived");
+          if (value) buffer += decoder.decode(value, { stream: true });
+        }
+      };
+
+      // The stream takes the user's message, so this round's delivery is recorded while that
+      // consumer is still attached - presence stays `listening` and emits nothing.
+      await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+      });
+      const message = await nextStreamFrame("message");
+      assert.equal(message.data.prompts[0].prompt, "hello");
+
+      // The other half of the shared refcount: attaching is only a new round when the consumer
+      // attaches ALONE. This poll arrives beside the live stream, so it must not erase the
+      // delivery the stream just recorded - the sibling erasure #301 fixed for two polls, now
+      // reachable across consumers because a stream shares the same counter.
+      const sibling = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=200`);
+      assert.deepEqual(await sibling.json(), { status: "waiting" });
+
+      // Both consumers are gone with nothing delivered since, so presence falls back to the
+      // marker: `working`, because the sibling attach preserved it.
+      controller.abort();
+      assert.equal(await presence.next(), "working");
+    } finally {
+      await presence.close();
+    }
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/stream caps concurrent connections and frees the slot on disconnect (HIGH regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-cap-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    maxStreamClients: 2,
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  const controllers = [];
+  const openStream = () => {
+    const controller = new AbortController();
+    controllers.push(controller);
+    return fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+  };
+  try {
+    await openSession(base, artifact);
+
+    const first = await openStream();
+    const second = await openStream();
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+
+    // A third stream exceeds the cap: rejected with 503 + Retry-After rather than another open SSE.
+    const third = await openStream();
+    assert.equal(third.status, 503);
+    assert.ok(third.headers.get("retry-after"), "rejected stream carries a Retry-After header");
+    await third.json().catch(() => {});
+
+    // Disconnecting an open stream must free its slot so a later stream is admitted again.
+    controllers[0].abort();
+    let admitted = null;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const res = await openStream();
+      if (res.status === 200) {
+        admitted = res;
+        break;
+      }
+      await res.json().catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(admitted, "a slot frees up after a stream disconnects");
+  } finally {
+    for (const controller of controllers) controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stream that disconnects during its setup awaits frees its slot (pre-await leak regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-preawait-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const stateFile = path.join(dir, "state.json");
+  const server = await serve({
+    port: 0,
+    stateFile,
+    version: "9.9.9-test",
+    maxStreamClients: 1,
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  const controllers = [];
+  const openStream = () => {
+    const controller = new AbortController();
+    controllers.push(controller);
+    return fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+  };
+  try {
+    const { key } = await openSession(base, artifact);
+
+    // Bloat state.json so every store read (findByKey) parses a large payload, holding the stream
+    // handler inside its initial awaits long enough for a disconnect to land there.
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    state.sessions[key].chat = Array.from({ length: 120000 }, (_, i) => ({
+      id: `m${i}`,
+      role: "agent",
+      text: `padding message ${i} that widens the state parse window for this regression test`,
+      ts: i,
+    }));
+    await writeFile(stateFile, JSON.stringify(state));
+
+    // Open a stream and disconnect it while its findByKey await is still in flight. The buggy path
+    // registered req.on("close", cleanup) only AFTER those awaits, so the close fired with no
+    // listener; the handler then claimed the slot and never freed it.
+    const leakController = new AbortController();
+    controllers.push(leakController);
+    const leaked = fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: leakController.signal,
+    }).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    leakController.abort();
+    await leaked;
+
+    // With the slot leaked (maxStreamClients=1) no later stream can ever be admitted; the fix bails
+    // out before claiming the slot, so a fresh stream opens 200.
+    let admitted = null;
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const res = await openStream();
+      if (res.status === 200) {
+        admitted = res;
+        break;
+      }
+      await res.json().catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(admitted, "a stream that disconnects during setup must not leak its slot");
+  } finally {
+    for (const controller of controllers) controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("many concurrent /api/stream connections do not trip MaxListenersExceededWarning (HIGH regression)", async () => {
+  const warnings = [];
+  const onWarning = (warning) => warnings.push(warning);
+  process.on("warning", onWarning);
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-listeners-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    maxStreamClients: 32,
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  const controllers = [];
+  try {
+    await openSession(base, artifact);
+    // Open more streams than Node's default 10-listener-per-event ceiling; each registers a
+    // "feedback" and an "ended" listener on the shared emitter.
+    const responses = await Promise.all(
+      Array.from({ length: 12 }, () => {
+        const controller = new AbortController();
+        controllers.push(controller);
+        return fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+          headers: { accept: "text/event-stream" },
+          signal: controller.signal,
+        });
+      }),
+    );
+    for (const res of responses) assert.equal(res.status, 200);
+    await new Promise((resolve) => setImmediate(resolve));
+    const offenders = warnings.filter((warning) => warning && warning.name === "MaxListenersExceededWarning");
+    assert.equal(
+      offenders.length,
+      0,
+      `MaxListenersExceededWarning fired: ${offenders.map((w) => w.message).join("; ")}`,
+    );
+  } finally {
+    process.off("warning", onWarning);
+    for (const controller of controllers) controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent-reply reports whether the requested reply_to actually threaded", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-reply-echo-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const postReply = async (body) => {
+      const res = await fetch(`${base}/api/${key}/agent-reply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      assert.equal(res.status, 200);
+      return res.json();
+    };
+
+    const root = await postReply({ text: "Here is the draft." });
+    assert.equal(root.reply_to, "", "a reply with no requested target reports no thread");
+
+    const threaded = await postReply({ text: "And the follow-up.", reply_to: root.id });
+    assert.equal(threaded.reply_to, root.id, "an honored target is echoed back");
+
+    // The store drops a reply_to naming no message in this session. The route still succeeds -
+    // the reply is posted - but it must not report a thread it did not create, or an agent that
+    // passed a stale id from another artifact reads a clean success and never learns the user
+    // will not see the answer under the message it was meant to answer.
+    const dropped = await postReply({ text: "Stale target.", reply_to: "not-a-message-in-this-session" });
+    assert.equal(dropped.status, "sent");
+    assert.equal(dropped.reply_to, "", "an unknown target is reported as unthreaded");
+
+    const state = JSON.parse(await readFile(path.join(dir, "state.json"), "utf8"));
+    const stored = state.sessions[key].chat.find((entry) => entry.id === dropped.id);
+    assert.equal(stored.reply_to, undefined, "and it really did land as a top-level message");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a queued non-message prompt cannot carry a client-supplied id", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-prompt-id-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const res = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [
+          { tag: "annotation", prompt: "tighten this", id: "forged-1" },
+          { tag: "message", prompt: "and answer me", id: "forged-2" },
+        ],
+      }),
+    });
+    assert.equal(res.status, 200);
+
+    const state = JSON.parse(await readFile(path.join(dir, "state.json"), "utf8"));
+    const [annotation, message] = state.sessions[key].prompts;
+    assert.equal(annotation.id, undefined, "a non-message prompt keeps no id at all");
+    assert.notEqual(message.id, "forged-2", "a message prompt id is minted by the server");
+    assert.ok(typeof message.id === "string" && message.id.length > 0);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent-reply broadcasts a message id and threads via reply_to (change #3)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-thread-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const replyRes = await fetch(`${base}/api/${key}/agent-reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "Here is the draft." }),
+    });
+    const replyBody = await replyRes.json();
+    assert.equal(replyBody.status, "sent");
+    assert.ok(typeof replyBody.id === "string" && replyBody.id.length > 0, "agent-reply returns the message id");
+
+    // A user message threaded under that id must persist the reply_to on the user chat entry.
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ tag: "message", prompt: "Change the title", reply_to: replyBody.id }] }),
+    });
+    const sessionRes = await fetch(`${base}/session/${key}`);
+    assert.equal(sessionRes.status, 200);
+    const state = JSON.parse(await readFile(path.join(dir, "state.json"), "utf8"));
+    const chat = state.sessions[key].chat;
+    const userMsg = chat.find((m) => m.role === "user" && m.text === "Change the title");
+    assert.ok(userMsg, "user message persisted");
+    assert.equal(userMsg.reply_to, replyBody.id, "user message threaded under the agent message id");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/stream?once=1 delivers exactly one user message and requeues the rest of the batch (HIGH regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-once-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+
+    // Queue two messages BEFORE the once stream opens so they form a single batch.
+    for (const text of ["first", "second"]) {
+      await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [{ tag: "message", prompt: text }] }),
+      });
+    }
+
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}&once=1`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+    const frames = await collectSseFrames(streamRes.body, (all) => all.some((f) => f.event === "message"));
+    const messages = frames.filter((f) => f.event === "message");
+    assert.equal(messages.length, 1, "once stream delivers exactly one user message");
+    assert.equal(messages[0].data.prompts.find((p) => p.tag === "message").prompt, "first");
+
+    // The second message must NOT be lost: a later poll still delivers it.
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=2000`);
+    const body = await poll.json();
+    assert.equal(body.status, "feedback");
+    assert.equal(body.prompts.find((p) => p.tag === "message").prompt, "second");
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// An image-only send - attachments and no typed text - is a user message: the store mints it an id
+// and records it in the transcript. The stream classified it as an "extra", so `once` never saw a
+// message, never set `stopped` and never ended the response: the single-shot harness blocked on a
+// batch the destructive take had already consumed.
+test("GET /api/stream?once=1 ends the response for an image-only message and carries its minted id", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-image-once-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const attachment = await uploadStreamImage(base, key);
+    await queueStreamPrompts(base, key, [
+      { tag: "message", prompt: "", attachments: [{ id: attachment.id, name: "shot.png" }] },
+    ]);
+
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}&once=1`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+
+    const frames = await readSseFramesUntilResponseEnd(streamRes);
+    assert.ok(frames, "a once stream must end the response for an image-only message, not hold it open");
+    const messages = frames.filter((f) => f.event === "message");
+    assert.equal(messages.length, 1);
+    assert.deepEqual(
+      messages[0].data.prompts.map((p) => [p.tag, p.prompt]),
+      [["message", ""]],
+      "the image-only prompt is the frame's user message, not an extra riding beside one",
+    );
+    assert.equal(messages[0].data.prompts[0].attachments.length, 1);
+    // The id is what `--reply-to` threads against, and the extras branch emits no `id` at all.
+    assert.equal(typeof messages[0].data.id, "string");
+    assert.ok(messages[0].data.id.length > 0, "the frame carries the server-minted message id");
+    assert.equal(messages[0].data.id, messages[0].data.prompts[0].id);
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/stream gives a mixed text + image-only batch one frame per message, each with its own id", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-image-mixed-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const attachment = await uploadStreamImage(base, key);
+    await queueStreamPrompts(base, key, [
+      { tag: "message", prompt: "typed words" },
+      { tag: "message", prompt: "", attachments: [{ id: attachment.id, name: "shot.png" }] },
+    ]);
+
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+    const frames = await collectSseFrames(
+      streamRes.body,
+      (all) => all.filter((f) => f.event === "message").length >= 2,
+    );
+    const messages = frames.filter((f) => f.event === "message");
+    assert.equal(messages.length, 2, "the image-only send gets a frame of its own, not a seat on the text frame");
+    assert.deepEqual(
+      messages.map((f) => f.data.prompts.map((p) => p.prompt)),
+      [["typed words"], [""]],
+    );
+    const ids = messages.map((f) => f.data.id);
+    assert.ok(
+      ids.every((id) => typeof id === "string" && id.length > 0),
+      `every message frame carries an id, got ${JSON.stringify(ids)}`,
+    );
+    assert.notEqual(ids[0], ids[1], "the two messages are separately addressable for --reply-to");
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/stream?once=1 delivers only the first of a mixed batch and requeues the image-only tail", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-image-once-tail-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const attachment = await uploadStreamImage(base, key);
+    await queueStreamPrompts(base, key, [
+      { tag: "message", prompt: "typed words" },
+      { tag: "message", prompt: "", attachments: [{ id: attachment.id, name: "shot.png" }] },
+    ]);
+
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}&once=1`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+    const frames = await readSseFramesUntilResponseEnd(streamRes);
+    assert.ok(frames, "the once stream ends the response");
+    const messages = frames.filter((f) => f.event === "message");
+    assert.equal(messages.length, 1);
+    assert.deepEqual(
+      messages[0].data.prompts.map((p) => p.prompt),
+      ["typed words"],
+      "exactly one user message is delivered - the image-only send does not ride along as an extra",
+    );
+
+    // The image-only message is requeued, not lost, and keeps the id already minted for it.
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=2000`);
+    const body = await poll.json();
+    assert.equal(body.status, "feedback");
+    assert.deepEqual(
+      body.prompts.map((p) => p.prompt),
+      [""],
+    );
+    assert.equal(body.prompts[0].attachments.length, 1);
+    assert.ok(body.prompts[0].id, "the requeued image-only message keeps its minted id");
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// The case the widened predicate must not swallow: a batch with no message prompt at all is still
+// not a user message. It rides the extras branch, which emits no `id` and never satisfies `once`.
+test("GET /api/stream still delivers an annotation-only batch on the extras branch with no message id", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-extras-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+
+    await queueStreamPrompts(base, key, [{ tag: "h1", prompt: "tighten this", selector: "h1", text: "Title" }]);
+
+    const frames = await collectSseFrames(streamRes.body, (all) => all.some((f) => f.event === "message"));
+    const messages = frames.filter((f) => f.event === "message");
+    assert.equal(messages.length, 1);
+    assert.deepEqual(
+      messages[0].data.prompts.map((p) => [p.tag, p.prompt]),
+      [["h1", "tighten this"]],
+    );
+    assert.equal(messages[0].data.id, undefined, "an extras-only frame names no message to reply to");
+    assert.equal(messages[0].data.prompts[0].id, undefined, "and the annotation itself is never minted one");
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("two concurrent streams on one session deliver each message exactly once (atomic take)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-dup-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    maxStreamClients: 4,
+  });
+  const controllers = [];
+  const openStream = () => {
+    const controller = new AbortController();
+    controllers.push(controller);
+    return fetch(`http://127.0.0.1:${server.port}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+  };
+  const countMessages = (frames) =>
+    frames.filter((f) => f.event === "message" && (f.data.prompts || []).some((p) => p.tag === "message")).length;
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+    const [a, b] = await Promise.all([openStream(), openStream()]);
+    assert.equal(a.status, 200);
+    assert.equal(b.status, 200);
+
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ tag: "message", prompt: "only once" }] }),
+    });
+
+    // Atomic takeFeedback means exactly one of the two streams delivers the message — never both.
+    const [framesA, framesB] = await Promise.all([
+      collectSseFrames(a.body, (all) => countMessages(all) >= 1, 1000),
+      collectSseFrames(b.body, (all) => countMessages(all) >= 1, 1000),
+    ]);
+    assert.equal(countMessages(framesA) + countMessages(framesB), 1, "delivered exactly once across both streams");
+  } finally {
+    for (const controller of controllers) controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 async function startFakeHtmlApp(requests, responseBody = null) {
@@ -6252,4 +7201,160 @@ test("extractArtifactHead reads the real href, not one hidden in another attribu
     '<head><link rel="icon" title="see href=data:image/png,decoy" href="https://cdn.example.com/logo.png"></head>',
   );
   assert.equal(inValue.faviconTag, '<link rel="icon" href="https://cdn.example.com/logo.png">');
+});
+
+// A rejecting async listener on the SSE emitter has no rejection handler, so under Node's default
+// --unhandled-rejections=throw one torn state read takes down the whole detached server and every
+// chrome, poll and stream attached to it. The dropped frame is the only acceptable loss.
+test("a chat-sync listener whose state read throws drops the frame and keeps the stream open", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-chat-sync-throw-"));
+  const artifact = path.join(dir, "report.html");
+  await writeFile(artifact, "<html><body><p>report</p></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  const { key } = await openSession(base, artifact);
+
+  // queuePrompts reads state directly, so only the SSE listener's findByKey tears: the POST still
+  // succeeds and still emits `chat-changed`, which is what puts the rejection on the emitter.
+  const realFindByKey = SessionStore.prototype.findByKey;
+  let tearState = false;
+  SessionStore.prototype.findByKey = async function findByKey(...args) {
+    if (tearState) throw new SyntaxError("Unexpected end of JSON input");
+    return realFindByKey.apply(this, args);
+  };
+
+  const queue = (text) =>
+    fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ prompt: text, tag: "message" }] }),
+    });
+
+  const observed = { duringTear: null, health: null, afterTear: null };
+  const controller = new AbortController();
+  try {
+    const stream = await fetch(`${base}/events/${key}`, { signal: controller.signal });
+    const pending = [];
+    const frames = await collectSseFrames(
+      stream.body,
+      (received) => {
+        // The route registers its listeners before writing this first snapshot, so the frame is the
+        // proof that a `chat-changed` emit is observable at all - without it the POST below could
+        // reach zero listeners and the test would pass while exercising nothing.
+        if (pending.length === 0 && received.some((frame) => frame.event === "chat-sync")) {
+          tearState = true;
+          pending.push(
+            (async () => {
+              observed.duringTear = (await queue("during the tear")).status;
+              observed.health = (await fetch(`${base}/health`)).status;
+              tearState = false;
+              observed.afterTear = (await queue("after the tear")).status;
+            })().catch(() => {}),
+          );
+        }
+        return received.some(
+          (frame) =>
+            frame.event === "chat-sync" && (frame.data.chat || []).some((message) => message.text === "after the tear"),
+        );
+      },
+      10_000,
+    );
+    await Promise.all(pending);
+
+    assert.equal(observed.duringTear, 200, "the prompt that trips the listener must still be queued");
+    assert.equal(observed.health, 200, "a rejected listener must not take the server process down");
+    assert.equal(observed.afterTear, 200);
+
+    const synced = frames.filter((frame) => frame.event === "chat-sync");
+    const latest = synced.at(-1);
+    assert.ok(latest, "the same connection must still deliver chat-sync after the failure");
+    const texts = (latest.data.chat || []).map((message) => message.text);
+    assert.deepEqual(texts, ["during the tear", "after the tear"], JSON.stringify(texts));
+  } finally {
+    SessionStore.prototype.findByKey = realFindByKey;
+    controller.abort();
+    await server.close();
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+// The "ended" frame is the stream's terminator, so it has to actually terminate: without setting
+// `stopped` and ending the response, a drain that had another event land mid-flight re-enters from
+// its own `finally`, takes "ended" a second time, and writes a duplicate terminator - and the
+// socket stays open afterwards, holding the stream slot and the presence refcount until the client
+// gives up. Every other terminal branch in this handler (the --once one) already does both.
+test("GET /api/stream ends the response after the ended frame and frees the slot (HIGH regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-stream-ended-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    // One slot, so a stream that never released its slot cannot be replaced.
+    maxStreamClients: 1,
+  });
+  const controller = new AbortController();
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await openSession(base, artifact);
+
+    const streamRes = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(streamRes.status, 200);
+
+    // Queue a message first so the drain that observes the end is one that already wrote frames -
+    // the shape that re-enters through `drainAgain`.
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ tag: "message", prompt: "last word" }] }),
+    });
+    await fetch(`${base}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+
+    // Read to end-of-body rather than to a frame predicate: the property under test is that the
+    // server closes the response itself, so a stream left open fails here instead of passing on a
+    // frame that happened to arrive.
+    const reader = streamRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let terminated = false;
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise((resolve) => setTimeout(() => resolve({ value: undefined, done: false }), 300)),
+      ]);
+      if (done) {
+        terminated = true;
+        break;
+      }
+      if (value) buffer += decoder.decode(value, { stream: true });
+    }
+    reader.cancel().catch(() => {});
+    assert.ok(terminated, `the server must end the response after the ended frame\n${buffer}`);
+
+    const endedFrames = buffer.split("\n\n").filter((raw) => raw.includes("event: ended"));
+    assert.equal(endedFrames.length, 1, `exactly one ended terminator\n${buffer}`);
+
+    // The slot and the presence refcount are released with the response, not whenever the client
+    // notices: a second stream fits into the single-slot cap immediately.
+    const second = await fetch(`${base}/api/stream?file=${encodeURIComponent(artifact)}`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.notEqual(second.status, 503, "the ended stream must have released its slot");
+    assert.equal(second.status, 200);
+    second.body.cancel().catch(() => {});
+  } finally {
+    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

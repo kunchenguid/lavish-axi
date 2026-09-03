@@ -184,6 +184,36 @@ let annotation = true;
 let ended = false;
 let agentPresence = "waiting";
 let pendingSnapshot = "";
+// Threading: full client model rebuilt from the authoritative transcript, plus the id of the root
+// whose thread is currently open ("" = none).
+/** @type {Map<string, ChatMsg>} */
+const messagesById = new Map();
+/** @type {(string|ChatMsg)[]} */
+const messageOrder = [];
+let openThreadRootId = "";
+/** @type {Map<string, number>} */
+const seenReplyCount = new Map();
+let seenBaselined = false;
+const threadPane = /** @type {HTMLDivElement} */ (document.getElementById("threadPane"));
+const threadChat = /** @type {HTMLDivElement} */ (document.getElementById("threadChat"));
+const threadTitle = /** @type {HTMLSpanElement} */ (document.getElementById("threadTitle"));
+const threadBack = /** @type {HTMLButtonElement} */ (document.getElementById("threadBack"));
+const backBadge = /** @type {HTMLSpanElement} */ (document.getElementById("backBadge"));
+const threadInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("threadInput"));
+const threadSend = /** @type {HTMLButtonElement} */ (document.getElementById("threadSend"));
+const threadReplyIndicator = /** @type {HTMLDivElement} */ (document.getElementById("threadReplyIndicator"));
+const threadReplyIndicatorText = /** @type {HTMLSpanElement} */ (document.getElementById("threadReplyIndicatorText"));
+const threadReplyIndicatorClear = /** @type {HTMLButtonElement} */ (
+  document.getElementById("threadReplyIndicatorClear")
+);
+let threadReplyToId = "";
+let localMessageSeq = 0;
+// Which optimistic (`local-`) bubble stands in for which still-unaccepted queued prompt. Keyed by
+// the prompt object so nothing has to be persisted or cleaned up: a prompt the server accepted is
+// spliced out of `queued` and the entry goes with it, and a queue restored from sessionStorage is a
+// fresh set of objects with no stand-ins on screen to match.
+/** @type {WeakMap<object, string>} */
+const optimisticMessageIds = new WeakMap();
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
 const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
 const layoutGateMaxHoldMs =
@@ -215,6 +245,7 @@ const snapshotRequests = [];
 let endAfterSubmit = false;
 let workingBubble = null;
 let submitQueuedPromise = null;
+let submitQueuedBatch = null;
 let submitQueuedAgain = false;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
@@ -264,6 +295,13 @@ let copyHintTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendHintTimer;
 
+// Returns true for optimistic/unreconciled messages whose id was minted client-side ("local-<n>").
+// These must not be threadable or targetable until a chat-sync round-trip replaces the id with a
+// server-assigned durable id.
+function isLocalId(id) {
+  return typeof id === "string" && id.startsWith("local-");
+}
+
 function artifactFrameSrcForLoad(load) {
   const separator = artifactSrc.includes("?") ? "&" : "?";
   return (
@@ -288,6 +326,109 @@ function escapeHtml(value) {
         "'": "&#39;",
       })[char],
   );
+}
+
+// Render a safe subset of inline markdown for agent messages: **bold**, *italic* / _italic_, and
+// `code`. HTML is escaped FIRST, then the markdown tokens are applied to the escaped string, so the
+// only tags introduced are the ones added here — no injection from message text.
+function renderInlineMarkdown(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  html = html.replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s).,!?:;]|$)/g, "$1<em>$2</em>");
+  html = html.replace(/(^|[\s(])_([^_\s][^_\n]*?)_(?=[\s).,!?:;]|$)/g, "$1<em>$2</em>");
+  html = html.replace(/\n/g, "<br>");
+  return html;
+}
+
+/**
+ * @typedef {{ id?: string, role: string, text: string, reply_to?: string, at?: number }} ChatMsg
+ */
+
+// Walk reply_to up to the thread root id. Cycle- and dangling-safe: returns the topmost id with no
+// reply_to, or the current id if the chain loops or points at a missing message.
+/** @param {string} id @param {Map<string, ChatMsg>} byId @returns {string} */
+function resolveRootId(id, byId) {
+  const seen = new Set();
+  let curId = String(id);
+  for (;;) {
+    if (seen.has(curId)) return curId;
+    seen.add(curId);
+    const current = byId.get(curId);
+    if (!current || !current.reply_to) return curId;
+    const parentId = String(current.reply_to);
+    if (!byId.has(parentId)) return curId;
+    curId = parentId;
+  }
+}
+
+// Split a flat, chronological transcript into roots (no reply_to) and replies grouped under their
+// resolved root. One level deep: nested replies land flat under the same root.
+/** @param {ChatMsg[]} messages @returns {{ roots: ChatMsg[], repliesByRoot: Map<string, ChatMsg[]> }} */
+function groupThreads(messages) {
+  const byId = new Map();
+  for (const m of messages) {
+    if (m && m.id != null && m.id !== "") byId.set(String(m.id), m);
+  }
+  const roots = [];
+  const repliesByRoot = new Map();
+  for (const m of messages) {
+    if (!m) continue;
+    const id = m.id != null ? String(m.id) : "";
+    const rootId = id ? resolveRootId(id, byId) : "";
+    if (!id || !m.reply_to || rootId === id) {
+      roots.push(m);
+      if (id && !repliesByRoot.has(id)) repliesByRoot.set(id, []);
+      continue;
+    }
+    if (!repliesByRoot.has(rootId)) repliesByRoot.set(rootId, []);
+    (repliesByRoot.get(rootId) || []).push(m);
+  }
+  return { roots, repliesByRoot };
+}
+
+// Coarse relative time for thread chips ("just now", "30s", "5m", "3h", "2d").
+/** @param {number|string} at @param {number} now @returns {string} */
+function formatRelativeTime(at, now) {
+  const t = typeof at === "number" ? at : Date.parse(String(at));
+  if (!Number.isFinite(t)) return "";
+  const s = Math.max(0, Math.floor((now - t) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+/** @param {number} count @param {number} lastAt @param {number} now @returns {string} */
+function threadChipLabel(count, lastAt, now) {
+  const noun = count === 1 ? "reply" : "replies";
+  const rel = formatRelativeTime(lastAt, now);
+  return rel ? `${count} ${noun} · ${rel}` : `${count} ${noun}`;
+}
+
+// True when a thread is open and an incoming message belongs to a different thread/root, so the
+// Back button should show an unread badge.
+/** @param {string} openRootId @param {ChatMsg} message @param {Map<string, ChatMsg>} byId @returns {boolean} */
+function shouldFlagBackBadge(openRootId, message, byId) {
+  if (!openRootId) return false;
+  const id = message && message.id != null ? String(message.id) : "";
+  if (!id) return false;
+  return resolveRootId(id, byId) !== String(openRootId);
+}
+
+// How many replies in a thread the user has not seen yet (never negative).
+/** @param {string} rootId @param {number} currentCount @param {Map<string, number>} seenMap @returns {number} */
+function unreadReplyCount(rootId, currentCount, seenMap) {
+  const seen = seenMap.get(String(rootId)) || 0;
+  return Math.max(0, currentCount - seen);
+}
+
+/** @param {string} rootId @param {number} currentCount @param {Map<string, number>} seenMap @returns {boolean} */
+function isThreadUnread(rootId, currentCount, seenMap) {
+  return unreadReplyCount(rootId, currentCount, seenMap) > 0;
 }
 
 function loadJsonState(storageKey, fallback) {
@@ -422,6 +563,8 @@ function render() {
 function updateSendState() {
   sendButton.disabled = ended;
   sendAndEndButton.disabled = sendButton.disabled;
+  if (threadInput) threadInput.disabled = ended;
+  if (threadSend) threadSend.disabled = ended;
   if (warningsQueueButton) updateWarningSelectionState();
 }
 
@@ -527,24 +670,247 @@ async function copyText(text) {
   return true;
 }
 
-function addChat(role, text, shouldScroll = true) {
-  if (!text) return;
-
+// Build one chat bubble element. `chip` adds a thread chip to a root that has replies.
+// `reply` is a tri-state:
+//   false   — no reply button
+//   "open"  — Reply button whose click calls openThread (for main-list roots with no replies)
+//   "target"— Reply button whose click calls setThreadReplyTarget (for thread bubbles)
+/**
+ * @param {ChatMsg} message
+ * @param {{ chip?: string|null, chipUnread?: boolean, isRoot?: boolean, reply?: false|"open"|"target" }} [opts]
+ */
+function buildBubble(message, { chip = null, chipUnread = false, isRoot = false, reply = false } = {}) {
   const el = document.createElement("div");
-  el.className = "bubble " + role;
-  el.innerHTML = "<small>" + (role === "agent" ? "Agent" : "You") + "</small><div>" + escapeHtml(text) + "</div>";
-  chatLog.appendChild(el);
-  if (shouldScroll) scrollElementIntoView(el);
+  el.className = "bubble " + message.role + (isRoot ? " thread-root" : "");
+  if (message.id) el.dataset.messageId = String(message.id);
+  const body = message.role === "agent" ? renderInlineMarkdown(message.text) : escapeHtml(message.text);
+  let html = "<small>" + (message.role === "agent" ? "Agent" : "You") + "</small><div>" + body + "</div>";
+  if (chip) {
+    html +=
+      '<button class="thread-chip' +
+      (chipUnread ? " unread" : "") +
+      '" type="button" data-root-id="' +
+      escapeHtml(String(message.id)) +
+      '"><span class="dot"></span>' +
+      escapeHtml(chip) +
+      "</button>";
+  }
+  if (reply && message.id && !isLocalId(String(message.id))) {
+    html +=
+      '<button class="reply-button" type="button" data-reply-id="' +
+      escapeHtml(String(message.id)) +
+      '">Reply</button>';
+  }
+  el.innerHTML = html;
+  const chipButton = el.querySelector(".thread-chip");
+  if (chipButton) chipButton.addEventListener("click", () => openThread(String(message.id)));
+  const replyButton = el.querySelector(".reply-button");
+  if (replyButton) {
+    if (reply === "open") {
+      replyButton.addEventListener("click", () => openThread(String(message.id)));
+    } else {
+      replyButton.addEventListener("click", () => setThreadReplyTarget(String(message.id), message.text));
+    }
+  }
   return el;
 }
 
-function syncChat(chat) {
+// Append a message to the in-memory model (used for optimistic local sends and incoming events).
+function rememberMessage(message) {
+  if (!message) return;
+  const id = message.id != null ? String(message.id) : "";
+  if (id) {
+    if (!messagesById.has(id)) messageOrder.push(id);
+    messagesById.set(id, message);
+  } else {
+    messageOrder.push(message);
+  }
+}
+
+// Remove one message from the in-memory model. Only optimistic local sends are ever forgotten this
+// way; server-owned messages leave through a full setMessages() rebuild instead.
+function forgetMessage(id) {
+  const messageId = String(id);
+  if (!messagesById.delete(messageId)) return false;
+  const index = messageOrder.indexOf(messageId);
+  if (index !== -1) messageOrder.splice(index, 1);
+  return true;
+}
+
+// An optimistic bubble stands in for a prompt the server has not accepted yet: a successful POST is
+// what makes the server mint the durable message and broadcast it over chat-sync, which replaces
+// the stand-in. A batch the server refused (an ended session, an atomic 400 reject) or a request
+// that never landed produces no such message, so the stand-in has to go - otherwise the transcript
+// shows the user a message that was never persisted or delivered. The prompts themselves stay
+// queued as pills, which is the surface that still lets the user retry it or take it back for good.
+// Retracting a stand-in is keyed on CONSUMING its optimisticMessageIds entry, never on removing it
+// from the model: a chat-sync rebuild drops every stand-in it does not carry, so by the time the
+// refusal lands the bubble is often already gone while the seen credit it bought is still standing.
+function dropOptimisticMessages(prompts) {
+  /** @type {Map<string, number>} */
+  const droppedByRoot = new Map();
+  let consumed = false;
+  let removed = false;
+  for (const prompt of prompts) {
+    const id = optimisticMessageIds.get(prompt);
+    if (!id) continue;
+    optimisticMessageIds.delete(prompt);
+    consumed = true;
+    // The prompt itself names the thread it was written into, so the root outlives the stand-in.
+    const rootId = optimisticPromptRoot(prompt);
+    if (forgetMessage(id)) removed = true;
+    if (rootId) droppedByRoot.set(rootId, (droppedByRoot.get(rootId) || 0) + 1);
+  }
+  if (!consumed) return;
+  const settled = settleSeenReplyCounts(droppedByRoot);
+  if (!removed && !settled) return;
+  repaintThreadSurfaces();
+}
+
+// The one repaint every seen-count change goes through, so a debit and a credit land on screen the
+// same way.
+function repaintThreadSurfaces() {
+  renderChat();
+  if (openThreadRootId) {
+    if (messagesById.has(openThreadRootId)) renderThread(openThreadRootId);
+    else closeThread();
+  }
+}
+
+// The thread a retracted prompt was written into: its own reply_to, walked to a root. A prompt with
+// no reply_to stood in for a root message, which counts toward no thread's reply count.
+function optimisticPromptRoot(prompt) {
+  const replyTo = prompt && prompt.reply_to != null ? String(prompt.reply_to) : "";
+  return replyTo ? resolveRootId(replyTo, messagesById) : "";
+}
+
+// Marking a thread seen counts the optimistic stand-ins on screen, so retracting one has to hand
+// that credit back per reply - not merely cap the total. A real reply that landed while the POST
+// was in flight takes the retracted one's place in the count, so a cap alone would find nothing to
+// trim and let the seen count absorb an agent reply the user never opened. The refund is therefore
+// the whole mechanism, and it settles ONLY the roots whose stand-ins were actually dropped: a root
+// nobody dropped keeps its credit untouched, because `seen > present` there is the transient state
+// of a chat-sync rebuild that dropped a stand-in whose POST is still in flight - `unreadReplyCount`
+// floors at 0 so it costs nothing, while zeroing the credit is permanent and paints a false unread
+// badge on the user's own reply the moment that POST lands. It is also only half a pair: a refund is
+// a debit that `creditDeliveredSeenReplyCounts` hands back if the retracted prompt is later retried
+// from its pill and accepted, so a retry ends exactly where an uninterrupted send would have.
+// KNOWN LIMITATION, reviewed and DECLINED 2026-08-29: that same rebuild reaches `seen` by a third
+// path this region does not cover. `syncChat` -> `markThreadSeen` SETS the count from a model that
+// `setMessages` has just cleared of every in-flight `local-` stand-in, so an agent reply landing
+// inside the POST window followed by Back before it resolves leaves a false unread badge on the
+// user's own reply until the thread is reopened, which self-heals it. It was declined rather than
+// patched because the obvious patch - keying the credit below off model presence instead of the
+// WeakMap - double-counts the retraction case above and silently swallows a real agent reply. A
+// correct fix makes `replyCountForRoot`/`markThreadSeen` count queued-but-undelivered thread replies
+// EXPLICITLY rather than inferring "was this counted?" from proxies.
+/** @param {Map<string, number>} droppedByRoot */
+function settleSeenReplyCounts(droppedByRoot) {
+  if (!seenReplyCount.size) return false;
+  const { repliesByRoot } = groupThreads(orderedMessages());
+  let changed = false;
+  for (const [rootId, dropped] of droppedByRoot) {
+    if (!seenReplyCount.has(rootId)) continue;
+    const seen = seenReplyCount.get(rootId) || 0;
+    const present = (repliesByRoot.get(rootId) || []).length;
+    const settled = Math.max(0, Math.min(seen - dropped, present));
+    if (settled !== seen) {
+      seenReplyCount.set(rootId, settled);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// The credit half of that pair, and it is conditional because an unconditional one is worse than the
+// bug it fixes. `markThreadSeen` SETS a thread's seen count from what is present, so a stand-in still
+// on screen at delivery was already counted; crediting it again pushes seen past the replies present
+// and silently swallows the next real agent reply. The guard is a WeakMap-presence test, and absence
+// there has TWO sources, only one of which it was written for: (a) CONSUMED - `dropOptimisticMessages`
+// debited the stand-in and removed the entry, which is the only thing that ever removes one, since
+// delivery does not; and (b) NEVER PRESENT - `loadQueuedPrompts` rebuilds the queue from
+// sessionStorage into fresh objects, and `optimisticMessageIds` is keyed by the prompt object, so a
+// restored prompt matches nothing while `sanitizeQueuedPrompt` keeps its `reply_to`. So debit and
+// credit are not inverses over the same population: a restored queued thread reply is credited though
+// nothing ever debited it. That was accepted rather than tightened because it converges - the credit
+// anticipates exactly the one reply about to land, so a genuinely unread badge clears for the moment
+// between delivery and the batch's own chat-sync, which restores it. Benign, not invisible. A root
+// the user never opened has no seen entry and must not gain one, or an unopened thread would come
+// back marked read.
+/**
+ * @param {any[]} prompts
+ * @returns {boolean}
+ */
+function creditDeliveredSeenReplyCounts(prompts) {
+  if (!seenReplyCount.size) return false;
+  let changed = false;
+  for (const prompt of prompts) {
+    if (optimisticMessageIds.has(prompt)) continue;
+    const rootId = optimisticPromptRoot(prompt);
+    if (!rootId || !seenReplyCount.has(rootId)) continue;
+    seenReplyCount.set(rootId, (seenReplyCount.get(rootId) || 0) + 1);
+    changed = true;
+  }
+  return changed;
+}
+
+// Rebuild the whole model from the authoritative transcript.
+function setMessages(chat) {
+  messagesById.clear();
+  messageOrder.length = 0;
+  for (const item of chat) {
+    rememberMessage({
+      id: item.id,
+      role: item.role,
+      text: item.text,
+      reply_to: item.reply_to,
+      at: item.at,
+    });
+  }
+}
+
+function orderedMessages() {
+  const seen = new Set();
+  const list = [];
+  for (const entry of messageOrder) {
+    if (typeof entry === "string") {
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      const m = messagesById.get(entry);
+      if (m) list.push(m);
+    } else if (entry) {
+      list.push(entry);
+    }
+  }
+  return list;
+}
+
+// Render only roots into the main list, each with a thread chip when it has replies.
+function renderChat() {
   for (const el of [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")]) {
     el.remove();
   }
-
+  const { roots, repliesByRoot } = groupThreads(orderedMessages());
+  const now = Date.now();
   let lastChatBubble = null;
-  for (const item of chat) lastChatBubble = addChat(item.role, item.text, false) || lastChatBubble;
+  for (const root of roots) {
+    const id = root.id != null ? String(root.id) : "";
+    const replies = id ? repliesByRoot.get(id) || [] : [];
+    /** @type {false|"open"|"target"} */
+    const reply = replies.length ? false : isLocalId(id) ? false : "open";
+    let chip = null;
+    let chipUnread = false;
+    if (replies.length) {
+      const unread = unreadReplyCount(id, replies.length, seenReplyCount);
+      if (unread > 0) {
+        chipUnread = true;
+        chip = unread === 1 ? "1 new" : unread + " new";
+      } else {
+        chip = threadChipLabel(replies.length, replies[replies.length - 1].at, now);
+      }
+    }
+    lastChatBubble = chatLog.appendChild(buildBubble(root, { chip, chipUnread, reply }));
+  }
   if (workingBubble) chatLog.appendChild(workingBubble);
   // Handed-back drafts were written at the end of the conversation, and a rebuild re-appends the
   // whole transcript - so without this they end up above it, where the scroll below would leave
@@ -552,6 +918,110 @@ function syncChat(chat) {
   for (const note of retiredDraftNodes) chatLog.appendChild(note);
   const anchor = retiredDraftNodes[retiredDraftNodes.length - 1] || workingBubble || lastChatBubble;
   if (anchor) scrollElementIntoView(anchor);
+}
+
+// Render the open thread: pinned root, a count rule, then replies in time order.
+function renderThread(rootId) {
+  threadChat.innerHTML = "";
+  const root = messagesById.get(String(rootId));
+  if (!root) return;
+  const { repliesByRoot } = groupThreads(orderedMessages());
+  const replies = repliesByRoot.get(String(rootId)) || [];
+  threadTitle.textContent = replies.length
+    ? threadChipLabel(replies.length, replies[replies.length - 1].at, Date.now())
+    : "Thread";
+  threadChat.appendChild(buildBubble(root, { isRoot: true, reply: "target" }));
+  for (const reply of replies) threadChat.appendChild(buildBubble(reply, { reply: "target" }));
+  threadChat.scrollTop = threadChat.scrollHeight;
+}
+
+// Current reply count for one root, from the live model.
+function replyCountForRoot(rootId) {
+  const { repliesByRoot } = groupThreads(orderedMessages());
+  return (repliesByRoot.get(String(rootId)) || []).length;
+}
+
+function threadUnreadCount(rootId) {
+  return unreadReplyCount(String(rootId), replyCountForRoot(rootId), seenReplyCount);
+}
+
+// Mark a thread read: the user has now seen all its current replies.
+function markThreadSeen(rootId) {
+  seenReplyCount.set(String(rootId), replyCountForRoot(rootId));
+}
+
+// On the first authoritative transcript with content, treat every existing thread as read.
+// Guard is deferred until the model is non-empty so that an initial empty sync doesn't
+// lock seenBaselined before real messages arrive.
+function baselineSeenOnce() {
+  if (seenBaselined) return;
+  const { roots } = groupThreads(orderedMessages());
+  if (!roots.length) return; // nothing to baseline yet — wait for the real transcript
+  seenBaselined = true;
+  for (const root of roots) {
+    if (root.id != null) markThreadSeen(String(root.id));
+  }
+}
+
+function setBackBadge(visible) {
+  if (!backBadge) return;
+  backBadge.hidden = !visible;
+  if (visible) backBadge.textContent = "new";
+}
+
+function openThread(rootId) {
+  openThreadRootId = String(rootId);
+  markThreadSeen(openThreadRootId);
+  renderChat();
+  clearThreadReplyTarget();
+  renderThread(openThreadRootId);
+  setBackBadge(false);
+  if (panel) panel.classList.add("thread-open");
+  if (threadInput) threadInput.focus();
+}
+
+function closeThread() {
+  openThreadRootId = "";
+  setBackBadge(false);
+  if (panel) panel.classList.remove("thread-open");
+}
+
+// Re-render the list and, if a thread is open, the thread view, from the current model.
+function syncChat(chat) {
+  setMessages(chat);
+  // baseline BEFORE renderChat so chips paint with correct read-state on load
+  baselineSeenOnce();
+  // Mark the open thread seen BEFORE renderChat so the chip paints as read.
+  if (openThreadRootId) markThreadSeen(openThreadRootId);
+  renderChat();
+  if (openThreadRootId) {
+    if (messagesById.has(openThreadRootId)) renderThread(openThreadRootId);
+    else closeThread();
+  }
+  scrollChatToLatest();
+}
+
+function clearThreadReplyTarget() {
+  threadReplyToId = "";
+  if (threadReplyIndicator) threadReplyIndicator.hidden = true;
+}
+
+// Collapse whitespace and truncate long text for the reply indicator quote label.
+function truncateQuote(text) {
+  const flat = String(text).replace(/\s+/g, " ").trim();
+  return flat.length > 120 ? flat.slice(0, 120) + "…" : flat;
+}
+
+// Point the thread composer at a specific message. Shows the reply indicator so the user sees
+// what they are replying to, then focuses the thread input.
+function setThreadReplyTarget(id, text) {
+  if (isLocalId(String(id))) return;
+  threadReplyToId = String(id);
+  if (threadReplyIndicator) {
+    if (threadReplyIndicatorText) threadReplyIndicatorText.textContent = truncateQuote(text);
+    threadReplyIndicator.hidden = false;
+  }
+  if (threadInput) threadInput.focus();
 }
 
 function setAgentPresence(state) {
@@ -767,8 +1237,13 @@ function applySheetState() {
   const docked = mobile && !open;
   panelScroll.inert = ended || docked;
   chatComposer.inert = ended || docked;
+  if (threadPane) threadPane.inert = ended || docked;
   const activeElement = document.activeElement;
-  if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
+  const inHiddenHalf =
+    panelScroll.contains(activeElement) ||
+    chatComposer.contains(activeElement) ||
+    Boolean(threadPane && threadPane.contains(activeElement));
+  if (docked && activeElement && inHiddenHalf) {
     panelToggle.focus();
   }
   panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -905,10 +1380,25 @@ function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+// chatLog sits inside the scrolling panel rather than scrolling itself, so reveal the newest
+// bubble (the working bubble when the agent is busy) instead of setting scrollTop on it.
+function scrollChatToLatest() {
+  const last = chatLog.lastElementChild;
+  if (last) scrollElementIntoView(last);
+}
+
 function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
-  queued.splice(index, 1);
+  const [removed] = queued.splice(index, 1);
   persistQueuedPrompts();
+  // Taking a prompt back before any request carried it means the server never heard of it, so its
+  // stand-in goes the way a refused batch's does, credit included. A prompt the in-flight POST is
+  // still carrying is not that: that request may yet be accepted, and the chat-sync it returns is
+  // what reconciles the stand-in. Its outcome is settled where every other outcome is - the
+  // submit's own failure path, which drops the batch it was carrying.
+  if (removed && !(submitQueuedBatch && submitQueuedBatch.includes(removed))) {
+    dropOptimisticMessages([removed]);
+  }
   render();
 }
 
@@ -1170,7 +1660,15 @@ function sendQueued(endAfter) {
       if (attachments.length) prompt.attachments = attachments;
       queued.push(prompt);
       persistQueuedPrompts();
-      addChat("user", text || "Image message");
+      const localId = "local-" + ++localMessageSeq;
+      optimisticMessageIds.set(prompt, localId);
+      rememberMessage({
+        id: localId,
+        role: "user",
+        text: text || "Image message",
+        at: Date.now(),
+      });
+      renderChat();
       chatInput.value = "";
       chatAttachmentController.reset();
       render();
@@ -1186,6 +1684,41 @@ function sendQueued(endAfter) {
   requestSnapshot("submit");
 }
 
+// Send a reply from the thread composer. Carries reply_to (the targeted sub-message, or the open
+// thread's root) so the server threads it and the agent sees what it answered.
+function sendThreadReply() {
+  if (ended || !openThreadRootId) return;
+  const text = threadInput.value.trim();
+  if (!text) return;
+  const replyTo = threadReplyToId || openThreadRootId;
+  // Defense-in-depth: never forward a local (optimistic) id as reply_to to the server.
+  // In normal flow setThreadReplyTarget already rejects local ids, but guard here too.
+  const safeReplyTo = isLocalId(replyTo) ? undefined : replyTo;
+  const message = {
+    uid: "",
+    prompt: text,
+    selector: "",
+    tag: "message",
+    text: "Freeform message",
+    reply_to: safeReplyTo,
+  };
+  if (!safeReplyTo) delete message.reply_to;
+  queued.push(message);
+  persistQueuedPrompts();
+  const localMsg = { id: "local-" + ++localMessageSeq, role: "user", text, at: Date.now() };
+  if (safeReplyTo) localMsg.reply_to = safeReplyTo;
+  optimisticMessageIds.set(message, localMsg.id);
+  rememberMessage(localMsg);
+  // Mark the open thread seen BEFORE renderChat so the chip paints as read.
+  markThreadSeen(openThreadRootId);
+  renderChat();
+  renderThread(openThreadRootId);
+  threadInput.value = "";
+  clearThreadReplyTarget();
+  render();
+  requestSnapshot("submit");
+}
+
 async function submitQueued() {
   if (submitQueuedPromise) {
     submitQueuedAgain = true;
@@ -1193,17 +1726,33 @@ async function submitQueued() {
   }
 
   let succeeded = false;
-  submitQueuedPromise = submitQueuedOnce();
+  // Snapshot the batch here rather than inside submitQueuedOnce so the POST carries exactly the
+  // prompts that were queued when it started, even though this runs synchronously before the first
+  // await; a later send appends to `queued` without joining this request.
+  const batch = queued.slice();
+  submitQueuedBatch = batch;
+  submitQueuedPromise = submitQueuedOnce(batch);
   try {
     const result = await submitQueuedPromise;
     succeeded = result !== false;
     return result;
   } finally {
     submitQueuedPromise = null;
+    const inFlight = submitQueuedBatch || [];
+    submitQueuedBatch = null;
     const shouldSubmitAgain = submitQueuedAgain;
     submitQueuedAgain = false;
     if (!succeeded) {
       endAfterSubmit = false;
+      // Nothing was delivered and nothing retries on its own (shouldSubmitAgain is dropped here
+      // too). That covers more than this batch: a send composed while the POST was in flight only
+      // set that flag, so it never got a request of its own either. `queued` is exactly the
+      // unaccepted set - a batch is spliced out of it only on success - so every stand-in still
+      // keyed to a prompt in it is standing in for a message the server does not have. The
+      // in-flight batch joins it because a prompt the user took back mid-request left `queued`
+      // without being dropped, and this refusal is the answer that says nothing was delivered;
+      // a prompt in both lists is dropped once, since the second pass finds no stand-in.
+      dropOptimisticMessages([...queued, ...inFlight]);
     } else if (!ended && shouldSubmitAgain) {
       if (queued.length) {
         submitQueued().catch(() => {});
@@ -1215,8 +1764,7 @@ async function submitQueued() {
   }
 }
 
-async function submitQueuedOnce() {
-  const prompts = queued.slice();
+async function submitQueuedOnce(prompts) {
   const shouldEndSession = endAfterSubmit;
   const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
   if (shouldEndSession) body.endSession = true;
@@ -1256,6 +1804,7 @@ async function submitQueuedOnce() {
     if (index !== -1) queued.splice(index, 1);
   }
   persistQueuedPrompts();
+  if (creditDeliveredSeenReplyCounts(prompts)) repaintThreadSurfaces();
   render();
   if (shouldEndSession) {
     endAfterSubmit = false;
@@ -2198,11 +2747,12 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
         }
         if (status === "superseded") {
           setHandoffSuperseded(true);
-          // The takeover banner sits in the conversation panel, which the layout gate overlay
-          // covers whenever the gate is enabled. A chrome that never loaded the artifact would
-          // otherwise show the checking spinner until the gate's max hold expires and then
-          // reveal an empty frame, with the only recovery control hidden the whole time. Say it
-          // on the overlay instead. Still no background retry: the reload is the user's to make.
+          // The takeover banner sits in the conversation panel: the gate curtain is scoped to the
+          // artifact frame and no longer covers it, but it is away from the artifact area the user
+          // is watching and entirely off-screen behind a phone's collapsed sheet. A chrome that
+          // never loaded the artifact would otherwise show the checking spinner until the gate's
+          // max hold expires and then reveal an empty frame that explains nothing. Say it on the
+          // overlay too. Still no background retry: the reload is the user's to make.
           if (!artifactLoadToken) {
             setLayoutGateFailure(
               "This review is already open in another tab.",
@@ -3200,6 +3750,16 @@ chatInput.addEventListener("keydown", (event) => {
   }
 });
 chatInput.addEventListener("input", hideSendHint);
+if (threadSend) threadSend.onclick = () => sendThreadReply();
+if (threadInput) {
+  threadInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      sendThreadReply();
+    }
+  });
+}
+if (threadReplyIndicatorClear) threadReplyIndicatorClear.onclick = () => clearThreadReplyTarget();
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
@@ -3278,6 +3838,35 @@ frame.addEventListener("load", () => {
 
 initializeLayoutGate();
 
+function ingestIncoming(message) {
+  if (!message || !message.text) return;
+  // Build a lookahead map that includes the incoming message so resolveRootId can follow its
+  // reply_to chain even though rememberMessage hasn't run yet.
+  const lookahead = message.id != null ? new Map([...messagesById, [String(message.id), message]]) : messagesById;
+  const flagBadge = shouldFlagBackBadge(openThreadRootId, message, lookahead) || flagsNewRoot(message);
+  rememberMessage(message);
+  // Startup-race guard: if the initial sync was empty and content arrives live,
+  // lock seenBaselined so a later non-empty chat-sync baseline cannot erase the
+  // unread signal on a reply the user never opened.
+  if (!seenBaselined) seenBaselined = true;
+  // Mark the open thread seen BEFORE renderChat so the chip paints as read.
+  // A reply into a closed thread must still paint unread — only the open root is marked.
+  if (openThreadRootId) markThreadSeen(openThreadRootId);
+  renderChat();
+  if (openThreadRootId) {
+    renderThread(openThreadRootId);
+    if (flagBadge) setBackBadge(true);
+  }
+}
+
+// A brand-new root (no reply_to, not yet in the model) is "outside" any open thread, so it should
+// also flag the badge. shouldFlagBackBadge already covers replies to other roots.
+function flagsNewRoot(message) {
+  if (!openThreadRootId) return false;
+  const id = message.id != null ? String(message.id) : "";
+  return !message.reply_to && id !== openThreadRootId;
+}
+
 const events = new EventSource("/events/" + key);
 events.addEventListener("reload", () => {
   resetFrame().then((reloaded) => {
@@ -3289,9 +3878,9 @@ events.addEventListener("chrome-reload", (event) => reloadAfterServerRestart(shu
 // it; it is only running the previous version of the chrome, which is the user's to act on.
 events.addEventListener("chrome-outdated", (event) => setChromeOutdated(true, shutdownEventReason(event)));
 events.addEventListener("agent-reply", (event) => {
-  const text = JSON.parse(event.data).text;
-  addChat("agent", text);
-  noteAgentReply(text);
+  const data = JSON.parse(event.data);
+  ingestIncoming({ id: data.id, role: "agent", text: data.text, reply_to: data.reply_to, at: data.at });
+  noteAgentReply(data.text);
 });
 events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
 events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
@@ -3300,17 +3889,41 @@ events.addEventListener("ended", () => markSessionEnded());
 // A reconnecting stream means this chrome may have missed updates while it was away.
 events.addEventListener("open", () => refreshLayoutWarnings());
 
+if (threadBack) threadBack.addEventListener("click", () => closeThread());
+
 applySheetState();
 render();
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);
 renderWarnings();
-initialChat.forEach((item) => addChat(item.role, item.text));
+syncChat(initialChat);
 retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
 // The session already ended before this page (re)loaded, so there is no future SSE `ended` event
 // to wait for - start read-only instead of looking live until a Send gets silently refused.
 if (sessionData.initialEnded) markSessionEnded();
+
+// Test seam: a harness pre-seeds globalThis.__lavishTest, letting the pure threading helpers be
+// unit-tested without a DOM. No-op in the browser, where the key is never set.
+if (globalThis.__lavishTest) {
+  globalThis.__lavishTest.threading = {
+    resolveRootId,
+    groupThreads,
+    formatRelativeTime,
+    threadChipLabel,
+    shouldFlagBackBadge,
+    unreadReplyCount,
+    isThreadUnread,
+  };
+  globalThis.__lavishTest.openThread = openThread;
+  globalThis.__lavishTest.setThreadReplyTarget = setThreadReplyTarget;
+  globalThis.__lavishTest.buildBubble = buildBubble;
+  globalThis.__lavishTest.orderedMessages = orderedMessages;
+  globalThis.__lavishTest.unreadReplyCount = unreadReplyCount;
+  globalThis.__lavishTest.isThreadUnread = isThreadUnread;
+  globalThis.__lavishTest.threadUnreadCount = threadUnreadCount;
+  globalThis.__lavishTest.removeQueuedPrompt = removeQueuedPrompt;
+}
 
 // Reaching this line is the only proof that this file parsed and ran to completion. The inline
 // bootstrap already owns the gate's bounded escape if this script fails; retire only its separate

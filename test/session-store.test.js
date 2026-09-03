@@ -2097,3 +2097,367 @@ test("every image delivered in one poll survives, across accumulated batches (po
     assert.deepEqual(missing, [], `every id in the actual delivery stays referenced (${missing.length} were not)`);
   });
 });
+
+test("a queued user message stays in chat history after the agent drains the queue (disappearing-message regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-drain-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "", prompt: "Keep me visible", selector: "", tag: "message", text: "Freeform message" }],
+    });
+
+    // The agent polls/streams and drains the queue — the moment the message "leaves" for the agent.
+    const drained = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(
+      drained.prompts.filter((p) => p.tag === "message").map((p) => p.prompt)[0],
+      "Keep me visible",
+      "the agent receives the message",
+    );
+
+    // The visible transcript (session.chat) MUST still hold the user's message: takeFeedback clears
+    // session.prompts only, never session.chat. This is the server-side guarantee that a sent message
+    // cannot vanish from the chat panel when the agent consumes it from the queue.
+    const after = await store.findByKey(session.key);
+    assert.deepEqual(
+      after.chat.map((item) => [item.role, item.text]),
+      [["user", "Keep me visible"]],
+      "user message persists in chat history after the drain",
+    );
+    assert.equal(after.prompts.length, 0, "queue is drained");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent takeFeedback and queuePrompts never drop or duplicate messages (BLOCKER regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-race-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    const collect = (result, into) => {
+      if (result.status === "feedback") {
+        for (const prompt of result.prompts) if (prompt.tag === "message") into.push(prompt.prompt);
+      }
+    };
+    const drainAll = async (into) => {
+      let next = await store.takeFeedback(session.key);
+      while (next.status === "feedback") {
+        collect(next, into);
+        next = await store.takeFeedback(session.key);
+      }
+    };
+
+    // Race a stream drain (takeFeedback) against an always-on Send (queuePrompts) many times. The
+    // un-serialized read-modify-write loses or duplicates a message in at least one iteration; a
+    // serialized store always delivers each message exactly once.
+    for (let i = 0; i < 30; i++) {
+      await drainAll([]); // clear any residue from a previous iteration
+      await store.queuePrompts(session.key, { prompts: [{ tag: "message", prompt: "A" }] });
+
+      const delivered = [];
+      const drain = store.takeFeedback(session.key);
+      const send = store.queuePrompts(session.key, { prompts: [{ tag: "message", prompt: "B" }] });
+      const [drainResult] = await Promise.all([drain, send]);
+      collect(drainResult, delivered);
+      await drainAll(delivered);
+
+      assert.deepEqual(
+        [...delivered].sort(),
+        ["A", "B"],
+        `iteration ${i}: messages dropped or duplicated -> ${JSON.stringify(delivered)}`,
+      );
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("user and agent messages get stable ids and carry reply_to for threading (change #3)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-thread-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    const { message: agentMessage } = await store.addAgentReply(session.key, "Draft ready");
+    assert.ok(typeof agentMessage.id === "string" && agentMessage.id.length > 0);
+
+    await store.queuePrompts(session.key, {
+      prompts: [{ tag: "message", prompt: "Tweak the heading", reply_to: agentMessage.id }],
+    });
+    const updated = await store.findByKey(session.key);
+    const userMsg = updated.chat.find((m) => m.role === "user");
+    assert.ok(typeof userMsg.id === "string" && userMsg.id.length > 0, "user message has an id");
+    assert.equal(userMsg.reply_to, agentMessage.id, "user message threads under the agent message");
+
+    // takeFeedback preserves the reply_to on the delivered prompt.
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    const delivered = feedback.prompts.find((p) => p.tag === "message");
+    assert.equal(delivered.reply_to, agentMessage.id);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queuePrompts assigns server-side message ids and ignores caller-supplied ids (MEDIUM regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-id-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    // A caller-forged id (and a duplicate of it) must not become the message id: the server owns ids.
+    await store.queuePrompts(session.key, {
+      prompts: [
+        { tag: "message", prompt: "first", id: "forged-1" },
+        { tag: "message", prompt: "second", id: "forged-1" },
+      ],
+    });
+
+    const updated = await store.findByKey(session.key);
+    const userMsgs = updated.chat.filter((m) => m.role === "user");
+    assert.equal(userMsgs.length, 2);
+    for (const msg of userMsgs) {
+      assert.notEqual(msg.id, "forged-1", "server ignores the caller-supplied id");
+      assert.match(msg.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    }
+    assert.notEqual(userMsgs[0].id, userMsgs[1].id, "duplicate forged ids resolve to distinct server ids");
+
+    // The delivered prompt carries the same server id as the chat entry.
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    const deliveredIds = feedback.prompts.filter((p) => p.tag === "message").map((p) => p.id);
+    assert.deepEqual([...deliveredIds].sort(), [...userMsgs.map((m) => m.id)].sort());
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queuePrompts drops a reply_to that targets no known message (MEDIUM regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-reply-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, {
+      prompts: [{ tag: "message", prompt: "reply to a ghost", reply_to: "does-not-exist" }],
+    });
+
+    const updated = await store.findByKey(session.key);
+    const userMsg = updated.chat.find((m) => m.role === "user");
+    assert.equal(userMsg.reply_to, undefined, "unknown reply_to is stripped from the chat entry");
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    const delivered = feedback.prompts.find((p) => p.tag === "message");
+    assert.equal(delivered.reply_to, undefined, "unknown reply_to is stripped from the delivered prompt");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("addAgentReply drops an unknown reply_to but keeps a valid one (MEDIUM regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-areply-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    // A user message exists; replying to it threads, replying to a ghost does not.
+    await store.queuePrompts(session.key, { prompts: [{ tag: "message", prompt: "the question" }] });
+    const afterUser = await store.findByKey(session.key);
+    const userId = afterUser.chat.find((m) => m.role === "user").id;
+
+    const ghost = await store.addAgentReply(session.key, "answering nothing", { reply_to: "ghost-id" });
+    assert.equal(ghost.message.reply_to, undefined, "unknown reply_to is stripped");
+
+    const threaded = await store.addAgentReply(session.key, "answering the question", { reply_to: userId });
+    assert.equal(threaded.message.reply_to, userId, "valid reply_to is preserved");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// An image-only send is a real user message: the chrome renders an optimistic bubble for it, and
+// the chat-sync broadcast replaces the whole transcript with what the server holds. A message the
+// server never recorded is therefore erased from the panel the moment the sync lands.
+function imageResolver(known) {
+  return async (_key, id) =>
+    id === known ? { id: known, type: "image", path: "/vetted/shot.png", mime: "image/png", bytes: 12 } : null;
+}
+
+test("an image-only message earns a transcript entry and a server id (regression)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-imgmsg-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const known = "b".repeat(64) + ".png";
+    await store.queuePrompts(
+      session.key,
+      { prompts: [{ tag: "message", prompt: "", attachments: [{ id: known, name: "shot.png" }] }] },
+      { resolveAttachment: imageResolver(known), maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+
+    const updated = await store.findByKey(session.key);
+    const userMsgs = updated.chat.filter((m) => m.role === "user");
+    assert.equal(userMsgs.length, 1, "the image-only send is in the transcript");
+    assert.equal(userMsgs[0].text, "Image message");
+    assert.match(userMsgs[0].id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+
+    // The prompt still reaches the agent with its images and the id its transcript entry carries.
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    const delivered = feedback.prompts.find((p) => p.tag === "message");
+    assert.equal(delivered.prompt, "");
+    assert.equal(delivered.id, userMsgs[0].id);
+    assert.equal(delivered.attachments.length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a batch mixing text and image-only messages records both, in queue order", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-mixmsg-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const known = "c".repeat(64) + ".png";
+    await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          { tag: "message", prompt: "", attachments: [{ id: known, name: "shot.png" }] },
+          { tag: "message", prompt: "and here is why" },
+        ],
+      },
+      { resolveAttachment: imageResolver(known), maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+
+    const updated = await store.findByKey(session.key);
+    assert.deepEqual(
+      updated.chat.filter((m) => m.role === "user").map((m) => m.text),
+      ["Image message", "and here is why"],
+    );
+    const ids = updated.chat.filter((m) => m.role === "user").map((m) => m.id);
+    assert.equal(new Set(ids).size, 2, "each message gets its own id");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a message with text and images keeps the user's own words, never the image placeholder", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-textmsg-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const known = "d".repeat(64) + ".png";
+    await store.queuePrompts(
+      session.key,
+      { prompts: [{ tag: "message", prompt: "look at this", attachments: [{ id: known, name: "shot.png" }] }] },
+      { resolveAttachment: imageResolver(known), maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+
+    const updated = await store.findByKey(session.key);
+    assert.deepEqual(
+      updated.chat.filter((m) => m.role === "user").map((m) => m.text),
+      ["look at this"],
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an annotation prompt carrying images stays out of the transcript and gets no message id", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-annimg-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const known = "e".repeat(64) + ".png";
+    await store.queuePrompts(
+      session.key,
+      {
+        prompts: [{ uid: "1", prompt: "", selector: "h1", tag: "h1", text: "Hello", attachments: [{ id: known }] }],
+      },
+      { resolveAttachment: imageResolver(known), maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.chat.filter((m) => m.role === "user").length, 0, "annotations are not chat messages");
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal("id" in feedback.prompts[0], false, "a non-message prompt is never given a message id");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("every minted message id has a transcript entry and every entry has a minted id", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-idpair-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const known = "f".repeat(64) + ".png";
+    await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          { tag: "message", prompt: "words" },
+          { tag: "message", prompt: "", attachments: [{ id: known, name: "shot.png" }] },
+          { tag: "message", prompt: "" },
+          { uid: "1", prompt: "note", selector: "h1", tag: "h1", text: "Hello" },
+        ],
+      },
+      { resolveAttachment: imageResolver(known), maxPerPrompt: 4, maxPromptBytes: 25 * 1024 * 1024 },
+    );
+
+    // The id mint and the transcript filter run at different points in the pipeline; a prompt that
+    // answers one and not the other leaves either an unreachable id or an unaddressable message.
+    const updated = await store.findByKey(session.key);
+    const chatIds = updated.chat.filter((m) => m.role === "user").map((m) => m.id);
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    const promptIds = feedback.prompts.filter((p) => p.id).map((p) => p.id);
+    assert.deepEqual([...promptIds].sort(), [...chatIds].sort());
+    assert.equal(chatIds.length, 2, "the empty message with no images is not a transcript entry");
+    assert.equal(
+      chatIds.every((id) => typeof id === "string" && id.length > 0),
+      true,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

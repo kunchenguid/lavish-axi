@@ -14,10 +14,19 @@ import { isVersionOnlyArgv, VERSION } from "../src/cli.js";
 const execFileAsync = promisify(execFile);
 const BIN = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
 
-// A regression to the pre-fast-path behavior costs the full telemetry drain (up to
-// 1000ms) plus process startup. Windows process startup is substantially slower on
-// hosted runners, so give it more headroom while staying below the drain timeout.
-const VERSION_BUDGET_MS = process.platform === "win32" ? 750 : 500;
+// This file deliberately carries NO wall-clock budget for the fast path. A regression to the
+// pre-fast-path behavior costs the telemetry drain (up to 1000ms of pure waiting) plus state-dir
+// init, and both of those are asserted DIRECTLY below - no request reached the black hole, and the
+// state dir was never created - which catches the regression on any machine. An elapsed-time
+// ceiling only proxied for those two facts, and it measured the machine instead of the code: it
+// fails on a loaded runner where process startup alone exceeds it (measured: ~1223ms for one
+// `--version` spawn while the rest of the suite ran, against a 500ms ceiling). Re-expressing it as
+// a ratio against a same-run calibration does not rescue it either, because per-spawn startup
+// variance under load swamps the fixed drain: measured over the same 16-way CPU saturation, a
+// healthy build's best-of-three ran at 0.50-0.83 of its calibration while a build that DOES pay the
+// init ran at 0.94-1.17 - overlapping ranges, so no threshold separates them. The property is not
+// observable through wall clock on a contended box; it is observable through the two assertions
+// that remain.
 
 // Accepts the telemetry connection and never answers, so a regression pays the whole
 // drain timeout instead of a fast connection refusal.
@@ -55,7 +64,7 @@ test("isVersionOnlyArgv matches exactly the SDK's version-flag shapes", () => {
   }
 });
 
-test("--version prints the version fast and skips telemetry and state-dir init", async (t) => {
+test("--version prints the version and skips telemetry and state-dir init", async (t) => {
   const telemetry = await startBlackHoleTelemetry();
   const stateParent = await mkdtemp(path.join(tmpdir(), "lavish-version-"));
   const stateDir = path.join(stateParent, "state");
@@ -73,15 +82,8 @@ test("--version prints the version fast and skips telemetry and state-dir init",
   };
 
   for (const flag of ["--version", "-v", "-V"]) {
-    const startedAt = process.hrtime.bigint();
     const { stdout } = await execFileAsync(process.execPath, [BIN, flag], { env });
-    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
-
     assert.equal(stdout, `${VERSION}\n`);
-    assert.ok(
-      elapsedMs < VERSION_BUDGET_MS,
-      `\`${flag}\` took ${Math.round(elapsedMs)}ms, over the ${VERSION_BUDGET_MS}ms budget`,
-    );
   }
 
   // The heavy init is provably skipped: no telemetry request was ever sent, and the

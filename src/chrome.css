@@ -901,6 +901,7 @@ body.lavish {
   min-width: 0;
   min-height: 0;
   background: #fff;
+  position: relative;
   overflow: hidden;
 }
 .panel {
@@ -911,6 +912,14 @@ body.lavish {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+.chat-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
 }
 /* Desktop keeps the panel's original flex children: the head wrappers exist only so the phone
    layout can turn the heading into a dock, and they are transparent to layout everywhere else. */
@@ -1023,6 +1032,101 @@ body.lavish {
   to {
     transform: rotate(360deg);
   }
+}
+/* Threading (change #3): reply affordance on agent bubbles, quoted snippet on threaded messages,
+   and the "Replying to:" indicator above the composer. */
+.bubble {
+  position: relative;
+}
+.reply-button {
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: var(--w-bold);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  background: transparent;
+  border: var(--hairline-subtle);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.bubble.agent:hover .reply-button,
+.bubble.user:hover .reply-button,
+.reply-button:focus-visible {
+  opacity: 1;
+}
+/* Reply is the only entry point for starting a thread, and a touch pointer has no hover to reveal
+   it with. Scoped to (hover: none) so a mouse pointer keeps the reveal-on-hover treatment. */
+@media (hover: none) {
+  .reply-button {
+    opacity: 1;
+  }
+}
+.bubble code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg);
+  border: var(--hairline-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+}
+.bubble strong {
+  font-weight: var(--w-bold);
+  color: var(--fg);
+}
+.reply-button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.reply-indicator[hidden] {
+  display: none;
+}
+.reply-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md, 6px);
+  color: var(--fg-muted);
+  font-size: 11px;
+  /* Grid child of .composer: allow it to shrink so a long quoted reply truncates instead of
+     forcing the whole composer to overflow horizontally. */
+  min-width: 0;
+}
+.reply-indicator-label {
+  font-weight: var(--w-bold);
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+}
+.reply-indicator-text {
+  flex: 1 1 auto;
+  /* Without min-width:0 a flex child won't shrink below its content width, so a nowrap quote
+     overflows to the right and the ellipsis never engages. This is the reported "wraps infinitely
+     to the right" bug. */
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.reply-indicator-clear {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 14px;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--radius-pill);
+}
+.reply-indicator-clear:hover {
+  color: var(--accent);
 }
 .composer {
   display: grid;
@@ -1321,6 +1425,13 @@ body.lavish {
 .ended-overlay[hidden] {
   display: none;
 }
+.layout-gate-overlay {
+  /* Scope the layout-check curtain to the artifact frame (.frame is position:relative;
+     overflow:hidden) so it hides only the unverified artifact, never the chat composer
+     in the side panel. The human must always be able to message the agent. */
+  position: absolute;
+  inset: 0;
+}
 .ended-card {
   width: min(360px, calc(100vw - 48px));
   border: 1px solid var(--border);
@@ -1411,6 +1522,12 @@ body.layout-gate-active iframe#artifact {
     grid-template-rows: minmax(0, 1fr) calc(var(--dock-h) + env(safe-area-inset-bottom, 0px));
   }
   .frame {
+    /* The gate curtain lives inside .frame and carries .ended-overlay's z-index: 60, which on this
+       breakpoint outranks the fixed sheet (z-index: 30) the frame sits under. A stacking context
+       here keeps that 60 local, so the sheet and its scrim paint above the curtain and the chat
+       composer stays reachable - the invariant .layout-gate-overlay already claims. Scoped to this
+       breakpoint because .frame and .panel are non-overlapping grid columns on desktop. */
+    isolation: isolate;
     padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
     background: var(--bg-bar);
   }
@@ -1688,4 +1805,149 @@ body.layout-gate-active iframe#artifact {
 }
 .whiteboard-error[hidden] {
   display: none;
+}
+/* Thread panel (slide-out): roots stay in .chat-pane, a thread drills in over the panel. */
+.thread-pane {
+  position: absolute;
+  inset: 0;
+  /* Must outrank .composer, which is sticky with z-index 4 so it stays visible above a long
+     queue - otherwise the chat composer paints straight through the thread overlay. */
+  z-index: 5;
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.28);
+}
+.panel.thread-open .thread-pane {
+  display: flex;
+  animation: thread-slide-in var(--dur-slow) var(--ease);
+}
+/* Take the covered list out of the layout entirely while a thread is open, so its sticky
+   composer cannot show through and Tab cannot land in the hidden chat input behind the pane. */
+.panel.thread-open .chat-pane {
+  display: none;
+}
+/* Must follow the desktop rule above: same specificity, so source order is what decides. The dock
+   lives inside .chat-pane and is the only control that raises a collapsed sheet, so a phone keeps
+   that pane laid out for the dock alone and starts the thread below it. */
+@media (max-width: 860px) {
+  .panel.thread-open .chat-pane {
+    display: flex;
+  }
+  .panel.thread-open .panel-scroll,
+  .panel.thread-open .chat-pane > .composer {
+    display: none;
+  }
+  .panel.thread-open .thread-pane {
+    top: var(--dock-h);
+  }
+  body:not(.sheet-open) .panel.thread-open .thread-pane {
+    top: calc(var(--dock-h) + env(safe-area-inset-bottom, 0px));
+  }
+}
+@keyframes thread-slide-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+.thread-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: var(--hairline-subtle);
+  flex-shrink: 0;
+}
+.thread-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: var(--hairline-subtle);
+  background: var(--bg);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: var(--w-semi);
+  padding: 6px 12px 6px 9px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.thread-back:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.back-badge {
+  background: var(--danger);
+  color: #fff;
+  border-radius: var(--radius-pill);
+  font-size: 10px;
+  font-weight: var(--w-bold);
+  padding: 0 6px;
+  line-height: 16px;
+  min-width: 16px;
+  text-align: center;
+}
+.back-badge[hidden] {
+  display: none;
+}
+.thread-title {
+  font-size: 13px;
+  font-weight: var(--w-semi);
+  color: var(--fg-muted);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The main list scrolls via .panel-scroll, so .chat itself does not scroll. A drilled-in thread
+   has no such wrapper, so its chat owns the scroll and keeps the reply composer in view. */
+.thread-chat {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.thread-chat .bubble {
+  max-width: 100%;
+}
+.thread-chat .thread-root {
+  border-bottom: var(--hairline-subtle);
+  padding-bottom: 12px;
+}
+/* Reply-count chip under a root that has a thread. */
+.thread-chip {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: var(--w-bold);
+  color: var(--accent);
+  background: rgba(244, 201, 93, 0.1);
+  border: 1px solid rgba(244, 201, 93, 0.35);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.thread-chip:hover {
+  background: rgba(244, 201, 93, 0.18);
+}
+.thread-chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  display: none;
+}
+.thread-chip.unread {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--brass-ink);
+}
+.thread-chip.unread .dot {
+  display: block;
+  background: var(--brass-ink);
 }

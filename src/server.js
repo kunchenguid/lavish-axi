@@ -66,7 +66,7 @@ import {
   sanitizeListenHosts,
 } from "./paths.js";
 import { detectTailscale } from "./tailscale.js";
-import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import { canonicalFile, isTranscriptMessage, SessionStore, sessionKey } from "./session-store.js";
 import { generateSharePassword } from "./share-password.js";
 import {
   ACCEPTED_IMAGE_MIME,
@@ -234,8 +234,14 @@ export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = D
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
+// Cap on simultaneously-open /api/stream connections. Each open stream holds a socket and adds a
+// "feedback"/"ended" listener to the shared emitter, so an unbounded number would exhaust sockets
+// and trip Node's MaxListenersExceededWarning. The agent normally keeps a single stream open, so
+// this is generous headroom while still bounding runaway growth.
+const DEFAULT_MAX_STREAM_CLIENTS = 16;
+
 // A detached server should not live forever. When no browser chrome (SSE) and no agent poll
-// are connected for this long, the server shuts itself down so it stops dangling. The next
+// or stream are connected for this long, the server shuts itself down so it stops dangling. The next
 // `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
 // state.json. Browser-ended sessions still require the explicit --reopen opt-in. Set
 // LAVISH_AXI_IDLE_TIMEOUT_MS to 0/off to disable, or to a custom millisecond budget.
@@ -266,6 +272,7 @@ export async function serve({
   allowedHosts,
   detectTailscale: detectTailscaleFn,
   lookupHost,
+  maxStreamClients = DEFAULT_MAX_STREAM_CLIENTS,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 } = {}) {
   const extraHosts = allowedHosts ?? extraAllowedHosts(env);
@@ -286,12 +293,18 @@ export async function serve({
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
+  // Each open /api/stream and /api/poll registers a "feedback"/"ended" listener, and each browser
+  // SSE chrome registers three more. Lift Node's default 10-listener ceiling above the stream cap
+  // (plus headroom for polls and browser chromes) so legitimate fan-out doesn't emit a spurious
+  // MaxListenersExceededWarning, while a real listener leak past this bound still surfaces.
+  events.setMaxListeners(maxStreamClients + 24);
   const watchers = new Map();
   const activePolls = new Map();
   const deliveredFeedback = new Set();
   // Keyed by session so a version-driven shutdown can reload the one chrome whose artifact is
   // being reopened and leave every other open review page on screen.
   const sseClients = new Map();
+  const streamClients = new Set();
   const whiteboardChannelSecret = crypto.randomBytes(32);
   // Sessions with at least one warning the user queued that has not been re-checked yet.
   const outstandingRepairBatches = new Set();
@@ -299,6 +312,37 @@ export async function serve({
   const verbose = debug || env.LAVISH_AXI_DEBUG === "1";
   const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${line}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
+  // An emit has no rejection handler, so an async listener that rejects - `sendChatSync` awaits a
+  // state read that rethrows a torn state.json - is an unhandled rejection, and under Node's
+  // default --unhandled-rejections=throw that tears down the detached server together with every
+  // attached chrome, poll and stream. The guard belongs on the emitter rather than inside any one
+  // listener so no present or future listener can reject into the void: the frame is dropped, the
+  // failure is reported, and the connection stays open.
+  const guardedEventListeners = new WeakMap();
+  const rawEventOn = events.on.bind(events);
+  const rawEventOff = events.off.bind(events);
+  const guardedEventListener = (event, listener) => {
+    let byEvent = guardedEventListeners.get(listener);
+    if (!byEvent) {
+      byEvent = new Map();
+      guardedEventListeners.set(listener, byEvent);
+    }
+    const existing = byEvent.get(event);
+    if (existing) return existing;
+    const report = (error) => writeLog(`[lavish] ${event} listener failed: ${error?.message || error}`);
+    const guarded = (...payload) => {
+      try {
+        const result = listener(...payload);
+        if (result && typeof result.then === "function") result.catch(report);
+      } catch (error) {
+        report(error);
+      }
+    };
+    byEvent.set(event, guarded);
+    return guarded;
+  };
+  events.on = (event, listener) => rawEventOn(event, guardedEventListener(event, listener));
+  events.off = (event, listener) => rawEventOff(event, guardedEventListeners.get(listener)?.get(event) || listener);
   if (networkWarning) writeLog(`[lavish] WARNING: ${networkWarning}`);
   let publicPort = port;
   let serverReady = false;
@@ -718,6 +762,184 @@ export async function serve({
     }
   });
 
+  // Agent-facing push stream. Unlike /api/poll, which drains one batch and ends the response, this
+  // holds the connection open forever and emits each queued message as its own SSE `data:` frame as
+  // soon as it arrives. The agent consumes this with `lavish-axi stream <file>` and fans out a
+  // subagent per frame. An open stream counts as a live poll for presence, so the browser sees
+  // "listening" and Send stays available for the whole time the agent is attached.
+  app.get("/api/stream", async (req, res, next) => {
+    // Held outside the try so a synchronous throw after we register the stream still runs cleanup
+    // (otherwise the slot/listeners/presence would leak for the process lifetime).
+    let cleanup = null;
+    let closed = false;
+    // Track disconnect BEFORE the first await: a close during canonicalFile/findByKey would
+    // otherwise be missed (cleanup registered too late) and leak the stream slot plus presence/idle
+    // state. cleanup is null until the stream is set up; the post-await guard handles a close that
+    // lands before then.
+    req.on("close", () => {
+      closed = true;
+      if (cleanup) cleanup();
+    });
+    try {
+      const file = await canonicalFile(String(req.query.file || ""));
+      const key = sessionKey(file);
+      const once = isTruthyFlag(req.query.once);
+      const session = await store.findByKey(key);
+      if (!session) {
+        res.status(404).json({ status: "missing" });
+        return;
+      }
+      // The client may have disconnected during the awaits above; nothing is registered yet, so bail
+      // before claiming the slot or marking presence.
+      if (closed || req.destroyed) {
+        return;
+      }
+      // Bound concurrent streams so a flood of connections can't exhaust sockets/listeners. The
+      // agent keeps one stream open per session; anything past the cap is a misuse or a leak.
+      if (streamClients.size >= maxStreamClients) {
+        res.set("Retry-After", "5");
+        res.status(503).json({ status: "busy", error: `too many concurrent streams (max ${maxStreamClients})` });
+        return;
+      }
+      streamClients.add(res);
+      let heartbeat = null;
+      let cleanedUp = false;
+      // Set once this stream is finished delivering (a --once single message, or a detected
+      // disconnect): blocks any further drain so a restore's re-emitted "feedback" can't loop here.
+      let stopped = false;
+      let draining = false;
+      let drainAgain = false;
+      // Each emitted frame is `event: <name>\ndata: <json>\n\n`.
+      const writeFrame = (event, data) => {
+        if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+      const drain = async () => {
+        // Serialize drains so two near-simultaneous "feedback" events can't double-take the queue;
+        // re-run once if another event lands mid-drain. A --once stream stops after one user message.
+        if (draining || stopped) {
+          if (!stopped) drainAgain = true;
+          return;
+        }
+        draining = true;
+        try {
+          let batch = await store.takeFeedback(key);
+          while (batch.status === "feedback") {
+            // Deliver-then-restore: takeFeedback already cleared this batch atomically. If a
+            // *detected* disconnect happened, put it back so the next stream/poll still gets it —
+            // never write to a dead socket and drop. Atomic take (not peek) keeps this correct under
+            // multiple consumers: only one stream can take a given batch, so no double-delivery.
+            if (closed || req.destroyed) {
+              // Detected disconnect: hand the batch to the same restore path the closed-poll case
+              // uses, which re-queues it verbatim (ids intact) and wakes any other open consumer.
+              // `stopped` keeps this dead stream's own re-drain from looping on that re-emitted
+              // event. A restore that comes back short is logged there rather than thrown, which is
+              // the right shape here: this drain is fire-and-forget and its socket is already gone.
+              stopped = true;
+              await restoreClosedFeedback(key, batch);
+              return;
+            }
+            finishFeedbackDelivery(key, batch);
+            const feedback = /** @type {{ prompts?: any[], artifact_failures?: any[], dom_snapshot?: string }} */ (
+              batch
+            );
+            const prompts = Array.isArray(feedback.prompts) ? feedback.prompts : [];
+            const artifactFailures = Array.isArray(feedback.artifact_failures) ? feedback.artifact_failures : [];
+            const dom = feedback.dom_snapshot || "";
+            // One SSE frame per user message keeps the "one subagent per message" contract; fatal
+            // artifact failures (and any non-message prompts) ride along on the batch's first frame.
+            const messages = prompts.filter((p) => p && isTranscriptMessage(p));
+            const extras = prompts.filter((p) => !(p && isTranscriptMessage(p)));
+            if (once && messages.length > 0) {
+              // --once delivers exactly one user message and requeues the rest of the batch, so a
+              // single-shot harness never loses the tail of a multi-message batch.
+              const [first, ...rest] = messages;
+              writeFrame("message", {
+                prompts: [first, ...extras],
+                ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
+                dom_snapshot: dom,
+                id: first.id || "",
+                ...(first.reply_to ? { reply_to: first.reply_to } : {}),
+              });
+              stopped = true;
+              // Requeue the tail WITH the batch's dom_snapshot so the next consumer keeps the DOM
+              // context that produced those messages. The restore path preserves the ids already
+              // minted for these prompts, so the chrome's optimistic bubbles still reconcile.
+              if (rest.length > 0) {
+                await restoreClosedFeedback(key, { status: "feedback", prompts: rest, dom_snapshot: dom });
+              }
+              if (!res.writableEnded) res.end();
+              return;
+            }
+            if (messages.length === 0 && (extras.length > 0 || artifactFailures.length > 0)) {
+              writeFrame("message", {
+                prompts: extras,
+                ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
+                dom_snapshot: dom,
+              });
+            } else {
+              messages.forEach((message, index) => {
+                writeFrame("message", {
+                  prompts: [message, ...(index === 0 ? extras : [])],
+                  ...(index === 0 && artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
+                  dom_snapshot: index === 0 ? dom : "",
+                  id: message.id || "",
+                  ...(message.reply_to ? { reply_to: message.reply_to } : {}),
+                });
+              });
+            }
+            batch = await store.takeFeedback(key);
+          }
+          if (batch.status === "ended") {
+            writeFrame("ended", { file });
+            stopped = true;
+            if (!res.writableEnded) res.end();
+            return;
+          }
+        } finally {
+          draining = false;
+          if (drainAgain && !stopped) {
+            drainAgain = false;
+            drain().catch(() => {});
+          }
+        }
+      };
+      const onFeedback = (changedKey) => {
+        if (changedKey === key) drain().catch(() => {});
+      };
+      cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        closed = true;
+        streamClients.delete(res);
+        if (heartbeat) clearInterval(heartbeat);
+        events.off("feedback", onFeedback);
+        events.off("ended", onFeedback);
+        setPollActive(key, activePolls, deliveredFeedback, events, false);
+        refreshIdleTimer();
+      };
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      setPollActive(key, activePolls, deliveredFeedback, events, true);
+      refreshIdleTimer();
+      writeFrame("ready", { file });
+      events.on("feedback", onFeedback);
+      events.on("ended", onFeedback);
+      // Drain anything already queued before the stream opened.
+      drain().catch(() => {});
+
+      heartbeat = setInterval(() => {
+        if (!res.writableEnded) res.write(": keep-alive\n\n");
+      }, pollHeartbeatMs);
+      heartbeat.unref?.();
+    } catch (error) {
+      if (cleanup) cleanup();
+      next(error);
+    }
+  });
+
   // The one route that puts words in the reviewer's mouth: whatever lands here
   // reaches the agent as the user's own instructions. The session key is derived
   // from the artifact path, not a secret, so knowing it must not be enough -
@@ -776,6 +998,9 @@ export async function serve({
         events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(session.layout_warnings));
       }
       events.emit(shouldEndSession ? "ended" : "feedback", req.params.key, session.ended_by);
+      // Re-broadcast the transcript to every attached chrome so a bubble the browser has just sent
+      // optimistically picks up the server-assigned id that makes it reply-able.
+      events.emit("chat-changed", req.params.key);
       res.json({ status: "queued", pending_prompts: session.pending_prompts });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
     } catch (error) {
@@ -889,18 +1114,19 @@ export async function serve({
   app.post("/api/:key/agent-reply", async (req, res, next) => {
     try {
       const text = String(req.body?.text || "");
-      const session = await store.addAgentReply(req.params.key, text);
-      if (!session) {
+      const replyTo = req.body?.reply_to ? String(req.body.reply_to) : "";
+      const result = await store.addAgentReply(req.params.key, text, replyTo ? { reply_to: replyTo } : {});
+      if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
-      events.emit("agent-reply", req.params.key, text);
+      events.emit("agent-reply", req.params.key, result.message);
       // The reply concludes the delivered-feedback "working" state. Without this, a poll that
       // drains feedback and then releases leaves presence stuck on "working" even after the agent
       // answers. Human sends remain available while working because the server queues them for the
       // next poll. See "SSE agent-presence returns to waiting after an agent reply".
       clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
-      res.json({ status: "sent" });
+      res.json({ status: "sent", id: result.message.id, reply_to: result.message.reply_to || "" });
     } catch (error) {
       next(error);
     }
@@ -1194,9 +1420,12 @@ export async function serve({
           res.write("event: reload\ndata: {}\n\n");
         }
       };
-      const sendAgentReply = (key, text) => {
+      const sendAgentReply = (key, message) => {
         if (key === req.params.key) {
-          res.write(`event: agent-reply\ndata: ${JSON.stringify({ text })}\n\n`);
+          // `message` is the persisted chat entry ({ role, text, at, id, reply_to? }); forward the
+          // whole object so the browser can tag the bubble with its id for reply-threading.
+          const payload = typeof message === "string" ? { text: message } : message;
+          res.write(`event: agent-reply\ndata: ${JSON.stringify(payload)}\n\n`);
         }
       };
       const sendPresence = (key, state) => {
@@ -1219,6 +1448,14 @@ export async function serve({
           res.write(`event: ended\ndata: ${JSON.stringify({ ended_by: endedBy || null })}\n\n`);
         }
       };
+      // Re-broadcast the transcript when it changes (e.g. a user message was queued) so the browser
+      // can tag its just-sent bubbles with the server-assigned ids, making them reply-able.
+      const sendChatSync = async (key) => {
+        if (key !== req.params.key || res.writableEnded) return;
+        const fresh = await store.findByKey(key);
+        if (res.writableEnded) return;
+        res.write(`event: chat-sync\ndata: ${JSON.stringify({ chat: fresh?.chat || [] })}\n\n`);
+      };
       // Listeners must be registered BEFORE the read below: an end that lands during that await
       // would otherwise fire "ended" while nothing here is listening yet, and this connection
       // would never learn the session ended (#171).
@@ -1227,6 +1464,7 @@ export async function serve({
       events.on("agent-presence", sendPresence);
       events.on("layout-warnings", sendLayoutWarnings);
       events.on("ended", sendEnded);
+      events.on("chat-changed", sendChatSync);
       let cleanedUp = false;
       cleanup = () => {
         if (cleanedUp) return;
@@ -1238,6 +1476,7 @@ export async function serve({
         events.off("agent-presence", sendPresence);
         events.off("layout-warnings", sendLayoutWarnings);
         events.off("ended", sendEnded);
+        events.off("chat-changed", sendChatSync);
         refreshIdleTimer();
       };
       req.once("close", cleanup);
@@ -2411,9 +2650,8 @@ ${faviconTag}
 </head>
 <body class="${bodyClass}">
 <div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><div class="panel-scrim" id="panelScrim"></div><aside class="panel" id="panel"><div class="panel-head" id="panelHead"><span class="panel-handle" aria-hidden="true"></span><div class="panel-head-row"><h2>Conversation</h2><span class="panel-summary" id="panelSummary" role="status" aria-live="polite"></span><button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">${chromeIcons.chevronUp}</button></div></div><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe><div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button><button class="button ended-action layout-gate-bypass" id="layoutGateBypass" type="button" hidden>Show anyway</button></div></div></div><div class="panel-scrim" id="panelScrim"></div><aside class="panel" id="panel"><div class="chat-pane" id="chatPane"><div class="panel-head" id="panelHead"><span class="panel-handle" aria-hidden="true"></span><div class="panel-head-row"><h2>Conversation</h2><span class="panel-summary" id="panelSummary" role="status" aria-live="polite"></span><button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">${chromeIcons.chevronUp}</button></div></div><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></div><div class="thread-pane" id="threadPane"><div class="thread-head"><button class="thread-back" id="threadBack" type="button">&lsaquo; Back<span class="back-badge" id="backBadge" hidden></span></button><span class="thread-title" id="threadTitle">Thread</span></div><div class="chat thread-chat" id="threadChat"></div><div class="composer"><div class="reply-indicator" id="threadReplyIndicator" hidden><span class="reply-indicator-label">Replying to:</span><span class="reply-indicator-text" id="threadReplyIndicatorText"></span><button class="reply-indicator-clear" id="threadReplyIndicatorClear" type="button" title="Reply to the whole thread">&times;</button></div><textarea id="threadInput" placeholder="Reply in thread..."></textarea><div class="actions"><button class="button" id="threadSend">Reply</button></div></div></div></aside></div>
 <div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label class="share-check"><input id="shareGenerate" type="checkbox"><span>Generate a password (makes this page private)</span></label><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label id="shareUrlResult">Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label id="sharePasswordResult" hidden>Password (shared secret)<div class="share-copy-row"><input id="sharePasswordOut" readonly><button class="share-copy-btn" id="copySharePassword" type="button">Copy password</button></div></label><label id="shareSiteIdResult" hidden>Site ID<div class="share-copy-row"><input id="shareSiteId" readonly><button class="share-copy-btn" id="copyShareSiteId" type="button">Copy site ID</button></div></label><label id="shareUpdateKeyResult">Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note" id="shareUpdateKeyNote">Keep the update key private. ht-ml.app returns it once and it is the only way to update this page later; the service has no delete. Republish this page&#39;s HTML with <code>lavish-axi share &lt;file&gt; --site &lt;site id&gt; --update-key &lt;key&gt;</code>, and add <code>--private</code> to also lock it behind a new generated password.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
-<div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button><button class="button ended-action layout-gate-bypass" id="layoutGateBypass" type="button" hidden>Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
 <div class="whiteboard-overlay" id="whiteboardOverlay" hidden><div class="whiteboard-shell"><div class="whiteboard-error" id="whiteboardError" hidden></div><button class="whiteboard-close" id="whiteboardClose" type="button" aria-label="Close whiteboard"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><iframe id="whiteboardFrame" title="Excalidraw whiteboard" sandbox="allow-scripts allow-popups"></iframe></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>

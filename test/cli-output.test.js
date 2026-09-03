@@ -14,6 +14,7 @@ process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
 import {
+  agentReplyUnthreadedText,
   collapseHomeDirectory,
   computeCopilotCliHookUpdate,
   createCopilotCliAmbientContextScript,
@@ -30,6 +31,7 @@ import {
   createShareUpdateOutput,
   createUserEndedOpenOutput,
   detectInvokingAgent,
+  drainSseBuffer,
   fetchJson,
   getCommandHelp,
   normalizeArgv,
@@ -50,6 +52,10 @@ import {
   shouldRestartServer,
   startPollWaitReporter,
   stopCommand,
+  STREAM_FLUSH_CEILING_MS,
+  streamBusyError,
+  streamInterruptedText,
+  streamMessageRecord,
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
@@ -2985,6 +2991,370 @@ test("stop command reports when no server is running", async () => {
   }
 });
 
+test("a refused stream carries the cap reason and the wait the server asked for", () => {
+  const error = streamBusyError("/tmp/artifact.html", "5", "too many concurrent streams (max 16)");
+
+  assert.ok(error instanceof AxiError);
+  assert.equal(error.code, "SERVER_ERROR");
+  assert.match(error.message, /maximum concurrent streams/);
+  const hints = error.suggestions.join("\n");
+  assert.match(hints, /max 16/, "the server's own cap message reaches the agent");
+  assert.match(hints, /Wait 5s/, "Retry-After becomes an actionable wait");
+  assert.match(hints, /never lost/, "and the agent is told waiting costs it nothing");
+  assert.match(hints, /lavish-axi poll \/tmp\/artifact\.html/, "with a working fallback for this artifact");
+});
+
+test("a refused stream still says how long to wait when the server sent no usable Retry-After", () => {
+  for (const header of [null, "", "not-a-number", "0"]) {
+    const hints = streamBusyError("/tmp/a.html", header, "").suggestions;
+    assert.match(hints.join("\n"), /Wait 5s/, `header ${JSON.stringify(header)} falls back to the documented 5s`);
+    assert.equal(hints.length, 2, "an absent cap message leaves no empty hint behind");
+  }
+});
+
+test("a dropped --reply-to is reported as an unthreaded post, not a failure", () => {
+  const text = agentReplyUnthreadedText("stale-id-7");
+
+  assert.match(text, /stale-id-7/, "the id the agent passed is named");
+  assert.match(text, /top-level message/, "and what actually happened to the reply");
+  assert.doesNotMatch(text, /fail|error/i, "the reply was posted, so it must not read as a failure");
+});
+
+test("streamMessageRecord marks a user-message frame deliverable (MEDIUM regression)", () => {
+  const { record, isUserMessage } = streamMessageRecord({
+    id: "msg-1",
+    prompts: [{ tag: "message", prompt: "make the header bigger", id: "msg-1" }],
+    dom_snapshot: "snap",
+  });
+  assert.equal(isUserMessage, true);
+  assert.equal(record.type, "message");
+  assert.equal(record.text, "make the header bigger");
+  assert.equal(record.id, "msg-1");
+});
+
+test("streamMessageRecord carries a fatal artifact failure and does NOT count it as a user message", () => {
+  // A feedback-only batch (no message-tagged prompt) must still be emitted so the agent learns the
+  // review surface is unusable, but it is not a delivered user message and must neither satisfy
+  // nor terminate --once. `artifact_failures` is the shape takeFeedback actually produces here.
+  const { record, isUserMessage } = streamMessageRecord({
+    prompts: [],
+    artifact_failures: [{ kind: "artifact-unavailable", detail: "500" }],
+  });
+  assert.equal(isUserMessage, false);
+  assert.equal(record.type, "feedback");
+  assert.equal(record.text, "");
+  assert.deepEqual(record.artifact_failures, [{ kind: "artifact-unavailable", detail: "500" }]);
+  // Same key-order contract as the poll response: the failures precede the unbounded snapshot.
+  const keys = Object.keys(record);
+  assert.ok(keys.indexOf("artifact_failures") < keys.indexOf("dom_snapshot"));
+});
+
+test("streamMessageRecord does NOT treat an annotation-only frame as a user message (MEDIUM regression)", () => {
+  const { record, isUserMessage } = streamMessageRecord({
+    prompts: [{ tag: "h1", prompt: "tighten this", selector: "h1", text: "Title" }],
+  });
+  assert.equal(isUserMessage, false);
+  assert.equal(record.type, "feedback", "a batch with no message prompt is feedback, whatever else it carries");
+});
+
+// An image-only send carries no typed text, so the classifier that keyed off `prompt` alone read it
+// as an annotation: it never counted toward `delivered`, never satisfied `--once`, and lost the id
+// `--reply-to` needs. Its `text` still has to stay empty - the transcript's "Image message" label is
+// display copy, and an agent handed it could not tell it from a user who typed those words.
+test("streamMessageRecord counts an image-only send as a user message without borrowing its label", () => {
+  const { record, isUserMessage } = streamMessageRecord({
+    id: "msg-9",
+    prompts: [
+      {
+        tag: "message",
+        prompt: "",
+        id: "msg-9",
+        attachments: [{ id: `${"a".repeat(64)}.png`, name: "shot.png", path: "/tmp/shot.png" }],
+      },
+    ],
+    dom_snapshot: "snap",
+  });
+  assert.equal(isUserMessage, true);
+  assert.equal(record.type, "message");
+  assert.equal(record.id, "msg-9");
+  assert.equal(record.text, "");
+  assert.equal(record.prompts[0].attachments.length, 1);
+});
+
+// The whole agent path, end to end: a real server, a real `lavish-axi stream --once` child, and an
+// image-only send queued before it attaches. The child must print that message and EXIT. Before
+// this the server never classified it as a user message, so it never ended the response - the child
+// blocked forever on a batch the destructive take had already consumed - and `delivered` reported 0.
+test("`stream --once` counts an image-only send as delivered and exits instead of blocking", async () => {
+  const stateDir = await realpath(await mkdtemp(`${os.tmpdir()}/lavish-axi-stream-image-`));
+  const artifact = path.join(stateDir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const bin = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+  // The CLI reuses a running server only when /health reports its own version, so serve as VERSION.
+  const server = await serve({ port: 0, stateFile: path.join(stateDir, "state.json"), version: VERSION });
+  const base = `http://127.0.0.1:${server.port}`;
+  const PNG_2x1 = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR42mP8z8BQz0BkYGAAADAAA/8W1p0AAAAASUVORK5CYII=",
+    "base64",
+  );
+  try {
+    const { key } = await (
+      await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      })
+    ).json();
+    const { attachment } = await (
+      await fetch(`${base}/api/${key}/attachments`, {
+        method: "POST",
+        headers: { "content-type": "image/png", origin: base },
+        body: PNG_2x1,
+      })
+    ).json();
+    const queued = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [{ tag: "message", prompt: "", attachments: [{ id: attachment.id, name: "shot.png" }] }],
+      }),
+    });
+    assert.equal(queued.status, 200);
+
+    // spawn, never spawnSync: the server answering this child runs on THIS event loop.
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [bin, "stream", "--once", artifact], {
+        cwd: stateDir,
+        env: {
+          ...process.env,
+          LAVISH_AXI_STATE_DIR: stateDir,
+          LAVISH_AXI_PORT: String(server.port),
+          LAVISH_AXI_TELEMETRY: "0",
+        },
+      });
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGKILL");
+      }, 30_000);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code, stdout, stderr, timedOut });
+      });
+    });
+
+    assert.equal(run.timedOut, false, `--once must return on an image-only message\n${run.stderr}`);
+    assert.equal(run.code, 0, `stream exited ${run.code}\n${run.stdout}\n${run.stderr}`);
+    const records = run.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    assert.equal(records.length, 1, `one NDJSON delivery line\n${run.stdout}`);
+    assert.equal(records[0].type, "message");
+    assert.ok(records[0].id, "the agent is handed the id it needs for --reply-to");
+    assert.equal(records[0].text, "", "the transcript's display label never reaches the agent as typed words");
+    assert.equal(records[0].prompts[0].attachments.length, 1);
+    assert.match(run.stdout, /delivered:\s*1/, `the summary counts it as delivered\n${run.stdout}`);
+  } finally {
+    await server.close();
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
+// stdout is `stream`'s delivery channel and /api/stream delivery is destructive: takeFeedback clears
+// the batch and finishFeedbackDelivery runs before the frame is written, so a record the CLI printed
+// but did not flush is a user message nothing will ever re-send. process.exit() discards buffered
+// bytes when stdout is a pipe, which is the loss these scenarios reproduce.
+const STREAM_SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
+// Derived from the flush ceiling rather than written as a second independent number: the ceiling is
+// the only wall clock this scenario depends on, and a child honoring it closes well inside this.
+const STREAM_SIGNAL_CHILD_TIMEOUT_MS = STREAM_FLUSH_CEILING_MS * 10;
+// Well past the 64 KB pipe buffer, so the record cannot fit in the reader's buffer plus the pipe and
+// a real tail is always still queued inside the child when the signal lands. Asserting on a prefix
+// (non-empty stdout, "contains the id") would pass against the bug, which keeps the first 64 KB.
+const STREAM_SIGNAL_SNAPSHOT_BYTES = 256 * 1024;
+// Windows has no POSIX signals: subprocess.kill("SIGINT"/"SIGTERM") terminates the child
+// unconditionally instead of delivering the signal to its JavaScript handler, so the bounded flush
+// under test never runs there. Measured by emulating that termination locally - the child reports
+// code null (not 130/143), exits in ~3ms rather than waiting on the ceiling, and writes zero
+// complete NDJSON lines. There is no cross-platform way to drive it: the handler only fires for a
+// real console Ctrl-C event, which Node exposes no API to send. Same reason the SIGTERM poll
+// scenario above guards its handler assertions.
+const signalDeliveringOnly = {
+  skip: process.platform === "win32" ? "Windows kills the child instead of running its signal handler" : false,
+};
+
+async function withStreamSignalSession(run) {
+  const stateDir = await realpath(await mkdtemp(`${os.tmpdir()}/lavish-axi-stream-signal-`));
+  const artifact = path.join(stateDir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(stateDir, "state.json"), version: VERSION });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await (
+      await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      })
+    ).json();
+    const queueBigMessage = async (text) => {
+      const queued = await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({
+          prompts: [{ tag: "message", prompt: text }],
+          dom_snapshot: "d".repeat(STREAM_SIGNAL_SNAPSHOT_BYTES),
+        }),
+      });
+      assert.equal(queued.status, 200);
+    };
+    await run({ artifact, stateDir, port: server.port, queueBigMessage });
+  } finally {
+    await server.close();
+    await rm(stateDir, { force: true, recursive: true });
+  }
+}
+
+// Spawns the real `stream` command over a real pipe, waits for it to start writing its record, then
+// stops reading so the tail stays queued inside the child and signals it there. `drainAfterSignal`
+// picks which half is under test: true resumes reading once the child's own handler has announced
+// itself on stderr, so the flush can complete; false models a consumer that never reads again.
+function spawnStreamAndSignal({ artifact, stateDir, port, signal, drainAfterSignal }) {
+  const bin = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+  const interrupted = streamInterruptedText(artifact);
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [bin, "stream", artifact], {
+      cwd: stateDir,
+      env: {
+        ...process.env,
+        LAVISH_AXI_STATE_DIR: stateDir,
+        LAVISH_AXI_PORT: String(port),
+        LAVISH_AXI_TELEMETRY: "0",
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let signalledAt = 0;
+    let exit = null;
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (signalledAt) return;
+      child.stdout.pause();
+      signalledAt = Date.now();
+      child.kill(signal);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      // Resume only once the handler has run. Resuming earlier would drain the queued bytes before
+      // the signal was even delivered, and an unflushed exit would then look identical to a flushed
+      // one - the test would pass against the very bug it exists to catch.
+      if (drainAfterSignal && signalledAt && stderr.includes(interrupted)) child.stdout.resume();
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, STREAM_SIGNAL_CHILD_TIMEOUT_MS);
+    // Measure at exit, not at close: a stdout left paused never ends on its own, so the ceiling
+    // scenario would otherwise hang here rather than in the child.
+    child.on("exit", (code, closedBy) => {
+      exit = { code, closedBy, elapsedMs: Date.now() - signalledAt };
+      child.stdout.resume();
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      resolve({ ...exit, stdout, stderr, timedOut });
+    });
+  });
+}
+
+function parseStreamRecords(stdout) {
+  return stdout
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line));
+}
+
+test("`stream` flushes a delivered message to stdout before exiting on a signal", signalDeliveringOnly, async () => {
+  await withStreamSignalSession(async ({ artifact, stateDir, port, queueBigMessage }) => {
+    for (const signal of ["SIGTERM", "SIGINT"]) {
+      await queueBigMessage(`flush me on ${signal}`);
+      const run = await spawnStreamAndSignal({ artifact, stateDir, port, signal, drainAfterSignal: true });
+      assert.equal(run.timedOut, false, `${signal}: the bounded flush must not outlive the ceiling\n${run.stderr}`);
+      assert.equal(
+        run.code,
+        STREAM_SIGNAL_EXIT_CODES[signal],
+        `${signal}: the signal's exit code is part of the contract\n${run.stderr}`,
+      );
+      const records = parseStreamRecords(run.stdout);
+      assert.equal(records.length, 1, `${signal}: the delivered record survives as one complete JSON line`);
+      assert.equal(records[0].text, `flush me on ${signal}`);
+      assert.equal(
+        records[0].dom_snapshot.length,
+        STREAM_SIGNAL_SNAPSHOT_BYTES,
+        `${signal}: the whole record is flushed, not the first pipe-buffer's worth of it`,
+      );
+    }
+  });
+});
+
+test(
+  "`stream` still exits within the flush ceiling when the consumer stops reading",
+  signalDeliveringOnly,
+  async () => {
+    await withStreamSignalSession(async ({ artifact, stateDir, port, queueBigMessage }) => {
+      for (const signal of ["SIGINT", "SIGTERM"]) {
+        await queueBigMessage(`stalled on ${signal}`);
+        const run = await spawnStreamAndSignal({ artifact, stateDir, port, signal, drainAfterSignal: false });
+        assert.equal(run.timedOut, false, `${signal}: Ctrl-C must stay fatal against a consumer that never reads`);
+        assert.equal(
+          run.code,
+          STREAM_SIGNAL_EXIT_CODES[signal],
+          `${signal}: the ceiling path exits with the same code as the flushed path\n${run.stderr}`,
+        );
+        assert.ok(
+          run.elapsedMs >= STREAM_FLUSH_CEILING_MS / 2,
+          `${signal}: it waited on the unflushable bytes rather than exiting straight away (${run.elapsedMs}ms)`,
+        );
+        assert.ok(
+          run.elapsedMs < STREAM_FLUSH_CEILING_MS * 3,
+          `${signal}: the wait is bounded by the ceiling, not by the consumer (${run.elapsedMs}ms)`,
+        );
+      }
+    });
+  },
+);
+
+test("drainSseBuffer emits every complete buffered frame, even after the handler signals stop (I1 regression)", () => {
+  // Under --once the handler sets stop on the first user message. A multi-message batch that
+  // arrived in one read must still be fully emitted, not truncated at the first frame.
+  const handled = [];
+  const onFrame = (event, data) => handled.push({ event, data });
+  const buffer = `event: message\ndata: {"n":1}\n\nevent: message\ndata: {"n":2}\n\n`;
+  const rest = drainSseBuffer(buffer, onFrame);
+  assert.equal(handled.length, 2, "both buffered frames are emitted, not just the first");
+  assert.equal(handled[0].data, '{"n":1}');
+  assert.equal(handled[1].data, '{"n":2}');
+  assert.equal(rest, "", "no complete frame is left unprocessed");
+});
+
+test("drainSseBuffer returns a trailing partial frame for the next read (I1 regression)", () => {
+  const handled = [];
+  const rest = drainSseBuffer(`event: message\ndata: {"n":1}\n\nevent: mess`, (event, data) =>
+    handled.push({ event, data }),
+  );
+  assert.equal(handled.length, 1);
+  assert.equal(rest, "event: mess", "the incomplete frame is preserved");
+});
 async function startFakeHtmlApp(requests) {
   const server = createServer((req, res) => {
     let raw = "";
@@ -3367,4 +3737,200 @@ test("createShareUnpublishOutput separates the immediate content swap from the l
   assert.match(output.next_step, /cach/i, "the lagging lock must still be disclosed");
   assert.match(output.next_step, /readable without the password/i);
   assert.doesNotMatch(output.next_step, /no visitor can read the old content/i);
+});
+
+// `stream` resolves its artifact the way every other file-taking command does. Before this, it
+// read args[0] verbatim, so the natural `stream --once report.html` ordering the README's flag
+// rows invite made it realpath("--once") and die on an ENOENT naming a path nobody typed.
+test("stream resolves the artifact past its own flags, and honors a -- separator", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-stream-args-`);
+  const bin = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+  // A path that does not exist: canonicalFile fails BEFORE any server is contacted, and the error
+  // names whichever token the command decided was the artifact - which is exactly what we measure.
+  const missing = path.join(stateDir, "review-fixture.html");
+  const run = (args) =>
+    spawnSync(process.execPath, [bin, "stream", ...args], {
+      cwd: stateDir,
+      encoding: "utf8",
+      env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_TELEMETRY: "0" },
+      timeout: 30_000,
+    });
+
+  try {
+    for (const args of [
+      ["--once", missing],
+      ["--reply-to", "msg-7", "--agent-reply", "on it", missing],
+      ["--agent-reply=on it", "--once", missing],
+      [missing, "--once"],
+    ]) {
+      const result = run(args);
+      const output = `${result.stdout || ""}${result.stderr || ""}`;
+      assert.notEqual(result.status, 0, `${args.join(" ")} should fail on the missing artifact\n${output}`);
+      assert.match(output, /review-fixture\.html/, `${args.join(" ")} must resolve the artifact\n${output}`);
+      for (const token of ["--once", "--reply-to", "--agent-reply", "msg-7", "on it"]) {
+        assert.ok(
+          !output.includes(`'${token}`) && !output.includes(`/${token}`),
+          `${args.join(" ")} must not treat ${token} as the artifact path\n${output}`,
+        );
+      }
+    }
+
+    // A `--` separator is what lets an artifact whose own name starts with a dash be named at all.
+    const dashed = run(["--once", "--", "-dash-fixture.html"]);
+    const dashedOutput = `${dashed.stdout || ""}${dashed.stderr || ""}`;
+    assert.notEqual(dashed.status, 0);
+    assert.match(dashedOutput, /-dash-fixture\.html/, dashedOutput);
+
+    // Without it, that same token is a flag, so no artifact was named at all.
+    const unseparated = run(["--once", "-dash-fixture.html"]);
+    const unseparatedOutput = `${unseparated.stdout || ""}${unseparated.stderr || ""}`;
+    assert.notEqual(unseparated.status, 0);
+    assert.match(unseparatedOutput, /HTML file path is required/, unseparatedOutput);
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
+// Every command that resolves its artifact with `firstPositionalArg` must read its boolean flags
+// from the same pre-`--` view. Scanning the raw array makes the two disagree about one token: the
+// path resolution treats it as the artifact name while the flag scan still honors it as a flag.
+test("boolean flags stop at the -- separator, like the positional resolution already does", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-separator-`);
+  const artifact = path.join(stateDir, "report.html");
+  await writeFile(artifact, "<html><body><p>report</p></body></html>");
+  const bin = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+
+  const streamUrls = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url || "/", "http://localhost");
+    if (url.pathname === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION }));
+      return;
+    }
+    if (url.pathname === "/api/stream") {
+      streamUrls.push(url.search);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end();
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+
+  const runStream = (args) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [bin, "stream", ...args], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {
+          ...process.env,
+          LAVISH_AXI_STATE_DIR: stateDir,
+          LAVISH_AXI_PORT: String(port),
+          LAVISH_AXI_TELEMETRY: "0",
+        },
+      });
+      child.stdout.resume();
+      child.stderr.resume();
+      child.on("close", () => resolve());
+    });
+
+  try {
+    await runStream(["--once", artifact]);
+    assert.match(streamUrls.at(-1) || "", /once=1/, "a flag before the separator still applies");
+
+    await runStream([artifact, "--", "--once"]);
+    assert.doesNotMatch(
+      streamUrls.at(-1) || "",
+      /once=1/,
+      "past `--` the token is a positional, not the single-shot flag",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve()));
+    await rm(stateDir, { force: true, recursive: true });
+  }
+
+  // The same split in `open` and `share`, whose flag decisions are exported as pure functions.
+  assert.equal(shouldOpenBrowser(["report.html", "--no-open"], {}), false);
+  assert.equal(shouldOpenBrowser(["report.html", "--", "--no-open"], {}), true);
+  assert.equal(resolveShareRequest(["report.html", "--private"]).generatedPassword, true);
+  assert.equal(resolveShareRequest(["report.html", "--", "--private"]).generatedPassword, false);
+});
+
+// `poll` resolves its artifact past every flag it accepts a value for. `--reply-to` is a `stream`
+// feature, but an agent reaching for it on `poll` is a plausible mistake, and before this the
+// unknown flag's VALUE was resolved as the artifact - so the failure named a message id as a path
+// and never mentioned the flag that caused it.
+test("poll resolves the artifact past --reply-to's value instead of treating it as the path", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-poll-args-`);
+  const bin = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+  // A path that does not exist: canonicalFile fails BEFORE any server is contacted, and the error
+  // names whichever token the command decided was the artifact - which is exactly what we measure.
+  const missing = path.join(stateDir, "poll-fixture.html");
+  const run = (args) =>
+    spawnSync(process.execPath, [bin, "poll", ...args], {
+      cwd: stateDir,
+      encoding: "utf8",
+      env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_TELEMETRY: "0" },
+      timeout: 30_000,
+    });
+
+  try {
+    for (const args of [
+      ["--agent-reply", "done", "--reply-to", "msg-7", missing],
+      ["--reply-to", "msg-7", missing],
+      ["--reply-to=msg-7", "--timeout-ms", "50", missing],
+      [missing, "--reply-to", "msg-7"],
+    ]) {
+      const result = run(args);
+      const output = `${result.stdout || ""}${result.stderr || ""}`;
+      assert.notEqual(result.status, 0, `${args.join(" ")} should fail on the missing artifact\n${output}`);
+      assert.match(output, /poll-fixture\.html/, `${args.join(" ")} must resolve the artifact\n${output}`);
+      for (const token of ["msg-7", "--reply-to", "--agent-reply", "done"]) {
+        assert.ok(
+          !output.includes(`'${token}`) && !output.includes(`/${token}`),
+          `${args.join(" ")} must not treat ${token} as the artifact path\n${output}`,
+        );
+      }
+    }
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
+// `--verbose` is read through the same separator-aware view as `--port`, so both parsers in
+// `server` agree about what `--` means.
+test("server treats --verbose past a -- separator as positional, like every other boolean flag", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-server-args-`);
+  const bin = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+  const run = (args) =>
+    spawnSync(process.execPath, [bin, "server", "--port", "0", ...args], {
+      cwd: stateDir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        LAVISH_AXI_STATE_DIR: stateDir,
+        LAVISH_AXI_TELEMETRY: "0",
+        LAVISH_AXI_DEBUG: "",
+        LAVISH_AXI_IDLE_TIMEOUT_MS: "700",
+      },
+      timeout: 30_000,
+    });
+
+  try {
+    // Debug logging is the observable effect of --verbose: the server narrates its startup on
+    // stderr. Both runs exit on the idle timeout, so each one's stderr is complete.
+    const verbose = run(["--verbose"]);
+    assert.notEqual((verbose.stderr || "").trim(), "", `--verbose must enable debug logging\n${verbose.stderr}`);
+
+    const separated = run(["--", "--verbose"]);
+    assert.equal(
+      (separated.stderr || "").trim(),
+      "",
+      `--verbose past -- must not enable debug logging\n${separated.stderr}`,
+    );
+  } finally {
+    await rm(stateDir, { force: true, recursive: true });
+  }
 });

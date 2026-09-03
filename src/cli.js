@@ -36,12 +36,36 @@ import {
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
-import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
+import { canonicalFile, isTranscriptMessage, sessionKey, SessionStore } from "./session-store.js";
 import { generateSharePassword } from "./share-password.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
 const SHARE_VALUE_FLAGS = ["--password", "--token", "--site", "--update-key"];
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+// Every `stream` flag that consumes the token after it. `firstPositionalArg` and the `flagValue`
+// reads below share these names, so a new value flag cannot be added to one and missed by the
+// other - which is what makes `stream --agent-reply "on it" review.html` resolve the artifact
+// rather than the reply text.
+const AGENT_REPLY_FLAG = "--agent-reply";
+const REPLY_TO_FLAG = "--reply-to";
+const STREAM_VALUE_FLAGS = [AGENT_REPLY_FLAG, REPLY_TO_FLAG];
+// Hard ceiling on the stdout flush a `stream` signal handler waits for, so Ctrl-C can never hang on
+// a consumer that has stopped reading.
+export const STREAM_FLUSH_CEILING_MS = 2000;
+// `poll` ignores --reply-to - threading is a `stream` feature - but must still step over its value.
+const POLL_VALUE_FLAGS = [AGENT_REPLY_FLAG, REPLY_TO_FLAG, "--timeout-ms"];
+const COMMANDS = new Set([
+  "open",
+  "poll",
+  "stream",
+  "end",
+  "stop",
+  "server",
+  "playbook",
+  "design",
+  "setup",
+  "export",
+  "share",
+]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -121,6 +145,7 @@ export async function run(argv) {
       commands: {
         open: openCommand,
         poll: pollCommand,
+        stream: streamCommand,
         end: endCommand,
         stop: stopCommand,
         playbook: playbookCommand,
@@ -197,6 +222,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
       "Lavish serves the html file through a local express.js server. If your html needs to reference other filesystem assets such as images, CSS, fonts, and local scripts, copy them into the same directory as the HTML file, then reference them with relative paths from that directory. Never prepend `/` to those asset paths - root paths won't work",
       `Run \`lavish-axi poll <html-file>\` to wait for user feedback. It long-polls and stays silent until the user sends feedback or ends the session, so leave it running - never kill it. Detected layout issues never return this poll: the browser files them in the user's Layout issues inbox in the Lavish top bar, and they arrive as an ordinary tag "layout-warnings" prompt only when the user selects them and queues the fixes. Never edit the artifact to chase a layout issue the user has not queued. The only exception is a fatal artifact_failures response, which means the review surface itself could not be used. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}`,
+      'Or run `lavish-axi stream <html-file>` as a real-time push alternative to poll: it holds a live connection open and prints one NDJSON line per user message as it arrives, so you can handle each message individually (e.g. fan out a subagent per message) instead of draining one batch and exiting. It stays open until the session ends or the connection drops - never kill it, and re-run it if it drops (anything not yet delivered stays queued until delivery, but delivery consumes it, so messages already printed do not arrive again). Pass --once to stop after the first message, and reply with `--agent-reply "<message>" [--reply-to <id>]`',
       'Mermaid is the whiteboard opt-in, not the diagram default: only when the user asks for an editable whiteboard, author that diagram as Mermaid in a `.mermaid` container. Rendered Mermaid diagrams there become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; an unmodified autosave silently re-converts when a reload changes the Mermaid source. If the reviewer edited the scene, they choose to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
@@ -267,8 +293,9 @@ async function openCommand(args) {
   await assertHtmlFile(file);
   const absolute = await canonicalFile(file);
   const selfPaintWarning = await selfPaintWarningForFile(absolute);
-  const noGate = args.includes("--no-gate");
-  const reopen = args.includes("--reopen");
+  const flags = flagTokens(args);
+  const noGate = flags.includes("--no-gate");
+  const reopen = flags.includes("--reopen");
   const baseUrl = await ensureServer({
     forceRestart: shouldForceRestartForLocalBuild(process.argv[1] || ""),
     reloadKey: sessionKey(absolute),
@@ -310,11 +337,11 @@ async function selfPaintWarningForFile(absolute) {
 }
 
 export function shouldOpenBrowser(args, env) {
-  return !args.includes("--no-open") && env.LAVISH_AXI_NO_OPEN !== "1";
+  return !flagTokens(args).includes("--no-open") && env.LAVISH_AXI_NO_OPEN !== "1";
 }
 
 async function pollCommand(args) {
-  const file = firstPositionalArg(args, ["--agent-reply", "--timeout-ms"]);
+  const file = firstPositionalArg(args, POLL_VALUE_FLAGS);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi poll <html-file>`"]);
   }
@@ -362,6 +389,231 @@ async function pollCommand(args) {
       process.off("SIGTERM", onPollSignal);
     }
   }
+}
+
+// Change #1: real-time push delivery. Instead of one poll = one batch = exit, `stream` holds an SSE
+// connection open and prints one NDJSON line per user message as it arrives. The agent reads stdout
+// line-by-line and fans out a subagent per line. Use --once to stop after the first message (useful
+// for tests / harnesses that cannot keep a long-lived process), and --agent-reply to post a reply
+// (optionally threaded with --reply-to <id>) before streaming.
+async function streamCommand(args) {
+  const file = firstPositionalArg(args, STREAM_VALUE_FLAGS);
+  if (!file) {
+    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi stream <html-file>`"]);
+  }
+  const absolute = await canonicalFile(file);
+  const baseUrl = await ensureServer();
+  const agentReply = flagValue(args, AGENT_REPLY_FLAG);
+  if (agentReply) {
+    const replyTo = flagValue(args, REPLY_TO_FLAG);
+    const posted = await postJson(`${baseUrl}/api/${sessionKey(absolute)}/agent-reply`, {
+      text: agentReply,
+      ...(replyTo ? { reply_to: replyTo } : {}),
+    });
+    if (replyTo && posted?.reply_to !== replyTo) {
+      process.stderr.write(`${agentReplyUnthreadedText(replyTo)}\n`);
+    }
+  }
+  const once = flagTokens(args).includes("--once");
+  const write = (line) => process.stdout.write(`${line}\n`);
+  // Tell the server it's a single-shot consumer so it delivers exactly one user message and
+  // requeues the rest of any batch, rather than writing the whole batch to a client that stops early.
+  const url = `${baseUrl}/api/stream?file=${encodeURIComponent(absolute)}${once ? "&once=1" : ""}`;
+
+  let response;
+  try {
+    response = await fetch(url, { headers: { accept: "text/event-stream" } });
+  } catch {
+    throw serverConnectionError();
+  }
+  if (response.status === 404) {
+    throw new AxiError("No active Lavish Editor session for this file", "NOT_FOUND", [
+      `Run \`lavish-axi ${absolute}\` first`,
+    ]);
+  }
+  if (response.status === 503) {
+    throw streamBusyError(absolute, response.headers.get("retry-after"), await responseErrorMessage(response));
+  }
+  if (!response.ok || !response.body) {
+    throw new AxiError(`Lavish Editor stream failed: ${response.status}`, "SERVER_ERROR");
+  }
+
+  // Bounded flush. stdout is the delivery channel and /api/stream delivery is destructive, so a
+  // frame already written but still buffered is a permanently lost user message: process.exit()
+  // discards it when stdout is a pipe. Wait for the queued bytes, but never longer than the
+  // ceiling - an unbounded wait would let a consumer that stopped reading make Ctrl-C hang. The
+  // write(cb) form (not "drain", which only fires after a write that crossed highWaterMark) is what
+  // makes the wait exact: the write queue is FIFO, so an empty write's callback runs last.
+  const onSignal = (signal) => {
+    const code = signal === "SIGINT" ? 130 : 143;
+    process.stderr.write(`\n${streamInterruptedText(absolute)}\n`);
+    let exited = false;
+    const finish = () => {
+      if (exited) return;
+      exited = true;
+      process.exit(code);
+    };
+    const timer = setTimeout(finish, STREAM_FLUSH_CEILING_MS);
+    timer.unref?.();
+    process.stdout.write("", finish);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  process.stderr.write(`${streamBannerText(absolute)}\n`);
+
+  let delivered = 0;
+  let ended = false;
+  // Own the reader explicitly (rather than a for-await generator) so that on --once / "ended" we
+  // can deterministically cancel it and let the socket close, instead of leaving a pending read()
+  // that keeps the process alive.
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let stop = false;
+  const handleFrame = (event, data) => {
+    if (event === "message") {
+      const payload = safeJsonParse(data);
+      if (!payload) return;
+      const { record, isUserMessage } = streamMessageRecord(payload);
+      write(JSON.stringify(record));
+      // Only a real user message counts toward delivery and satisfies --once. Annotation-only or
+      // artifact-failure-only frames are still emitted (the agent acts on them) but must not
+      // terminate a --once harness before an actual user message arrives.
+      if (isUserMessage) {
+        delivered += 1;
+        if (once) stop = true;
+      }
+    } else if (event === "ended") {
+      ended = true;
+      write(JSON.stringify({ type: "ended", file: absolute }));
+      stop = true;
+    }
+  };
+  try {
+    while (!stop) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // Drain every complete frame already received before honoring --once's stop, so a multi-
+      // message batch that arrived in one read is fully emitted instead of truncated (I1).
+      buffer = drainSseBuffer(buffer, handleFrame);
+    }
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    try {
+      await reader.cancel();
+    } catch {
+      // best effort
+    }
+  }
+  return {
+    session: { file: absolute, status: ended ? "ended" : "streamed" },
+    delivered,
+    next_step: streamNextStep(absolute),
+  };
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// Build the NDJSON record for one `/api/stream` `message` frame and classify it. A frame is a
+// deliverable user message only when it carries a prompt the transcript recorded as one - the same
+// `isTranscriptMessage` the store mints ids with, so an image-only send is a message here too and
+// its `text` stays empty rather than borrowing the transcript's display label; the server also emits
+// `message` frames for annotation- or layout-warning-only batches (no user message). Those still
+// reach the agent but must not count toward `delivered` or satisfy `--once`. `isUserMessage`
+// captures that distinction so the stream loop treats the two kinds correctly.
+export function streamMessageRecord(payload) {
+  const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+  const message = prompts.find((p) => p && isTranscriptMessage(p)) || null;
+  const replyTo = payload.reply_to || message?.reply_to;
+  const record = {
+    type: message ? "message" : "feedback",
+    id: payload.id || message?.id || "",
+    ...(replyTo ? { reply_to: replyTo } : {}),
+    text: message?.prompt || "",
+    prompts,
+    ...(payload.artifact_failures ? { artifact_failures: payload.artifact_failures } : {}),
+    dom_snapshot: payload.dom_snapshot || "",
+  };
+  return { record, isUserMessage: Boolean(message) };
+}
+
+// Split an SSE byte buffer into complete `event:/data:` frames, hand each to `onFrame`, and return
+// any trailing partial frame for the next read. Drains the whole buffer regardless of caller stop
+// state so a --once consumer can't truncate a multi-frame batch mid-buffer (I1).
+export function drainSseBuffer(buffer, onFrame) {
+  let boundary;
+  while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+    const raw = buffer.slice(0, boundary);
+    buffer = buffer.slice(boundary + 2);
+    let event = "message";
+    const dataLines = [];
+    for (const line of raw.split("\n")) {
+      if (line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (dataLines.length > 0) onFrame(event, dataLines.join("\n"));
+  }
+  return buffer;
+}
+
+async function responseErrorMessage(response) {
+  try {
+    const body = await response.json();
+    return String(body?.error || "");
+  } catch {
+    return "";
+  }
+}
+
+export function streamBusyError(file, retryAfter, detail) {
+  const seconds = Number(retryAfter) > 0 ? Number(retryAfter) : 5;
+  return new AxiError("Lavish Editor is already serving its maximum concurrent streams", "SERVER_ERROR", [
+    ...(detail ? [detail] : []),
+    `Wait ${seconds}s and re-run the same \`lavish-axi stream\` command - queued messages are never lost while you wait`,
+    `Or run \`lavish-axi poll ${file}\` to drain one batch instead`,
+  ]);
+}
+
+export function agentReplyUnthreadedText(replyTo) {
+  return `Lavish Editor: --reply-to ${replyTo} matched no message in this session, so the reply was posted as a new top-level message. Use an id from this artifact's own stream records.`;
+}
+
+export function streamBannerText(file) {
+  return (
+    `[lavish-axi] Streaming user messages for ${file} over a live push connection. Each user message ` +
+    `prints as one NDJSON line on stdout - read them line-by-line and handle each (e.g. fan out a ` +
+    `subagent per message). This stays open until the session ends or the connection drops; never ` +
+    `kill it. If it drops, re-run \`lavish-axi stream ${file}\` - anything not yet delivered stays queued ` +
+    `until delivery, but delivery consumes it, so a message already printed here is never repeated.`
+  );
+}
+
+export function streamInterruptedText(file) {
+  return (
+    `[lavish-axi] Stream interrupted. The user may still be reviewing - re-run ` +
+    `\`lavish-axi stream ${file}\` to keep receiving messages; anything not yet delivered stays queued ` +
+    `until delivery. Messages this stream already printed were consumed and will not arrive again, so ` +
+    `act on what you have already read.`
+  );
+}
+
+export function streamNextStep(file) {
+  return (
+    `The stream closed. If the session is not ended, re-run \`lavish-axi stream ${file}\` to keep ` +
+    `receiving messages - anything not yet delivered stays queued until delivery, though messages this ` +
+    `stream already printed were consumed and will not arrive again. Use ` +
+    `\`lavish-axi stream ${file} --agent-reply "<message>" [--reply-to <id>]\` to reply to the user, ` +
+    `threading under a specific message id when relevant.`
+  );
 }
 
 export function pollWaitBannerText(file) {
@@ -764,8 +1016,9 @@ async function unpublishShareSite(request) {
 // or the browser; this is the only place one is generated for a request, the sole exception being
 // `--unpublish`, which mints its own directly because that value is discarded rather than reported.
 export function resolveShareRequest(args) {
-  const unpublish = args.includes("--unpublish");
-  const generate = args.includes("--private");
+  const flags = flagTokens(args);
+  const unpublish = flags.includes("--unpublish");
+  const generate = flags.includes("--private");
   const explicitPassword = shareFlagValue(args, "--password");
   const siteId = shareFlagValue(args, "--site");
   const updateKey = shareFlagValue(args, "--update-key");
@@ -1481,7 +1734,7 @@ function deepEqual(a, b) {
 
 async function serverCommand(args) {
   const port = Number(flagValue(args, "--port") || defaultPort());
-  const debug = args.includes("--verbose") || process.env.LAVISH_AXI_DEBUG === "1";
+  const debug = flagTokens(args).includes("--verbose") || process.env.LAVISH_AXI_DEBUG === "1";
   const server = await serve({ port, stateFile: stateFile(), version: VERSION, debug });
   await server.done;
   return "";
@@ -1782,6 +2035,14 @@ function pollResponseInterruptedError() {
   ]);
 }
 
+// The view of `args` every flag scan has to use. `firstPositionalArg` and `flagValue` both stop at
+// `--` and treat what follows as positional, so a boolean flag read from the raw array disagrees
+// with the path resolution about the same token.
+function flagTokens(args) {
+  const end = args.indexOf("--");
+  return end === -1 ? args : args.slice(0, end);
+}
+
 function firstPositionalArg(args, valueFlags = []) {
   const flags = new Set(valueFlags);
   let positionalMode = false;
@@ -1829,17 +2090,18 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--agent-reply "..."]\n  lavish-axi stream <html-file> [--once] [--agent-reply "..." [--reply-to <id>]]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls indefinitely by default until the user sends feedback or ends the session, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
   return {
     open: `Usage: lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window. Use --no-gate to skip the open-time layout curtain for this browser open. If the user explicitly ended the session from the browser, this refuses to reopen it and returns guidance instead - pass --reopen to force it open when the user asks for further review or something important needs their visual attention. Sessions ended by the agent (\`lavish-axi end\`) reopen normally without the flag.\n`,
     poll: `Usage: lavish-axi poll <html-file> [--agent-reply "..."]\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display your response in Lavish Editor before waiting again. ${POLL_SEND_AND_END_RULE}\n`,
+    stream: `Usage: lavish-axi stream <html-file> [--once] [--agent-reply "..." [--reply-to <id>]]\n\nReal-time push alternative to poll. Holds a live connection open and prints one NDJSON line per user message on stdout as each arrives, so you can handle messages individually (e.g. fan out a subagent per message) instead of draining one batch and exiting. Read stdout line-by-line; the stream stays open until the session ends or the connection drops - never kill it, and re-run if it drops (anything not yet delivered stays queued until delivery; delivery consumes it, so a message already printed on stdout does not arrive again - act on what you have read). Pass --once to stop after the first message (for harnesses that cannot keep a long-lived process). Use --agent-reply to post a reply before streaming, and --reply-to <id> to thread it under a specific message.\n`,
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
     share: `Usage:\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --private to publish a PRIVATE page behind a generated password, returned once in the output - give it to the user with the URL and tell them it is a shared secret. Pass --password <pw> instead when the user chose the password; it is never echoed back. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for changing the page later.\n\n--site <site_id> with --update-key <key> republishes an existing page in place: same URL, new HTML. On a republish the password is left alone unless you pass --private (rotate to a new generated one) or --password <pw> (set one). There is no way to make a private page public again: ht-ml.app accepts a request to clear a password and silently ignores it, so Lavish does not offer one rather than reporting a page as public while it is still gated. Locking a page that was PUBLIC is also not instant at ht-ml.app's CDN: it was observed still answering uncredentialed requests for minutes after the password was set, so do not tell the user a newly gated page is unreachable right away (a page that was already private has no such cached copy).\n\n--unpublish takes the same credentials and no file. ht-ml.app has NO delete endpoint, so this replaces the page with a short placeholder and locks it behind a random password that is immediately discarded; the URL still resolves and the host still holds what was published. Say that to the user rather than calling it deleted. The update_key still works, so republishing with --private brings the page back behind a new password.\n\nA value flag given an empty or whitespace-only value is REFUSED rather than acted on: an unquoted shell variable that is unset makes \`--password $PW\` an empty password, which the host treats as none and would publish a PUBLIC page while you believed it was gated. Quote the value, or pass --private to have Lavish generate one.\n\nSet LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token when CREATING a page; it is never required. A republish (--site/--update-key) or --unpublish rejects --token, because the update_key is what the Authorization header carries there. The annotation SDK is never included.\n`,
-    stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser or poll has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
+    stop: `Usage: lavish-axi stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser, poll, or stream has been connected for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-axi playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-axi playbook\n  lavish-axi playbook diagram\n  lavish-axi playbook input\n`,
     design: `Usage: lavish-axi design\n\nShow a copy-pasteable CDN snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes, the whiteboard (Mermaid) opt-in snippet, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} Lavish artifacts stay portable HTML. This CDN snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
     setup: `Usage: lavish-axi setup hooks\n       lavish-axi setup plugin\n\nhooks: install or repair agent SessionStart hooks for lavish-axi ambient context in Claude Code, Codex, OpenCode, and GitHub Copilot CLI. Restart your agent session afterward to receive the context. This is the primary integration - it carries live session state.\n\nplugin: register the installed lavish-axi package as an Agent Plugin (agent-plugins.org) in VS Code, Cursor, and GitHub Copilot CLI. The installed package directory is itself the plugin root, so nothing is downloaded and no marketplace is involved. Reload each client afterward. Codex users should use \`setup hooks\` instead.\n\nBoth actions are explicit opt-in, idempotent, and repair a stale path after a reinstall.\n`,

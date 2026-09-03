@@ -229,11 +229,16 @@ function bootSdk({ runAnimationFrames = false } = {}) {
       assert.ok(card, "clicking an element opens an annotation card");
       return card;
     },
+    // The card's actions are Cancel / Queue / Send: Queue only enqueues, while Send enqueues
+    // and then posts `lavish:sendQueuedPrompts`. These tests are about what a queued prompt
+    // carries, so click Queue and select the queued message by type rather than by position.
     queue(text) {
       const card = this.card();
       card.querySelector("textarea").value = text;
-      card.querySelector(".lavish-send").onclick();
-      return posted.at(-1);
+      card.querySelector(".lavish-queue").onclick();
+      const queued = posted.filter((message) => message.type === "lavish:queuePrompt").at(-1);
+      assert.ok(queued, "clicking Queue posts a lavish:queuePrompt message");
+      return queued;
     },
   };
 }
