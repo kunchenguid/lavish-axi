@@ -20,6 +20,9 @@ import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./
 
 export const LAYOUT_WARNINGS_TARGET_TYPE = "layout-warnings";
 const MAX_ARTIFACT_FAILURES = 20;
+export const FEEDBACK_LEASE_MS = 30_000;
+const MAX_ACKNOWLEDGED_DELIVERIES = 200;
+const MAX_AGENT_REPLY_DELIVERIES = 200;
 // How long a just-delivered attachment stays referenced after `takeFeedback`
 // hands its path to the agent. The sweeper's reference set is built from PENDING
 // prompts, which delivery clears - so without this window an attachment that is
@@ -48,8 +51,10 @@ export const MAX_REQUEST_ATTACHMENT_REFS = 256;
 export const MAX_DELIVERED_ATTACHMENTS = 256;
 
 export class SessionStore {
-  constructor(file) {
+  constructor(file, { feedbackLeaseMs = FEEDBACK_LEASE_MS, now = Date.now } = {}) {
     this.file = file;
+    this.feedbackLeaseMs = feedbackLeaseMs;
+    this.now = now;
     // One mutex serializes every state.json read-modify-write and the server's
     // attachment disk lifecycle sections through runExclusive.
     this.lock = new AsyncMutex();
@@ -93,11 +98,22 @@ export class SessionStore {
     const existing = state.sessions[key] || {};
     const existingPrompts = existing.prompts || [];
     const existingStatus = existing.status === "ended" ? "open" : existing.status || "open";
+    const existingDelivery = existing.feedback_delivery
+      ? {
+          ...existing.feedback_delivery,
+          result: {
+            ...existing.feedback_delivery.result,
+            session_ended: undefined,
+            ended_by: undefined,
+          },
+        }
+      : null;
     const session = {
       key,
       file: absolute,
       url,
-      status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
+      status:
+        existingStatus === "feedback" && existingPrompts.length === 0 && !existingDelivery ? "open" : existingStatus,
       pending_prompts: existing.pending_prompts || 0,
       prompts: existingPrompts,
       // The warning inbox is durable review state, not deliverable feedback: reopening a session
@@ -112,6 +128,9 @@ export class SessionStore {
       // any new session field must be added here too.
       delivered_attachments: Array.isArray(existing.delivered_attachments) ? existing.delivered_attachments : [],
       dom_snapshot: existing.dom_snapshot || "",
+      feedback_delivery: existingDelivery,
+      acknowledged_delivery_ids: boundedIds(existing.acknowledged_delivery_ids, MAX_ACKNOWLEDGED_DELIVERIES),
+      agent_reply_delivery_ids: boundedIds(existing.agent_reply_delivery_ids, MAX_AGENT_REPLY_DELIVERIES),
       chat: existing.chat || [],
       updated_at: new Date().toISOString(),
     };
@@ -142,23 +161,14 @@ export class SessionStore {
     }
     const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
     const shouldEndSession = Boolean(payload.endSession || payload.end_session);
-    // `options.restore` re-queues a batch `takeFeedback` already removed (a poll whose client
-    // disconnected before its response was written). Those prompts were accepted once already, so
-    // restoring replays them verbatim: no layout-warning plan or conflict check to re-run and no
-    // chat messages to re-append. Restored prompts are prepended to newer prompts, while newer
-    // snapshots and failures are preserved. Attachments are still re-derived through the resolver,
-    // because restore re-enters the same trust boundary.
-    const restoring = options.restore === true;
     const alreadyEnded = session.status === "ended";
     // A session already ended by someone else (an agent's `lavish-axi end`, or the user in
     // another tab) must not accept a further batch as if it were queued for delivery: no agent
     // will ever poll it again, so a 200 here would be a promise the server cannot keep. This
     // applies even to a batch that also requests `endSession` - a redundant end of an
-    // already-ended session is still a late batch nobody will read. Only `restore` is exempt,
-    // because it never originated a new POST: it replays a batch `takeFeedback` already
-    // accepted and removed, and its payload never sets `endSession`. A batch that ends a session
+    // already-ended session is still a late batch nobody will read. A batch that ends a session
     // that is not yet ended is unaffected, because `alreadyEnded` is false for that call.
-    if (alreadyEnded && !restoring) {
+    if (alreadyEnded) {
       return { ended: true, ended_by: session.ended_by };
     }
     const normalized = prompts.map(normalizePrompt);
@@ -190,76 +200,53 @@ export class SessionStore {
     const revision = normalizeRevision(session.artifact_revision);
     const at = new Date().toISOString();
     let warnings = normalizeStoredWarnings(session.layout_warnings);
-    let acceptedPrompts;
-    if (restoring) {
-      acceptedPrompts = normalizedPrompts;
-    } else {
-      const layoutPlans = [];
-      const conflicts = new Set();
-      for (const prompt of normalizedPrompts) {
-        const warningIds = layoutWarningPromptIds(prompt);
-        if (warningIds === null) {
-          layoutPlans.push({
-            prompt,
-            warningIds: null,
-            expectedRevision: null,
-            conflicts: [],
-            queueIds: [],
-            hadKnownWarning: false,
-          });
-          continue;
-        }
-        const plan = planLayoutWarningPrompt(warnings, prompt, revision);
-        for (const id of plan.conflicts) conflicts.add(id);
-        layoutPlans.push({ prompt, ...plan });
+    const layoutPlans = [];
+    const conflicts = new Set();
+    for (const prompt of normalizedPrompts) {
+      const warningIds = layoutWarningPromptIds(prompt);
+      if (warningIds === null) {
+        layoutPlans.push({
+          prompt,
+          warningIds: null,
+          expectedRevision: null,
+          conflicts: [],
+          queueIds: [],
+          hadKnownWarning: false,
+        });
+        continue;
       }
-      if (conflicts.size > 0) {
-        return {
-          conflict: true,
-          session,
-          warning_ids: [...conflicts],
-          warnings: serializeLayoutWarnings(warnings),
-        };
+      const plan = planLayoutWarningPrompt(warnings, prompt, revision);
+      for (const id of plan.conflicts) conflicts.add(id);
+      layoutPlans.push({ prompt, ...plan });
+    }
+    if (conflicts.size > 0) {
+      return {
+        conflict: true,
+        session,
+        warning_ids: [...conflicts],
+        warnings: serializeLayoutWarnings(warnings),
+      };
+    }
+    const acceptedPrompts = [];
+    for (const plan of layoutPlans) {
+      if (plan.warningIds === null) {
+        acceptedPrompts.push(plan.prompt);
+        continue;
       }
-      acceptedPrompts = [];
-      for (const plan of layoutPlans) {
-        if (plan.warningIds === null) {
-          acceptedPrompts.push(plan.prompt);
-          continue;
-        }
-        const result = queueWarningRecords(warnings, plan.queueIds, { revision, at });
-        warnings = result.warnings;
-        if (result.queued.length > 0 || !plan.hadKnownWarning) acceptedPrompts.push(plan.prompt);
-      }
+      const result = queueWarningRecords(warnings, plan.queueIds, { revision, at });
+      warnings = result.warnings;
+      if (result.queued.length > 0 || !plan.hadKnownWarning) acceptedPrompts.push(plan.prompt);
     }
     session.layout_warnings = warnings;
-    const userMessages = restoring
-      ? []
-      : acceptedPrompts
-          .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-          .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+    const userMessages = acceptedPrompts
+      .filter((prompt) => prompt.tag === "message" && prompt.prompt)
+      .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
     const existingPrompts = Array.isArray(session.prompts) ? session.prompts : [];
-    session.prompts = restoring ? [...acceptedPrompts, ...existingPrompts] : [...existingPrompts, ...acceptedPrompts];
+    session.prompts = [...existingPrompts, ...acceptedPrompts];
     session.chat = [...(session.chat || []), ...userMessages];
-    if (restoring) {
-      const restoredFailures = Array.isArray(payload.artifact_failures)
-        ? JSON.parse(JSON.stringify(payload.artifact_failures))
-        : [];
-      const existingFailures = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
-      session.artifact_failures = mergeArtifactFailures(restoredFailures, existingFailures).failures;
-    }
     session.pending_prompts = session.prompts.length;
-    const restoredSnapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-    if (!restoring || (existingPrompts.length === 0 && !session.dom_snapshot)) {
-      session.dom_snapshot = restoredSnapshot;
-    }
-    session.status =
-      shouldEndSession || alreadyEnded
-        ? "ended"
-        : session.prompts.length > 0 ||
-            (restoring && Array.isArray(session.artifact_failures) && session.artifact_failures.length > 0)
-          ? "feedback"
-          : "open";
+    session.dom_snapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
+    session.status = shouldEndSession || alreadyEnded ? "ended" : session.prompts.length > 0 ? "feedback" : "open";
     if (shouldEndSession) session.ended_by = "user";
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
@@ -539,6 +526,17 @@ export class SessionStore {
       if (!session) {
         return { status: "missing" };
       }
+      const now = this.now();
+      if (session.feedback_delivery?.result) {
+        const leasedUntil = Number(session.feedback_delivery.leased_until || 0);
+        if (leasedUntil > now) {
+          return { status: "waiting", retry_after_ms: leasedUntil - now };
+        }
+        session.feedback_delivery.leased_until = now + this.feedbackLeaseMs;
+        session.updated_at = new Date(now).toISOString();
+        await this.writeState(state);
+        return feedbackDeliveryResult(session.feedback_delivery);
+      }
       // Prompts queued before the session ended (a browser send-and-end) must still reach the
       // agent, so deliver them before reporting the ended state; the next poll then sees ended.
       const prompts = session.prompts || [];
@@ -551,6 +549,7 @@ export class SessionStore {
       }
       const result = {
         status: "feedback",
+        delivery_id: crypto.randomBytes(8).toString("hex"),
         dom_snapshot: session.dom_snapshot || "",
         prompts,
         ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
@@ -578,16 +577,45 @@ export class SessionStore {
       const current = [...deliveredIds].map((id) => ({ id, at: deliveredNow }));
       const historyRoom = Math.max(0, MAX_DELIVERED_ATTACHMENTS - current.length);
       session.delivered_attachments = [...carried.slice(-historyRoom), ...current];
-      session.prompts = [];
-      session.artifact_failures = [];
-      session.pending_prompts = 0;
-      session.dom_snapshot = "";
-      if (!alreadyEnded) {
-        session.status = "open";
-      }
-      session.updated_at = new Date().toISOString();
+      session.feedback_delivery = {
+        result,
+        prompt_count: prompts.length,
+        artifact_failure_count: artifactFailures.length,
+        leased_until: now + this.feedbackLeaseMs,
+      };
+      session.updated_at = new Date(now).toISOString();
       await this.writeState(state);
       return result;
+    });
+  }
+
+  async acknowledgeFeedback(key, deliveryId) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return { status: "not_found", has_pending_feedback: false };
+      const acknowledged = boundedIds(session.acknowledged_delivery_ids, MAX_ACKNOWLEDGED_DELIVERIES);
+      if (acknowledged.includes(deliveryId)) {
+        return { status: "already_acknowledged", has_pending_feedback: hasPendingFeedback(session) };
+      }
+      const delivery = session.feedback_delivery;
+      if (!delivery || delivery.result?.delivery_id !== deliveryId) {
+        return { status: "mismatch", has_pending_feedback: hasPendingFeedback(session) };
+      }
+      session.prompts = (session.prompts || []).slice(delivery.prompt_count || 0);
+      session.artifact_failures = removeMatchingItems(
+        session.artifact_failures || [],
+        delivery.result?.artifact_failures || [],
+      );
+      session.pending_prompts = session.prompts.length;
+      if (session.prompts.length === 0) session.dom_snapshot = "";
+      session.feedback_delivery = null;
+      session.acknowledged_delivery_ids = [...acknowledged, deliveryId].slice(-MAX_ACKNOWLEDGED_DELIVERIES);
+      const pending = hasPendingFeedback(session);
+      if (session.status !== "ended") session.status = pending ? "feedback" : "open";
+      session.updated_at = new Date(this.now()).toISOString();
+      await this.writeState(state);
+      return { status: "acknowledged", has_pending_feedback: pending };
     });
   }
 
@@ -611,20 +639,25 @@ export class SessionStore {
     });
   }
 
-  async addAgentReply(key, text) {
+  async addAgentReply(key, text, deliveryId = "") {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
       if (!session) {
         return null;
       }
+      const replyIds = boundedIds(session.agent_reply_delivery_ids, MAX_AGENT_REPLY_DELIVERIES);
+      if (deliveryId && replyIds.includes(deliveryId)) return { session, added: false };
       session.chat = [
         ...(session.chat || []),
         { role: "agent", text: String(text || ""), at: new Date().toISOString() },
       ];
+      if (deliveryId) {
+        session.agent_reply_delivery_ids = [...replyIds, deliveryId].slice(-MAX_AGENT_REPLY_DELIVERIES);
+      }
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
-      return session;
+      return { session, added: true };
     });
   }
 
@@ -690,6 +723,29 @@ export async function canonicalFile(file) {
 
 export function sessionKey(file) {
   return crypto.createHash("sha256").update(file).digest("hex").slice(0, 16);
+}
+
+function feedbackDeliveryResult(delivery) {
+  return JSON.parse(JSON.stringify(delivery.result));
+}
+
+function hasPendingFeedback(session) {
+  return Boolean(
+    session.feedback_delivery || (session.prompts || []).length > 0 || (session.artifact_failures || []).length > 0,
+  );
+}
+
+function boundedIds(value, limit) {
+  return Array.isArray(value) ? value.map(String).filter(Boolean).slice(-limit) : [];
+}
+
+function removeMatchingItems(current, delivered) {
+  const remaining = [...current];
+  for (const item of delivered) {
+    const index = remaining.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(item));
+    if (index !== -1) remaining.splice(index, 1);
+  }
+  return remaining;
 }
 
 // Returns `{ prompt, malformed }`: `malformed` is non-empty when the payload's
@@ -776,17 +832,10 @@ function boundAttachmentRefs(normalized, options) {
   }
   if (rejected.length) return rejected;
 
-  // The request-wide bound guards ONE untrusted POST. A restore is not a request: it re-queues a
-  // batch this store already accepted across an unbounded number of earlier POSTs, so measuring it
-  // against a single request's budget rejects the whole batch and loses feedback for good - the
-  // exact loss restore exists to prevent. The per-prompt cap above and the resolver's own work
-  // still apply, and the ref count is bounded by what was already admitted.
-  if (options.restore !== true) {
-    let requestRefs = 0;
-    for (const { prompt } of normalized) requestRefs += prompt.attachments?.length || 0;
-    if (requestRefs > MAX_REQUEST_ATTACHMENT_REFS) {
-      return [{ id: "", name: "", reason: "too-many-in-request" }];
-    }
+  let requestRefs = 0;
+  for (const { prompt } of normalized) requestRefs += prompt.attachments?.length || 0;
+  if (requestRefs > MAX_REQUEST_ATTACHMENT_REFS) {
+    return [{ id: "", name: "", reason: "too-many-in-request" }];
   }
   return rejected;
 }
@@ -881,18 +930,8 @@ function parsePassSequence(payload) {
 
 const ARTIFACT_FAILURE_KINDS = new Set(["artifact-unavailable", "artifact-asset-unavailable"]);
 
-// The single merge policy for `session.artifact_failures`, shared by both writers that add to it
-// (a fresh report and a closed-poll restore), which is why `earlier` is always the chronologically
-// older side. A repeat of a failure already on file is not a second failure, and the list stays
-// bounded because state.json is rewritten wholesale.
-//
-// Which END the bound trims is one policy for both writers, and it is load-bearing that a restore
-// does not get its own: the bound keeps the NEWEST entries, so no write can evict an observation
-// made after it. A restore that trimmed the newest end instead would delete failures recorded
-// inside its own disconnect window - never delivered either, and describing the artifact the
-// reviewer is looking at now - and nothing else holds them, because the restore REPLACES this list.
-// At the bound the restore's own overflow is dropped, which `restoreClosedFeedback` reports through
-// its incomplete-restore log rather than losing silently.
+// A repeat of a failure already on file is not a second failure, and the list stays bounded because
+// state.json is rewritten wholesale. Keeping the newest end preserves the current artifact state.
 function mergeArtifactFailures(earlier, later) {
   const merged = Array.isArray(earlier) ? [...earlier] : [];
   let changed = false;

@@ -36,19 +36,20 @@ function diagnosticPayload(load, sequence, body = {}) {
 
 function feedbackResult(result) {
   assert.equal(result.status, "feedback");
-  return /** @type {{ status: string, dom_snapshot: string, prompts: any[], artifact_failures?: any[], session_ended?: boolean, ended_by?: string }} */ (
+  return /** @type {{ status: string, delivery_id: string, dom_snapshot: string, prompts: any[], artifact_failures?: any[], session_ended?: boolean, ended_by?: string }} */ (
     result
   );
 }
 
-test("queued prompts are returned with DOM snapshot context and then cleared", async () => {
+test("an unacknowledged feedback lease releases the same batch for redelivery", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
     const stateFile = path.join(dir, "state.json");
     const artifact = path.join(dir, "artifact.html");
     await writeFile(artifact, "<h1>Hello</h1>");
 
-    const store = new SessionStore(stateFile);
+    let now = 1_000;
+    const store = new SessionStore(stateFile, { feedbackLeaseMs: 100, now: () => now });
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
     await store.queuePrompts(session.key, {
       domSnapshot: 'uid=1 h1 "Hello"',
@@ -60,9 +61,34 @@ test("queued prompts are returned with DOM snapshot context and then cleared", a
     assert.deepEqual(first.prompts, [
       { uid: "1", prompt: "Make this warmer", selector: "h1", tag: "h1", text: "Hello" },
     ]);
+    assert.match(first.delivery_id, /^[0-9a-f]{16}$/);
 
-    const second = await store.takeFeedback(session.key);
-    assert.equal(second.status, "waiting");
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+    now += 101;
+    const retry = feedbackResult(await store.takeFeedback(session.key));
+    assert.deepEqual(retry, first);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("acknowledging a feedback delivery removes it from the next poll", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    await store.queuePrompts(session.key, { prompts: [{ tag: "message", prompt: "Keep me" }] });
+
+    const delivery = feedbackResult(await store.takeFeedback(session.key));
+    assert.deepEqual(await store.acknowledgeFeedback(session.key, delivery.delivery_id), {
+      status: "acknowledged",
+      has_pending_feedback: false,
+    });
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -855,6 +881,7 @@ test("the final feedback batch before an end flags session_ended with who ended 
     assert.equal(first.session_ended, true);
     assert.equal(first.ended_by, "user");
 
+    await store.acknowledgeFeedback(session.key, first.delivery_id);
     const second = await store.takeFeedback(session.key);
     assert.equal(second.status, "ended");
     assert.equal(second.ended_by, "user");
@@ -883,6 +910,7 @@ test("queued prompts can atomically carry a browser end intent", async () => {
     assert.equal(first.ended_by, "user");
     assert.equal(first.prompts.length, 1);
 
+    await store.acknowledgeFeedback(session.key, first.delivery_id);
     const second = await store.takeFeedback(session.key);
     assert.equal(second.status, "ended");
     assert.equal(second.ended_by, "user");
@@ -1005,6 +1033,7 @@ test("prompts queued before ending are still delivered before the ended status",
     assert.equal(first.dom_snapshot, 'uid=1 h1 "Hello"');
 
     // Delivering the final batch must not resurrect the session.
+    await store.acknowledgeFeedback(session.key, first.delivery_id);
     const second = await store.takeFeedback(session.key);
     assert.equal(second.status, "ended");
   } finally {
@@ -1362,8 +1391,9 @@ test("referencedAttachmentIds covers pending prompts, then the delivery read gra
     // takeFeedback clears the pending prompts, but the agent only starts reading the
     // delivered path now, so the id stays referenced for the read grace and is
     // released once that window lapses.
-    await store.takeFeedback(session.key);
+    const delivery = feedbackResult(await store.takeFeedback(session.key));
     assert.deepEqual([...(await store.referencedAttachmentIds())], [`${session.key}/${id}`]);
+    await store.acknowledgeFeedback(session.key, delivery.delivery_id);
     assert.deepEqual(
       [...(await store.referencedAttachmentIds({ now: Date.now() + ATTACHMENT_DELIVERY_GRACE_MS + 1 }))],
       [],
@@ -1419,13 +1449,14 @@ test("queuePrompts and takeFeedback serialize so a mid-resolution poll never clo
     assert.equal(feedback.status, "feedback");
     assert.deepEqual(feedback.prompts.map((p) => p.uid).sort(), ["A", "B"]);
     // Nothing was resurrected or left behind.
+    await store.acknowledgeFeedback(session.key, feedback.delivery_id);
     assert.equal((await store.takeFeedback(session.key)).status, "waiting");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("restoring a taken batch preserves newer prompts, snapshot, chat, and artifact failures", async () => {
+test("acknowledging a delivery preserves newer prompts, snapshot, chat, and artifact failures", async () => {
   await withStore(async ({ store, session }) => {
     const first = { uid: "A", prompt: "First", selector: "", tag: "message", text: "" };
     const second = { uid: "B", prompt: "Second", selector: "", tag: "message", text: "" };
@@ -1441,33 +1472,12 @@ test("restoring a taken batch preserves newer prompts, snapshot, chat, and artif
     });
     assert.equal(recorded.changed, true);
 
-    const restored = await store.queuePrompts(
-      session.key,
-      {
-        dom_snapshot: taken.dom_snapshot,
-        prompts: taken.prompts,
-        artifact_failures: taken.artifact_failures,
-      },
-      { restore: true },
-    );
-    assert.deepEqual(
-      restored.prompts.map((prompt) => prompt.uid),
-      ["A", "B"],
-    );
-    assert.equal(restored.dom_snapshot, "SECOND snapshot");
-    assert.deepEqual(
-      restored.chat.map((message) => message.text),
-      ["First", "Second"],
-    );
-    assert.deepEqual(
-      restored.artifact_failures.map((item) => item.detail),
-      ["newer asset"],
-    );
+    await store.acknowledgeFeedback(session.key, taken.delivery_id);
 
     const feedback = feedbackResult(await store.takeFeedback(session.key));
     assert.deepEqual(
       feedback.prompts.map((prompt) => prompt.uid),
-      ["A", "B"],
+      ["B"],
     );
     assert.equal(feedback.dom_snapshot, "SECOND snapshot");
     assert.deepEqual(
@@ -1477,38 +1487,21 @@ test("restoring a taken batch preserves newer prompts, snapshot, chat, and artif
   });
 });
 
-test("restoring an accepted batch remains allowed when the session ends during delivery", async () => {
+test("acknowledging an accepted batch remains allowed when the session ends during delivery", async () => {
   await withStore(async ({ store, session }) => {
     const prompt = { uid: "A", prompt: "Accepted before end", selector: "", tag: "message", text: "" };
     await store.queuePrompts(session.key, { domSnapshot: "accepted snapshot", prompts: [prompt] });
     const taken = feedbackResult(await store.takeFeedback(session.key));
 
     await store.endSession(session.key, "agent");
-    const restored = await store.queuePrompts(
-      session.key,
-      {
-        dom_snapshot: taken.dom_snapshot,
-        prompts: taken.prompts,
-        artifact_failures: taken.artifact_failures,
-      },
-      { restore: true },
-    );
-
-    assert.equal(restored.status, "ended");
-    assert.equal(restored.ended_by, "agent");
-    assert.equal(restored.pending_prompts, 1);
-
-    const feedback = feedbackResult(await store.takeFeedback(session.key));
-    assert.deepEqual(
-      feedback.prompts.map((item) => item.prompt),
-      ["Accepted before end"],
-    );
-    assert.equal(feedback.session_ended, true);
-    assert.equal(feedback.ended_by, "agent");
+    await store.acknowledgeFeedback(session.key, taken.delivery_id);
+    const ended = await store.takeFeedback(session.key);
+    assert.equal(ended.status, "ended");
+    assert.equal(ended.ended_by, "agent");
   });
 });
 
-test("restoring a delivery larger than one request's attachment bound loses nothing", async () => {
+test("acknowledging a delivery larger than one request's attachment bound clears it atomically", async () => {
   await withStore(async ({ store, session }) => {
     const resolveAttachment = async (_key, attachmentId) => ({
       id: attachmentId,
@@ -1535,29 +1528,17 @@ test("restoring a delivery larger than one request's attachment bound loses noth
     const taken = feedbackResult(await store.takeFeedback(session.key));
     assert.equal(taken.prompts.length, MAX_REQUEST_ATTACHMENT_REFS / 2);
 
-    // That delivery carries twice what one request may queue. Measuring the restore
-    // against the per-request bound would reject the whole batch and lose it for good.
-    const restored = await store.queuePrompts(
-      session.key,
-      { dom_snapshot: taken.dom_snapshot, prompts: taken.prompts },
-      { ...opts, restore: true },
-    );
-    assert.equal(restored.rejected, undefined, "the restore was not refused");
-    assert.deepEqual(
-      restored.prompts.map((prompt) => prompt.uid),
-      taken.prompts.map((prompt) => prompt.uid),
-    );
-
-    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(taken.prompts.flatMap((prompt) => prompt.attachments || []).length, MAX_REQUEST_ATTACHMENT_REFS * 2);
+    await store.acknowledgeFeedback(session.key, taken.delivery_id);
     assert.equal(
-      feedback.prompts.flatMap((prompt) => prompt.attachments || []).length,
-      MAX_REQUEST_ATTACHMENT_REFS * 2,
-      "every attachment survived the restore",
+      (await store.takeFeedback(session.key)).status,
+      "waiting",
+      "the whole accumulated delivery was acknowledged",
     );
   });
 });
 
-test("restoring artifact failures dedupes against one re-reported in the disconnect window", async () => {
+test("an in-flight artifact failure dedupes when it is re-reported before ACK", async () => {
   await withStore(async ({ store, session }) => {
     const load = await beginArtifactLoad(store, session.key);
     const failure = { kind: "artifact-asset-unavailable", detail: "missing.css" };
@@ -1565,49 +1546,37 @@ test("restoring artifact failures dedupes against one re-reported in the disconn
     const taken = feedbackResult(await store.takeFeedback(session.key));
     assert.equal(taken.artifact_failures?.length, 1);
 
-    // The take cleared the list, so the SDK's re-report for the still-current load
-    // records the identical failure again before the restore puts the taken one back.
+    // The leased delivery retains the failure, so a repeat diagnostic cannot duplicate it.
     const recorded = await store.recordArtifactFailures(session.key, {
       ...diagnosticPayload(load, 2),
       failures: [failure],
     });
-    assert.equal(recorded.changed, true);
-
-    const restored = await store.queuePrompts(
-      session.key,
-      { dom_snapshot: "", prompts: [], artifact_failures: taken.artifact_failures },
-      { restore: true },
-    );
+    assert.equal(recorded.changed, false);
+    const retained = await store.findByKey(session.key);
     assert.deepEqual(
-      restored.artifact_failures.map((item) => item.detail),
+      retained.artifact_failures.map((item) => item.detail),
       ["missing.css"],
       "the same failure is not handed to the agent twice",
     );
+    await store.acknowledgeFeedback(session.key, taken.delivery_id);
   });
 });
 
-// Which entries survive the bound is the policy, not the count. The restore REPLACES
-// session.artifact_failures, so anything its merge trims is gone from the store: a restore
-// that trimmed the newest end would delete the failures recorded inside its own disconnect
-// window, which have never been delivered either and describe the current artifact. The bound
-// therefore keeps the newest entries for both writers, and the restore's own overflow - the
-// only loss the bound can still cause - is what restoreClosedFeedback reports as incomplete.
-const restoreRetentionCases = [
+const acknowledgedFailureRetentionCases = [
   {
     name: "keeps every failure recorded during the disconnect window",
     windowCount: 5,
-    // 20 restored + 5 window = 25 over a bound of 20: the five oldest restored entries go.
-    expected: [...range(5, 20).map((i) => `asset-${i}.css`), ...range(0, 5).map((i) => `asset-${100 + i}.css`)],
+    expected: range(0, 5).map((i) => `asset-${100 + i}.css`),
   },
   {
-    name: "never evicts a window failure to make room for a restored one",
+    name: "never evicts an older undelivered failure to make room for a newer one",
     windowCount: 20,
     expected: range(0, 20).map((i) => `asset-${100 + i}.css`),
   },
 ];
 
-for (const testCase of restoreRetentionCases) {
-  test(`a restore bounded at the artifact-failure retention limit ${testCase.name}`, async () => {
+for (const testCase of acknowledgedFailureRetentionCases) {
+  test(`ACK at the artifact-failure retention limit ${testCase.name}`, async () => {
     await withStore(async ({ store, session }) => {
       const load = await beginArtifactLoad(store, session.key);
       const failures = (offset, count) =>
@@ -1623,18 +1592,9 @@ for (const testCase of restoreRetentionCases) {
         ...diagnosticPayload(load, 2),
         failures: failures(100, testCase.windowCount),
       });
-      const restored = await store.queuePrompts(
-        session.key,
-        { dom_snapshot: "", prompts: [], artifact_failures: taken.artifact_failures },
-        { restore: true },
-      );
-      assert.equal(restored.artifact_failures.length, 20, "the merged list stays bounded");
-      assert.deepEqual(
-        restored.artifact_failures.map((failure) => failure.detail),
-        testCase.expected,
-      );
+      await store.acknowledgeFeedback(session.key, taken.delivery_id);
 
-      // The store is the only place these live, so what the next poll delivers is the proof.
+      // ACK removes only the delivered failures; failures recorded during the lease remain.
       const delivered = feedbackResult(await store.takeFeedback(session.key));
       assert.deepEqual(
         delivered.artifact_failures.map((failure) => failure.detail),
@@ -1885,7 +1845,8 @@ test("a delivered attachment is released once its read grace elapses (post-poll-
         maxPromptBytes: 25 * 1024 * 1024,
       },
     );
-    await store.takeFeedback(session.key);
+    const delivery = feedbackResult(await store.takeFeedback(session.key));
+    await store.acknowledgeFeedback(session.key, delivery.delivery_id);
 
     // The grace is a bounded read window, not a second lifetime: once it lapses the
     // file is ordinary unreferenced bytes again, or the TTL and disk cap could never

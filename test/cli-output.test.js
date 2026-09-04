@@ -293,9 +293,9 @@ test("home output warns agents that poll needs an observable wake path", () => {
   assertObservablePollWakePath(pollHelp);
   assert.doesNotMatch(pollHelp, /Codex/);
   assert.match(pollHelp, /re-run/);
-  assert.match(pollHelp, /feedback remains queued until delivery/);
+  assert.match(pollHelp, /released for redelivery/);
   assert.match(pollHelp, /`Send & End` ends the session/);
-  assert.match(pollHelp, /final feedback is still delivered once/);
+  assert.match(pollHelp, /final feedback remains leased until ACK/);
   assert.doesNotMatch(pollHelp, /above 10 minutes/);
 });
 
@@ -324,7 +324,7 @@ test("home output keeps static skill poll guidance safe and agent-neutral", () =
   assertObservablePollWakePath(pollHelp);
   assert.doesNotMatch(pollHelp, /keep the poll attached to the active turn/i);
   assert.doesNotMatch(pollHelp, /Codex detected/);
-  assert.match(pollHelp, /feedback remains queued until delivery/);
+  assert.match(pollHelp, /released for redelivery/);
 });
 
 test("invoking agent detection recognizes Codex runtime markers only", () => {
@@ -357,7 +357,7 @@ test("top-level help renders static home output without dynamic sessions", async
     assert.match(result.stdout, /lavish-axi design/);
     assert.match(result.stdout, /strict priority order/);
     assert.match(result.stdout, /never kill it/);
-    assert.match(result.stdout, /feedback remains queued until delivery/);
+    assert.match(result.stdout, /released for redelivery/);
     assert.doesNotMatch(result.stdout, /above 10 minutes/);
     assert.doesNotMatch(result.stdout, /lavish-design/);
     assert.doesNotMatch(result.stdout, /sessions\[/);
@@ -838,9 +838,9 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.match(output.next_step, /never kill it/);
   assertObservablePollWakePath(output.next_step);
   assert.doesNotMatch(output.next_step, /Codex/);
-  assert.match(output.next_step, /feedback remains queued until delivery/);
+  assert.match(output.next_step, /--ack <delivery_id>/);
   assert.match(output.next_step, /Do not pass --timeout-ms/);
-  assert.match(output.next_step, /If the user ends the session, stop polling and do not reopen it/);
+  assert.match(output.next_step, /If the user ends the session, acknowledge its final delivery before stopping/);
   assert.match(output.next_step, /--reopen/);
 });
 
@@ -1678,11 +1678,11 @@ test("poll help requires an observable wake path", () => {
   assert.match(help, /never kill it/);
   assertObservablePollWakePath(help);
   assert.doesNotMatch(help, /Codex/);
-  assert.match(help, /feedback remains queued until delivery/);
+  assert.match(help, /released for redelivery/);
   assert.match(help, /Do not pass --timeout-ms/);
   assert.match(help, /tests and debugging only/);
   assert.match(help, /`Send & End` ends the session/);
-  assert.match(help, /final feedback is still delivered once/);
+  assert.match(help, /final feedback remains leased until ACK/);
   assert.doesNotMatch(help, /above 10 minutes/);
 });
 
@@ -1751,17 +1751,19 @@ test("home share guidance defers republish and unpublish mechanics to share --he
 test("feedback next step keeps the next poll completion observable", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
-    response: { status: "feedback", dom_snapshot: "", prompts: [] },
+    response: { status: "feedback", delivery_id: "0123456789abcdef", dom_snapshot: "", prompts: [] },
   });
 
+  assert.equal(output.delivery_id, "0123456789abcdef");
   assert.equal("artifact_failures" in output, false);
   assert.equal("layout_warnings" in output, false);
   assert.match(output.next_step, /never kill it/);
   assert.match(output.next_step, /without --timeout-ms/);
   assertObservablePollWakePath(output.next_step);
   assert.doesNotMatch(output.next_step, /Codex/);
-  assert.match(output.next_step, /feedback remains queued until delivery/);
+  assert.match(output.next_step, /--ack 0123456789abcdef/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
+  assert.match(output.next_step, /--ack 0123456789abcdef --agent-reply/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
 });
 
@@ -2109,7 +2111,7 @@ test("poll wait messages tell watching agents the silence is normal", () => {
   assert.match(banner, /Long-polling for user feedback/);
   assert.match(banner, /stays silent/);
   assert.match(banner, /leave it running/i);
-  assert.match(banner, /feedback remains queued until delivery/);
+  assert.match(banner, /released for redelivery/);
 
   const tick = pollWaitTickText(3 * 60_000);
   assert.match(tick, /\[lavish-axi\]/);
@@ -2121,7 +2123,7 @@ test("poll wait messages tell watching agents the silence is normal", () => {
   assert.match(interrupted, /Poll interrupted/);
   assert.match(interrupted, /user may still be reviewing/);
   assert.match(interrupted, /lavish-axi poll \/tmp\/report\.html/);
-  assert.match(interrupted, /feedback remains queued until delivery/);
+  assert.match(interrupted, /released for redelivery/);
 });
 
 test("poll wait reporter writes a banner immediately and heartbeats on an interval", async () => {
@@ -2226,8 +2228,71 @@ test("spawned poll with piped stderr banners once and leaves re-run guidance whe
     // to the child process's JavaScript signal handler.
     if (process.platform !== "win32") {
       assert.match(stderr, /Poll interrupted/);
-      assert.match(stderr, /feedback remains queued until delivery/);
+      assert.match(stderr, /released for redelivery/);
     }
+  } finally {
+    await server.close();
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
+test("retrying ACK plus agent reply after a lost response is idempotent", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-retried-reply-test-`);
+  const stateFile = `${stateDir}/state.json`;
+  const artifact = `${stateDir}/artifact.html`;
+  await writeFile(artifact, "<html><body>hello</body></html>", "utf8");
+  const server = await serve({ port: 0, stateFile, version: VERSION });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ prompt: "process me", tag: "message" }] }),
+    });
+    const delivery = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+      res.json(),
+    );
+
+    const runPoll = async () => {
+      const child = spawn(
+        process.execPath,
+        [
+          fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)),
+          "poll",
+          artifact,
+          "--ack",
+          delivery.delivery_id,
+          "--agent-reply",
+          "Applied the requested changes.",
+          "--timeout-ms",
+          "1",
+        ],
+        {
+          cwd: fileURLToPath(new URL("..", import.meta.url)),
+          env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_PORT: String(server.port) },
+        },
+      );
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
+      const exitCode = await new Promise((resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", resolve);
+      });
+      assert.equal(exitCode, 0, stderr);
+    };
+
+    await runPoll();
+    await runPoll();
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.deepEqual(
+      state.sessions[key].chat.filter((item) => item.role === "agent").map((item) => item.text),
+      ["Applied the requested changes."],
+    );
   } finally {
     await server.close();
     await rm(stateDir, { force: true, recursive: true });
@@ -2242,7 +2307,7 @@ test("waiting next step reassures agents that re-running poll loses nothing", ()
 
   assert.match(output.next_step, /lavish-axi poll \/tmp\/report\.html/);
   assert.match(output.next_step, /without --timeout-ms/);
-  assert.match(output.next_step, /feedback remains queued until delivery/);
+  assert.match(output.next_step, /released for redelivery/);
 });
 
 test("html file arguments normalize to the hidden open command", () => {
