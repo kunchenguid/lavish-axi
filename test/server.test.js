@@ -4171,6 +4171,50 @@ test("shutdown terminates an event WebSocket that ignores the close handshake", 
   }
 });
 
+test("initialization failure terminates an event WebSocket that ignores the close handshake", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  await writeFile(stateFile, "invalid json");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  const socket = netConnect(server.port, "127.0.0.1");
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(
+      [
+        "GET /events/0123456789abcdef HTTP/1.1",
+        `Host: 127.0.0.1:${server.port}`,
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==",
+        "Sec-WebSocket-Version: 13",
+        `Origin: http://127.0.0.1:${server.port}`,
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    const response = await new Promise((resolve, reject) => {
+      let received = "";
+      const onData = (chunk) => {
+        received += chunk.toString("latin1");
+        if (!received.includes("\r\n\r\n")) return;
+        socket.off("data", onData);
+        resolve(received);
+      };
+      socket.on("data", onData);
+      socket.once("error", reject);
+    });
+    assert.match(response, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
+    await expectSocketClosedWithin(socket, 1000);
+  } finally {
+    socket.destroy();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // Collects a chrome's SSE stream until the server ends it, which is what a shutdown does.
 async function collectEventStream(base, key) {
   const controller = new AbortController();
@@ -4330,6 +4374,19 @@ async function expectDoneWithin(server, ms) {
   });
   try {
     await Promise.race([server.done, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function expectSocketClosedWithin(socket, ms) {
+  if (socket.destroyed) return;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`socket did not close within ${ms}ms`)), ms);
+  });
+  try {
+    await Promise.race([new Promise((resolve) => socket.once("close", resolve)), timeout]);
   } finally {
     clearTimeout(timer);
   }

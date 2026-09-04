@@ -1635,8 +1635,8 @@ export async function serve({
         sendEvent(type, data) {
           if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify({ type, data }));
         },
-        close() {
-          webSocket.close(1001, "Lavish server shutdown");
+        close(code = 1001, reason = "Lavish server shutdown") {
+          webSocket.close(code, reason);
           const terminateTimer = setTimeout(() => {
             if (webSocket.readyState !== WebSocket.CLOSED) webSocket.terminate();
           }, WEBSOCKET_CLOSE_GRACE_MS);
@@ -1650,9 +1650,9 @@ export async function serve({
       webSocket.on("error", () => {});
       const cleanup = attachLiveEventClient(client, key, (remove) => webSocket.once("close", remove));
       sendInitialLiveEventState(client, key, cleanup).catch((error) => {
+        client.close(1011, "Failed to initialize live events");
         cleanup();
         logEvent?.(`event WebSocket initialization failed session=${key}: ${error?.message || error}`);
-        webSocket.close(1011, "Failed to initialize live events");
       });
     });
   }
