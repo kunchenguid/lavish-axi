@@ -84,8 +84,11 @@ function playAgentReplyTone() {
   const context = replyAudioContext;
   if (!context || document.hasFocus()) return;
   if (context.state === "suspended") {
-    // A gesture may have already resumed the context while the browser still reports it as
-    // suspended. Preserve this reply by starting its tone once that gesture's resume completes.
+    // A prior gesture may have already resumed the context while the browser still reports it as
+    // suspended, or the browser may have auto-suspended an idle context since that gesture. Once a
+    // context has been unlocked by a real gesture, browsers permit resuming it again without a new
+    // one, so retry resume() here too rather than only awaiting the earlier gesture's promise.
+    resumeAgentReplyTone();
     replyAudioResume
       ?.then(() => {
         if (replyAudioContext === context && context.state !== "suspended" && !document.hasFocus()) {
