@@ -1106,31 +1106,12 @@ test("chrome client renders persisted chat history", async () => {
   assert.match(js, /initialChat\.forEach/);
 });
 
-test("chrome can sync persisted chat after the event stream reconnects", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /chat-sync/);
-  assert.match(js, /function syncChat/);
-});
-
 test("chrome shows agent working state when a previous poll has released", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /agent-presence/);
   assert.match(js, /Working\.\.\./);
   assert.match(js, /spinner/);
-});
-
-test("sending with an empty composer nudges instead of blocking", async () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
-
-  assert.match(html, /class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div>/);
-  assert.match(js, /function showSendHint\(message = DEFAULT_SEND_HINT/);
-  assert.match(js, /sendHint\.hidden = false/);
-  assert.match(js, /chatInput\.focus\(\)/);
-  assert.match(css, /\.send-hint\{/);
 });
 
 test("composer offers two always-visible top-level send actions", async () => {

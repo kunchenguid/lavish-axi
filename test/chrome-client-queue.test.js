@@ -445,6 +445,12 @@ async function createChromeHarness({
       assert.equal(webSockets.length, 1);
       return webSockets[0];
     },
+    webSocketAt(index) {
+      return webSockets[index];
+    },
+    webSocketCount() {
+      return webSockets.length;
+    },
     sendFrameMessage(data) {
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
@@ -549,6 +555,22 @@ test("chrome client carries live events over a WebSocket outside the HTTP connec
   assert.equal(chrome.webSocket().url, "ws://lavish.test/events/abc");
   chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
   assert.equal(chrome.element("presenceBanner").hidden, true);
+});
+
+test("chrome reconnects its live WebSocket and syncs missed chat", async () => {
+  const chrome = await createChromeHarness();
+  const firstSocket = chrome.webSocket();
+
+  firstSocket.protocolListeners.get("close")();
+  chrome.runTimers(500);
+
+  assert.equal(chrome.webSocketCount(), 2);
+  const reconnectedSocket = chrome.webSocketAt(1);
+  assert.equal(reconnectedSocket.url, "ws://lavish.test/events/abc");
+  reconnectedSocket.listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [{ role: "agent", text: "Missed while disconnected" }] }),
+  });
+  assert.match(chrome.element("chatLog").lastAppendedChild.innerHTML, /Missed while disconnected/);
 });
 
 test("a queued send that receives no acknowledgement becomes visibly recoverable", async () => {
@@ -4234,6 +4256,18 @@ test("chrome send and end with an empty composer nudges instead of ending", asyn
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.element("chatInput").disabled, false);
+});
+
+test("chrome send with an empty composer shows a visible hint", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("sendHint").hidden = true;
+
+  chrome.element("send").click();
+
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.equal(chrome.element("sendHint").textContent, "Write a message or annotate an element first.");
+  assert.equal(chrome.element("chatInput").focused, true);
+  assert.equal(chrome.postedToFrame.length, 0);
 });
 
 test("chrome send and end during an in-flight submit still ends after the submit drains the queue", async () => {
