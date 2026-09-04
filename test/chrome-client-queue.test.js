@@ -5392,6 +5392,59 @@ test("an agent reply chimes only after interaction while its window is unfocused
   assert.equal(calls.filter((call) => call === "stop").length, 2);
 });
 
+test("an agent reply retries resume() when audio auto-suspends with no further gesture", async () => {
+  // Distinct from the previous test: here the browser auto-suspends the context (as it may while
+  // backgrounded) with NO new gesture at all before the reply arrives, so the earlier gesture's
+  // resume promise is already resolved and chaining off it alone would never re-check state.
+  const calls = [];
+  /** @type {{ state: string } | null} */
+  let context = null;
+  class FakeAudioContext {
+    constructor() {
+      this.currentTime = 10;
+      this.destination = {};
+      this.state = "running";
+      context = this;
+    }
+
+    resume() {
+      calls.push("resume");
+      this.state = "running";
+      return Promise.resolve();
+    }
+
+    createOscillator() {
+      return {
+        frequency: { setValueAtTime() {} },
+        connect() {},
+        start() {
+          calls.push("start");
+        },
+        stop() {},
+      };
+    }
+
+    createGain() {
+      return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} };
+    }
+  }
+
+  const chrome = await createChromeHarness({ audioContext: FakeAudioContext });
+  chrome.dispatchDocumentEvent("pointerdown");
+  await flushPromises();
+  assert.ok(context, "the gesture creates and resumes an audio context");
+  calls.length = 0;
+
+  // The browser silently auto-suspends the idle, backgrounded context - no gesture fires.
+  context.state = "suspended";
+  chrome.setFocused(false);
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Still here?" }) });
+  await flushPromises();
+
+  assert.ok(calls.includes("resume"), "playing a chime must retry resume() itself, not just await a stale promise");
+  assert.equal(calls.filter((call) => call === "start").length, 2, "the chime still plays once resume completes");
+});
+
 test("the dock summarizes what the user should know while the sheet is down", async () => {
   const chrome = await createChromeHarness({
     mobile: true,
