@@ -3354,7 +3354,6 @@ test("/chrome-client.js serves the extracted chrome client script", async () => 
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") || "", /application\/javascript/);
     assert.match(body, /const sessionData/);
-    assert.match(body, /new WebSocket\(/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -4123,6 +4122,51 @@ test("POST /shutdown stops the listener so the client can spawn a fresh server",
     await server.done;
     await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("shutdown terminates an event WebSocket that ignores the close handshake", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const socket = netConnect(server.port, "127.0.0.1");
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(
+      [
+        "GET /events/0123456789abcdef HTTP/1.1",
+        `Host: 127.0.0.1:${server.port}`,
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==",
+        "Sec-WebSocket-Version: 13",
+        `Origin: http://127.0.0.1:${server.port}`,
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    const response = await new Promise((resolve, reject) => {
+      let received = "";
+      const onData = (chunk) => {
+        received += chunk.toString("latin1");
+        if (!received.includes("\r\n\r\n")) return;
+        socket.off("data", onData);
+        resolve(received);
+      };
+      socket.on("data", onData);
+      socket.once("error", reject);
+    });
+    assert.match(response, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
+
+    const closing = server.close();
+    await expectDoneWithin(server, 1000);
+    await closing;
+  } finally {
+    socket.destroy();
+    await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

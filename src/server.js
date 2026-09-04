@@ -103,6 +103,7 @@ const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
 const NETWORK_RECONCILE_CACHE_MS = 1_000;
 const TAILSCALE_BIND_RETRY_DELAYS_MS = [100, 250, 500];
+const WEBSOCKET_CLOSE_GRACE_MS = 250;
 // An escaped popup can navigate to an artifact-owned HTML or SVG asset on the
 // server origin. Keep every artifact response sandboxed at the response layer
 // so active documents stay opaque-origin even when they are top-level.
@@ -1636,6 +1637,11 @@ export async function serve({
         },
         close() {
           webSocket.close(1001, "Lavish server shutdown");
+          const terminateTimer = setTimeout(() => {
+            if (webSocket.readyState !== WebSocket.CLOSED) webSocket.terminate();
+          }, WEBSOCKET_CLOSE_GRACE_MS);
+          terminateTimer.unref?.();
+          webSocket.once("close", () => clearTimeout(terminateTimer));
         },
         isClosed() {
           return webSocket.readyState === WebSocket.CLOSING || webSocket.readyState === WebSocket.CLOSED;
