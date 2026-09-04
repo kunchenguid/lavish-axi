@@ -7,6 +7,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import WebSocket from "ws";
 
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
@@ -3353,8 +3354,117 @@ test("/chrome-client.js serves the extracted chrome client script", async () => 
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") || "", /application\/javascript/);
     assert.match(body, /const sessionData/);
-    assert.match(body, /new EventSource\("\/events\/" \+ key\)/);
+    assert.match(body, /new WebSocket\(/);
   } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("event WebSocket preserves initial state and named live-event semantics", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/${opened.key}`, { origin: base });
+    const messages = [];
+    const waiters = [];
+    socket.on("message", (raw) => {
+      const message = JSON.parse(String(raw));
+      messages.push(message);
+      const waiter = waiters.shift();
+      if (waiter) waiter(message);
+    });
+    const nextMessage = () =>
+      new Promise((resolve) => {
+        if (messages.length > nextMessage.index) {
+          resolve(messages[nextMessage.index]);
+          nextMessage.index += 1;
+          return;
+        }
+        waiters.push((message) => {
+          nextMessage.index = messages.length;
+          resolve(message);
+        });
+      });
+    nextMessage.index = 0;
+
+    await new Promise((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+    assert.deepEqual(await nextMessage(), { type: "chat-sync", data: { chat: [] } });
+    assert.deepEqual(await nextMessage(), { type: "agent-presence", data: { state: "waiting" } });
+
+    const reply = await fetch(`${base}/api/${opened.key}/agent-reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "live reply" }),
+    });
+    assert.equal(reply.status, 200);
+    assert.deepEqual(await nextMessage(), { type: "agent-reply", data: { text: "live reply" } });
+    socket.close();
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("event WebSocket rejects foreign and missing browser origins", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    for (const origin of ["http://attacker.example", undefined]) {
+      const status = await new Promise((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/0123456789abcdef`, {
+          ...(origin ? { origin } : {}),
+        });
+        socket.once("unexpected-response", (_request, response) => resolve(response.statusCode));
+        socket.once("open", () => reject(new Error("untrusted WebSocket origin was accepted")));
+        socket.once("error", () => {});
+      });
+      assert.equal(status, 403);
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("event WebSocket validates a reverse proxy's forwarded origin", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    allowedHosts: ["review.example"],
+  });
+  let socket;
+  try {
+    socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/0123456789abcdef`, {
+      origin: "https://review.example",
+      headers: {
+        "x-forwarded-host": "review.example",
+        "x-forwarded-proto": "https",
+      },
+    });
+    await new Promise((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+      socket.once("unexpected-response", (_request, response) =>
+        reject(new Error(`proxied WebSocket was rejected with ${response.statusCode}`)),
+      );
+    });
+    assert.equal(socket.readyState, WebSocket.OPEN);
+  } finally {
+    socket?.close();
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -4229,6 +4339,41 @@ test("an open SSE connection keeps the server alive past the idle timeout", asyn
     await expectDoneWithin(server, 2000);
   } finally {
     controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an open event WebSocket keeps the server alive past the idle timeout", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    idleTimeoutMs: 500,
+  });
+  let socket;
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/${opened.key}`, { origin: base });
+    await new Promise((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    assert.equal((await fetch(`${base}/health`)).status, 200);
+    socket.close();
+    await expectDoneWithin(server, 2000);
+  } finally {
+    socket?.close();
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }

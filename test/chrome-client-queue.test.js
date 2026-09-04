@@ -51,6 +51,7 @@ async function createChromeHarness({
   const postedToWhiteboard = [];
   const inlineWhiteboards = [];
   const eventSources = [];
+  const webSockets = [];
   const windowListeners = new Map();
   const documentListeners = new Map();
   const elements = new Map();
@@ -281,6 +282,8 @@ async function createChromeHarness({
     ...(fakeClock ? { Date: { now: () => clockNow, parse: Date.parse } } : {}),
     fetch: harnessFetch,
     location: {
+      protocol: "http:",
+      host: "lavish.test",
       reload() {
         reloadCount += 1;
       },
@@ -302,6 +305,34 @@ async function createChromeHarness({
 
       addEventListener(type, handler) {
         this.listeners.set(type, handler);
+      }
+    },
+    WebSocket: class FakeWebSocket {
+      static OPEN = 1;
+
+      constructor(url) {
+        this.url = url;
+        this.readyState = 1;
+        this.protocolListeners = new Map();
+        // Existing behavior tests dispatch named live events through this helper. Translate those
+        // named dispatches onto the WebSocket wire message so they continue exercising the real
+        // client event decoder instead of reaching into implementation source.
+        this.listeners = {
+          get: (type) => {
+            if (this.protocolListeners.has(type)) return this.protocolListeners.get(type);
+            const onMessage = this.protocolListeners.get("message");
+            if (!onMessage) return undefined;
+            return (event = {}) =>
+              onMessage({
+                data: JSON.stringify({ type, data: JSON.parse(event.data || "{}") }),
+              });
+          },
+        };
+        webSockets.push(this);
+      }
+
+      addEventListener(type, handler) {
+        this.protocolListeners.set(type, handler);
       }
     },
     document: {
@@ -407,8 +438,12 @@ async function createChromeHarness({
       return { source, posted };
     },
     eventSource() {
-      assert.equal(eventSources.length, 1);
-      return eventSources[0];
+      assert.equal(eventSources.length + webSockets.length, 1);
+      return webSockets[0] || eventSources[0];
+    },
+    webSocket() {
+      assert.equal(webSockets.length, 1);
+      return webSockets[0];
     },
     sendFrameMessage(data) {
       const handlers = windowListeners.get("message") || [];
@@ -507,6 +542,64 @@ async function createChromeHarness({
     },
   };
 }
+
+test("chrome client carries live events over a WebSocket outside the HTTP connection pool", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.equal(chrome.webSocket().url, "ws://lavish.test/events/abc");
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  assert.equal(chrome.element("presenceBanner").hidden, true);
+});
+
+test("a queued send that receives no acknowledgement becomes visibly recoverable", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("chatInput").value = "Do not lose this";
+
+  chrome.element("send").click();
+
+  assert.equal(chrome.element("chatInput").value, "");
+  assert.match(chrome.element("annotationPills").innerHTML, /Do not lose this/);
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Do not lose this"],
+  );
+
+  chrome.runTimers(10_000);
+
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /saved in this tab/i);
+  assert.match(chrome.element("sendHint").textContent, /check that the server is running/i);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
+  chrome.runTimers(2600);
+  assert.equal(chrome.element("sendHint").hidden, false, "the actionable failure remains until the next action");
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Do not lose this"],
+  );
+});
+
+test("a rejected prompt POST keeps the queue and surfaces the retry action", async () => {
+  const chrome = await createChromeHarness({
+    storedQueue: [{ uid: "", prompt: "Retry me", selector: "", tag: "message", text: "Freeform message" }],
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) throw new Error("network unavailable");
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.element("send").click();
+  chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /feedback is still queued/i);
+  assert.match(chrome.element("sendHint").textContent, /click Send to Agent to retry/i);
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Retry me"],
+  );
+});
 
 // One whole begin-load attempt that fails: the request plus both in-call transport retries.
 async function exhaustOneBeginLoadAttempt(chrome) {
