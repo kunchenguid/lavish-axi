@@ -92,71 +92,40 @@ function chromeSessionData(html) {
 }
 
 async function startPresenceStream(base, key) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+  const stream = await startEventStream(base, key, "agent-presence");
 
   return {
     async next() {
-      const deadline = Date.now() + 500;
-      while (true) {
-        const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
-        if (match) {
-          buffer = buffer.replace(match[0], "");
-          return JSON.parse(match[1]).state;
-        }
-        const remaining = Math.max(1, deadline - Date.now());
-        const { value, done } = await Promise.race([
-          reader.read(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("timed out waiting for agent presence event")), remaining),
-          ),
-        ]);
-        if (done) throw new Error("presence stream closed before an agent presence event");
-        buffer += decoder.decode(value, { stream: true });
-      }
+      return (await stream.next()).state;
     },
-    async close() {
-      controller.abort();
-      await reader.cancel().catch(() => {});
-    },
+    close: stream.close,
   };
 }
 
-// A generic version of startPresenceStream for events other than agent-presence, such as `ended`.
 async function startEventStream(base, key, eventName) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const pattern = new RegExp(`^event: ${eventName}\\ndata: (.+)\\n\\n`, "m");
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/events/${key}`, { origin: base });
+  const messages = on(socket, "message");
+  await once(socket, "open");
 
   return {
     async next() {
       const deadline = Date.now() + 2000;
       while (true) {
-        const match = buffer.match(pattern);
-        if (match) {
-          buffer = buffer.replace(match[0], "");
-          return JSON.parse(match[1]);
-        }
         const remaining = Math.max(1, deadline - Date.now());
-        const { value, done } = await Promise.race([
-          reader.read(),
+        const result = await Promise.race([
+          messages.next(),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error(`timed out waiting for a ${eventName} event`)), remaining),
           ),
         ]);
-        if (done) throw new Error(`${eventName} stream closed before the event arrived`);
-        buffer += decoder.decode(value, { stream: true });
+        if (result.done) throw new Error(`${eventName} stream closed before the event arrived`);
+        const message = JSON.parse(String(result.value[0]));
+        if (message.type === eventName) return message.data;
       }
     },
     async close() {
-      controller.abort();
-      await reader.cancel().catch(() => {});
+      await messages.return();
+      socket.close();
     },
   };
 }
@@ -4145,20 +4114,15 @@ for (const initializeFailure of [false, true]) {
   );
 }
 
-// Collects a chrome's SSE stream until the server ends it, which is what a shutdown does.
 async function collectEventStream(base, key) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/events/${key}`, { origin: base });
   let text = "";
-  const finished = (async () => {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) return text;
-      text += decoder.decode(value, { stream: true });
-    }
-  })();
+  socket.on("message", (raw) => {
+    const message = JSON.parse(String(raw));
+    text += `event: ${message.type}\ndata: ${JSON.stringify(message.data)}\n\n`;
+  });
+  await once(socket, "open");
+  const finished = once(socket, "close").then(() => text);
   return {
     finished: () =>
       Promise.race([
@@ -4166,7 +4130,7 @@ async function collectEventStream(base, key) {
         new Promise((_, reject) => setTimeout(() => reject(new Error("event stream never closed")), 2000)),
       ]),
     close() {
-      controller.abort();
+      socket.close();
     },
   };
 }
@@ -4326,7 +4290,7 @@ test("server shuts itself down after the idle timeout with no connections", asyn
   }
 });
 
-test("an open SSE connection keeps the server alive past the idle timeout", async () => {
+test("the legacy event stream requests a full-chrome migration and closes", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -4336,7 +4300,6 @@ test("an open SSE connection keeps the server alive past the idle timeout", asyn
     version: "9.9.9-test",
     idleTimeoutMs: 500,
   });
-  const controller = new AbortController();
   try {
     const base = `http://127.0.0.1:${server.port}`;
     const open = await fetch(`${base}/api/sessions`, {
@@ -4345,18 +4308,14 @@ test("an open SSE connection keeps the server alive past the idle timeout", asyn
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    // Hold an SSE connection open so the server is never idle.
-    const sse = fetch(`${base}/events/${key}`, { signal: controller.signal });
-    sse.catch(() => {});
-    await sse;
-    await new Promise((resolve) => setTimeout(resolve, 750));
-    const health = await fetch(`${base}/health`);
-    assert.equal(health.status, 200);
-    // Dropping the connection lets the idle timer fire and shut the server down.
-    controller.abort();
+    const response = await fetch(`${base}/events/${key}`, { headers: { accept: "text/event-stream" } });
+    assert.equal(response.headers.get("connection"), "close");
+    assert.equal(
+      await response.text(),
+      'event: chrome-reload\ndata: {"reason":"upgrade"}\n\n',
+    );
     await expectDoneWithin(server, 2000);
   } finally {
-    controller.abort();
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -4770,7 +4729,7 @@ test("ending an active poll without final feedback leaves presence waiting", asy
   }
 });
 
-test("SSE agent-presence reflects waiting, listening, and working transitions", async () => {
+test("event WebSocket agent-presence reflects waiting, listening, and working transitions", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await (await import("node:fs/promises")).writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -4784,48 +4743,12 @@ test("SSE agent-presence reflects waiting, listening, and working transitions", 
     });
     const { key } = await open.json();
 
-    const presenceEvents = [];
-    const presenceWaiters = [];
-    const presenceController = new AbortController();
-    const presenceFetch = fetch(`${base}/events/${key}`, { signal: presenceController.signal }).then(async (res) => {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let lines;
-        while ((lines = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m))) {
-          const data = JSON.parse(lines[1]);
-          presenceEvents.push(data.state);
-          buffer = buffer.replace(lines[0], "");
-          const waiter = presenceWaiters.shift();
-          if (waiter) waiter(data.state);
-        }
-      }
-    });
-    presenceFetch.catch(() => {});
-
-    const waitForPresence = () =>
-      new Promise((resolve) => {
-        if (presenceEvents.length > waitForPresence.lastIndex) {
-          waitForPresence.lastIndex++;
-          resolve(presenceEvents[waitForPresence.lastIndex - 1]);
-          return;
-        }
-        presenceWaiters.push((state) => {
-          waitForPresence.lastIndex = presenceEvents.length;
-          resolve(state);
-        });
-      });
-    waitForPresence.lastIndex = 0;
-
-    const initial = await waitForPresence();
-    assert.equal(initial, "waiting", "first SSE handshake should report waiting before any poll");
+    const presence = await startPresenceStream(base, key);
+    const initial = await presence.next();
+    assert.equal(initial, "waiting", "first WebSocket handshake should report waiting before any poll");
 
     const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
-    const listening = await waitForPresence();
+    const listening = await presence.next();
     assert.equal(listening, "listening", "should switch to listening when poll attaches");
 
     await fetch(`${base}/api/${key}/prompts`, {
@@ -4835,18 +4758,17 @@ test("SSE agent-presence reflects waiting, listening, and working transitions", 
     });
     await pollPromise;
 
-    const working = await waitForPresence();
+    const working = await presence.next();
     assert.equal(working, "working", "should switch to working when poll releases after at least one attach");
 
-    presenceController.abort();
-    await presenceFetch.catch(() => {});
+    await presence.close();
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("SSE handshake reports waiting on a fresh session that never had a poll", async () => {
+test("event WebSocket handshake reports waiting on a fresh session that never had a poll", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await (await import("node:fs/promises")).writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -4860,28 +4782,16 @@ test("SSE handshake reports waiting on a fresh session that never had a poll", a
     });
     const { key } = await open.json();
 
-    const controller = new AbortController();
-    const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let state = null;
-    while (state === null) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
-      if (match) state = JSON.parse(match[1]).state;
-    }
-    controller.abort();
-    assert.equal(state, "waiting");
+    const presence = await startPresenceStream(base, key);
+    assert.equal(await presence.next(), "waiting");
+    await presence.close();
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("SSE agent-presence returns to waiting when a poll times out without feedback", async () => {
+test("event WebSocket agent-presence returns to waiting when a poll times out without feedback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -5769,57 +5679,6 @@ test("SSE sends an immediate ended snapshot to a connection that attaches after 
       await stream.close();
     }
   } finally {
-    await server.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("SSE disconnect during the initial session read releases the connection", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, "<!doctype html><html><body></body></html>");
-  const server = await serve({
-    port: 0,
-    stateFile: path.join(dir, "state.json"),
-    version: "9.9.9-test",
-    idleTimeoutMs: 100,
-  });
-  const originalFindByKey = SessionStore.prototype.findByKey;
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const open = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const { key } = await open.json();
-    const { promise: findReleased, resolve: releaseFind } = Promise.withResolvers();
-    const { promise: findPending, resolve: findStarted } = Promise.withResolvers();
-    SessionStore.prototype.findByKey = async function (sessionKey) {
-      if (sessionKey === key) {
-        findStarted();
-        await findReleased;
-      }
-      return originalFindByKey.call(this, sessionKey);
-    };
-
-    const socket = await new Promise((resolve, reject) => {
-      const client = netConnect(server.port, "127.0.0.1", () => {
-        client.write(`GET /events/${key} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`, () => resolve(client));
-      });
-      client.on("error", reject);
-    });
-    await findPending;
-    socket.on("error", () => {});
-    socket.destroy();
-    releaseFind();
-
-    await Promise.race([
-      server.done,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("server retained disconnected SSE client")), 1000)),
-    ]);
-  } finally {
-    SessionStore.prototype.findByKey = originalFindByKey;
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }

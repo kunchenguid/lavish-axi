@@ -1224,32 +1224,13 @@ export async function serve({
     }
   });
 
-  app.get("/events/:key", async (req, res, next) => {
-    let cleanup = () => {};
-    try {
-      res.writeHead(200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      });
-      const client = {
-        sendEvent(type, data) {
-          if (!res.destroyed && !res.writableEnded) res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-        },
-        close() {
-          res.end();
-        },
-        isClosed() {
-          return req.destroyed || res.writableEnded;
-        },
-      };
-      // Register before reading session state so an end that lands during the read is not missed.
-      cleanup = attachLiveEventClient(client, String(req.params.key || ""), (remove) => req.once("close", remove));
-      await sendInitialLiveEventState(client, String(req.params.key || ""), cleanup);
-    } catch (error) {
-      cleanup();
-      next(error);
-    }
+  app.get("/events/:key", (_req, res) => {
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "close",
+    });
+    res.end(`event: chrome-reload\ndata: ${JSON.stringify({ reason: "upgrade" })}\n\n`);
   });
 
   app.get("/chrome-client.js", async (req, res, next) => {

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import WebSocket from "ws";
 
 import { AxiError } from "axi-sdk-js";
 
@@ -61,39 +62,20 @@ import { serve } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
 
 async function waitForPollListening(base, key, timeoutMs = 10_000) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const deadline = Date.now() + timeoutMs;
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/events/${key}`, { origin: base });
   try {
-    while (true) {
-      const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
-      if (match) {
-        buffer = buffer.replace(match[0], "");
-        if (JSON.parse(match[1]).state === "listening") return;
-        continue;
-      }
-      const remaining = Math.max(1, deadline - Date.now());
-      let timer;
-      let value;
-      let done;
-      try {
-        ({ value, done } = await Promise.race([
-          reader.read(),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error("timed out waiting for listening presence")), remaining);
-          }),
-        ]));
-      } finally {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out waiting for listening presence")), timeoutMs);
+      socket.on("message", (raw) => {
+        const message = JSON.parse(String(raw));
+        if (message.type !== "agent-presence" || message.data.state !== "listening") return;
         clearTimeout(timer);
-      }
-      if (done) throw new Error("presence stream closed before listening");
-      buffer += decoder.decode(value, { stream: true });
-    }
+        resolve(undefined);
+      });
+      socket.once("error", reject);
+    });
   } finally {
-    controller.abort();
+    socket.close();
   }
 }
 

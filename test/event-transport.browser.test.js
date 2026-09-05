@@ -88,6 +88,20 @@ test(
       assert.equal(pages.length, 7, "all seven same-origin board tabs loaded");
       const pageByUrl = new Map(pages.map((page) => [page.url, page]));
 
+      for (const session of sessions) {
+        const page = pageByUrl.get(session.url);
+        assert.ok(page, `missing browser tab for ${session.url}`);
+        run("chrome-devtools-axi", ["selectpage", String(page.id)], chromeEnv);
+        run(
+          "chrome-devtools-axi",
+          [
+            "eval",
+            `() => { sessionStorage.removeItem("lavish-legacy-migrated"); const events = new EventSource("/events/${session.key}"); events.addEventListener("chrome-reload", async () => { const response = await fetch("/health", { cache: "no-store" }); if (!response.ok) return; sessionStorage.setItem("lavish-legacy-migrated", "true"); location.reload(); }); return true; }`,
+          ],
+          chromeEnv,
+        );
+      }
+
       for (let index = 0; index < sessions.length; index += 1) {
         const session = sessions[index];
         const page = pageByUrl.get(session.url);
@@ -101,7 +115,7 @@ test(
           "chrome-devtools-axi",
           [
             "eval",
-            '() => new Promise((resolve, reject) => { const deadline = Date.now() + 8000; const check = () => { if (window.__lavishChromeReady && document.getElementById("artifact")?.src) return resolve(true); if (Date.now() >= deadline) return reject(new Error("Lavish reload did not complete")); setTimeout(check, 25); }; check(); })',
+            '() => new Promise((resolve, reject) => { const deadline = Date.now() + 8000; const check = () => { if (sessionStorage.getItem("lavish-legacy-migrated") === "true" && window.__lavishChromeReady && document.getElementById("artifact")?.src) return resolve(true); if (Date.now() >= deadline) return reject(new Error("legacy page did not migrate onto the current chrome")); setTimeout(check, 25); }; check(); })',
           ],
           chromeEnv,
           10_000,
