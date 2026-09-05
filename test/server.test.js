@@ -1830,6 +1830,45 @@ test("loopback server rejects forged non-loopback Host headers (DNS rebinding)",
 // Regression: /api/:key/prompts had no same-origin guard, so any client that
 // learned the (path-derived, non-secret) session key could inject prompts the
 // agent then received as the reviewer's own instructions.
+test("POST /api/:key/prompts rejects malformed bodies with 400", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+
+    const invalidJson = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: "{",
+    });
+    assert.equal(invalidJson.status, 400);
+    assert.deepEqual(await invalidJson.json(), { error: "invalid request body" });
+
+    const invalidShape = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify([]),
+    });
+    assert.equal(invalidShape.status, 400);
+    assert.deepEqual(await invalidShape.json(), { error: "invalid prompt payload" });
+
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+      res.json(),
+    );
+    assert.equal(poll.status, "waiting");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/:key/prompts rejects non-same-origin callers and queues nothing", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

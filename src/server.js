@@ -147,6 +147,10 @@ export function isAttachmentUploadApiPath(pathname) {
   return /^\/api\/[0-9a-f]{16}\/attachments$/.test(String(pathname || ""));
 }
 
+function isValidPromptPayload(body) {
+  return Boolean(body && typeof body === "object" && !Array.isArray(body));
+}
+
 // Read the raw upload body, buffering at most `maxBytes` but always draining the
 // stream to its end. If the body exceeds the cap it resolves `{ tooLarge: true }`
 // (bytes discarded) rather than aborting mid-stream, so the caller can send a clean
@@ -771,6 +775,10 @@ export async function serve({
     try {
       if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin prompt submission rejected" });
+        return;
+      }
+      if (!isValidPromptPayload(req.body)) {
+        res.status(400).json({ error: "invalid prompt payload" });
         return;
       }
       const shouldEndSession = Boolean(req.body?.endSession || req.body?.end_session);
@@ -1546,6 +1554,10 @@ export async function serve({
     // Body-parser errors carry a meaningful HTTP status (413 payload-too-large,
     // 400 malformed JSON); surface it instead of flattening everything to 500.
     const status = Number(error?.statusCode || error?.status) || 500;
+    if (status >= 400 && status < 500) {
+      res.status(status).json({ error: "invalid request body" });
+      return;
+    }
     res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
   });
 
