@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.65](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.64...lavish-axi-v0.1.65) (2026-09-05)
+
+
+### Bug Fixes
+
+* keep multiple review boards responsive ([#324](https://github.com/kunchenguid/lavish-axi/issues/324)) ([27be6be](https://github.com/kunchenguid/lavish-axi/commit/27be6bee7368fe08072c1448a4541d20d6ec2a6b))
+
 ## [0.1.64](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.63...lavish-axi-v0.1.64) (2026-09-03)
 
 
