@@ -624,15 +624,6 @@ function setHandoffSuperseded(visible) {
 // the shutdown names its reason and each one gets its own line - a page told "Lavish was updated"
 // after a deliberate stop is being told something false. An unnamed reason (SIGTERM, or any
 // caller that names none) claims neither.
-// Both shutdown events carry the reason the same way, so both render from one rule.
-function shutdownEventReason(event) {
-  try {
-    return String(JSON.parse(event?.data || "{}").reason || "");
-  } catch {
-    return "";
-  }
-}
-
 function chromeOutdatedCopy(reason) {
   if (reason === "upgrade") return "Lavish was updated. This page is running the previous version.";
   if (reason === "local-build") {
@@ -3343,77 +3334,48 @@ frame.addEventListener("load", () => {
 
 initializeLayoutGate();
 
-// WebSockets use Chromium's separate socket pool, so each review tab keeps live reload and agent
-// updates without reserving one of the six normal HTTP/1.1 connections needed by artifact loads,
-// prompt POSTs, and navigation. Keep the EventSource-shaped listener interface local so the event
-// consumers below retain their existing semantics while this transport reconnects after restarts.
-function createLiveEventSocket(sessionKey) {
-  const listeners = new Map();
-  let reconnectDelayMs = 500;
-  let reconnectTimer;
-
-  function dispatch(type, data = {}) {
-    const event = { data: JSON.stringify(data) };
-    let result;
-    for (const listener of listeners.get(type) || []) result = listener(event);
-    return result;
-  }
-
-  function connect() {
-    clearTimeout(reconnectTimer);
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(sessionKey));
-    socket.addEventListener("open", () => {
-      reconnectDelayMs = 500;
-      dispatch("open");
-    });
-    socket.addEventListener("message", (message) => {
-      try {
-        const parsed = JSON.parse(String(message.data || ""));
-        if (!parsed || typeof parsed.type !== "string" || !parsed.type) return;
-        return dispatch(parsed.type, parsed.data && typeof parsed.data === "object" ? parsed.data : {});
-      } catch {
-        // A malformed server frame is not an event. Leave the connection up so a later valid
-        // event or the normal close/reconnect path can recover without taking the review offline.
-      }
-    });
-    socket.addEventListener("close", () => {
-      reconnectTimer = setTimeout(connect, reconnectDelayMs);
-      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5000);
-    });
-  }
-
-  connect();
-  return {
-    addEventListener(type, listener) {
-      const registered = listeners.get(type) || [];
-      registered.push(listener);
-      listeners.set(type, registered);
-    },
-  };
+// WebSockets leave the browser's HTTP connection pool free for sends and artifact loads.
+const events = new Map();
+let eventReconnectDelayMs = 500;
+function connectLiveEvents() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
+  socket.addEventListener("open", () => {
+    eventReconnectDelayMs = 500;
+    refreshLayoutWarnings();
+  });
+  socket.addEventListener("message", (message) => {
+    try {
+      const { type, data } = JSON.parse(message.data);
+      return events.get(type)?.(data || {});
+    } catch {
+      // Ignore malformed frames; a later event or reconnect can recover the stream.
+    }
+  });
+  socket.addEventListener("close", () => {
+    setTimeout(connectLiveEvents, eventReconnectDelayMs);
+    eventReconnectDelayMs = Math.min(eventReconnectDelayMs * 2, 5000);
+  });
 }
 
-const events = createLiveEventSocket(key);
-events.addEventListener("reload", () => {
+events.set("reload", () => {
   resetFrame().then((reloaded) => {
     if (reloaded) refreshWhiteboardSource();
   });
 });
-events.addEventListener("chrome-reload", (event) => reloadAfterServerRestart(shutdownEventReason(event)));
+events.set("chrome-reload", (data) => reloadAfterServerRestart(String(data.reason || "")));
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
-events.addEventListener("chrome-outdated", (event) => setChromeOutdated(true, shutdownEventReason(event)));
-events.addEventListener("agent-reply", (event) => {
-  const text = JSON.parse(event.data).text;
+events.set("chrome-outdated", (data) => setChromeOutdated(true, String(data.reason || "")));
+events.set("agent-reply", ({ text }) => {
   addChat("agent", text);
   noteAgentReply(text);
 });
-events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
-events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
-events.addEventListener("layout-warnings", (event) => setLayoutWarnings(JSON.parse(event.data).warnings || []));
-events.addEventListener("ended", () => markSessionEnded());
-// A reconnecting stream means this chrome may have missed updates while it was away.
-events.addEventListener("open", () => refreshLayoutWarnings());
+events.set("chat-sync", (data) => syncChat(data.chat || []));
+events.set("agent-presence", (data) => setAgentPresence(data.state));
+events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
+events.set("ended", () => markSessionEnded());
+connectLiveEvents();
 
 applySheetState();
 render();

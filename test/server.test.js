@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { on, once } from "node:events";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect } from "node:net";
@@ -3354,32 +3355,9 @@ test("event WebSocket preserves initial state and named live-event semantics", a
       body: JSON.stringify({ file: artifact }),
     }).then((response) => response.json());
     const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/${opened.key}`, { origin: base });
-    const messages = [];
-    const waiters = [];
-    socket.on("message", (raw) => {
-      const message = JSON.parse(String(raw));
-      messages.push(message);
-      const waiter = waiters.shift();
-      if (waiter) waiter(message);
-    });
-    const nextMessage = () =>
-      new Promise((resolve) => {
-        if (messages.length > nextMessage.index) {
-          resolve(messages[nextMessage.index]);
-          nextMessage.index += 1;
-          return;
-        }
-        waiters.push((message) => {
-          nextMessage.index = messages.length;
-          resolve(message);
-        });
-      });
-    nextMessage.index = 0;
-
-    await new Promise((resolve, reject) => {
-      socket.once("open", resolve);
-      socket.once("error", reject);
-    });
+    const messages = on(socket, "message");
+    const nextMessage = async () => JSON.parse(String((await messages.next()).value[0]));
+    await once(socket, "open");
     assert.deepEqual(await nextMessage(), { type: "chat-sync", data: { chat: [] } });
     assert.deepEqual(await nextMessage(), { type: "agent-presence", data: { state: "waiting" } });
 
@@ -3390,6 +3368,7 @@ test("event WebSocket preserves initial state and named live-event semantics", a
     });
     assert.equal(reply.status, 200);
     assert.deepEqual(await nextMessage(), { type: "agent-reply", data: { text: "live reply" } });
+    await messages.return();
     socket.close();
   } finally {
     await server.close();
@@ -3401,11 +3380,16 @@ test("event WebSocket rejects foreign and missing browser origins", async () => 
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
   try {
-    for (const origin of ["http://attacker.example", undefined]) {
+    const base = `http://127.0.0.1:${server.port}`;
+    for (const headers of [
+      { origin: "http://attacker.example" },
+      {},
+      { referer: base },
+      { origin: base, host: "attacker.example" },
+      { origin: base, "x-forwarded-host": "attacker.example" },
+    ]) {
       const status = await new Promise((resolve, reject) => {
-        const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/0123456789abcdef`, {
-          ...(origin ? { origin } : {}),
-        });
+        const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/0123456789abcdef`, { headers });
         socket.once("unexpected-response", (_request, response) => resolve(response.statusCode));
         socket.once("open", () => reject(new Error("untrusted WebSocket origin was accepted")));
         socket.once("error", () => {});
@@ -4107,94 +4091,59 @@ test("POST /shutdown stops the listener so the client can spawn a fresh server",
   }
 });
 
-test("shutdown terminates an event WebSocket that ignores the close handshake", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
-  const socket = netConnect(server.port, "127.0.0.1");
-  try {
-    await new Promise((resolve, reject) => {
-      socket.once("connect", resolve);
-      socket.once("error", reject);
-    });
-    socket.write(
-      [
-        "GET /events/0123456789abcdef HTTP/1.1",
-        `Host: 127.0.0.1:${server.port}`,
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==",
-        "Sec-WebSocket-Version: 13",
-        `Origin: http://127.0.0.1:${server.port}`,
-        "",
-        "",
-      ].join("\r\n"),
-    );
-    const response = await new Promise((resolve, reject) => {
-      let received = "";
-      const onData = (chunk) => {
-        received += chunk.toString("latin1");
-        if (!received.includes("\r\n\r\n")) return;
-        socket.off("data", onData);
-        resolve(received);
-      };
-      socket.on("data", onData);
-      socket.once("error", reject);
-    });
-    assert.match(response, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
+for (const initializeFailure of [false, true]) {
+  test(
+    `${initializeFailure ? "initialization failure" : "shutdown"} terminates an event WebSocket that ignores the close handshake`,
+    { timeout: 5000 },
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+      const stateFile = path.join(dir, "state.json");
+      if (initializeFailure) await writeFile(stateFile, "invalid json");
+      const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+      const socket = netConnect(server.port, "127.0.0.1");
+      try {
+        await once(socket, "connect");
+        socket.write(
+          [
+            "GET /events/0123456789abcdef HTTP/1.1",
+            `Host: 127.0.0.1:${server.port}`,
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==",
+            "Sec-WebSocket-Version: 13",
+            `Origin: http://127.0.0.1:${server.port}`,
+            "",
+            "",
+          ].join("\r\n"),
+        );
+        const response = await new Promise((resolve, reject) => {
+          let received = "";
+          const onData = (chunk) => {
+            received += chunk.toString("latin1");
+            if (!received.includes("\r\n\r\n")) return;
+            socket.off("data", onData);
+            resolve(received);
+          };
+          socket.on("data", onData);
+          socket.once("error", reject);
+        });
+        assert.match(response, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
 
-    const closing = server.close();
-    await expectDoneWithin(server, 1000);
-    await closing;
-  } finally {
-    socket.destroy();
-    await server.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("initialization failure terminates an event WebSocket that ignores the close handshake", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const stateFile = path.join(dir, "state.json");
-  await writeFile(stateFile, "invalid json");
-  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
-  const socket = netConnect(server.port, "127.0.0.1");
-  try {
-    await new Promise((resolve, reject) => {
-      socket.once("connect", resolve);
-      socket.once("error", reject);
-    });
-    socket.write(
-      [
-        "GET /events/0123456789abcdef HTTP/1.1",
-        `Host: 127.0.0.1:${server.port}`,
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==",
-        "Sec-WebSocket-Version: 13",
-        `Origin: http://127.0.0.1:${server.port}`,
-        "",
-        "",
-      ].join("\r\n"),
-    );
-    const response = await new Promise((resolve, reject) => {
-      let received = "";
-      const onData = (chunk) => {
-        received += chunk.toString("latin1");
-        if (!received.includes("\r\n\r\n")) return;
-        socket.off("data", onData);
-        resolve(received);
-      };
-      socket.on("data", onData);
-      socket.once("error", reject);
-    });
-    assert.match(response, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
-    await expectSocketClosedWithin(socket, 1000);
-  } finally {
-    socket.destroy();
-    await server.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
+        if (initializeFailure) {
+          await once(socket, "close", { signal: AbortSignal.timeout(1000) });
+        } else {
+          const closing = server.close();
+          await expectDoneWithin(server, 1000);
+          await closing;
+        }
+      } finally {
+        socket.destroy();
+        await server.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+}
 
 // Collects a chrome's SSE stream until the server ends it, which is what a shutdown does.
 async function collectEventStream(base, key) {
@@ -4355,19 +4304,6 @@ async function expectDoneWithin(server, ms) {
   });
   try {
     await Promise.race([server.done, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function expectSocketClosedWithin(socket, ms) {
-  if (socket.destroyed) return;
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`socket did not close within ${ms}ms`)), ms);
-  });
-  try {
-    await Promise.race([new Promise((resolve) => socket.once("close", resolve)), timeout]);
   } finally {
     clearTimeout(timer);
   }

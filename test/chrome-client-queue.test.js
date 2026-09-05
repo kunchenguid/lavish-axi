@@ -50,7 +50,6 @@ async function createChromeHarness({
   const postedToFrame = [];
   const postedToWhiteboard = [];
   const inlineWhiteboards = [];
-  const eventSources = [];
   const webSockets = [];
   const windowListeners = new Map();
   const documentListeners = new Map();
@@ -296,17 +295,6 @@ async function createChromeHarness({
       },
       revokeObjectURL() {},
     },
-    EventSource: class FakeEventSource {
-      constructor(url) {
-        this.url = url;
-        this.listeners = new Map();
-        eventSources.push(this);
-      }
-
-      addEventListener(type, handler) {
-        this.listeners.set(type, handler);
-      }
-    },
     WebSocket: class FakeWebSocket {
       static OPEN = 1;
 
@@ -438,8 +426,8 @@ async function createChromeHarness({
       return { source, posted };
     },
     eventSource() {
-      assert.equal(eventSources.length + webSockets.length, 1);
-      return webSockets[0] || eventSources[0];
+      assert.equal(webSockets.length, 1);
+      return webSockets[0];
     },
     webSocket() {
       assert.equal(webSockets.length, 1);
@@ -573,32 +561,43 @@ test("chrome reconnects its live WebSocket and syncs missed chat", async () => {
   assert.match(chrome.element("chatLog").lastAppendedChild.innerHTML, /Missed while disconnected/);
 });
 
-test("a queued send that receives no acknowledgement becomes visibly recoverable", async () => {
-  const chrome = await createChromeHarness();
-  chrome.element("chatInput").value = "Do not lose this";
+for (const stalledPost of [false, true]) {
+  test(`a queued send stalled at ${stalledPost ? "POST" : "snapshot"} becomes visibly recoverable`, async () => {
+    const chrome = await createChromeHarness({
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/prompts")) return new Promise(() => {});
+        return { ok: true, json: async () => ({}) };
+      },
+    });
+    chrome.element("chatInput").value = "Do not lose this";
 
-  chrome.element("send").click();
+    chrome.element("send").click();
 
-  assert.equal(chrome.element("chatInput").value, "");
-  assert.match(chrome.element("annotationPills").innerHTML, /Do not lose this/);
-  assert.deepEqual(
-    chrome.queued().map((prompt) => prompt.prompt),
-    ["Do not lose this"],
-  );
+    assert.equal(chrome.element("chatInput").value, "");
+    assert.match(chrome.element("annotationPills").innerHTML, /Do not lose this/);
+    assert.deepEqual(
+      chrome.queued().map((prompt) => prompt.prompt),
+      ["Do not lose this"],
+    );
 
-  chrome.runTimers(10_000);
+    if (stalledPost) {
+      chrome.sendFrameMessage({ type: "lavish:snapshot", snapshot: "uid=1 body" });
+      await flushPromises();
+    }
+    chrome.runTimers(10_000);
 
-  assert.equal(chrome.element("sendHint").hidden, false);
-  assert.match(chrome.element("sendHint").textContent, /saved in this tab/i);
-  assert.match(chrome.element("sendHint").textContent, /check that the server is running/i);
-  assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
-  chrome.runTimers(2600);
-  assert.equal(chrome.element("sendHint").hidden, false, "the actionable failure remains until the next action");
-  assert.deepEqual(
-    chrome.queued().map((prompt) => prompt.prompt),
-    ["Do not lose this"],
-  );
-});
+    assert.equal(chrome.element("sendHint").hidden, false);
+    assert.match(chrome.element("sendHint").textContent, /saved in this tab/i);
+    assert.match(chrome.element("sendHint").textContent, /check that the server is running/i);
+    assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
+    chrome.runTimers(2600);
+    assert.equal(chrome.element("sendHint").hidden, false, "the actionable failure remains until the next action");
+    assert.deepEqual(
+      chrome.queued().map((prompt) => prompt.prompt),
+      ["Do not lose this"],
+    );
+  });
+}
 
 test("a rejected prompt POST keeps the queue and surfaces the retry action", async () => {
   const chrome = await createChromeHarness({

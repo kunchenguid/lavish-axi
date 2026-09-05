@@ -1591,34 +1591,15 @@ export async function serve({
       return;
     }
 
-    const host = Array.isArray(req.headers.host) ? req.headers.host.join(",") : req.headers.host;
-    const forwardedHost = Array.isArray(req.headers["x-forwarded-host"])
-      ? req.headers["x-forwarded-host"].join(",")
-      : req.headers["x-forwarded-host"];
-    const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
-    const forwardedProto = Array.isArray(req.headers["x-forwarded-proto"])
-      ? req.headers["x-forwarded-proto"].join(",")
-      : req.headers["x-forwarded-proto"];
     const hostAllowed = allowAnyHostname
-      ? parseHostAuthority(host) !== null
-      : isAllowedRequestHost({ host, forwardedHost }, allowedHostnames);
-    const sameOrigin = isSameOriginHeaders(
-      {
-        host,
-        forwardedHost,
-        forwardedProto,
-        origin,
-        referer: undefined,
-        // Lavish itself creates a plain HTTP server. A TLS reverse proxy supplies its public
-        // protocol through X-Forwarded-Proto together with X-Forwarded-Host above.
-        protocol: "http",
-      },
-      allowedHostnames,
-      allowAnyHostname,
-    );
+      ? parseHostAuthority(req.headers.host) !== null
+      : isAllowedRequestHost(
+          { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] },
+          allowedHostnames,
+        );
     // WebSocket reads are not protected by CORS. Require the chrome page's exact Origin as well
     // as the normal Host allowlist so a foreign site cannot read a known session's live events.
-    if (!hostAllowed || !sameOrigin) {
+    if (!hostAllowed || !req.headers.origin || !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
       rejectEventUpgrade(socket, 403, "Forbidden");
       return;
     }
@@ -2046,29 +2027,30 @@ function hasPresentOriginOrReferer(req) {
   return Boolean(req.get("origin") || req.get("referer"));
 }
 
-function isSameOriginHeaders(
-  { host: hostHeader, protocol: requestProtocol, origin, referer, forwardedHost, forwardedProto },
-  allowedHostnames,
-  allowAnyHostname = false,
-) {
-  const host = parseHostAuthority(hostHeader);
+// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
+// browser attaches an Origin/Referer that must match this server's own origin. The global
+// mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
+// middleware is lenient (absent headers pass) while per-route callers still reject header-less
+// requests.
+function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
+  const host = parseHostAuthority(req.headers.host);
   if (!host) return false;
 
-  let protocol = String(requestProtocol || "http").toLowerCase();
+  let protocol = req.protocol || "http";
   let authority = host;
-  const outermostForwardedHost = String(forwardedHost || "")
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "")
     .split(",")
     .pop()
     .trim();
-  if (outermostForwardedHost) {
-    const forwardedAuthority = parseHostAuthority(outermostForwardedHost);
+  if (forwardedHost) {
+    const forwardedAuthority = parseHostAuthority(forwardedHost);
     if (
       !forwardedAuthority ||
       (!allowAnyHostname &&
         (!allowedHostnames.has(host.hostname) || !allowedHostnames.has(forwardedAuthority.hostname)))
     )
       return false;
-    protocol = String(forwardedProto || requestProtocol)
+    protocol = String(req.headers["x-forwarded-proto"] || protocol)
       .split(",")
       .pop()
       .trim()
@@ -2078,28 +2060,12 @@ function isSameOriginHeaders(
   }
   const expectedOrigin = normalizeOrigin(`${protocol}://${authority.authority}`);
   if (!expectedOrigin) return false;
-  if (origin) return normalizeOrigin(origin) === expectedOrigin;
+  const origin = req.headers.origin;
+  if (origin) {
+    return normalizeOrigin(origin) === expectedOrigin;
+  }
+  const referer = req.headers.referer;
   return Boolean(referer) && normalizeOrigin(referer) === expectedOrigin;
-}
-
-// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
-// browser attaches an Origin/Referer that must match this server's own origin. The global
-// mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
-// middleware is lenient (absent headers pass) while per-route callers still reject header-less
-// requests.
-function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
-  return isSameOriginHeaders(
-    {
-      host: req.headers.host,
-      protocol: req.protocol,
-      origin: req.get("origin"),
-      referer: req.get("referer"),
-      forwardedHost: req.get("x-forwarded-host"),
-      forwardedProto: req.get("x-forwarded-proto"),
-    },
-    allowedHostnames,
-    allowAnyHostname,
-  );
 }
 
 function normalizeOrigin(value) {
