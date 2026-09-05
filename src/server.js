@@ -1230,7 +1230,7 @@ export async function serve({
       "cache-control": "no-cache",
       connection: "close",
     });
-    res.end(`event: chrome-reload\ndata: ${JSON.stringify({ reason: "upgrade" })}\n\n`);
+    res.end(`event: chrome-reload\ndata: ${JSON.stringify({ reason: "server-restarted" })}\n\n`);
   });
 
   app.get("/chrome-client.js", async (req, res, next) => {

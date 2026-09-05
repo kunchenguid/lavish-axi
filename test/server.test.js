@@ -4310,10 +4310,7 @@ test("the legacy event stream requests a full-chrome migration and closes", asyn
     const { key } = await open.json();
     const response = await fetch(`${base}/events/${key}`, { headers: { accept: "text/event-stream" } });
     assert.equal(response.headers.get("connection"), "close");
-    assert.equal(
-      await response.text(),
-      'event: chrome-reload\ndata: {"reason":"upgrade"}\n\n',
-    );
+    assert.equal(await response.text(), 'event: chrome-reload\ndata: {"reason":"server-restarted"}\n\n');
     await expectDoneWithin(server, 2000);
   } finally {
     await server.close();
