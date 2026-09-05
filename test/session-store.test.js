@@ -713,6 +713,37 @@ test("fatal artifact failures still reach the agent without user action", async 
   }
 });
 
+test("artifact failure details redact local file paths before agent delivery", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const load = await beginArtifactLoad(store, session.key);
+    await store.recordArtifactFailures(session.key, {
+      ...diagnosticPayload(load, 1),
+      failures: [
+        {
+          kind: "artifact-asset-unavailable",
+          detail: "<img> could not load file:///Users/kun/private/logo.png from /Users/kun/private/report.html",
+        },
+      ],
+    });
+
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(feedback.artifact_failures.length, 1);
+    assert.equal(
+      feedback.artifact_failures[0].detail,
+      "<img> could not load file://[redacted] from [local path redacted]",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("stale artifact failures and duplicate diagnostic sequences have no side effects", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
