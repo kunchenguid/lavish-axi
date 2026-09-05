@@ -31,7 +31,9 @@ async function waitForHealth(base, child, output) {
     try {
       const response = await fetch(`${base}/health`);
       if (response.ok) return;
-    } catch {}
+    } catch {
+      // The private server may still be binding. Retry until the deadline.
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`server did not become healthy\n${output.join("")}`);
@@ -298,7 +300,7 @@ test(
         encoding: "utf8",
         timeout: 15_000,
       });
-      if (stopped.error) throw stopped.error;
+      assert.ifError(stopped.error);
       await rm(temp, { recursive: true, force: true });
     }
   },
