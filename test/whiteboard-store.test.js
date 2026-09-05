@@ -128,9 +128,10 @@ test("writeWhiteboardFeedbackFiles tolerates a missing or invalid preview", asyn
   });
 });
 
-test("decodePngDataUrl only accepts base64 PNG data URLs", () => {
+test("decodePngDataUrl only accepts base64 PNG data URLs with a valid signature", () => {
   assert.ok(decodePngDataUrl(PNG_DATA_URL) instanceof Buffer);
   assert.equal(decodePngDataUrl("data:image/jpeg;base64,abcd"), null);
   assert.equal(decodePngDataUrl("not-a-data-url"), null);
+  assert.equal(decodePngDataUrl("data:image/png;base64,ZmFrZS1wbmc="), null);
   assert.equal(decodePngDataUrl(null), null);
 });

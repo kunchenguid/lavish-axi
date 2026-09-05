@@ -61,9 +61,9 @@ function splitLabelLines(text) {
 function estimateMultilineLabelBox(text, fontSize) {
   const size = Number(fontSize) || 16;
   const lines = splitLabelLines(text);
-  const width = Math.max(
+  const width = lines.reduce(
+    (max, line) => Math.max(max, Math.ceil(Math.max(String(line).length, 1) * size * LABEL_CHAR_WIDTH_RATIO)),
     20,
-    ...lines.map((line) => Math.ceil(Math.max(String(line).length, 1) * size * LABEL_CHAR_WIDTH_RATIO)),
   );
   const height = Math.max(1, lines.length) * size * LABEL_LINE_HEIGHT;
   return { width, height, lineCount: lines.length };

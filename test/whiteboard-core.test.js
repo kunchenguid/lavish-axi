@@ -479,8 +479,8 @@ test("restoreMermaidLabelLineBreaks rewrites materialized text elements and size
   const measure = (element) => {
     const lines = String(element.text || "").split("\n");
     return {
-      width: Math.max(...lines.map((line) => line.length * 10)),
-      height: lines.length * (Number(element.fontSize) || 16) * (Number(element.lineHeight) || 1.25),
+      width: lines.reduce((max, line) => Math.max(max, line.length * 10), 0),
+      height: Math.max(1, lines.length) * (Number(element.fontSize) || 16) * (Number(element.lineHeight) || 1.25),
     };
   };
   const [container, text] = restoreMermaidLabelLineBreaks([box, label], { measure });
@@ -511,8 +511,8 @@ test("restoreMermaidLabelLineBreaks recenters bound text when container growth s
   const measure = (element) => {
     const lines = String(element.text || "").split("\n");
     return {
-      width: Math.max(...lines.map((line) => line.length * 10)),
-      height: lines.length * (Number(element.fontSize) || 16) * (Number(element.lineHeight) || 1.25),
+      width: lines.reduce((max, line) => Math.max(max, line.length * 10), 0),
+      height: Math.max(1, lines.length) * (Number(element.fontSize) || 16) * (Number(element.lineHeight) || 1.25),
     };
   };
   const [container, text] = restoreMermaidLabelLineBreaks([box, label], { measure });
@@ -520,6 +520,32 @@ test("restoreMermaidLabelLineBreaks recenters bound text when container growth s
   assert.ok(container.y < box.y, "expandBoxToFit grows from the center, moving the container origin");
   assert.equal(text.x, container.x + (container.width - text.width) / 2);
   assert.equal(text.y, container.y + (container.height - text.height) / 2);
+});
+
+test("restoreMermaidLabelLineBreaks handles empty multiline labels without spreading an empty array", () => {
+  const box = rect("A", { x: 10, y: 20, width: 20, height: 20 });
+  const label = {
+    id: "t1",
+    type: "text",
+    containerId: "A",
+    x: 10,
+    y: 20,
+    width: 0,
+    height: 0,
+    fontSize: 16,
+    lineHeight: 1.25,
+    text: "<br>",
+    originalText: "<br>",
+  };
+  const measure = (element) => {
+    const lines = String(element.text || "").split("\n");
+    return {
+      width: lines.reduce((max, line) => Math.max(max, line.length * 10), 0),
+      height: Math.max(1, lines.length) * (Number(element.fontSize) || 16) * (Number(element.lineHeight) || 1.25),
+    };
+  };
+
+  assert.doesNotThrow(() => restoreMermaidLabelLineBreaks([box, label], { measure }));
 });
 
 test("restoreMermaidLabelLineBreaks leaves labelled-arrow geometry and path-midpoint labels alone", () => {
