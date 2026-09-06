@@ -42,6 +42,8 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  audioContext = null,
+  focused = true,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -328,6 +330,9 @@ async function createChromeHarness({
       get activeElement() {
         return activeElement;
       },
+      hasFocus() {
+        return focused;
+      },
       getElementById(id) {
         // Answer only for ids the served page declares, so an id the client and the page disagree
         // on fails here the way it would go dead in a browser.
@@ -359,6 +364,7 @@ async function createChromeHarness({
       },
     },
     window: {
+      AudioContext: audioContext,
       clearTimeout: fakeClearTimeout,
       setTimeout: fakeSetTimeout,
       addEventListener(type, handler) {
@@ -511,6 +517,9 @@ async function createChromeHarness({
     artifactBeginRequests,
     artifactLoadToken: frameLoadToken,
     mediaQueries,
+    setFocused(value) {
+      focused = value;
+    },
     setMobile(matches) {
       for (const list of mediaQueries) {
         list.matches = matches;
@@ -5407,6 +5416,159 @@ test("phone chrome restores an open sheet across a chrome reload", async () => {
   assert.equal(state.open, true);
   assert.equal(state.scrollInert, false);
   assert.equal(state.expanded, "true");
+});
+
+test("an agent reply chimes only after interaction while its window is unfocused and resumes suspended audio", async () => {
+  const calls = [];
+  /** @type {{ state: string } | null} */
+  let context = null;
+  let deferResume = false;
+  /** @type {(() => void) | null} */
+  let finishResume = null;
+  class FakeAudioContext {
+    constructor() {
+      this.currentTime = 10;
+      this.destination = {};
+      this.state = "running";
+      context = this;
+      calls.push("context");
+    }
+
+    resume() {
+      calls.push("resume");
+      if (!deferResume) {
+        this.state = "running";
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        finishResume = () => {
+          this.state = "running";
+          resolve();
+        };
+      });
+    }
+
+    createOscillator() {
+      const oscillator = {
+        frequency: {
+          setValueAtTime(frequency) {
+            calls.push(["frequency", frequency]);
+          },
+        },
+        connect() {
+          calls.push("oscillator-connect");
+        },
+        start() {
+          calls.push("start");
+        },
+        stop() {
+          calls.push("stop");
+        },
+      };
+      return oscillator;
+    }
+
+    createGain() {
+      return {
+        gain: {
+          setValueAtTime() {
+            calls.push("gain-start");
+          },
+          exponentialRampToValueAtTime() {
+            calls.push("gain-ramp");
+          },
+        },
+        connect() {
+          calls.push("gain-connect");
+        },
+      };
+    }
+  }
+
+  const chrome = await createChromeHarness({ audioContext: FakeAudioContext });
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Before interaction" }) });
+  assert.deepEqual(calls, [], "the browser must not initialize audio outside a user gesture");
+
+  chrome.dispatchDocumentEvent("pointerdown");
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Visible reply" }) });
+  assert.equal(calls.filter((call) => call === "start").length, 0, "focused windows stay quiet");
+
+  assert.ok(context, "the user gesture creates an audio context");
+  context.state = "suspended";
+  deferResume = true;
+  chrome.dispatchDocumentKeydown({ key: "a" });
+  assert.equal(calls.filter((call) => call === "resume").length, 2, "a later gesture resumes suspended audio");
+
+  chrome.setFocused(false);
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Ready for review" }) });
+  assert.equal(calls.filter((call) => call === "start").length, 0, "the pending resume delays the chime");
+
+  assert.ok(finishResume, "the suspended context has a pending resume");
+  finishResume();
+  await flushPromises();
+
+  assert.deepEqual(
+    calls.filter((call) => Array.isArray(call) && call[0] === "frequency"),
+    [
+      ["frequency", 659.25],
+      ["frequency", 880],
+    ],
+  );
+  assert.equal(calls.filter((call) => call === "start").length, 2);
+  assert.equal(calls.filter((call) => call === "stop").length, 2);
+});
+
+test("an agent reply retries resume() when audio auto-suspends with no further gesture", async () => {
+  // Distinct from the previous test: here the browser auto-suspends the context (as it may while
+  // backgrounded) with NO new gesture at all before the reply arrives, so the earlier gesture's
+  // resume promise is already resolved and chaining off it alone would never re-check state.
+  const calls = [];
+  /** @type {{ state: string } | null} */
+  let context = null;
+  class FakeAudioContext {
+    constructor() {
+      this.currentTime = 10;
+      this.destination = {};
+      this.state = "running";
+      context = this;
+    }
+
+    resume() {
+      calls.push("resume");
+      this.state = "running";
+      return Promise.resolve();
+    }
+
+    createOscillator() {
+      return {
+        frequency: { setValueAtTime() {} },
+        connect() {},
+        start() {
+          calls.push("start");
+        },
+        stop() {},
+      };
+    }
+
+    createGain() {
+      return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} };
+    }
+  }
+
+  const chrome = await createChromeHarness({ audioContext: FakeAudioContext });
+  chrome.dispatchDocumentEvent("pointerdown");
+  await flushPromises();
+  assert.ok(context, "the gesture creates and resumes an audio context");
+  calls.length = 0;
+
+  // The browser silently auto-suspends the idle, backgrounded context - no gesture fires.
+  context.state = "suspended";
+  chrome.setFocused(false);
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Still here?" }) });
+  await flushPromises();
+
+  assert.ok(calls.includes("resume"), "playing a chime must retry resume() itself, not just await a stale promise");
+  assert.equal(calls.filter((call) => call === "start").length, 2, "the chime still plays once resume completes");
 });
 
 test("the dock summarizes what the user should know while the sheet is down", async () => {

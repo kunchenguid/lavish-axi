@@ -41,6 +41,83 @@ const CHAT_ATTACHMENT_LABELS = (() => {
   return labels.slice(0, -1).join(", ") + (labels.length > 2 ? ", or " : " or ") + labels[labels.length - 1];
 })();
 
+// An agent reply is worth noticing only after the person has left this exact browser window.
+// This is deliberately a short, paired rising chime rather than a terminal bell, so it remains
+// recognizable next to Pi or WezTerm's completion sound. Audio is only initialized or resumed
+// from a user gesture to honor browser autoplay rules; unsupported or muted browsers simply keep
+// the visual reply notification.
+const AGENT_REPLY_TONE = Object.freeze([
+  { frequency: 659.25, start: 0, duration: 0.09 },
+  { frequency: 880, start: 0.12, duration: 0.14 },
+]);
+let replyAudioContext = null;
+let replyAudioResume = null;
+
+function resumeAgentReplyTone() {
+  try {
+    const resumed = replyAudioContext?.resume?.();
+    if (resumed && typeof resumed.then === "function") {
+      replyAudioResume = Promise.resolve(resumed);
+      replyAudioResume.catch(() => {});
+    }
+  } catch {
+    // Audio is an enhancement. A browser may still reject a gesture it does not trust.
+  }
+}
+
+function prepareAgentReplyTone() {
+  if (replyAudioContext) {
+    if (replyAudioContext.state === "suspended") resumeAgentReplyTone();
+    return;
+  }
+  const AudioContext = window.AudioContext || /** @type {any} */ (window).webkitAudioContext;
+  if (typeof AudioContext !== "function") return;
+  try {
+    replyAudioContext = new AudioContext();
+    resumeAgentReplyTone();
+  } catch {
+    // Audio is an enhancement. A browser may still reject a gesture it does not trust.
+  }
+}
+
+function playAgentReplyTone() {
+  const context = replyAudioContext;
+  if (!context || document.hasFocus()) return;
+  if (context.state === "suspended") {
+    // A prior gesture may have already resumed the context while the browser still reports it as
+    // suspended, or the browser may have auto-suspended an idle context since that gesture. Once a
+    // context has been unlocked by a real gesture, browsers permit resuming it again without a new
+    // one, so retry resume() here too rather than only awaiting the earlier gesture's promise.
+    resumeAgentReplyTone();
+    replyAudioResume
+      ?.then(() => {
+        if (replyAudioContext === context && context.state !== "suspended" && !document.hasFocus()) {
+          playAgentReplyTone();
+        }
+      })
+      .catch(() => {});
+    return;
+  }
+  try {
+    const now = context.currentTime;
+    for (const tone of AGENT_REPLY_TONE) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(tone.frequency, now + tone.start);
+      gain.gain.setValueAtTime(0.0001, now + tone.start);
+      gain.gain.exponentialRampToValueAtTime(0.13, now + tone.start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + tone.start + tone.duration);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(now + tone.start);
+      oscillator.stop(now + tone.start + tone.duration);
+    }
+  } catch {
+    // A closed context or an audio-device failure must never break the review loop.
+  }
+}
+
 // The chrome is the only path from the sandboxed (opaque-origin) artifact iframe to
 // the loopback server, so it is the sole place a same-origin confused-deputy can be
 // mediated: the frame's postMessage source check proves a message came from the
@@ -3311,6 +3388,8 @@ document.addEventListener("keydown", (event) => {
 });
 // Capture phase so the mode hotkey fires no matter where focus is in the chrome - including
 // mid-keystroke in chatInput or an annotation-card textarea - without disturbing normal typing.
+document.addEventListener("pointerdown", prepareAgentReplyTone, { capture: true, passive: true });
+document.addEventListener("keydown", prepareAgentReplyTone, { capture: true });
 document.addEventListener(
   "keydown",
   (event) => {
@@ -3370,6 +3449,7 @@ events.set("chrome-outdated", (data) => setChromeOutdated(true, String(data.reas
 events.set("agent-reply", ({ text }) => {
   addChat("agent", text);
   noteAgentReply(text);
+  playAgentReplyTone();
 });
 events.set("chat-sync", (data) => syncChat(data.chat || []));
 events.set("agent-presence", (data) => setAgentPresence(data.state));
