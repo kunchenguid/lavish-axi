@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.66](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.65...lavish-axi-v0.1.66) (2026-09-06)
+
+
+### Features
+
+* add tracked batch input guidance ([#327](https://github.com/kunchenguid/lavish-axi/issues/327)) ([38747bf](https://github.com/kunchenguid/lavish-axi/commit/38747bfc0f554b3088990a053ab36968e2c8619a))
+
 ## [0.1.65](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.64...lavish-axi-v0.1.65) (2026-09-05)
 
 
