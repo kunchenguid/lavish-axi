@@ -66,7 +66,7 @@ import {
   sanitizeListenHosts,
 } from "./paths.js";
 import { detectTailscale } from "./tailscale.js";
-import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
+import { canonicalFile, filterVisibleSessions, SessionStore, sessionKey } from "./session-store.js";
 import { generateSharePassword } from "./share-password.js";
 import {
   ACCEPTED_IMAGE_MIME,
@@ -572,8 +572,16 @@ export async function serve({
     return defaultJsonParser(req, res, next);
   });
 
-  app.get("/", (_req, res) => {
-    res.type("html").send(createLandingHtml());
+  app.get("/", async (_req, res) => {
+    let sessions = [];
+    try {
+      sessions = filterVisibleSessions(await store.listSessions());
+    } catch {
+      // Fail open: the root route is a plain, unauthenticated surface that must
+      // never 500 or hang because state.json had a bad read - worst case it falls
+      // back to today's placeholder, same as if no sessions were open.
+    }
+    res.type("html").send(createLandingHtml(sessions));
   });
 
   app.get("/health", async (req, res) => {
@@ -1862,8 +1870,38 @@ function wantsHtml(req) {
   return accept.toLowerCase().includes("text/html");
 }
 
-function createLandingHtml() {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lavish Editor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ef;color:#25221f;font:16px/1.5 system-ui,sans-serif}.card{width:min(560px,calc(100% - 40px));padding:32px;border:1px solid #d9d0c5;border-radius:16px;background:#fffdf9;box-shadow:0 12px 40px #25221f18}h1{margin:0 0 12px;font-size:26px}p{margin:0}</style></head><body><main class="card"><h1>Lavish Editor is running</h1><p>Open the review session URL printed by your agent.</p></main></body></html>`;
+// The landing/denied pages are their own self-contained light shell - a single
+// inline <style> string, no link to chrome.css (an entirely separate dark
+// ink/steel/brass system used only by /session/:key). Keeping them dependency-free
+// is deliberate: these two pages are the only routes that render before a reviewer
+// has any session open, so they must never depend on session-scoped assets.
+function createLandingHtml(sessions = []) {
+  const body = sessions.length
+    ? `<p class="sub">${sessions.length} active session${sessions.length === 1 ? "" : "s"} on this device:</p>` +
+      `<ul class="sessions">${sessions.map(createSessionRow).join("")}</ul>`
+    : `<p>Open the review session URL printed by your agent.</p>`;
+  // A newer artifact revision or a session ending elsewhere never reaches this
+  // static page on its own, so a populated list refreshes itself periodically to
+  // stay current. The empty placeholder never carries the tag: there is nothing
+  // there to go stale, and reloading it would disrupt someone leaving the tab open.
+  const refreshTag = sessions.length ? `<meta http-equiv="refresh" content="15">` : "";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${refreshTag}<title>Lavish Editor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ef;color:#25221f;font:16px/1.5 system-ui,sans-serif}.card{width:min(560px,calc(100% - 40px));padding:32px;border:1px solid #d9d0c5;border-radius:16px;background:#fffdf9;box-shadow:0 12px 40px #25221f18}h1{margin:0 0 12px;font-size:26px}p{margin:0}.sub{color:#948c7e;font-size:14px;margin:0 0 4px}.sessions{list-style:none;margin:14px 0 0;padding:0;border-top:1px solid #ece5da}.session-row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid #ece5da}.dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}.dot.open{background:#1baf7a}.dot.feedback{background:#c98a1f}.file{flex:1;min-width:0;display:flex;font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#25221f}.path-head{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto;min-width:0;color:#a99f8f}.path-tail{flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.open-link{flex:0 0 auto;color:#2a78d6;font-weight:700;text-decoration:none;font-size:14px}</style></head><body><main class="card"><h1>Lavish Editor is running</h1>${body}</main></body></html>`;
+}
+
+// The link is always built fresh from the session key, never from the session's
+// stored `url` field: that field is captured once at POST /api/sessions time
+// against whatever host was resolved then (src/server.js's /api/sessions route),
+// and can go stale relative to whichever host actually served this landing page.
+// /session/:key itself never checks Host, so a relative link resolves correctly
+// against plain 127.0.0.1 today and the tailnet root once #216 lands.
+function createSessionRow(session) {
+  const { head, tail } = displayPathParts(session.file);
+  const dotClass = session.status === "feedback" ? "feedback" : "open";
+  return (
+    `<li class="session-row"><span class="dot ${dotClass}" title="Status: ${escapeHtml(session.status)}"></span>` +
+    `<span class="file" title="${escapeHtml(session.file)}"><span class="path-head">${escapeHtml(head)}</span><span class="path-tail">${escapeHtml(tail)}</span></span>` +
+    `<a class="open-link" href="/session/${escapeHtml(session.key)}">Open &rarr;</a></li>`
+  );
 }
 
 function createDeniedHtml({ title, message, workingUrl }) {

@@ -36,7 +36,7 @@ import {
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
-import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
+import { canonicalFile, filterVisibleSessions, sessionKey, SessionStore } from "./session-store.js";
 import { generateSharePassword } from "./share-password.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
@@ -1489,7 +1489,7 @@ async function serverCommand(args) {
 
 async function visibleSessions() {
   const store = new SessionStore(stateFile());
-  return (await store.listSessions()).filter((session) => session.status !== "ended");
+  return filterVisibleSessions(await store.listSessions());
 }
 
 async function assertHtmlFile(file) {

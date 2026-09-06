@@ -692,6 +692,13 @@ export function sessionKey(file) {
   return crypto.createHash("sha256").update(file).digest("hex").slice(0, 16);
 }
 
+// Sessions a human should be shown as "live" - the CLI's own home output and the
+// server landing page both point at this so the two surfaces can never silently
+// diverge on what "open" means.
+export function filterVisibleSessions(sessions) {
+  return sessions.filter((session) => session.status !== "ended");
+}
+
 // Returns `{ prompt, malformed }`: `malformed` is non-empty when the payload's
 // `attachments` field exists but cannot be honored as written, which fails the
 // whole batch rather than being normalized away (C4, see queuePrompts).
