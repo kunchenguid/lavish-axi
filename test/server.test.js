@@ -4772,6 +4772,36 @@ test("closing the last review WebSocket releases an active poll without ending t
   }
 });
 
+test("a poll that starts after a browser disconnect receives its own full wait", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    browserDisconnectGraceMs: 120,
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const browser = await startPresenceStream(base, opened.key);
+    assert.equal(await browser.next(), "waiting");
+    await browser.close();
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=80`);
+    assert.deepEqual(await poll.json(), { status: "waiting" });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a review WebSocket reconnect within the grace period keeps the active poll waiting", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

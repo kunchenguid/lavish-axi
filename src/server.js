@@ -346,7 +346,7 @@ export async function serve({
 
   function scheduleBrowserDisconnect(key) {
     clearBrowserDisconnectTimer(key);
-    if (shuttingDown || hasLiveEventClient(key)) return;
+    if (shuttingDown || hasLiveEventClient(key) || !activePolls.has(key)) return;
     const timer = setTimeout(() => {
       browserDisconnectTimers.delete(key);
       if (!hasLiveEventClient(key) && activePolls.has(key)) events.emit("browser-disconnected", key);
