@@ -4726,6 +4726,90 @@ test("ending an active poll without final feedback leaves presence waiting", asy
   }
 });
 
+test("closing the last review WebSocket releases an active poll without ending the session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    browserDisconnectGraceMs: 20,
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const firstBrowser = await startPresenceStream(base, opened.key);
+    const lastBrowser = await startPresenceStream(base, opened.key);
+    assert.equal(await firstBrowser.next(), "waiting");
+    assert.equal(await lastBrowser.next(), "waiting");
+
+    let pollSettled = false;
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: AbortSignal.timeout(1000) })
+      .then((response) => response.json())
+      .finally(() => {
+        pollSettled = true;
+      });
+    assert.equal(await firstBrowser.next(), "listening");
+    assert.equal(await lastBrowser.next(), "listening");
+    await firstBrowser.close();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(pollSettled, false, "closing one of two review windows must not release the poll");
+    await lastBrowser.close();
+
+    assert.deepEqual(await poll, { status: "browser_disconnected" });
+    const stillOpen = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+      (response) => response.json(),
+    );
+    assert.deepEqual(stillOpen, { status: "waiting" });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a review WebSocket reconnect within the grace period keeps the active poll waiting", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    browserDisconnectGraceMs: 100,
+  });
+  let reconnected = null;
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const browser = await startPresenceStream(base, opened.key);
+    assert.equal(await browser.next(), "waiting");
+
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=180`).then((response) =>
+      response.json(),
+    );
+    assert.equal(await browser.next(), "listening");
+    await browser.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    reconnected = await startPresenceStream(base, opened.key);
+    assert.equal(await reconnected.next(), "listening");
+
+    assert.deepEqual(await poll, { status: "waiting" });
+  } finally {
+    await reconnected?.close();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("event WebSocket agent-presence reflects waiting, listening, and working transitions", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
