@@ -753,6 +753,40 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
 });
 
+test("input playbook defines an opt-in tracked batch handoff", () => {
+  const output = createPlaybookOutput(["input"]);
+  const guidance = JSON.stringify(output.playbook);
+  const example = output.playbook.lavish_notes.find((item) => /tag: ['"]tracked-batch/.test(item));
+
+  assert.match(guidance, /multi-item/);
+  assert.match(guidance, /stable, visible ID/);
+  assert.match(guidance, /selected set/);
+  assert.match(guidance, /account for every submitted ID/);
+  assert.match(guidance, /addressed/);
+  assert.match(guidance, /deferred/);
+  assert.match(guidance, /rejected/);
+  assert.match(guidance, /receipt ID set/);
+  assert.ok(example, "the tracked-batch pattern includes a copyable example");
+  assert.match(example, /<form/);
+  assert.match(example, /type="checkbox"/);
+  assert.match(example, /onsubmit=/);
+  assert.equal(example.match(/window\.lavish\.queuePrompt/g)?.length, 1);
+  assert.match(example, /items: selected/);
+  assert.match(example, /id:/);
+  assert.match(example, /label:/);
+  assert.match(example, /disposition:/);
+});
+
+test("table playbook routes multi-row actions to the input tracked-batch pattern", () => {
+  const output = createPlaybookOutput(["table"]);
+
+  assert.ok(
+    output.playbook.lavish_notes.some(
+      (item) => item.includes("multiple rows") && item.includes("input") && item.includes("tracked batch"),
+    ),
+  );
+});
+
 test("code playbook detail output requires verified @pierre/diffs rendering", () => {
   const output = createPlaybookOutput(["code"]);
 
