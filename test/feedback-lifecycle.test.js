@@ -114,7 +114,12 @@ test("public CLI rejects an equals-form feedback id without an agent reply", asy
   await assert.rejects(
     () => f.cli("--feedback-id=unfinished-batch"),
     (error) => {
-      assert.match(`${error.stdout}${error.stderr}`, /--feedback-id requires a batch id and --agent-reply/);
+      if (typeof error !== "object" || error === null) return false;
+      const stdout = "stdout" in error ? error.stdout : undefined;
+      const stderr = "stderr" in error ? error.stderr : undefined;
+      if (!(typeof stdout === "string" || Buffer.isBuffer(stdout))) return false;
+      if (!(typeof stderr === "string" || Buffer.isBuffer(stderr))) return false;
+      assert.match(`${stdout}${stderr}`, /--feedback-id requires a batch id and --agent-reply/);
       return true;
     },
   );
