@@ -2250,6 +2250,21 @@ test("spawned poll with piped stderr banners once and leaves re-run guidance whe
   }
 });
 
+test("browser-disconnected poll output asks before reopening or ending the resumable session", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: { status: "browser_disconnected" },
+  });
+
+  assert.deepEqual(output.session, { file: "/tmp/report.html", status: "browser_disconnected" });
+  assert.match(output.next_step, /review window (?:was closed|disconnected)/i);
+  assert.match(output.next_step, /ask the user/i);
+  assert.match(output.next_step, /reopen/i);
+  assert.match(output.next_step, /end the session/i);
+  assert.match(output.next_step, /remains open|resumable/i);
+  assert.doesNotMatch(output.next_step, /Run `lavish-axi \/tmp\/report\.html`/);
+});
+
 test("waiting next step reassures agents that re-running poll loses nothing", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",

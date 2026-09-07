@@ -104,6 +104,7 @@ const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
 const NETWORK_RECONCILE_CACHE_MS = 1_000;
 const TAILSCALE_BIND_RETRY_DELAYS_MS = [100, 250, 500];
 const WEBSOCKET_CLOSE_GRACE_MS = 250;
+const BROWSER_DISCONNECT_GRACE_MS = 10_000;
 // An escaped popup can navigate to an artifact-owned HTML or SVG asset on the
 // server origin. Keep every artifact response sandboxed at the response layer
 // so active documents stay opaque-origin even when they are top-level.
@@ -260,6 +261,7 @@ export async function serve({
   debug = false,
   log = null,
   pollHeartbeatMs = 15_000,
+  browserDisconnectGraceMs = BROWSER_DISCONNECT_GRACE_MS,
   idleTimeoutMs = resolveIdleTimeoutMs(),
   host = bindHost(env),
   hosts,
@@ -296,6 +298,7 @@ export async function serve({
   // being reopened and leave every other open review page on screen. Current chromes use a
   // WebSocket, while the legacy SSE route remains available during rolling local upgrades.
   const liveEventClients = new Map();
+  const browserDisconnectTimers = new Map();
   const whiteboardChannelSecret = crypto.randomBytes(32);
   // Sessions with at least one warning the user queued that has not been re-checked yet.
   const outstandingRepairBatches = new Set();
@@ -308,6 +311,7 @@ export async function serve({
   let serverReady = false;
   let networkReconcileCheckedAt = 0;
   let cachedNetworkStale = false;
+  let shuttingDown = false;
   /** @type {Promise<boolean> | null} */
   let networkReconcilePromise = null;
 
@@ -326,7 +330,33 @@ export async function serve({
   events.on("layout-warnings", (key, warnings) => broadcastLiveEvent("layout-warnings", key, { warnings }));
   events.on("ended", (key, endedBy) => broadcastLiveEvent("ended", key, { ended_by: endedBy || null }));
 
+  function hasLiveEventClient(key) {
+    for (const clientKey of liveEventClients.values()) {
+      if (clientKey === key) return true;
+    }
+    return false;
+  }
+
+  function clearBrowserDisconnectTimer(key) {
+    const timer = browserDisconnectTimers.get(key);
+    if (!timer) return;
+    clearTimeout(timer);
+    browserDisconnectTimers.delete(key);
+  }
+
+  function scheduleBrowserDisconnect(key) {
+    clearBrowserDisconnectTimer(key);
+    if (shuttingDown || hasLiveEventClient(key) || !activePolls.has(key)) return;
+    const timer = setTimeout(() => {
+      browserDisconnectTimers.delete(key);
+      if (!hasLiveEventClient(key) && activePolls.has(key)) events.emit("browser-disconnected", key);
+    }, browserDisconnectGraceMs);
+    timer.unref?.();
+    browserDisconnectTimers.set(key, timer);
+  }
+
   function attachLiveEventClient(client, key, onClose) {
+    clearBrowserDisconnectTimer(key);
     liveEventClients.set(client, key);
     refreshIdleTimer();
     let cleanedUp = false;
@@ -334,6 +364,7 @@ export async function serve({
       if (cleanedUp) return;
       cleanedUp = true;
       liveEventClients.delete(client);
+      scheduleBrowserDisconnect(key);
       refreshIdleTimer();
     };
     onClose(cleanup);
@@ -710,25 +741,30 @@ export async function serve({
         if (heartbeat) clearInterval(heartbeat);
         events.off("feedback", onFeedback);
         events.off("ended", onFeedback);
+        events.off("browser-disconnected", onBrowserDisconnected);
         setPollActive(key, activePolls, deliveredFeedback, events, false);
+        if (!activePolls.has(key)) clearBrowserDisconnectTimer(key);
         refreshIdleTimer();
         cleanupPoll = null;
         detachRequestClose();
       };
-      const respond = async () => {
+      const respond = async (forcedResult = null) => {
         if (responding || res.writableEnded) return;
         responding = true;
         try {
           const result = await store.takeFeedback(key);
+          // Feedback or an explicit end that raced the grace timer wins. The disconnect result
+          // is only the non-terminal replacement for a poll that would otherwise keep waiting.
+          const responseResult = forcedResult && result.status === "waiting" ? forcedResult : result;
           if (requestClosed || req.destroyed || res.writableEnded) {
-            await restoreClosedFeedback(key, result);
+            await restoreClosedFeedback(key, responseResult);
             return;
           }
-          finishFeedbackDelivery(key, result);
+          finishFeedbackDelivery(key, responseResult);
           if (streamHeartbeat) {
-            res.end(JSON.stringify(result));
+            res.end(JSON.stringify(responseResult));
           } else {
-            res.json(result);
+            res.json(responseResult);
           }
         } finally {
           cleanup();
@@ -748,8 +784,13 @@ export async function serve({
         }
         respond().catch(handleRespondError);
       };
+      const onBrowserDisconnected = (changedKey) => {
+        if (changedKey !== key || res.writableEnded) return;
+        respond({ status: "browser_disconnected" }).catch(handleRespondError);
+      };
       events.on("feedback", onFeedback);
       events.on("ended", onFeedback);
+      events.on("browser-disconnected", onBrowserDisconnected);
       cleanupPoll = cleanup;
       if (requestClosed || req.destroyed || res.writableEnded) {
         cleanup();
@@ -1668,7 +1709,6 @@ export async function serve({
   publicPort = httpServers[0].address().port;
   serverReady = true;
 
-  let shuttingDown = false;
   function shutdown(reloadKey = "", reason = "") {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -1700,6 +1740,8 @@ export async function serve({
       }
     }
     liveEventClients.clear();
+    for (const timer of browserDisconnectTimers.values()) clearTimeout(timer);
+    browserDisconnectTimers.clear();
     for (const w of watchers.values()) {
       w.close().catch(() => {});
     }
