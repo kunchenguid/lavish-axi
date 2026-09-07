@@ -323,7 +323,7 @@ async function pollCommand(args) {
   const absolute = await canonicalFile(file);
   const agentReply = flagValue(args, "--agent-reply");
   const feedbackId = flagValue(args, "--feedback-id");
-  if (args.includes("--feedback-id") && (!feedbackId || !agentReply?.trim())) {
+  if (feedbackId !== undefined && (!feedbackId || !agentReply?.trim())) {
     throw new AxiError("--feedback-id requires a batch id and --agent-reply", "VALIDATION_ERROR");
   }
   const baseUrl = await ensureServer();
@@ -1843,11 +1843,11 @@ function firstPositionalArg(args, valueFlags = []) {
 function flagValue(args, flag) {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (arg === "--") return null;
+    if (arg === "--") return undefined;
     if (arg === flag) return args[i + 1] || null;
     if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1) || null;
   }
-  return null;
+  return undefined;
 }
 
 function isValueFlagToken(arg, flags) {

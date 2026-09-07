@@ -606,7 +606,7 @@ function addChat(role, text, shouldScroll = true, attachments = []) {
 }
 
 function syncChat(chat) {
-  if (!Array.isArray(chat) || chat.length < confirmedChatLength) return;
+  if (!Array.isArray(chat) || chat.length <= confirmedChatLength) return;
   // HTTP acknowledgements and live snapshots can cross. The append-only server transcript
   // must not shrink when an older acknowledgement arrives after a newer live message.
   confirmedChatLength = chat.length;

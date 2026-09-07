@@ -10,6 +10,9 @@ import WebSocket from "ws";
 import { serve } from "../src/server.js";
 import { VERSION } from "../src/cli.js";
 
+const exec = promisify(execFile);
+const cliEntry = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
   "base64",
@@ -62,30 +65,26 @@ async function fixture(t) {
       });
     });
   }
-  return { base, key, file, stateFile, post, poll, send, presence };
+  const cli = (...args) =>
+    exec(process.execPath, [cliEntry, "poll", file, "--timeout-ms", "1", ...args], {
+      env: {
+        ...process.env,
+        LAVISH_AXI_PORT: new URL(base).port,
+        LAVISH_AXI_HOST: "127.0.0.1",
+        LAVISH_AXI_LINK_HOST: "127.0.0.1",
+        LAVISH_AXI_STATE_DIR: path.dirname(stateFile),
+        LAVISH_AXI_TELEMETRY: "0",
+        LAVISH_AXI_NO_OPEN: "1",
+      },
+      timeout: 10_000,
+    });
+  return { base, key, file, stateFile, post, poll, send, presence, cli };
 }
 
 test("public CLI carries the completion identity through a reply while another receiver stays attached", async (t) => {
   const f = await fixture(t);
-  const cli = (...args) =>
-    promisify(execFile)(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "poll", f.file, "--timeout-ms", "1", ...args],
-      {
-        env: {
-          ...process.env,
-          LAVISH_AXI_PORT: new URL(f.base).port,
-          LAVISH_AXI_HOST: "127.0.0.1",
-          LAVISH_AXI_LINK_HOST: "127.0.0.1",
-          LAVISH_AXI_STATE_DIR: path.dirname(f.stateFile),
-          LAVISH_AXI_TELEMETRY: "0",
-          LAVISH_AXI_NO_OPEN: "1",
-        },
-        timeout: 10_000,
-      },
-    );
   await f.send("CLI task");
-  const delivered = await cli();
+  const delivered = await f.cli();
   const feedbackId = delivered.stdout.match(/feedback_id:\s*"?([0-9a-f-]+)/)?.[1];
   assert.ok(feedbackId, delivered.stdout);
   assert.ok(delivered.stdout.includes(`--feedback-id ${feedbackId}`));
@@ -99,7 +98,7 @@ test("public CLI carries the completion identity through a reply while another r
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     assert.deepEqual(await f.presence(), { state: "working", receiving: true });
-    await cli("--agent-reply", "Could not complete the requested change", "--feedback-id", feedbackId);
+    await f.cli("--agent-reply", "Could not complete the requested change", "--feedback-id", feedbackId);
     assert.deepEqual(await f.presence(), { state: "listening", receiving: true });
     const state = JSON.parse(await readFile(f.stateFile, "utf8"));
     assert.equal(state.sessions[f.key].chat.at(-1).text, "Could not complete the requested change");
@@ -107,6 +106,18 @@ test("public CLI carries the completion identity through a reply while another r
     controller.abort();
     await receiving;
   }
+});
+
+test("public CLI rejects an equals-form feedback id without an agent reply", async (t) => {
+  const f = await fixture(t);
+
+  await assert.rejects(
+    () => f.cli("--feedback-id=unfinished-batch"),
+    (error) => {
+      assert.match(`${error.stdout}${error.stderr}`, /--feedback-id requires a batch id and --agent-reply/);
+      return true;
+    },
+  );
 });
 
 test("receiving another poll does not conclude delivered work, including reconnect", async (t) => {
