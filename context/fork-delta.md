@@ -1,8 +1,14 @@
 # Fork delta
 
-This fork was reviewed against `upstream/main` at `a7ddbba` on 2026-08-26.
-The upstream sync retains four intentional differences. Other historical fork
-commits no longer change the effective tree.
+This fork was reviewed against `upstream/main` at `ca4c59d` on 2026-09-07.
+The upstream sync retains four intentional policies and four compatibility
+fixes. Other historical fork commits no longer change the effective tree.
+
+The reviewed delta from `a7ddbba` through `ca4c59d` includes the overlapping
+poll presence fix, reverse-proxy attachment fix, WebSocket event transport,
+tracked-batch playbook guidance, and browser-disconnect poll release. Upstream
+release commits through v0.1.67 were reviewed but their version changes were
+not imported because this fork keeps its own release line.
 
 ## Retained policies
 
@@ -61,6 +67,54 @@ This also keeps upstream release commits from making an ordinary sync pull
 request modify the two generated files rejected by the repository's generated
 file guard. Re-evaluate this policy only if the fork stops publishing its own
 release line or adopts an upstream-version mirroring workflow.
+
+## Retained compatibility fixes
+
+### Keep incomplete-publish warnings readable
+
+`src/chrome-client.js` repairs the incomplete-publish warning assembled when
+ht-ml.app returns an update key without a site id. Upstream still concatenates
+the fragments as `thoughThe`. `test/chrome-client-queue.test.js` verifies the
+rendered message through the chrome harness. Keep this fix until upstream
+produces the same readable output.
+
+### Keep browser E2E compatible across CLI versions
+
+`test/attachment-upload.browser.test.js` accepts the nested JSON encoding
+returned by supported `chrome-devtools-axi` versions before checking rendered
+attachment errors. The opt-in browser suites use the Node test clock for fixed
+delays because the CLI's numeric `wait` command is not reliable across those
+versions, and they establish a page before asking newer versions to emulate a
+viewport. These changes affect test compatibility only. Keep them while the
+browser CLI used by this fork has these version-dependent contracts.
+
+### Bound listener-shutdown connection probes
+
+`test/server.test.js` gives the connection probe a one-second timeout when it
+checks whether a listener closed. Without the bound, an unreachable address
+can leave the suite waiting on the operating system's TCP timeout. This changes
+test reliability only and does not alter server behavior.
+
+### Verify the deliberate-stop banner is truthful
+
+`test/event-transport.browser.test.js` checks the message an older review tab
+renders when a deliberate stop leaves it open. Two truthful copies can legitimately
+win: the deliberate-stop copy “Lavish was stopped. Reload after you start it again.”
+that the old server sends with `reason: "stop"`, and the generic “The Lavish server
+this page was connected to is no longer running. Reloading will work once it is
+running again.” copy that the tab's legacy EventSource reconnect to the replacement
+server delivers with a neutral `server-restarted` reason. Which one the test reads
+depends on whether the read lands before or after that reconnect fires, so the
+assertion accepts either and only forbids the false “updated” copy. This documents
+the stable end state - the banner must never claim Lavish was updated - rather than
+one transient event order. The same test retries a read-only DOM observation when
+the browser CLI reports that the expected migration navigation destroyed its
+execution context. The event must still appear within the original deadline. The
+test reconstructs its pre-WebSocket "old build"
+with `git archive` from this fork's pre-sync commit
+`54b55875b1d5cda18a9fe11889ab604e97f73798`, which still shipped the SSE
+transport, so the seven-tab regression stays self-contained in fork-only clones
+where upstream's intermediate commits are absent.
 
 ## Superseded commits
 

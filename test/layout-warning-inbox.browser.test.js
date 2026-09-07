@@ -28,6 +28,13 @@ function run(command, args, env, timeout = 45_000) {
   return `${result.stdout || ""}${result.stderr || ""}`;
 }
 
+function selectInitialPage(env) {
+  const pages = run("chrome-devtools-axi", ["pages"], env);
+  const pageId = pages.match(/^\s*(\d+),/m)?.[1];
+  assert.ok(pageId, `chrome-devtools-axi did not create an initial page:\n${pages}`);
+  run("chrome-devtools-axi", ["selectpage", pageId], env);
+}
+
 async function freePort() {
   const server = net.createServer();
   await new Promise((resolve, reject) => {
@@ -129,12 +136,12 @@ test(
 
     function openReview(url, settleMs = 4500) {
       run("chrome-devtools-axi", ["open", url], chromeEnv);
-      run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
+      wait(settleMs);
       instrumentArtifactLoads();
     }
 
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     }
 
     try {
@@ -144,6 +151,7 @@ test(
       const artifact = path.join(temp, "review.html");
       await copyFile(path.join(fixtures, "control-broken-clipping.html"), artifact);
       const url = openArtifact(artifact);
+      selectInitialPage(chromeEnv);
       run("chrome-devtools-axi", ["emulate", "--viewport", "1440x1000x1"], chromeEnv);
       openReview(url);
 
@@ -451,7 +459,7 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     run("chrome-devtools-axi", ["click", `@${ref(pattern)}`], chromeEnv);
   }
   function wait(ms) {
-    run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   }
 
   try {
@@ -460,6 +468,7 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
     const url = output.match(/url:\s*"([^"]+)"/)?.[1];
     assert.ok(url, output);
+    selectInitialPage(chromeEnv);
     run("chrome-devtools-axi", ["emulate", "--viewport", "1440x1000x1"], chromeEnv);
     run("chrome-devtools-axi", ["open", url], chromeEnv);
     wait(4500);

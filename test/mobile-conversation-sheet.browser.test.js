@@ -28,6 +28,13 @@ function run(command, args, env, timeout = 45_000) {
   return `${result.stdout || ""}${result.stderr || ""}`;
 }
 
+function selectInitialPage(env) {
+  const pages = run("chrome-devtools-axi", ["pages"], env);
+  const pageId = pages.match(/^\s*(\d+),/m)?.[1];
+  assert.ok(pageId, `chrome-devtools-axi did not create an initial page:\n${pages}`);
+  run("chrome-devtools-axi", ["selectpage", pageId], env);
+}
+
 async function freePort() {
   const server = net.createServer();
   await new Promise((resolve, reject) => {
@@ -127,7 +134,7 @@ test(
     }
 
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     }
 
     function emulate(viewport) {
@@ -240,6 +247,7 @@ test(
       }
 
       // ---- Portrait phone ----
+      selectInitialPage(chromeEnv);
       emulate("390x844x3,mobile,touch");
       open(url);
       let g = geometry();

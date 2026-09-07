@@ -23,6 +23,22 @@ function run(command, args, env, timeout = 45_000) {
   return `${result.stdout || ""}${result.stderr || ""}`;
 }
 
+function selectInitialPage(env) {
+  const pages = run("chrome-devtools-axi", ["pages"], env);
+  const pageId = pages.match(/^\s*(\d+),/m)?.[1];
+  assert.ok(pageId, `chrome-devtools-axi did not create an initial page:\n${pages}`);
+  run("chrome-devtools-axi", ["selectpage", pageId], env);
+}
+
+function emulateViewport(viewport, env) {
+  try {
+    run("chrome-devtools-axi", ["emulate", "--viewport", viewport], env);
+  } catch (error) {
+    if (!String(error).includes("Navigation timeout")) throw error;
+    run("chrome-devtools-axi", ["emulate", "--viewport", viewport], env);
+  }
+}
+
 async function freePort() {
   const server = net.createServer();
   await new Promise((resolve, reject) => {
@@ -97,16 +113,16 @@ test(
     // the poll return - only the user queueing a fix does that.
     async function audit(name, viewport, settleMs, expectedCount) {
       const { file, url } = await openFixture(name);
-      run("chrome-devtools-axi", ["emulate", "--viewport", viewport], chromeEnv);
+      emulateViewport(viewport, chromeEnv);
       run("chrome-devtools-axi", ["open", url], chromeEnv);
-      run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, settleMs);
       let inbox = readInbox();
       // A busy browser can return from navigation before the refreshed chrome has painted its
       // first diagnostic result. Re-open once when the gate is still checking (or a warning-count
       // assertion is otherwise not ready), then keep the final gate assertion strict.
       if (inbox.gate || (expectedCount > 0 && Number(inbox.badge) !== expectedCount)) {
         run("chrome-devtools-axi", ["open", url], chromeEnv);
-        run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, settleMs);
         inbox = readInbox();
       }
       const poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", "600"], lavishEnv);
@@ -120,6 +136,7 @@ test(
     }
 
     try {
+      selectInitialPage(chromeEnv);
       await audit("control-broken-occlusion", "1440x1000x1", 3200, 1);
 
       const acceptable = [
@@ -155,9 +172,9 @@ test(
       const revalidationFile = path.join(temp, "root-lock-revalidation.html");
       await copyFile(path.join(fixtures, "control-broken-reachability.html"), revalidationFile);
       const revalidation = openArtifact(revalidationFile);
-      run("chrome-devtools-axi", ["emulate", "--viewport", "390x844x1,mobile,touch"], chromeEnv);
+      emulateViewport("390x844x1,mobile,touch", chromeEnv);
       run("chrome-devtools-axi", ["open", revalidation.url], chromeEnv);
-      run("chrome-devtools-axi", ["wait", "3200"], chromeEnv);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3200);
       const detected = readInbox();
       assert.equal(Number(detected.badge), 3);
       assert.equal(detected.gate, false);
@@ -170,7 +187,7 @@ test(
         revalidationFile,
         '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Repaired controls</title></head><body><button>Continue</button></body></html>',
       );
-      run("chrome-devtools-axi", ["wait", "4500"], chromeEnv);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4500);
       const repaired = readInbox();
       assert.equal(Number(repaired.badge), 0);
       assert.equal(repaired.wrapHidden, true);

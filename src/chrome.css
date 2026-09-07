@@ -1300,6 +1300,13 @@ body.lavish {
   font-size: 11px;
   line-height: 1.35;
 }
+.send-hint.persistent {
+  padding: var(--space-4);
+  border: 1px solid var(--amber-700);
+  border-radius: var(--radius-sm);
+  background: var(--amber-900);
+  color: var(--accent-hover);
+}
 .send-hint[hidden] {
   display: none;
 }

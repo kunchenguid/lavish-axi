@@ -1,4 +1,4 @@
-/* global EventSource, document, location, window */
+/* global document, location, window */
 
 const sessionDataElement = document.getElementById("lavish-session");
 const sessionData = JSON.parse(sessionDataElement?.textContent || "{}");
@@ -216,6 +216,8 @@ let endAfterSubmit = false;
 let workingBubble = null;
 let submitQueuedPromise = null;
 let submitQueuedAgain = false;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let sendAcknowledgementTimer;
 let lastScroll = { x: 0, y: 0 };
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
@@ -243,6 +245,14 @@ const CHROME_RESTART_PROBE_MS = 100;
 const CHROME_RESTART_SLOW_PROBE_MS = 500;
 // A probe must always settle, so the control that is waiting on it always comes back.
 const HEALTH_PROBE_TIMEOUT_MS = 4000;
+// A send starts before the artifact snapshot arrives and ends only when /prompts acknowledges the
+// batch. Bound that whole wait so a missing SDK response or a browser/network stall can never look
+// like a dead button while the user's queue remains safely stored in this tab.
+const SEND_ACKNOWLEDGEMENT_WARNING_MS = 10_000;
+const SEND_STALLED_COPY =
+  "Still trying to send. Your feedback is saved in this tab. Keep this tab open while Lavish catches up, and check that the server is running.";
+const SEND_FAILED_COPY =
+  "Could not send. Your feedback is still queued in this tab. Check that Lavish is running, then click Send to Agent to retry.";
 const HEALTH_NO_ANSWER_TITLE = "Lavish did not answer.";
 const HEALTH_NO_ANSWER_COPY =
   "Lavish did not answer the check, so this page cannot tell whether it is running. Try again in a moment.";
@@ -263,6 +273,7 @@ let artifactSilenceTimer;
 let copyHintTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendHintTimer;
+let sendHintPersistent = false;
 
 function artifactFrameSrcForLoad(load) {
   const separator = artifactSrc.includes("?") ? "&" : "?";
@@ -476,20 +487,50 @@ function pillAttachmentsHtml(prompt) {
 
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
 
-function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600) {
+function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
   sendHint.textContent = message;
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);
+  sendHintPersistent = holdMs === null;
+  sendHint.classList.toggle("persistent", sendHintPersistent);
+  if (sendHintPersistent) {
+    sendHintTimer = undefined;
+    if (focusInput) chatInput.focus();
+    return;
+  }
   sendHintTimer = setTimeout(() => {
     sendHint.hidden = true;
     sendHint.textContent = DEFAULT_SEND_HINT;
+    sendHintPersistent = false;
   }, holdMs);
-  chatInput.focus();
+  if (focusInput) chatInput.focus();
 }
 
-function hideSendHint() {
+function hideSendHint(force = false) {
+  if (sendHintPersistent && force !== true) return;
   clearTimeout(sendHintTimer);
   sendHint.hidden = true;
+  sendHint.textContent = DEFAULT_SEND_HINT;
+  sendHint.classList.remove("persistent");
+  sendHintPersistent = false;
+}
+
+function armSendAcknowledgementWarning() {
+  if (sendAcknowledgementTimer || !queued.length) return;
+  sendAcknowledgementTimer = setTimeout(() => {
+    sendAcknowledgementTimer = undefined;
+    if (queued.length) showSendHint(SEND_STALLED_COPY, null, false);
+  }, SEND_ACKNOWLEDGEMENT_WARNING_MS);
+}
+
+function clearSendAcknowledgementWarning() {
+  clearTimeout(sendAcknowledgementTimer);
+  sendAcknowledgementTimer = undefined;
+}
+
+function showQueuedSendFailure(message = SEND_FAILED_COPY) {
+  clearSendAcknowledgementWarning();
+  if (queued.length) showSendHint(message, null, false);
 }
 
 function setMenuOpen(button, menu, open) {
@@ -583,15 +624,6 @@ function setHandoffSuperseded(visible) {
 // the shutdown names its reason and each one gets its own line - a page told "Lavish was updated"
 // after a deliberate stop is being told something false. An unnamed reason (SIGTERM, or any
 // caller that names none) claims neither.
-// Both shutdown events carry the reason the same way, so both render from one rule.
-function shutdownEventReason(event) {
-  try {
-    return String(JSON.parse(event?.data || "{}").reason || "");
-  } catch {
-    return "";
-  }
-}
-
 function chromeOutdatedCopy(reason) {
   if (reason === "upgrade") return "Lavish was updated. This page is running the previous version.";
   if (reason === "local-build") {
@@ -909,6 +941,10 @@ function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
   queued.splice(index, 1);
   persistQueuedPrompts();
+  if (!queued.length) {
+    clearSendAcknowledgementWarning();
+    hideSendHint(true);
+  }
   render();
 }
 
@@ -1170,17 +1206,20 @@ function sendQueued(endAfter) {
       if (attachments.length) prompt.attachments = attachments;
       queued.push(prompt);
       persistQueuedPrompts();
+      // Render the durable queue pill before clearing the editor. If anything after this point
+      // fails, the user's words are already both stored and visibly recoverable in the tab.
+      render();
       addChat("user", text || "Image message");
       chatInput.value = "";
       chatAttachmentController.reset();
-      render();
     }
   }
   if (!queued.length) {
     if (!chipsBlocked) showSendHint();
     return;
   }
-  hideSendHint();
+  hideSendHint(true);
+  armSendAcknowledgementWarning();
 
   if (endAfter && !chipsBlocked) endAfterSubmit = true;
   requestSnapshot("submit");
@@ -1220,24 +1259,34 @@ async function submitQueuedOnce() {
   const shouldEndSession = endAfterSubmit;
   const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: pendingSnapshot };
   if (shouldEndSession) body.endSession = true;
-  const response = await fetch("/api/" + key + "/prompts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch("/api/" + key + "/prompts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    showQueuedSendFailure();
+    throw error;
+  }
   if (!response.ok) {
     if (response.status === 409) {
       const data = await response.json().catch(() => null);
       // The session already ended before this batch arrived - most likely this chrome missed the
-      // SSE `ended` event (a dropped connection). Go read-only now instead of leaving Send enabled
+      // live `ended` event (a dropped connection). Go read-only now instead of leaving Send enabled
       // for another attempt that will be refused the same way.
       if (data?.status === "ended") {
+        clearSendAcknowledgementWarning();
         endAfterSubmit = false;
         markSessionEnded();
         return false;
       }
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
       endAfterSubmit = false;
+      showQueuedSendFailure(
+        "Could not send because the layout issue selection changed. Your feedback is still queued. Review the current issues, then click Send to Agent to retry.",
+      );
       return false;
     }
     // C4: the server persisted nothing (atomic reject) - the queue below is left
@@ -1246,8 +1295,12 @@ async function submitQueuedOnce() {
     if (response.status === 400) {
       const detail = await response.json().catch(() => ({}));
       if (Array.isArray(detail.rejected) && detail.rejected.length) {
-        showSendHint(describeAttachmentRejection(detail.rejected, detail.caps), 6000);
+        showQueuedSendFailure(describeAttachmentRejection(detail.rejected, detail.caps));
+      } else {
+        showQueuedSendFailure();
       }
+    } else {
+      showQueuedSendFailure();
     }
     throw new Error("failed to submit queued prompts");
   }
@@ -1257,12 +1310,14 @@ async function submitQueuedOnce() {
   }
   persistQueuedPrompts();
   render();
+  clearSendAcknowledgementWarning();
+  hideSendHint(true);
+  if (queued.length) armSendAcknowledgementWarning();
   if (shouldEndSession) {
     endAfterSubmit = false;
     markSessionEnded();
     return;
   }
-  if (agentPresence === "listening") setAgentPresence("working");
 }
 
 function normalizeLayoutFindings(value) {
@@ -3179,7 +3234,7 @@ chatComposer.addEventListener("drop", (event) => {
   chatAttachmentController.rejectUnsupported(files);
 });
 // A file drop that misses the composer must not navigate the chrome away from
-// the session (losing chips, uploads, and the SSE connection). Text drags stay
+// the session (losing chips, uploads, and the live-event connection). Text drags stay
 // untouched so dropping text into the textarea keeps working.
 document.addEventListener("dragover", (event) => {
   if (Array.from(event.dataTransfer?.types || []).includes("Files")) event.preventDefault();
@@ -3200,7 +3255,7 @@ chatInput.addEventListener("keydown", (event) => {
     sendQueued(false);
   }
 });
-chatInput.addEventListener("input", hideSendHint);
+chatInput.addEventListener("input", () => hideSendHint());
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
@@ -3279,27 +3334,48 @@ frame.addEventListener("load", () => {
 
 initializeLayoutGate();
 
-const events = new EventSource("/events/" + key);
-events.addEventListener("reload", () => {
+// WebSockets leave the browser's HTTP connection pool free for sends and artifact loads.
+const events = new Map();
+let eventReconnectDelayMs = 500;
+function connectLiveEvents() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
+  socket.addEventListener("open", () => {
+    eventReconnectDelayMs = 500;
+    refreshLayoutWarnings();
+  });
+  socket.addEventListener("message", (message) => {
+    try {
+      const { type, data } = JSON.parse(message.data);
+      return events.get(type)?.(data || {});
+    } catch {
+      // Ignore malformed frames; a later event or reconnect can recover the stream.
+    }
+  });
+  socket.addEventListener("close", () => {
+    setTimeout(connectLiveEvents, eventReconnectDelayMs);
+    eventReconnectDelayMs = Math.min(eventReconnectDelayMs * 2, 5000);
+  });
+}
+
+events.set("reload", () => {
   resetFrame().then((reloaded) => {
     if (reloaded) refreshWhiteboardSource();
   });
 });
-events.addEventListener("chrome-reload", (event) => reloadAfterServerRestart(shutdownEventReason(event)));
+events.set("chrome-reload", (data) => reloadAfterServerRestart(String(data.reason || "")));
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
-events.addEventListener("chrome-outdated", (event) => setChromeOutdated(true, shutdownEventReason(event)));
-events.addEventListener("agent-reply", (event) => {
-  const text = JSON.parse(event.data).text;
+events.set("chrome-outdated", (data) => setChromeOutdated(true, String(data.reason || "")));
+events.set("agent-reply", ({ text }) => {
   addChat("agent", text);
   noteAgentReply(text);
 });
-events.addEventListener("chat-sync", (event) => syncChat(JSON.parse(event.data).chat || []));
-events.addEventListener("agent-presence", (event) => setAgentPresence(JSON.parse(event.data).state));
-events.addEventListener("layout-warnings", (event) => setLayoutWarnings(JSON.parse(event.data).warnings || []));
-events.addEventListener("ended", () => markSessionEnded());
-// A reconnecting stream means this chrome may have missed updates while it was away.
-events.addEventListener("open", () => refreshLayoutWarnings());
+events.set("chat-sync", (data) => syncChat(data.chat || []));
+events.set("agent-presence", (data) => setAgentPresence(data.state));
+events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
+events.set("ended", () => markSessionEnded());
+connectLiveEvents();
 
 applySheetState();
 render();
@@ -3309,7 +3385,7 @@ renderWarnings();
 initialChat.forEach((item) => addChat(item.role, item.text));
 retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
-// The session already ended before this page (re)loaded, so there is no future SSE `ended` event
+// The session already ended before this page (re)loaded, so there is no future live `ended` event
 // to wait for - start read-only instead of looking live until a Send gets silently refused.
 if (sessionData.initialEnded) markSessionEnded();
 

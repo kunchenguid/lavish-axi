@@ -157,8 +157,8 @@ test(
     function evaluate(expression) {
       return run("chrome-devtools-axi", ["eval", expression], chromeEnv);
     }
-    function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+    async function wait(ms) {
+      await new Promise((resolve) => setTimeout(resolve, ms));
     }
     async function waitForAttachmentFile() {
       const dir = path.join(stateDir, "attachments");
@@ -190,7 +190,7 @@ test(
       const key = new URL(url).pathname.split("/").pop();
 
       run("chrome-devtools-axi", ["open", url], chromeEnv);
-      wait(4500);
+      await wait(4500);
 
       // A REAL click through the chrome into the sandboxed artifact iframe opens
       // the annotation card - the driver only performs the paste a browser cannot
@@ -220,7 +220,7 @@ test(
         const pills = evaluate('document.querySelectorAll(".pill").length');
         if (pills.includes("1")) break;
         if (Date.now() > deadline) assert.fail(`queued prompt pill never appeared: ${pills}`);
-        wait(500);
+        await wait(500);
       }
       evaluate('document.getElementById("send").click()');
       const poll = run(
@@ -238,7 +238,7 @@ test(
         body: JSON.stringify({ text: "Annotation received." }),
       });
       assert.equal(replied.status, 200);
-      wait(500);
+      await wait(500);
 
       // Exercise the top-level Conversation composer separately. Image-only paste
       // must upload, queue, and reach poll without relying on annotation-card code.
@@ -257,7 +257,7 @@ test(
         const ready = evaluate('document.querySelectorAll(".chat-attachment-ready").length');
         if (ready.includes("1")) break;
         if (Date.now() > conversationDeadline) assert.fail(`Conversation image never became ready: ${ready}`);
-        wait(500);
+        await wait(500);
       }
       evaluate('document.getElementById("send").click()');
       const conversationPoll = run(
@@ -280,7 +280,7 @@ test(
           new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }),
         );
       })()`);
-      wait(500);
+      await wait(500);
       const errorColors = evaluate(`(() => {
         const status = document.querySelector(".chat-attachment-error .chat-attachment-status");
         if (!status) return "missing-error-chip";

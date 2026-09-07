@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import WebSocket from "ws";
 
 import { AxiError } from "axi-sdk-js";
 
@@ -61,39 +62,20 @@ import { serve } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
 
 async function waitForPollListening(base, key, timeoutMs = 10_000) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const deadline = Date.now() + timeoutMs;
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/events/${key}`, { origin: base });
   try {
-    while (true) {
-      const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
-      if (match) {
-        buffer = buffer.replace(match[0], "");
-        if (JSON.parse(match[1]).state === "listening") return;
-        continue;
-      }
-      const remaining = Math.max(1, deadline - Date.now());
-      let timer;
-      let value;
-      let done;
-      try {
-        ({ value, done } = await Promise.race([
-          reader.read(),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error("timed out waiting for listening presence")), remaining);
-          }),
-        ]));
-      } finally {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out waiting for listening presence")), timeoutMs);
+      socket.on("message", (raw) => {
+        const message = JSON.parse(String(raw));
+        if (message.type !== "agent-presence" || message.data.state !== "listening") return;
         clearTimeout(timer);
-      }
-      if (done) throw new Error("presence stream closed before listening");
-      buffer += decoder.decode(value, { stream: true });
-    }
+        resolve(undefined);
+      });
+      socket.once("error", reject);
+    });
   } finally {
-    controller.abort();
+    socket.close();
   }
 }
 
@@ -769,6 +751,40 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("unclear")));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("radio change")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
+});
+
+test("input playbook defines an opt-in tracked batch handoff", () => {
+  const output = createPlaybookOutput(["input"]);
+  const guidance = JSON.stringify(output.playbook);
+  const example = output.playbook.lavish_notes.find((item) => /tag: ['"]tracked-batch/.test(item));
+
+  assert.match(guidance, /multi-item/);
+  assert.match(guidance, /stable, visible ID/);
+  assert.match(guidance, /selected set/);
+  assert.match(guidance, /account for every submitted ID/);
+  assert.match(guidance, /addressed/);
+  assert.match(guidance, /deferred/);
+  assert.match(guidance, /rejected/);
+  assert.match(guidance, /receipt ID set/);
+  assert.ok(example, "the tracked-batch pattern includes a copyable example");
+  assert.match(example, /<form/);
+  assert.match(example, /type="checkbox"/);
+  assert.match(example, /onsubmit=/);
+  assert.equal(example.match(/window\.lavish\.queuePrompt/g)?.length, 1);
+  assert.match(example, /items: selected/);
+  assert.match(example, /id:/);
+  assert.match(example, /label:/);
+  assert.match(example, /disposition:/);
+});
+
+test("table playbook routes multi-row actions to the input tracked-batch pattern", () => {
+  const output = createPlaybookOutput(["table"]);
+
+  assert.ok(
+    output.playbook.lavish_notes.some(
+      (item) => item.includes("multiple rows") && item.includes("input") && item.includes("tracked batch"),
+    ),
+  );
 });
 
 test("code playbook detail output requires verified @pierre/diffs rendering", () => {
@@ -2243,6 +2259,21 @@ test("spawned poll with piped stderr banners once and leaves re-run guidance whe
     await server.close();
     await rm(stateDir, { force: true, recursive: true });
   }
+});
+
+test("browser-disconnected poll output asks before reopening or ending the resumable session", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: { status: "browser_disconnected" },
+  });
+
+  assert.deepEqual(output.session, { file: "/tmp/report.html", status: "browser_disconnected" });
+  assert.match(output.next_step, /review window (?:was closed|disconnected)/i);
+  assert.match(output.next_step, /ask the user/i);
+  assert.match(output.next_step, /reopen/i);
+  assert.match(output.next_step, /end the session/i);
+  assert.match(output.next_step, /remains open|resumable/i);
+  assert.doesNotMatch(output.next_step, /Run `lavish-axi \/tmp\/report\.html`/);
 });
 
 test("waiting next step reassures agents that re-running poll loses nothing", () => {
