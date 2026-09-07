@@ -236,8 +236,27 @@ export class SessionStore {
     const userMessages = restoring
       ? []
       : acceptedPrompts
-          .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-          .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+          .filter((prompt) => (prompt.tag === "message" && prompt.prompt) || prompt.attachments?.length)
+          .map((prompt) => ({
+            role: "user",
+            text: prompt.prompt,
+            at,
+            // Receipts keep display metadata after file expiration, but never carry local paths
+            // into browser history. These fields come from the resolved, accepted prompt only.
+            ...(prompt.attachments?.length
+              ? {
+                  attachments: prompt.attachments.map(({ id, type, mime, bytes, width, height, name }) => ({
+                    id,
+                    type,
+                    mime,
+                    bytes,
+                    width,
+                    height,
+                    ...(name ? { name } : {}),
+                  })),
+                }
+              : {}),
+          }));
     const existingPrompts = Array.isArray(session.prompts) ? session.prompts : [];
     session.prompts = restoring ? [...acceptedPrompts, ...existingPrompts] : [...existingPrompts, ...acceptedPrompts];
     session.chat = [...(session.chat || []), ...userMessages];

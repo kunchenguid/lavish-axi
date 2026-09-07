@@ -1241,6 +1241,28 @@ body.lavish {
   padding: 6px;
   font-size: 11px;
 }
+.chat-attachment-receipt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chat-attachment-receipt > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-attachment-receipt strong,
+.chat-attachment-receipt-status {
+  display: block;
+}
+
+.chat-attachment-receipt-status {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
 .chat-attachment-thumb {
   width: 32px;
   height: 32px;

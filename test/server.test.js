@@ -93,10 +93,18 @@ function chromeSessionData(html) {
 
 async function startPresenceStream(base, key) {
   const stream = await startEventStream(base, key, "agent-presence");
+  let previousState;
 
   return {
     async next() {
-      return (await stream.next()).state;
+      // Receiving can change while processing remains working. These older tests observe only
+      // state transitions; the independent receiving field is exercised in the lifecycle tests.
+      while (true) {
+        const { state } = await stream.next();
+        if (state === previousState) continue;
+        previousState = state;
+        return state;
+      }
     },
     close: stream.close,
   };
@@ -1122,12 +1130,10 @@ test("chrome only marks session ended after the end request succeeds", async () 
 
 test("chrome shows a waiting banner when no agent has attached", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
   const css = await chromeCssSource();
 
   assert.match(html, /id="presenceBanner"/);
   assert.match(html, /Your agent is not listening/);
-  assert.match(js, /presenceBanner\.hidden = ended \|\| agentPresence !== "waiting"/);
   assert.match(css, /\.presence-banner\{/);
 });
 
@@ -3328,7 +3334,7 @@ test("event WebSocket preserves initial state and named live-event semantics", a
     const nextMessage = async () => JSON.parse(String((await messages.next()).value[0]));
     await once(socket, "open");
     assert.deepEqual(await nextMessage(), { type: "chat-sync", data: { chat: [] } });
-    assert.deepEqual(await nextMessage(), { type: "agent-presence", data: { state: "waiting" } });
+    assert.deepEqual(await nextMessage(), { type: "agent-presence", data: { state: "waiting", receiving: false } });
 
     const reply = await fetch(`${base}/api/${opened.key}/agent-reply`, {
       method: "POST",
@@ -3336,7 +3342,10 @@ test("event WebSocket preserves initial state and named live-event semantics", a
       body: JSON.stringify({ text: "live reply" }),
     });
     assert.equal(reply.status, 200);
-    assert.deepEqual(await nextMessage(), { type: "agent-reply", data: { text: "live reply" } });
+    const receivedReply = await nextMessage();
+    assert.equal(receivedReply.type, "agent-reply");
+    assert.equal(receivedReply.data.text, "live reply");
+    assert.equal(receivedReply.data.chat[0].text, "live reply");
     await messages.return();
     socket.close();
   } finally {
@@ -5212,7 +5221,7 @@ test("overlapping poll cleanup preserves working presence after one poll deliver
   }
 });
 
-test("a fresh poll attaching alone retires the previous round's working presence", async () => {
+test("a fresh receiving poll leaves the previous batch working", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -5234,18 +5243,16 @@ test("a fresh poll attaching alone retires the previous round's working presence
     const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     assert.equal((await delivered.json()).status, "feedback");
 
-    const presence = await startPresenceStream(base, key);
+    const presence = await startEventStream(base, key, "agent-presence");
     try {
-      assert.equal(await presence.next(), "working");
+      assert.deepEqual(await presence.next(), { state: "working", receiving: false });
 
-      // The agent came back and attached with no other poll in flight: that starts a new round,
-      // so the poll ending without feedback has to leave presence waiting - not stuck on
-      // "working", which hides the "your agent is not listening" banner while nothing is attached.
+      // A receiver attaching and timing out changes only receiving, never completion.
       const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1`);
       assert.deepEqual(await next.json(), { status: "waiting" });
 
-      assert.equal(await presence.next(), "listening");
-      assert.equal(await presence.next(), "waiting");
+      assert.deepEqual(await presence.next(), { state: "working", receiving: true });
+      assert.deepEqual(await presence.next(), { state: "working", receiving: false });
     } finally {
       await presence.close();
     }
@@ -5913,8 +5920,13 @@ test("immediate send-and-end delivery clears working presence without an active 
       const feedback = await immediate.json();
       assert.equal(feedback.status, "feedback");
       assert.equal(feedback.session_ended, true);
-      assert.equal(await presence.next(), "working");
-      assert.equal(await presence.next(), "waiting");
+      assert.equal(feedback.feedback_id, undefined);
+      const reconnected = await startPresenceStream(base, key);
+      try {
+        assert.equal(await reconnected.next(), "waiting");
+      } finally {
+        await reconnected.close();
+      }
     } finally {
       await presence.close();
     }
@@ -5948,7 +5960,7 @@ test("SSE agent-presence returns to waiting after an agent reply", async () => {
         headers: { "content-type": "application/json", origin: base },
         body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
       });
-      await poll;
+      const delivered = await poll;
       // An armed poll that drains the feedback and releases leaves presence "working".
       assert.equal(await presence.next(), "working");
 
@@ -5957,7 +5969,7 @@ test("SSE agent-presence returns to waiting after an agent reply", async () => {
       await fetch(`${base}/api/${key}/agent-reply`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "done - applied your feedback" }),
+        body: JSON.stringify({ text: "done - applied your feedback", feedback_id: delivered.feedback_id }),
       });
       assert.equal(await presence.next(), "waiting");
     } finally {

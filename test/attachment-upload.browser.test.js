@@ -138,13 +138,20 @@ test(
     const chromeEnv = {
       CHROME_DEVTOOLS_AXI_SESSION: `lavish-attach-e2e-${process.pid}`,
       CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
+      CHROME_DEVTOOLS_AXI_AUTO_CONNECT: "0",
+      CHROME_DEVTOOLS_AXI_BROWSER_URL: "",
     };
 
     function evaluate(expression) {
       return run("chrome-devtools-axi", ["eval", expression], chromeEnv);
     }
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      run(
+        "chrome-devtools-axi",
+        ["eval", `async () => { await new Promise(resolve => setTimeout(resolve, ${ms})); return true; }`],
+        chromeEnv,
+        ms + 45_000,
+      );
     }
     async function waitForAttachmentFile() {
       const dir = path.join(stateDir, "attachments");
@@ -279,7 +286,12 @@ test(
         return JSON.stringify({ actual: getComputedStyle(status).color, expected, text: status.textContent });
       })()`);
       assert.doesNotMatch(errorColors, /missing-error-chip/, errorColors);
-      const colors = JSON.parse(errorColors.match(/\{.*\}/)?.[0] || "{}");
+      // `eval` wraps its result in a quoted tool-output field; braces inside it are still
+      // escaped. Decode that field before decoding the JSON returned by the page.
+      const rawColors = errorColors.match(/result:\s*("(?:[^"\\]|\\.)*")/s)?.[1];
+      assert.ok(rawColors, errorColors);
+      let colors = JSON.parse(rawColors);
+      while (typeof colors === "string") colors = JSON.parse(colors);
       assert.match(colors.text, /Unsupported file type/, errorColors);
       assert.equal(colors.actual, colors.expected, `error status must render in --danger:\n${errorColors}`);
     } finally {

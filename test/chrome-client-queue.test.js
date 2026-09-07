@@ -561,6 +561,23 @@ test("chrome reconnects its live WebSocket and syncs missed chat", async () => {
   assert.match(chrome.element("chatLog").lastAppendedChild.innerHTML, /Missed while disconnected/);
 });
 
+test("duplicate chat snapshots preserve the rendered transcript and reading position", async () => {
+  const chrome = await createChromeHarness();
+  const chat = [{ role: "agent", text: "Already received" }];
+  const sync = chrome.eventSource().listeners.get("chat-sync");
+
+  sync({ data: JSON.stringify({ chat }) });
+  const chatLog = chrome.element("chatLog");
+  const renderedBubble = chatLog.children[0];
+  renderedBubble.scrolledIntoView = null;
+
+  sync({ data: JSON.stringify({ chat }) });
+
+  assert.equal(chatLog.children.length, 1);
+  assert.equal(chatLog.children[0], renderedBubble);
+  assert.equal(renderedBubble.scrolledIntoView, null);
+});
+
 for (const stalledPost of [false, true]) {
   test(`a queued send stalled at ${stalledPost ? "POST" : "snapshot"} becomes visibly recoverable`, async () => {
     const chrome = await createChromeHarness({
@@ -4090,7 +4107,7 @@ test("chrome client strips the internal queue key before posting prompts", async
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init) => {
       posts.push({ url, body: JSON.parse(init.body) });
-      return { ok: true };
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
     },
   });
 
@@ -4118,7 +4135,7 @@ test("chrome client sends queued prompts while the agent is working", async () =
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init) => {
       posts.push({ url, body: JSON.parse(init.body) });
-      return { ok: true };
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
     },
   });
 
@@ -4209,7 +4226,7 @@ test("chrome send and end carries the end intent with queued prompts", async () 
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {
       posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
-      return { ok: true };
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
     },
   });
 
@@ -4279,7 +4296,7 @@ test("chrome send and end during an in-flight submit still ends after the submit
     fetchImpl: async (url, init = {}) => {
       posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
       if (posts.length === 1) await firstPost;
-      return { ok: true };
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
     },
   });
 
