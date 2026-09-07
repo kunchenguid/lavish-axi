@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.67](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.66...lavish-axi-v0.1.67) (2026-09-07)
+
+
+### Bug Fixes
+
+* **server:** release polls after review browser disconnects ([#329](https://github.com/kunchenguid/lavish-axi/issues/329)) ([dcf49d3](https://github.com/kunchenguid/lavish-axi/commit/dcf49d3ff6e2e0789d1ebdf9c03ceca4a08d11fb))
+
 ## [0.1.66](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.65...lavish-axi-v0.1.66) (2026-09-06)
 
 
