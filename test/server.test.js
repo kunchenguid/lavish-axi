@@ -1652,6 +1652,20 @@ test("Tailscale mode binds concrete listeners, serves the MagicDNS link, and tea
     });
     assert.equal(landing.status, 200);
     assert.match(landing.body, /Lavish Editor is running/);
+    // The session opened above (over the Tailscale listener) must show up in the
+    // landing list when it is fetched over the *other* allowed host (MagicDNS) -
+    // the list is sourced from state.json, not from whichever host is asking.
+    assert.match(landing.body, /artifact\.html/);
+    const sessionLinkMatch = landing.body.match(/href="(\/session\/[0-9a-f]+)"/);
+    assert.ok(sessionLinkMatch, "landing page links to the open session");
+    // The link must be relative (host-independent) so it resolves correctly no
+    // matter which allowed host rendered this page - proving #216 tailnet-root
+    // compatibility rather than merely asserting it.
+    const sessionLinkOnMagicDns = await rawRequest(server.port, sessionLinkMatch[1], {
+      host: `${magicDnsName}:${server.port}`,
+      headers: { accept: "text/html" },
+    });
+    assert.equal(sessionLinkOnMagicDns.status, 200);
 
     const shutdown = await rawRequest(server.port, "/shutdown", {
       method: "POST",
@@ -1664,6 +1678,121 @@ test("Tailscale mode binds concrete listeners, serves the MagicDNS link, and tea
     for (const address of server.addresses) {
       await assert.doesNotReject(() => connectTo(address.address, address.port));
     }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("landing page keeps today's placeholder verbatim when no sessions are open", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-landing-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const landing = await rawRequest(server.port, "/", { headers: { accept: "text/html" } });
+    assert.equal(landing.status, 200);
+    assert.match(landing.body, /Lavish Editor is running/);
+    assert.match(landing.body, /Open the review session URL printed by your agent\./);
+    assert.doesNotMatch(landing.body, /class="sessions"/);
+    // The refresh tag exists only to keep a populated list current - an empty
+    // placeholder has nothing to go stale, so it must never reload the page
+    // someone left open in a tab for later.
+    assert.doesNotMatch(landing.body, /http-equiv="refresh"/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("landing page lists a single open session: file name, status, and a working link", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-landing-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+    const opened = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+
+    const landing = await rawRequest(server.port, "/", { headers: { accept: "text/html" } });
+    assert.equal(landing.status, 200);
+    assert.match(landing.body, /1 active session on this device:/);
+    assert.match(landing.body, /artifact\.html/);
+    assert.match(landing.body, new RegExp(`class="dot open" title="Status: open"`));
+    assert.match(landing.body, new RegExp(`href="/session/${opened.key}"`));
+    assert.match(landing.body, /http-equiv="refresh" content="15"/);
+
+    const sessionPage = await rawRequest(server.port, `/session/${opened.key}`, { headers: { accept: "text/html" } });
+    assert.equal(sessionPage.status, 200);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("landing page lists several sessions and excludes an ended one", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-landing-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const files = ["a.html", "b.html", "c.html"].map((name) => path.join(dir, name));
+    const opened = [];
+    for (const file of files) {
+      await writeFile(file, "<!doctype html><html><body>review</body></html>");
+      opened.push(
+        await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ file }),
+        }).then((response) => response.json()),
+      );
+    }
+    const store = new SessionStore(path.join(dir, "state.json"));
+    await store.endSession(opened[1].key, "agent");
+
+    const landing = await rawRequest(server.port, "/", { headers: { accept: "text/html" } });
+    assert.equal(landing.status, 200);
+    assert.match(landing.body, /2 active sessions on this device:/);
+    assert.match(landing.body, /a\.html/);
+    assert.doesNotMatch(landing.body, /b\.html/);
+    assert.match(landing.body, /c\.html/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("landing page escapes a session file path containing markup-significant characters", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-landing-xss-"));
+  const stateFile = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    // Windows forbids `<>:"|?*` in path names, so the XSS payload cannot live
+    // on disk. Open a real artifact under a safe path, then rewrite the stored
+    // `file` the landing page renders — that field is what must be escaped.
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+    const opened = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    // Do not path.join the XSS payload: Windows treats `/` in `</script>` as a
+    // separator, so the stored path would become `...<\script>...` and the
+    // title-attribute assertion looking for `&lt;/script&gt;` would fail.
+    const evilFile = `${dir}${path.sep}<script>alert(1)</script>&"'${path.sep}artifact.html`;
+    state.sessions[opened.key].file = evilFile;
+    await writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`);
+
+    const landing = await rawRequest(server.port, "/", { headers: { accept: "text/html" } });
+    assert.equal(landing.status, 200);
+    assert.doesNotMatch(landing.body, /<script>alert\(1\)<\/script>/);
+    assert.match(landing.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;&amp;&quot;&#39;/);
+    // The path is interpolated into a title="..." attribute; unescaped quotes
+    // would terminate it. The escaped payload must sit inside one attribute.
+    assert.match(landing.body, /title="[^"]*&lt;script&gt;alert\(1\)&lt;\/script&gt;&amp;&quot;&#39;[^"]*"/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
