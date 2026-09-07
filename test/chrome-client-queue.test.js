@@ -4090,7 +4090,7 @@ test("chrome client strips the internal queue key before posting prompts", async
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init) => {
       posts.push({ url, body: JSON.parse(init.body) });
-      return { ok: true };
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
     },
   });
 
@@ -4118,7 +4118,7 @@ test("chrome client sends queued prompts while the agent is working", async () =
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init) => {
       posts.push({ url, body: JSON.parse(init.body) });
-      return { ok: true };
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
     },
   });
 
@@ -4209,7 +4209,7 @@ test("chrome send and end carries the end intent with queued prompts", async () 
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {
       posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
-      return { ok: true };
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
     },
   });
 
@@ -4279,7 +4279,7 @@ test("chrome send and end during an in-flight submit still ends after the submit
     fetchImpl: async (url, init = {}) => {
       posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
       if (posts.length === 1) await firstPost;
-      return { ok: true };
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
     },
   });
 

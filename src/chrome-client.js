@@ -19,6 +19,7 @@ const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
 const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
+let confirmedChatLength = initialChat.length;
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
 const attachmentMaxCount = Number(sessionData.attachmentMaxCount) || 4;
@@ -568,24 +569,53 @@ async function copyText(text) {
   return true;
 }
 
-function addChat(role, text, shouldScroll = true) {
-  if (!text) return;
+function addChat(role, text, shouldScroll = true, attachments = []) {
+  const receipts = Array.isArray(attachments) ? attachments.filter((item) => item && typeof item === "object") : [];
+  if (!text && !receipts.length) return;
 
   const el = document.createElement("div");
   el.className = "bubble " + role;
   el.innerHTML = "<small>" + (role === "agent" ? "Agent" : "You") + "</small><div>" + escapeHtml(text) + "</div>";
+  for (const attachment of receipts) {
+    const receipt = document.createElement("div");
+    receipt.className = "chat-attachment-receipt";
+    const name = document.createElement("strong");
+    name.textContent = String(attachment.name || "Image attachment");
+    const detail = document.createElement("span");
+    detail.className = "chat-attachment-receipt-status";
+    detail.textContent = String(attachment.mime || "Image") + " · Submitted";
+    const preview = document.createElement("img");
+    preview.className = "chat-attachment-thumb";
+    preview.alt = "Preview of " + name.textContent;
+    preview.addEventListener("error", () => {
+      preview.remove();
+      detail.textContent = String(attachment.mime || "Image") + " · Submitted · Preview unavailable";
+    });
+    // Use only the existing confined attachment route, never an attachment-supplied URL/path.
+    preview.src = "/api/" + encodeURIComponent(key) + "/attachments/" + encodeURIComponent(String(attachment.id || ""));
+    receipt.appendChild(preview);
+    const copy = document.createElement("div");
+    copy.appendChild(name);
+    copy.appendChild(detail);
+    receipt.appendChild(copy);
+    el.appendChild(receipt);
+  }
   chatLog.appendChild(el);
   if (shouldScroll) scrollElementIntoView(el);
   return el;
 }
 
 function syncChat(chat) {
+  if (!Array.isArray(chat) || chat.length < confirmedChatLength) return;
+  // HTTP acknowledgements and live snapshots can cross. The append-only server transcript
+  // must not shrink when an older acknowledgement arrives after a newer live message.
+  confirmedChatLength = chat.length;
   for (const el of [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")]) {
     el.remove();
   }
 
   let lastChatBubble = null;
-  for (const item of chat) lastChatBubble = addChat(item.role, item.text, false) || lastChatBubble;
+  for (const item of chat) lastChatBubble = addChat(item.role, item.text, false, item.attachments) || lastChatBubble;
   if (workingBubble) chatLog.appendChild(workingBubble);
   // Handed-back drafts were written at the end of the conversation, and a rebuild re-appends the
   // whole transcript - so without this they end up above it, where the scroll below would leave
@@ -595,11 +625,11 @@ function syncChat(chat) {
   if (anchor) scrollElementIntoView(anchor);
 }
 
-function setAgentPresence(state) {
+function setAgentPresence(state, receiving = state !== "waiting") {
   agentPresence = state === "listening" || state === "working" ? state : "waiting";
   updateSendState();
   renderSheetSummary();
-  if (presenceBanner) presenceBanner.hidden = ended || agentPresence !== "waiting";
+  if (presenceBanner) presenceBanner.hidden = ended || receiving;
 
   if (agentPresence !== "working") {
     if (workingBubble) workingBubble.remove();
@@ -1209,7 +1239,6 @@ function sendQueued(endAfter) {
       // Render the durable queue pill before clearing the editor. If anything after this point
       // fails, the user's words are already both stored and visibly recoverable in the tab.
       render();
-      addChat("user", text || "Image message");
       chatInput.value = "";
       chatAttachmentController.reset();
     }
@@ -1304,6 +1333,8 @@ async function submitQueuedOnce() {
     }
     throw new Error("failed to submit queued prompts");
   }
+  const receipt = await response.json().catch(() => null);
+  if (Array.isArray(receipt?.chat)) syncChat(receipt.chat);
   for (const prompt of prompts) {
     const index = queued.indexOf(prompt);
     if (index !== -1) queued.splice(index, 1);
@@ -3367,12 +3398,13 @@ events.set("chrome-reload", (data) => reloadAfterServerRestart(String(data.reaso
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
 events.set("chrome-outdated", (data) => setChromeOutdated(true, String(data.reason || "")));
-events.set("agent-reply", ({ text }) => {
-  addChat("agent", text);
+events.set("agent-reply", ({ text, chat }) => {
+  if (Array.isArray(chat)) syncChat(chat);
+  else addChat("agent", text);
   noteAgentReply(text);
 });
 events.set("chat-sync", (data) => syncChat(data.chat || []));
-events.set("agent-presence", (data) => setAgentPresence(data.state));
+events.set("agent-presence", (data) => setAgentPresence(data.state, data.receiving));
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());
 connectLiveEvents();
@@ -3382,7 +3414,7 @@ render();
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);
 renderWarnings();
-initialChat.forEach((item) => addChat(item.role, item.text));
+initialChat.forEach((item) => addChat(item.role, item.text, true, item.attachments));
 retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
 // The session already ended before this page (re)loaded, so there is no future live `ended` event

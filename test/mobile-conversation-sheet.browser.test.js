@@ -109,6 +109,8 @@ test(
     const chromeEnv = {
       CHROME_DEVTOOLS_AXI_SESSION: `lavish-mobile-sheet-${process.pid}`,
       CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
+      CHROME_DEVTOOLS_AXI_AUTO_CONNECT: "0",
+      CHROME_DEVTOOLS_AXI_BROWSER_URL: "",
     };
 
     function evaluate(expression) {
@@ -127,7 +129,12 @@ test(
     }
 
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      run(
+        "chrome-devtools-axi",
+        ["eval", `async () => { await new Promise(resolve => setTimeout(resolve, ${ms})); return true; }`],
+        chromeEnv,
+        ms + 45_000,
+      );
     }
 
     function emulate(viewport) {
@@ -240,6 +247,16 @@ test(
       }
 
       // ---- Portrait phone ----
+      // The bridge starts with an unselected blank page. Select the actual startup page id
+      // before invoking commands that require a selected page (including blank-page snapshots).
+      const pages = run("chrome-devtools-axi", ["pages"], chromeEnv);
+      const pageId = [...pages.matchAll(/^\s*(\d+),about:blank,(?:true|false)$/gm)].at(-1)?.[1];
+      assert.ok(pageId, pages);
+      run("chrome-devtools-axi", ["selectpage", pageId], chromeEnv);
+      assert.match(
+        run("chrome-devtools-axi", ["pages"], chromeEnv),
+        new RegExp(`^\\s*${pageId},about:blank,true$`, "m"),
+      );
       emulate("390x844x3,mobile,touch");
       open(url);
       let g = geometry();

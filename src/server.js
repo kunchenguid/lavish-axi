@@ -293,7 +293,9 @@ export async function serve({
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();
-  const deliveredFeedback = new Set();
+  // Receiving and processing have independent lifetimes. Each delivered batch needs its own
+  // completion identity so a late reply cannot retire a newer batch (or a sibling worker's work).
+  const deliveredFeedback = new Map();
   // Keyed by session so a version-driven shutdown can reload the one chrome whose artifact is
   // being reopened and leave every other open review page on screen. Current chromes use a
   // WebSocket, while the legacy SSE route remains available during rolling local upgrades.
@@ -325,8 +327,11 @@ export async function serve({
   // EventEmitter listener warning the former one-listener-per-SSE-client design reached at only a
   // few boards.
   events.on("reload", (key) => broadcastLiveEvent("reload", key));
-  events.on("agent-reply", (key, text) => broadcastLiveEvent("agent-reply", key, { text }));
-  events.on("agent-presence", (key, state) => broadcastLiveEvent("agent-presence", key, { state }));
+  events.on("agent-reply", (key, text, chat) => broadcastLiveEvent("agent-reply", key, { text, chat }));
+  events.on("chat-sync", (key, chat) => broadcastLiveEvent("chat-sync", key, { chat }));
+  events.on("agent-presence", (key, state) =>
+    broadcastLiveEvent("agent-presence", key, { state, receiving: activePolls.has(key) }),
+  );
   events.on("layout-warnings", (key, warnings) => broadcastLiveEvent("layout-warnings", key, { warnings }));
   events.on("ended", (key, endedBy) => broadcastLiveEvent("ended", key, { ended_by: endedBy || null }));
 
@@ -378,7 +383,10 @@ export async function serve({
       return;
     }
     client.sendEvent("chat-sync", { chat: session?.chat || [] });
-    client.sendEvent("agent-presence", { state: computePresence(key, activePolls, deliveredFeedback) });
+    client.sendEvent("agent-presence", {
+      state: computePresence(key, activePolls, deliveredFeedback),
+      receiving: activePolls.has(key),
+    });
     // A connection that attaches after the live end event still needs the terminal snapshot.
     if (session?.status === "ended") client.sendEvent("ended", { ended_by: session.ended_by || null });
   }
@@ -408,14 +416,15 @@ export async function serve({
 
   function finishFeedbackDelivery(key, result) {
     if (result.status !== "feedback") return;
-    const chat = result.chat;
     delete result.chat;
-    markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
-    // A batch flagged `session_ended` is the last one this session will ever deliver, so no
-    // later poll or agent reply can retire the working state markFeedbackDelivered just set:
-    // release it here or presence reports an agent still working on a session that is over.
-    if (result.session_ended) clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
-    if (Array.isArray(chat)) events.emit("chat-sync", key, chat);
+    // Terminal feedback cannot be completed through a later reply. Ending the session already
+    // releases its processing state; do not briefly advertise a new outstanding batch here.
+    if (result.session_ended) {
+      clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+      return;
+    }
+    result.feedback_id = markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
+    logEvent?.(`feedback delivered key=${key} feedback_id=${result.feedback_id}`);
   }
 
   // `takeFeedback` is destructive: it clears the batch from `state.json` before anything is
@@ -861,8 +870,9 @@ export async function serve({
         await syncOutstandingRepairs(req.params.key);
         events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(session.layout_warnings));
       }
+      events.emit("chat-sync", req.params.key, session.chat || []);
       events.emit(shouldEndSession ? "ended" : "feedback", req.params.key, session.ended_by);
-      res.json({ status: "queued", pending_prompts: session.pending_prompts });
+      res.json({ status: "queued", pending_prompts: session.pending_prompts, chat: session.chat || [] });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);
@@ -975,18 +985,27 @@ export async function serve({
   app.post("/api/:key/agent-reply", async (req, res, next) => {
     try {
       const text = String(req.body?.text || "");
+      const feedbackId = req.body?.feedback_id;
+      if (feedbackId !== undefined && (typeof feedbackId !== "string" || !feedbackId || !text.trim())) {
+        res.status(400).json({ error: "feedback_id requires a nonempty id and an agent reply" });
+        return;
+      }
       const session = await store.addAgentReply(req.params.key, text);
       if (!session) {
         res.status(404).json({ error: "session not found" });
         return;
       }
-      events.emit("agent-reply", req.params.key, text);
-      // The reply concludes the delivered-feedback "working" state. Without this, a poll that
-      // drains feedback and then releases leaves presence stuck on "working" even after the agent
-      // answers. Human sends remain available while working because the server queues them for the
-      // next poll. See "SSE agent-presence returns to waiting after an agent reply".
-      clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
-      res.json({ status: "sent" });
+      events.emit("agent-reply", req.params.key, text, session.chat || []);
+      // Unscoped replies remain usable for progress and older clients, but cannot identify work
+      // to conclude. Snapshotting "the latest" here would let an old worker clear a new delivery.
+      const completed = feedbackId
+        ? clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events, feedbackId)
+        : false;
+      if (feedbackId)
+        logEvent?.(
+          `feedback completion key=${req.params.key} feedback_id=${JSON.stringify(feedbackId)} completed=${completed}`,
+        );
+      res.json({ status: "sent", ...(feedbackId ? { feedback_completed: completed } : {}) });
     } catch (error) {
       next(error);
     }
@@ -2212,38 +2231,40 @@ function setPollActive(key, activePolls, deliveredFeedback, events, active) {
   } else {
     activePolls.set(key, nextCount);
   }
-  // A poll that attaches with nothing else in flight is the agent starting a new round, and that
-  // is the ONLY transition here allowed to retire the previous round's delivery. Releasing a poll
-  // never is: with two polls open, the second one's cleanup would erase the marker the first one
-  // just set and report an agent that is working as merely waiting. Neither is a poll attaching
-  // beside an existing one, which is the same erasure of a sibling's delivery from the other side.
-  // Everything else that retires delivery is an explicit conclusion, through clearFeedbackDelivery.
-  if (active && count === 0) deliveredFeedback.delete(key);
   const nextPresence = computePresence(key, activePolls, deliveredFeedback);
-  if (nextPresence !== previousPresence) events.emit("agent-presence", key, nextPresence);
+  if (nextPresence !== previousPresence || count > 0 !== nextCount > 0) {
+    events.emit("agent-presence", key, nextPresence);
+  }
 }
 
 function markFeedbackDelivered(key, activePolls, deliveredFeedback, events) {
   const previousPresence = computePresence(key, activePolls, deliveredFeedback);
-  deliveredFeedback.add(key);
+  const feedbackId = crypto.randomUUID();
+  const outstanding = deliveredFeedback.get(key) || new Set();
+  outstanding.add(feedbackId);
+  deliveredFeedback.set(key, outstanding);
   const nextPresence = computePresence(key, activePolls, deliveredFeedback);
   if (nextPresence !== previousPresence) {
     events.emit("agent-presence", key, nextPresence);
   }
+  return feedbackId;
 }
 
-function clearFeedbackDelivery(key, activePolls, deliveredFeedback, events) {
+function clearFeedbackDelivery(key, activePolls, deliveredFeedback, events, feedbackId = undefined) {
   const previousPresence = computePresence(key, activePolls, deliveredFeedback);
-  deliveredFeedback.delete(key);
+  const outstanding = deliveredFeedback.get(key);
+  const completed = feedbackId === undefined ? deliveredFeedback.delete(key) : Boolean(outstanding?.delete(feedbackId));
+  if (outstanding?.size === 0) deliveredFeedback.delete(key);
   const nextPresence = computePresence(key, activePolls, deliveredFeedback);
   if (nextPresence !== previousPresence) {
     events.emit("agent-presence", key, nextPresence);
   }
+  return completed;
 }
 
 export function computePresence(key, activePolls, deliveredFeedback) {
-  if (activePolls.has(key)) return "listening";
   if (deliveredFeedback.has(key)) return "working";
+  if (activePolls.has(key)) return "listening";
   return "waiting";
 }
 
