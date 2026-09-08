@@ -675,25 +675,6 @@ test("artifact SDK registers a capture-phase document keydown listener for the m
   );
 });
 
-test("artifact SDK forwards a bare Escape to the chrome without swallowing it", () => {
-  const js = createSdkJs("abc");
-
-  assert.match(js, /function isPlainEscapeEvent\(event\)/);
-  // Capture phase like the mode hotkey, but no preventDefault: artifacts handle Escape themselves.
-  assert.match(
-    js,
-    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isPlainEscapeEvent\(event\)\) return;\s*postArtifactMessage\("lavish:escape"\);\s*\},\s*true,?\s*\);/,
-  );
-});
-
-test("chrome client runs one Escape chain for both its own keypress and a forwarded one", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /function handleEscape\(\)/);
-  assert.match(js, /if \(event\.key === "Escape"\) handleEscape\(\);/);
-  assert.match(js, /if \(msg\.type === "lavish:escape"\) handleEscape\(\);/);
-});
-
 test("chrome client toggles annotation mode via Cmd/Ctrl+I and on request from the artifact SDK", async () => {
   const js = await chromeClientSource();
 

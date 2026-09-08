@@ -219,6 +219,14 @@ function bootSdk({ runAnimationFrames = false } = {}) {
       assert.ok(listeners.length > 0, "the SDK registers a window message listener");
       for (const listener of listeners) listener.handler({ source: sandbox.parent, data });
     },
+    // Both the mode-toggle and Escape listeners register as document-level "keydown" capture
+    // listeners, so drive every one of them with a real event rather than reaching for a
+    // specific handler by name: only isPlainEscapeEvent matches a bare Escape.
+    dispatchDocumentKeydown(event) {
+      const listeners = documentListeners.filter((entry) => entry.type === "keydown");
+      assert.ok(listeners.length > 0, "the SDK registers a document keydown listener");
+      for (const listener of listeners) listener.handler({ preventDefault() {}, ...event });
+    },
     cards() {
       return documentElement.children
         .flatMap((child) => child.shadowRoot?.children || [])
@@ -352,6 +360,22 @@ function pressEscape(textarea) {
   assert.ok(listener, "the annotation textarea registers a keydown listener");
   listener.handler({ key: "Escape", preventDefault() {} });
 }
+
+test("the served SDK bundle forwards a bare Escape to the chrome, but not a modified one", () => {
+  const sdk = bootSdk();
+
+  sdk.dispatchDocumentKeydown({ key: "Escape" });
+  const escapes = sdk.posted.filter((message) => message.type === "lavish:escape");
+  assert.equal(escapes.length, 1);
+  assert.equal(escapes[0].artifact_load_token, "load-token");
+
+  sdk.dispatchDocumentKeydown({ key: "Escape", metaKey: true });
+  assert.equal(
+    sdk.posted.filter((message) => message.type === "lavish:escape").length,
+    1,
+    "a modified Escape belongs to something else and must not forward",
+  );
+});
 
 test("Escape closes an annotation card with no text and no attachment", () => {
   const sdk = bootSdk();
