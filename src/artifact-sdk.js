@@ -12,6 +12,12 @@ export function isModeToggleHotkeyEvent(event) {
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
 }
 
+export function isPlainEscapeEvent(event) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+  if (event.isComposing) return false;
+  return String(event.key || "") === "Escape";
+}
+
 // Derive the browser-only replacement key used to collapse unsent updates for the same input.
 // The key is stripped by the chrome before prompts are sent to the server or returned by poll.
 export function deriveLavishQueueKey(element, options = {}) {
@@ -111,6 +117,21 @@ export function deriveLavishQueueKey(element, options = {}) {
   }
 
   return "";
+}
+
+// Controls that take typed input - and so raise the on-screen keyboard on a phone. The chrome uses
+// this to know when the reviewer is mid-entry and mobile reader mode must leave the layout alone.
+// The type list is inline because createSdkJs serializes this function on its own: it may only
+// reference its arguments, browser globals, or its sibling exports.
+export function isKeyboardEntryElement(el) {
+  if (!el || el.nodeType !== 1) return false;
+  const tag = String(el.tagName || "").toLowerCase();
+  if (tag === "textarea") return true;
+  if (tag === "input") {
+    const type = String((el.getAttribute && el.getAttribute("type")) || "text").toLowerCase();
+    return !"button,checkbox,color,file,hidden,image,radio,range,reset,submit".split(",").includes(type);
+  }
+  return el.isContentEditable === true;
 }
 
 export function isNativeInteractiveControl(el) {
@@ -2074,6 +2095,18 @@ export function createArtifactSdk(
   let reviewStateTimer = 0;
   let draftRestoreTimer = 0;
   const REVIEW_DRAFT_ANCHOR_SETTLE_MS = 1500;
+  // Whether the reviewer is entering text inside the artifact. An open annotation card counts even
+  // before it takes focus, because the card is positioned against the current viewport.
+  let cardOpen = false;
+  let inputFocused = false;
+  let editingReported = false;
+
+  function reportEditingState() {
+    const active = cardOpen || inputFocused;
+    if (active === editingReported) return;
+    editingReported = active;
+    postArtifactMessage("lavish:editing", { active });
+  }
 
   // A card the user opened ends the pending late restore for good, not just for the instant the
   // settle timer happens to fire: closing that card reports `card: null`, which retires the stored
@@ -2227,6 +2260,8 @@ export function createArtifactSdk(
       activeAttachments.destroy();
       activeAttachments = null;
     }
+    cardOpen = false;
+    reportEditingState();
     if (shadow) {
       for (const el of [...shadow.querySelectorAll(".lavish-annotation-card")]) el.remove();
     }
@@ -2428,6 +2463,8 @@ export function createArtifactSdk(
     // Unsent annotation text is review context Lavish owns, so it is reported to the chrome and
     // replayed after a live reload.
     textarea.addEventListener("input", scheduleReviewStateReport);
+    cardOpen = true;
+    reportEditingState();
     if (typeof options.restoreText === "string") {
       textarea.value = options.restoreText;
       // Re-report immediately so restored text survives a second reload too, rather than only
@@ -2508,8 +2545,23 @@ export function createArtifactSdk(
     true,
   );
 
-  // Report scroll position to the chrome so it can be restored across hot reloads.
-  // The iframe is sandboxed without same-origin, so the chrome can't read scrollY directly.
+  // Escape is a chrome-level shortcut too, and focus inside this sandboxed iframe would otherwise
+  // swallow it. Forward a bare Escape so the chrome runs its own Escape chain - collapsed reader
+  // mode included - without this SDK owning any of that state. No preventDefault: unlike the
+  // modified mode hotkey, artifacts legitimately handle Escape themselves.
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!isPlainEscapeEvent(event)) return;
+      postArtifactMessage("lavish:escape");
+    },
+    true,
+  );
+
+  // Report scroll position to the chrome so it can be restored across hot reloads, and so mobile
+  // reader mode can infer scroll direction. The iframe is sandboxed without same-origin, so the
+  // chrome can't read scrollY directly. `maxY` is what lets the chrome tell a real gesture from
+  // rubber-band overscroll past either end of the document.
   let scrollFrame = 0;
   window.addEventListener(
     "scroll",
@@ -2517,10 +2569,34 @@ export function createArtifactSdk(
       if (scrollFrame) return;
       scrollFrame = window.requestAnimationFrame(() => {
         scrollFrame = 0;
-        postArtifactMessage("lavish:scroll", { x: window.scrollX, y: window.scrollY });
+        const scroller = document.scrollingElement || document.documentElement;
+        const maxY = Math.max(0, (scroller ? scroller.scrollHeight : 0) - window.innerHeight);
+        postArtifactMessage("lavish:scroll", { x: window.scrollX, y: window.scrollY, maxY });
       });
     },
     { passive: true },
+  );
+
+  // Tell the chrome when the reviewer is entering text in here - an open annotation card, or any
+  // of the artifact's own inputs. Mobile reader mode uses it to leave the layout alone while the
+  // on-screen keyboard is up, and the chrome cannot see this itself across the sandbox.
+  document.addEventListener(
+    "focusin",
+    (event) => {
+      // focusin from the annotation card retargets to its shadow host, so card focus is tracked by
+      // the card itself; this only sees the artifact's own controls.
+      inputFocused = isKeyboardEntryElement(event.target);
+      reportEditingState();
+    },
+    true,
+  );
+  document.addEventListener(
+    "focusout",
+    () => {
+      inputFocused = false;
+      reportEditingState();
+    },
+    true,
   );
 
   document.addEventListener(

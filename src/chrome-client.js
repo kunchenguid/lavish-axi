@@ -177,6 +177,7 @@ const whiteboardOverlay = /** @type {HTMLDivElement} */ (document.getElementById
 const whiteboardFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("whiteboardFrame"));
 const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("whiteboardClose"));
 const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
+const readerRestoreButton = /** @type {HTMLButtonElement} */ (document.getElementById("readerRestore"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
@@ -219,6 +220,30 @@ let submitQueuedAgain = false;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendAcknowledgementTimer;
 let lastScroll = { x: 0, y: 0 };
+// Mobile reader mode. Scrolling down through the artifact collapses the header and the docked
+// conversation sheet so a phone screen is almost all artifact; scrolling up, returning to the top,
+// the restore control, or Escape brings them back. It runs on the same `MOBILE_SHEET_MEDIA`
+// breakpoint the conversation sheet uses - deliberately one query, not a second copy that could
+// drift - so the desktop chrome, where the panel is a sidebar, never collapses.
+// Scroll offsets at or below this always show the chrome: the top of an artifact is where the
+// reviewer orients, not where they read.
+const READER_TOP_ZONE_PX = 32;
+// Directional travel required to flip the chrome, so jitter and one-off nudges do not.
+const READER_SCROLL_STEP_PX = 24;
+// Collapsing the chrome grows the artifact viewport, which clamps its scroll offset and emits a
+// run of upward scroll reports. Reacting to those would flap the chrome open and shut, so reports
+// only re-baseline until the geometry has settled.
+const READER_SETTLE_MS = 400;
+let readerMode = false;
+let readerScrollPrimed = false;
+let readerScrollY = 0;
+let readerScrollAnchor = 0;
+let readerScrollDirection = 0;
+let readerSettling = false;
+let composerFocused = false;
+let artifactEditing = false;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let readerSettleTimer;
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
 // it as it changes and the chrome replays it once the new document is up. It is persisted per
@@ -784,6 +809,9 @@ function setSheetOpen(open) {
     // Storage refused is not worth a broken sheet: the state just stops surviving a reload.
   }
   if (sheetOpen) unreadAgentReply = "";
+  // The sheet rises out of the panel reader mode collapsed, so the chrome comes back with it -
+  // otherwise the sheet animates up from behind a hidden dock into a page with no way out.
+  if (sheetOpen) exitReaderMode();
   applySheetState();
   if (!changed || !isMobileSheet()) return;
   if (sheetOpen) scrollPanelToBottom();
@@ -797,10 +825,23 @@ function applySheetState() {
   const open = mobile && sheetOpen;
   document.body.classList.toggle("sheet-open", open);
   const docked = mobile && !open;
+  // Reader mode slides the whole sheet, dock included, past the bottom edge. Off-screen is not
+  // unfocusable, so the dock's own controls are inerted too - otherwise Tab walks into chrome the
+  // reviewer cannot see and focus lands nowhere visible.
+  const collapsed = mobile && readerMode;
+  panelHead.inert = collapsed;
   panelScroll.inert = ended || docked;
   chatComposer.inert = ended || docked;
   const activeElement = document.activeElement;
-  if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
+  const inSheetContent = Boolean(
+    activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement)),
+  );
+  const inDock = Boolean(activeElement && panelHead.contains(activeElement));
+  if (collapsed && (inSheetContent || inDock)) {
+    // Reader mode takes the dock away too, so focus goes to the control that replaced it rather
+    // than to a dock that is no longer on screen.
+    readerRestoreButton?.focus?.();
+  } else if (docked && inSheetContent) {
     panelToggle.focus();
   }
   panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -916,6 +957,9 @@ panelHead.addEventListener("pointercancel", (event) => {
 if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
   sheetMedia.addEventListener("change", (event) => {
     if (!event.matches) {
+      // Reader mode only exists in the phone layout: a viewport that grew past the breakpoint
+      // must not keep a collapsed header and panel.
+      setReaderMode(false, { manual: true });
       sheetOpen = false;
       try {
         sessionStorage.removeItem(sheetStorageKey);
@@ -935,6 +979,127 @@ syncVisualViewport();
 
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+// ---------------------------------------------------------------------------
+// Mobile reader mode
+// ---------------------------------------------------------------------------
+
+/**
+ * The artifact is sandboxed, so its scroll position only ever arrives as a postMessage payload -
+ * untrusted input that has to be validated before it can drive chrome state. Returns null for
+ * anything that is not a usable position, so a malformed report is ignored rather than treated as
+ * a jump to the top.
+ */
+function normalizeArtifactScroll(message) {
+  const y = message?.y;
+  if (typeof y !== "number" || !Number.isFinite(y)) return null;
+  const reportedMax = message?.maxY;
+  const maxY = typeof reportedMax === "number" && Number.isFinite(reportedMax) && reportedMax > 0 ? reportedMax : 0;
+  const x = message?.x;
+  return {
+    x: typeof x === "number" && Number.isFinite(x) ? Math.max(0, x) : 0,
+    // Overscroll (rubber banding) reports offsets outside the scrollable range.
+    y: Math.min(Math.max(y, 0), maxY > 0 ? maxY : Math.max(y, 0)),
+    maxY,
+  };
+}
+
+function readerModeAvailable() {
+  return isMobileSheet();
+}
+
+/**
+ * Auto-hide is a convenience, so it yields to anything the reviewer is actively doing: typing a
+ * comment, editing an annotation in the artifact, or working in a surface anchored to the chrome
+ * it would slide away.
+ */
+function readerAutoHideSuppressed() {
+  return (
+    ended ||
+    composerFocused ||
+    artifactEditing ||
+    // A raised conversation sheet is the reviewer working in the panel reader mode would take
+    // away, and it covers the artifact anyway, so there is nothing to reveal by collapsing.
+    (sheetOpen && isMobileSheet()) ||
+    layoutGateVisible ||
+    warningsDrawerOpen ||
+    !moreMenu.hidden ||
+    !shareDialog.hidden ||
+    !whiteboardOverlay.hidden
+  );
+}
+
+function setReaderMode(next, { manual = false } = {}) {
+  const target = Boolean(next) && readerModeAvailable() && !ended;
+  if (target && !manual && readerAutoHideSuppressed()) return;
+  if (target === readerMode) return;
+  readerMode = target;
+  document.body?.classList?.toggle("reader-mode", readerMode);
+  if (readerRestoreButton) readerRestoreButton.hidden = !readerMode;
+  // The docked sheet travels off screen with the rest of the chrome, so its own inert/ARIA state
+  // has to be re-derived: an off-screen dock must not stay a tab stop.
+  applySheetState();
+  beginReaderSettle();
+}
+
+function beginReaderSettle() {
+  readerSettling = true;
+  clearTimeout(readerSettleTimer);
+  readerSettleTimer = setTimeout(() => {
+    readerSettling = false;
+  }, READER_SETTLE_MS);
+  readerSettleTimer?.unref?.();
+}
+
+function exitReaderMode({ focusControls = false } = {}) {
+  if (!readerMode) return;
+  const restoreHadFocus = focusControls && document.activeElement === readerRestoreButton;
+  setReaderMode(false, { manual: true });
+  // The control the reviewer just used disappears with reader mode, so keyboard focus is handed
+  // to the first control that took its place instead of being dropped on the document.
+  if (restoreHadFocus) annotationSwitch?.focus?.();
+}
+
+/** Re-baseline without inferring a direction: the next report is what a gesture is measured from. */
+function primeReaderScroll(y) {
+  readerScrollPrimed = true;
+  readerScrollY = y;
+  readerScrollAnchor = y;
+  readerScrollDirection = 0;
+}
+
+function applyReaderModeScroll(scroll) {
+  if (!readerModeAvailable()) {
+    primeReaderScroll(scroll.y);
+    return;
+  }
+  if (!readerScrollPrimed || readerSettling) {
+    primeReaderScroll(scroll.y);
+    // The top of the artifact still shows the chrome, even when the position was restored rather
+    // than scrolled to - otherwise a reload at the top could strand a collapsed chrome.
+    if (scroll.y <= READER_TOP_ZONE_PX) setReaderMode(false);
+    return;
+  }
+
+  const previous = readerScrollY;
+  readerScrollY = scroll.y;
+  if (scroll.y <= READER_TOP_ZONE_PX) {
+    readerScrollAnchor = scroll.y;
+    readerScrollDirection = 0;
+    setReaderMode(false);
+    return;
+  }
+
+  const delta = scroll.y - previous;
+  if (delta === 0) return;
+  const direction = delta > 0 ? 1 : -1;
+  if (direction !== readerScrollDirection) {
+    readerScrollDirection = direction;
+    readerScrollAnchor = previous;
+  }
+  if (Math.abs(scroll.y - readerScrollAnchor) < READER_SCROLL_STEP_PX) return;
+  setReaderMode(direction > 0);
 }
 
 function removeQueuedPrompt(index, event) {
@@ -970,6 +1135,9 @@ function enqueuePrompt(rawPrompt) {
 
   persistQueuedPrompts();
   render();
+  // Queued feedback the reviewer cannot see reads as feedback that was lost, so a new prompt
+  // always brings the conversation panel back.
+  exitReaderMode();
 }
 
 function stripInternalPromptFields(prompt) {
@@ -1189,6 +1357,9 @@ const chatAttachmentController = createChatAttachmentsController();
 function sendQueued(endAfter) {
   if (ended) return;
   closeMenus();
+  // The artifact can trigger a send while the chrome is collapsed, and everything that answers it -
+  // the send hint, the clearing pills, the working bubble - lives in the panel.
+  exitReaderMode();
 
   // A pending or failed chip holds back only the COMPOSER message (and an
   // explicit end, which would strand the chips) - queued annotation prompts
@@ -1885,6 +2056,7 @@ function markSessionEnded() {
   layoutGateFailureSticky = false;
   revealLayoutGate();
   layoutGateEscape?.end?.();
+  setReaderMode(false, { manual: true });
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
 }
@@ -2999,7 +3171,14 @@ window.addEventListener("message", (event) => {
     }
   }
   if (msg.type === "lavish:scroll") {
-    lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
+    const scroll = normalizeArtifactScroll(msg);
+    if (scroll) {
+      lastScroll = { x: scroll.x, y: scroll.y };
+      applyReaderModeScroll(scroll);
+    }
+  }
+  if (msg.type === "lavish:editing") {
+    artifactEditing = msg.active === true;
   }
   if (msg.type === "lavish:reviewState") {
     setReviewState(msg.state && typeof msg.state === "object" ? msg.state : null);
@@ -3020,6 +3199,7 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
+  if (msg.type === "lavish:escape") handleEscape();
 });
 
 // The sandboxed artifact iframe can't reach the loopback server (opaque origin),
@@ -3256,6 +3436,16 @@ chatInput.addEventListener("keydown", (event) => {
   }
 });
 chatInput.addEventListener("input", () => hideSendHint());
+// A composer the reviewer is typing into - and, on a phone, the on-screen keyboard that comes with
+// it - must never be pulled out from under them by an auto-hide.
+chatInput.addEventListener("focus", () => {
+  composerFocused = true;
+  exitReaderMode();
+});
+chatInput.addEventListener("blur", () => {
+  composerFocused = false;
+});
+if (readerRestoreButton) readerRestoreButton.onclick = () => exitReaderMode({ focusControls: true });
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
@@ -3292,22 +3482,29 @@ warningsWrap.addEventListener("focusout", (event) => {
   if (warningsDrawerOpen && next && !warningsWrap.contains(next)) closeWarningsDrawer();
 });
 whiteboardCloseButton.onclick = closeWhiteboard;
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    if (!whiteboardOverlay.hidden) {
-      closeWhiteboard();
-    } else if (!shareDialog.hidden) {
-      closeShareDialog();
-    } else if (warningsDrawerOpen) {
-      closeWarningsDrawer({ restoreFocus: true });
-    } else if (!moreMenu.hidden) {
-      closeMenus();
-    } else if (sheetOpen && isMobileSheet()) {
-      setSheetOpen(false);
-    } else {
-      closeMenus();
-    }
+// One Escape chain, driven either by a keypress in the chrome or by an Escape the SDK forwarded
+// out of the sandboxed artifact, so focus location never changes what Escape does.
+function handleEscape() {
+  if (!whiteboardOverlay.hidden) {
+    closeWhiteboard();
+  } else if (!shareDialog.hidden) {
+    closeShareDialog();
+  } else if (warningsDrawerOpen) {
+    closeWarningsDrawer({ restoreFocus: true });
+  } else if (!moreMenu.hidden) {
+    closeMenus();
+  } else if (sheetOpen && isMobileSheet()) {
+    setSheetOpen(false);
+  } else if (readerMode) {
+    // Reader mode is only ever entered with the sheet down, so it sits below the sheet in this
+    // chain: Escape lowers a raised sheet first, then brings the collapsed chrome back.
+    exitReaderMode({ focusControls: true });
+  } else {
+    closeMenus();
   }
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") handleEscape();
 });
 // Capture phase so the mode hotkey fires no matter where focus is in the chrome - including
 // mid-keystroke in chatInput or an annotation-card textarea - without disturbing normal typing.
@@ -3325,6 +3522,9 @@ frame.addEventListener("load", () => {
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
+  // A restored (or anchor-driven) position is where the next gesture starts from, not a gesture.
+  readerScrollPrimed = false;
+  artifactEditing = false;
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });
   if (overlayIndex !== null) {
     inlineWhiteboardChannels.delete(overlayIndex);
@@ -3380,6 +3580,7 @@ connectLiveEvents();
 applySheetState();
 render();
 setChromeOutdated(false);
+if (readerRestoreButton) readerRestoreButton.hidden = true;
 setWarningsDrawerOpen(false);
 renderWarnings();
 initialChat.forEach((item) => addChat(item.role, item.text));

@@ -129,12 +129,15 @@ test(
 
     function openReview(url, settleMs = 4500) {
       run("chrome-devtools-axi", ["open", url], chromeEnv);
-      run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
+      wait(settleMs);
       instrumentArtifactLoads();
     }
 
+    // Settling time is the harness's own business, and the driver's `wait` subcommand is not
+    // reliable across its versions, so this blocks in this process instead of spending a browser
+    // round-trip on it. The surrounding helpers are synchronous, so this sleep is too.
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     }
 
     try {
@@ -144,6 +147,9 @@ test(
       const artifact = path.join(temp, "review.html");
       await copyFile(path.join(fixtures, "control-broken-clipping.html"), artifact);
       const url = openArtifact(artifact);
+      // chrome-devtools-axi emulates against the selected page, and a freshly launched browser has
+      // no selection yet, so the blank startup tab is selected first.
+      run("chrome-devtools-axi", ["selectpage", "1"], chromeEnv);
       run("chrome-devtools-axi", ["emulate", "--viewport", "1440x1000x1"], chromeEnv);
       openReview(url);
 
@@ -235,6 +241,24 @@ test(
       assert.ok(narrow.left >= 0 && narrow.right <= narrow.innerWidth, "the drawer fits the narrow viewport");
       assert.equal(narrow.listOverflow, 0, "the list itself never overflows horizontally");
       run("chrome-devtools-axi", ["eval", '() => document.getElementById("warningsButton").click()'], chromeEnv);
+
+      // The bar only clips its own contents while reader mode is collapsing it. A narrow but
+      // expanded bar must let its menus paint outside itself, or every overflow-menu action
+      // (reload, snapshot, export, publish, end) is stranded in the sliver below the trigger.
+      // getBoundingClientRect ignores ancestor clipping, so this hit-tests the painted result.
+      const menu = evaluate(
+        '(() => { document.getElementById("moreButton").click();' +
+          ' const menuEl = document.getElementById("moreMenu");' +
+          " const box = menuEl.getBoundingClientRect();" +
+          ' const barBottom = document.querySelector(".bar").getBoundingClientRect().bottom;' +
+          " const probeY = box.bottom - 4;" +
+          " const hit = document.elementFromPoint(Math.round(box.left + box.width / 2), Math.round(probeY));" +
+          " return JSON.stringify({ menuBottom: Math.round(box.bottom), barBottom: Math.round(barBottom)," +
+          " belowBar: probeY > barBottom, hitInsideMenu: !!hit && menuEl.contains(hit) }); })()",
+      );
+      assert.ok(menu.belowBar, "the overflow menu is taller than the bar it hangs from");
+      assert.ok(menu.hitInsideMenu, "the overflow menu is not clipped by the bar at phone width");
+      run("chrome-devtools-axi", ["eval", '() => document.getElementById("moreButton").click()'], chromeEnv);
 
       // A phone-width pass adds phone-scoped findings without clearing the desktop ones.
       const mobileDetected = inbox();
@@ -450,8 +474,9 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
   function click(pattern) {
     run("chrome-devtools-axi", ["click", `@${ref(pattern)}`], chromeEnv);
   }
+  // See the note on the other suite's `wait`: settling is this process's job, not the driver's.
   function wait(ms) {
-    run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   }
 
   try {
@@ -460,6 +485,9 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
     const url = output.match(/url:\s*"([^"]+)"/)?.[1];
     assert.ok(url, output);
+    // chrome-devtools-axi emulates against the selected page, and a freshly launched browser has
+    // no selection yet, so the blank startup tab is selected first.
+    run("chrome-devtools-axi", ["selectpage", "1"], chromeEnv);
     run("chrome-devtools-axi", ["emulate", "--viewport", "1440x1000x1"], chromeEnv);
     run("chrome-devtools-axi", ["open", url], chromeEnv);
     wait(4500);

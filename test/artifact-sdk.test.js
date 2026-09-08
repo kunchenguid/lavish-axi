@@ -7,9 +7,11 @@ import {
   deriveLavishQueueKey,
   findStableLayoutFindings,
   isMaterialPageOverflow,
+  isKeyboardEntryElement,
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
+  isPlainEscapeEvent,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -323,4 +325,45 @@ test("isModeToggleHotkeyEvent rejects extra shift or alt modifiers", () => {
 test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () => {
   assert.equal(isModeToggleHotkeyEvent({ key: "e", metaKey: true }), false);
   assert.equal(isModeToggleHotkeyEvent({ key: "Enter", metaKey: true }), false);
+});
+
+test("isPlainEscapeEvent forwards only an unmodified Escape", () => {
+  assert.equal(isPlainEscapeEvent({ key: "Escape" }), true);
+  assert.equal(isPlainEscapeEvent({ key: "Escape", metaKey: true }), false);
+  assert.equal(isPlainEscapeEvent({ key: "Escape", ctrlKey: true }), false);
+  assert.equal(isPlainEscapeEvent({ key: "Escape", shiftKey: true }), false);
+  assert.equal(isPlainEscapeEvent({ key: "Escape", altKey: true }), false);
+  assert.equal(isPlainEscapeEvent({ key: "Esc" }), false);
+});
+
+test("isPlainEscapeEvent ignores an Escape that cancels an IME composition", () => {
+  assert.equal(isPlainEscapeEvent({ key: "Escape", isComposing: true }), false);
+});
+
+test("isKeyboardEntryElement recognises the controls that open an on-screen keyboard", () => {
+  assert.equal(isKeyboardEntryElement(node("textarea")), true);
+  assert.equal(isKeyboardEntryElement(node("input", { type: "text" })), true);
+  assert.equal(isKeyboardEntryElement(node("input", { type: "email" })), true);
+  assert.equal(isKeyboardEntryElement(node("input")), true, "an input without a type is a text input");
+  assert.equal(isKeyboardEntryElement(node("input", { type: "SEARCH" })), true);
+});
+
+test("isKeyboardEntryElement ignores controls that take no typing", () => {
+  assert.equal(isKeyboardEntryElement(node("input", { type: "checkbox" })), false);
+  assert.equal(isKeyboardEntryElement(node("input", { type: "radio" })), false);
+  assert.equal(isKeyboardEntryElement(node("input", { type: "range" })), false);
+  assert.equal(isKeyboardEntryElement(node("button")), false);
+  assert.equal(isKeyboardEntryElement(node("select")), false);
+  assert.equal(isKeyboardEntryElement(node("p")), false);
+  assert.equal(isKeyboardEntryElement(null), false);
+});
+
+test("isKeyboardEntryElement treats an editable region as typing", () => {
+  const editable = node("div", { contenteditable: "" });
+  editable.isContentEditable = true;
+  const plain = node("div");
+  plain.isContentEditable = false;
+
+  assert.equal(isKeyboardEntryElement(editable), true);
+  assert.equal(isKeyboardEntryElement(plain), false);
 });

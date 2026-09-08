@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reader mode fixture</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 16px;
+        font:
+          16px/1.6 system-ui,
+          sans-serif;
+        color: #1b1b1b;
+        background: #fff;
+      }
+      h1 {
+        font-size: 24px;
+        margin: 0 0 12px;
+      }
+      p {
+        margin: 0 0 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>A long enough article to scroll</h1>
+    <p id="intro">Reader mode only matters when there is more artifact than screen.</p>
+    <div id="filler"></div>
+    <p id="tail">The end of the article.</p>
+    <script>
+      const filler = document.getElementById("filler");
+      for (let index = 0; index < 60; index += 1) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = `Paragraph ${index + 1}. ` + "Body copy that fills the page. ".repeat(6);
+        filler.appendChild(paragraph);
+      }
+      // Test hook: the artifact is sandboxed with an opaque origin, so the test driver cannot
+      // evaluate script in here to scroll it. This turns a message from the driver into a real
+      // scroll, which produces real scroll events and the SDK's own scroll reports.
+      window.addEventListener("message", (event) => {
+        const message = event.data || {};
+        if (message.type === "lavish-test:scrollBy") window.scrollBy(0, Number(message.dy) || 0);
+      });
+    </script>
+  </body>
+</html>

@@ -1404,10 +1404,17 @@ body.layout-gate-active iframe#artifact {
     --composer-reserve: calc(1px + var(--space-4) + 34px + var(--space-6) + env(safe-area-inset-bottom, 0px));
     --sheet-top: max(var(--bar-h) + var(--sheet-peek) - var(--vv-top, 0px), var(--sheet-peek));
   }
+  /* Showing is instant in `visibility` so a control is focusable the moment it is restored - a
+     transitioned visibility would still be `hidden` when a click handler tries to move focus to
+     it. Hiding delays `visibility` by the collapse instead, so the chrome fades before it goes. */
   .bar {
     padding-top: env(safe-area-inset-top, 0px);
     padding-right: calc(var(--bar-pad) + env(safe-area-inset-right, 0px));
     padding-left: calc(var(--bar-pad) + env(safe-area-inset-left, 0px));
+    transition:
+      height var(--dur) var(--ease),
+      opacity var(--dur) var(--ease),
+      visibility 0s linear 0s;
   }
   .layout {
     height: calc(100vh - var(--bar-h));
@@ -1594,6 +1601,83 @@ body.layout-gate-active iframe#artifact {
   .share-copy-row {
     flex-direction: column;
   }
+  /* Mobile reader mode. The bottom sheet already trades the panel's height for the artifact's;
+     reader mode finishes the trade by taking the top bar and the sheet's own dock strip too, so
+     scrolling down through a long artifact leaves nothing but the artifact. It only ever collapses
+     a CLOSED sheet - chrome-client.js suppresses auto-hide while the sheet is open - so the panel
+     here is always the dock.
+     visibility, not display: the composer draft, queued pills, and chat log all keep their state,
+     and hidden controls drop out of the tab order, so keyboard focus can never be trapped behind
+     chrome the reviewer cannot see. */
+  /* border-width, not just colour: a 1px border keeps the bar 1px tall, which is a 1px strip of
+     the artifact the reviewer does not get back. Zeroing the safe-area padding matters for the
+     same reason - on a notched phone it is the taller half of a collapsed bar. */
+  body.reader-mode .bar {
+    overflow: hidden;
+    height: 0;
+    padding-top: 0;
+    opacity: 0;
+    visibility: hidden;
+    border-bottom-width: 0;
+    transition:
+      height var(--dur) var(--ease),
+      opacity var(--dur) var(--ease),
+      visibility 0s linear var(--dur);
+  }
+  /* The grid's second row exists only to reserve the dock's footprint; with the dock gone the
+     artifact takes the full viewport, bar included. */
+  body.reader-mode .layout {
+    height: 100vh;
+    height: 100dvh;
+    grid-template-rows: minmax(0, 1fr) 0px;
+  }
+  /* The panel is a fixed sheet, so fading it would leave its strip occupying the bottom of the
+     artifact: it has to travel the rest of the way off screen. */
+  body.reader-mode .panel {
+    transform: translateY(100%);
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      transform var(--dur-slow) var(--ease),
+      opacity var(--dur) var(--ease),
+      visibility 0s linear var(--dur-slow);
+  }
+  /* Overlays are insetted below the header, so with the header collapsed they have to reclaim
+     that strip or they leave a gap onto the artifact they are supposed to be covering. */
+  body.reader-mode .ended-overlay,
+  body.reader-mode .panel-scrim {
+    inset: 0;
+  }
+  /* The always-recoverable way back: reachable by tap, and the first tab stop in the document so a
+     keyboard reviewer finds it before anything inside the artifact. */
+  .reader-restore {
+    position: fixed;
+    top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
+    right: calc(var(--space-5) + env(safe-area-inset-right, 0px));
+    z-index: 40;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+    height: 34px;
+    padding: 0 var(--space-6);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: rgba(28, 33, 43, 0.86);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    color: var(--fg-muted);
+    font-family: inherit;
+    font-size: var(--text-xs);
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .reader-restore[hidden] {
+    display: none;
+  }
+  .reader-restore:hover {
+    color: var(--fg);
+  }
 }
 /* A phone on its side has no height to share: the raised sheet covers the bar as well (the sheet
    carries its own close control) and the composer gives up its tall default. */
@@ -1611,10 +1695,16 @@ body.layout-gate-active iframe#artifact {
     max-height: 44px;
   }
 }
+/* Reader mode is a space trade, not an animation: with reduced motion the chrome simply is or
+   is not there. */
 @media (max-width: 860px) and (prefers-reduced-motion: reduce) {
+  .bar,
+  .layout,
   .panel,
   .panel-scrim,
-  .panel-toggle svg {
+  .panel-toggle svg,
+  body.reader-mode .bar,
+  body.reader-mode .panel {
     transition: none;
   }
   .panel-head.is-fresh .panel-toggle {

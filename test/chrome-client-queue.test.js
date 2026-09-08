@@ -59,10 +59,10 @@ async function createChromeHarness({
   const beginRequests = [];
   const artifactBeginRequests = [];
   const focusLog = [];
-  let activeElement = null;
   let nextTimerId = 1;
   let reloadCount = 0;
   let artifactRevision = 0;
+  let activeElement = null;
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -533,6 +533,12 @@ async function createChromeHarness({
       head.dispatch("pointerdown", { pointerId, clientY: fromY, button: 0 });
       head.dispatch("pointermove", { pointerId, clientY: moveY });
       head.dispatch("pointercancel", { pointerId, clientY: cancelY });
+    },
+    // Top-level function declarations land on the vm context, so pure helpers inside
+    // chrome-client.js can be unit tested without going through the DOM.
+    context,
+    activeElement() {
+      return activeElement;
     },
   };
 }
@@ -5539,4 +5545,388 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
   assert.equal(state.scrollInert, true);
   assert.equal(chrome.focusLog.at(-1), "panelToggle");
   assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Mobile reader mode
+// ---------------------------------------------------------------------------
+
+const READER_SETTLE_MS = 400;
+
+async function createMobileChrome(options = {}) {
+  const chrome = await createChromeHarness({
+    mobile: true,
+    // The open-time gate covers the artifact, so reader mode is only reachable once it reveals.
+    // Its own suppression is covered separately below.
+    sessionData: { ...defaultSessionData, layoutGateEnabled: false },
+    ...options,
+  });
+  // Stamped the way the real SDK stamps every postMessage: the chrome drops frame messages whose
+  // artifact_load_token is not the current load's, so an unstamped scroll is silently discarded.
+  const scrollTo = (y, extra = {}) => {
+    chrome.sendFrameMessage({
+      type: "lavish:scroll",
+      x: 0,
+      y,
+      maxY: 4000,
+      artifact_load_token: chrome.artifactLoadToken(),
+      ...extra,
+    });
+  };
+  return {
+    ...chrome,
+    scrollTo,
+    // A real scroll arrives as a stream of frames, so tests move in steps the way a finger does.
+    scrollBy(from, to, steps = 2) {
+      for (let step = 1; step <= steps; step += 1) scrollTo(from + ((to - from) * step) / steps);
+    },
+    settle() {
+      chrome.runTimers(READER_SETTLE_MS);
+    },
+    readerMode() {
+      return chrome.element("body").classList.contains("reader-mode");
+    },
+    restoreHidden() {
+      return chrome.element("readerRestore").hidden;
+    },
+  };
+}
+
+test("reader mode collapses the chrome on a downward scroll and restores it on an upward one", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  assert.equal(chrome.readerMode(), false, "the chrome starts visible");
+
+  chrome.scrollTo(24);
+  assert.equal(chrome.readerMode(), false, "movement inside the top zone never hides the chrome");
+
+  chrome.scrollTo(160);
+  assert.equal(chrome.readerMode(), true, "scrolling down hides the header and the panel");
+  assert.equal(chrome.restoreHidden(), false, "the restore control appears with the collapsed chrome");
+
+  chrome.settle();
+  chrome.scrollTo(150);
+  chrome.scrollTo(110);
+  assert.equal(chrome.readerMode(), false, "scrolling up brings the chrome back");
+  assert.equal(chrome.restoreHidden(), true);
+});
+
+test("reader mode restores when the artifact returns near the top", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), true);
+
+  chrome.settle();
+  chrome.scrollTo(8);
+  assert.equal(chrome.readerMode(), false, "the top of the artifact always shows the controls");
+});
+
+test("desktop widths never enter reader mode", async () => {
+  const chrome = await createChromeHarness();
+
+  for (const y of [0, 200, 400, 800]) chrome.sendFrameMessage({ type: "lavish:scroll", x: 0, y, maxY: 4000 });
+
+  assert.equal(chrome.element("body").classList.contains("reader-mode"), false);
+  assert.equal(chrome.element("readerRestore").hidden, true, "the restore control stays out of the desktop chrome");
+});
+
+test("widening past the mobile breakpoint restores the collapsed chrome", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 400);
+  assert.equal(chrome.readerMode(), true);
+
+  chrome.setMobile(false);
+  assert.equal(chrome.readerMode(), false, "a desktop-width viewport can never be left without chrome");
+  assert.equal(chrome.restoreHidden(), true);
+});
+
+test("the restore control and Escape both bring the chrome back", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 400);
+  assert.equal(chrome.readerMode(), true);
+
+  // A keyboard reviewer tabs to the control before activating it.
+  chrome.element("readerRestore").focus();
+  chrome.element("readerRestore").click();
+  assert.equal(chrome.readerMode(), false);
+  assert.equal(chrome.restoreHidden(), true);
+  assert.equal(chrome.activeElement().id, "annotation", "focus lands on a visible control, never nowhere");
+
+  chrome.settle();
+  chrome.scrollBy(400, 800);
+  assert.equal(chrome.readerMode(), true);
+
+  const escape = chrome.dispatchDocumentKeydown({ key: "Escape" });
+  assert.equal(chrome.readerMode(), false, "Escape is the keyboard escape hatch out of reader mode");
+  assert.equal(escape.defaultPrevented, false, "Escape stays available to the rest of the chrome");
+});
+
+test("an Escape forwarded out of the sandboxed artifact restores the chrome", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 400);
+  assert.equal(chrome.readerMode(), true);
+
+  chrome.settle();
+  chrome.sendFrameMessage({ type: "lavish:escape" });
+  assert.equal(chrome.readerMode(), false, "focus inside the iframe must not swallow the Escape path");
+  assert.equal(chrome.restoreHidden(), true);
+});
+
+test("a focused composer suppresses auto-hide and keeps its draft across a hide cycle", async () => {
+  const chrome = await createMobileChrome();
+  const chatInput = chrome.element("chatInput");
+
+  chatInput.value = "half-written feedback";
+  chatInput.dispatch("focus");
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), false, "typing in the composer is never interrupted by an auto-hide");
+
+  chatInput.dispatch("blur");
+  chrome.scrollBy(600, 900);
+  assert.equal(chrome.readerMode(), true);
+  assert.equal(chatInput.value, "half-written feedback", "the draft survives the collapse");
+
+  chrome.element("readerRestore").click();
+  assert.equal(chatInput.value, "half-written feedback", "the draft survives the restore");
+});
+
+test("an open annotation card in the artifact suppresses auto-hide", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.sendFrameMessage({ type: "lavish:editing", active: true });
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), false, "an artifact-side input keeps the chrome in place");
+
+  chrome.sendFrameMessage({ type: "lavish:editing", active: false });
+  chrome.scrollBy(600, 900);
+  assert.equal(chrome.readerMode(), true);
+});
+
+test("an open chrome menu suppresses auto-hide", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.element("moreButton").click();
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), false, "the bar cannot slide out from under an open menu");
+});
+
+test("the open-time layout gate suppresses auto-hide until the artifact is revealed", async () => {
+  const chrome = await createMobileChrome({ sessionData: defaultSessionData });
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), false, "the chrome cannot collapse behind the gate overlay");
+
+  chrome.element("layoutGateAction").click();
+  chrome.settle();
+  chrome.scrollBy(600, 900);
+  assert.equal(chrome.readerMode(), true);
+});
+
+test("queued feedback restores the chrome so the reviewer sees the pill", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 400);
+  assert.equal(chrome.readerMode(), true);
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Tighten this heading", selector: "h1", tag: "annotation", text: "Heading" },
+  });
+
+  assert.equal(chrome.readerMode(), false);
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Tighten this heading"],
+  );
+});
+
+test("an artifact-triggered send restores the chrome that answers it", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 400);
+  assert.equal(chrome.readerMode(), true);
+
+  // Nothing is queued, so the send answers with the hint that lives in the collapsed panel.
+  chrome.sendFrameMessage({ type: "lavish:sendQueuedPrompts" });
+
+  assert.equal(chrome.readerMode(), false);
+  assert.equal(chrome.element("sendHint").hidden, false);
+});
+
+test("ending the session restores the chrome", async () => {
+  const chrome = await createMobileChrome({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ status: "ended" }) }),
+  });
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 400);
+  assert.equal(chrome.readerMode(), true);
+
+  chrome.element("end").click();
+  await flushPromises();
+
+  assert.equal(chrome.readerMode(), false, "an ended session never leaves the overlay behind hidden chrome");
+  assert.equal(chrome.restoreHidden(), true);
+});
+
+test("reader mode ignores the geometry settling reports that follow a collapse", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), true);
+
+  // Growing the artifact viewport clamps its scroll offset, which the browser reports as a run of
+  // upward scrolls. Reacting to those would flap the chrome open and shut.
+  for (const y of [560, 520, 480, 440]) chrome.scrollTo(y);
+  assert.equal(chrome.readerMode(), true, "self-inflicted scroll reports never toggle the chrome back");
+
+  chrome.settle();
+  chrome.scrollTo(400);
+  chrome.scrollTo(360);
+  assert.equal(chrome.readerMode(), false, "a real upward scroll after the settle still restores it");
+});
+
+test("the first scroll report after an artifact load only sets the baseline", async () => {
+  const chrome = await createMobileChrome({ artifactSrc: "/artifact/abc/index.html" });
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 900);
+  assert.equal(chrome.readerMode(), true);
+  chrome.element("readerRestore").click();
+  chrome.settle();
+
+  chrome.element("artifact").dispatch("load");
+  chrome.scrollTo(900);
+  assert.equal(chrome.readerMode(), false, "a restored scroll position is a baseline, not a downward gesture");
+
+  chrome.scrollTo(1000);
+  assert.equal(chrome.readerMode(), true, "scrolling on from the restored position still works");
+});
+
+test("malformed scroll reports are ignored and never overwrite the restore position", async () => {
+  const chrome = await createMobileChrome({ artifactSrc: "/artifact/abc/index.html" });
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 500);
+  assert.equal(chrome.readerMode(), true);
+  chrome.element("readerRestore").click();
+  chrome.settle();
+
+  const before = chrome.postedToFrame.length;
+  for (const bad of [{}, { y: "700" }, { y: Number.NaN }, { y: null }, { x: 4 }])
+    chrome.sendFrameMessage({ type: "lavish:scroll", artifact_load_token: chrome.artifactLoadToken(), ...bad });
+  assert.equal(chrome.readerMode(), false, "garbage scroll input cannot drive the chrome");
+
+  chrome.element("artifact").dispatch("load");
+  const restore = chrome.postedToFrame.slice(before).find((message) => message.type === "lavish:restoreScroll");
+  assert.equal(restore.y, 500, "the last valid position is what a live reload restores");
+});
+
+test("a raised conversation sheet suppresses reader mode's auto-hide", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 900);
+  assert.equal(chrome.readerMode(), false, "the sheet the reviewer raised is never slid away underneath them");
+  assert.equal(sheetState(chrome).open, true, "and the sheet stays up");
+
+  // Lowering the sheet hands the artifact back, and reader mode resumes from there.
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, false);
+  chrome.scrollBy(900, 1200);
+  assert.equal(chrome.readerMode(), true);
+});
+
+test("raising the conversation sheet restores the chrome reader mode collapsed", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), true);
+  assert.equal(chrome.restoreHidden(), false);
+
+  // The dock is off screen with the rest of the chrome, so this models the other way in: an
+  // artifact-side action that opens the conversation.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Tighten this heading", selector: "h1", tag: "annotation", text: "Heading" },
+  });
+  chrome.element("panelHead").dispatch("click", {});
+
+  assert.equal(chrome.readerMode(), false, "the sheet never rises out of chrome that is still collapsed");
+  assert.equal(chrome.restoreHidden(), true);
+  assert.equal(sheetState(chrome).open, true);
+});
+
+test("a collapsed dock leaves the tab order and hands focus to the restore control", async () => {
+  const chrome = await createMobileChrome();
+  const panelHead = chrome.element("panelHead");
+
+  assert.equal(Boolean(panelHead.inert), false, "the dock is reachable while the chrome is showing");
+
+  panelHead.focus();
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), true);
+  assert.equal(Boolean(panelHead.inert), true, "an off-screen dock is not a tab stop");
+  assert.equal(chrome.focusLog.at(-1), "readerRestore", "focus follows the chrome it was sitting in");
+
+  chrome.element("readerRestore").click();
+  assert.equal(Boolean(panelHead.inert), false, "the dock is reachable again once the chrome returns");
+});
+
+test("reader mode is inert on desktop even after the sheet breakpoint is crossed both ways", async () => {
+  const chrome = await createMobileChrome();
+
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), true);
+
+  chrome.setMobile(false);
+  assert.equal(chrome.readerMode(), false);
+  chrome.settle();
+  chrome.scrollBy(600, 1200);
+  assert.equal(chrome.readerMode(), false, "a desktop-width chrome never collapses, whatever the artifact reports");
+
+  chrome.setMobile(true);
+  chrome.settle();
+  chrome.scrollTo(0);
+  chrome.scrollBy(0, 600);
+  assert.equal(chrome.readerMode(), true, "and narrowing again restores the behaviour");
+});
+
+test("normalizeArtifactScroll validates and clamps what the artifact reports", async () => {
+  const chrome = await createChromeHarness();
+  // The helper builds its object inside the vm realm, so compare structure in this one.
+  const normalize = (message) => {
+    const result = /** @type {any} */ (chrome.context).normalizeArtifactScroll(message);
+    return result === null ? null : { ...result };
+  };
+
+  assert.equal(normalize(null), null);
+  assert.equal(normalize({ y: "120" }), null, "a non-numeric offset is not a scroll position");
+  assert.equal(normalize({ y: Number.NaN, maxY: 10 }), null);
+  assert.deepEqual(normalize({ x: 3, y: 120, maxY: 900 }), { x: 3, y: 120, maxY: 900 });
+  assert.deepEqual(normalize({ y: -40, maxY: 900 }), { x: 0, y: 0, maxY: 900 }, "rubber-band overscroll clamps");
+  assert.deepEqual(normalize({ y: 1200, maxY: 900 }), { x: 0, y: 900, maxY: 900 });
+  assert.deepEqual(normalize({ y: 300 }), { x: 0, y: 300, maxY: 0 }, "an SDK without maxY still reports a position");
 });

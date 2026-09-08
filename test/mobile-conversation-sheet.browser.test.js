@@ -126,8 +126,11 @@ test(
       return value;
     }
 
+    // Settling time is the harness's own business, and the driver's `wait` subcommand is not
+    // reliable across its versions, so this blocks in this process instead of spending a browser
+    // round-trip on it. The surrounding helpers are synchronous, so this sleep is too.
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     }
 
     function emulate(viewport) {
@@ -240,6 +243,9 @@ test(
       }
 
       // ---- Portrait phone ----
+      // chrome-devtools-axi emulates against the selected page, and a freshly launched browser has
+      // no selection yet, so the blank startup tab is selected first.
+      run("chrome-devtools-axi", ["selectpage", "1"], chromeEnv);
       emulate("390x844x3,mobile,touch");
       open(url);
       let g = geometry();

@@ -233,7 +233,9 @@ function bootSdk({ runAnimationFrames = false } = {}) {
       const card = this.card();
       card.querySelector("textarea").value = text;
       card.querySelector(".lavish-send").onclick();
-      return posted.at(-1);
+      // Queuing also closes the card, which reports the editing state the chrome uses for mobile
+      // reader mode, so the prompt is picked out by type rather than by being the last message.
+      return posted.filter((message) => message.type === "lavish:queuePrompt").at(-1);
     },
   };
 }
