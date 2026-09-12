@@ -5,6 +5,8 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { conversationBrowser } from "./support/conversation-browser.js";
 import { fileURLToPath } from "node:url";
 
 // The phone-width conversation surface, measured in a real browser. Before this change the panel
@@ -106,42 +108,16 @@ test(
       LAVISH_AXI_HOST: "127.0.0.1",
       LAVISH_AXI_LINK_HOST: "127.0.0.1",
     };
-    const chromeEnv = {
-      CHROME_DEVTOOLS_AXI_SESSION: `lavish-mobile-sheet-${process.pid}`,
-      CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
-    };
-
-    function evaluate(expression) {
-      const output = run("chrome-devtools-axi", ["eval", expression], chromeEnv);
-      const raw = output.match(/result:\s*("(?:[^"\\]|\\.)*")/s)?.[1];
-      assert.ok(raw, output);
-      let value = JSON.parse(raw);
-      while (typeof value === "string") {
-        try {
-          value = JSON.parse(value);
-        } catch {
-          break;
-        }
-      }
-      return value;
+    let browser;
+    let serverStarted = false;
+    const evaluate = (expression) => browser.evaluate(expression);
+    const wait = (ms) => delay(ms);
+    const emulate = (viewport) => browser.emulate(viewport);
+    async function open(url, settleMs = 4000) {
+      await browser.open(url);
+      await wait(settleMs);
     }
-
-    function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
-    }
-
-    function emulate(viewport) {
-      run("chrome-devtools-axi", ["emulate", "--viewport", viewport], chromeEnv);
-    }
-
-    function open(url, settleMs = 4000) {
-      run("chrome-devtools-axi", ["open", url], chromeEnv);
-      wait(settleMs);
-    }
-
-    function geometry() {
-      return evaluate(GEOMETRY);
-    }
+    const geometry = () => evaluate(GEOMETRY);
 
     // Everything the user can reach in the sheet sits inside the viewport, and the log scrolls
     // inside the sheet rather than being cut off by it.
@@ -168,8 +144,8 @@ test(
       assert.equal(g.documentScrollable, false, "the page itself never scrolls");
     }
 
-    function populateComposer() {
-      evaluate(`() => {
+    async function populateComposer() {
+      await evaluate(`() => {
         document.getElementById("presenceBanner").hidden = false;
         document.getElementById("chatAttachments").innerHTML = ${JSON.stringify(
           Array.from(
@@ -181,7 +157,7 @@ test(
         document.getElementById("chatComposer").scrollTop = 0;
         return "ok";
       }`);
-      wait(300);
+      await wait(300);
     }
 
     function assertPopulatedComposerUsable(g) {
@@ -225,9 +201,11 @@ test(
     }
 
     try {
+      browser = await conversationBrowser(temp, `lavish-mobile-sheet-${process.pid}`);
       const artifact = path.join(temp, "review.html");
       await writeFile(artifact, ARTIFACT);
       const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
+      serverStarted = true;
       const url = output.match(/url:\s*"([^"]+)"/)?.[1];
       assert.ok(url, output);
       for (const reply of REPLIES) {
@@ -240,46 +218,46 @@ test(
       }
 
       // ---- Portrait phone ----
-      emulate("390x844x3,mobile,touch");
-      open(url);
-      let g = geometry();
+      await emulate("390x844x3,mobile,touch");
+      await open(url);
+      let g = await geometry();
       assertDocked(g);
       assert.equal(g.summary, "Agent not listening");
 
-      evaluate('() => { document.getElementById("panelHead").click(); return "ok"; }');
-      wait(500);
-      assertSheetUsable(geometry());
+      await evaluate('() => { document.getElementById("panelHead").click(); return "ok"; }');
+      await wait(500);
+      assertSheetUsable(await geometry());
 
       // The scrim lowers it again and the artifact is back to full height.
-      evaluate('() => { document.getElementById("panelScrim").click(); return "ok"; }');
-      wait(500);
-      assertDocked(geometry());
+      await evaluate('() => { document.getElementById("panelScrim").click(); return "ok"; }');
+      await wait(500);
+      assertDocked(await geometry());
 
       // ---- Short phone (small-height case) ----
-      emulate("375x548x2,mobile,touch");
-      open(url);
-      g = geometry();
+      await emulate("375x548x2,mobile,touch");
+      await open(url);
+      g = await geometry();
       assertDocked(g);
-      evaluate('() => { document.getElementById("panelToggle").click(); return "ok"; }');
-      wait(500);
-      assertSheetUsable(geometry());
+      await evaluate('() => { document.getElementById("panelToggle").click(); return "ok"; }');
+      await wait(500);
+      assertSheetUsable(await geometry());
 
       // The open sheet survives a chrome reload on the same tab.
-      open(url, 3000);
-      assertSheetUsable(geometry());
-      populateComposer();
-      g = geometry();
+      await open(url, 3000);
+      assertSheetUsable(await geometry());
+      await populateComposer();
+      g = await geometry();
       assertPopulatedComposerUsable(g);
       assert.ok(g.chat.visible >= 56, `normal visual viewport retains the chat minimum: ${JSON.stringify(g.chat)}`);
 
-      evaluate(`() => {
+      await evaluate(`() => {
         document.documentElement.style.setProperty("--vv-top", "0px");
         document.documentElement.style.setProperty("--vv-height", "240px");
         document.getElementById("chatComposer").scrollTop = 0;
         return "ok";
       }`);
-      wait(300);
-      g = geometry();
+      await wait(300);
+      g = await geometry();
       assert.equal(g.composer.scrollTop, 0);
       assert.equal(g.panel.bottom, 240);
       assert.equal(g.composer.bottom, 240);
@@ -293,24 +271,24 @@ test(
           `${name} stays inside the short visual viewport: ${JSON.stringify(rect)}`,
         );
       }
-      evaluate(`() => {
+      await evaluate(`() => {
         document.documentElement.style.removeProperty("--vv-top");
         document.documentElement.style.removeProperty("--vv-height");
         return "ok";
       }`);
-      wait(300);
+      await wait(300);
 
-      emulate("844x390x1,mobile,touch");
-      open(url, 3000);
-      populateComposer();
-      g = geometry();
+      await emulate("844x390x1,mobile,touch");
+      await open(url, 3000);
+      await populateComposer();
+      g = await geometry();
       assert.equal(g.panel.bottom, g.viewport.height);
       assertPopulatedComposerUsable(g);
 
       // ---- Desktop: a side panel, never a sheet ----
-      emulate("1440x1000x1");
-      open(url, 3000);
-      g = geometry();
+      await emulate("1440x1000x1");
+      await open(url, 3000);
+      g = await geometry();
       assert.equal(g.open, false);
       assert.notEqual(g.panelPosition, "fixed");
       assert.equal(g.panel.top, 56);
@@ -319,9 +297,16 @@ test(
       assert.equal(g.chat.inert, false);
       assert.equal(g.frame.right, g.panel.left, "artifact and panel sit side by side");
     } finally {
-      run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
-      run("chrome-devtools-axi", ["stop"], chromeEnv);
-      await rm(temp, { recursive: true, force: true });
+      try {
+        if (serverStarted)
+          run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
+      } finally {
+        try {
+          await browser?.stop();
+        } finally {
+          await rm(temp, { recursive: true, force: true });
+        }
+      }
     }
   },
 );

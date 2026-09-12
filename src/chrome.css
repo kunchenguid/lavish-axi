@@ -216,6 +216,28 @@ body.lavish {
   left: 16px;
   background: var(--accent-ink);
 }
+.conversation-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  max-width: 240px;
+}
+.conversation-status {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--accent);
+}
+body.conversation-hidden .layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+body.conversation-hidden .panel {
+  display: none;
+}
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -1660,6 +1682,10 @@ body.layout-gate-active iframe#artifact {
    of covering the composer, and every edge that can meet a notch or home indicator pads by the
    matching safe-area inset. */
 @media (max-width: 860px) {
+  .conversation-control {
+    display: none;
+  }
+
   :root {
     --bar-h: calc(56px + env(safe-area-inset-top, 0px));
     --dock-h: 60px;

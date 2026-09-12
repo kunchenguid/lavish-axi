@@ -118,6 +118,8 @@ const panel = /** @type {HTMLElement} */ (document.getElementById("panel"));
 const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelHead"));
 const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
+const conversationToggle = /** @type {HTMLButtonElement} */ (document.getElementById("conversationToggle"));
+const conversationStatus = /** @type {HTMLSpanElement} */ (document.getElementById("conversationStatus"));
 const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
@@ -791,6 +793,7 @@ chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
+  revealConversation();
   sendHint.textContent = message;
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);
@@ -1088,6 +1091,8 @@ function setAgentPresence(state) {
 
 function setHandoffSuperseded(visible) {
   if (handoffBanner) handoffBanner.hidden = ended || !visible;
+  if (visible && !ended) revealConversation();
+  renderConversationStatus();
 }
 
 // The server this page was connected to went away. What is true beyond that depends on why, so
@@ -1112,6 +1117,8 @@ function setChromeOutdated(visible, reason = chromeOutdatedReason) {
   outdatedReloadInFlight = false;
   if (outdatedReloadButton) outdatedReloadButton.disabled = false;
   if (outdatedBanner) outdatedBanner.hidden = ended || !visible;
+  if (visible && !ended) revealConversation();
+  renderConversationStatus();
 }
 
 function setReviewState(state) {
@@ -1225,12 +1232,45 @@ const sheetMedia = typeof window.matchMedia === "function" ? window.matchMedia(M
 // The user's intent, kept across a chrome reload so a live-reload or server upgrade does not drop
 // them back onto a closed dock mid-conversation.
 let sheetOpen = readSheetOpen();
-// The latest agent reply that landed while the sheet was closed: the dock previews it until the
-// user opens the sheet, so a reply never arrives silently behind the artifact.
+// Wide-layout intent is independent of the phone sheet, including across browser zoom changes.
+const conversationStorageKey = "lavish-axi:conversation-hidden:" + key;
+let conversationHidden = loadJsonState(conversationStorageKey, false) === true;
+// Replies received while Conversation is hidden are reported by the toolbar or phone summary.
 let unreadAgentReply = "";
 /** @type {{ pointerId: any, startY: number, moved: boolean } | null} */
 let sheetDrag = null;
 let suppressSheetClick = false;
+
+function setConversationHidden(hidden) {
+  conversationHidden = Boolean(hidden);
+  saveJsonState(conversationStorageKey, conversationHidden);
+  if (!conversationHidden) unreadAgentReply = "";
+  applySheetState();
+}
+
+function revealConversation() {
+  if (!isMobileSheet() && conversationHidden) setConversationHidden(false);
+}
+
+conversationToggle.onclick = () => setConversationHidden(!conversationHidden);
+
+function renderConversationStatus() {
+  const hidden = !isMobileSheet() && conversationHidden;
+  const parts = [];
+  if (ended) parts.push("Session ended");
+  else {
+    if (handoffBanner && !handoffBanner.hidden) parts.push("Open in another tab");
+    if (outdatedBanner && !outdatedBanner.hidden) parts.push("Server notice");
+    if (agentPresence === "waiting") parts.push("Agent not listening");
+    if (queued.length) parts.push(queued.length + " queued");
+    if (unreadAgentReply) parts.push("New reply");
+    if (!parts.length) parts.push(agentPresence === "working" ? "Agent is working…" : "Agent listening");
+  }
+  const status = hidden ? parts.join(" · ") : "";
+  conversationStatus.textContent = status;
+  conversationStatus.title = status;
+  conversationStatus.hidden = !hidden;
+}
 
 function readSheetOpen() {
   try {
@@ -1260,19 +1300,29 @@ function setSheetOpen(open) {
   if (sheetOpen) scrollPanelToBottom();
 }
 
-// Re-derives every sheet attribute from the phone layout, sheet-open, and session-ended state so a
-// viewport crossing the breakpoint in either direction cannot make an ended panel interactive or
-// leave a closed dock trapping focus.
+// Re-derives every sheet and wide-panel attribute from the phone layout, sheet-open, wide-hidden,
+// and session-ended state so a viewport crossing the breakpoint in either direction cannot make an
+// ended panel interactive or leave hidden conversation content holding focus.
 function applySheetState() {
+  const activeElement = document.activeElement;
   const mobile = isMobileSheet();
   const open = mobile && sheetOpen;
   document.body.classList.toggle("sheet-open", open);
   const docked = mobile && !open;
+  const hidden = !mobile && conversationHidden;
+  document.body.classList.toggle("conversation-hidden", hidden);
+  panel.inert = hidden;
+  conversationToggle.setAttribute("aria-pressed", hidden ? "false" : "true");
+  conversationToggle.title = hidden ? "Show conversation" : "Hide conversation";
   panelScroll.inert = ended || docked;
   chatComposer.inert = ended || docked;
-  const activeElement = document.activeElement;
-  if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
-    panelToggle.focus();
+  if (
+    (docked || hidden) &&
+    activeElement &&
+    (panel.contains(activeElement) || panelScroll.contains(activeElement) || chatComposer.contains(activeElement))
+  ) {
+    if (hidden) conversationToggle.focus();
+    else panelToggle.focus();
   }
   panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
   panelToggle.setAttribute("aria-label", open ? "Hide conversation" : "Show conversation");
@@ -1294,6 +1344,7 @@ function sheetSummary() {
 }
 
 function renderSheetSummary() {
+  renderConversationStatus();
   const summary = sheetSummary();
   panelSummary.textContent = summary.text;
   panelSummary.classList.toggle("is-accent", summary.accent);
@@ -1311,7 +1362,7 @@ function pulseSheetDock() {
 }
 
 function noteAgentReply(text) {
-  if (!isMobileSheet() || sheetOpen) return;
+  if (isMobileSheet() ? sheetOpen : !conversationHidden) return;
   unreadAgentReply = String(text || "");
   renderSheetSummary();
   pulseSheetDock();
@@ -1677,6 +1728,7 @@ function createChatAttachmentsController() {
   }
 
   function renderAttachments() {
+    if (items.some((item) => item.status === "error")) revealConversation();
     chatAttachments.innerHTML = items
       .map((item) => {
         const status = item.status === "uploading" ? "Uploading…" : item.status === "error" ? item.error : "";

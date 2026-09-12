@@ -46,6 +46,16 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json`.
 - User-facing telemetry docs should stay minimal: anonymous usage telemetry, no sensitive content, and `LAVISH_AXI_TELEMETRY=0` opt-out.
 
+## Conversation browser tests
+
+The conversation suites are opt-in and use `chrome-devtools-axi` by default:
+
+```sh
+LAVISH_AXI_BROWSER_E2E=1 node --test test/mobile-conversation-sheet.browser.test.js test/wide-conversation-panel.browser.test.js
+```
+
+Set `LAVISH_AXI_CHROME_PATH` to a Chrome executable to run these two suites directly in an isolated headless browser. This override does not install Chrome or change the installed CLI. The wide suite checks 1440px, 960px, and 861px CSS viewports and transitions to the phone sheet; viewport emulation does not test native browser zoom controls.
+
 ## Questions
 
 Open an issue, or talk to me on [Discord](https://discord.gg/Wsy2NpnZDu).
