@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.68](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.67...lavish-axi-v0.1.68) (2026-09-15)
+
+
+### Bug Fixes
+
+* **chrome:** prevent feedback from stalling during snapshot capture ([#334](https://github.com/kunchenguid/lavish-axi/issues/334)) ([830efa8](https://github.com/kunchenguid/lavish-axi/commit/830efa80da49dda662232594630bf0c4e459fee8))
+
 ## [0.1.67](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.66...lavish-axi-v0.1.67) (2026-09-07)
 
 
