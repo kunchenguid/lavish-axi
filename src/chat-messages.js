@@ -14,15 +14,15 @@ const LABEL_MAX = 40;
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 const BLOCK_START = /^(?:```|~~~|#{1,6}\s|\s*(?:[-*+]|\d+[.)])\s+)/;
 const FENCE_OPEN = /^(```|~~~)/;
-const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+const HEADING = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/;
 
 function escapeHtml(value) {
   return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 // Inline rules run on text that is already escaped, so no rule can be tricked into emitting
-// markup that was not one of these. Code spans are split out first so nothing else touches
-// their contents; link targets are limited to http(s) and open in a new tab.
+// markup that was not one of these. Code spans and images are split out first so nothing else
+// touches their contents; link targets are limited to http(s) and open in a new tab.
 function renderEmphasis(text) {
   return text
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
@@ -30,33 +30,107 @@ function renderEmphasis(text) {
     .replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g, "$1<em>$2</em>");
 }
 
+function destinationEnd(text, start) {
+  let depth = 0;
+  let i = start;
+  while (i < text.length && !/[\s<]/.test(text[i])) {
+    if (text[i] === "(") depth += 1;
+    if (text[i] === ")") {
+      if (depth === 0) break;
+      depth -= 1;
+    }
+    i += 1;
+  }
+  return { end: i, balanced: depth === 0 };
+}
+
+function imageEnd(text, start) {
+  if (!text.startsWith("![", start)) return -1;
+  const labelEnd = text.indexOf("](", start + 2);
+  if (labelEnd === -1 || text.slice(start + 2, labelEnd).includes("\n")) return -1;
+  const destinationStart = labelEnd + 2;
+  const destination = destinationEnd(text, destinationStart);
+  if (destination.end === destinationStart || !destination.balanced) return -1;
+  if (text[destination.end] === ")") return destination.end + 1;
+  let titleStart = destination.end;
+  while (text[titleStart] === " " || text[titleStart] === "\t") titleStart += 1;
+  if (text[titleStart] !== '"') return -1;
+  const titleEnd = text.indexOf('"', titleStart + 1);
+  if (titleEnd === -1 || text.slice(titleStart + 1, titleEnd).includes("\n")) return -1;
+  let close = titleEnd + 1;
+  while (text[close] === " " || text[close] === "\t") close += 1;
+  return text[close] === ")" ? close + 1 : -1;
+}
+
+function markdownLinkAt(text, start) {
+  if (text[start] !== "[") return null;
+  const labelEnd = text.indexOf("](", start + 1);
+  if (labelEnd === -1 || text.slice(start + 1, labelEnd).includes("\n")) return null;
+  const destinationStart = labelEnd + 2;
+  if (!text.startsWith("http://", destinationStart) && !text.startsWith("https://", destinationStart)) return null;
+  const destination = destinationEnd(text, destinationStart);
+  if (!destination.balanced || text[destination.end] !== ")") return null;
+  return {
+    end: destination.end + 1,
+    label: text.slice(start + 1, labelEnd),
+    url: text.slice(destinationStart, destination.end),
+  };
+}
+
 function renderLinksAndEmphasis(text) {
-  const linkPattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(^|[\s(])(https?:\/\/[^\s<)]+)/g;
   let html = "";
   let offset = 0;
-  for (const match of text.matchAll(linkPattern)) {
-    html += renderEmphasis(text.slice(offset, match.index));
-    if (match[1] !== undefined) {
-      html += '<a href="' + match[2] + '" target="_blank" rel="noopener noreferrer">' + match[1] + "</a>";
-    } else {
-      html += match[3] + '<a href="' + match[4] + '" target="_blank" rel="noopener noreferrer">' + match[4] + "</a>";
+  let i = 0;
+  while (i < text.length) {
+    const markdownLink = markdownLinkAt(text, i);
+    const bareUrl =
+      (i === 0 || /[\s(]/.test(text[i - 1])) && (text.startsWith("http://", i) || text.startsWith("https://", i));
+    if (!markdownLink && !bareUrl) {
+      i += 1;
+      continue;
     }
-    offset = Number(match.index) + match[0].length;
+    html += renderEmphasis(text.slice(offset, i));
+    if (markdownLink) {
+      html +=
+        '<a href="' + markdownLink.url + '" target="_blank" rel="noopener noreferrer">' + markdownLink.label + "</a>";
+      i = markdownLink.end;
+    } else {
+      const destination = destinationEnd(text, i);
+      const url = text.slice(i, destination.end);
+      html += '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>";
+      i = destination.end;
+    }
+    offset = i;
   }
   return html + renderEmphasis(text.slice(offset));
 }
 
 function renderInline(text) {
-  return text
-    .split(/(`[^`\n]+`|!\[[^\]\n]*\]\([^\s)\n]+\))/)
-    .map((part) => {
-      if (part.startsWith("`") && part.endsWith("`")) {
-        return "<code>" + escapeHtml(part.slice(1, -1)) + "</code>";
+  let html = "";
+  let offset = 0;
+  let i = 0;
+  while (i < text.length) {
+    let end = -1;
+    let code = false;
+    if (text[i] === "`") {
+      const close = text.indexOf("`", i + 1);
+      if (close !== -1 && !text.slice(i + 1, close).includes("\n")) {
+        end = close + 1;
+        code = true;
       }
-      if (part.startsWith("![")) return escapeHtml(part);
-      return renderLinksAndEmphasis(escapeHtml(part));
-    })
-    .join("");
+    } else {
+      end = imageEnd(text, i);
+    }
+    if (end === -1) {
+      i += 1;
+      continue;
+    }
+    html += renderLinksAndEmphasis(escapeHtml(text.slice(offset, i)));
+    html += code ? "<code>" + escapeHtml(text.slice(i + 1, end - 1)) + "</code>" : escapeHtml(text.slice(i, end));
+    i = end;
+    offset = end;
+  }
+  return html + renderLinksAndEmphasis(escapeHtml(text.slice(offset)));
 }
 
 // Items nest by indentation; a change of marker at the same depth starts a new list, as

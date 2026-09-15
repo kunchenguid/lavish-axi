@@ -14,10 +14,10 @@ test("paragraphs split on blank lines and a single newline is a line break", () 
   );
 });
 
-test("headings of any level render as one bold lead line", () => {
+test("headings strip only whitespace-separated closing markers", () => {
   assert.equal(
-    renderChatMarkdown("# Title\n### Sub ##\ntext"),
-    '<p class="chat-h">Title</p><p class="chat-h">Sub</p><p>text</p>',
+    renderChatMarkdown("# Title\n### Sub ##\n## C#\ntext"),
+    '<p class="chat-h">Title</p><p class="chat-h">Sub</p><p class="chat-h">C#</p><p>text</p>',
   );
 });
 
@@ -69,10 +69,17 @@ test("link labels and targets are protected from emphasis rendering", () => {
   );
 });
 
-test("Markdown images remain literal text", () => {
+test("links preserve balanced parentheses and leave trailing punctuation outside", () => {
   assert.equal(
-    renderChatMarkdown("before ![alt](https://example.com/image.png) after"),
-    "<p>before ![alt](https://example.com/image.png) after</p>",
+    renderChatMarkdown("[docs](https://example.test/Foo_(bar)) and https://example.test/Foo_(bar))"),
+    '<p><a href="https://example.test/Foo_(bar)" target="_blank" rel="noopener noreferrer">docs</a> and <a href="https://example.test/Foo_(bar)" target="_blank" rel="noopener noreferrer">https://example.test/Foo_(bar)</a>)</p>',
+  );
+});
+
+test("Markdown images with optional titles remain literal text", () => {
+  assert.equal(
+    renderChatMarkdown('before ![*alt*](https://example.com/image_(1).png "*caption*") after'),
+    "<p>before ![*alt*](https://example.com/image_(1).png &quot;*caption*&quot;) after</p>",
   );
 });
 
