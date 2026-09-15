@@ -7283,6 +7283,13 @@ test("an unavailable transcript image becomes an explicit expired placeholder", 
   assert.equal(expired.className, "bubble-attachment bubble-attachment-expired");
   assert.equal(expired.textContent, "Image expired");
   assert.equal(expired.title, "checkout-reference.png");
+
+  const queuedImage = chrome.element("queued-image");
+  queuedImage.tagName = "IMG";
+  queuedImage.className = "bubble-attachment";
+  chrome.element("queuedLog").appendChild(queuedImage);
+  chrome.element("queuedLog").dispatch("error", { target: queuedImage });
+  assert.equal(chrome.element("queuedLog").children[0], queuedImage);
 });
 
 test("a synced transcript renders sent notes with anchors and thumbnails and never a user entry as html", async () => {

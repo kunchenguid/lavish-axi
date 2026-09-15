@@ -646,7 +646,6 @@ function replaceExpiredThumbnail(event) {
 }
 
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
-queuedLog.addEventListener("error", replaceExpiredThumbnail, true);
 
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
 

@@ -50,10 +50,11 @@ function imageEnd(text, start) {
   if (labelEnd === -1 || text.slice(start + 2, labelEnd).includes("\n")) return -1;
   const destinationStart = labelEnd + 2;
   const destination = destinationEnd(text, destinationStart);
-  if (destination.end === destinationStart || !destination.balanced) return -1;
+  if (!destination.balanced) return -1;
   if (text[destination.end] === ")") return destination.end + 1;
   let titleStart = destination.end;
   while (text[titleStart] === " " || text[titleStart] === "\t") titleStart += 1;
+  if (text[titleStart] === ")") return titleStart + 1;
   const quote = text[titleStart];
   let titleEnd = -1;
   if (quote === '"' || quote === "'") {
