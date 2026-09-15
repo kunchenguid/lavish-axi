@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 
 import { chatEntryForPrompt, renderChatMarkdown, serializeChat } from "../src/chat-messages.js";
@@ -85,6 +86,15 @@ test("Markdown images with optional titles remain literal text", () => {
     ),
     "<p>before ![*alt*](https://example.com/image_(1).png &quot;*caption*&quot;) and ![_alt_](image.png '_caption_') and ![**last**](image.png (caption)) and ![*empty*]() and ![_titled_]( &quot;title&quot;) and ![*angle*](&lt;https://example.test/a b.png&gt; &quot;caption&quot;) and ![*ref*][logo] and ![_collapsed_][] and ![**shortcut**] after</p>",
   );
+});
+
+test("long runs of unmatched link and image brackets stay literal without stalling", () => {
+  const text = "[".repeat(30_000) + " " + "![".repeat(30_000);
+  const started = performance.now();
+  const html = renderChatMarkdown(text);
+  const elapsed = performance.now() - started;
+  assert.equal(html, `<p>${text}</p>`);
+  assert.ok(elapsed < 1_000, `render took ${Math.round(elapsed)}ms`);
 });
 
 test("raw html is escaped, never interpreted", () => {

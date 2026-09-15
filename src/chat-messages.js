@@ -44,10 +44,26 @@ function destinationEnd(text, start) {
   return { end: i, balanced: depth === 0 };
 }
 
-function imageEnd(text, start) {
-  if (!text.startsWith("![", start)) return -1;
-  const labelEnd = text.indexOf("]", start + 2);
-  if (labelEnd === -1 || text.slice(start + 2, labelEnd).includes("\n")) return -1;
+function forwardFinder(text, needle) {
+  let found = -1;
+  let exhausted = false;
+  return (after) => {
+    if (found >= after) return found;
+    if (exhausted) return -1;
+    found = text.indexOf(needle, after);
+    exhausted = found === -1;
+    return found;
+  };
+}
+
+function createImageScanner(text) {
+  const nextBracket = forwardFinder(text, "]");
+  const nextNewline = forwardFinder(text, "\n");
+  const suffixEnds = new Map();
+  return { nextBracket, nextNewline, suffixEnds };
+}
+
+function imageSuffixEnd(text, labelEnd) {
   if (text[labelEnd + 1] === "[") {
     const referenceEnd = text.indexOf("]", labelEnd + 2);
     if (referenceEnd === -1 || text.slice(labelEnd + 2, referenceEnd).includes("\n")) return -1;
@@ -91,19 +107,44 @@ function imageEnd(text, start) {
   return text[close] === ")" ? close + 1 : -1;
 }
 
-function markdownLinkAt(text, start) {
-  if (text[start] !== "[") return null;
-  const labelEnd = text.indexOf("](", start + 1);
-  if (labelEnd === -1 || text.slice(start + 1, labelEnd).includes("\n")) return null;
-  const destinationStart = labelEnd + 2;
-  if (!text.startsWith("http://", destinationStart) && !text.startsWith("https://", destinationStart)) return null;
-  const destination = destinationEnd(text, destinationStart);
-  if (!destination.balanced || text[destination.end] !== ")") return null;
+function imageEnd(text, start, scanner) {
+  if (!text.startsWith("![", start)) return -1;
+  const labelEnd = scanner.nextBracket(start + 2);
+  const newline = scanner.nextNewline(start + 2);
+  if (labelEnd === -1 || (newline !== -1 && newline < labelEnd)) return -1;
+  if (!scanner.suffixEnds.has(labelEnd)) scanner.suffixEnds.set(labelEnd, imageSuffixEnd(text, labelEnd));
+  return scanner.suffixEnds.get(labelEnd);
+}
+
+function createLinkScanner(text) {
   return {
-    end: destination.end + 1,
-    label: text.slice(start + 1, labelEnd),
-    url: text.slice(destinationStart, destination.end),
+    nextLabelEnd: forwardFinder(text, "]("),
+    nextNewline: forwardFinder(text, "\n"),
+    destinations: new Map(),
   };
+}
+
+function markdownLinkAt(text, start, scanner) {
+  if (text[start] !== "[") return null;
+  const labelEnd = scanner.nextLabelEnd(start + 1);
+  const newline = scanner.nextNewline(start + 1);
+  if (labelEnd === -1 || (newline !== -1 && newline < labelEnd)) return null;
+  if (!scanner.destinations.has(labelEnd)) {
+    const destinationStart = labelEnd + 2;
+    if (!text.startsWith("http://", destinationStart) && !text.startsWith("https://", destinationStart)) {
+      scanner.destinations.set(labelEnd, null);
+    } else {
+      const destination = destinationEnd(text, destinationStart);
+      scanner.destinations.set(
+        labelEnd,
+        !destination.balanced || text[destination.end] !== ")"
+          ? null
+          : { end: destination.end + 1, url: text.slice(destinationStart, destination.end) },
+      );
+    }
+  }
+  const destination = scanner.destinations.get(labelEnd);
+  return destination ? { ...destination, label: text.slice(start + 1, labelEnd) } : null;
 }
 
 function bareUrlEnd(text, start) {
@@ -126,8 +167,9 @@ function renderLinksAndEmphasis(text) {
   let html = "";
   let offset = 0;
   let i = 0;
+  const linkScanner = createLinkScanner(text);
   while (i < text.length) {
-    const markdownLink = markdownLinkAt(text, i);
+    const markdownLink = markdownLinkAt(text, i, linkScanner);
     const bareUrl =
       (i === 0 || /[\s(]/.test(text[i - 1])) && (text.startsWith("http://", i) || text.startsWith("https://", i));
     if (!markdownLink && !bareUrl) {
@@ -154,6 +196,7 @@ function renderInline(text) {
   let html = "";
   let offset = 0;
   let i = 0;
+  const imageScanner = createImageScanner(text);
   while (i < text.length) {
     let end = -1;
     let code = false;
@@ -164,7 +207,7 @@ function renderInline(text) {
         code = true;
       }
     } else {
-      end = imageEnd(text, i);
+      end = imageEnd(text, i, imageScanner);
     }
     if (end === -1) {
       i += 1;
