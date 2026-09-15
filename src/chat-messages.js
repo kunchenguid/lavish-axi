@@ -55,7 +55,14 @@ function imageEnd(text, start) {
   }
   if (text[labelEnd + 1] !== "(") return labelEnd + 1;
   const destinationStart = labelEnd + 2;
-  const destination = destinationEnd(text, destinationStart);
+  let destination;
+  if (text[destinationStart] === "<") {
+    const close = text.indexOf(">", destinationStart + 1);
+    if (close === -1 || text.slice(destinationStart + 1, close).includes("\n")) return -1;
+    destination = { end: close + 1, balanced: true };
+  } else {
+    destination = destinationEnd(text, destinationStart);
+  }
   if (!destination.balanced) return -1;
   if (text[destination.end] === ")") return destination.end + 1;
   let titleStart = destination.end;

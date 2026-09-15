@@ -7227,6 +7227,51 @@ test("an acceptance sync settles a matching local note before the prompts respon
   await flushPromises();
 });
 
+test("one transcript entry cannot settle a second identical queued note", async () => {
+  let resolveFirstPost = () => {};
+  const postedBodies = [];
+  const acceptedEntry = { role: "user", kind: "message", text: "Repeat this" };
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      if (String(url).endsWith("/prompts")) {
+        postedBodies.push(JSON.parse(init.body));
+        if (postedBodies.length === 1) {
+          return new Promise((resolve) => {
+            resolveFirstPost = () =>
+              resolve({ ok: true, json: async () => ({ status: "queued", chat: [acceptedEntry] }) });
+          });
+        }
+        return {
+          ok: true,
+          json: async () => ({ status: "queued", chat: [acceptedEntry, acceptedEntry] }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("chatInput").value = "Repeat this";
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 first");
+  await flushPromises();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Repeat this", selector: "", tag: "message", text: "Freeform message" },
+  });
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [acceptedEntry] }) });
+  assert.equal(chrome.queued().length, 1);
+
+  resolveFirstPost();
+  await flushPromises();
+  assert.equal(chrome.queued().length, 1);
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=2 second");
+  await flushPromises();
+  assert.equal(postedBodies.length, 2);
+  assert.equal(postedBodies[1].prompts[0].prompt, "Repeat this");
+});
+
 test("a restored duplicate note survives history at boot and settles only on a later sync", async () => {
   let resolvePost = () => {};
   let postedBody;

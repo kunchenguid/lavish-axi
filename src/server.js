@@ -258,7 +258,6 @@ export async function serve({
   env = process.env,
   port,
   stateFile,
-  sessionStore,
   version = "",
   debug = false,
   log = null,
@@ -291,7 +290,7 @@ export async function serve({
   let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
-  const store = sessionStore || new SessionStore(stateFile);
+  const store = new SessionStore(stateFile);
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();

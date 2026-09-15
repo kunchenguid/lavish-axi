@@ -846,6 +846,11 @@ function settleQueuedFromTranscript(chat, shouldRender = true) {
     settledPrompts.add(prompt);
     deliveredPrompts.add(prompt);
   }
+  for (const prompt of queued) {
+    if (!settledPrompts.has(prompt)) {
+      queuedTranscriptFloors.set(prompt, Math.max(queuedTranscriptFloors.get(prompt) || 0, chat.length));
+    }
+  }
   if (!settledPrompts.size) return false;
   for (let i = queued.length - 1; i >= 0; i -= 1) {
     if (settledPrompts.has(queued[i])) queued.splice(i, 1);
