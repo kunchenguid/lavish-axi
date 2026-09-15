@@ -81,9 +81,9 @@ test("links preserve balanced parentheses and leave trailing punctuation outside
 test("Markdown images with optional titles remain literal text", () => {
   assert.equal(
     renderChatMarkdown(
-      'before ![*alt*](https://example.com/image_(1).png "*caption*") and ![_alt_](image.png \'_caption_\') and ![**last**](image.png (caption)) and ![*empty*]() and ![_titled_]( "title") after',
+      'before ![*alt*](https://example.com/image_(1).png "*caption*") and ![_alt_](image.png \'_caption_\') and ![**last**](image.png (caption)) and ![*empty*]() and ![_titled_]( "title") and ![*ref*][logo] and ![_collapsed_][] and ![**shortcut**] after',
     ),
-    "<p>before ![*alt*](https://example.com/image_(1).png &quot;*caption*&quot;) and ![_alt_](image.png '_caption_') and ![**last**](image.png (caption)) and ![*empty*]() and ![_titled_]( &quot;title&quot;) after</p>",
+    "<p>before ![*alt*](https://example.com/image_(1).png &quot;*caption*&quot;) and ![_alt_](image.png '_caption_') and ![**last**](image.png (caption)) and ![*empty*]() and ![_titled_]( &quot;title&quot;) and ![*ref*][logo] and ![_collapsed_][] and ![**shortcut**] after</p>",
   );
 });
 

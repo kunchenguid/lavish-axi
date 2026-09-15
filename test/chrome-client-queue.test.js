@@ -7193,6 +7193,71 @@ test("live transcript events are not replaced by an older prompt response", asyn
   }
 });
 
+test("an acceptance sync settles a matching local note before the prompts response", async () => {
+  let resolvePost = () => {};
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        return new Promise((resolve) => {
+          resolvePost = () => resolve({ ok: true, json: async () => ({ status: "queued", chat: [] }) });
+        });
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const prompt = {
+    prompt: "Rename this",
+    selector: "h2#phase-1",
+    tag: "h2",
+    text: "Phase 1",
+    attachments: [{ id: "a".repeat(64) + ".png", name: "reference.png" }],
+  };
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt });
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  const acceptedEntry = chatEntryForPrompt({ uid: "", ...prompt }, "2026-09-15T00:00:00.000Z");
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [acceptedEntry] }) });
+
+  assert.deepEqual(chrome.queued(), []);
+  assert.equal(chrome.element("queuedLog").innerHTML, "");
+  assert.equal(chrome.element("chatLog").children.length, 1);
+  resolvePost();
+  await flushPromises();
+});
+
+test("retrying after a lost prompts response does not resend accepted feedback", async () => {
+  let rejectPost = () => {};
+  let postCount = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        postCount += 1;
+        return new Promise((_, reject) => {
+          rejectPost = () => reject(new Error("response lost"));
+        });
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("chatInput").value = "Keep the accepted note";
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [{ role: "user", kind: "message", text: "Keep the accepted note" }] }),
+  });
+  rejectPost();
+  await flushPromises();
+  chrome.element("send").click();
+  await flushPromises();
+
+  assert.equal(postCount, 1);
+  assert.deepEqual(chrome.queued(), []);
+});
+
 test("an older live sync does not hide the transcript accepted by the prompts response", async () => {
   let resolvePost = () => {};
   const acceptedChat = [{ role: "user", kind: "message", text: "Sent note" }];

@@ -46,8 +46,14 @@ function destinationEnd(text, start) {
 
 function imageEnd(text, start) {
   if (!text.startsWith("![", start)) return -1;
-  const labelEnd = text.indexOf("](", start + 2);
+  const labelEnd = text.indexOf("]", start + 2);
   if (labelEnd === -1 || text.slice(start + 2, labelEnd).includes("\n")) return -1;
+  if (text[labelEnd + 1] === "[") {
+    const referenceEnd = text.indexOf("]", labelEnd + 2);
+    if (referenceEnd === -1 || text.slice(labelEnd + 2, referenceEnd).includes("\n")) return -1;
+    return referenceEnd + 1;
+  }
+  if (text[labelEnd + 1] !== "(") return labelEnd + 1;
   const destinationStart = labelEnd + 2;
   const destination = destinationEnd(text, destinationStart);
   if (!destination.balanced) return -1;

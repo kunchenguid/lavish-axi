@@ -219,6 +219,7 @@ let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
 let workingBubble = null;
 let displayedChat = initialChat.slice();
+const queuedTranscriptFloors = new WeakMap(queued.map((prompt) => [prompt, 0]));
 let submitQueuedPromise = null;
 const pendingSubmissions = [];
 /** @type {{ prompts?: any[] } | null} */
@@ -811,7 +812,51 @@ function chatContainsEntries(candidate, entries) {
   return matched === entries.length;
 }
 
+function queuedPromptKind(prompt) {
+  const tag = String(prompt?.tag || "");
+  if (tag === "message" || tag === "whiteboard" || tag === "layout-warnings") return tag;
+  return "annotation";
+}
+
+function queuedPromptMatchesEntry(prompt, entry) {
+  if (entry?.role !== "user") return false;
+  if (queuedPromptKind(prompt) !== String(entry.kind || "message")) return false;
+  if (String(prompt?.prompt || "") !== String(entry.text || "")) return false;
+  if (JSON.stringify(promptAnchor(prompt)) !== JSON.stringify(entry.anchor || null)) return false;
+  const promptAttachments = Array.isArray(prompt?.attachments)
+    ? prompt.attachments.map((item) => String(item?.id || ""))
+    : [];
+  const entryAttachments = Array.isArray(entry.attachments)
+    ? entry.attachments.map((item) => String(item?.id || ""))
+    : [];
+  return JSON.stringify(promptAttachments) === JSON.stringify(entryAttachments);
+}
+
+function settleQueuedFromTranscript(chat, shouldRender = true) {
+  if (!Array.isArray(chat) || !queued.length) return false;
+  const matchedEntries = new Set();
+  const settledPrompts = new Set();
+  for (const prompt of queued) {
+    const floor = Math.min(queuedTranscriptFloors.get(prompt) || 0, chat.length);
+    const entryIndex = chat.findIndex(
+      (entry, index) => index >= floor && !matchedEntries.has(index) && queuedPromptMatchesEntry(prompt, entry),
+    );
+    if (entryIndex === -1) continue;
+    matchedEntries.add(entryIndex);
+    settledPrompts.add(prompt);
+    deliveredPrompts.add(prompt);
+  }
+  if (!settledPrompts.size) return false;
+  for (let i = queued.length - 1; i >= 0; i -= 1) {
+    if (settledPrompts.has(queued[i])) queued.splice(i, 1);
+  }
+  persistQueuedPrompts();
+  if (shouldRender) render();
+  return true;
+}
+
 function syncChat(chat) {
+  settleQueuedFromTranscript(chat);
   displayedChat = Array.isArray(chat) ? chat.slice() : [];
   for (const el of [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")]) {
     el.remove();
@@ -1220,6 +1265,7 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
   } else {
     queued.push(prompt);
   }
+  queuedTranscriptFloors.set(prompt, displayedChat.length);
 
   persistQueuedPrompts();
   render();
@@ -1500,6 +1546,7 @@ function sendQueued(endAfter) {
       const prompt = { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
       if (attachments.length) prompt.attachments = attachments;
       queued.push(prompt);
+      queuedTranscriptFloors.set(prompt, displayedChat.length);
       persistQueuedPrompts();
       // Render the durable queued bubble before clearing the editor. If anything after this point
       // fails, the user's words are already both stored and visibly recoverable in the tab. It
@@ -1631,6 +1678,7 @@ async function submitQueued(submission) {
 }
 
 async function submitQueuedOnce(submission, preserveFailureState = false) {
+  settleQueuedFromTranscript(displayedChat);
   const prompts = submission.prompts.filter((prompt) => !deliveredPrompts.has(prompt));
   const shouldEndSession = submission.endAfter;
   if (!prompts.length) {
@@ -3865,6 +3913,7 @@ events.set("ended", () => markSessionEnded());
 connectLiveEvents();
 
 applySheetState();
+settleQueuedFromTranscript(initialChat, false);
 render();
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);
