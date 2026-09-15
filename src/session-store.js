@@ -15,6 +15,7 @@ import {
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
 import { AsyncMutex } from "./async-mutex.js";
+import { chatEntryForPrompt } from "./chat-messages.js";
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
 import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./whiteboard-core.js";
 
@@ -233,11 +234,11 @@ export class SessionStore {
       }
     }
     session.layout_warnings = warnings;
+    // Every accepted prompt joins the transcript, not only composer messages: the notes a
+    // reviewer sends are the half of the conversation the panel used to lose on send.
     const userMessages = restoring
       ? []
-      : acceptedPrompts
-          .filter((prompt) => prompt.tag === "message" && prompt.prompt)
-          .map((prompt) => ({ role: "user", text: prompt.prompt, at: new Date().toISOString() }));
+      : acceptedPrompts.map((prompt) => chatEntryForPrompt(prompt, at)).filter(Boolean);
     const existingPrompts = Array.isArray(session.prompts) ? session.prompts : [];
     session.prompts = restoring ? [...acceptedPrompts, ...existingPrompts] : [...existingPrompts, ...acceptedPrompts];
     session.chat = [...(session.chat || []), ...userMessages];

@@ -2097,3 +2097,84 @@ test("every image delivered in one poll survives, across accumulated batches (po
     assert.deepEqual(missing, [], `every id in the actual delivery stays referenced (${missing.length} were not)`);
   });
 });
+
+// Every prompt the reviewer sends is part of the conversation, not only the composer messages:
+// an element note, a text selection, and a message queued together enter the chat in batch
+// order, each carrying the anchor the chrome shows. Without this the transcript only ever held
+// the agent's side and the reviewer's typed messages, and the notes that drove the changes were
+// gone from the panel the moment they were sent.
+test("every accepted prompt enters the chat history with its anchor, in batch order", async () => {
+  await withStore(async ({ store, session }) => {
+    await store.queuePrompts(session.key, {
+      prompts: [
+        { uid: "1", prompt: "Rename this", selector: "h2#phase-1", tag: "h2", text: "Phase 1: Inventory" },
+        {
+          uid: "",
+          prompt: "Say design system",
+          selector: "main > p",
+          tag: "text",
+          text: "marketing site",
+          target: {
+            type: "text-range",
+            text: "marketing site",
+            selector: "main > p",
+            commonAncestorSelector: "main > p",
+            start: { selector: "main > p", path: [], offset: 0 },
+            end: { selector: "main > p", path: [], offset: 14 },
+          },
+        },
+        { uid: "", prompt: "Keep the table", selector: "", tag: "message", text: "Freeform message" },
+      ],
+    });
+
+    const updated = await store.findByKey(session.key);
+    assert.ok(updated.chat.every((entry) => typeof entry.at === "string" && entry.at));
+    assert.deepEqual(
+      updated.chat.map(({ at: _at, ...entry }) => entry),
+      [
+        {
+          role: "user",
+          kind: "annotation",
+          text: "Rename this",
+          anchor: { kind: "element", label: "<h2>", excerpt: "Phase 1: Inventory", selector: "h2#phase-1" },
+        },
+        {
+          role: "user",
+          kind: "annotation",
+          text: "Say design system",
+          anchor: { kind: "text", label: "text", excerpt: "marketing site", selector: "main > p" },
+        },
+        { role: "user", kind: "message", text: "Keep the table" },
+      ],
+    );
+  });
+});
+
+test("a queued prompt's chat entry keeps only the client-visible attachment fields", async () => {
+  await withStore(async ({ store, session }) => {
+    const id = "a".repeat(64) + ".png";
+    await store.queuePrompts(
+      session.key,
+      {
+        prompts: [
+          { uid: "", prompt: "", selector: "", tag: "message", text: "", attachments: [{ id, name: "shot.png" }] },
+        ],
+      },
+      {
+        resolveAttachment: async () => ({
+          id,
+          name: "shot.png",
+          path: "/private/shot.png",
+          mime: "image/png",
+          bytes: 12,
+        }),
+        maxPerPrompt: 4,
+        maxPromptBytes: 1024,
+      },
+    );
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.chat.length, 1);
+    assert.deepEqual(updated.chat[0].attachments, [{ id, name: "shot.png" }]);
+    assert.equal(updated.chat[0].text, "");
+  });
+});

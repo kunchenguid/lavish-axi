@@ -143,6 +143,21 @@ test(
     function evaluate(expression) {
       return run("chrome-devtools-axi", ["eval", expression], chromeEnv);
     }
+    // chrome-devtools-axi renders the evaluated value as a JSON string, and an expression that
+    // already JSON.stringify()s its result is encoded twice - so unwrap until it stops being JSON.
+    function decode(output) {
+      const raw = output.match(/result:\s*("(?:[^"\\]|\\.)*")/s)?.[1];
+      assert.ok(raw, output);
+      let value = JSON.parse(raw);
+      while (typeof value === "string") {
+        try {
+          value = JSON.parse(value);
+        } catch {
+          break;
+        }
+      }
+      return value;
+    }
     function wait(ms) {
       run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
     }
@@ -203,9 +218,9 @@ test(
       // require the agent-facing poll to carry the server-vetted local path.
       const deadline = Date.now() + 60_000;
       for (;;) {
-        const pills = evaluate('document.querySelectorAll(".pill").length');
+        const pills = evaluate('document.querySelectorAll(".bubble.queued").length');
         if (pills.includes("1")) break;
-        if (Date.now() > deadline) assert.fail(`queued prompt pill never appeared: ${pills}`);
+        if (Date.now() > deadline) assert.fail(`queued note never appeared: ${pills}`);
         wait(500);
       }
       evaluate('document.getElementById("send").click()');
@@ -279,7 +294,7 @@ test(
         return JSON.stringify({ actual: getComputedStyle(status).color, expected, text: status.textContent });
       })()`);
       assert.doesNotMatch(errorColors, /missing-error-chip/, errorColors);
-      const colors = JSON.parse(errorColors.match(/\{.*\}/)?.[0] || "{}");
+      const colors = decode(errorColors);
       assert.match(colors.text, /Unsupported file type/, errorColors);
       assert.equal(colors.actual, colors.expected, `error status must render in --danger:\n${errorColors}`);
     } finally {

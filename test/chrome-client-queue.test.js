@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+import { chatEntryForPrompt } from "../src/chat-messages.js";
 import { createChromeHtml } from "../src/server.js";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
@@ -142,9 +143,9 @@ async function createChromeHarness({
         if (handler) handler(event);
       },
       querySelectorAll(selector) {
-        if (id === "annotationPills" && selector === ".pill-close") {
-          return [...this.innerHTML.matchAll(/class="pill-close"[^>]*data-index="(\d+)"/g)].map((match) => {
-            const close = element(`annotation-pill-close-${match[1]}`);
+        if (id === "queuedLog" && selector === ".queued-remove") {
+          return [...this.innerHTML.matchAll(/class="queued-remove"[^>]*data-index="(\d+)"/g)].map((match) => {
+            const close = element(`queued-remove-${match[1]}`);
             close.dataset.index = match[1];
             return close;
           });
@@ -602,7 +603,7 @@ test("a queued send stalled at POST becomes visibly recoverable", async () => {
   chrome.element("send").click();
 
   assert.equal(chrome.element("chatInput").value, "");
-  assert.match(chrome.element("annotationPills").innerHTML, /Do not lose this/);
+  assert.match(chrome.element("queuedLog").innerHTML, /Do not lose this/);
   assert.deepEqual(
     chrome.queued().map((prompt) => prompt.prompt),
     ["Do not lose this"],
@@ -1688,8 +1689,8 @@ test("chrome client replaces queued prompts with the same internal key", async (
     chrome.queued().map((prompt) => prompt.prompt),
     ["Use plan B", "Apply dark mode"],
   );
-  assert.match(chrome.element("annotationPills").innerHTML, /Use plan B/);
-  assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /Use plan A/);
+  assert.match(chrome.element("queuedLog").innerHTML, /Use plan B/);
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /Use plan A/);
 });
 
 test("chrome client shows semantic table coordinates before positional selector", async () => {
@@ -1712,8 +1713,8 @@ test("chrome client shows semantic table coordinates before positional selector"
     },
   });
 
-  assert.match(chrome.element("annotationPills").innerHTML, /Media &amp; Apple Music → Database evidence/);
-  assert.match(chrome.element("annotationPills").innerHTML, /tr:nth-of-type\(7\)/);
+  assert.match(chrome.element("queuedLog").innerHTML, /Media &amp; Apple Music → Database evidence/);
+  assert.match(chrome.element("queuedLog").innerHTML, /tr:nth-of-type\(7\)/);
 });
 
 test("chrome client falls back to the locator when a table cell has no row or column name", async () => {
@@ -1730,7 +1731,7 @@ test("chrome client falls back to the locator when a table cell has no row or co
     },
   });
 
-  const html = chrome.element("annotationPills").innerHTML;
+  const html = chrome.element("queuedLog").innerHTML;
   assert.match(html, /tr:nth-of-type\(7\)/);
   assert.doesNotMatch(html, /Locator/);
 });
@@ -2422,7 +2423,7 @@ test("Conversation labels an image-only queued prompt as an image message", asyn
 
   chrome.element("send").click();
 
-  assert.match(chrome.element("annotationPills").innerHTML, /Image message/);
+  assert.match(chrome.element("queuedLog").innerHTML, /Image message/);
 });
 
 test("Conversation drop partial-accepts images and lets the rejected chip be removed", async () => {
@@ -3056,7 +3057,7 @@ test("removing the final unrelated prompt preserves layout preparation failure g
   await flushPromises();
   assert.match(chrome.element("sendHint").textContent, /could not prepare the selected layout fixes/i);
 
-  const [removeButton] = chrome.element("annotationPills").querySelectorAll(".pill-close");
+  const [removeButton] = chrome.element("queuedLog").querySelectorAll(".queued-remove");
   assert.ok(removeButton, "the queued prompt exposes its removal control");
   removeButton.click({ stopPropagation() {} });
 
@@ -6450,8 +6451,8 @@ test("chrome renders queued-prompt attachment thumbnails from the server endpoin
     type: "lavish:queuePrompt",
     prompt: { prompt: "", selector: "h1", tag: "annotation", text: "", attachments: [{ id, name: "mock.png" }] },
   });
-  const html = chrome.element("annotationPills").innerHTML;
-  assert.match(html, /pill-attachment/);
+  const html = chrome.element("queuedLog").innerHTML;
+  assert.match(html, /bubble-attachment/);
   assert.match(html, new RegExp("/api/abc/attachments/" + id));
   // An image-only annotation still shows a readable label.
   assert.match(html, /Image annotation/);
@@ -6459,7 +6460,7 @@ test("chrome renders queued-prompt attachment thumbnails from the server endpoin
 
 test("a queued prompt over the thumbnail limit shows the hidden images as a +N badge (W-A)", async () => {
   // LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT is configurable, so a prompt can legitimately
-  // carry more images than the compact pill can show. The overflow must be counted, not
+  // carry more images than the compact bubble can show. The overflow must be counted, not
   // silently dropped - otherwise the queue looks like it lost the extra attachments.
   const chrome = await createChromeHarness();
   const attachments = Array.from({ length: 7 }, (_, i) => ({ id: String(i).repeat(64) + ".png", name: `i${i}.png` }));
@@ -6467,9 +6468,9 @@ test("a queued prompt over the thumbnail limit shows the hidden images as a +N b
     type: "lavish:queuePrompt",
     prompt: { prompt: "seven", selector: "h1", tag: "annotation", text: "", attachments },
   });
-  const html = chrome.element("annotationPills").innerHTML;
-  assert.equal(html.match(/class="pill-attachment"/g)?.length, 4, "the pill renders its four thumbnails");
-  assert.match(html, /class="pill-attachment-more"[^>]*>\+3</, "the other three are counted, not hidden");
+  const html = chrome.element("queuedLog").innerHTML;
+  assert.equal(html.match(/class="bubble-attachment"/g)?.length, 4, "the bubble renders its four thumbnails");
+  assert.match(html, /class="bubble-attachment-more"[^>]*>\+3</, "the other three are counted, not hidden");
   assert.match(html, /title="3 more images"/);
 });
 
@@ -6480,9 +6481,9 @@ test("a queued prompt at or under the thumbnail limit shows no +N badge (W-A)", 
     type: "lavish:queuePrompt",
     prompt: { prompt: "four", selector: "h1", tag: "annotation", text: "", attachments },
   });
-  const html = chrome.element("annotationPills").innerHTML;
-  assert.equal(html.match(/class="pill-attachment"/g)?.length, 4);
-  assert.doesNotMatch(html, /pill-attachment-more/);
+  const html = chrome.element("queuedLog").innerHTML;
+  assert.equal(html.match(/class="bubble-attachment"/g)?.length, 4);
+  assert.doesNotMatch(html, /bubble-attachment-more/);
 });
 
 test("the +N badge stays singular for a single hidden image (W-A)", async () => {
@@ -6492,7 +6493,7 @@ test("the +N badge stays singular for a single hidden image (W-A)", async () => 
     type: "lavish:queuePrompt",
     prompt: { prompt: "five", selector: "h1", tag: "annotation", text: "", attachments },
   });
-  assert.match(chrome.element("annotationPills").innerHTML, /title="1 more image"/);
+  assert.match(chrome.element("queuedLog").innerHTML, /title="1 more image"/);
 });
 
 test("chrome rejects an over-cap image before it hits the network", async () => {
@@ -6534,7 +6535,7 @@ test("a poisoned attachments array cannot wedge the queue or the tab (E5)", asyn
   });
 
   assert.deepEqual(chrome.queued(), [{ prompt: "poison", selector: "h1", tag: "annotation", text: "" }]);
-  assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /pill-attachment/);
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /bubble-attachment/);
 });
 
 test("only well-formed attachment refs survive the enqueue path (E5)", async () => {
@@ -6555,7 +6556,7 @@ test("only well-formed attachment refs survive the enqueue path (E5)", async () 
   // The one real ref is kept; every malformed entry is dropped before persisting,
   // so what reaches the server (and the +N count) reflects only deliverable images.
   assert.deepEqual(chrome.queued()[0].attachments, [{ id: good, name: "ok.png" }]);
-  assert.equal(chrome.element("annotationPills").innerHTML.match(/class="pill-attachment"/g)?.length, 1);
+  assert.equal(chrome.element("queuedLog").innerHTML.match(/class="bubble-attachment"/g)?.length, 1);
 });
 
 test("a non-array attachments field cannot wedge the queue (E5)", async () => {
@@ -6576,8 +6577,8 @@ test("a poisoned prompt already in the restored queue cannot wedge a reload (E5)
 
   // A tab poisoned before this fix still has the bad prompt on disk; loading it
   // must not throw, or the tab stays wedged even after upgrading.
-  assert.doesNotMatch(chrome.element("annotationPills").innerHTML, /pill-attachment/);
-  assert.match(chrome.element("annotationPills").innerHTML, /old poison/);
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /bubble-attachment/);
+  assert.match(chrome.element("queuedLog").innerHTML, /old poison/);
 });
 
 test("the chrome never honors an attachment delete driven by the artifact iframe (E2)", async () => {
@@ -6967,4 +6968,250 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
   assert.equal(state.scrollInert, true);
   assert.equal(chrome.focusLog.at(-1), "panelToggle");
   assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
+});
+
+// ---- Queued and sent notes are one conversation ----
+// A note the reviewer queues is a bubble on their side of the transcript from the moment they
+// queue it: dashed and removable while it lives only in this tab, settled in place once the
+// server's transcript carries it. Before this, queued notes were pills in a separate region and
+// sent notes vanished from the panel entirely, so the conversation read as one-sided.
+
+test("a queued note is a dashed bubble at the end of the conversation with its anchor and a remove control", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Rename this", selector: "h2#phase-1", tag: "h2", text: "Phase 1: Inventory" },
+  });
+
+  const html = chrome.element("queuedLog").innerHTML;
+  assert.match(html, /^<div class="bubble user queued"><small>Queued <button class="queued-remove"[^>]*data-index="0"/);
+  assert.match(
+    html,
+    /<span class="anchor-kind">&lt;h2&gt;<\/span><span class="anchor-excerpt">“Phase 1: Inventory”<\/span>/,
+  );
+  assert.match(html, /title="Phase 1: Inventory\nh2#phase-1"/);
+  assert.match(html, /<div class="bubble-text">Rename this<\/div>/);
+  assert.equal(
+    chrome.element("chatLog").children.length,
+    0,
+    "nothing joins the transcript until the server accepts it",
+  );
+});
+
+// The chrome derives a queued note's anchor itself (the prompt has not reached the server), and the
+// server derives the sent note's anchor. A bubble must not change its anchor when it settles, so the
+// two rules are pinned against the same fixtures, one per prompt kind.
+test("the chrome's queued anchor agrees with the server's transcript anchor for every prompt kind", async () => {
+  const fixtures = [
+    { prompt: "note", selector: "h2#phase-1", tag: "h2", text: "Phase 1: Inventory" },
+    {
+      prompt: "note",
+      selector: "main > p",
+      tag: "text",
+      text: "marketing site",
+      target: {
+        type: "text-range",
+        text: "marketing site",
+        selector: "main > p",
+        commonAncestorSelector: "main > p",
+        start: { selector: "main > p", path: [], offset: 0 },
+        end: { selector: "main > p", path: [], offset: 14 },
+      },
+    },
+    {
+      prompt: "note",
+      selector: "td",
+      tag: "td",
+      text: "Annotation card",
+      target: { type: "table-cell", rowLabel: "Annotation card", columnLabel: "Risk", text: "Annotation card" },
+    },
+    {
+      prompt: "note",
+      selector: "td",
+      tag: "td",
+      text: "Drive",
+      target: { type: "table-cell", rowLabel: "", columnLabel: "", text: "Drive" },
+    },
+    {
+      prompt: "note",
+      selector: "svg g.node",
+      tag: "mermaid-node",
+      text: "Classify",
+      target: { type: "mermaid-node", diagramId: "d", nodeId: "n", label: "Classify checks", selector: "svg g.node" },
+    },
+    {
+      prompt: "note",
+      selector: "",
+      tag: "whiteboard",
+      text: "Whiteboard: diagram 2",
+      target: { type: "excalidraw-scene", diagramIndex: 1 },
+    },
+    {
+      prompt: "note",
+      selector: "",
+      tag: "layout-warnings",
+      text: "2 layout issues",
+      target: { type: "layout-warnings", warnings: [{ id: "a" }, { id: "b" }] },
+    },
+    { prompt: "note", selector: "", tag: "message", text: "Freeform message" },
+  ];
+  const unescape = (value) =>
+    value
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, "&");
+  for (const fixture of fixtures) {
+    const chrome = await createChromeHarness();
+    chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: fixture });
+    const html = chrome.element("queuedLog").innerHTML;
+    const expected = chatEntryForPrompt({ uid: "", ...fixture }, "2026-09-15T00:00:00.000Z").anchor;
+    const rendered = html.match(
+      /<div class="anchor" title="([^"]*)"><span class="anchor-kind">([^<]*)<\/span>(?:<span class="anchor-excerpt(?: text)?">([^<]*)<\/span>)?<\/div>/,
+    );
+    if (!expected) {
+      assert.equal(rendered, null, `${fixture.tag}: no anchor`);
+      continue;
+    }
+    assert.ok(rendered, `${fixture.tag}: anchor rendered`);
+    assert.equal(unescape(rendered[2]), expected.label, `${fixture.tag}: label`);
+    const quoted = expected.kind === "element" || expected.kind === "text";
+    assert.equal(
+      unescape(rendered[3] || ""),
+      quoted ? "“" + expected.excerpt + "”" : expected.excerpt,
+      `${fixture.tag}: excerpt`,
+    );
+    assert.equal(
+      unescape(rendered[1]),
+      [expected.excerpt, expected.selector].filter(Boolean).join("\n"),
+      `${fixture.tag}: hover`,
+    );
+  }
+});
+
+test("a sent batch settles in place: notes read Sending until the server's transcript carries them", async () => {
+  let resolvePost = () => {};
+  const transcript = [
+    {
+      role: "user",
+      kind: "annotation",
+      text: "Rename this",
+      at: "2026-09-15T00:00:00.000Z",
+      anchor: { kind: "element", label: "<h2>", excerpt: "Phase 1: Inventory", selector: "h2#phase-1" },
+    },
+    { role: "user", kind: "message", text: "Keep the table", at: "2026-09-15T00:00:01.000Z" },
+  ];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        return new Promise((resolve) => {
+          resolvePost = () =>
+            resolve({ ok: true, json: async () => ({ status: "queued", pending_prompts: 2, chat: transcript }) });
+        });
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Rename this", selector: "h2#phase-1", tag: "h2", text: "Phase 1: Inventory" },
+  });
+  chrome.element("chatInput").value = "Keep the table";
+  chrome.element("send").click();
+
+  // Pressing Send commits the batch: both notes read Sending, nothing is in the transcript yet,
+  // and a committed note cannot be removed.
+  const inFlight = chrome.element("queuedLog").innerHTML;
+  assert.equal((inFlight.match(/<small>Sending… /g) || []).length, 2);
+  assert.doesNotMatch(inFlight, /<small>Queued /);
+  assert.equal(chrome.element("chatLog").children.length, 0);
+  const [removeButton] = chrome.element("queuedLog").querySelectorAll(".queued-remove");
+  assert.equal(removeButton.disabled, true);
+
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+  resolvePost();
+  await flushPromises();
+
+  assert.equal(chrome.element("queuedLog").innerHTML, "");
+  assert.deepEqual(chrome.queued(), []);
+  const bubbles = chrome.element("chatLog").children;
+  assert.equal(bubbles.length, 2);
+  assert.match(
+    bubbles[0].innerHTML,
+    /^<small>You<\/small><div class="anchor" [^>]*><span class="anchor-kind">&lt;h2&gt;<\/span>/,
+  );
+  assert.match(bubbles[0].innerHTML, /<div class="bubble-text">Rename this<\/div>/);
+  assert.equal(bubbles[1].innerHTML, '<small>You</small><div class="bubble-text">Keep the table</div>');
+});
+
+test("a failed send returns its notes to Queued with the remove control back", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) throw new Error("network unavailable");
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("chatInput").value = "Do not lose this";
+  chrome.element("send").click();
+  assert.match(chrome.element("queuedLog").innerHTML, /<small>Sending… /);
+
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  assert.match(chrome.element("queuedLog").innerHTML, /<small>Queued /);
+  const [removeButton] = chrome.element("queuedLog").querySelectorAll(".queued-remove");
+  assert.equal(removeButton.disabled, false);
+  assert.equal(
+    chrome.element("chatLog").children.length,
+    0,
+    "a note that never reached the server is not in the transcript",
+  );
+});
+
+// ---- Agent prose renders as structure; user text never renders as html ----
+
+test("an agent reply renders the server's html and a text-only reply stays escaped", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({ text: "Done.\n\n- one", html: "<p>Done.</p><ul><li>one</li></ul>" }),
+  });
+  assert.equal(
+    chrome.element("chatLog").lastAppendedChild.innerHTML,
+    '<small>Agent</small><div class="chat-md"><p>Done.</p><ul><li>one</li></ul></div>',
+  );
+
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "<img src=x onerror=alert(1)>" }) });
+  assert.equal(
+    chrome.element("chatLog").lastAppendedChild.innerHTML,
+    '<small>Agent</small><div class="bubble-text">&lt;img src=x onerror=alert(1)&gt;</div>',
+  );
+});
+
+test("a synced transcript renders sent notes with anchors and thumbnails and never a user entry as html", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [
+        { role: "user", kind: "message", text: "<b>bold</b>", html: "<b>bold</b>" },
+        {
+          role: "user",
+          kind: "annotation",
+          text: "note",
+          anchor: { kind: "text", label: "text", excerpt: "<i>sel</i>", selector: "p" },
+          attachments: Array.from({ length: 6 }, (_, i) => ({ id: String(i).repeat(64) + ".png", name: `i${i}.png` })),
+        },
+        { role: "agent", text: "ok", html: "<p>ok</p>" },
+      ],
+    }),
+  });
+  const [message, note, reply] = chrome.element("chatLog").children;
+  assert.equal(message.innerHTML, '<small>You</small><div class="bubble-text">&lt;b&gt;bold&lt;/b&gt;</div>');
+  assert.match(
+    note.innerHTML,
+    /<span class="anchor-kind">text<\/span><span class="anchor-excerpt text">“&lt;i&gt;sel&lt;\/i&gt;”<\/span>/,
+  );
+  assert.equal(note.innerHTML.match(/class="bubble-attachment"/g)?.length, 4);
+  assert.match(note.innerHTML, /class="bubble-attachment-more"[^>]*>\+2</);
+  assert.equal(reply.innerHTML, '<small>Agent</small><div class="chat-md"><p>ok</p></div>');
 });

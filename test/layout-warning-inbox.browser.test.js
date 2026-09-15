@@ -100,7 +100,7 @@ test(
           ' badge: document.getElementById("warningsCount").textContent,' +
           ' label: document.getElementById("warningsButton").getAttribute("aria-label"),' +
           ' gate: document.body.classList.contains("layout-gate-active"),' +
-          ' pills: document.querySelectorAll(".pill").length,' +
+          ' pills: document.querySelectorAll(".bubble.queued").length,' +
           " loads: window.__lavishArtifactLoads," +
           ' rows: [...document.querySelectorAll(".warning-row")].map((row) => ({' +
           '   title: row.querySelector(".warning-title").textContent,' +
@@ -490,7 +490,10 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     wait(800);
     const pills = run(
       "chrome-devtools-axi",
-      ["eval", '[...document.querySelectorAll(".pill-preview")].map((pill) => pill.textContent).join("|")'],
+      [
+        "eval",
+        '[...document.querySelectorAll(".bubble.queued .bubble-text")].map((note) => note.textContent).join("|")',
+      ],
       chromeEnv,
     );
     assert.match(pills, /Shorten this to one sentence/);

@@ -101,7 +101,7 @@ function isModeToggleHotkeyEvent(event) {
 
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
 const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
-const annotationPills = /** @type {HTMLDivElement} */ (document.getElementById("annotationPills"));
+const queuedLog = /** @type {HTMLDivElement} */ (document.getElementById("queuedLog"));
 const chatLog = /** @type {HTMLDivElement} */ (document.getElementById("chatLog"));
 const chatComposer = /** @type {HTMLDivElement} */ (document.getElementById("chatComposer"));
 const chatInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("chatInput"));
@@ -220,6 +220,8 @@ let nextSendOperationOrder = 0;
 let workingBubble = null;
 let submitQueuedPromise = null;
 const pendingSubmissions = [];
+/** @type {{ prompts?: any[] } | null} */
+let activeSubmission = null;
 const deliveredPrompts = new WeakSet();
 const pendingAcknowledgements = new Set();
 /** @type {Set<FeedbackPreparation>} */
@@ -412,51 +414,151 @@ function persistTerminalReservation(reserved) {
   }
 }
 
-function promptTargetLabel(prompt) {
-  if (prompt?.target?.type === "table-cell") {
-    const semantic = [prompt.target.rowLabel, prompt.target.columnLabel].filter(Boolean).join(" → ");
-    if (semantic) return semantic;
+const REMOVE_ICON_SVG =
+  '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const ANCHOR_EXCERPT_MAX = 120;
+const ANCHOR_SELECTOR_MAX = 512;
+const ANCHOR_LABEL_MAX = 40;
+
+function boundAnchorText(value, max) {
+  const text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length <= max) return text;
+  return text.slice(0, max - 1) + "\u2026";
+}
+
+// What a queued note is attached to, in the annotation card's own words. This is the same rule
+// as the server's `chatEntryForPrompt` (src/chat-messages.js), which derives the anchor for the
+// note once it is sent: a queued prompt has not reached the server yet and this file cannot
+// import modules, so the rule is duplicated here and test/chrome-client-queue.test.js pins the
+// two against the same fixtures. A bubble must not change its anchor when it settles.
+function promptAnchor(prompt) {
+  const tag = String(prompt?.tag || "");
+  if (tag === "message") return null;
+  const target = prompt?.target && typeof prompt.target === "object" ? prompt.target : null;
+  const selector = boundAnchorText(prompt?.selector, ANCHOR_SELECTOR_MAX);
+  const withSelector = (anchor) => (selector ? { ...anchor, selector } : anchor);
+  if (tag === "whiteboard") {
+    const index = Number(target?.diagramIndex);
+    const excerpt = Number.isInteger(index) && index >= 0 ? "Diagram " + (index + 1) : prompt.text;
+    return { kind: "whiteboard", label: "whiteboard", excerpt: boundAnchorText(excerpt, ANCHOR_EXCERPT_MAX) };
   }
-  return String(prompt?.selector || "");
+  if (tag === "layout-warnings") {
+    const count = Array.isArray(target?.warnings) ? target.warnings.length : 0;
+    const excerpt = count > 0 ? count + (count === 1 ? " issue" : " issues") : prompt.text;
+    return { kind: "layout", label: "layout", excerpt: boundAnchorText(excerpt, ANCHOR_EXCERPT_MAX) };
+  }
+  const type = String(target?.type || "");
+  if (type === "text-range") {
+    return withSelector({
+      kind: "text",
+      label: "text",
+      excerpt: boundAnchorText(target.text || prompt.text, ANCHOR_EXCERPT_MAX),
+    });
+  }
+  if (type === "table-cell") {
+    const semantic = [target.rowLabel, target.columnLabel]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" \u2192 ");
+    if (semantic)
+      return withSelector({ kind: "cell", label: "cell", excerpt: boundAnchorText(semantic, ANCHOR_EXCERPT_MAX) });
+  }
+  if (type === "mermaid-node") {
+    return withSelector({
+      kind: "node",
+      label: "node",
+      excerpt: boundAnchorText(target.label || prompt.text, ANCHOR_EXCERPT_MAX),
+    });
+  }
+  const elementTag = tag.trim();
+  if (!elementTag) return null;
+  return withSelector({
+    kind: "element",
+    label: boundAnchorText("<" + elementTag + ">", ANCHOR_LABEL_MAX),
+    excerpt: boundAnchorText(prompt.text, ANCHOR_EXCERPT_MAX),
+  });
+}
+
+// The anchor line: a mono chip naming the kind (`<h2>`, `text`, `cell`, ...) and the excerpt,
+// quoted for an element or a selection, with the full excerpt and selector on hover.
+function anchorHtml(anchor) {
+  if (!anchor || typeof anchor !== "object") return "";
+  const excerpt = String(anchor.excerpt || "");
+  const quoted = anchor.kind === "element" || anchor.kind === "text";
+  const title = [excerpt, anchor.selector].filter(Boolean).join("\n");
+  return (
+    '<div class="anchor" title="' +
+    escapeHtml(title) +
+    '"><span class="anchor-kind">' +
+    escapeHtml(anchor.label || "") +
+    "</span>" +
+    (excerpt
+      ? '<span class="anchor-excerpt' +
+        (anchor.kind === "text" ? " text" : "") +
+        '">' +
+        (quoted ? "\u201C" + escapeHtml(excerpt) + "\u201D" : escapeHtml(excerpt)) +
+        "</span>"
+      : "") +
+    "</div>"
+  );
+}
+
+// What a note with images and no words says for itself. A queued prompt keeps its words in
+// `prompt` (`text` is the element's excerpt); a transcript entry keeps them in `text`.
+function attachmentOnlyText(entry) {
+  if (!attachmentCount(entry)) return "";
+  return entry.tag === "message" || entry.kind === "message" ? "Image message" : "Image annotation";
+}
+
+// A queued note is the user bubble in its not-yet-sent state: dashed, labelled Queued (Sending
+// while its batch is in flight), and removable until then. It settles in place as a sent bubble
+// once the server's transcript carries it, so nothing moves between regions.
+function queuedBubbleHtml(prompt, index) {
+  const sending = isPromptSending(prompt);
+  return (
+    '<div class="bubble user queued"><small>' +
+    (sending ? "Sending\u2026" : "Queued") +
+    ' <button class="queued-remove" type="button" aria-label="Remove queued prompt" data-index="' +
+    index +
+    '">' +
+    REMOVE_ICON_SVG +
+    "</button></small>" +
+    anchorHtml(promptAnchor(prompt)) +
+    '<div class="bubble-text">' +
+    escapeHtml(prompt.prompt || attachmentOnlyText(prompt)) +
+    "</div>" +
+    bubbleAttachmentsHtml(prompt) +
+    "</div>"
+  );
+}
+
+// Whether a queued prompt is committed to a send that has not been answered yet: waiting for its
+// snapshot, queued behind another submission, in flight, or held by the terminal reservation.
+// Derived from the existing send bookkeeping rather than tracked separately, so no failure path
+// can strand a note labelled Sending with its remove control disabled.
+function isPromptSending(prompt) {
+  if (terminalSubmission?.inFlight && terminalSubmission.prompts.includes(prompt)) return true;
+  for (const request of snapshotRequests.values()) {
+    if (request.action === "submit" && Array.isArray(request.prompts) && request.prompts.includes(prompt)) return true;
+  }
+  for (const submission of pendingSubmissions) {
+    if (Array.isArray(submission.prompts) && submission.prompts.includes(prompt)) return true;
+  }
+  return Boolean(
+    activeSubmission && Array.isArray(activeSubmission.prompts) && activeSubmission.prompts.includes(prompt),
+  );
 }
 
 function render() {
-  annotationPills.innerHTML = queued
-    .map((prompt, index) => {
-      const targetLabel = promptTargetLabel(prompt);
-      const showLocator = targetLabel && prompt.selector && targetLabel !== prompt.selector;
-      return (
-        '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
-        escapeHtml(
-          prompt.prompt ||
-            (attachmentCount(prompt) ? (prompt.tag === "message" ? "Image message" : "Image annotation") : ""),
-        ) +
-        "</span>" +
-        pillAttachmentsHtml(prompt) +
-        '<button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
-        index +
-        '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
-        (targetLabel
-          ? '<div class="tooltip-label">Target</div><div class="pill-tooltip-target">' +
-            escapeHtml(targetLabel) +
-            "</div>"
-          : "") +
-        (showLocator
-          ? '<div class="tooltip-label">Locator</div><div class="pill-tooltip-target">' +
-            escapeHtml(prompt.selector) +
-            "</div>"
-          : "") +
-        '<div class="tooltip-label">Prompt</div><div class="pill-tooltip-prompt">' +
-        escapeHtml(prompt.prompt) +
-        "</div></div></div>"
-      );
-    })
-    .join("");
+  queuedLog.innerHTML = queued.map((prompt, index) => queuedBubbleHtml(prompt, index)).join("");
 
-  for (const button of annotationPills.querySelectorAll(".pill-close")) {
-    const closeButton = /** @type {HTMLButtonElement} */ (button);
-    closeButton.disabled = terminalSubmission !== null;
-    closeButton.addEventListener("click", (event) => removeQueuedPrompt(Number(closeButton.dataset.index), event));
+  for (const button of queuedLog.querySelectorAll(".queued-remove")) {
+    const removeButton = /** @type {HTMLButtonElement} */ (button);
+    const prompt = queued[Number(removeButton.dataset.index)];
+    removeButton.disabled = terminalSubmission !== null || isPromptSending(prompt);
+    removeButton.addEventListener("click", (event) => removeQueuedPrompt(Number(removeButton.dataset.index), event));
   }
   updateSendState();
   scrollPanelToBottom();
@@ -482,27 +584,26 @@ function attachmentCount(prompt) {
   return Array.isArray(prompt.attachments) ? prompt.attachments.length : 0;
 }
 
-// How many thumbnails the compact pill shows before the rest collapse into a badge.
-const PILL_THUMBNAIL_LIMIT = 4;
+// How many thumbnails a bubble shows before the rest collapse into a badge.
+const BUBBLE_THUMBNAIL_LIMIT = 4;
 
-// Thumbnails for a queued prompt's images, served straight from the same-origin
-// attachment endpoint (the ids are already server-vetted at upload time). The pill
-// has room for only a few, but the per-prompt cap is configurable
-// (LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT), so a prompt can legitimately carry more
-// than fit: the remainder collapses into a +N badge rather than being dropped from
-// the preview, which would make the queue look like it lost the extra images (W-A).
-function pillAttachmentsHtml(prompt) {
-  const count = attachmentCount(prompt);
+// Thumbnails for a note's images, served straight from the same-origin attachment endpoint (the
+// ids are already server-vetted at upload time). The bubble has room for only a few, but the
+// per-prompt cap is configurable (LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT), so a note can
+// legitimately carry more than fit: the remainder collapses into a +N badge rather than being
+// dropped from the preview, which would make the queue look like it lost the extra images (W-A).
+function bubbleAttachmentsHtml(entry) {
+  const count = attachmentCount(entry);
   if (!count) return "";
-  const hidden = count - PILL_THUMBNAIL_LIMIT;
+  const hidden = count - BUBBLE_THUMBNAIL_LIMIT;
   return (
-    '<span class="pill-attachments">' +
-    prompt.attachments
-      .slice(0, PILL_THUMBNAIL_LIMIT)
+    '<span class="bubble-attachments">' +
+    entry.attachments
+      .slice(0, BUBBLE_THUMBNAIL_LIMIT)
       .map((attachment) => {
         const alt = escapeHtml(attachment.name || "image");
         return (
-          '<img class="pill-attachment" src="/api/' +
+          '<img class="bubble-attachment" src="/api/' +
           encodeURIComponent(key) +
           "/attachments/" +
           encodeURIComponent(attachment.id) +
@@ -515,7 +616,7 @@ function pillAttachmentsHtml(prompt) {
       })
       .join("") +
     (hidden > 0
-      ? '<span class="pill-attachment-more" title="' +
+      ? '<span class="bubble-attachment-more" title="' +
         hidden +
         " more image" +
         (hidden === 1 ? "" : "s") +
@@ -635,12 +736,37 @@ async function copyText(text) {
   return true;
 }
 
-function addChat(role, text, shouldScroll = true) {
-  if (!text) return;
+// One transcript entry, as the server serialized it (src/chat-messages.js). An agent entry's
+// `html` is the server's rendering of the agent's text and is the only html ever set here; a
+// user entry is always escaped text, with its anchor line and thumbnails when it carries them.
+function chatBubbleHtml(entry) {
+  if (entry.role === "agent") {
+    return (
+      "<small>Agent</small>" +
+      (typeof entry.html === "string" && entry.html
+        ? '<div class="chat-md">' + entry.html + "</div>"
+        : '<div class="bubble-text">' + escapeHtml(entry.text) + "</div>")
+    );
+  }
+  return (
+    "<small>You</small>" +
+    anchorHtml(entry.anchor) +
+    '<div class="bubble-text">' +
+    escapeHtml(entry.text || attachmentOnlyText(entry)) +
+    "</div>" +
+    bubbleAttachmentsHtml(entry)
+  );
+}
+
+function addChat(entry, shouldScroll = true) {
+  if (!entry || typeof entry !== "object") return;
+  const role = entry.role === "agent" ? "agent" : "user";
+  const text = String(entry.text || "");
+  if (!text && !(role === "agent" ? entry.html : attachmentCount(entry))) return;
 
   const el = document.createElement("div");
   el.className = "bubble " + role;
-  el.innerHTML = "<small>" + (role === "agent" ? "Agent" : "You") + "</small><div>" + escapeHtml(text) + "</div>";
+  el.innerHTML = chatBubbleHtml({ ...entry, role, text });
   chatLog.appendChild(el);
   if (shouldScroll) scrollElementIntoView(el);
   return el;
@@ -652,7 +778,7 @@ function syncChat(chat) {
   }
 
   let lastChatBubble = null;
-  for (const item of chat) lastChatBubble = addChat(item.role, item.text, false) || lastChatBubble;
+  for (const item of chat) lastChatBubble = addChat(item, false) || lastChatBubble;
   if (workingBubble) chatLog.appendChild(workingBubble);
   // Handed-back drafts were written at the end of the conversation, and a rebuild re-appends the
   // whole transcript - so without this they end up above it, where the scroll below would leave
@@ -1006,7 +1132,7 @@ function scrollElementIntoView(el) {
 
 function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
-  if (terminalSubmission) return;
+  if (terminalSubmission || isPromptSending(queued[index])) return;
   queued.splice(index, 1);
   persistQueuedPrompts();
   if (!queued.length) {
@@ -1335,10 +1461,10 @@ function sendQueued(endAfter) {
       if (attachments.length) prompt.attachments = attachments;
       queued.push(prompt);
       persistQueuedPrompts();
-      // Render the durable queue pill before clearing the editor. If anything after this point
-      // fails, the user's words are already both stored and visibly recoverable in the tab.
+      // Render the durable queued bubble before clearing the editor. If anything after this point
+      // fails, the user's words are already both stored and visibly recoverable in the tab. It
+      // becomes a sent bubble only when the server's transcript carries it (see submitQueuedOnce).
       render();
-      addChat("user", text || "Image message");
       chatInput.value = "";
       chatAttachmentController.reset();
     }
@@ -1362,6 +1488,7 @@ function sendQueued(endAfter) {
     return;
   }
   requestSnapshot("submit", queued.slice(), false, null);
+  render();
 }
 
 function finishTerminalPreparation(terminal, preparations) {
@@ -1403,6 +1530,7 @@ function completeTerminalPreparation(terminal, results) {
   // an incomplete terminal submission.
   persistTerminalReservation(true);
   requestSnapshot("submit", terminal.prompts, true, terminal);
+  render();
 }
 
 function retryTerminalSubmission() {
@@ -1410,6 +1538,7 @@ function retryTerminalSubmission() {
   terminalSubmission.inFlight = true;
   updateSendState();
   requestSnapshot("submit", terminalSubmission.prompts, true, terminalSubmission);
+  render();
 }
 
 function markTerminalSubmissionFailed(submission) {
@@ -1437,6 +1566,7 @@ async function submitQueued(submission) {
     while (pendingSubmissions.length && !ended) {
       const next = pendingSubmissions.shift();
       if (!next) continue;
+      activeSubmission = next;
       try {
         const result = await submitQueuedOnce(next, firstError !== null);
         if (result === false) markTerminalSubmissionFailed(next);
@@ -1445,6 +1575,10 @@ async function submitQueued(submission) {
         if (firstError === null) firstError = error;
       } finally {
         if (next.acknowledgement) pendingAcknowledgements.delete(next.acknowledgement);
+        activeSubmission = null;
+        // Whatever happened, the batch is no longer in flight: a failed note reads Queued again
+        // with its remove control back.
+        render();
       }
     }
     if (firstError !== null) throw firstError;
@@ -1553,12 +1687,17 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
     }
     throw new Error("failed to submit queued prompts");
   }
+  const accepted = typeof response.json === "function" ? await response.json().catch(() => null) : null;
   for (const prompt of prompts) {
     deliveredPrompts.add(prompt);
     const index = queued.indexOf(prompt);
     if (index !== -1) queued.splice(index, 1);
   }
   persistQueuedPrompts();
+  // The server answers with the transcript the batch just joined. Rebuilding the chat from it
+  // before clearing the queued log is what lets a note settle in place: it leaves the queued log
+  // and appears as a sent bubble in the same paint, with the same anchor.
+  if (Array.isArray(accepted?.chat)) syncChat(accepted.chat);
   render();
   settleAcknowledgementGuidance(submission, preserveFailureState);
   if (shouldEndSession) {
@@ -3674,8 +3813,8 @@ events.set("chrome-reload", (data) => reloadAfterServerRestart(String(data.reaso
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
 events.set("chrome-outdated", (data) => setChromeOutdated(true, String(data.reason || "")));
-events.set("agent-reply", ({ text }) => {
-  addChat("agent", text);
+events.set("agent-reply", ({ text, html }) => {
+  addChat({ role: "agent", text, html });
   noteAgentReply(text);
 });
 events.set("chat-sync", (data) => syncChat(data.chat || []));
@@ -3689,7 +3828,7 @@ render();
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);
 renderWarnings();
-initialChat.forEach((item) => addChat(item.role, item.text));
+initialChat.forEach((item) => addChat(item));
 retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
 // The session already ended before this page (re)loaded, so there is no future live `ended` event
