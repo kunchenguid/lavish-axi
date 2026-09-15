@@ -30,18 +30,42 @@ function renderEmphasis(text) {
     .replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g, "$1<em>$2</em>");
 }
 
-function destinationEnd(text, start) {
-  let depth = 0;
-  let i = start;
-  while (i < text.length && !/[\s<]/.test(text[i])) {
-    if (text[i] === "(") depth += 1;
-    if (text[i] === ")") {
-      if (depth === 0) break;
-      depth -= 1;
-    }
-    i += 1;
+const MAX_INLINE_DESTINATION_LENGTH = 2048;
+
+function createDestinationScanner(text) {
+  const closers = new Int32Array(text.length);
+  closers.fill(-1);
+  const stack = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "(") stack.push(i);
+    else if (text[i] === ")" && stack.length) closers[stack.pop()] = i;
   }
-  return { end: i, balanced: depth === 0 };
+  return { closers };
+}
+
+function destinationEnd(text, start, scanner) {
+  const limit = Math.min(text.length, start + MAX_INLINE_DESTINATION_LENGTH);
+  let i = start;
+  while (i < limit && !/[\s<)]/.test(text[i])) {
+    if (text[i] !== "(") {
+      i += 1;
+      continue;
+    }
+    const close = scanner.closers[i];
+    if (close === -1 || close >= limit) {
+      while (i < limit && !/[\s<]/.test(text[i])) i += 1;
+      return { end: i, balanced: false, withinLimit: i < limit || limit === text.length };
+    }
+    let boundary = i + 1;
+    while (boundary < close && !/[\s<]/.test(text[boundary])) boundary += 1;
+    if (boundary < close) return { end: boundary, balanced: false, withinLimit: true };
+    i = close + 1;
+  }
+  return {
+    end: i,
+    balanced: true,
+    withinLimit: i < limit || limit === text.length || /[\s<)]/.test(text[limit]),
+  };
 }
 
 function forwardFinder(text, needle) {
@@ -60,12 +84,22 @@ function createImageScanner(text) {
   const nextBracket = forwardFinder(text, "]");
   const nextNewline = forwardFinder(text, "\n");
   const suffixEnds = new Map();
-  return { nextBracket, nextNewline, suffixEnds };
+  return { nextBracket, nextNewline, suffixEnds, destinationScanner: null };
 }
 
-function imageSuffixEnd(text, labelEnd) {
+function scannedDestinationEnd(text, start, scanner) {
+  scanner.destinationScanner ||= createDestinationScanner(text);
+  return destinationEnd(text, start, scanner.destinationScanner);
+}
+
+function boundedIndexOf(text, needle, start) {
+  const found = text.indexOf(needle, start);
+  return found !== -1 && found - start <= MAX_INLINE_DESTINATION_LENGTH ? found : -1;
+}
+
+function imageSuffixEnd(text, labelEnd, scanner) {
   if (text[labelEnd + 1] === "[") {
-    const referenceEnd = text.indexOf("]", labelEnd + 2);
+    const referenceEnd = boundedIndexOf(text, "]", labelEnd + 2);
     if (referenceEnd === -1 || text.slice(labelEnd + 2, referenceEnd).includes("\n")) return -1;
     return referenceEnd + 1;
   }
@@ -73,13 +107,13 @@ function imageSuffixEnd(text, labelEnd) {
   const destinationStart = labelEnd + 2;
   let destination;
   if (text[destinationStart] === "<") {
-    const close = text.indexOf(">", destinationStart + 1);
+    const close = boundedIndexOf(text, ">", destinationStart + 1);
     if (close === -1 || text.slice(destinationStart + 1, close).includes("\n")) return -1;
-    destination = { end: close + 1, balanced: true };
+    destination = { end: close + 1, balanced: true, withinLimit: true };
   } else {
-    destination = destinationEnd(text, destinationStart);
+    destination = scannedDestinationEnd(text, destinationStart, scanner);
   }
-  if (!destination.balanced) return -1;
+  if (!destination.balanced || !destination.withinLimit) return -1;
   if (text[destination.end] === ")") return destination.end + 1;
   let titleStart = destination.end;
   while (text[titleStart] === " " || text[titleStart] === "\t") titleStart += 1;
@@ -87,13 +121,14 @@ function imageSuffixEnd(text, labelEnd) {
   const quote = text[titleStart];
   let titleEnd = -1;
   if (quote === '"' || quote === "'") {
-    titleEnd = text.indexOf(quote, titleStart + 1);
+    titleEnd = boundedIndexOf(text, quote, titleStart + 1);
     if (titleEnd === -1 || text.slice(titleStart + 1, titleEnd).includes("\n")) return -1;
     titleEnd += 1;
   } else if (quote === "(") {
     let depth = 1;
     titleEnd = titleStart + 1;
     while (titleEnd < text.length && depth > 0 && text[titleEnd] !== "\n") {
+      if (titleEnd - titleStart > MAX_INLINE_DESTINATION_LENGTH) return -1;
       if (text[titleEnd] === "(") depth += 1;
       if (text[titleEnd] === ")") depth -= 1;
       titleEnd += 1;
@@ -112,7 +147,7 @@ function imageEnd(text, start, scanner) {
   const labelEnd = scanner.nextBracket(start + 2);
   const newline = scanner.nextNewline(start + 2);
   if (labelEnd === -1 || (newline !== -1 && newline < labelEnd)) return -1;
-  if (!scanner.suffixEnds.has(labelEnd)) scanner.suffixEnds.set(labelEnd, imageSuffixEnd(text, labelEnd));
+  if (!scanner.suffixEnds.has(labelEnd)) scanner.suffixEnds.set(labelEnd, imageSuffixEnd(text, labelEnd, scanner));
   return scanner.suffixEnds.get(labelEnd);
 }
 
@@ -121,6 +156,8 @@ function createLinkScanner(text) {
     nextLabelEnd: forwardFinder(text, "]("),
     nextNewline: forwardFinder(text, "\n"),
     destinations: new Map(),
+    blockedBareUrls: new Set(),
+    destinationScanner: null,
   };
 }
 
@@ -134,21 +171,26 @@ function markdownLinkAt(text, start, scanner) {
     if (!text.startsWith("http://", destinationStart) && !text.startsWith("https://", destinationStart)) {
       scanner.destinations.set(labelEnd, null);
     } else {
-      const destination = destinationEnd(text, destinationStart);
-      scanner.destinations.set(
-        labelEnd,
-        !destination.balanced || text[destination.end] !== ")"
-          ? null
-          : { end: destination.end + 1, url: text.slice(destinationStart, destination.end) },
-      );
+      const destination = scannedDestinationEnd(text, destinationStart, scanner);
+      if (!destination.balanced || !destination.withinLimit || text[destination.end] !== ")") {
+        scanner.destinations.set(labelEnd, null);
+        scanner.blockedBareUrls.add(destinationStart);
+      } else {
+        scanner.destinations.set(labelEnd, {
+          end: destination.end + 1,
+          url: text.slice(destinationStart, destination.end),
+        });
+      }
     }
   }
   const destination = scanner.destinations.get(labelEnd);
   return destination ? { ...destination, label: text.slice(start + 1, labelEnd) } : null;
 }
 
-function bareUrlEnd(text, start) {
-  let end = destinationEnd(text, start).end;
+function bareUrlEnd(text, start, scanner) {
+  const destination = scannedDestinationEnd(text, start, scanner);
+  if (!destination.withinLimit) return -1;
+  let end = destination.end;
   while (end > start) {
     if (text.slice(start, end).endsWith("&quot;")) {
       end -= "&quot;".length;
@@ -171,8 +213,15 @@ function renderLinksAndEmphasis(text) {
   while (i < text.length) {
     const markdownLink = markdownLinkAt(text, i, linkScanner);
     const bareUrl =
-      (i === 0 || /[\s(]/.test(text[i - 1])) && (text.startsWith("http://", i) || text.startsWith("https://", i));
+      !linkScanner.blockedBareUrls.has(i) &&
+      (i === 0 || /[\s(]/.test(text[i - 1])) &&
+      (text.startsWith("http://", i) || text.startsWith("https://", i));
     if (!markdownLink && !bareUrl) {
+      i += 1;
+      continue;
+    }
+    const bareEnd = bareUrl ? bareUrlEnd(text, i, linkScanner) : -1;
+    if (!markdownLink && bareEnd === -1) {
       i += 1;
       continue;
     }
@@ -182,10 +231,9 @@ function renderLinksAndEmphasis(text) {
         '<a href="' + markdownLink.url + '" target="_blank" rel="noopener noreferrer">' + markdownLink.label + "</a>";
       i = markdownLink.end;
     } else {
-      const end = bareUrlEnd(text, i);
-      const url = text.slice(i, end);
+      const url = text.slice(i, bareEnd);
       html += '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>";
-      i = end;
+      i = bareEnd;
     }
     offset = i;
   }

@@ -88,13 +88,21 @@ test("Markdown images with optional titles remain literal text", () => {
   );
 });
 
-test("long runs of unmatched link and image brackets stay literal without stalling", () => {
-  const text = "[".repeat(30_000) + " " + "![".repeat(30_000);
+test("malformed links and images stay literal without stalling", () => {
+  const brackets = "[".repeat(30_000) + " " + "![".repeat(30_000);
+  const recursiveLinks = "[x](https://a(".repeat(10_000);
+  const nestedDestination = "[x](https://example.test/" + "(".repeat(30_000);
   const started = performance.now();
-  const html = renderChatMarkdown(text);
+  assert.equal(renderChatMarkdown(brackets), `<p>${brackets}</p>`);
+  assert.equal(renderChatMarkdown(recursiveLinks), `<p>${recursiveLinks}</p>`);
+  assert.equal(renderChatMarkdown(nestedDestination), `<p>${nestedDestination}</p>`);
   const elapsed = performance.now() - started;
-  assert.equal(html, `<p>${text}</p>`);
   assert.ok(elapsed < 1_000, `render took ${Math.round(elapsed)}ms`);
+});
+
+test("destinations beyond the inline limit remain literal", () => {
+  const link = `[long](https://example.test/${"a".repeat(2_049)})`;
+  assert.equal(renderChatMarkdown(link), `<p>${link}</p>`);
 });
 
 test("raw html is escaped, never interpreted", () => {
