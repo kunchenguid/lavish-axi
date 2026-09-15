@@ -54,8 +54,9 @@ function imageEnd(text, start) {
   if (text[destination.end] === ")") return destination.end + 1;
   let titleStart = destination.end;
   while (text[titleStart] === " " || text[titleStart] === "\t") titleStart += 1;
-  if (text[titleStart] !== '"') return -1;
-  const titleEnd = text.indexOf('"', titleStart + 1);
+  const quote = text[titleStart];
+  if (quote !== '"' && quote !== "'") return -1;
+  const titleEnd = text.indexOf(quote, titleStart + 1);
   if (titleEnd === -1 || text.slice(titleStart + 1, titleEnd).includes("\n")) return -1;
   let close = titleEnd + 1;
   while (text[close] === " " || text[close] === "\t") close += 1;
@@ -77,6 +78,22 @@ function markdownLinkAt(text, start) {
   };
 }
 
+function bareUrlEnd(text, start) {
+  let end = destinationEnd(text, start).end;
+  while (end > start) {
+    if (text.slice(start, end).endsWith("&quot;")) {
+      end -= "&quot;".length;
+    } else if (/&(?:amp|lt|gt);$/.test(text.slice(start, end))) {
+      break;
+    } else if (/[.,;:!?'”’]/.test(text[end - 1])) {
+      end -= 1;
+    } else {
+      break;
+    }
+  }
+  return end;
+}
+
 function renderLinksAndEmphasis(text) {
   let html = "";
   let offset = 0;
@@ -95,10 +112,10 @@ function renderLinksAndEmphasis(text) {
         '<a href="' + markdownLink.url + '" target="_blank" rel="noopener noreferrer">' + markdownLink.label + "</a>";
       i = markdownLink.end;
     } else {
-      const destination = destinationEnd(text, i);
-      const url = text.slice(i, destination.end);
+      const end = bareUrlEnd(text, i);
+      const url = text.slice(i, end);
       html += '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>";
-      i = destination.end;
+      i = end;
     }
     offset = i;
   }
@@ -150,12 +167,13 @@ function renderListItems(items) {
     while (i < nodes.length) {
       const ordered = nodes[i].ordered;
       const tag = ordered ? "ol" : "ul";
+      const start = ordered && nodes[i].start !== "1" ? ' start="' + nodes[i].start + '"' : "";
       let inner = "";
       while (i < nodes.length && nodes[i].ordered === ordered) {
         inner += "<li>" + renderInline(nodes[i].text) + render(nodes[i].children) + "</li>";
         i += 1;
       }
-      html += "<" + tag + ">" + inner + "</" + tag + ">";
+      html += "<" + tag + start + ">" + inner + "</" + tag + ">";
     }
     return html;
   };
@@ -202,7 +220,9 @@ export function renderChatMarkdown(text) {
       const items = [];
       while (i < lines.length && LIST_ITEM.test(lines[i])) {
         const item = LIST_ITEM.exec(lines[i]);
-        items.push({ indent: item[1].length, ordered: /\d/.test(item[2]), text: item[3] });
+        const ordered = /\d/.test(item[2]);
+        const start = ordered ? item[2].replace(/[.)]$/, "").replace(/^0+(?=\d)/, "") : "";
+        items.push({ indent: item[1].length, ordered, start, text: item[3] });
         i += 1;
         while (i < lines.length && lines[i].trim() && /^\s{2,}/.test(lines[i]) && !LIST_ITEM.test(lines[i])) {
           items[items.length - 1].text += " " + lines[i].trim();

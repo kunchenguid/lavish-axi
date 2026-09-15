@@ -21,10 +21,10 @@ test("headings strip only whitespace-separated closing markers", () => {
   );
 });
 
-test("lists nest by indentation and a marker change starts a new list", () => {
+test("lists nest by indentation, switch marker type, and preserve an ordered start", () => {
   assert.equal(
-    renderChatMarkdown("- a\n  - b\n  1. c\n- d\n1. one\n2) two"),
-    "<ul><li>a<ul><li>b</li></ul><ol><li>c</li></ol></li><li>d</li></ul><ol><li>one</li><li>two</li></ol>",
+    renderChatMarkdown("- a\n  - b\n  1. c\n- d\n3. third\n4) fourth"),
+    '<ul><li>a<ul><li>b</li></ul><ol><li>c</li></ol></li><li>d</li></ul><ol start="3"><li>third</li><li>fourth</li></ol>',
   );
 });
 
@@ -71,15 +71,19 @@ test("link labels and targets are protected from emphasis rendering", () => {
 
 test("links preserve balanced parentheses and leave trailing punctuation outside", () => {
   assert.equal(
-    renderChatMarkdown("[docs](https://example.test/Foo_(bar)) and https://example.test/Foo_(bar))"),
-    '<p><a href="https://example.test/Foo_(bar)" target="_blank" rel="noopener noreferrer">docs</a> and <a href="https://example.test/Foo_(bar)" target="_blank" rel="noopener noreferrer">https://example.test/Foo_(bar)</a>)</p>',
+    renderChatMarkdown(
+      '[docs](https://example.test/Foo_(bar)) and See https://example.test/docs. (https://example.test/Foo_(bar)). https://example.test/quoted"',
+    ),
+    '<p><a href="https://example.test/Foo_(bar)" target="_blank" rel="noopener noreferrer">docs</a> and See <a href="https://example.test/docs" target="_blank" rel="noopener noreferrer">https://example.test/docs</a>. (<a href="https://example.test/Foo_(bar)" target="_blank" rel="noopener noreferrer">https://example.test/Foo_(bar)</a>). <a href="https://example.test/quoted" target="_blank" rel="noopener noreferrer">https://example.test/quoted</a>&quot;</p>',
   );
 });
 
 test("Markdown images with optional titles remain literal text", () => {
   assert.equal(
-    renderChatMarkdown('before ![*alt*](https://example.com/image_(1).png "*caption*") after'),
-    "<p>before ![*alt*](https://example.com/image_(1).png &quot;*caption*&quot;) after</p>",
+    renderChatMarkdown(
+      "before ![*alt*](https://example.com/image_(1).png \"*caption*\") and ![_alt_](image.png '_caption_') after",
+    ),
+    "<p>before ![*alt*](https://example.com/image_(1).png &quot;*caption*&quot;) and ![_alt_](image.png '_caption_') after</p>",
   );
 });
 
