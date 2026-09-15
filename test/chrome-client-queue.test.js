@@ -7371,6 +7371,51 @@ test("an older live sync does not hide the transcript accepted by the prompts re
   );
 });
 
+test("a stale prompts response cannot remove a newer concurrent note", async () => {
+  let resolvePost = () => {};
+  const first = { role: "user", kind: "message", text: "First note" };
+  const second = { role: "user", kind: "message", text: "Second note" };
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        return new Promise((resolve) => {
+          resolvePost = () => resolve({ ok: true, json: async () => ({ status: "queued", chat: [first] }) });
+        });
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("chatInput").value = "First note";
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [first, second] }) });
+  resolvePost();
+  await flushPromises();
+
+  const bubbles = chrome.element("chatLog").children;
+  assert.equal(bubbles.length, 2);
+  assert.match(bubbles[0].innerHTML, /First note/);
+  assert.match(bubbles[1].innerHTML, /Second note/);
+});
+
+test("a stale live sync cannot remove a newer agent reply", async () => {
+  const sent = { role: "user", kind: "message", text: "Sent note" };
+  const reply = { role: "agent", text: "New reply", html: "<p>New reply</p>" };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [sent] },
+  });
+
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify(reply) });
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [sent] }) });
+
+  const bubbles = chrome.element("chatLog").children;
+  assert.equal(bubbles.length, 2);
+  assert.match(bubbles[0].innerHTML, /Sent note/);
+  assert.equal(bubbles[1].innerHTML, '<small>Agent</small><div class="chat-md"><p>New reply</p></div>');
+});
+
 test("a failed send returns its notes to Queued with the remove control back", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async (url) => {

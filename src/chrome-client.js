@@ -860,15 +860,17 @@ function settleQueuedFromTranscript(chat, shouldRender = true) {
   return true;
 }
 
-function syncChat(chat) {
-  settleQueuedFromTranscript(chat);
-  displayedChat = Array.isArray(chat) ? chat.slice() : [];
+function syncChat(chat, { allowReset = false } = {}) {
+  const nextChat = Array.isArray(chat) ? chat : [];
+  if (!allowReset && !chatContainsEntries(nextChat, displayedChat)) return false;
+  settleQueuedFromTranscript(nextChat);
+  displayedChat = nextChat.slice();
   for (const el of [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")]) {
     el.remove();
   }
 
   let lastChatBubble = null;
-  for (const item of chat) lastChatBubble = addChat(item, false) || lastChatBubble;
+  for (const item of nextChat) lastChatBubble = addChat(item, false) || lastChatBubble;
   if (workingBubble) chatLog.appendChild(workingBubble);
   // Handed-back drafts were written at the end of the conversation, and a rebuild re-appends the
   // whole transcript - so without this they end up above it, where the scroll below would leave
@@ -876,6 +878,7 @@ function syncChat(chat) {
   for (const note of retiredDraftNodes) chatLog.appendChild(note);
   const anchor = retiredDraftNodes[retiredDraftNodes.length - 1] || workingBubble || lastChatBubble;
   if (anchor) scrollElementIntoView(anchor);
+  return true;
 }
 
 function setAgentPresence(state) {
@@ -1790,7 +1793,7 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
   // The server answers with the transcript the batch just joined. Rebuilding the chat from it
   // before clearing the queued log is what lets a note settle in place: it leaves the queued log
   // and appears as a sent bubble in the same paint, with the same anchor.
-  if (Array.isArray(accepted?.chat) && chatContainsEntries(accepted.chat, displayedChat)) syncChat(accepted.chat);
+  if (Array.isArray(accepted?.chat)) syncChat(accepted.chat);
   render();
   settleAcknowledgementGuidance(submission, preserveFailureState);
   if (shouldEndSession) {
@@ -3876,8 +3879,12 @@ initializeLayoutGate();
 // WebSockets leave the browser's HTTP connection pool free for sends and artifact loads.
 const events = new Map();
 let eventReconnectDelayMs = 500;
+let liveEventSocketCount = 0;
 function connectLiveEvents() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const allowFirstChatReset = liveEventSocketCount > 0;
+  let awaitingFirstChatSync = true;
+  liveEventSocketCount += 1;
   const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
   socket.addEventListener("open", () => {
     eventReconnectDelayMs = 500;
@@ -3886,7 +3893,9 @@ function connectLiveEvents() {
   socket.addEventListener("message", (message) => {
     try {
       const { type, data } = JSON.parse(message.data);
-      return events.get(type)?.(data || {});
+      const allowReset = type === "chat-sync" && allowFirstChatReset && awaitingFirstChatSync;
+      if (type === "chat-sync") awaitingFirstChatSync = false;
+      return events.get(type)?.(data || {}, { allowReset });
     } catch {
       // Ignore malformed frames; a later event or reconnect can recover the stream.
     }
@@ -3911,7 +3920,7 @@ events.set("agent-reply", ({ text, html }) => {
   if (addChat(entry)) displayedChat.push(entry);
   noteAgentReply(text);
 });
-events.set("chat-sync", (data) => syncChat(data.chat || []));
+events.set("chat-sync", (data, options) => syncChat(data.chat || [], options));
 events.set("agent-presence", (data) => setAgentPresence(data.state));
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());
