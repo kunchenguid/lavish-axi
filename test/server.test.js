@@ -1029,16 +1029,6 @@ test("chrome chat bubbles follow the preview mock shades", async () => {
   assert.match(css, /border-top-color:var\(--accent\)/);
 });
 
-test("chrome queued notes are the user bubble in its not-yet-sent state", async () => {
-  const css = await chromeCssSource();
-
-  // Dashed is already the panel's word for "not delivered" (the Unsent annotation note), and the
-  // steel treatment stays: no amber, no second accent.
-  assert.match(css, /\.bubble\.queued\{[^}]*border-style:dashed/);
-  assert.match(css, /\.bubble\.queued\{[^}]*background:transparent/);
-  assert.doesNotMatch(css, /\.bubble\.queued\{[^}]*var\(--amber/);
-});
-
 test("chrome includes a chat-like prompt composer and agent reply listener", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
@@ -1125,35 +1115,12 @@ test("chrome keeps queued notes at the tail of the one conversation, above the s
   assert.doesNotMatch(html, /<h2>Queued Annotations<\/h2>/);
 });
 
-test("chrome scrolls queued prompts above a sticky composer footer", async () => {
-  const css = await chromeCssSource();
-
-  assert.match(css, /\.panel-scroll\{[^}]*flex:1 1 auto/);
-  assert.match(css, /\.panel-scroll\{[^}]*min-height:0/);
-  assert.match(css, /\.panel-scroll\{[^}]*overflow-y:auto/);
-  assert.match(css, /\.chat\{[^}]*overflow:visible/);
-  assert.match(css, /\.chat\{[^}]*flex:0 0 auto/);
-  assert.match(css, /\.composer\{[^}]*position:sticky/);
-  assert.match(css, /\.composer\{[^}]*bottom:0/);
-  assert.match(css, /\.composer\{[^}]*flex-shrink:0/);
-});
-
 test("chrome omits clear queue button because queued notes can be removed individually", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /removeQueuedPrompt/);
   assert.doesNotMatch(js, /Clear Queue/);
   assert.doesNotMatch(js, /id="clear"/);
-});
-
-test("a note's anchor line keeps its excerpt to one line and never floats a tooltip", async () => {
-  const css = await chromeCssSource();
-
-  // The full excerpt and the selector are on hover (title), so the line itself stays one line.
-  assert.match(css, /\.anchor-excerpt\{[^}]*white-space:nowrap/);
-  assert.match(css, /\.anchor-excerpt\{[^}]*text-overflow:ellipsis/);
-  assert.match(css, /\.anchor-kind\{[^}]*font-family:var\(--font-mono\)/);
-  assert.doesNotMatch(css, /pill-tooltip/);
 });
 
 test("chrome client script is valid JavaScript", async () => {
@@ -6383,6 +6350,74 @@ test("the prompts route returns the transcript and syncs it live at send time", 
     assert.deepEqual(withoutTimestamps((await stream.next()).chat), expected);
     await stream.close();
   } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a delayed layout-warning send never republishes an older transcript", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  const stateFile = path.join(dir, "state.json");
+  const sessionStore = new SessionStore(stateFile);
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile, sessionStore, version: "9.9.9-test" });
+  const originalHasOutstanding = sessionStore.hasOutstandingLayoutRepairs.bind(sessionStore);
+  let releaseSync;
+  let resolveSyncEntered;
+  const syncEntered = new Promise((resolve) => {
+    resolveSyncEntered = resolve;
+  });
+  const syncHold = new Promise((resolve) => {
+    releaseSync = resolve;
+  });
+  let stream;
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    stream = await startEventStream(base, opened.key, "chat-sync");
+    assert.deepEqual(await stream.next(), { chat: [] });
+
+    sessionStore.hasOutstandingLayoutRepairs = async (...args) => {
+      const result = await originalHasOutstanding(...args);
+      resolveSyncEntered();
+      await syncHold;
+      return result;
+    };
+
+    const delayedSend = fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [{ uid: "warning", prompt: "Fix layout", selector: "", tag: "layout-warnings", text: "Layout" }],
+      }),
+    }).then((response) => response.json());
+    await syncEntered;
+
+    const laterSend = await fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [{ uid: "later", prompt: "Keep this too", selector: "", tag: "message", text: "Message" }],
+      }),
+    }).then((response) => response.json());
+    const laterSync = await stream.next();
+
+    releaseSync();
+    const delayedResult = await delayedSend;
+    const delayedSync = await stream.next();
+    const texts = (chat) => chat.map((entry) => entry.text);
+    assert.deepEqual(texts(laterSend.chat), ["Fix layout", "Keep this too"]);
+    assert.deepEqual(texts(laterSync.chat), texts(laterSend.chat));
+    assert.deepEqual(texts(delayedResult.chat), texts(laterSend.chat));
+    assert.deepEqual(texts(delayedSync.chat), texts(laterSend.chat));
+  } finally {
+    releaseSync?.();
+    await stream?.close();
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }

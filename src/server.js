@@ -258,6 +258,7 @@ export async function serve({
   env = process.env,
   port,
   stateFile,
+  sessionStore,
   version = "",
   debug = false,
   log = null,
@@ -290,7 +291,7 @@ export async function serve({
   let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
-  const store = new SessionStore(stateFile);
+  const store = sessionStore || new SessionStore(stateFile);
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();
@@ -863,16 +864,22 @@ export async function serve({
         return;
       }
       if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      let publishedSession = session;
       if (hasLayoutWarningPrompt) {
         await syncOutstandingRepairs(req.params.key);
-        events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(session.layout_warnings));
+        publishedSession = (await store.findByKey(req.params.key)) || session;
+        events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(publishedSession.layout_warnings));
       }
-      events.emit(shouldEndSession ? "ended" : "feedback", req.params.key, session.ended_by);
+      events.emit(shouldEndSession ? "ended" : "feedback", req.params.key, publishedSession.ended_by);
       // The accepted batch is part of the conversation now: answer with the transcript so the
       // sending chrome can settle its queued bubbles in place, and sync every other tab of this
       // session at send time rather than when a poll happens to take the batch.
-      events.emit("chat-sync", req.params.key, session.chat);
-      res.json({ status: "queued", pending_prompts: session.pending_prompts, chat: serializeChat(session.chat) });
+      events.emit("chat-sync", req.params.key, publishedSession.chat);
+      res.json({
+        status: "queued",
+        pending_prompts: publishedSession.pending_prompts,
+        chat: serializeChat(publishedSession.chat),
+      });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);

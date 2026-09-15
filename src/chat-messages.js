@@ -12,11 +12,9 @@ const SELECTOR_MAX = 512;
 const LABEL_MAX = 40;
 
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
-const BLOCK_START = /^(?:```|~~~|#{1,6}\s|\s*>|\s*(?:[-*+]|\d+[.)])\s+)/;
+const BLOCK_START = /^(?:```|~~~|#{1,6}\s|\s*(?:[-*+]|\d+[.)])\s+)/;
 const FENCE_OPEN = /^(```|~~~)/;
 const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
-const RULE = /^(?:-{3,}|\*{3,}|_{3,})\s*$/;
-const QUOTE = /^\s*>/;
 
 function escapeHtml(value) {
   return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -27,9 +25,12 @@ function escapeHtml(value) {
 // their contents; link targets are limited to http(s) and open in a new tab.
 function renderInline(text) {
   return text
-    .split(/(`[^`\n]+`)/)
-    .map((part, index) => {
-      if (index % 2 === 1) return "<code>" + escapeHtml(part.slice(1, -1)) + "</code>";
+    .split(/(`[^`\n]+`|!\[[^\]\n]*\]\([^\s)\n]+\))/)
+    .map((part) => {
+      if (part.startsWith("`") && part.endsWith("`")) {
+        return "<code>" + escapeHtml(part.slice(1, -1)) + "</code>";
+      }
+      if (part.startsWith("![")) return escapeHtml(part);
       let s = escapeHtml(part);
       s = s.replace(
         /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
@@ -80,9 +81,9 @@ function renderListItems(items) {
 // A deliberate subset of Markdown: what makes an agent reply scannable in a 360px column, and
 // nothing that needs a type scale or a wide table. Blocks: paragraphs on blank lines with a
 // single newline as a line break (the chat convention - agents write one thought per line),
-// headings of any level as one bold lead line, nested bullet and numbered lists, fenced code,
-// quotes, rules. Inline: bold, italic, code, links. Everything else - tables, images, raw HTML -
-// comes out as the text the agent wrote.
+// headings of any level as one bold lead line, nested bullet and numbered lists, and fenced code.
+// Inline: bold, italic, code, links. Everything else - including tables, images, quotes, rules,
+// and raw HTML - comes out as the text the agent wrote.
 export function renderChatMarkdown(text) {
   const lines = String(text || "")
     .replace(/\r\n?/g, "\n")
@@ -111,20 +112,6 @@ export function renderChatMarkdown(text) {
     if (heading) {
       out.push('<p class="chat-h">' + renderInline(heading[2]) + "</p>");
       i += 1;
-      continue;
-    }
-    if (RULE.test(line)) {
-      out.push("<hr>");
-      i += 1;
-      continue;
-    }
-    if (QUOTE.test(line)) {
-      const buffer = [];
-      while (i < lines.length && QUOTE.test(lines[i])) {
-        buffer.push(lines[i].replace(/^\s*>\s?/, ""));
-        i += 1;
-      }
-      out.push("<blockquote>" + renderChatMarkdown(buffer.join("\n")) + "</blockquote>");
       continue;
     }
     if (LIST_ITEM.test(line)) {

@@ -60,6 +60,13 @@ test("links and bare https urls open in a new tab and only http(s) becomes a lin
   );
 });
 
+test("Markdown images remain literal text", () => {
+  assert.equal(
+    renderChatMarkdown("before ![alt](https://example.com/image.png) after"),
+    "<p>before ![alt](https://example.com/image.png) after</p>",
+  );
+});
+
 test("raw html is escaped, never interpreted", () => {
   assert.equal(
     renderChatMarkdown('<img src=x onerror=alert(1)> and & and "q"'),
@@ -71,10 +78,10 @@ test("tables are left as the lines the agent wrote", () => {
   assert.equal(renderChatMarkdown("| a | b |\n|---|---|\n| 1 | 2 |"), "<p>| a | b |<br>|---|---|<br>| 1 | 2 |</p>");
 });
 
-test("quotes and rules render, and CRLF input is normalized", () => {
+test("unsupported quotes and rules remain text, and CRLF input is normalized", () => {
   assert.equal(
     renderChatMarkdown("> quoted **bold**\r\n> second\r\n\r\n---\r\n\r\nend"),
-    "<blockquote><p>quoted <strong>bold</strong><br>second</p></blockquote><hr><p>end</p>",
+    "<p>&gt; quoted <strong>bold</strong><br>&gt; second</p><p>---</p><p>end</p>",
   );
 });
 

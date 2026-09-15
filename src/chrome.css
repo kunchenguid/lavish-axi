@@ -1184,17 +1184,6 @@ body.lavish {
   padding: 0;
   font-size: inherit;
 }
-.chat-md blockquote {
-  margin: 0 0 8px;
-  padding: 0 0 0 10px;
-  border-left: 2px solid var(--border-strong);
-  color: var(--fg-muted);
-}
-.chat-md hr {
-  border: 0;
-  border-top: 1px solid var(--border-subtle);
-  margin: 8px 0;
-}
 .chat-md a {
   color: var(--accent);
   text-decoration: underline;
