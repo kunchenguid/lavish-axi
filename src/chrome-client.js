@@ -218,6 +218,7 @@ const snapshotRequests = new Map();
 let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
 let workingBubble = null;
+let liveChatGeneration = 0;
 let submitQueuedPromise = null;
 const pendingSubmissions = [];
 /** @type {{ prompts?: any[] } | null} */
@@ -1610,6 +1611,7 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
   }
   const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: submission.domSnapshot };
   if (shouldEndSession) body.endSession = true;
+  const chatGenerationAtRequest = liveChatGeneration;
   let response;
   try {
     response = await fetch("/api/" + key + "/prompts", {
@@ -1697,7 +1699,7 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
   // The server answers with the transcript the batch just joined. Rebuilding the chat from it
   // before clearing the queued log is what lets a note settle in place: it leaves the queued log
   // and appears as a sent bubble in the same paint, with the same anchor.
-  if (Array.isArray(accepted?.chat)) syncChat(accepted.chat);
+  if (Array.isArray(accepted?.chat) && liveChatGeneration === chatGenerationAtRequest) syncChat(accepted.chat);
   render();
   settleAcknowledgementGuidance(submission, preserveFailureState);
   if (shouldEndSession) {
@@ -3814,10 +3816,14 @@ events.set("chrome-reload", (data) => reloadAfterServerRestart(String(data.reaso
 // it; it is only running the previous version of the chrome, which is the user's to act on.
 events.set("chrome-outdated", (data) => setChromeOutdated(true, String(data.reason || "")));
 events.set("agent-reply", ({ text, html }) => {
+  liveChatGeneration += 1;
   addChat({ role: "agent", text, html });
   noteAgentReply(text);
 });
-events.set("chat-sync", (data) => syncChat(data.chat || []));
+events.set("chat-sync", (data) => {
+  liveChatGeneration += 1;
+  syncChat(data.chat || []);
+});
 events.set("agent-presence", (data) => setAgentPresence(data.state));
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());

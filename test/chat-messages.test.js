@@ -60,6 +60,15 @@ test("links and bare https urls open in a new tab and only http(s) becomes a lin
   );
 });
 
+test("link labels and targets are protected from emphasis rendering", () => {
+  assert.equal(
+    renderChatMarkdown(
+      "[*label*](https://example.test/path_*_?q=_value_&x=*star*) and https://example.test/?q=_raw_&x=*plain*",
+    ),
+    '<p><a href="https://example.test/path_*_?q=_value_&amp;x=*star*" target="_blank" rel="noopener noreferrer">*label*</a> and <a href="https://example.test/?q=_raw_&amp;x=*plain*" target="_blank" rel="noopener noreferrer">https://example.test/?q=_raw_&amp;x=*plain*</a></p>',
+  );
+});
+
 test("Markdown images remain literal text", () => {
   assert.equal(
     renderChatMarkdown("before ![alt](https://example.com/image.png) after"),

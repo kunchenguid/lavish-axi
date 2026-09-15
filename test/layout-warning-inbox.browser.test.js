@@ -492,7 +492,7 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
       "chrome-devtools-axi",
       [
         "eval",
-        '() => { const bubble = document.querySelector(".bubble.queued"); const excerpt = bubble.querySelector(".anchor-excerpt"); const scroll = document.getElementById("panelScroll"); return JSON.stringify({ text: bubble.querySelector(".bubble-text").textContent, borderStyle: getComputedStyle(bubble).borderStyle, excerptWhiteSpace: getComputedStyle(excerpt).whiteSpace, excerptHeight: excerpt.getBoundingClientRect().height, excerptLineHeight: parseFloat(getComputedStyle(excerpt).lineHeight), scrollOverflowY: getComputedStyle(scroll).overflowY }); }',
+        '() => { const bubble = document.querySelector(".bubble.queued"); const excerpt = bubble.querySelector(".anchor-excerpt"); const scroll = document.getElementById("panelScroll"); const chat = document.getElementById("chatLog"); return JSON.stringify({ text: bubble.querySelector(".bubble-text").textContent, borderStyle: getComputedStyle(bubble).borderStyle, excerptWhiteSpace: getComputedStyle(excerpt).whiteSpace, excerptHeight: excerpt.getBoundingClientRect().height, excerptLineHeight: parseFloat(getComputedStyle(excerpt).lineHeight), scrollOverflowY: getComputedStyle(scroll).overflowY, emptyCopyDisplay: getComputedStyle(chat, "::before").display }); }',
       ],
       chromeEnv,
     );
@@ -501,6 +501,7 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     assert.equal(geometry.borderStyle, "dashed");
     assert.equal(geometry.excerptWhiteSpace, "nowrap");
     assert.equal(geometry.scrollOverflowY, "auto");
+    assert.equal(geometry.emptyCopyDisplay, "none");
     assert.ok(geometry.excerptHeight <= geometry.excerptLineHeight + 1, "the anchor excerpt stays on one line");
   } finally {
     run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);

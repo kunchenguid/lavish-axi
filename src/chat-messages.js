@@ -23,6 +23,29 @@ function escapeHtml(value) {
 // Inline rules run on text that is already escaped, so no rule can be tricked into emitting
 // markup that was not one of these. Code spans are split out first so nothing else touches
 // their contents; link targets are limited to http(s) and open in a new tab.
+function renderEmphasis(text) {
+  return text
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g, "$1<em>$2</em>");
+}
+
+function renderLinksAndEmphasis(text) {
+  const linkPattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(^|[\s(])(https?:\/\/[^\s<)]+)/g;
+  let html = "";
+  let offset = 0;
+  for (const match of text.matchAll(linkPattern)) {
+    html += renderEmphasis(text.slice(offset, match.index));
+    if (match[1] !== undefined) {
+      html += '<a href="' + match[2] + '" target="_blank" rel="noopener noreferrer">' + match[1] + "</a>";
+    } else {
+      html += match[3] + '<a href="' + match[4] + '" target="_blank" rel="noopener noreferrer">' + match[4] + "</a>";
+    }
+    offset = Number(match.index) + match[0].length;
+  }
+  return html + renderEmphasis(text.slice(offset));
+}
+
 function renderInline(text) {
   return text
     .split(/(`[^`\n]+`|!\[[^\]\n]*\]\([^\s)\n]+\))/)
@@ -31,20 +54,7 @@ function renderInline(text) {
         return "<code>" + escapeHtml(part.slice(1, -1)) + "</code>";
       }
       if (part.startsWith("![")) return escapeHtml(part);
-      let s = escapeHtml(part);
-      s = s.replace(
-        /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
-        (_match, label, url) => '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + "</a>",
-      );
-      s = s.replace(
-        /(^|[\s(])(https?:\/\/[^\s<)]+)/g,
-        (_match, before, url) =>
-          before + '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>",
-      );
-      s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-      s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-      s = s.replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g, "$1<em>$2</em>");
-      return s;
+      return renderLinksAndEmphasis(escapeHtml(part));
     })
     .join("");
 }

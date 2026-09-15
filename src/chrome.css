@@ -958,6 +958,9 @@ body.lavish {
   font-size: 13px;
   line-height: 1.45;
 }
+.chat:empty:has(+ .chat-queued:not(:empty))::before {
+  display: none;
+}
 .bubble {
   max-width: 85%;
   border-radius: var(--radius-xl);

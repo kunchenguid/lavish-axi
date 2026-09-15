@@ -7145,6 +7145,45 @@ test("a sent batch settles in place: notes read Sending until the server's trans
   assert.equal(bubbles[1].innerHTML, '<small>You</small><div class="bubble-text">Keep the table</div>');
 });
 
+test("live transcript events are not replaced by an older prompt response", async () => {
+  for (const eventName of ["chat-sync", "agent-reply"]) {
+    let resolvePost = () => {};
+    const chrome = await createChromeHarness({
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/prompts")) {
+          return new Promise((resolve) => {
+            resolvePost = () =>
+              resolve({
+                ok: true,
+                json: async () => ({
+                  status: "queued",
+                  chat: [{ role: "user", kind: "message", text: "Sent note" }],
+                }),
+              });
+          });
+        }
+        return { ok: true, json: async () => ({}) };
+      },
+    });
+    chrome.element("chatInput").value = "Sent note";
+    chrome.element("send").click();
+    chrome.sendSnapshot("uid=1 body");
+    await flushPromises();
+
+    const reply = { role: "agent", text: "Newer reply", html: "<p>Newer reply</p>" };
+    chrome.eventSource().listeners.get(eventName)({
+      data: JSON.stringify(eventName === "chat-sync" ? { chat: [reply] } : reply),
+    });
+    resolvePost();
+    await flushPromises();
+
+    const bubbles = chrome.element("chatLog").children;
+    assert.equal(bubbles.length, 1, eventName);
+    assert.equal(bubbles[0].innerHTML, '<small>Agent</small><div class="chat-md"><p>Newer reply</p></div>', eventName);
+    assert.equal(chrome.element("queuedLog").innerHTML, "", eventName);
+  }
+});
+
 test("a failed send returns its notes to Queued with the remove control back", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async (url) => {
