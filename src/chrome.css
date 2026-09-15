@@ -1117,6 +1117,17 @@ body.lavish {
   border: 1px solid var(--border-strong);
   display: block;
 }
+.bubble-attachment-expired {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 3px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.1;
+  text-align: center;
+}
 .bubble-attachment-more {
   display: inline-flex;
   align-items: center;

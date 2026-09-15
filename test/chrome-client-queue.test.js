@@ -209,6 +209,15 @@ async function createChromeHarness({
         parent.children = parent.children.filter((child) => child !== this);
         this.parentElement = null;
       },
+      replaceWith(replacement) {
+        const parent = this.parentElement;
+        if (!parent) return;
+        const index = parent.children.indexOf(this);
+        if (index === -1) return;
+        parent.children[index] = replacement;
+        replacement.parentElement = parent;
+        this.parentElement = null;
+      },
       focus() {
         this.focused = true;
         activeElement = this;
@@ -7184,6 +7193,36 @@ test("live transcript events are not replaced by an older prompt response", asyn
   }
 });
 
+test("an older live sync does not hide the transcript accepted by the prompts response", async () => {
+  let resolvePost = () => {};
+  const acceptedChat = [{ role: "user", kind: "message", text: "Sent note" }];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        return new Promise((resolve) => {
+          resolvePost = () => resolve({ ok: true, json: async () => ({ status: "queued", chat: acceptedChat }) });
+        });
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("chatInput").value = "Sent note";
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [] }) });
+  resolvePost();
+  await flushPromises();
+
+  assert.equal(chrome.element("queuedLog").innerHTML, "");
+  assert.equal(chrome.element("chatLog").children.length, 1);
+  assert.equal(
+    chrome.element("chatLog").children[0].innerHTML,
+    '<small>You</small><div class="bubble-text">Sent note</div>',
+  );
+});
+
 test("a failed send returns its notes to Queued with the remove control back", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async (url) => {
@@ -7225,6 +7264,25 @@ test("an agent reply renders the server's html and a text-only reply stays escap
     chrome.element("chatLog").lastAppendedChild.innerHTML,
     '<small>Agent</small><div class="bubble-text">&lt;img src=x onerror=alert(1)&gt;</div>',
   );
+});
+
+test("an unavailable transcript image becomes an explicit expired placeholder", async () => {
+  const chrome = await createChromeHarness();
+  const bubble = chrome.element("history-bubble");
+  const image = chrome.element("history-image");
+  image.tagName = "IMG";
+  image.className = "bubble-attachment";
+  image.alt = "checkout-reference.png";
+  bubble.appendChild(image);
+  chrome.element("chatLog").appendChild(bubble);
+
+  chrome.element("chatLog").dispatch("error", { target: image });
+
+  const [expired] = bubble.children;
+  assert.equal(expired.tagName, "SPAN");
+  assert.equal(expired.className, "bubble-attachment bubble-attachment-expired");
+  assert.equal(expired.textContent, "Image expired");
+  assert.equal(expired.title, "checkout-reference.png");
 });
 
 test("a synced transcript renders sent notes with anchors and thumbnails and never a user entry as html", async () => {

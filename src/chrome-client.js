@@ -218,7 +218,7 @@ const snapshotRequests = new Map();
 let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
 let workingBubble = null;
-let liveChatGeneration = 0;
+let displayedChat = initialChat.slice();
 let submitQueuedPromise = null;
 const pendingSubmissions = [];
 /** @type {{ prompts?: any[] } | null} */
@@ -629,6 +629,25 @@ function bubbleAttachmentsHtml(entry) {
   );
 }
 
+function replaceExpiredThumbnail(event) {
+  const image = event.target;
+  if (
+    String(image?.tagName || "").toUpperCase() !== "IMG" ||
+    !String(image.className || "")
+      .split(/\s+/)
+      .includes("bubble-attachment")
+  )
+    return;
+  const expired = document.createElement("span");
+  expired.className = "bubble-attachment bubble-attachment-expired";
+  expired.textContent = "Image expired";
+  expired.title = String(image.alt || "image");
+  image.replaceWith(expired);
+}
+
+chatLog.addEventListener("error", replaceExpiredThumbnail, true);
+queuedLog.addEventListener("error", replaceExpiredThumbnail, true);
+
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
@@ -773,7 +792,28 @@ function addChat(entry, shouldScroll = true) {
   return el;
 }
 
+function chatEntryDisplayKey(entry) {
+  return JSON.stringify({
+    role: entry?.role === "agent" ? "agent" : "user",
+    kind: entry?.kind,
+    text: String(entry?.text || ""),
+    html: entry?.html,
+    anchor: entry?.anchor,
+    attachments: entry?.attachments,
+  });
+}
+
+function chatContainsEntries(candidate, entries) {
+  if (candidate.length < entries.length) return false;
+  let matched = 0;
+  for (const entry of candidate) {
+    if (matched < entries.length && chatEntryDisplayKey(entry) === chatEntryDisplayKey(entries[matched])) matched += 1;
+  }
+  return matched === entries.length;
+}
+
 function syncChat(chat) {
+  displayedChat = Array.isArray(chat) ? chat.slice() : [];
   for (const el of [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")]) {
     el.remove();
   }
@@ -1611,7 +1651,6 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
   }
   const body = { prompts: prompts.map(stripInternalPromptFields), domSnapshot: submission.domSnapshot };
   if (shouldEndSession) body.endSession = true;
-  const chatGenerationAtRequest = liveChatGeneration;
   let response;
   try {
     response = await fetch("/api/" + key + "/prompts", {
@@ -1699,7 +1738,7 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
   // The server answers with the transcript the batch just joined. Rebuilding the chat from it
   // before clearing the queued log is what lets a note settle in place: it leaves the queued log
   // and appears as a sent bubble in the same paint, with the same anchor.
-  if (Array.isArray(accepted?.chat) && liveChatGeneration === chatGenerationAtRequest) syncChat(accepted.chat);
+  if (Array.isArray(accepted?.chat) && chatContainsEntries(accepted.chat, displayedChat)) syncChat(accepted.chat);
   render();
   settleAcknowledgementGuidance(submission, preserveFailureState);
   if (shouldEndSession) {
@@ -3816,14 +3855,11 @@ events.set("chrome-reload", (data) => reloadAfterServerRestart(String(data.reaso
 // it; it is only running the previous version of the chrome, which is the user's to act on.
 events.set("chrome-outdated", (data) => setChromeOutdated(true, String(data.reason || "")));
 events.set("agent-reply", ({ text, html }) => {
-  liveChatGeneration += 1;
-  addChat({ role: "agent", text, html });
+  const entry = { role: "agent", text, html };
+  if (addChat(entry)) displayedChat.push(entry);
   noteAgentReply(text);
 });
-events.set("chat-sync", (data) => {
-  liveChatGeneration += 1;
-  syncChat(data.chat || []);
-});
+events.set("chat-sync", (data) => syncChat(data.chat || []));
 events.set("agent-presence", (data) => setAgentPresence(data.state));
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());

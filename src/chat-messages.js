@@ -55,10 +55,24 @@ function imageEnd(text, start) {
   let titleStart = destination.end;
   while (text[titleStart] === " " || text[titleStart] === "\t") titleStart += 1;
   const quote = text[titleStart];
-  if (quote !== '"' && quote !== "'") return -1;
-  const titleEnd = text.indexOf(quote, titleStart + 1);
-  if (titleEnd === -1 || text.slice(titleStart + 1, titleEnd).includes("\n")) return -1;
-  let close = titleEnd + 1;
+  let titleEnd = -1;
+  if (quote === '"' || quote === "'") {
+    titleEnd = text.indexOf(quote, titleStart + 1);
+    if (titleEnd === -1 || text.slice(titleStart + 1, titleEnd).includes("\n")) return -1;
+    titleEnd += 1;
+  } else if (quote === "(") {
+    let depth = 1;
+    titleEnd = titleStart + 1;
+    while (titleEnd < text.length && depth > 0 && text[titleEnd] !== "\n") {
+      if (text[titleEnd] === "(") depth += 1;
+      if (text[titleEnd] === ")") depth -= 1;
+      titleEnd += 1;
+    }
+    if (depth !== 0) return -1;
+  } else {
+    return -1;
+  }
+  let close = titleEnd;
   while (text[close] === " " || text[close] === "\t") close += 1;
   return text[close] === ")" ? close + 1 : -1;
 }
