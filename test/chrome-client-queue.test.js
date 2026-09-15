@@ -7227,6 +7227,44 @@ test("an acceptance sync settles a matching local note before the prompts respon
   await flushPromises();
 });
 
+test("a restored duplicate note survives history at boot and settles only on a later sync", async () => {
+  let resolvePost = () => {};
+  let postedBody;
+  const prompt = { uid: "", prompt: "Same words", selector: "", tag: "message", text: "Freeform message" };
+  const historicalEntry = { role: "user", kind: "message", text: "Same words", at: "2026-09-14T00:00:00.000Z" };
+  const acceptedEntry = { ...historicalEntry, at: "2026-09-15T00:00:00.000Z" };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [historicalEntry] },
+    storedQueue: [prompt],
+    fetchImpl: async (url, init) => {
+      if (String(url).endsWith("/prompts")) {
+        postedBody = JSON.parse(init.body);
+        return new Promise((resolve) => {
+          resolvePost = () =>
+            resolve({ ok: true, json: async () => ({ status: "queued", chat: [historicalEntry, acceptedEntry] }) });
+        });
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  assert.equal(chrome.queued().length, 1);
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+  assert.equal(postedBody.prompts.length, 1);
+  assert.equal(postedBody.prompts[0].prompt, "Same words");
+
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [historicalEntry, acceptedEntry] }),
+  });
+  assert.deepEqual(chrome.queued(), []);
+  assert.equal(chrome.element("queuedLog").innerHTML, "");
+
+  resolvePost();
+  await flushPromises();
+});
+
 test("retrying after a lost prompts response does not resend accepted feedback", async () => {
   let rejectPost = () => {};
   let postCount = 0;

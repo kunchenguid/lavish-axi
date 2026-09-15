@@ -219,7 +219,7 @@ let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
 let workingBubble = null;
 let displayedChat = initialChat.slice();
-const queuedTranscriptFloors = new WeakMap(queued.map((prompt) => [prompt, 0]));
+const queuedTranscriptFloors = new WeakMap(queued.map((prompt) => [prompt, initialChat.length]));
 let submitQueuedPromise = null;
 const pendingSubmissions = [];
 /** @type {{ prompts?: any[] } | null} */
@@ -3913,7 +3913,6 @@ events.set("ended", () => markSessionEnded());
 connectLiveEvents();
 
 applySheetState();
-settleQueuedFromTranscript(initialChat, false);
 render();
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);
