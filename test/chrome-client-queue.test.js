@@ -7138,12 +7138,7 @@ test("the chrome's queued anchor agrees with the server's transcript anchor for 
     }
     assert.ok(rendered, `${fixture.tag}: anchor rendered`);
     assert.equal(unescape(rendered[2]), expected.label, `${fixture.tag}: label`);
-    const quoted = expected.kind === "element" || expected.kind === "text";
-    assert.equal(
-      unescape(rendered[3] || ""),
-      quoted ? "“" + expected.excerpt + "”" : expected.excerpt,
-      `${fixture.tag}: excerpt`,
-    );
+    assert.equal(unescape(rendered[3] || ""), "“" + expected.excerpt + "”", `${fixture.tag}: excerpt`);
     assert.equal(
       unescape(rendered[1]),
       [expected.excerpt, expected.selector].filter(Boolean).join("\n"),

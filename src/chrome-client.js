@@ -484,12 +484,11 @@ function promptAnchor(prompt) {
   });
 }
 
-// The anchor line: a mono chip naming the kind (`<h2>`, `text`, `cell`, ...) and the excerpt,
-// quoted for an element or a selection, with the full excerpt and selector on hover.
+// The anchor line: a mono chip naming the kind (`<h2>`, `text`, `cell`, ...) and a quoted
+// excerpt, with the full excerpt and selector on hover.
 function anchorHtml(anchor) {
   if (!anchor || typeof anchor !== "object") return "";
   const excerpt = String(anchor.excerpt || "");
-  const quoted = anchor.kind === "element" || anchor.kind === "text";
   const title = [excerpt, anchor.selector].filter(Boolean).join("\n");
   return (
     '<div class="anchor" title="' +
@@ -500,9 +499,9 @@ function anchorHtml(anchor) {
     (excerpt
       ? '<span class="anchor-excerpt' +
         (anchor.kind === "text" ? " text" : "") +
-        '">' +
-        (quoted ? "\u201C" + escapeHtml(excerpt) + "\u201D" : escapeHtml(excerpt)) +
-        "</span>"
+        '">\u201C' +
+        escapeHtml(excerpt) +
+        "\u201D</span>"
       : "") +
     "</div>"
   );
@@ -835,6 +834,9 @@ function queuedPromptMatchesEntry(prompt, entry) {
 
 function settleQueuedFromTranscript(chat, shouldRender = true) {
   if (!Array.isArray(chat) || !queued.length) return false;
+  // Distinct feedback can be dropped only when multiple tabs send notes with the same chat
+  // projection but different range boundaries. Durable identity is tracked by follow-up
+  // lavish-chat-panel-annotation-settle-durability-r1.
   const matchedEntries = new Set();
   const settledPrompts = new Set();
   for (const prompt of queued) {
