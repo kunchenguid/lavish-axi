@@ -7640,6 +7640,39 @@ test("reload after a lost prompts response settles the accepted note and does no
   assert.equal(postCount, 0);
 });
 
+test("reload after a lost response settles an accepted anchor-only prompt exactly once", async () => {
+  const promptId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const prompt = {
+    uid: "",
+    prompt: "",
+    selector: "p#summary",
+    tag: "text",
+    text: "",
+    target: { type: "text-range", text: "selected words" },
+    prompt_id: promptId,
+  };
+  const accepted = chatEntryForPrompt(prompt, "2026-09-15T00:00:00.000Z");
+  let postCount = 0;
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [accepted] },
+    storedQueue: [prompt],
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        postCount += 1;
+        return { ok: true, json: async () => ({ status: "queued", chat: [accepted] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  assert.deepEqual(chrome.queued(), []);
+  assert.equal(chrome.element("queuedLog").innerHTML, "");
+  assert.equal(chrome.element("chatLog").children.length, 1);
+  chrome.element("send").click();
+  await flushPromises();
+  assert.equal(postCount, 0);
+});
+
 test("two tabs with identical chat projections settle only their own submission", async () => {
   let resolveA = () => {};
   let resolveB = () => {};

@@ -296,8 +296,28 @@ test("anchor fields are bounded and attachments keep only their id and name", ()
   assert.deepEqual(entry.attachments, [{ id: "a".repeat(64) + ".png", name: "shot.png" }]);
 });
 
-test("a prompt with neither text nor images makes no entry, but an image-only message does", () => {
+test("an unidentified empty message makes no entry, but accepted anchor-only and image-only prompts do", () => {
   assert.equal(chatEntryForPrompt({ uid: "", prompt: "", selector: "", tag: "message", text: "" }, at), null);
+  const anchorOnly = chatEntryForPrompt(
+    {
+      uid: "",
+      prompt: "",
+      selector: "p#summary",
+      tag: "text",
+      text: "",
+      target: { type: "text-range", text: "selected words" },
+      prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    },
+    at,
+  );
+  assert.equal(anchorOnly.text, "");
+  assert.equal(anchorOnly.prompt_id, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  assert.deepEqual(anchorOnly.anchor, {
+    kind: "text",
+    label: "text",
+    excerpt: "selected words",
+    selector: "p#summary",
+  });
   const imageOnly = chatEntryForPrompt(
     { uid: "", prompt: "", selector: "", tag: "message", text: "", attachments: [{ id: "b".repeat(64) + ".png" }] },
     at,

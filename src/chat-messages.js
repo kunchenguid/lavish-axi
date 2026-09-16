@@ -438,7 +438,8 @@ function promptAnchor(prompt, kind) {
 // What an accepted prompt becomes in `session.chat`. Every kind of prompt enters the transcript,
 // so the conversation shows what the reviewer said and not only what the agent answered. Only the
 // client-visible attachment fields are kept: the resolved path, mime, and size stay in the prompt.
-// A prompt with neither text nor images has nothing to show and makes no entry.
+// An accepted prompt keeps its identity even when its only displayable content is an anchor, so
+// the transcript remains the authoritative acknowledgement source after a lost response.
 export function chatEntryForPrompt(prompt, at) {
   if (!prompt || typeof prompt !== "object") return null;
   const text = String(prompt.prompt || "");
@@ -451,7 +452,6 @@ export function chatEntryForPrompt(prompt, at) {
             : { id: String(attachment.id) },
         )
     : [];
-  if (!text && attachments.length === 0) return null;
   const tag = String(prompt.tag || "");
   const kind =
     tag === "message"
@@ -461,10 +461,11 @@ export function chatEntryForPrompt(prompt, at) {
         : tag === "layout-warnings"
           ? "layout-warnings"
           : "annotation";
-  const entry = { role: "user", kind, text, at: String(at || new Date().toISOString()) };
   const promptId = normalizePromptId(prompt.prompt_id);
-  if (promptId) entry.prompt_id = promptId;
   const anchor = promptAnchor(prompt, kind);
+  if (!text && attachments.length === 0 && !promptId && !anchor) return null;
+  const entry = { role: "user", kind, text, at: String(at || new Date().toISOString()) };
+  if (promptId) entry.prompt_id = promptId;
   if (anchor) entry.anchor = anchor;
   if (attachments.length) entry.attachments = attachments;
   return entry;

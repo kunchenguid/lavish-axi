@@ -553,6 +553,11 @@ function attachmentOnlyText(entry) {
   return entry.tag === "message" || entry.kind === "message" ? "Image message" : "Image annotation";
 }
 
+function userBubbleTextHtml(entry, text) {
+  const displayText = String(text || attachmentOnlyText(entry));
+  return displayText ? '<div class="bubble-text">' + escapeHtml(displayText) + "</div>" : "";
+}
+
 // A queued note is the user bubble in its not-yet-sent state: dashed, labelled Queued (Sending
 // while its batch is in flight), and removable until then. It settles in place as a sent bubble
 // once the server's transcript carries it, so nothing moves between regions.
@@ -567,9 +572,7 @@ function queuedBubbleHtml(prompt, index) {
     REMOVE_ICON_SVG +
     "</button></small>" +
     anchorHtml(promptAnchor(prompt)) +
-    '<div class="bubble-text">' +
-    escapeHtml(prompt.prompt || attachmentOnlyText(prompt)) +
-    "</div>" +
+    userBubbleTextHtml(prompt, prompt.prompt) +
     bubbleAttachmentsHtml(prompt) +
     "</div>"
   );
@@ -810,9 +813,7 @@ function chatBubbleHtml(entry) {
   return (
     "<small>You</small>" +
     anchorHtml(entry.anchor) +
-    '<div class="bubble-text">' +
-    escapeHtml(entry.text || attachmentOnlyText(entry)) +
-    "</div>" +
+    userBubbleTextHtml(entry, entry.text) +
     bubbleAttachmentsHtml(entry)
   );
 }
@@ -821,7 +822,7 @@ function addChat(entry, shouldScroll = true) {
   if (!entry || typeof entry !== "object") return;
   const role = entry.role === "agent" ? "agent" : "user";
   const text = String(entry.text || "");
-  if (!text && !(role === "agent" ? entry.html : attachmentCount(entry))) return;
+  if (!text && !(role === "agent" ? entry.html : attachmentCount(entry) || entry.anchor)) return;
 
   const el = document.createElement("div");
   el.className = "bubble " + role;
