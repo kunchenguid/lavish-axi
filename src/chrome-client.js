@@ -800,9 +800,9 @@ function chatEntryDisplayKey(entry) {
     role: entry?.role === "agent" ? "agent" : "user",
     kind: entry?.kind,
     text: String(entry?.text || ""),
-    html: entry?.html,
     anchor: entry?.anchor,
-    attachments: entry?.attachments,
+    attachments: Array.isArray(entry?.attachments) ? entry.attachments.map((item) => String(item?.id || "")) : [],
+    at: entry?.at,
   });
 }
 

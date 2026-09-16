@@ -7465,6 +7465,29 @@ test("a stale live sync cannot remove a newer agent reply", async () => {
   assert.equal(bubbles[1].innerHTML, '<small>Agent</small><div class="chat-md"><p>New reply</p></div>');
 });
 
+test("a transcript sync accepts updated rendering for the same stored agent entry", async () => {
+  const storedReply = {
+    role: "agent",
+    text: "Structured reply",
+    html: "<p>Old rendering</p>",
+    at: "2026-09-15T00:00:00.000Z",
+  };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [storedReply] },
+  });
+
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [{ ...storedReply, html: "<p><strong>New rendering</strong></p>" }],
+    }),
+  });
+
+  assert.equal(
+    chrome.element("chatLog").lastAppendedChild.innerHTML,
+    '<small>Agent</small><div class="chat-md"><p><strong>New rendering</strong></p></div>',
+  );
+});
+
 test("a failed send returns its notes to Queued with the remove control back", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async (url) => {
