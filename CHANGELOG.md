@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.70](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.69...lavish-axi-v0.1.70) (2026-09-16)
+
+
+### Bug Fixes
+
+* bound stored review transcripts ([#340](https://github.com/kunchenguid/lavish-axi/issues/340)) ([93eb9c0](https://github.com/kunchenguid/lavish-axi/commit/93eb9c08fd451fd0d44f6185b8babd50a4d4d709))
+
 ## [0.1.69](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.68...lavish-axi-v0.1.69) (2026-09-16)
 
 
