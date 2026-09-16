@@ -7067,6 +7067,23 @@ test("a queued note is a dashed bubble at the end of the conversation with its a
 // The chrome derives a queued note's anchor itself (the prompt has not reached the server), and the
 // server derives the sent note's anchor. A bubble must not change its anchor when it settles, so the
 // two rules are pinned against the same fixtures, one per prompt kind.
+test("a queued note's remove control clears memory, storage, and its bubble", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Remove this", selector: "h2", tag: "h2", text: "Heading" },
+  });
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.storage.has("lavish-axi:queued:abc"), true);
+
+  const [removeButton] = chrome.element("queuedLog").querySelectorAll(".queued-remove");
+  removeButton.click({ stopPropagation() {} });
+
+  assert.deepEqual(chrome.queued(), []);
+  assert.equal(chrome.storage.has("lavish-axi:queued:abc"), false);
+  assert.equal(chrome.element("queuedLog").innerHTML, "");
+});
+
 test("the chrome's queued anchor agrees with the server's transcript anchor for every prompt kind", async () => {
   const fixtures = [
     { prompt: "note", selector: "h2#phase-1", tag: "h2", text: "Phase 1: Inventory" },

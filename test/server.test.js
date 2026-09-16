@@ -1115,14 +1115,6 @@ test("chrome keeps queued notes at the tail of the one conversation, above the s
   assert.doesNotMatch(html, /<h2>Queued Annotations<\/h2>/);
 });
 
-test("chrome omits clear queue button because queued notes can be removed individually", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /removeQueuedPrompt/);
-  assert.doesNotMatch(js, /Clear Queue/);
-  assert.doesNotMatch(js, /id="clear"/);
-});
-
 test("chrome client script is valid JavaScript", async () => {
   const js = await chromeClientSource();
 
