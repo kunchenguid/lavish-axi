@@ -219,6 +219,9 @@ let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
 let workingBubble = null;
 let displayedChat = initialChat.slice();
+// If /prompts persisted a note but its response and chat-sync were lost, reload restores it as
+// queued and it can be re-sent as duplicate feedback. Durable settlement across reloads is tracked
+// by follow-up lavish-chat-panel-annotation-settle-durability-r1.
 const queuedTranscriptFloors = new WeakMap(queued.map((prompt) => [prompt, initialChat.length]));
 let submitQueuedPromise = null;
 const pendingSubmissions = [];
