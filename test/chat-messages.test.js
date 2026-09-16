@@ -150,6 +150,31 @@ test("a composer message becomes a user entry with no anchor", () => {
   );
 });
 
+test("a prompt identity is copied onto the transcript entry and a malformed identity is dropped", () => {
+  const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  assert.equal(
+    chatEntryForPrompt(
+      { uid: "", prompt: "Keep the table", selector: "", tag: "message", text: "Freeform message", prompt_id: id },
+      at,
+    ).prompt_id,
+    id,
+  );
+  assert.equal(
+    chatEntryForPrompt(
+      {
+        uid: "",
+        prompt: "Keep the table",
+        selector: "",
+        tag: "message",
+        text: "Freeform message",
+        prompt_id: "not a valid id because of spaces",
+      },
+      at,
+    ).prompt_id,
+    undefined,
+  );
+});
+
 test("an element note anchors to its tag and text in the annotation card's words", () => {
   assert.deepEqual(
     chatEntryForPrompt(
@@ -292,6 +317,7 @@ test("serializeChat renders agent entries and passes user entries through as tex
       kind: "annotation",
       text: "<b>note</b>",
       at,
+      prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       anchor: { kind: "element", label: "<h2>", excerpt: "x", selector: "h2" },
     },
     { role: "user", text: "legacy message" },
@@ -303,6 +329,7 @@ test("serializeChat renders agent entries and passes user entries through as tex
       kind: "annotation",
       text: "<b>note</b>",
       at,
+      prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       anchor: { kind: "element", label: "<h2>", excerpt: "x", selector: "h2" },
     },
     { role: "user", kind: "message", text: "legacy message" },

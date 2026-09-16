@@ -2150,6 +2150,48 @@ test("every accepted prompt enters the chat history with its anchor, in batch or
   });
 });
 
+test("queuePrompts stores the prompt identity on the transcript and not on the agent-facing prompt", async () => {
+  await withStore(async ({ store, session }) => {
+    const promptId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    await store.queuePrompts(session.key, {
+      prompts: [
+        {
+          uid: "",
+          prompt: "Rename this",
+          selector: "h2#phase-1",
+          tag: "h2",
+          text: "Phase 1: Inventory",
+          prompt_id: promptId,
+        },
+      ],
+    });
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.chat[0].prompt_id, promptId);
+    assert.equal(updated.prompts[0].prompt_id, undefined);
+    assert.equal(updated.prompts[0].prompt, "Rename this");
+  });
+});
+
+test("queuePrompts does not duplicate chat or pending prompts for an already-accepted identity", async () => {
+  await withStore(async ({ store, session }) => {
+    const promptId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+    const prompt = {
+      uid: "",
+      prompt: "Keep this note",
+      selector: "",
+      tag: "message",
+      text: "Freeform message",
+      prompt_id: promptId,
+    };
+    await store.queuePrompts(session.key, { prompts: [prompt] });
+    await store.queuePrompts(session.key, { prompts: [prompt] });
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.chat.length, 1);
+    assert.equal(updated.prompts.length, 1);
+    assert.equal(updated.chat[0].prompt_id, promptId);
+  });
+});
+
 test("a queued prompt's chat entry keeps only the client-visible attachment fields", async () => {
   await withStore(async ({ store, session }) => {
     const id = "a".repeat(64) + ".png";

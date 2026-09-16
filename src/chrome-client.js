@@ -19,6 +19,11 @@ const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
 /** @type {any[]} */
 const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
+const promptIdentityField = "prompt_id";
+const queuedAttemptedField = "_lavishAttempted";
+const queuedFloorField = "_lavishTranscriptFloor";
+const PROMPT_IDENTITY_MAX = 128;
+const PROMPT_IDENTITY_RE = /^[A-Za-z0-9_-]+$/;
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
@@ -219,16 +224,19 @@ let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
 let workingBubble = null;
 let displayedChat = initialChat.slice();
-// If /prompts persisted a note but its response and chat-sync were lost, reload restores it as
-// queued and it can be re-sent as duplicate feedback. Durable settlement across reloads is tracked
-// by follow-up lavish-chat-panel-annotation-settle-durability-r1.
-const queuedTranscriptFloors = new WeakMap(queued.map((prompt) => [prompt, initialChat.length]));
+// Settlement is by per-submission identity, not displayed content: two tabs can queue notes
+// whose chat projection is identical (same selected text under one container, different range
+// boundaries) without settling each other, and a reload after a lost POST response still
+// recognizes an already-accepted note. Attempted status and the original transcript floor are
+// persisted with the prompt, keyed by that identity.
+const queuedTranscriptFloors = new WeakMap();
 let submitQueuedPromise = null;
 const pendingSubmissions = [];
 /** @type {{ prompts?: any[] } | null} */
 let activeSubmission = null;
 const deliveredPrompts = new WeakSet();
 const attemptedPrompts = new WeakSet();
+restoreQueuedSettlementState();
 const pendingAcknowledgements = new Set();
 /** @type {Set<FeedbackPreparation>} */
 const feedbackPreparations = new Set();
@@ -378,6 +386,61 @@ function sanitizeAttachmentRefs(value) {
   return refs;
 }
 
+function isPromptIdentity(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= PROMPT_IDENTITY_MAX &&
+    PROMPT_IDENTITY_RE.test(value)
+  );
+}
+
+function promptIdentity(value) {
+  return isPromptIdentity(value?.[promptIdentityField]) ? value[promptIdentityField] : "";
+}
+
+function createPromptIdentity() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+}
+
+function assignPromptIdentity(prompt, keepExisting) {
+  if (keepExisting && promptIdentity(prompt)) return prompt;
+  prompt[promptIdentityField] = createPromptIdentity();
+  return prompt;
+}
+
+function adoptQueuedPrompt(rawPrompt, keepIdentity) {
+  const prompt = sanitizeQueuedPrompt(rawPrompt);
+  if (!prompt) return null;
+  if (!keepIdentity) delete prompt[promptIdentityField];
+  assignPromptIdentity(prompt, true);
+  return prompt;
+}
+
+function recordQueuedTranscriptFloor(prompt, floor) {
+  const nextFloor = Number.isFinite(floor) && floor >= 0 ? floor : 0;
+  queuedTranscriptFloors.set(prompt, nextFloor);
+  prompt[queuedFloorField] = nextFloor;
+}
+
+function markPromptAttempted(prompt) {
+  attemptedPrompts.add(prompt);
+  prompt[queuedAttemptedField] = true;
+}
+
+function restoreQueuedSettlementState() {
+  for (const prompt of queued) {
+    const storedFloor = Number(prompt[queuedFloorField]);
+    recordQueuedTranscriptFloor(
+      prompt,
+      Number.isFinite(storedFloor) && storedFloor >= 0 ? storedFloor : displayedChat.length,
+    );
+    if (prompt[queuedAttemptedField]) markPromptAttempted(prompt);
+  }
+  persistQueuedPrompts();
+}
+
 function sanitizeQueuedPrompt(prompt) {
   if (!prompt || typeof prompt !== "object") return null;
   if (!("attachments" in prompt)) return prompt;
@@ -393,7 +456,9 @@ function loadQueuedPrompts() {
     const parsed = JSON.parse(sessionStorage.getItem(queueStorageKey) || "[]");
     // Also sanitize on restore: a tab poisoned before this guard existed still has
     // the bad prompt on disk and would otherwise stay wedged after an upgrade.
-    return Array.isArray(parsed) ? parsed.map(sanitizeQueuedPrompt).filter(Boolean) : [];
+    // Keep a stored identity so a reload can settle an already-accepted note; mint
+    // one only when the restored prompt predates identity.
+    return Array.isArray(parsed) ? parsed.map((item) => adoptQueuedPrompt(item, true)).filter(Boolean) : [];
   } catch {
     return [];
   }
@@ -401,6 +466,11 @@ function loadQueuedPrompts() {
 
 function persistQueuedPrompts() {
   try {
+    for (const prompt of queued) {
+      prompt[queuedAttemptedField] = attemptedPrompts.has(prompt);
+      const floor = queuedTranscriptFloors.get(prompt);
+      if (Number.isFinite(floor)) prompt[queuedFloorField] = floor;
+    }
     if (queued.length) {
       sessionStorage.setItem(queueStorageKey, JSON.stringify(queued));
     } else {
@@ -848,35 +918,26 @@ function mergeAcceptedChat(accepted, chatAtRequest) {
   return accepted.concat(unmatchedDisplayed);
 }
 
-function queuedPromptKind(prompt) {
-  const tag = String(prompt?.tag || "");
-  if (tag === "message" || tag === "whiteboard" || tag === "layout-warnings") return tag;
-  return "annotation";
+function queuedPromptMatchesEntry(prompt, entry) {
+  const id = promptIdentity(prompt);
+  return Boolean(id) && entry?.role === "user" && promptIdentity(entry) === id;
 }
 
-function queuedPromptMatchesEntry(prompt, entry) {
-  if (entry?.role !== "user") return false;
-  if (queuedPromptKind(prompt) !== String(entry.kind || "message")) return false;
-  if (String(prompt?.prompt || "") !== String(entry.text || "")) return false;
-  if (JSON.stringify(promptAnchor(prompt)) !== JSON.stringify(entry.anchor || null)) return false;
-  const promptAttachments = Array.isArray(prompt?.attachments)
-    ? prompt.attachments.map((item) => String(item?.id || ""))
-    : [];
-  const entryAttachments = Array.isArray(entry.attachments)
-    ? entry.attachments.map((item) => String(item?.id || ""))
-    : [];
-  return JSON.stringify(promptAttachments) === JSON.stringify(entryAttachments);
+function promptAcknowledgedInChat(prompt, chat) {
+  const id = promptIdentity(prompt);
+  if (!id || !Array.isArray(chat)) return false;
+  return chat.some((entry) => queuedPromptMatchesEntry(prompt, entry));
 }
 
 function settleQueuedFromTranscript(chat, shouldRender = true) {
   if (!Array.isArray(chat) || !queued.length) return false;
-  // Distinct feedback can be dropped only when multiple tabs send notes with the same chat
-  // projection but different range boundaries. Durable identity is tracked by follow-up
-  // lavish-chat-panel-annotation-settle-durability-r1.
+  // Match by the per-submission identity only. Displayed content is not identity: two tabs
+  // can send the same selected text under one container with different range boundaries,
+  // and each note must settle exactly once against its own acknowledgement.
   const matchedEntries = new Set();
   const settledPrompts = new Set();
   for (const prompt of queued) {
-    if (!attemptedPrompts.has(prompt)) continue;
+    if (!attemptedPrompts.has(prompt) && !promptAcknowledgedInChat(prompt, chat)) continue;
     const floor = Math.min(queuedTranscriptFloors.get(prompt) || 0, chat.length);
     const entryIndex = chat.findIndex(
       (entry, index) => index >= floor && !matchedEntries.has(index) && queuedPromptMatchesEntry(prompt, entry),
@@ -1299,7 +1360,8 @@ function beginFeedbackPreparation() {
 
 function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ preparation = null) {
   if ((preparation && !feedbackPreparations.has(preparation)) || (terminalSubmission && !preparation)) return false;
-  const prompt = sanitizeQueuedPrompt(rawPrompt);
+  // The sandboxed iframe is untrusted: never accept a caller-supplied settlement identity.
+  const prompt = adoptQueuedPrompt(rawPrompt, false);
   if (!prompt) return false;
 
   const queueKey = promptQueueKey(prompt);
@@ -1313,7 +1375,7 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
   } else {
     queued.push(prompt);
   }
-  queuedTranscriptFloors.set(prompt, displayedChat.length);
+  recordQueuedTranscriptFloor(prompt, displayedChat.length);
 
   persistQueuedPrompts();
   render();
@@ -1324,6 +1386,8 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
+  delete clean[queuedAttemptedField];
+  delete clean[queuedFloorField];
   return clean;
 }
 
@@ -1346,7 +1410,8 @@ function requestSnapshot(action, prompts = [], endAfter = false, terminal = null
       : { action };
   snapshotRequests.set(requestId, request);
   if (action === "submit") {
-    for (const prompt of prompts) attemptedPrompts.add(prompt);
+    for (const prompt of prompts) markPromptAttempted(prompt);
+    persistQueuedPrompts();
     request.acknowledgement = {};
     pendingAcknowledgements.add(request.acknowledgement);
     armSendAcknowledgementWarning();
@@ -1602,8 +1667,9 @@ function sendQueued(endAfter) {
     if (text || attachments.length) {
       const prompt = { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
       if (attachments.length) prompt.attachments = attachments;
+      assignPromptIdentity(prompt, false);
       queued.push(prompt);
-      queuedTranscriptFloors.set(prompt, displayedChat.length);
+      recordQueuedTranscriptFloor(prompt, displayedChat.length);
       persistQueuedPrompts();
       // Render the durable queued bubble before clearing the editor. If anything after this point
       // fails, the user's words are already both stored and visibly recoverable in the tab. It
@@ -1700,7 +1766,8 @@ function releaseTerminalSubmission(terminal) {
 
 async function submitQueued(submission) {
   if (!Array.isArray(submission.chatAtRequest)) submission.chatAtRequest = displayedChat.slice();
-  for (const prompt of submission.prompts) attemptedPrompts.add(prompt);
+  for (const prompt of submission.prompts) markPromptAttempted(prompt);
+  persistQueuedPrompts();
   pendingSubmissions.push(submission);
   if (submitQueuedPromise) {
     return submitQueuedPromise;
@@ -1738,7 +1805,9 @@ async function submitQueued(submission) {
 
 async function submitQueuedOnce(submission, preserveFailureState = false) {
   settleQueuedFromTranscript(displayedChat);
-  const prompts = submission.prompts.filter((prompt) => !deliveredPrompts.has(prompt));
+  const prompts = submission.prompts.filter(
+    (prompt) => !deliveredPrompts.has(prompt) && !promptAcknowledgedInChat(prompt, displayedChat),
+  );
   const shouldEndSession = submission.endAfter;
   if (!prompts.length) {
     if (shouldEndSession && !ended) {
@@ -3979,6 +4048,7 @@ events.set("ended", () => markSessionEnded());
 connectLiveEvents();
 
 applySheetState();
+settleQueuedFromTranscript(initialChat, false);
 render();
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);

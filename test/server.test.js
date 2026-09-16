@@ -6325,7 +6325,16 @@ test("the prompts route returns the transcript and syncs it live at send time", 
       method: "POST",
       headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({
-        prompts: [{ uid: "1", prompt: "Rename this", selector: "h2#phase-1", tag: "h2", text: "Phase 1: Inventory" }],
+        prompts: [
+          {
+            uid: "1",
+            prompt: "Rename this",
+            selector: "h2#phase-1",
+            tag: "h2",
+            text: "Phase 1: Inventory",
+            prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          },
+        ],
       }),
     });
     assert.equal(response.status, 200);
@@ -6336,6 +6345,7 @@ test("the prompts route returns the transcript and syncs it live at send time", 
         role: "user",
         kind: "annotation",
         text: "Rename this",
+        prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         anchor: { kind: "element", label: "<h2>", excerpt: "Phase 1: Inventory", selector: "h2#phase-1" },
       },
     ];
