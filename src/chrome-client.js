@@ -213,7 +213,7 @@ const selectedWarningIds = new Set(loadJsonState(warningSelectionStorageKey, [])
 let warningsDrawerOpen = false;
 /** @typedef {{ done: Promise<boolean>, finish: (succeeded: boolean) => void }} FeedbackPreparation */
 /** @typedef {{ prompts: any[], inFlight: boolean, order: number }} TerminalSubmission */
-/** @type {Map<string, { action: "copy" | "submit", prompts?: any[], endAfter?: boolean, terminal?: TerminalSubmission | null, acknowledgement?: object, order?: number, timeout?: ReturnType<typeof setTimeout> }>} */
+/** @type {Map<string, { action: "copy" | "submit", prompts?: any[], chatAtRequest?: any[], endAfter?: boolean, terminal?: TerminalSubmission | null, acknowledgement?: object, order?: number, timeout?: ReturnType<typeof setTimeout> }>} */
 const snapshotRequests = new Map();
 let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
@@ -821,6 +821,28 @@ function chatContainsEntries(candidate, entries) {
   return matched === entries.length;
 }
 
+function chatStartsWith(candidate, prefix) {
+  return (
+    Array.isArray(candidate) &&
+    Array.isArray(prefix) &&
+    candidate.length >= prefix.length &&
+    prefix.every((entry, index) => chatEntriesMatch(candidate[index], entry))
+  );
+}
+
+function mergeAcceptedChat(accepted, chatAtRequest) {
+  if (!chatStartsWith(accepted, chatAtRequest) || !chatStartsWith(displayedChat, chatAtRequest)) return null;
+  let common = chatAtRequest.length;
+  while (
+    common < accepted.length &&
+    common < displayedChat.length &&
+    chatEntriesMatch(accepted[common], displayedChat[common])
+  ) {
+    common += 1;
+  }
+  return accepted.concat(displayedChat.slice(common));
+}
+
 function queuedPromptKind(prompt) {
   const tag = String(prompt?.tag || "");
   if (tag === "message" || tag === "whiteboard" || tag === "layout-warnings") return tag;
@@ -1308,7 +1330,14 @@ function requestSnapshot(action, prompts = [], endAfter = false, terminal = null
   const requestId = "snapshot-" + ++nextSnapshotRequestId;
   const request =
     action === "submit"
-      ? { action, prompts, endAfter, terminal, order: terminal?.order || ++nextSendOperationOrder }
+      ? {
+          action,
+          prompts,
+          chatAtRequest: displayedChat.slice(),
+          endAfter,
+          terminal,
+          order: terminal?.order || ++nextSendOperationOrder,
+        }
       : { action };
   snapshotRequests.set(requestId, request);
   if (action === "submit") {
@@ -1339,6 +1368,7 @@ function completeSnapshotRequest(requestId, snapshot) {
 
   submitQueued({
     prompts: request.prompts || [],
+    chatAtRequest: request.chatAtRequest || [],
     domSnapshot: snapshot || "",
     endAfter: request.endAfter === true,
     terminal: request.terminal || null,
@@ -1664,6 +1694,7 @@ function releaseTerminalSubmission(terminal) {
 }
 
 async function submitQueued(submission) {
+  if (!Array.isArray(submission.chatAtRequest)) submission.chatAtRequest = displayedChat.slice();
   for (const prompt of submission.prompts) attemptedPrompts.add(prompt);
   pendingSubmissions.push(submission);
   if (submitQueuedPromise) {
@@ -1799,16 +1830,18 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
     throw new Error("failed to submit queued prompts");
   }
   const accepted = typeof response.json === "function" ? await response.json().catch(() => null) : null;
-  for (const prompt of prompts) {
-    deliveredPrompts.add(prompt);
-    const index = queued.indexOf(prompt);
-    if (index !== -1) queued.splice(index, 1);
+  const reconciledChat = Array.isArray(accepted?.chat)
+    ? mergeAcceptedChat(accepted.chat, submission.chatAtRequest)
+    : null;
+  if (!Array.isArray(accepted?.chat) || reconciledChat) {
+    for (const prompt of prompts) {
+      deliveredPrompts.add(prompt);
+      const index = queued.indexOf(prompt);
+      if (index !== -1) queued.splice(index, 1);
+    }
+    persistQueuedPrompts();
+    if (reconciledChat) syncChat(reconciledChat);
   }
-  persistQueuedPrompts();
-  // The server answers with the transcript the batch just joined. Rebuilding the chat from it
-  // before clearing the queued log is what lets a note settle in place: it leaves the queued log
-  // and appears as a sent bubble in the same paint, with the same anchor.
-  if (Array.isArray(accepted?.chat)) syncChat(accepted.chat);
   render();
   settleAcknowledgementGuidance(submission, preserveFailureState);
   if (shouldEndSession) {

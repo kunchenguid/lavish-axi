@@ -153,13 +153,16 @@ async function createChromeHarness({
         const matches = [];
         const walk = (node) => {
           for (const child of node.children || []) {
-            if (typeof selector === "string" && selector.startsWith(".")) {
+            const childClasses = String(child.className || "").split(/\s+/);
+            if (selector === ".bubble.user,.bubble.agent:not(.agent-working)") {
               if (
-                String(child.className || "")
-                  .split(/\s+/)
-                  .includes(selector.slice(1))
+                childClasses.includes("bubble") &&
+                (childClasses.includes("user") ||
+                  (childClasses.includes("agent") && !childClasses.includes("agent-working")))
               )
                 matches.push(child);
+            } else if (typeof selector === "string" && selector.startsWith(".")) {
+              if (childClasses.includes(selector.slice(1))) matches.push(child);
             }
             walk(child);
           }
@@ -7203,7 +7206,7 @@ test("a sent batch settles in place: notes read Sending until the server's trans
   assert.equal(bubbles[1].innerHTML, '<small>You</small><div class="bubble-text">Keep the table</div>');
 });
 
-test("live transcript events are not replaced by an older prompt response", async () => {
+test("an accepted note merges before live entries that arrived before its response", async () => {
   for (const eventName of ["chat-sync", "agent-reply"]) {
     let resolvePost = () => {};
     const chrome = await createChromeHarness({
@@ -7236,8 +7239,9 @@ test("live transcript events are not replaced by an older prompt response", asyn
     await flushPromises();
 
     const bubbles = chrome.element("chatLog").children;
-    assert.equal(bubbles.length, 1, eventName);
-    assert.equal(bubbles[0].innerHTML, '<small>Agent</small><div class="chat-md"><p>Newer reply</p></div>', eventName);
+    assert.equal(bubbles.length, 2, eventName);
+    assert.equal(bubbles[0].innerHTML, '<small>You</small><div class="bubble-text">Sent note</div>', eventName);
+    assert.equal(bubbles[1].innerHTML, '<small>Agent</small><div class="chat-md"><p>Newer reply</p></div>', eventName);
     assert.equal(chrome.element("queuedLog").innerHTML, "", eventName);
   }
 });
