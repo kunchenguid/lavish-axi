@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.69](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.68...lavish-axi-v0.1.69) (2026-09-16)
+
+
+### Features
+
+* add structured conversation history ([#337](https://github.com/kunchenguid/lavish-axi/issues/337)) ([c95f3c4](https://github.com/kunchenguid/lavish-axi/commit/c95f3c474beebcb0f0df09a5e90ef5ab5633bb84))
+
+
+### Bug Fixes
+
+* settle queued feedback by durable prompt identity ([#339](https://github.com/kunchenguid/lavish-axi/issues/339)) ([7f1c477](https://github.com/kunchenguid/lavish-axi/commit/7f1c47744773a3db5f1af97bd256a347ee9680b8))
+
 ## [0.1.68](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.67...lavish-axi-v0.1.68) (2026-09-15)
 
 
