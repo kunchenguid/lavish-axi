@@ -619,6 +619,41 @@ test("a reconnect's stale initial sync cannot erase a newer reply", async () => 
   assert.equal(bubbles[1].innerHTML, '<small>Agent</small><div class="chat-md"><p>New reply</p></div>');
 });
 
+test("a reconnect cannot settle an identical note this tab never submitted", async () => {
+  const postedBodies = [];
+  const identicalEntry = { role: "user", kind: "message", text: "Same note" };
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      if (String(url).endsWith("/prompts")) {
+        postedBodies.push(JSON.parse(init.body));
+        return {
+          ok: true,
+          json: async () => ({ status: "queued", chat: [identicalEntry, identicalEntry] }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.webSocket().protocolListeners.get("close")();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Same note", selector: "", tag: "message", text: "Freeform message" },
+  });
+  chrome.runTimers(500);
+  chrome.webSocketAt(1).listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [identicalEntry] }),
+  });
+
+  assert.equal(chrome.queued().length, 1);
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  assert.equal(postedBodies.length, 1);
+  assert.equal(postedBodies[0].prompts[0].prompt, "Same note");
+});
+
 test("a queued send stalled at POST becomes visibly recoverable", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async (url) => {

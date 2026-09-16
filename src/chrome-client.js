@@ -225,6 +225,7 @@ const pendingSubmissions = [];
 /** @type {{ prompts?: any[] } | null} */
 let activeSubmission = null;
 const deliveredPrompts = new WeakSet();
+const attemptedPrompts = new WeakSet();
 const pendingAcknowledgements = new Set();
 /** @type {Set<FeedbackPreparation>} */
 const feedbackPreparations = new Set();
@@ -837,6 +838,7 @@ function settleQueuedFromTranscript(chat, shouldRender = true) {
   const matchedEntries = new Set();
   const settledPrompts = new Set();
   for (const prompt of queued) {
+    if (!attemptedPrompts.has(prompt)) continue;
     const floor = Math.min(queuedTranscriptFloors.get(prompt) || 0, chat.length);
     const entryIndex = chat.findIndex(
       (entry, index) => index >= floor && !matchedEntries.has(index) && queuedPromptMatchesEntry(prompt, entry),
@@ -1299,6 +1301,7 @@ function requestSnapshot(action, prompts = [], endAfter = false, terminal = null
       : { action };
   snapshotRequests.set(requestId, request);
   if (action === "submit") {
+    for (const prompt of prompts) attemptedPrompts.add(prompt);
     request.acknowledgement = {};
     pendingAcknowledgements.add(request.acknowledgement);
     armSendAcknowledgementWarning();
@@ -1650,6 +1653,7 @@ function releaseTerminalSubmission(terminal) {
 }
 
 async function submitQueued(submission) {
+  for (const prompt of submission.prompts) attemptedPrompts.add(prompt);
   pendingSubmissions.push(submission);
   if (submitQueuedPromise) {
     return submitQueuedPromise;
