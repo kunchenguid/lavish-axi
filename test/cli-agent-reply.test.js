@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -68,6 +69,9 @@ function runCli(args, { cwd = REPO_ROOT, env = process.env, stdin } = {}) {
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
+  child.stdin.on("error", (error) => {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code !== "EPIPE") throw error;
+  });
   if (stdin !== undefined) {
     child.stdin.end(stdin);
   } else {
@@ -131,7 +135,7 @@ test("resolveAgentReply reads --agent-reply-file and stdin, and refuses the unsa
     assert.equal(await resolveAgentReply(["report.html", "--agent-reply-file", replyFile]), STRUCTURED_REPLY);
     assert.equal(
       await resolveAgentReply(["report.html", "--agent-reply-file", "-"], {
-        readStdinFn: async () => STRUCTURED_REPLY,
+        stdin: Readable.from([STRUCTURED_REPLY]),
         stdinIsTTY: false,
       }),
       STRUCTURED_REPLY,
@@ -168,9 +172,11 @@ test("resolveAgentReply reads --agent-reply-file and stdin, and refuses the unsa
       () =>
         resolveAgentReply(["report.html", "--agent-reply-file", "-"], {
           stdinIsTTY: true,
-          readStdinFn: async () => {
-            throw new Error("must not read a TTY");
-          },
+          stdin: new Readable({
+            read() {
+              throw new Error("must not read a TTY");
+            },
+          }),
         }),
       (error) => {
         assert.ok(error instanceof AxiError);
@@ -198,6 +204,35 @@ test("resolveAgentReply reads --agent-reply-file and stdin, and refuses the unsa
         return true;
       },
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("poll rejects over-limit agent reply files and stdin with an actionable error", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-agent-reply-limit-"));
+  const oversizedReply = Buffer.alloc(2 * 1024 * 1024, "a");
+  const replyFile = path.join(dir, "oversized.md");
+  await writeFile(replyFile, oversizedReply);
+  const env = {
+    ...process.env,
+    LAVISH_AXI_STATE_DIR: path.join(dir, "state"),
+    LAVISH_AXI_TELEMETRY: "0",
+  };
+  try {
+    for (const result of [
+      await runCli(["poll", "report.html", "--agent-reply-file", replyFile], { env }),
+      await runCli(["poll", "report.html", "--agent-reply-file", "-"], {
+        env,
+        stdin: oversizedReply.toString("utf8"),
+      }),
+    ]) {
+      assert.notEqual(result.status, 0);
+      const output = `${result.stdout}\n${result.stderr}`;
+      assert.match(output, /Agent reply exceeds the 2 MB JSON request limit/);
+      assert.match(output, /Shorten the reply/);
+      assert.doesNotMatch(output, /RangeError|ERR_OUT_OF_RANGE|at readAgentReply/);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -1,5 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -66,6 +75,10 @@ const POLL_AGENT_REPLY_HELP_POINTER =
 const POLL_AGENT_REPLY_NEXT_POINTER =
   "The Conversation panel's Markdown subset is in `lavish-axi poll --help` and README.";
 const POLL_VALUE_FLAGS = ["--agent-reply", "--agent-reply-file", "--timeout-ms"];
+const AGENT_REPLY_JSON_LIMIT_BYTES = 2 * 1024 * 1024;
+const AGENT_REPLY_JSON_ENVELOPE_BYTES = Buffer.byteLength(JSON.stringify({ text: "" }));
+const AGENT_REPLY_INPUT_LIMIT_BYTES = AGENT_REPLY_JSON_LIMIT_BYTES - AGENT_REPLY_JSON_ENVELOPE_BYTES;
+const AGENT_REPLY_LIMIT_LABEL = "2 MB JSON request limit";
 const CODEX_POLL_WAKE_PATH_GUIDANCE =
   "Codex detected: completed background tasks may not resume Codex automatically, so keep the poll attached to the active turn.";
 // Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
@@ -1844,12 +1857,32 @@ function inspectValueFlag(args, flag) {
 
 const AGENT_REPLY_FILE_HINT = "Pass --agent-reply-file <path>, or --agent-reply-file - to read stdin";
 
-async function readStdinText(stdin = process.stdin) {
+function agentReplyTooLargeError() {
+  return new AxiError(`Agent reply exceeds the ${AGENT_REPLY_LIMIT_LABEL}`, "VALIDATION_ERROR", [
+    "Shorten the reply, then retry the same poll command",
+  ]);
+}
+
+/**
+ * @param {import("node:stream").Readable} stream
+ */
+async function readAgentReplyStream(stream) {
   const chunks = [];
-  for await (const chunk of stdin) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  let bytes = 0;
+  for await (const value of stream) {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    bytes += chunk.length;
+    if (bytes > AGENT_REPLY_INPUT_LIMIT_BYTES) {
+      stream.destroy();
+      throw agentReplyTooLargeError();
+    }
+    chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  const text = Buffer.concat(chunks, bytes).toString("utf8");
+  if (Buffer.byteLength(JSON.stringify({ text })) > AGENT_REPLY_JSON_LIMIT_BYTES) {
+    throw agentReplyTooLargeError();
+  }
+  return text;
 }
 
 /**
@@ -1858,15 +1891,15 @@ async function readStdinText(stdin = process.stdin) {
  *
  * @param {string[]} args
  * @param {{
- *   readFileFn?: typeof readFile,
- *   readStdinFn?: () => Promise<string>,
+ *   createReadStreamFn?: typeof createReadStream,
+ *   stdin?: import("node:stream").Readable,
  *   stdinIsTTY?: boolean,
  * }} [io]
  * @returns {Promise<string | null>}
  */
 export async function resolveAgentReply(
   args,
-  { readFileFn = readFile, readStdinFn = readStdinText, stdinIsTTY = process.stdin.isTTY === true } = {},
+  { createReadStreamFn = createReadStream, stdin = process.stdin, stdinIsTTY = process.stdin.isTTY === true } = {},
 ) {
   const inline = inspectValueFlag(args, "--agent-reply");
   const fromFile = inspectValueFlag(args, "--agent-reply-file");
@@ -1876,7 +1909,7 @@ export async function resolveAgentReply(
     ]);
   }
   if (fromFile.present) {
-    return readAgentReplyFile(fromFile, { readFileFn, readStdinFn, stdinIsTTY });
+    return readAgentReplyFile(fromFile, { createReadStreamFn, stdin, stdinIsTTY });
   }
   if (!inline.present) return null;
   return inline.value || null;
@@ -1885,12 +1918,12 @@ export async function resolveAgentReply(
 /**
  * @param {{ present: boolean, value?: string | null, swallows?: boolean }} fromFile
  * @param {{
- *   readFileFn: typeof readFile,
- *   readStdinFn: () => Promise<string>,
+ *   createReadStreamFn: typeof createReadStream,
+ *   stdin: import("node:stream").Readable,
  *   stdinIsTTY: boolean,
  * }} io
  */
-async function readAgentReplyFile(fromFile, { readFileFn, readStdinFn, stdinIsTTY }) {
+async function readAgentReplyFile(fromFile, { createReadStreamFn, stdin, stdinIsTTY }) {
   if (fromFile.swallows && typeof fromFile.value === "string" && fromFile.value.startsWith("--")) {
     throw new AxiError(
       `--agent-reply-file was given no value: the next argument ${fromFile.value} is another flag, so it would have been used as the path`,
@@ -1910,8 +1943,9 @@ async function readAgentReplyFile(fromFile, { readFileFn, readStdinFn, stdinIsTT
       ]);
     }
     try {
-      text = await readStdinFn();
+      text = await readAgentReplyStream(stdin);
     } catch (error) {
+      if (error instanceof AxiError) throw error;
       const detail = error instanceof Error ? error.message : String(error);
       throw new AxiError(`Cannot read --agent-reply-file stdin: ${detail}`, "VALIDATION_ERROR", [
         "Pipe a Markdown body into stdin, or pass --agent-reply-file <path>",
@@ -1919,8 +1953,9 @@ async function readAgentReplyFile(fromFile, { readFileFn, readStdinFn, stdinIsTT
     }
   } else {
     try {
-      text = await readFileFn(spec, "utf8");
+      text = await readAgentReplyStream(createReadStreamFn(spec));
     } catch (error) {
+      if (error instanceof AxiError) throw error;
       const detail = error instanceof Error ? error.message : String(error);
       throw new AxiError(`Cannot read --agent-reply-file ${spec}: ${detail}`, "VALIDATION_ERROR", [
         "Pass a UTF-8 Markdown file, or `-` to read stdin",
