@@ -832,15 +832,20 @@ function chatStartsWith(candidate, prefix) {
 
 function mergeAcceptedChat(accepted, chatAtRequest) {
   if (!chatStartsWith(accepted, chatAtRequest) || !chatStartsWith(displayedChat, chatAtRequest)) return null;
-  let common = chatAtRequest.length;
-  while (
-    common < accepted.length &&
-    common < displayedChat.length &&
-    chatEntriesMatch(accepted[common], displayedChat[common])
-  ) {
-    common += 1;
+  const displayedTail = displayedChat.slice(chatAtRequest.length);
+  const unmatchedDisplayed = [];
+  let acceptedIndex = chatAtRequest.length;
+  for (const displayedEntry of displayedTail) {
+    while (acceptedIndex < accepted.length && !chatEntriesMatch(accepted[acceptedIndex], displayedEntry)) {
+      acceptedIndex += 1;
+    }
+    if (acceptedIndex < accepted.length) {
+      acceptedIndex += 1;
+    } else {
+      unmatchedDisplayed.push(displayedEntry);
+    }
   }
-  return accepted.concat(displayedChat.slice(common));
+  return accepted.concat(unmatchedDisplayed);
 }
 
 function queuedPromptKind(prompt) {

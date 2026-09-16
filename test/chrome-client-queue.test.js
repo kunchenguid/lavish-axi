@@ -7246,6 +7246,60 @@ test("an accepted note merges before live entries that arrived before its respon
   }
 });
 
+test("an accepted transcript consumes live entries it already contains", async () => {
+  for (const responseIncludesReply of [true, false]) {
+    let resolvePost = () => {};
+    const base = { role: "user", kind: "message", text: "Earlier note", at: "2026-09-15T00:00:00.000Z" };
+    const sent = { role: "user", kind: "message", text: "Sent note", at: "2026-09-15T00:00:01.000Z" };
+    const reply = {
+      role: "agent",
+      text: "Newer reply",
+      html: "<p>Newer reply</p>",
+      at: "2026-09-15T00:00:02.000Z",
+    };
+    const authoritativeChat = [base, sent, reply];
+    const chrome = await createChromeHarness({
+      sessionData: { ...defaultSessionData, initialChat: [base] },
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/prompts")) {
+          return new Promise((resolve) => {
+            resolvePost = () =>
+              resolve({
+                ok: true,
+                json: async () => ({
+                  status: "queued",
+                  chat: responseIncludesReply ? authoritativeChat : [base, sent],
+                }),
+              });
+          });
+        }
+        return { ok: true, json: async () => ({}) };
+      },
+    });
+    chrome.element("chatInput").value = "Sent note";
+    chrome.element("send").click();
+    chrome.sendSnapshot("uid=1 body");
+    await flushPromises();
+    chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify(reply) });
+
+    resolvePost();
+    await flushPromises();
+
+    let bubbles = chrome.element("chatLog").children;
+    assert.equal(bubbles.length, 3, String(responseIncludesReply));
+    assert.match(bubbles[0].innerHTML, /Earlier note/);
+    assert.match(bubbles[1].innerHTML, /Sent note/);
+    assert.match(bubbles[2].innerHTML, /Newer reply/);
+
+    chrome.eventSource().listeners.get("chat-sync")({
+      data: JSON.stringify({ chat: authoritativeChat }),
+    });
+    bubbles = chrome.element("chatLog").children;
+    assert.equal(bubbles.length, 3, String(responseIncludesReply));
+    assert.match(bubbles[2].innerHTML, /Newer reply/);
+  }
+});
+
 test("an acceptance sync settles a matching local note before the prompts response", async () => {
   let resolvePost = () => {};
   const chrome = await createChromeHarness({
