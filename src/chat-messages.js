@@ -507,20 +507,15 @@ export function boundStoredChat(chat, maxBytes = MAX_CHAT_STORED_BYTES) {
   const entries = Array.isArray(chat) ? chat.filter((entry) => entry && typeof entry === "object") : [];
   if (entries.length === 0) return { chat: [], evicted: [] };
   const limit = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : MAX_CHAT_STORED_BYTES;
-  const fits = (slice) => storedChatBytes(slice) <= limit;
-  if (fits(entries)) return { chat: entries, evicted: [] };
-  if (!fits(entries.slice(-1))) return { chat: [], evicted: entries };
-  let cut = entries.length - 1;
-  let left = 0;
-  let right = entries.length - 2;
-  while (left <= right) {
-    const mid = (left + right) >> 1;
-    if (fits(entries.slice(mid))) {
-      cut = mid;
-      right = mid - 1;
-    } else {
-      left = mid + 1;
-    }
+  let storedBytes = 2;
+  let cut = entries.length;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const serialized = JSON.stringify(entries[index]);
+    const entryBytes = Buffer.byteLength(serialized === undefined ? "null" : serialized, "utf8");
+    const nextBytes = storedBytes + entryBytes + (cut < entries.length ? 1 : 0);
+    if (nextBytes > limit) break;
+    storedBytes = nextBytes;
+    cut = index;
   }
   return { chat: entries.slice(cut), evicted: entries.slice(0, cut) };
 }
