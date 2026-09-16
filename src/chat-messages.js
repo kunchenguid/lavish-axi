@@ -119,7 +119,8 @@ function imageSuffixEnd(text, labelEnd, scanner) {
   while (text[titleStart] === " " || text[titleStart] === "\t") titleStart += 1;
   if (text[titleStart] === ")") return titleStart + 1;
   const quote = text[titleStart];
-  let titleEnd = -1;
+  /** @type {number} */
+  let titleEnd;
   if (quote === '"' || quote === "'") {
     titleEnd = boundedIndexOf(text, quote, titleStart + 1);
     if (titleEnd === -1 || text.slice(titleStart + 1, titleEnd).includes("\n")) return -1;

@@ -234,8 +234,9 @@ export class SessionStore {
       }
     }
     session.layout_warnings = warnings;
-    // Every accepted prompt joins the transcript, not only composer messages: the notes a
-    // reviewer sends are the half of the conversation the panel used to lose on send.
+    // Every accepted prompt with something to display joins the transcript, not only composer
+    // messages: the notes a reviewer sends are the half of the conversation the panel used to
+    // lose on send.
     const userMessages = restoring
       ? []
       : acceptedPrompts.map((prompt) => chatEntryForPrompt(prompt, at)).filter(Boolean);
