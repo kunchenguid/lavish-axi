@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.71](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.70...lavish-axi-v0.1.71) (2026-09-16)
+
+
+### Bug Fixes
+
+* **cli:** preserve structure in longer agent replies ([#342](https://github.com/kunchenguid/lavish-axi/issues/342)) ([5d72def](https://github.com/kunchenguid/lavish-axi/commit/5d72def61d1cb5be2e54e61941d083eb1fa78426))
+
 ## [0.1.70](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.69...lavish-axi-v0.1.70) (2026-09-16)
 
 
