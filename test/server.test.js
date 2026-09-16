@@ -3236,7 +3236,7 @@ test("event WebSocket preserves initial state and named live-event semantics", a
     const messages = on(socket, "message");
     const nextMessage = async () => JSON.parse(String((await messages.next()).value[0]));
     await once(socket, "open");
-    assert.deepEqual(await nextMessage(), { type: "chat-sync", data: { chat: [] } });
+    assert.deepEqual(await nextMessage(), { type: "chat-sync", data: { chat: [], ack_ids: [] } });
     assert.deepEqual(await nextMessage(), { type: "agent-presence", data: { state: "waiting" } });
 
     const reply = await fetch(`${base}/api/${opened.key}/agent-reply`, {
@@ -6319,7 +6319,7 @@ test("the prompts route returns the transcript and syncs it live at send time", 
       body: JSON.stringify({ file: artifact }),
     }).then((response) => response.json());
     const stream = await startEventStream(base, opened.key, "chat-sync");
-    assert.deepEqual(await stream.next(), { chat: [] });
+    assert.deepEqual(await stream.next(), { chat: [], ack_ids: [] });
 
     const response = await fetch(`${base}/api/${opened.key}/prompts`, {
       method: "POST",

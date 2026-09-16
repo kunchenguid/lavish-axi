@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 
-import { chatEntryForPrompt, renderChatMarkdown, serializeChat } from "../src/chat-messages.js";
+import {
+  boundStoredChat,
+  chatEntryForPrompt,
+  collectChatAckIds,
+  MAX_CHAT_STORED_BYTES,
+  renderChatMarkdown,
+  serializeChat,
+  storedChatBytes,
+} from "../src/chat-messages.js";
 
 // The renderer is what turns an agent's `--agent-reply` into something a reviewer can scan in a
 // 360px column. It is a deliberate subset: every rule below is one the reply needs, and anything
@@ -355,4 +363,29 @@ test("serializeChat renders agent entries and passes user entries through as tex
     { role: "user", kind: "message", text: "legacy message" },
   ]);
   assert.deepEqual(serializeChat(undefined), []);
+});
+
+test("MAX_CHAT_STORED_BYTES is 5 MiB of stored transcript JSON", () => {
+  assert.equal(MAX_CHAT_STORED_BYTES, 5_242_880);
+});
+
+test("boundStoredChat drops the oldest entries until the stored JSON fits", () => {
+  const chat = [
+    { role: "user", text: "a".repeat(80), at: "1", prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+    { role: "user", text: "b".repeat(80), at: "2", prompt_id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" },
+    { role: "agent", text: "c".repeat(80), at: "3" },
+  ];
+  const maxBytes = storedChatBytes(chat.slice(1));
+  const { chat: kept, evicted } = boundStoredChat(chat, maxBytes);
+  assert.deepEqual(kept, chat.slice(1));
+  assert.deepEqual(evicted, [chat[0]]);
+  assert.ok(storedChatBytes(kept) <= maxBytes);
+  assert.deepEqual(collectChatAckIds(evicted), ["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]);
+});
+
+test("boundStoredChat keeps a single oversize newest entry rather than dropping the transcript", () => {
+  const huge = { role: "agent", text: "x".repeat(1000), at: "1" };
+  const { chat, evicted } = boundStoredChat([huge], 50);
+  assert.deepEqual(chat, [huge]);
+  assert.deepEqual(evicted, []);
 });

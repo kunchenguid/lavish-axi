@@ -52,7 +52,7 @@ import {
   splitExportWarnings,
 } from "./export-bundle.js";
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
-import { serializeChat } from "./chat-messages.js";
+import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
   bindHost,
@@ -329,7 +329,13 @@ export async function serve({
   // The transcript the chrome renders is computed here (src/chat-messages.js): agent text ships
   // with its rendered html, user entries ship as text with their anchor, never as html.
   events.on("agent-reply", (key, entry) => broadcastLiveEvent("agent-reply", key, entry));
-  events.on("chat-sync", (key, chat) => broadcastLiveEvent("chat-sync", key, { chat: serializeChat(chat) }));
+  events.on("chat-sync", (key, sessionOrChat) =>
+    broadcastLiveEvent(
+      "chat-sync",
+      key,
+      Array.isArray(sessionOrChat) ? serializeChatSync({ chat: sessionOrChat }) : serializeChatSync(sessionOrChat),
+    ),
+  );
   events.on("agent-presence", (key, state) => broadcastLiveEvent("agent-presence", key, { state }));
   events.on("layout-warnings", (key, warnings) => broadcastLiveEvent("layout-warnings", key, { warnings }));
   events.on("ended", (key, endedBy) => broadcastLiveEvent("ended", key, { ended_by: endedBy || null }));
@@ -381,7 +387,7 @@ export async function serve({
       cleanup();
       return;
     }
-    client.sendEvent("chat-sync", { chat: serializeChat(session?.chat || []) });
+    client.sendEvent("chat-sync", serializeChatSync(session));
     client.sendEvent("agent-presence", { state: computePresence(key, activePolls, deliveredFeedback) });
     // A connection that attaches after the live end event still needs the terminal snapshot.
     if (session?.status === "ended") client.sendEvent("ended", { ended_by: session.ended_by || null });
@@ -873,11 +879,11 @@ export async function serve({
       // The accepted batch is part of the conversation now: answer with the transcript so the
       // sending chrome can settle its queued bubbles in place, and sync every other tab of this
       // session at send time rather than when a poll happens to take the batch.
-      events.emit("chat-sync", req.params.key, publishedSession.chat);
+      events.emit("chat-sync", req.params.key, publishedSession);
       res.json({
         status: "queued",
         pending_prompts: publishedSession.pending_prompts,
-        chat: serializeChat(publishedSession.chat),
+        ...serializeChatSync(publishedSession),
       });
       if (shouldEndSession) await shutdownIfNoLiveSessions();
     } catch (error) {
@@ -2485,6 +2491,7 @@ export function createChromeHtml(
     initialEnded: session.status === "ended",
     initialEndedBy: session.ended_by || null,
     initialChat: serializeChat(session.chat || []),
+    initialChatAckIds: serializeChatAckIds(session.chat_ack_ids),
     // Bootstrapping the inbox from the server is what makes it survive a browser refresh or a
     // reconnect: the chrome never owns warning state, it only renders it.
     initialLayoutWarnings: serializeLayoutWarnings(session.layout_warnings),

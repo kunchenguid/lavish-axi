@@ -15,7 +15,7 @@ import {
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
 import { AsyncMutex } from "./async-mutex.js";
-import { chatEntryForPrompt, normalizePromptId } from "./chat-messages.js";
+import { boundStoredChat, chatEntryForPrompt, collectChatAckIds, normalizePromptId } from "./chat-messages.js";
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
 import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./whiteboard-core.js";
 
@@ -114,6 +114,9 @@ export class SessionStore {
       delivered_attachments: Array.isArray(existing.delivered_attachments) ? existing.delivered_attachments : [],
       dom_snapshot: existing.dom_snapshot || "",
       chat: existing.chat || [],
+      // Compact prompt_id acks for bubbles evicted by the stored-chat byte bound. Reopening
+      // must keep them: they are the settlement/dedup source once the visible entry is gone.
+      chat_ack_ids: Array.isArray(existing.chat_ack_ids) ? existing.chat_ack_ids : [],
       updated_at: new Date().toISOString(),
     };
     state.sessions[key] = session;
@@ -165,7 +168,10 @@ export class SessionStore {
     let normalized = prompts.map(normalizePrompt);
     if (!restoring) {
       const acknowledgedIds = new Set(
-        (session.chat || []).map((entry) => normalizePromptId(entry?.prompt_id)).filter(Boolean),
+        [
+          ...(session.chat || []).map((entry) => normalizePromptId(entry?.prompt_id)),
+          ...(session.chat_ack_ids || []).map((id) => normalizePromptId(id)),
+        ].filter(Boolean),
       );
       normalized = normalized.filter(({ prompt }) => {
         const promptId = normalizePromptId(prompt.prompt_id);
@@ -256,6 +262,7 @@ export class SessionStore {
     const storedPrompts = restoring ? acceptedPrompts : acceptedPrompts.map(agentFacingPrompt);
     session.prompts = restoring ? [...storedPrompts, ...existingPrompts] : [...existingPrompts, ...storedPrompts];
     session.chat = [...(session.chat || []), ...userMessages];
+    applyTranscriptBound(session);
     if (restoring) {
       const restoredFailures = Array.isArray(payload.artifact_failures)
         ? JSON.parse(JSON.stringify(payload.artifact_failures))
@@ -637,6 +644,7 @@ export class SessionStore {
         ...(session.chat || []),
         { role: "agent", text: String(text || ""), at: new Date().toISOString() },
       ];
+      applyTranscriptBound(session);
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
       return session;
@@ -705,6 +713,13 @@ export async function canonicalFile(file) {
 
 export function sessionKey(file) {
   return crypto.createHash("sha256").update(file).digest("hex").slice(0, 16);
+}
+
+function applyTranscriptBound(session) {
+  const { chat, evicted } = boundStoredChat(session.chat);
+  session.chat = chat;
+  if (evicted.length === 0) return;
+  session.chat_ack_ids = collectChatAckIds(evicted, session.chat_ack_ids);
 }
 
 // Returns `{ prompt, malformed }`: `malformed` is non-empty when the payload's

@@ -10,6 +10,7 @@ import {
   MAX_REQUEST_ATTACHMENT_REFS,
   SessionStore,
 } from "../src/session-store.js";
+import { MAX_CHAT_STORED_BYTES, storedChatBytes } from "../src/chat-messages.js";
 
 let beginRequestSequence = 0;
 
@@ -2261,5 +2262,84 @@ test("a queued prompt's chat entry keeps only the client-visible attachment fiel
     assert.equal(updated.chat.length, 1);
     assert.deepEqual(updated.chat[0].attachments, [{ id, name: "shot.png" }]);
     assert.equal(updated.chat[0].text, "");
+  });
+});
+
+test("evicting chat past 5 MiB keeps prompt_id settlement and the remaining stored bytes in bound", async () => {
+  await withStore(async ({ store, session }) => {
+    const olderId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const newerId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+    const payload = "x".repeat(Math.ceil(MAX_CHAT_STORED_BYTES / 2) + 1024);
+    const note = (id) => ({
+      uid: "",
+      prompt: payload,
+      selector: "",
+      tag: "message",
+      text: "Freeform message",
+      prompt_id: id,
+    });
+    await store.queuePrompts(session.key, { prompts: [note(olderId)] });
+    await store.queuePrompts(session.key, { prompts: [note(newerId)] });
+    const bounded = await store.findByKey(session.key);
+    assert.ok(storedChatBytes(bounded.chat) <= MAX_CHAT_STORED_BYTES);
+    assert.equal(
+      bounded.chat.some((entry) => entry.prompt_id === olderId),
+      false,
+    );
+    assert.equal(
+      bounded.chat.some((entry) => entry.prompt_id === newerId),
+      true,
+    );
+    assert.deepEqual(bounded.chat_ack_ids, [olderId]);
+    assert.equal(bounded.prompts.length, 2);
+
+    await store.queuePrompts(session.key, { prompts: [note(olderId)] });
+    const afterRetry = await store.findByKey(session.key);
+    assert.equal(afterRetry.prompts.length, 2, "an evicted identity must not re-queue for the agent");
+    assert.deepEqual(afterRetry.chat_ack_ids, [olderId]);
+    assert.equal(
+      afterRetry.chat.some((entry) => entry.prompt_id === olderId),
+      false,
+    );
+
+    const reopened = await store.upsertSession(session.file, session.url);
+    assert.deepEqual(reopened.chat_ack_ids, [olderId]);
+  });
+});
+
+test("an oversized agent reply evicts older chat into compact acks", async () => {
+  await withStore(async ({ store, session }) => {
+    const olderId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    await store.queuePrompts(session.key, {
+      prompts: [
+        {
+          uid: "",
+          prompt: "Keep this note",
+          selector: "",
+          tag: "message",
+          text: "Freeform message",
+          prompt_id: olderId,
+        },
+      ],
+    });
+    await store.addAgentReply(session.key, "y".repeat(MAX_CHAT_STORED_BYTES));
+    const updated = await store.findByKey(session.key);
+    assert.equal(updated.chat.length, 1);
+    assert.equal(updated.chat[0].role, "agent");
+    assert.deepEqual(updated.chat_ack_ids, [olderId]);
+    await store.queuePrompts(session.key, {
+      prompts: [
+        {
+          uid: "",
+          prompt: "Keep this note",
+          selector: "",
+          tag: "message",
+          text: "Freeform message",
+          prompt_id: olderId,
+        },
+      ],
+    });
+    const afterRetry = await store.findByKey(session.key);
+    assert.equal(afterRetry.prompts.length, 1, "the evicted note must not be delivered twice");
   });
 });

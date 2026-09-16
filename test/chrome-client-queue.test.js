@@ -17,7 +17,7 @@ const servedChromeIds = new Set(
   ),
 );
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
@@ -8015,4 +8015,89 @@ test("a synced transcript renders sent notes with anchors and thumbnails and nev
   assert.equal(note.innerHTML.match(/class="bubble-attachment"/g)?.length, 4);
   assert.match(note.innerHTML, /class="bubble-attachment-more"[^>]*>\+2</);
   assert.equal(reply.innerHTML, '<small>Agent</small><div class="chat-md"><p>ok</p></div>');
+});
+
+test("a queued note settles from a compact ack after its transcript entry is evicted", async () => {
+  const promptId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const kept = {
+    role: "user",
+    kind: "message",
+    text: "Kept note",
+    prompt_id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+  };
+  let posted = 0;
+  const chrome = await createChromeHarness({
+    storedQueue: [
+      { prompt: "Evicted note", selector: "", tag: "message", text: "Freeform message", prompt_id: promptId },
+    ],
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [kept],
+      initialChatAckIds: [promptId],
+    },
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        posted += 1;
+        return { ok: true, json: async () => ({ status: "queued", chat: [kept], ack_ids: [promptId] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  assert.deepEqual(chrome.queued(), []);
+  chrome.element("send").click();
+  await flushPromises();
+  assert.equal(posted, 0, "an evicted identity must not be sent again");
+  const bubbles = chrome.element("chatLog").children;
+  assert.equal(bubbles.length, 1);
+  assert.match(bubbles[0].innerHTML, /Kept note/);
+});
+
+test("a live sync that dropped a prefix still settles from ack_ids", async () => {
+  let rejectPost = () => {};
+  let postCount = 0;
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        postCount += 1;
+        return new Promise((_, reject) => {
+          rejectPost = () => reject(new Error("response lost"));
+        });
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("chatInput").value = "Evicted after accept";
+  chrome.element("send").click();
+  const promptId = chrome.queued()[0].prompt_id;
+  assertPromptIdentity(promptId);
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+  rejectPost();
+  await flushPromises();
+
+  const kept = { role: "user", kind: "message", text: "Later note", prompt_id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" };
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [kept], ack_ids: [promptId] }),
+  });
+  assert.deepEqual(chrome.queued(), []);
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 retry");
+  await flushPromises();
+  assert.equal(postCount, 1, "settlement from ack_ids must prevent a second POST");
+});
+
+test("a size-bound transcript sync may drop a prefix but a stale sync cannot drop a newer tail", async () => {
+  const older = { role: "user", kind: "message", text: "Older note" };
+  const newer = { role: "user", kind: "message", text: "Newer note" };
+  const latest = { role: "user", kind: "message", text: "Latest note" };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [older, newer] },
+  });
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [newer, latest], ack_ids: [] }),
+  });
+  const bubbles = chrome.element("chatLog").children;
+  assert.equal(bubbles.length, 2);
+  assert.match(bubbles[0].innerHTML, /Newer note/);
+  assert.match(bubbles[1].innerHTML, /Latest note/);
 });
