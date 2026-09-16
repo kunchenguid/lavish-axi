@@ -802,15 +802,21 @@ function chatEntryDisplayKey(entry) {
     text: String(entry?.text || ""),
     anchor: entry?.anchor,
     attachments: Array.isArray(entry?.attachments) ? entry.attachments.map((item) => String(item?.id || "")) : [],
-    at: entry?.at,
   });
+}
+
+function chatEntriesMatch(left, right) {
+  if (chatEntryDisplayKey(left) !== chatEntryDisplayKey(right)) return false;
+  const leftAt = String(left?.at || "");
+  const rightAt = String(right?.at || "");
+  return !leftAt || !rightAt || leftAt === rightAt;
 }
 
 function chatContainsEntries(candidate, entries) {
   if (candidate.length < entries.length) return false;
   let matched = 0;
   for (const entry of candidate) {
-    if (matched < entries.length && chatEntryDisplayKey(entry) === chatEntryDisplayKey(entries[matched])) matched += 1;
+    if (matched < entries.length && chatEntriesMatch(entry, entries[matched])) matched += 1;
   }
   return matched === entries.length;
 }
@@ -3918,10 +3924,15 @@ events.set("chrome-reload", (data) => reloadAfterServerRestart(String(data.reaso
 // The replacement server serves a different artifact's review. This page keeps working against
 // it; it is only running the previous version of the chrome, which is the user's to act on.
 events.set("chrome-outdated", (data) => setChromeOutdated(true, String(data.reason || "")));
-events.set("agent-reply", ({ text, html }) => {
-  const entry = { role: "agent", text, html };
+events.set("agent-reply", (data) => {
+  const entry = {
+    ...data,
+    role: "agent",
+    text: String(data.text || ""),
+    ...(data.at ? { at: String(data.at) } : {}),
+  };
   if (addChat(entry)) displayedChat.push(entry);
-  noteAgentReply(text);
+  noteAgentReply(entry.text);
 });
 events.set("chat-sync", (data) => syncChat(data.chat || []));
 events.set("agent-presence", (data) => setAgentPresence(data.state));

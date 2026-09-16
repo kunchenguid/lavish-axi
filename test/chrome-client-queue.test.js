@@ -7488,6 +7488,46 @@ test("a transcript sync accepts updated rendering for the same stored agent entr
   );
 });
 
+test("a live agent reply remains reconcilable with a later sent-note transcript", async () => {
+  for (const includeEventTimestamp of [true, false]) {
+    let resolvePost = () => {};
+    const reply = {
+      role: "agent",
+      text: "Agent reply",
+      html: "<p>Agent reply</p>",
+      at: "2026-09-15T00:00:00.000Z",
+    };
+    const sent = {
+      role: "user",
+      kind: "message",
+      text: "Reviewer note",
+      at: "2026-09-15T00:00:01.000Z",
+    };
+    const chrome = await createChromeHarness({
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/prompts")) {
+          return new Promise((resolve) => {
+            resolvePost = () => resolve({ ok: true, json: async () => ({ status: "queued", chat: [reply, sent] }) });
+          });
+        }
+        return { ok: true, json: async () => ({}) };
+      },
+    });
+    const eventReply = includeEventTimestamp ? reply : { role: reply.role, text: reply.text, html: reply.html };
+    chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify(eventReply) });
+    chrome.element("chatInput").value = "Reviewer note";
+    chrome.element("send").click();
+    chrome.sendSnapshot("uid=1 body");
+    await flushPromises();
+
+    resolvePost();
+    await flushPromises();
+
+    assert.equal(chrome.element("queuedLog").innerHTML, "", String(includeEventTimestamp));
+    assert.match(chrome.element("chatLog").lastAppendedChild.innerHTML, /Reviewer note/, String(includeEventTimestamp));
+  }
+});
+
 test("a failed send returns its notes to Queued with the remove control back", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async (url) => {

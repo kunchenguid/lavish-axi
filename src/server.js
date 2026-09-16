@@ -52,7 +52,7 @@ import {
   splitExportWarnings,
 } from "./export-bundle.js";
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
-import { renderChatMarkdown, serializeChat } from "./chat-messages.js";
+import { serializeChat } from "./chat-messages.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
   bindHost,
@@ -328,9 +328,7 @@ export async function serve({
   events.on("reload", (key) => broadcastLiveEvent("reload", key));
   // The transcript the chrome renders is computed here (src/chat-messages.js): agent text ships
   // with its rendered html, user entries ship as text with their anchor, never as html.
-  events.on("agent-reply", (key, text) =>
-    broadcastLiveEvent("agent-reply", key, { text, html: renderChatMarkdown(text) }),
-  );
+  events.on("agent-reply", (key, entry) => broadcastLiveEvent("agent-reply", key, entry));
   events.on("chat-sync", (key, chat) => broadcastLiveEvent("chat-sync", key, { chat: serializeChat(chat) }));
   events.on("agent-presence", (key, state) => broadcastLiveEvent("agent-presence", key, { state }));
   events.on("layout-warnings", (key, warnings) => broadcastLiveEvent("layout-warnings", key, { warnings }));
@@ -996,7 +994,8 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      events.emit("agent-reply", req.params.key, text);
+      const entry = serializeChat([session.chat?.at(-1)])[0];
+      events.emit("agent-reply", req.params.key, entry);
       // The reply concludes the delivered-feedback "working" state. Without this, a poll that
       // drains feedback and then releases leaves presence stuck on "working" even after the agent
       // answers. Human sends remain available while working because the server queues them for the

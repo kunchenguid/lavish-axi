@@ -3253,10 +3253,13 @@ test("event WebSocket preserves initial state and named live-event semantics", a
       body: JSON.stringify({ text: "live reply" }),
     });
     assert.equal(reply.status, 200);
-    assert.deepEqual(await nextMessage(), {
-      type: "agent-reply",
-      data: { text: "live reply", html: "<p>live reply</p>" },
-    });
+    const replyEvent = await nextMessage();
+    assert.equal(replyEvent.type, "agent-reply");
+    assert.deepEqual(
+      { ...replyEvent.data, at: undefined },
+      { role: "agent", text: "live reply", html: "<p>live reply</p>", at: undefined },
+    );
+    assert.ok(Number.isFinite(Date.parse(replyEvent.data.at)));
     await messages.return();
     socket.close();
   } finally {
