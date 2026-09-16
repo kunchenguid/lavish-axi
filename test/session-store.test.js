@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   ATTACHMENT_DELIVERY_GRACE_MS,
+  filterVisibleSessions,
   MAX_DELIVERED_ATTACHMENTS,
   MAX_REQUEST_ATTACHMENT_REFS,
   SessionStore,
@@ -2096,4 +2097,14 @@ test("every image delivered in one poll survives, across accumulated batches (po
     const missing = delivered.filter((id) => !referenced.has(`${session.key}/${id}`));
     assert.deepEqual(missing, [], `every id in the actual delivery stays referenced (${missing.length} were not)`);
   });
+});
+
+test("filterVisibleSessions keeps open and feedback sessions, drops ended ones, preserves order", () => {
+  const sessions = [
+    { file: "/a.html", status: "open" },
+    { file: "/b.html", status: "ended" },
+    { file: "/c.html", status: "feedback" },
+    { file: "/d.html", status: "ended" },
+  ];
+  assert.deepEqual(filterVisibleSessions(sessions), [sessions[0], sessions[2]]);
 });
