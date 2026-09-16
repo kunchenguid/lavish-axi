@@ -2320,7 +2320,10 @@ test("loading bounds and persists a legacy transcript without reopening it", asy
 
     const loaded = await store.findByKey(session.key);
     assert.ok(storedChatBytes(loaded.chat) <= MAX_CHAT_STORED_BYTES);
-    assert.deepEqual(loaded.chat.map((entry) => entry.prompt_id), [newerId]);
+    assert.deepEqual(
+      loaded.chat.map((entry) => entry.prompt_id),
+      [newerId],
+    );
     assert.deepEqual(loaded.chat_ack_ids, [olderId]);
     assert.equal(loaded.chat_revision, 1);
 

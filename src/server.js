@@ -994,9 +994,7 @@ export async function serve({
         return;
       }
       const entry = serializeChat([
-        session.chat?.at(-1)?.role === "agent"
-          ? session.chat.at(-1)
-          : { role: "agent", text, at: session.updated_at },
+        session.chat?.at(-1)?.role === "agent" ? session.chat.at(-1) : { role: "agent", text, at: session.updated_at },
       ])[0];
       events.emit("agent-reply", req.params.key, entry);
       events.emit("chat-sync", req.params.key, session);
