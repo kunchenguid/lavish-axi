@@ -6360,6 +6360,67 @@ test("the prompts route returns the transcript and syncs it live at send time", 
   }
 });
 
+test("retrying an acknowledged prompt does not wake an unrelated poll", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const accepted = {
+      uid: "",
+      prompt: "Already accepted",
+      selector: "",
+      tag: "message",
+      text: "Freeform message",
+      prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    };
+    const post = (prompt) =>
+      fetch(`${base}/api/${opened.key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [prompt] }),
+      });
+
+    assert.equal((await post(accepted)).status, 200);
+    assert.equal(
+      (await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) => res.json()))
+        .status,
+      "feedback",
+    );
+
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
+      res.json(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await post(accepted)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      (
+        await post({
+          ...accepted,
+          prompt: "Fresh feedback",
+          prompt_id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+        })
+      ).status,
+      200,
+    );
+
+    const delivered = await poll;
+    assert.equal(delivered.status, "feedback");
+    assert.equal(delivered.prompts.length, 1);
+    assert.equal(delivered.prompts[0].prompt, "Fresh feedback");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("the live transcript carries rendered html for agent replies and never for user text", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

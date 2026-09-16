@@ -486,6 +486,49 @@ test("queueing a warning produces one ordinary prompt and leaves the warning unr
   }
 });
 
+test("an acknowledged layout prompt retry bypasses a later recurring-warning conflict", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const firstLoad = await beginArtifactLoad(store, session.key);
+    const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
+    const recorded = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(firstLoad, 1, { complete: true, viewport_width: 1440, findings: [finding] }),
+    );
+    const prepared = await store.prepareLayoutWarningFixes(session.key, [recorded.warnings[0].id]);
+    const prompt = {
+      ...prepared.prompt,
+      uid: "",
+      selector: "",
+      tag: "layout-warnings",
+      prompt_id: "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa",
+    };
+    await store.queuePrompts(session.key, { prompts: [prompt] });
+    assert.equal((await store.takeFeedback(session.key)).status, "feedback");
+
+    const secondLoad = await beginArtifactLoad(store, session.key);
+    const recurring = await store.recordLayoutDiagnostics(
+      session.key,
+      diagnosticPayload(secondLoad, 1, { complete: true, viewport_width: 1440, findings: [finding] }),
+    );
+    assert.equal(recurring.warnings[0].status, "recurring");
+
+    const retry = await store.queuePrompts(session.key, { prompts: [prompt] });
+    assert.equal(retry.conflict, undefined);
+    assert.equal(retry.fresh_feedback, false);
+    assert.equal(retry.chat.length, 1);
+    assert.equal(retry.prompts.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a prepared layout prompt conflicts when its warning changes before sending", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

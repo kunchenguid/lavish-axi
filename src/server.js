@@ -860,6 +860,7 @@ export async function serve({
         });
         return;
       }
+      const freshFeedback = session.fresh_feedback === true;
       if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       let publishedSession = session;
       if (hasLayoutWarningPrompt) {
@@ -867,7 +868,8 @@ export async function serve({
         publishedSession = (await store.findByKey(req.params.key)) || session;
         events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(publishedSession.layout_warnings));
       }
-      events.emit(shouldEndSession ? "ended" : "feedback", req.params.key, publishedSession.ended_by);
+      if (shouldEndSession) events.emit("ended", req.params.key, publishedSession.ended_by);
+      else if (freshFeedback) events.emit("feedback", req.params.key, publishedSession.ended_by);
       // The accepted batch is part of the conversation now: answer with the transcript so the
       // sending chrome can settle its queued bubbles in place, and sync every other tab of this
       // session at send time rather than when a poll happens to take the batch.

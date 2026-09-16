@@ -31,8 +31,6 @@ const PROMPT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 function publicQueuedPrompt(prompt) {
   const rest = { ...prompt };
   delete rest.prompt_id;
-  delete rest._lavishAttempted;
-  delete rest._lavishTranscriptFloor;
   return rest;
 }
 
@@ -7619,8 +7617,6 @@ test("reload after a lost prompts response settles the accepted note and does no
     tag: "h2",
     text: "Phase 1",
     prompt_id: promptId,
-    _lavishAttempted: true,
-    _lavishTranscriptFloor: 0,
   };
   const accepted = chatEntryForPrompt({ ...prompt }, "2026-09-15T00:00:00.000Z");
   let postCount = 0;

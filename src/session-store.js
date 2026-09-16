@@ -162,7 +162,19 @@ export class SessionStore {
     if (alreadyEnded && !restoring) {
       return { ended: true, ended_by: session.ended_by };
     }
-    const normalized = prompts.map(normalizePrompt);
+    let normalized = prompts.map(normalizePrompt);
+    if (!restoring) {
+      const acknowledgedIds = new Set(
+        (session.chat || []).map((entry) => normalizePromptId(entry?.prompt_id)).filter(Boolean),
+      );
+      normalized = normalized.filter(({ prompt }) => {
+        const promptId = normalizePromptId(prompt.prompt_id);
+        if (!promptId) return true;
+        if (acknowledgedIds.has(promptId)) return false;
+        acknowledgedIds.add(promptId);
+        return true;
+      });
+    }
     const normalizedPrompts = normalized.map((entry) => entry.prompt);
     // Resolve every attachment BEFORE mutating anything. If any prompt's images
     // can't be fully honored - malformed, an unknown id, or over the per-prompt
@@ -237,21 +249,11 @@ export class SessionStore {
     // Every accepted prompt with something to display joins the transcript, not only composer
     // messages: the notes a reviewer sends are the half of the conversation the panel used to
     // lose on send.
-    // A retry of an already-accepted identity must not append a second chat entry or a second
-    // agent-facing prompt: that is the duplicate-feedback path after a lost POST response.
-    const acknowledgedIds = new Set(
-      (session.chat || []).map((entry) => normalizePromptId(entry?.prompt_id)).filter(Boolean),
-    );
-    const freshPrompts = [];
-    for (const prompt of acceptedPrompts) {
-      const promptId = normalizePromptId(prompt.prompt_id);
-      if (promptId && acknowledgedIds.has(promptId)) continue;
-      if (promptId) acknowledgedIds.add(promptId);
-      freshPrompts.push(prompt);
-    }
-    const userMessages = restoring ? [] : freshPrompts.map((prompt) => chatEntryForPrompt(prompt, at)).filter(Boolean);
+    const userMessages = restoring
+      ? []
+      : acceptedPrompts.map((prompt) => chatEntryForPrompt(prompt, at)).filter(Boolean);
     const existingPrompts = Array.isArray(session.prompts) ? session.prompts : [];
-    const storedPrompts = restoring ? acceptedPrompts : freshPrompts.map(agentFacingPrompt);
+    const storedPrompts = restoring ? acceptedPrompts : acceptedPrompts.map(agentFacingPrompt);
     session.prompts = restoring ? [...storedPrompts, ...existingPrompts] : [...existingPrompts, ...storedPrompts];
     session.chat = [...(session.chat || []), ...userMessages];
     if (restoring) {
@@ -276,7 +278,7 @@ export class SessionStore {
     if (shouldEndSession) session.ended_by = "user";
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
-    return session;
+    return { ...session, fresh_feedback: !restoring && acceptedPrompts.length > 0 };
   }
 
   async issueReviewerHandoff(key) {
