@@ -119,7 +119,6 @@ export class SessionStore {
       chat_ack_ids: Array.isArray(existing.chat_ack_ids) ? existing.chat_ack_ids : [],
       updated_at: new Date().toISOString(),
     };
-    applyTranscriptBound(session);
     state.sessions[key] = session;
     await this.writeState(state);
     return session;
@@ -691,7 +690,13 @@ export class SessionStore {
     try {
       const raw = await readFile(this.file, "utf8");
       const parsed = JSON.parse(raw);
-      return { sessions: parsed.sessions || {} };
+      const state = { sessions: parsed.sessions || {} };
+      let changed = false;
+      for (const session of Object.values(state.sessions)) {
+        if (session && typeof session === "object") changed = applyTranscriptBound(session) || changed;
+      }
+      if (changed) await this.writeState(state);
+      return state;
     } catch (error) {
       if (error && error.code === "ENOENT") {
         return { sessions: {} };
@@ -715,10 +720,17 @@ export function sessionKey(file) {
 }
 
 function applyTranscriptBound(session) {
+  const originalChat = Array.isArray(session.chat) ? session.chat : [];
   const { chat, evicted } = boundStoredChat(session.chat);
+  const chatChanged =
+    !Array.isArray(session.chat) ||
+    chat.length !== originalChat.length ||
+    chat.some((entry, index) => entry !== originalChat[index]);
   session.chat = chat;
-  if (evicted.length === 0) return;
+  if (evicted.length === 0) return chatChanged;
+  const existingAckCount = Array.isArray(session.chat_ack_ids) ? session.chat_ack_ids.length : 0;
   session.chat_ack_ids = collectChatAckIds(evicted, session.chat_ack_ids);
+  return chatChanged || session.chat_ack_ids.length !== existingAckCount;
 }
 
 // Returns `{ prompt, malformed }`: `malformed` is non-empty when the payload's

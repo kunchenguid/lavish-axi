@@ -2307,8 +2307,8 @@ test("evicting chat past 5 MiB keeps prompt_id settlement and the remaining stor
   });
 });
 
-test("reopening bounds a legacy transcript and preserves evicted prompt acknowledgements", async () => {
-  await withStore(async ({ store, session, stateFile, artifact }) => {
+test("loading bounds and persists a legacy transcript without reopening it", async () => {
+  await withStore(async ({ store, session, stateFile }) => {
     const olderId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     const newerId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
     const state = JSON.parse(await readFile(stateFile, "utf8"));
@@ -2318,10 +2318,30 @@ test("reopening bounds a legacy transcript and preserves evicted prompt acknowle
     ];
     await writeFile(stateFile, JSON.stringify(state));
 
-    const reopened = await store.upsertSession(artifact, session.url);
-    assert.ok(storedChatBytes(reopened.chat) <= MAX_CHAT_STORED_BYTES);
-    assert.deepEqual(reopened.chat.map((entry) => entry.prompt_id), [newerId]);
-    assert.deepEqual(reopened.chat_ack_ids, [olderId]);
+    const loaded = await store.findByKey(session.key);
+    assert.ok(storedChatBytes(loaded.chat) <= MAX_CHAT_STORED_BYTES);
+    assert.deepEqual(loaded.chat.map((entry) => entry.prompt_id), [newerId]);
+    assert.deepEqual(loaded.chat_ack_ids, [olderId]);
+
+    const persisted = JSON.parse(await readFile(stateFile, "utf8")).sessions[session.key];
+    assert.deepEqual(persisted.chat, loaded.chat);
+    assert.deepEqual(persisted.chat_ack_ids, [olderId]);
+
+    await store.queuePrompts(session.key, {
+      prompts: [
+        {
+          uid: "",
+          prompt: "Do not send twice",
+          selector: "",
+          tag: "message",
+          text: "Freeform message",
+          prompt_id: olderId,
+        },
+      ],
+    });
+    const afterRetry = await store.findByKey(session.key);
+    assert.deepEqual(afterRetry.prompts, []);
+    assert.deepEqual(afterRetry.chat_ack_ids, [olderId]);
   });
 });
 
