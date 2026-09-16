@@ -860,9 +860,9 @@ function settleQueuedFromTranscript(chat, shouldRender = true) {
   return true;
 }
 
-function syncChat(chat, { allowReset = false } = {}) {
+function syncChat(chat) {
   const nextChat = Array.isArray(chat) ? chat : [];
-  if (!allowReset && !chatContainsEntries(nextChat, displayedChat)) return false;
+  if (!chatContainsEntries(nextChat, displayedChat)) return false;
   settleQueuedFromTranscript(nextChat);
   displayedChat = nextChat.slice();
   for (const el of [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")]) {
@@ -3879,12 +3879,8 @@ initializeLayoutGate();
 // WebSockets leave the browser's HTTP connection pool free for sends and artifact loads.
 const events = new Map();
 let eventReconnectDelayMs = 500;
-let liveEventSocketCount = 0;
 function connectLiveEvents() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  const allowFirstChatReset = liveEventSocketCount > 0;
-  let awaitingFirstChatSync = true;
-  liveEventSocketCount += 1;
   const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
   socket.addEventListener("open", () => {
     eventReconnectDelayMs = 500;
@@ -3893,9 +3889,7 @@ function connectLiveEvents() {
   socket.addEventListener("message", (message) => {
     try {
       const { type, data } = JSON.parse(message.data);
-      const allowReset = type === "chat-sync" && allowFirstChatReset && awaitingFirstChatSync;
-      if (type === "chat-sync") awaitingFirstChatSync = false;
-      return events.get(type)?.(data || {}, { allowReset });
+      return events.get(type)?.(data || {});
     } catch {
       // Ignore malformed frames; a later event or reconnect can recover the stream.
     }
@@ -3920,7 +3914,7 @@ events.set("agent-reply", ({ text, html }) => {
   if (addChat(entry)) displayedChat.push(entry);
   noteAgentReply(text);
 });
-events.set("chat-sync", (data, options) => syncChat(data.chat || [], options));
+events.set("chat-sync", (data) => syncChat(data.chat || []));
 events.set("agent-presence", (data) => setAgentPresence(data.state));
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());

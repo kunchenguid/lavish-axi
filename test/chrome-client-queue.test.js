@@ -600,6 +600,25 @@ test("chrome reconnects its live WebSocket and syncs missed chat", async () => {
   assert.match(chrome.element("chatLog").lastAppendedChild.innerHTML, /Missed while disconnected/);
 });
 
+test("a reconnect's stale initial sync cannot erase a newer reply", async () => {
+  const sent = { role: "user", kind: "message", text: "Sent note" };
+  const reply = { role: "agent", text: "New reply", html: "<p>New reply</p>" };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [sent] },
+  });
+
+  chrome.webSocket().protocolListeners.get("close")();
+  chrome.runTimers(500);
+  const reconnectedSocket = chrome.webSocketAt(1);
+  reconnectedSocket.listeners.get("agent-reply")({ data: JSON.stringify(reply) });
+  reconnectedSocket.listeners.get("chat-sync")({ data: JSON.stringify({ chat: [sent] }) });
+
+  const bubbles = chrome.element("chatLog").children;
+  assert.equal(bubbles.length, 2);
+  assert.match(bubbles[0].innerHTML, /Sent note/);
+  assert.equal(bubbles[1].innerHTML, '<small>Agent</small><div class="chat-md"><p>New reply</p></div>');
+});
+
 test("a queued send stalled at POST becomes visibly recoverable", async () => {
   const chrome = await createChromeHarness({
     fetchImpl: async (url) => {
