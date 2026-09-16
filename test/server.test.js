@@ -3252,6 +3252,10 @@ test("event WebSocket preserves initial state and named live-event semantics", a
       { role: "agent", text: "live reply", html: "<p>live reply</p>", at: undefined },
     );
     assert.ok(Number.isFinite(Date.parse(replyEvent.data.at)));
+    const replySync = await nextMessage();
+    assert.equal(replySync.type, "chat-sync");
+    assert.deepEqual(replySync.data.ack_ids, []);
+    assert.deepEqual(replySync.data.chat, [replyEvent.data]);
     await messages.return();
     socket.close();
   } finally {

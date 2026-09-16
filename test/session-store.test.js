@@ -1706,7 +1706,7 @@ async function withStore(run) {
     await writeFile(artifact, "<h1>Hello</h1>");
     const store = new SessionStore(stateFile);
     const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
-    await run({ store, session });
+    await run({ store, session, stateFile, artifact });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -2307,7 +2307,25 @@ test("evicting chat past 5 MiB keeps prompt_id settlement and the remaining stor
   });
 });
 
-test("an oversized agent reply evicts older chat into compact acks", async () => {
+test("reopening bounds a legacy transcript and preserves evicted prompt acknowledgements", async () => {
+  await withStore(async ({ store, session, stateFile, artifact }) => {
+    const olderId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const newerId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    state.sessions[session.key].chat = [
+      { role: "user", text: "x".repeat(Math.ceil(MAX_CHAT_STORED_BYTES / 2)), prompt_id: olderId },
+      { role: "user", text: "y".repeat(Math.ceil(MAX_CHAT_STORED_BYTES / 2)), prompt_id: newerId },
+    ];
+    await writeFile(stateFile, JSON.stringify(state));
+
+    const reopened = await store.upsertSession(artifact, session.url);
+    assert.ok(storedChatBytes(reopened.chat) <= MAX_CHAT_STORED_BYTES);
+    assert.deepEqual(reopened.chat.map((entry) => entry.prompt_id), [newerId]);
+    assert.deepEqual(reopened.chat_ack_ids, [olderId]);
+  });
+});
+
+test("an oversized agent reply preserves evicted prompt acks without exceeding the hard cap", async () => {
   await withStore(async ({ store, session }) => {
     const olderId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     await store.queuePrompts(session.key, {
@@ -2324,8 +2342,8 @@ test("an oversized agent reply evicts older chat into compact acks", async () =>
     });
     await store.addAgentReply(session.key, "y".repeat(MAX_CHAT_STORED_BYTES));
     const updated = await store.findByKey(session.key);
-    assert.equal(updated.chat.length, 1);
-    assert.equal(updated.chat[0].role, "agent");
+    assert.deepEqual(updated.chat, []);
+    assert.ok(storedChatBytes(updated.chat) <= MAX_CHAT_STORED_BYTES);
     assert.deepEqual(updated.chat_ack_ids, [olderId]);
     await store.queuePrompts(session.key, {
       prompts: [

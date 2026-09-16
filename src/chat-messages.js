@@ -502,15 +502,14 @@ export function storedChatBytes(chat) {
   return Buffer.byteLength(JSON.stringify(Array.isArray(chat) ? chat : []), "utf8");
 }
 
-// Keep the newest suffix of `session.chat` whose JSON fits `maxBytes`. A single newest entry
-// that already exceeds the cap is kept anyway: dropping it would erase the current turn rather
-// than bound history, the same structural exception as delivered-attachment retention.
+// Keep the newest suffix of `session.chat` whose JSON fits `maxBytes`.
 export function boundStoredChat(chat, maxBytes = MAX_CHAT_STORED_BYTES) {
   const entries = Array.isArray(chat) ? chat.filter((entry) => entry && typeof entry === "object") : [];
   if (entries.length === 0) return { chat: [], evicted: [] };
   const limit = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : MAX_CHAT_STORED_BYTES;
   const fits = (slice) => storedChatBytes(slice) <= limit;
   if (fits(entries)) return { chat: entries, evicted: [] };
+  if (!fits(entries.slice(-1))) return { chat: [], evicted: entries };
   let cut = entries.length - 1;
   let left = 0;
   let right = entries.length - 2;

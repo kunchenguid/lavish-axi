@@ -383,9 +383,10 @@ test("boundStoredChat drops the oldest entries until the stored JSON fits", () =
   assert.deepEqual(collectChatAckIds(evicted), ["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]);
 });
 
-test("boundStoredChat keeps a single oversize newest entry rather than dropping the transcript", () => {
+test("boundStoredChat never lets a single oversize entry exceed the hard cap", () => {
   const huge = { role: "agent", text: "x".repeat(1000), at: "1" };
   const { chat, evicted } = boundStoredChat([huge], 50);
-  assert.deepEqual(chat, [huge]);
-  assert.deepEqual(evicted, []);
+  assert.deepEqual(chat, []);
+  assert.deepEqual(evicted, [huge]);
+  assert.ok(storedChatBytes(chat) <= 50);
 });

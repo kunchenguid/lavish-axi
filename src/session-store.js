@@ -119,6 +119,7 @@ export class SessionStore {
       chat_ack_ids: Array.isArray(existing.chat_ack_ids) ? existing.chat_ack_ids : [],
       updated_at: new Date().toISOString(),
     };
+    applyTranscriptBound(session);
     state.sessions[key] = session;
     await this.writeState(state);
     return session;
@@ -640,12 +641,10 @@ export class SessionStore {
       if (!session) {
         return null;
       }
-      session.chat = [
-        ...(session.chat || []),
-        { role: "agent", text: String(text || ""), at: new Date().toISOString() },
-      ];
+      const at = new Date().toISOString();
+      session.chat = [...(session.chat || []), { role: "agent", text: String(text || ""), at }];
       applyTranscriptBound(session);
-      session.updated_at = new Date().toISOString();
+      session.updated_at = at;
       await this.writeState(state);
       return session;
     });
