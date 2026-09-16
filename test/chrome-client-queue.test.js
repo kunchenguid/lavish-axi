@@ -17,7 +17,7 @@ const servedChromeIds = new Set(
   ),
 );
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
@@ -8100,4 +8100,32 @@ test("a size-bound transcript sync may drop a prefix but a stale sync cannot dro
   assert.equal(bubbles.length, 2);
   assert.match(bubbles[0].innerHTML, /Newer note/);
   assert.match(bubbles[1].innerHTML, /Latest note/);
+});
+
+test("a newer bounded sync replaces the transcript without overlap and rejects stale revisions", async () => {
+  const old = { role: "user", kind: "message", text: "Evicted note" };
+  const kept = { role: "user", kind: "message", text: "Newest note" };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [old], initialChatRevision: 1 },
+  });
+
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [kept], ack_ids: [], chat_revision: 2 }),
+  });
+  assert.equal(chrome.element("chatLog").children.length, 1);
+  assert.match(chrome.element("chatLog").children[0].innerHTML, /Newest note/);
+
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [old], ack_ids: [], chat_revision: 1 }),
+  });
+  assert.equal(chrome.element("chatLog").children.length, 1);
+  assert.match(chrome.element("chatLog").children[0].innerHTML, /Newest note/);
+
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({ role: "agent", text: "Oversized reply" }),
+  });
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [], ack_ids: [], chat_revision: 3 }),
+  });
+  assert.equal(chrome.element("chatLog").children.length, 0);
 });

@@ -550,8 +550,10 @@ export function collectChatAckIds(evicted, existing = []) {
 }
 
 export function serializeChatSync(session) {
+  const revision = Number(session?.chat_revision);
   return {
     chat: serializeChat(session?.chat || []),
     ack_ids: serializeChatAckIds(session?.chat_ack_ids),
+    chat_revision: Number.isSafeInteger(revision) && revision >= 0 ? revision : 0,
   };
 }

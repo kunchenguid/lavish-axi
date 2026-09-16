@@ -2322,10 +2322,12 @@ test("loading bounds and persists a legacy transcript without reopening it", asy
     assert.ok(storedChatBytes(loaded.chat) <= MAX_CHAT_STORED_BYTES);
     assert.deepEqual(loaded.chat.map((entry) => entry.prompt_id), [newerId]);
     assert.deepEqual(loaded.chat_ack_ids, [olderId]);
+    assert.equal(loaded.chat_revision, 1);
 
     const persisted = JSON.parse(await readFile(stateFile, "utf8")).sessions[session.key];
     assert.deepEqual(persisted.chat, loaded.chat);
     assert.deepEqual(persisted.chat_ack_ids, [olderId]);
+    assert.equal(persisted.chat_revision, 1);
 
     await store.queuePrompts(session.key, {
       prompts: [
@@ -2342,6 +2344,7 @@ test("loading bounds and persists a legacy transcript without reopening it", asy
     const afterRetry = await store.findByKey(session.key);
     assert.deepEqual(afterRetry.prompts, []);
     assert.deepEqual(afterRetry.chat_ack_ids, [olderId]);
+    assert.equal(afterRetry.chat_revision, 1);
   });
 });
 

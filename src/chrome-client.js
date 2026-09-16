@@ -24,6 +24,7 @@ const PROMPT_IDENTITY_MAX = 128;
 const PROMPT_IDENTITY_RE = /^[A-Za-z0-9_-]+$/;
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const initialChatAckIds = Array.isArray(sessionData.initialChatAckIds) ? sessionData.initialChatAckIds : [];
+const initialChatRevision = parseChatRevision(sessionData.initialChatRevision) || 0;
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
 const attachmentMaxCount = Number(sessionData.attachmentMaxCount) || 4;
@@ -223,6 +224,7 @@ let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
 let workingBubble = null;
 let displayedChat = initialChat.slice();
+let chatRevision = initialChatRevision;
 // Settlement is by per-submission identity, not displayed content: two tabs can queue notes
 // whose chat projection is identical (same selected text under one container, different range
 // boundaries) without settling each other, and a reload after a lost POST response still
@@ -859,6 +861,11 @@ function chatEntriesMatch(left, right) {
   return !leftAt || !rightAt || leftAt === rightAt;
 }
 
+function parseChatRevision(value) {
+  const revision = Number(value);
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
+}
+
 function chatContainsEntries(candidate, entries) {
   if (!Array.isArray(candidate) || !Array.isArray(entries)) return false;
   if (entries.length === 0) return true;
@@ -944,10 +951,15 @@ function settleQueuedFromTranscript(chat, shouldRender = true) {
   return true;
 }
 
-function syncChat(chat) {
+function syncChat(chat, revision) {
   const nextChat = Array.isArray(chat) ? chat : [];
   settleQueuedFromTranscript(nextChat);
-  if (!chatContainsEntries(nextChat, displayedChat)) return false;
+  const nextRevision = parseChatRevision(revision);
+  if (nextRevision !== null && nextRevision < chatRevision) return false;
+  if (nextRevision === null || nextRevision === chatRevision) {
+    if (!chatContainsEntries(nextChat, displayedChat)) return false;
+  }
+  if (nextRevision !== null) chatRevision = nextRevision;
   displayedChat = nextChat.slice();
   for (const el of [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")]) {
     el.remove();
@@ -1881,7 +1893,12 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
   rememberChatAckIds(accepted?.ack_ids);
   const acceptedChat = Array.isArray(accepted?.chat) ? accepted.chat : null;
   if (acceptedChat) settleQueuedFromTranscript(acceptedChat);
-  const reconciledChat = acceptedChat ? mergeAcceptedChat(acceptedChat, submission.chatAtRequest) : null;
+  const acceptedRevision = parseChatRevision(accepted?.chat_revision);
+  const reconciledChat = acceptedChat
+    ? acceptedRevision !== null && acceptedRevision > chatRevision
+      ? acceptedChat
+      : mergeAcceptedChat(acceptedChat, submission.chatAtRequest)
+    : null;
   if (!acceptedChat || reconciledChat) {
     for (const prompt of prompts) {
       deliveredPrompts.add(prompt);
@@ -1889,7 +1906,7 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
       if (index !== -1) queued.splice(index, 1);
     }
     persistQueuedPrompts();
-    if (reconciledChat) syncChat(reconciledChat);
+    if (reconciledChat) syncChat(reconciledChat, acceptedRevision);
   }
   render();
   settleAcknowledgementGuidance(submission, preserveFailureState);
@@ -4018,7 +4035,7 @@ events.set("agent-reply", (data) => {
 });
 events.set("chat-sync", (data) => {
   rememberChatAckIds(data.ack_ids);
-  syncChat(data.chat || []);
+  syncChat(data.chat || [], data.chat_revision);
 });
 events.set("agent-presence", (data) => setAgentPresence(data.state));
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));

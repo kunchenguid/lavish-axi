@@ -114,6 +114,7 @@ export class SessionStore {
       delivered_attachments: Array.isArray(existing.delivered_attachments) ? existing.delivered_attachments : [],
       dom_snapshot: existing.dom_snapshot || "",
       chat: existing.chat || [],
+      chat_revision: normalizeRevision(existing.chat_revision),
       // Compact prompt_id acks for bubbles evicted by the stored-chat byte bound. Reopening
       // must keep them: they are the settlement/dedup source once the visible entry is gone.
       chat_ack_ids: Array.isArray(existing.chat_ack_ids) ? existing.chat_ack_ids : [],
@@ -263,6 +264,7 @@ export class SessionStore {
     session.prompts = restoring ? [...storedPrompts, ...existingPrompts] : [...existingPrompts, ...storedPrompts];
     session.chat = [...(session.chat || []), ...userMessages];
     applyTranscriptBound(session);
+    if (userMessages.length > 0) session.chat_revision = normalizeRevision(session.chat_revision) + 1;
     if (restoring) {
       const restoredFailures = Array.isArray(payload.artifact_failures)
         ? JSON.parse(JSON.stringify(payload.artifact_failures))
@@ -643,6 +645,7 @@ export class SessionStore {
       const at = new Date().toISOString();
       session.chat = [...(session.chat || []), { role: "agent", text: String(text || ""), at }];
       applyTranscriptBound(session);
+      session.chat_revision = normalizeRevision(session.chat_revision) + 1;
       session.updated_at = at;
       await this.writeState(state);
       return session;
@@ -693,7 +696,9 @@ export class SessionStore {
       const state = { sessions: parsed.sessions || {} };
       let changed = false;
       for (const session of Object.values(state.sessions)) {
-        if (session && typeof session === "object") changed = applyTranscriptBound(session) || changed;
+        if (!session || typeof session !== "object" || !applyTranscriptBound(session)) continue;
+        session.chat_revision = normalizeRevision(session.chat_revision) + 1;
+        changed = true;
       }
       if (changed) await this.writeState(state);
       return state;
