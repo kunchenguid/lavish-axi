@@ -1868,6 +1868,29 @@ test("chrome client scrolls new chat bubbles into view above queued prompts", as
   assert.equal(panelScroll.scrollTop, 640);
 });
 
+test("expanding the desktop rail lands on the newest bubble, not the oldest", async () => {
+  const chrome = await createChromeHarness();
+  const panelScroll = chrome.element("panelScroll");
+  panelScroll.scrollHeight = 1800;
+  panelScroll.scrollTop = 1800;
+
+  chrome.element("panelToggle").click();
+  // A collapsed rail hides the scrollport, so it measures zero while notes and replies arrive.
+  panelScroll.scrollHeight = 0;
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Review the title", selector: "h1", tag: "annotation", text: "Title" },
+  });
+  chrome.eventSource().listeners.get("agent-reply")({
+    data: JSON.stringify({ text: "I updated the title." }),
+  });
+  assert.equal(panelScroll.scrollTop, 0);
+
+  panelScroll.scrollHeight = 2400;
+  chrome.element("panelToggle").click();
+  assert.equal(panelScroll.scrollTop, 2400);
+});
+
 test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confused-deputy guard)", async () => {
   let fetches = 0;
   const chrome = await createChromeHarness({

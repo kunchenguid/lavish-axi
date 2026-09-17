@@ -1659,24 +1659,6 @@ body.layout-gate-active iframe#artifact {
     background: var(--accent);
     vertical-align: 1px;
   }
-  .panel-toggle {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-pill);
-    background: var(--bg-elevated);
-    color: var(--fg-muted);
-    cursor: pointer;
-  }
-  .panel-toggle svg {
-    display: block;
-    transition: transform var(--dur) var(--ease);
-  }
   body.sheet-open .panel-toggle svg {
     transform: rotate(180deg);
   }

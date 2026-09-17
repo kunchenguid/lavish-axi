@@ -1184,6 +1184,8 @@ function setDesktopPanelCollapsed(collapsed) {
     // Storage refusal only prevents this tab from remembering the rail after a reload.
   }
   applySheetState();
+  // A hidden scrollport measures zero, so every append while collapsed pinned the log to the top.
+  if (!desktopPanelCollapsed && !isMobileSheet()) scrollPanelToBottom();
 }
 
 function setSheetOpen(open) {
