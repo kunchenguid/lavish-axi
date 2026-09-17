@@ -845,6 +845,14 @@ test("chrome page ships the phone conversation dock and the viewport contract it
   assert.match(html, /<span class="panel-summary" id="panelSummary" role="status" aria-live="polite"><\/span>/);
 });
 
+test("desktop chrome keeps the conversation disclosure available as a collapsed rail", async () => {
+  const css = await chromeCssSource();
+
+  assert.match(css, /--panel-collapsed-w:48px/);
+  assert.match(css, /body\.panel-collapsed \.layout\{[^}]*var\(--panel-collapsed-w\)/);
+  assert.match(css, /body\.panel-collapsed \.panel-scroll,[\s\S]*?body\.panel-collapsed \.composer\{[^}]*display:none/);
+});
+
 test("chrome top bar follows the design mock wordmark and overflow menu treatment", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();

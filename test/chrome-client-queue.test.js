@@ -6878,6 +6878,7 @@ function sheetState(chrome) {
   const toggle = chrome.element("panelToggle");
   return {
     open: chrome.element("body").classList.contains("sheet-open"),
+    desktopCollapsed: chrome.element("body").classList.contains("panel-collapsed"),
     scrollInert: Boolean(chrome.element("panelScroll").inert),
     composerInert: Boolean(chrome.element("chatComposer").inert),
     expanded: toggle["aria-expanded"],
@@ -6885,24 +6886,85 @@ function sheetState(chrome) {
     summary: chrome.element("panelSummary").textContent,
     summaryClass: String(chrome.element("panelSummary").classList),
     stored: chrome.storage.get("lavish-axi:sheet-open:abc") || null,
+    desktopStored: chrome.storage.get("lavish-axi:panel-collapsed:abc") || null,
   };
 }
 
-test("desktop chrome never turns the conversation panel into a sheet", async () => {
+test("desktop chrome collapses the conversation into an accessible rail without losing queued feedback", async () => {
   const chrome = await createChromeHarness();
 
   assert.deepEqual(chrome.mediaQueries, []);
   const before = sheetState(chrome);
   assert.equal(before.open, false);
+  assert.equal(before.desktopCollapsed, false);
   assert.equal(before.scrollInert, false);
   assert.equal(before.composerInert, false);
+  assert.equal(before.expanded, "true");
+  assert.equal(before.label, "Hide conversation");
 
-  // The heading is plain text on desktop: clicking it must not start hiding the panel.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Keep this note", selector: "h2", tag: "h2", text: "Heading" },
+  });
+  chrome.element("chatInput").value = "Keep this draft";
+  chrome.element("chatInput").focus();
+  chrome.element("panelToggle").click();
+
+  const collapsed = sheetState(chrome);
+  assert.equal(collapsed.open, false);
+  assert.equal(collapsed.desktopCollapsed, true);
+  assert.equal(collapsed.scrollInert, true);
+  assert.equal(collapsed.composerInert, true);
+  assert.equal(collapsed.expanded, "false");
+  assert.equal(collapsed.label, "Show conversation");
+  assert.equal(collapsed.desktopStored, "1");
+  assert.equal(chrome.focusLog.at(-1), "panelToggle");
+
+  chrome.element("panelToggle").click();
+  const expanded = sheetState(chrome);
+  assert.equal(expanded.desktopCollapsed, false);
+  assert.equal(expanded.scrollInert, false);
+  assert.equal(expanded.composerInert, false);
+  assert.equal(expanded.expanded, "true");
+  assert.equal(expanded.label, "Hide conversation");
+  assert.equal(expanded.desktopStored, null);
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.element("chatInput").value, "Keep this draft");
+
+  // The mobile head remains the mobile-only disclosure. It must not collapse a desktop rail.
   chrome.element("panelHead").dispatch("click", {});
   const after = sheetState(chrome);
   assert.equal(after.open, false);
+  assert.equal(after.desktopCollapsed, false);
   assert.equal(after.scrollInert, false);
   assert.equal(after.stored, null);
+});
+
+test("desktop collapse persists independently from the phone sheet across responsive widths", async () => {
+  const storage = new Map();
+  const desktop = await createChromeHarness({ storage });
+  desktop.element("panelToggle").click();
+  assert.equal(sheetState(desktop).desktopStored, "1");
+  storage.set("lavish-axi:sheet-open:abc", "1");
+
+  const reloaded = await createChromeHarness({ storage });
+  assert.equal(sheetState(reloaded).desktopCollapsed, true);
+  assert.equal(sheetState(reloaded).scrollInert, true);
+  assert.equal(sheetState(reloaded).stored, null);
+
+  // A phone uses its own dock state, not the desktop rail state.
+  const mobile = await createChromeHarness({ mobile: true, storage });
+  let state = sheetState(mobile);
+  assert.equal(state.desktopCollapsed, false);
+  assert.equal(state.open, false);
+  assert.equal(state.scrollInert, true);
+  assert.equal(state.stored, null);
+
+  mobile.setMobile(false);
+  state = sheetState(mobile);
+  assert.equal(state.desktopCollapsed, true);
+  assert.equal(state.open, false);
+  assert.equal(state.scrollInert, true);
 });
 
 test("phone chrome boots with the conversation docked and raises it on tap", async () => {
@@ -6935,7 +6997,6 @@ test("phone chrome boots with the conversation docked and raises it on tap", asy
 
   // Escape also lowers it, after the menus and dialogs that sit above it have had their turn.
   chrome.element("panelToggle").dispatch("click", {});
-  chrome.element("panelHead").dispatch("click", {});
   assert.equal(sheetState(chrome).open, true);
   chrome.dispatchDocumentKeydown({ key: "Escape" });
   assert.equal(sheetState(chrome).open, false);

@@ -1132,10 +1132,22 @@ const MOBILE_SHEET_MEDIA = "(max-width: 860px)";
 // How far a drag on the dock must travel before it counts as a gesture rather than a tap.
 const SHEET_DRAG_THRESHOLD_PX = 48;
 const sheetStorageKey = "lavish-axi:sheet-open:" + key;
+const desktopPanelStorageKey = "lavish-axi:panel-collapsed:" + key;
 const sheetMedia = typeof window.matchMedia === "function" ? window.matchMedia(MOBILE_SHEET_MEDIA) : null;
 // The user's intent, kept across a chrome reload so a live-reload or server upgrade does not drop
 // them back onto a closed dock mid-conversation.
 let sheetOpen = readSheetOpen();
+let desktopPanelCollapsed = readDesktopPanelCollapsed();
+// A page can be reloaded after its viewport has already widened, so no media-query change event
+// arrives to clear a phone sheet that would otherwise reopen when the tab next narrows.
+if (!isMobileSheet()) {
+  sheetOpen = false;
+  try {
+    sessionStorage.removeItem(sheetStorageKey);
+  } catch {
+    // Storage refusal only prevents cleanup of an obsolete phone-only preference.
+  }
+}
 // The latest agent reply that landed while the sheet was closed: the dock previews it until the
 // user opens the sheet, so a reply never arrives silently behind the artifact.
 let unreadAgentReply = "";
@@ -1155,6 +1167,25 @@ function isMobileSheet() {
   return Boolean(sheetMedia && sheetMedia.matches);
 }
 
+function readDesktopPanelCollapsed() {
+  try {
+    return sessionStorage.getItem(desktopPanelStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setDesktopPanelCollapsed(collapsed) {
+  desktopPanelCollapsed = Boolean(collapsed);
+  try {
+    if (desktopPanelCollapsed) sessionStorage.setItem(desktopPanelStorageKey, "1");
+    else sessionStorage.removeItem(desktopPanelStorageKey);
+  } catch {
+    // Storage refusal only prevents this tab from remembering the rail after a reload.
+  }
+  applySheetState();
+}
+
 function setSheetOpen(open) {
   const next = Boolean(open);
   const changed = next !== sheetOpen;
@@ -1171,22 +1202,22 @@ function setSheetOpen(open) {
   if (sheetOpen) scrollPanelToBottom();
 }
 
-// Re-derives every sheet attribute from the phone layout, sheet-open, and session-ended state so a
-// viewport crossing the breakpoint in either direction cannot make an ended panel interactive or
-// leave a closed dock trapping focus.
+// Re-derives the shared disclosure state from the active responsive layout so a viewport crossing
+// cannot leave an inaccessible mobile dock or a desktop rail with focus in hidden content.
 function applySheetState() {
   const mobile = isMobileSheet();
-  const open = mobile && sheetOpen;
-  document.body.classList.toggle("sheet-open", open);
-  const docked = mobile && !open;
-  panelScroll.inert = ended || docked;
-  chatComposer.inert = ended || docked;
+  const expanded = mobile ? sheetOpen : !desktopPanelCollapsed;
+  const hiddenContent = !expanded;
+  document.body.classList.toggle("sheet-open", mobile && sheetOpen);
+  document.body.classList.toggle("panel-collapsed", !mobile && desktopPanelCollapsed);
+  panelScroll.inert = ended || hiddenContent;
+  chatComposer.inert = ended || hiddenContent;
   const activeElement = document.activeElement;
-  if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
+  if (hiddenContent && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
     panelToggle.focus();
   }
-  panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
-  panelToggle.setAttribute("aria-label", open ? "Hide conversation" : "Show conversation");
+  panelToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  panelToggle.setAttribute("aria-label", expanded ? "Hide conversation" : "Show conversation");
   renderSheetSummary();
 }
 
@@ -1271,6 +1302,11 @@ panelHead.addEventListener("click", () => {
     return;
   }
   setSheetOpen(!sheetOpen);
+});
+panelToggle.addEventListener("click", (event) => {
+  event.stopPropagation?.();
+  if (isMobileSheet()) setSheetOpen(!sheetOpen);
+  else setDesktopPanelCollapsed(!desktopPanelCollapsed);
 });
 panelScrim.addEventListener("click", () => setSheetOpen(false));
 panelHead.addEventListener("pointerdown", (event) => {
