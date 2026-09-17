@@ -1737,10 +1737,14 @@ body.layout-gate-active iframe#artifact {
     max-height: 44px;
   }
 }
+@media (prefers-reduced-motion: reduce) {
+  .panel-toggle svg {
+    transition: none;
+  }
+}
 @media (max-width: 860px) and (prefers-reduced-motion: reduce) {
   .panel,
-  .panel-scrim,
-  .panel-toggle svg {
+  .panel-scrim {
     transition: none;
   }
   .panel-head.is-fresh .panel-toggle {

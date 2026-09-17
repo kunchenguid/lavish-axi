@@ -1891,6 +1891,50 @@ test("expanding the desktop rail lands on the newest bubble, not the oldest", as
   assert.equal(panelScroll.scrollTop, 2400);
 });
 
+test("a takeover banner reopens the collapsed desktop rail that would hide its only control", async () => {
+  const beginLoadResponses = [];
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", beginLoadResponses });
+  await flushPromises();
+
+  chrome.element("panelToggle").click();
+  assert.equal(sheetState(chrome).desktopCollapsed, true);
+  assert.equal(chrome.element("handoffBanner").hidden, true);
+
+  // Another tab takes the review over while this one sits collapsed behind its artifact.
+  beginLoadResponses.push({ ok: false, status: 409, json: async () => ({ status: "superseded" }) });
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("handoffBanner").hidden, false);
+  assert.equal(sheetState(chrome).desktopCollapsed, false, "the takeover control has to be reachable");
+  assert.equal(sheetState(chrome).composerInert, false);
+});
+
+test("an outdated-server banner reopens the collapsed desktop rail", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  chrome.element("panelToggle").click();
+  assert.equal(sheetState(chrome).desktopCollapsed, true);
+
+  sendChromeOutdated(chrome, "upgrade");
+  await flushPromises();
+
+  assert.equal(chrome.element("outdatedBanner").hidden, false);
+  assert.equal(sheetState(chrome).desktopCollapsed, false);
+  assert.equal(sheetState(chrome).composerInert, false);
+});
+
+test("a phone dock stays docked when a recovery banner is raised", async () => {
+  const chrome = await createChromeHarness({ mobile: true, artifactSrc: "/artifact/abc/index.html" });
+  assert.equal(sheetState(chrome).open, false);
+
+  sendChromeOutdated(chrome, "upgrade");
+  await flushPromises();
+
+  assert.equal(chrome.element("outdatedBanner").hidden, false);
+  assert.equal(sheetState(chrome).open, false, "the dock is the user's own gesture");
+});
+
 test("chrome mediates attachment uploads: rate + cumulative-byte ceiling (confused-deputy guard)", async () => {
   let fetches = 0;
   const chrome = await createChromeHarness({

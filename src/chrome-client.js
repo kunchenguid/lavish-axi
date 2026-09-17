@@ -712,9 +712,7 @@ function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = t
   sendHint.classList.toggle("persistent", sendHintPersistent);
   if (sendHintPersistent) {
     sendHintTimer = undefined;
-    // Recovery guidance lives inside the composer, which the collapsed desktop rail hides and
-    // makes inert, so the rail has to give way before the user can read it or reach the input.
-    if (!isMobileSheet() && desktopPanelCollapsed) setDesktopPanelCollapsed(false);
+    revealPanelForRecovery();
     if (focusInput) chatInput.focus();
     return;
   }
@@ -1002,7 +1000,9 @@ function setAgentPresence(state) {
 }
 
 function setHandoffSuperseded(visible) {
-  if (handoffBanner) handoffBanner.hidden = ended || !visible;
+  if (!handoffBanner) return;
+  handoffBanner.hidden = ended || !visible;
+  if (!handoffBanner.hidden) revealPanelForRecovery();
 }
 
 // The server this page was connected to went away. What is true beyond that depends on why, so
@@ -1026,7 +1026,9 @@ function setChromeOutdated(visible, reason = chromeOutdatedReason) {
   if (outdatedText) outdatedText.textContent = chromeOutdatedCopy(chromeOutdatedReason);
   outdatedReloadInFlight = false;
   if (outdatedReloadButton) outdatedReloadButton.disabled = false;
-  if (outdatedBanner) outdatedBanner.hidden = ended || !visible;
+  if (!outdatedBanner) return;
+  outdatedBanner.hidden = ended || !visible;
+  if (!outdatedBanner.hidden) revealPanelForRecovery();
 }
 
 function setReviewState(state) {
@@ -1186,6 +1188,13 @@ function setDesktopPanelCollapsed(collapsed) {
   applySheetState();
   // A hidden scrollport measures zero, so every append while collapsed pinned the log to the top.
   if (!desktopPanelCollapsed && !isMobileSheet()) scrollPanelToBottom();
+}
+
+// Every recovery notice this chrome raises lives inside the composer, which the collapsed
+// desktop rail hides and marks inert, so the rail gives way before the user is asked to act on
+// one. The phone dock is the user's own gesture and keeps its state.
+function revealPanelForRecovery() {
+  if (!isMobileSheet() && desktopPanelCollapsed) setDesktopPanelCollapsed(false);
 }
 
 function setSheetOpen(open) {
