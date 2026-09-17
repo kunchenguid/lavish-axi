@@ -2466,7 +2466,10 @@ export function createArtifactSdk(
       activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);
     }
     if (msg.type === "lavish:requestSnapshot") {
-      postArtifactMessage("lavish:snapshot", { snapshot: snapshot() });
+      postArtifactMessage("lavish:snapshot", {
+        snapshot: snapshot(),
+        snapshot_request_id: typeof msg.snapshot_request_id === "string" ? msg.snapshot_request_id : "",
+      });
     }
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);

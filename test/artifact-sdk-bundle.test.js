@@ -269,6 +269,17 @@ test("a requested layout diagnostic publishes even when the result is unchanged"
   assert.deepEqual(diagnostics[1].findings, diagnostics[0].findings);
 });
 
+test("the served SDK echoes the snapshot request id", () => {
+  const sdk = bootSdk();
+
+  sdk.sendChromeMessage({ type: "lavish:requestSnapshot", snapshot_request_id: "snapshot-17" });
+
+  const response = sdk.posted.at(-1);
+  assert.equal(response.type, "lavish:snapshot");
+  assert.equal(response.snapshot_request_id, "snapshot-17");
+  assert.equal(response.artifact_load_token, "load-token");
+});
+
 test("the served SDK bundle queues a table-cell annotation without a missing-helper ReferenceError", () => {
   const sdk = bootSdk();
   const { evidence } = buildTable(sdk);

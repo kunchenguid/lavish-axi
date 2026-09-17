@@ -217,9 +217,9 @@ test(
       // require the agent-facing poll to carry the server-vetted local path.
       const deadline = Date.now() + 60_000;
       for (;;) {
-        const pills = evaluate('document.querySelectorAll(".pill").length');
+        const pills = evaluate('document.querySelectorAll(".bubble.queued").length');
         if (pills.includes("1")) break;
-        if (Date.now() > deadline) assert.fail(`queued prompt pill never appeared: ${pills}`);
+        if (Date.now() > deadline) assert.fail(`queued note never appeared: ${pills}`);
         await wait(500);
       }
       evaluate('document.getElementById("send").click()');

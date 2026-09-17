@@ -107,7 +107,7 @@ test(
           ' badge: document.getElementById("warningsCount").textContent,' +
           ' label: document.getElementById("warningsButton").getAttribute("aria-label"),' +
           ' gate: document.body.classList.contains("layout-gate-active"),' +
-          ' pills: document.querySelectorAll(".pill").length,' +
+          ' pills: document.querySelectorAll(".bubble.queued").length,' +
           " loads: window.__lavishArtifactLoads," +
           ' rows: [...document.querySelectorAll(".warning-row")].map((row) => ({' +
           '   title: row.querySelector(".warning-title").textContent,' +
@@ -497,12 +497,21 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     // Queueing the restored card proves the unsent text itself survived, not just the card.
     click(/button "Queue"/);
     wait(800);
-    const pills = run(
+    const queuedNote = run(
       "chrome-devtools-axi",
-      ["eval", '[...document.querySelectorAll(".pill-preview")].map((pill) => pill.textContent).join("|")'],
+      [
+        "eval",
+        '() => { const bubble = document.querySelector(".bubble.queued"); const excerpt = bubble.querySelector(".anchor-excerpt"); const scroll = document.getElementById("panelScroll"); const chat = document.getElementById("chatLog"); return JSON.stringify({ text: bubble.querySelector(".bubble-text").textContent, borderStyle: getComputedStyle(bubble).borderStyle, excerptWhiteSpace: getComputedStyle(excerpt).whiteSpace, excerptHeight: excerpt.getBoundingClientRect().height, excerptLineHeight: parseFloat(getComputedStyle(excerpt).lineHeight), scrollOverflowY: getComputedStyle(scroll).overflowY, emptyCopyDisplay: getComputedStyle(chat, "::before").display }); }',
+      ],
       chromeEnv,
     );
-    assert.match(pills, /Shorten this to one sentence/);
+    const geometry = JSON.parse(JSON.parse(queuedNote.match(/result:\s*("(?:[^"\\]|\\.)*")/s)[1]));
+    assert.equal(geometry.text, "Shorten this to one sentence");
+    assert.equal(geometry.borderStyle, "dashed");
+    assert.equal(geometry.excerptWhiteSpace, "nowrap");
+    assert.equal(geometry.scrollOverflowY, "auto");
+    assert.equal(geometry.emptyCopyDisplay, "none");
+    assert.ok(geometry.excerptHeight <= geometry.excerptLineHeight + 1, "the anchor excerpt stays on one line");
   } finally {
     run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
     run("chrome-devtools-axi", ["stop"], chromeEnv);

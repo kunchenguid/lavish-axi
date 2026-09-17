@@ -1,14 +1,15 @@
 # Fork delta
 
-This fork was reviewed against `upstream/main` at `ca4c59d` on 2026-09-07.
+This fork was reviewed against `upstream/main` at `4413dcc` on 2026-09-17.
 The upstream sync retains four intentional policies and four compatibility
 fixes. Other historical fork commits no longer change the effective tree.
 
-The reviewed delta from `a7ddbba` through `ca4c59d` includes the overlapping
-poll presence fix, reverse-proxy attachment fix, WebSocket event transport,
-tracked-batch playbook guidance, and browser-disconnect poll release. Upstream
-release commits through v0.1.67 were reviewed but their version changes were
-not imported because this fork keeps its own release line.
+The reviewed delta from `ca4c59d` through `4413dcc` (v0.1.68–v0.1.71) includes
+the snapshot-stall feedback fix, structured conversation history, durable
+prompt-identity settlement, bounded 5 MiB transcripts, and the
+`--agent-reply-file` CLI input. Upstream release commits through v0.1.71 were
+reviewed but their version changes were not imported because this fork keeps
+its own release line.
 
 ## Retained policies
 
@@ -80,13 +81,16 @@ produces the same readable output.
 
 ### Keep browser E2E compatible across CLI versions
 
-`test/attachment-upload.browser.test.js` accepts the nested JSON encoding
-returned by supported `chrome-devtools-axi` versions before checking rendered
-attachment errors. The opt-in browser suites use the Node test clock for fixed
-delays because the CLI's numeric `wait` command is not reliable across those
-versions, and they establish a page before asking newer versions to emulate a
-viewport. These changes affect test compatibility only. Keep them while the
-browser CLI used by this fork has these version-dependent contracts.
+`test/attachment-upload.browser.test.js` keeps the fork's top-level
+`decodeEvaluationResult` helper and Node-clock waits. Upstream `c95f3c4`
+adopted an equivalent inner `decode()` helper and the new `.bubble.queued`
+selectors, so this sync takes the upstream selectors and message wording while
+keeping the fork's clock and helper instead of carrying two decoders. The
+opt-in browser suites use the Node test clock for fixed delays because the
+CLI's numeric `wait` command is not reliable across those versions, and they
+establish a page before asking newer versions to emulate a viewport. These
+changes affect test compatibility only. Keep them while the browser CLI used by
+this fork has these version-dependent contracts.
 
 ### Bound listener-shutdown connection probes
 

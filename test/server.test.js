@@ -1002,16 +1002,6 @@ test("the share dialog hands back the site id alongside the update key it tells 
   );
 });
 
-test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /const snapshotRequests = \[\]/);
-  assert.match(js, /requestSnapshot\("copy"\)/);
-  assert.match(js, /const snapshotAction = snapshotRequests\.shift\(\) \|\| "submit"/);
-  assert.match(js, /if \(snapshotAction === "copy"\)/);
-  assert.match(js, /copyText\(msg\.snapshot \|\| ""\)/);
-});
-
 test("clipboard copy falls back when navigator clipboard rejects", async () => {
   const js = await chromeClientSource();
 
@@ -1037,14 +1027,6 @@ test("chrome chat bubbles follow the preview mock shades", async () => {
   assert.match(css, /\.bubble\.agent\{[^}]*background:transparent/);
   assert.match(css, /\.bubble\.agent\{[^}]*border-color:var\(--border-subtle\)/);
   assert.match(css, /border-top-color:var\(--accent\)/);
-});
-
-test("chrome queued-prompt pills use the preview mock steel treatment", async () => {
-  const css = await chromeCssSource();
-
-  assert.match(css, /\.pill\{[^}]*border:1px solid var\(--border-strong\)/);
-  assert.match(css, /\.pill\{[^}]*background:var\(--bg-elevated\)/);
-  assert.doesNotMatch(css, /\.pill\{[^}]*var\(--amber/);
 });
 
 test("chrome includes a chat-like prompt composer and agent reply listener", async () => {
@@ -1101,17 +1083,6 @@ test("composer offers two always-visible top-level send actions", async () => {
   assert.match(css, /\.actions\{[^}]*min-width:0/);
 });
 
-test("send and end submits queued prompts before ending the session", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /let endAfterSubmit = false/);
-  assert.match(js, /sendQueued\(true\)/);
-  assert.match(js, /if \(shouldEndSession\) body\.endSession = true/);
-  assert.match(js, /if \(shouldEndSession\) \{\n {4}endAfterSubmit = false;\n {4}markSessionEnded\(\)/);
-  assert.match(js, /if \(!succeeded\) \{\n {6}endAfterSubmit = false/);
-  assert.doesNotMatch(js, /await endSession\(\)/);
-});
-
 test("chrome only marks session ended after the end request succeeds", async () => {
   const js = await chromeClientSource();
 
@@ -1131,60 +1102,17 @@ test("chrome shows a waiting banner when no agent has attached", async () => {
   assert.match(css, /\.presence-banner\{/);
 });
 
-test("chrome puts queued annotations above the chat composer as preview pills", async () => {
+test("chrome keeps queued notes at the tail of the one conversation, above the sticky composer", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
 
-  assert.match(html, /id="annotationPills"/);
+  // The queued log is the last child of the same scroll region as the transcript, so a queued
+  // note is the end of the conversation rather than a second region with its own grammar.
   assert.match(
     html,
-    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="annotation-pills" id="annotationPills"><\/div><\/div><div class="composer" id="chatComposer">/,
+    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="chat chat-queued" id="queuedLog"><\/div><\/div><div class="composer" id="chatComposer">/,
   );
-  assert.match(js, /class="pill/);
-  assert.match(js, /pill-preview/);
-  assert.match(js, /removeQueuedPrompt/);
-  assert.match(js, /pill-tooltip/);
-  assert.match(css, /text-overflow:ellipsis/);
-  assert.doesNotMatch(js, /togglePill/);
-  assert.doesNotMatch(js, /pill-detail/);
+  assert.doesNotMatch(html, /annotation-pills/);
   assert.doesNotMatch(html, /<h2>Queued Annotations<\/h2>/);
-});
-
-test("chrome scrolls queued prompts above a sticky composer footer", async () => {
-  const css = await chromeCssSource();
-
-  assert.match(css, /\.panel-scroll\{[^}]*flex:1 1 auto/);
-  assert.match(css, /\.panel-scroll\{[^}]*min-height:0/);
-  assert.match(css, /\.panel-scroll\{[^}]*overflow-y:auto/);
-  assert.match(css, /\.chat\{[^}]*overflow:visible/);
-  assert.match(css, /\.annotation-pills\{[^}]*flex:0 0 auto/);
-  assert.match(css, /\.composer\{[^}]*position:sticky/);
-  assert.match(css, /\.composer\{[^}]*bottom:0/);
-  assert.match(css, /\.composer\{[^}]*flex-shrink:0/);
-});
-
-test("chrome omits clear queue button because pills can be removed individually", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /removeQueuedPrompt/);
-  assert.doesNotMatch(js, /Clear Queue/);
-  assert.doesNotMatch(js, /id="clear"/);
-});
-
-test("annotation pill tooltip separates target and prompt details", async () => {
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
-
-  assert.match(js, /tooltip-label/);
-  assert.match(js, /Target/);
-  assert.match(js, /Prompt/);
-  assert.match(js, /pill-tooltip-target/);
-  assert.match(js, /pill-tooltip-prompt/);
-  assert.match(css, /\.pill-wrap\{[^}]*width:min\(320px,100%\)/);
-  assert.match(css, /\.pill-tooltip\{[^}]*position:static/);
-  assert.match(css, /\.pill-tooltip\{[^}]*width:100%/);
-  assert.doesNotMatch(css, /\.pill-tooltip\{[^}]*position:absolute/);
 });
 
 test("chrome client script is valid JavaScript", async () => {
@@ -1319,25 +1247,6 @@ test("chrome keeps queued prompts persisted until submit succeeds", async () => 
   assert.match(js, /for \(const prompt of prompts\) \{/);
   assert.match(js, /const index = queued\.indexOf\(prompt\)/);
   assert.match(js, /if \(index !== -1\) queued\.splice\(index, 1\)/);
-});
-
-test("chrome ignores concurrent queued prompt submits", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /let submitQueuedPromise = null/);
-  assert.match(js, /if \(submitQueuedPromise\) \{/);
-  assert.match(js, /return submitQueuedPromise/);
-  assert.match(js, /submitQueuedPromise = null/);
-});
-
-test("chrome submits prompts queued during an in-flight submit", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /let submitQueuedAgain = false/);
-  assert.match(js, /submitQueuedAgain = true/);
-  assert.match(js, /const shouldSubmitAgain = submitQueuedAgain/);
-  assert.match(js, /else if \(!ended && shouldSubmitAgain\) \{\n {6}if \(queued\.length\) \{\n {8}submitQueued\(\)/);
-  assert.match(js, /else if \(endAfterSubmit\) \{\n {8}endAfterSubmit = false;\n {8}endSession\(\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
@@ -3354,7 +3263,10 @@ test("event WebSocket preserves initial state and named live-event semantics", a
     const messages = on(socket, "message");
     const nextMessage = async () => JSON.parse(String((await messages.next()).value[0]));
     await once(socket, "open");
-    assert.deepEqual(await nextMessage(), { type: "chat-sync", data: { chat: [] } });
+    assert.deepEqual(await nextMessage(), {
+      type: "chat-sync",
+      data: { chat: [], ack_ids: [], chat_revision: 0 },
+    });
     assert.deepEqual(await nextMessage(), { type: "agent-presence", data: { state: "waiting" } });
 
     const reply = await fetch(`${base}/api/${opened.key}/agent-reply`, {
@@ -3363,7 +3275,18 @@ test("event WebSocket preserves initial state and named live-event semantics", a
       body: JSON.stringify({ text: "live reply" }),
     });
     assert.equal(reply.status, 200);
-    assert.deepEqual(await nextMessage(), { type: "agent-reply", data: { text: "live reply" } });
+    const replyEvent = await nextMessage();
+    assert.equal(replyEvent.type, "agent-reply");
+    assert.deepEqual(
+      { ...replyEvent.data, at: undefined },
+      { role: "agent", text: "live reply", html: "<p>live reply</p>", at: undefined },
+    );
+    assert.ok(Number.isFinite(Date.parse(replyEvent.data.at)));
+    const replySync = await nextMessage();
+    assert.equal(replySync.type, "chat-sync");
+    assert.deepEqual(replySync.data.ack_ids, []);
+    assert.equal(replySync.data.chat_revision, 1);
+    assert.deepEqual(replySync.data.chat, [replyEvent.data]);
     await messages.return();
     socket.close();
   } finally {
@@ -6412,4 +6335,168 @@ test("extractArtifactHead reads the real href, not one hidden in another attribu
     '<head><link rel="icon" title="see href=data:image/png,decoy" href="https://cdn.example.com/logo.png"></head>',
   );
   assert.equal(inValue.faviconTag, '<link rel="icon" href="https://cdn.example.com/logo.png">');
+});
+
+// The transcript is server-owned display state: the prompts route answers with it and syncs it
+// live the moment a batch is accepted, so every tab shows what was sent at send time rather than
+// when a poll happens to take the batch - and the anchor names the element in the annotation
+// card's own words.
+test("the prompts route returns the transcript and syncs it live at send time", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, '<!doctype html><html><body><h2 id="phase-1">Phase 1</h2></body></html>');
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const stream = await startEventStream(base, opened.key, "chat-sync");
+    assert.deepEqual(await stream.next(), { chat: [], ack_ids: [], chat_revision: 0 });
+
+    const response = await fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [
+          {
+            uid: "1",
+            prompt: "Rename this",
+            selector: "h2#phase-1",
+            tag: "h2",
+            text: "Phase 1: Inventory",
+            prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          },
+        ],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, "queued");
+    const expected = [
+      {
+        role: "user",
+        kind: "annotation",
+        text: "Rename this",
+        prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        anchor: { kind: "element", label: "<h2>", excerpt: "Phase 1: Inventory", selector: "h2#phase-1" },
+      },
+    ];
+    const withoutTimestamps = (chat) => chat.map(({ at: _at, ...entry }) => entry);
+    assert.deepEqual(withoutTimestamps(body.chat), expected);
+    // Nothing polled: the sync is driven by the accept, not by delivery.
+    assert.deepEqual(withoutTimestamps((await stream.next()).chat), expected);
+    await stream.close();
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("retrying an acknowledged prompt does not wake an unrelated poll", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const accepted = {
+      uid: "",
+      prompt: "Already accepted",
+      selector: "",
+      tag: "message",
+      text: "Freeform message",
+      prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    };
+    const post = (prompt) =>
+      fetch(`${base}/api/${opened.key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [prompt] }),
+      });
+
+    assert.equal((await post(accepted)).status, 200);
+    assert.equal(
+      (await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) => res.json()))
+        .status,
+      "feedback",
+    );
+
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
+      res.json(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await post(accepted)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      (
+        await post({
+          ...accepted,
+          prompt: "Fresh feedback",
+          prompt_id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+        })
+      ).status,
+      200,
+    );
+
+    const delivered = await poll;
+    assert.equal(delivered.status, "feedback");
+    assert.equal(delivered.prompts.length, 1);
+    assert.equal(delivered.prompts[0].prompt, "Fresh feedback");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the live transcript carries rendered html for agent replies and never for user text", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    await fetch(`${base}/api/${opened.key}/agent-reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "Done.\n\n- one\n- two" }),
+    });
+    await fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [{ uid: "", prompt: "<b>keep</b>", selector: "", tag: "message", text: "Freeform message" }],
+      }),
+    });
+
+    const stream = await startEventStream(base, opened.key, "chat-sync");
+    const { chat } = await stream.next();
+    await stream.close();
+    assert.deepEqual(
+      chat.map(({ at: _at, ...entry }) => entry),
+      [
+        { role: "agent", text: "Done.\n\n- one\n- two", html: "<p>Done.</p><ul><li>one</li><li>two</li></ul>" },
+        { role: "user", kind: "message", text: "<b>keep</b>" },
+      ],
+    );
+
+    // The page bootstraps the same transcript, so a reload renders structure without a live event.
+    const page = await fetch(`${base}/session/${opened.key}`).then((response) => response.text());
+    assert.match(page, /"html":"\\u003cp\\u003eDone\.\\u003c\/p\\u003e\\u003cul\\u003e/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
