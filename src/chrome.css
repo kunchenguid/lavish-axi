@@ -967,7 +967,7 @@ body.panel-collapsed .panel {
 }
 /* Scoped to the wide layout: below the breakpoint the chevron points at the sheet the dock
    raises, and an unscoped rule here would outrank those rules on specificity. */
-@media (min-width: 861px) {
+@media not all and (max-width: 860px) {
   body:not(.panel-collapsed) .panel-toggle svg {
     transform: rotate(90deg);
   }

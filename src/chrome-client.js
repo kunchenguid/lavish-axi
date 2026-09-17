@@ -712,6 +712,9 @@ function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = t
   sendHint.classList.toggle("persistent", sendHintPersistent);
   if (sendHintPersistent) {
     sendHintTimer = undefined;
+    // Recovery guidance lives inside the composer, which the collapsed desktop rail hides and
+    // makes inert, so the rail has to give way before the user can read it or reach the input.
+    if (!isMobileSheet() && desktopPanelCollapsed) setDesktopPanelCollapsed(false);
     if (focusInput) chatInput.focus();
     return;
   }

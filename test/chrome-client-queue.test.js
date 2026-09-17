@@ -8028,6 +8028,50 @@ test("a failed send returns its notes to Queued with the remove control back", a
   );
 });
 
+test("a send that fails behind the collapsed desktop rail reopens it with the recovery guidance", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) throw new Error("network unavailable");
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Do not lose this", selector: "h2", tag: "h2", text: "Heading" },
+  });
+  chrome.element("panelToggle").click();
+  assert.equal(sheetState(chrome).desktopCollapsed, true);
+
+  // The artifact's own send shortcut reaches the chrome while the rail is collapsed.
+  chrome.sendFrameMessage({ type: "lavish:sendQueuedPrompts" });
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  assert.equal(sheetState(chrome).desktopCollapsed, false, "the rail gives way to the failure it has to report");
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(String(chrome.element("sendHint").classList), /persistent/);
+  assert.equal(chrome.queued().length, 1, "the note stays queued for the retry");
+});
+
+test("a send that succeeds behind the collapsed desktop rail leaves it collapsed", async () => {
+  const chrome = await createChromeHarness();
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Ship it", selector: "h2", tag: "h2", text: "Heading" },
+  });
+  chrome.element("panelToggle").click();
+  assert.equal(sheetState(chrome).desktopCollapsed, true);
+
+  chrome.sendFrameMessage({ type: "lavish:sendQueuedPrompts" });
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  assert.equal(sheetState(chrome).desktopCollapsed, true);
+  assert.equal(chrome.element("sendHint").hidden, true);
+});
+
 // ---- Agent prose renders as structure; user text never renders as html ----
 
 test("an agent reply renders the server's html and a text-only reply stays escaped", async () => {
