@@ -6885,6 +6885,7 @@ function sheetState(chrome) {
     label: toggle["aria-label"],
     summary: chrome.element("panelSummary").textContent,
     summaryClass: String(chrome.element("panelSummary").classList),
+    toggleClass: String(toggle.classList),
     stored: chrome.storage.get("lavish-axi:sheet-open:abc") || null,
     desktopStored: chrome.storage.get("lavish-axi:panel-collapsed:abc") || null,
   };
@@ -6919,6 +6920,9 @@ test("desktop chrome collapses the conversation into an accessible rail without 
   assert.equal(collapsed.label, "Show conversation");
   assert.equal(collapsed.desktopStored, "1");
   assert.equal(chrome.focusLog.at(-1), "panelToggle");
+  // The rail is the only thing on screen, so it has to report the work waiting behind it.
+  assert.equal(collapsed.summary, "1 queued");
+  assert.match(collapsed.toggleClass, /has-activity/);
 
   chrome.element("panelToggle").click();
   const expanded = sheetState(chrome);
@@ -6950,15 +6954,17 @@ test("desktop collapse persists independently from the phone sheet across respon
   const reloaded = await createChromeHarness({ storage });
   assert.equal(sheetState(reloaded).desktopCollapsed, true);
   assert.equal(sheetState(reloaded).scrollInert, true);
-  assert.equal(sheetState(reloaded).stored, null);
+  // A desktop load neither reads nor discards the phone's own sheet preference.
+  assert.equal(sheetState(reloaded).open, false);
+  assert.equal(sheetState(reloaded).stored, "1");
 
   // A phone uses its own dock state, not the desktop rail state.
   const mobile = await createChromeHarness({ mobile: true, storage });
   let state = sheetState(mobile);
   assert.equal(state.desktopCollapsed, false);
-  assert.equal(state.open, false);
-  assert.equal(state.scrollInert, true);
-  assert.equal(state.stored, null);
+  assert.equal(state.open, true);
+  assert.equal(state.scrollInert, false);
+  assert.equal(state.stored, "1");
 
   mobile.setMobile(false);
   state = sheetState(mobile);
@@ -7104,6 +7110,23 @@ test("a swipe on the dock raises and lowers the sheet, and a tap after a swipe i
   const panel = chrome.element("panel");
   assert.equal(panel.style.transform, "");
   assert.equal(panel.classList.contains("is-dragging"), false);
+});
+
+test("a swipe that ends on the dock chevron is not undone by the click it synthesizes", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  const head = chrome.element("panelHead");
+
+  head.dispatch("pointerdown", { pointerId: 1, clientY: 800, button: 0 });
+  head.dispatch("pointermove", { pointerId: 1, clientY: 750 });
+  head.dispatch("pointermove", { pointerId: 1, clientY: 700 });
+  head.dispatch("pointerup", { pointerId: 1, clientY: 700 });
+  // The pointer came up over the chevron, so the browser targets the synthesized click there.
+  chrome.element("panelToggle").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+
+  // That suppression is spent: the next ordinary tap still lowers the sheet.
+  chrome.element("panelToggle").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, false);
 });
 
 test("a cancelled dock swipe leaves the sheet unchanged and the next tap active", async () => {

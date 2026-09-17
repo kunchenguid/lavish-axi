@@ -93,6 +93,9 @@ const GEOMETRY = `() => {
     summary: document.getElementById("panelSummary").textContent,
     toggleExpanded: document.getElementById("panelToggle").getAttribute("aria-expanded"),
     toggleLabel: document.getElementById("panelToggle").getAttribute("aria-label"),
+    toggleChevron: getComputedStyle(document.querySelector("#panelToggle svg")).transform,
+    toggleActivity: document.getElementById("panelToggle").classList.contains("has-activity"),
+    summaryVisible: getComputedStyle(document.getElementById("panelSummary")).display !== "none",
     activeElement: document.activeElement?.id || "",
     documentScrollable: document.documentElement.scrollHeight > innerHeight || document.documentElement.scrollWidth > innerWidth,
   });
@@ -133,7 +136,7 @@ test(
     }
 
     function wait(ms) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
     }
 
     function emulate(viewport) {
@@ -156,6 +159,7 @@ test(
       assert.equal(g.panelPosition, "fixed");
       assert.ok(g.panel.top >= 56, `sheet clears the bar: ${JSON.stringify(g.panel)}`);
       assert.equal(g.panel.bottom, g.viewport.height, "sheet reaches the bottom edge");
+      assert.equal(g.toggleChevron, "matrix(-1, 0, 0, -1, 0, 0)", "the raised sheet flips the chevron down");
       assert.equal(g.composer.bottom, g.viewport.height, "composer ends at the viewport edge");
       for (const [name, r] of [
         ["send", g.send],
@@ -227,6 +231,7 @@ test(
       );
       assert.equal(g.chat.inert, true, "the hidden part of the sheet is unreachable");
       assert.equal(g.toggleLabel, "Show conversation");
+      assert.equal(g.toggleChevron, "none", "the docked chevron points up at the sheet it raises");
       assert.equal(g.documentScrollable, false, "the page itself never scrolls");
     }
 
@@ -240,6 +245,8 @@ test(
       assert.equal(g.chat.inert, false);
       assert.equal(g.toggleExpanded, "true");
       assert.equal(g.toggleLabel, "Hide conversation");
+      assert.equal(g.toggleChevron, "matrix(0, 1, -1, 0, 0, 0)", "the expanded rail chevron points at the panel edge");
+      assert.equal(g.summaryVisible, false, "the expanded panel shows its conversation, not a summary line");
       assert.equal(g.frame.right, g.panel.left, "artifact and panel sit side by side");
       assert.equal(g.documentScrollable, false, "the expanded desktop page has no overflow");
     }
@@ -252,6 +259,8 @@ test(
       assert.equal(g.chat.inert, true, "hidden conversation content is unreachable");
       assert.equal(g.toggleExpanded, "false");
       assert.equal(g.toggleLabel, "Show conversation");
+      assert.equal(g.toggleChevron, "matrix(0, -1, 1, 0, 0, 0)", "the collapsed rail chevron points back at the artifact");
+      assert.equal(g.summaryVisible, true, "the rail keeps its live region so activity is announced");
       assert.equal(g.frame.right, g.panel.left, "artifact claims the reclaimed width");
       assert.equal(g.documentScrollable, false, "the collapsed desktop page has no overflow");
     }
@@ -369,6 +378,8 @@ test(
       assert.equal(g.activeElement, "panelToggle", "collapse returns focus to the remaining control");
       assert.match(g.queued, /Keep this queued note/);
       assert.equal(g.draft, "Keep this desktop draft");
+      assert.equal(g.summary, "1 queued", "the collapsed rail reports the work waiting behind it");
+      assert.equal(g.toggleActivity, true, "the collapsed rail marks unseen activity");
 
       // The desktop preference and queued feedback survive a chrome reload.
       open(url, 3000);

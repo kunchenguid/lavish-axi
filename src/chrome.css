@@ -965,8 +965,26 @@ body.panel-collapsed .panel {
   display: block;
   transition: transform var(--dur) var(--ease);
 }
-body:not(.panel-collapsed) .panel-toggle svg {
-  transform: rotate(90deg);
+/* Scoped to the wide layout: below the breakpoint the chevron points at the sheet the dock
+   raises, and an unscoped rule here would outrank those rules on specificity. */
+@media (min-width: 861px) {
+  body:not(.panel-collapsed) .panel-toggle svg {
+    transform: rotate(90deg);
+  }
+}
+.panel-toggle.has-activity {
+  position: relative;
+}
+body.panel-collapsed .panel-toggle.has-activity::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--bg-panel);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
 }
 body.panel-collapsed .panel-head {
   padding-right: 8px;
@@ -979,6 +997,20 @@ body.panel-collapsed .panel h2,
 body.panel-collapsed .panel-scroll,
 body.panel-collapsed .composer {
   display: none;
+}
+/* The rail has no room for the summary line, but it stays in the accessibility tree so its live
+   region still announces queued work and unread replies while the conversation is hidden. */
+body.panel-collapsed .panel-summary {
+  display: block;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 body.panel-collapsed .panel-toggle svg {
   transform: rotate(-90deg);
@@ -1643,7 +1675,6 @@ body.layout-gate-active iframe#artifact {
   }
   .panel-toggle svg {
     display: block;
-    transform: none;
     transition: transform var(--dur) var(--ease);
   }
   body.sheet-open .panel-toggle svg {

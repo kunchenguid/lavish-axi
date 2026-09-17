@@ -1138,16 +1138,6 @@ const sheetMedia = typeof window.matchMedia === "function" ? window.matchMedia(M
 // them back onto a closed dock mid-conversation.
 let sheetOpen = readSheetOpen();
 let desktopPanelCollapsed = readDesktopPanelCollapsed();
-// A page can be reloaded after its viewport has already widened, so no media-query change event
-// arrives to clear a phone sheet that would otherwise reopen when the tab next narrows.
-if (!isMobileSheet()) {
-  sheetOpen = false;
-  try {
-    sessionStorage.removeItem(sheetStorageKey);
-  } catch {
-    // Storage refusal only prevents cleanup of an obsolete phone-only preference.
-  }
-}
 // The latest agent reply that landed while the sheet was closed: the dock previews it until the
 // user opens the sheet, so a reply never arrives silently behind the artifact.
 let unreadAgentReply = "";
@@ -1175,8 +1165,15 @@ function readDesktopPanelCollapsed() {
   }
 }
 
+// Whether the conversation body is out of reach right now, whichever layout is active. The dock
+// summary, the unread reply, and the pulse all key off this rather than the phone breakpoint.
+function isPanelHidden() {
+  return isMobileSheet() ? !sheetOpen : desktopPanelCollapsed;
+}
+
 function setDesktopPanelCollapsed(collapsed) {
   desktopPanelCollapsed = Boolean(collapsed);
+  if (!desktopPanelCollapsed) unreadAgentReply = "";
   try {
     if (desktopPanelCollapsed) sessionStorage.setItem(desktopPanelStorageKey, "1");
     else sessionStorage.removeItem(desktopPanelStorageKey);
@@ -1239,6 +1236,7 @@ function renderSheetSummary() {
   panelSummary.textContent = summary.text;
   panelSummary.classList.toggle("is-accent", summary.accent);
   panelSummary.classList.toggle("is-unread", summary.unread);
+  panelToggle.classList.toggle("has-activity", summary.accent || summary.unread);
 }
 
 // A brief pulse on the dock when something the user should notice lands while the sheet is
@@ -1252,7 +1250,7 @@ function pulseSheetDock() {
 }
 
 function noteAgentReply(text) {
-  if (!isMobileSheet() || sheetOpen) return;
+  if (!isPanelHidden()) return;
   unreadAgentReply = String(text || "");
   renderSheetSummary();
   pulseSheetDock();
@@ -1295,17 +1293,24 @@ function finishSheetDrag(event) {
   else if (!sheetOpen && offset < -SHEET_DRAG_THRESHOLD_PX) setSheetOpen(true);
 }
 
-panelHead.addEventListener("click", () => {
-  if (!isMobileSheet()) return;
+// Every phone click that toggles the dock goes through here, whether it landed on the head or on
+// the chevron inside it, so the click a completed drag synthesizes cannot undo what the drag
+// decided - and cannot leave the suppression armed for the next real tap either.
+function toggleSheetFromDock() {
   if (suppressSheetClick) {
     suppressSheetClick = false;
     return;
   }
   setSheetOpen(!sheetOpen);
+}
+
+panelHead.addEventListener("click", () => {
+  if (!isMobileSheet()) return;
+  toggleSheetFromDock();
 });
 panelToggle.addEventListener("click", (event) => {
   event.stopPropagation?.();
-  if (isMobileSheet()) setSheetOpen(!sheetOpen);
+  if (isMobileSheet()) toggleSheetFromDock();
   else setDesktopPanelCollapsed(!desktopPanelCollapsed);
 });
 panelScrim.addEventListener("click", () => setSheetOpen(false));
