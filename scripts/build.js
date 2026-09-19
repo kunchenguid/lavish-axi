@@ -35,7 +35,7 @@ await esbuild.build({
     {
       name: "external-cli",
       setup(build) {
-        build.onResolve({ filter: /^\.\.\/src\/cli\.js$/ }, () => ({
+        build.onResolve({ filter: /^\.\/lavish-axi\.js$/ }, () => ({
           path: "./cli.mjs",
           external: true,
         }));

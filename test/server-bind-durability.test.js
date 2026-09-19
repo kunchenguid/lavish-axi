@@ -410,6 +410,54 @@ try {
   });
 });
 
+test("a clean detached-server shutdown exits 0 without an error in server.log", async () => {
+  await withTempDir(async (dir) => {
+    const holder = createServer();
+    await new Promise((resolve) => holder.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+    const port = /** @type {{ port: number }} */ (holder.address()).port;
+    await new Promise((resolve) => holder.close(() => resolve(undefined)));
+    const logFile = path.join(dir, "server.log");
+    const fd = openSync(logFile, "a");
+    const child = spawn(process.execPath, [SERVER_ENTRY, "server", "--port", String(port)], {
+      env: {
+        ...process.env,
+        LAVISH_AXI_STATE_DIR: dir,
+        LAVISH_AXI_HOST: "127.0.0.1",
+        LAVISH_AXI_NO_OPEN: "1",
+        LAVISH_AXI_TELEMETRY: "0",
+        LAVISH_AXI_IDLE_TIMEOUT_MS: "off",
+      },
+      stdio: ["ignore", fd, fd],
+    });
+    try {
+      const deadline = Date.now() + 5000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        try {
+          const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+          if (health.ok) {
+            ready = true;
+            break;
+          }
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      assert.equal(ready, true);
+      await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST" });
+      const [code] = await once(child, "exit");
+      assert.equal(code, 0);
+    } finally {
+      child.kill();
+      closeSync(fd);
+    }
+    const log = await readFile(logFile, "utf8");
+    assert.doesNotMatch(log, /TypeError/);
+    assert.doesNotMatch(log, /run is not a function/);
+    assert.doesNotMatch(log, /\bError:/);
+  });
+});
+
 test("a detached server crash writes a timestamped line to server.log", async () => {
   await withTempDir(async (dir) => {
     const squatter = createServer();
