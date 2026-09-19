@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -2171,17 +2172,21 @@ test("Herdr poll chime is disabled unless both Lavish and Herdr opt in", () => {
   assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" }), true);
 });
 
-test("Herdr poll chime requests attention without making notification failure fatal", () => {
+test("Herdr poll chime requests attention without making notification failure fatal", async () => {
   const calls = [];
+  let child;
   const notified = notifyHerdrPollReady({
     env: { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" },
     runner(command, args, options) {
       calls.push({ command, args, options });
-      return { status: 0 };
+      child = spawn(process.execPath, ["-e", "process.exit(0)"], options);
+      return child;
     },
   });
 
   assert.equal(notified, true);
+  child.ref();
+  await once(child, "close");
   assert.deepEqual(calls, [
     {
       command: "herdr",
@@ -2194,7 +2199,7 @@ test("Herdr poll chime requests attention without making notification failure fa
         "--sound",
         "request",
       ],
-      options: { stdio: "ignore", timeout: 2_000 },
+      options: { stdio: "ignore" },
     },
   ]);
 
@@ -2207,6 +2212,66 @@ test("Herdr poll chime requests attention without making notification failure fa
     }),
     false,
   );
+});
+
+test("Herdr failures and a stalled notification do not delay poll feedback", { timeout: 10_000 }, async (t) => {
+  const server = createServer((_req, res) => {
+    res.setHeader("Lavish-Poll-State", "listening");
+    res.end(JSON.stringify({ status: "feedback", prompts: [{ text: "Review this" }] }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const env = { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" };
+
+  for (const behavior of ["missing", "rejected", "stalled"]) {
+    await t.test(behavior, async () => {
+      const exitListeners = process.listenerCount("exit");
+      let child;
+      let closed;
+      const response = await fetchJson(`http://127.0.0.1:${address.port}`, {
+        onResponse() {
+          notifyHerdrPollReady({
+            env,
+            runner(_command, _args, options) {
+              child =
+                behavior === "missing"
+                  ? spawn(path.join(process.cwd(), "missing-herdr-executable"), [], options)
+                  : spawn(
+                      process.execPath,
+                      [
+                        "-e",
+                        behavior === "rejected"
+                          ? "process.exit(1)"
+                          : "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
+                      ],
+                      options,
+                    );
+              closed = new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+              return child;
+            },
+          });
+        },
+      });
+      try {
+        assert.deepEqual(response, { status: "feedback", prompts: [{ text: "Review this" }] });
+        if (behavior === "stalled") {
+          assert.equal(child.exitCode, null);
+          assert.equal(child.signalCode, null);
+          const result = await closed;
+          if (process.platform !== "win32") assert.equal(result.signal, "SIGKILL");
+          assert.ok(child.killed);
+        } else {
+          await closed;
+        }
+        assert.equal(process.listenerCount("exit"), exitListeners);
+      } finally {
+        child.kill("SIGKILL");
+      }
+    });
+  }
 });
 
 test("poll wait reporter writes a banner immediately and heartbeats on an interval", async () => {

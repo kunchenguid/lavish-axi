@@ -110,16 +110,13 @@ export function herdrPollChimeEnabled(env = process.env) {
 /**
  * @param {{
  *   env?: NodeJS.ProcessEnv,
- *   runner?: (command: string, args: string[], options: { stdio: "ignore", timeout: number }) => {
- *     status: number | null,
- *     error?: Error,
- *   },
+ *   runner?: (command: string, args: string[], options: { stdio: "ignore" }) => import("node:child_process").ChildProcess,
  * }} [options]
  */
-export function notifyHerdrPollReady({ env = process.env, runner = spawnSync } = {}) {
+export function notifyHerdrPollReady({ env = process.env, runner = spawn } = {}) {
   if (!herdrPollChimeEnabled(env)) return false;
   try {
-    const result = runner(
+    const child = runner(
       "herdr",
       [
         "notification",
@@ -130,9 +127,26 @@ export function notifyHerdrPollReady({ env = process.env, runner = spawnSync } =
         "--sound",
         "request",
       ],
-      { stdio: "ignore", timeout: 2_000 },
+      { stdio: "ignore" },
     );
-    return result.status === 0 && !result.error;
+    const kill = () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        return;
+      }
+    };
+    const timer = setTimeout(kill, 2_000);
+    timer.unref();
+    const cleanup = () => {
+      clearTimeout(timer);
+      process.off("exit", kill);
+    };
+    child.on("error", () => {});
+    child.once("close", cleanup);
+    process.once("exit", kill);
+    child.unref();
+    return true;
   } catch {
     // A desktop notification is optional and must never interrupt feedback delivery.
     return false;
