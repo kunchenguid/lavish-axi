@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.74](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.73...lavish-axi-v0.1.74) (2026-09-19)
+
+
+### Features
+
+* **poll:** add opt-in Herdr readiness chime ([#355](https://github.com/kunchenguid/lavish-axi/issues/355)) ([20159e0](https://github.com/kunchenguid/lavish-axi/commit/20159e0726ba73c9e19db08a388dd1aa5673028c))
+
 ## [0.1.73](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.72...lavish-axi-v0.1.73) (2026-09-19)
 
 
