@@ -1146,6 +1146,9 @@ const sheetMedia = typeof window.matchMedia === "function" ? window.matchMedia(M
 // The user's intent, kept across a chrome reload so a live-reload or server upgrade does not drop
 // them back onto a closed dock mid-conversation.
 let sheetOpen = readSheetOpen();
+// Whether the desktop panel is collapsed to its rail. Deliberately not persisted: the rail is a
+// reading-time choice, and a reload opens the conversation again.
+let panelCollapsed = false;
 // The latest agent reply that landed while the sheet was closed: the dock previews it until the
 // user opens the sheet, so a reply never arrives silently behind the artifact.
 let unreadAgentReply = "";
@@ -1165,6 +1168,11 @@ function isMobileSheet() {
   return Boolean(sheetMedia && sheetMedia.matches);
 }
 
+// The conversation body is out of reach: the phone dock is lowered, or the desktop rail is collapsed.
+function isPanelHidden() {
+  return isMobileSheet() ? !sheetOpen : panelCollapsed;
+}
+
 function setSheetOpen(open) {
   const next = Boolean(open);
   const changed = next !== sheetOpen;
@@ -1175,28 +1183,32 @@ function setSheetOpen(open) {
   } catch {
     // Storage refused is not worth a broken sheet: the state just stops surviving a reload.
   }
-  if (sheetOpen) unreadAgentReply = "";
   applySheetState();
   if (!changed || !isMobileSheet()) return;
   if (sheetOpen) scrollPanelToBottom();
 }
 
-// Re-derives every sheet attribute from the phone layout, sheet-open, and session-ended state so a
-// viewport crossing the breakpoint in either direction cannot make an ended panel interactive or
-// leave a closed dock trapping focus.
+// Re-derives every disclosure attribute from the phone layout, sheet-open, rail, and session-ended
+// state so a viewport crossing the breakpoint in either direction cannot make an ended panel
+// interactive or leave hidden content trapping focus. Revealing the conversation is what marks
+// whatever landed behind it as seen.
 function applySheetState() {
   const mobile = isMobileSheet();
-  const open = mobile && sheetOpen;
-  document.body.classList.toggle("sheet-open", open);
-  const docked = mobile && !open;
-  panelScroll.inert = ended || docked;
-  chatComposer.inert = ended || docked;
+  const hidden = isPanelHidden();
+  document.body.classList.toggle("sheet-open", mobile && sheetOpen);
+  document.body.classList.toggle("panel-collapsed", !mobile && panelCollapsed);
+  panelScroll.inert = ended || hidden;
+  chatComposer.inert = ended || hidden;
   const activeElement = document.activeElement;
-  if (docked && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
+  if (hidden && activeElement && (panelScroll.contains(activeElement) || chatComposer.contains(activeElement))) {
     panelToggle.focus();
   }
-  panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
-  panelToggle.setAttribute("aria-label", open ? "Hide conversation" : "Show conversation");
+  if (!hidden) {
+    unreadAgentReply = "";
+    panelHead.classList.remove("is-fresh");
+  }
+  panelToggle.setAttribute("aria-expanded", hidden ? "false" : "true");
+  panelToggle.setAttribute("aria-label", hidden ? "Show conversation" : "Hide conversation");
   renderSheetSummary();
 }
 
@@ -1220,10 +1232,11 @@ function renderSheetSummary() {
   panelSummary.classList.toggle("is-unread", summary.unread);
 }
 
-// A brief pulse on the dock when something the user should notice lands while the sheet is
-// closed: a prompt they queued from the artifact, or an agent reply.
+// Something the user should notice landed while the conversation was hidden: a prompt they queued
+// from the artifact, or an agent reply. The phone dock pulses once; the desktop rail keeps
+// `is-fresh` as its signal until the conversation is revealed.
 function pulseSheetDock() {
-  if (!isMobileSheet() || sheetOpen) return;
+  if (!isPanelHidden()) return;
   panelHead.classList.remove("is-fresh");
   // Restart the animation even when the previous pulse is still running.
   void panelHead.offsetWidth;
@@ -1231,7 +1244,7 @@ function pulseSheetDock() {
 }
 
 function noteAgentReply(text) {
-  if (!isMobileSheet() || sheetOpen) return;
+  if (!isPanelHidden()) return;
   unreadAgentReply = String(text || "");
   renderSheetSummary();
   pulseSheetDock();
@@ -1281,6 +1294,15 @@ panelHead.addEventListener("click", () => {
     return;
   }
   setSheetOpen(!sheetOpen);
+});
+panelToggle.addEventListener("click", () => {
+  // On a phone this click reaches the head above, which raises or lowers the sheet.
+  if (isMobileSheet()) return;
+  panelCollapsed = !panelCollapsed;
+  const landed = panelHead.classList.contains("is-fresh");
+  applySheetState();
+  // Expanding returns to the reading position unless something landed behind the rail.
+  if (!panelCollapsed && landed) scrollPanelToBottom();
 });
 panelScrim.addEventListener("click", () => setSheetOpen(false));
 panelHead.addEventListener("pointerdown", (event) => {

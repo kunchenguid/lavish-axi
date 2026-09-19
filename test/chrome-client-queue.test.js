@@ -6878,6 +6878,7 @@ function sheetState(chrome) {
   const toggle = chrome.element("panelToggle");
   return {
     open: chrome.element("body").classList.contains("sheet-open"),
+    collapsed: chrome.element("body").classList.contains("panel-collapsed"),
     scrollInert: Boolean(chrome.element("panelScroll").inert),
     composerInert: Boolean(chrome.element("chatComposer").inert),
     expanded: toggle["aria-expanded"],
@@ -6888,21 +6889,64 @@ function sheetState(chrome) {
   };
 }
 
-test("desktop chrome never turns the conversation panel into a sheet", async () => {
+test("desktop chrome collapses the conversation to a rail without losing what is behind it", async () => {
   const chrome = await createChromeHarness();
+  const panelScroll = chrome.element("panelScroll");
 
   assert.deepEqual(chrome.mediaQueries, []);
   const before = sheetState(chrome);
   assert.equal(before.open, false);
+  assert.equal(before.collapsed, false);
   assert.equal(before.scrollInert, false);
   assert.equal(before.composerInert, false);
+  assert.equal(before.expanded, "true");
+  assert.equal(before.label, "Hide conversation");
 
-  // The heading is plain text on desktop: clicking it must not start hiding the panel.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Keep this note", selector: "h2", tag: "h2", text: "Heading" },
+  });
+  chrome.element("chatInput").value = "Keep this draft";
+  chrome.element("chatInput").focus();
+  panelScroll.scrollHeight = 1200;
+  panelScroll.scrollTop = 300;
+  chrome.element("panelToggle").click();
+  const collapsed = sheetState(chrome);
+  assert.equal(collapsed.open, false);
+  assert.equal(collapsed.collapsed, true);
+  assert.equal(collapsed.scrollInert, true);
+  assert.equal(collapsed.composerInert, true);
+  assert.equal(collapsed.expanded, "false");
+  assert.equal(collapsed.label, "Show conversation");
+  assert.equal(chrome.focusLog.at(-1), "panelToggle", "focus leaves the hidden composer for the toggle");
+
+  // The heading is plain text on desktop: clicking it must not touch the rail or start a sheet.
   chrome.element("panelHead").dispatch("click", {});
-  const after = sheetState(chrome);
-  assert.equal(after.open, false);
-  assert.equal(after.scrollInert, false);
-  assert.equal(after.stored, null);
+  assert.equal(sheetState(chrome).collapsed, true);
+  assert.equal(sheetState(chrome).open, false);
+  assert.equal(sheetState(chrome).stored, null);
+
+  // The rail is a reading-time choice: a reload opens the conversation again.
+  assert.equal(sheetState(await createChromeHarness({ storage: chrome.storage })).collapsed, false);
+
+  // Nothing landed: expanding returns to the reading position with the queue and draft intact.
+  chrome.element("panelToggle").click();
+  const expanded = sheetState(chrome);
+  assert.equal(expanded.collapsed, false);
+  assert.equal(expanded.scrollInert, false);
+  assert.equal(expanded.composerInert, false);
+  assert.equal(expanded.expanded, "true");
+  assert.equal(expanded.label, "Hide conversation");
+  assert.equal(panelScroll.scrollTop, 300);
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.element("chatInput").value, "Keep this draft");
+
+  // A reply lands behind the rail: expanding lands on the newest bubble instead.
+  chrome.element("panelToggle").click();
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Landed behind the rail." }) });
+  panelScroll.scrollHeight = 1600;
+  chrome.element("panelToggle").click();
+  assert.equal(panelScroll.scrollTop, 1600);
 });
 
 test("phone chrome boots with the conversation docked and raises it on tap", async () => {
@@ -7072,6 +7116,20 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
   assert.equal(state.scrollInert, false);
   assert.equal(state.composerInert, false);
   assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
+
+  // A rail collapsed on desktop is desktop state only: narrowing docks the sheet instead, and
+  // widening again brings the rail back.
+  chrome.element("panelToggle").click();
+  assert.equal(sheetState(chrome).collapsed, true);
+  chrome.setMobile(true);
+  state = sheetState(chrome);
+  assert.equal(state.collapsed, false);
+  assert.equal(state.open, false);
+  assert.equal(state.scrollInert, true);
+  chrome.setMobile(false);
+  assert.equal(sheetState(chrome).collapsed, true);
+  chrome.element("panelToggle").click();
+  assert.equal(sheetState(chrome).collapsed, false);
 
   // Narrowing back docks it again and moves focus out of the content becoming inert.
   chrome.element("chatInput").focus();
