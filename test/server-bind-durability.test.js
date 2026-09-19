@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,7 +9,7 @@ import test from "node:test";
 
 import WebSocket from "ws";
 
-import { serverBaseUrls } from "../src/cli.js";
+import { findRunningServer, serverBaseUrls } from "../src/cli.js";
 import { formatServerLogLine, serve } from "../src/server.js";
 
 // 192.0.2.0/24 is TEST-NET-1: routable nowhere and assigned to no interface, so binding it fails
@@ -222,3 +223,84 @@ test("the control channel looks for a fallen-back server on loopback too", () =>
   // Already loopback: one candidate, not a duplicate probe.
   assert.deepEqual(serverBaseUrls(4387, "127.0.0.1"), ["http://127.0.0.1:4387"]);
 });
+
+test(
+  "discovery prefers Lavish on loopback over a hanging or foreign requested address",
+  { timeout: 2000 },
+  async () => {
+    const lavishHealth = { ok: true, app: "lavish-axi", version: "9.9.9-test" };
+    const foreignHealth = { ok: true, app: "other", version: "0.0.0" };
+    const applessHealth = { ok: true };
+
+    const lavish = createHttpServer((req, res) => {
+      if (req.url?.startsWith("/health")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(lavishHealth));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => lavish.listen({ host: "127.0.0.1", port: 0 }, () => resolve(undefined)));
+    const port = /** @type {{ port: number }} */ (lavish.address()).port;
+    try {
+      const started = Date.now();
+      const fromHang = await findRunningServer(port, { host: UNBINDABLE_HOST, probeTimeoutMs: 80 });
+      assert.equal(fromHang.baseUrl, `http://127.0.0.1:${port}`);
+      assert.equal(fromHang.health.app, "lavish-axi");
+      assert.ok(Date.now() - started < 1000, `discovery stalled for ${Date.now() - started}ms`);
+    } finally {
+      await new Promise((resolve) => lavish.close(() => resolve(undefined)));
+    }
+
+    const hangStarted = Date.now();
+    const fromInjectedHang = await findRunningServer(4387, {
+      host: "100.99.161.42",
+      probeTimeoutMs: 80,
+      fetchHealth: async (baseUrl) => {
+        if (baseUrl === "http://100.99.161.42:4387") return new Promise(() => {});
+        if (baseUrl === "http://127.0.0.1:4387") return lavishHealth;
+        return null;
+      },
+    });
+    assert.equal(fromInjectedHang.baseUrl, "http://127.0.0.1:4387");
+    assert.equal(fromInjectedHang.health.app, "lavish-axi");
+    assert.ok(Date.now() - hangStarted < 1000, `injected hang stalled for ${Date.now() - hangStarted}ms`);
+
+    const fromForeign = await findRunningServer(4387, {
+      host: "100.99.161.42",
+      fetchHealth: async (baseUrl) => {
+        if (baseUrl === "http://100.99.161.42:4387") return foreignHealth;
+        if (baseUrl === "http://127.0.0.1:4387") return lavishHealth;
+        return null;
+      },
+    });
+    assert.equal(fromForeign.baseUrl, "http://127.0.0.1:4387");
+    assert.equal(fromForeign.health.app, "lavish-axi");
+
+    const fromAppless = await findRunningServer(4387, {
+      host: "100.99.161.42",
+      fetchHealth: async (baseUrl) => {
+        if (baseUrl === "http://100.99.161.42:4387") return applessHealth;
+        if (baseUrl === "http://127.0.0.1:4387") return lavishHealth;
+        return null;
+      },
+    });
+    assert.equal(fromAppless.baseUrl, "http://127.0.0.1:4387");
+    assert.equal(fromAppless.health.app, "lavish-axi");
+
+    const keptForeign = await findRunningServer(4387, {
+      host: "100.99.161.42",
+      fetchHealth: async (baseUrl) => (baseUrl === "http://100.99.161.42:4387" ? foreignHealth : null),
+    });
+    assert.equal(keptForeign.baseUrl, "http://100.99.161.42:4387");
+    assert.equal(keptForeign.health.app, "other");
+
+    const none = await findRunningServer(4387, {
+      host: "100.99.161.42",
+      fetchHealth: async () => null,
+    });
+    assert.equal(none.baseUrl, "http://100.99.161.42:4387");
+    assert.equal(none.health, null);
+  },
+);

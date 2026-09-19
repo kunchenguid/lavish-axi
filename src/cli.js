@@ -1557,15 +1557,54 @@ export function serverBaseUrls(port, host = clientHost()) {
   return urls;
 }
 
-// Returns where a Lavish server actually answered, falling back to the primary URL when none did
-// so callers still have something to spawn against and report.
-async function findRunningServer(port, { reconcileNetwork = false } = {}) {
-  const candidates = serverBaseUrls(port);
+const HEALTH_PROBE_TIMEOUT_MS = 500;
+
+// Returns where a Lavish server actually answered. Each candidate probe is bounded so a hanging
+// requested address cannot mask loopback, and a response whose app is lavish-axi wins over a
+// foreign /health. When nothing answers, the primary URL is still returned so callers have
+// something to spawn against and report.
+export async function findRunningServer(
+  port,
+  {
+    reconcileNetwork = false,
+    host = clientHost(),
+    fetchHealth: healthFetcher = fetchHealth,
+    probeTimeoutMs = HEALTH_PROBE_TIMEOUT_MS,
+  } = {},
+) {
+  const candidates = serverBaseUrls(port, host);
+  let foreign = null;
   for (const baseUrl of candidates) {
-    const health = await fetchHealth(baseUrl, { reconcileNetwork });
-    if (health) return { baseUrl, health };
+    const health = await probeHealth(healthFetcher, baseUrl, { reconcileNetwork, timeoutMs: probeTimeoutMs });
+    if (!health) continue;
+    if (health.app === "lavish-axi") return { baseUrl, health };
+    if (!foreign) foreign = { baseUrl, health };
   }
-  return { baseUrl: candidates[0], health: null };
+  return foreign ?? { baseUrl: candidates[0], health: null };
+}
+
+async function probeHealth(healthFetcher, baseUrl, { reconcileNetwork, timeoutMs }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const health = await Promise.race([
+      Promise.resolve()
+        .then(() =>
+          healthFetcher(baseUrl, {
+            reconcileNetwork,
+            timeoutMs,
+            signal: controller.signal,
+          }),
+        )
+        .catch(() => null),
+      new Promise((resolve) => {
+        controller.signal.addEventListener("abort", () => resolve(null), { once: true });
+      }),
+    ]);
+    return health && typeof health === "object" ? health : null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // `reloadKey` names the session this invocation is about to open. A version-driven replacement
@@ -1665,10 +1704,11 @@ async function canControlServerOnPort(port, healthBody, processMatchesLavish) {
   return processMatchesLavish(port);
 }
 
-async function fetchHealth(baseUrl, { reconcileNetwork = false } = {}) {
+async function fetchHealth(baseUrl, { reconcileNetwork = false, timeoutMs, signal } = {}) {
   try {
     const suffix = reconcileNetwork ? "?reconcile_network=1" : "";
-    const response = await fetch(`${baseUrl}/health${suffix}`);
+    const abortSignal = signal ?? (timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined);
+    const response = await fetch(`${baseUrl}/health${suffix}`, abortSignal ? { signal: abortSignal } : {});
     if (!response.ok) return null;
     return await response.json();
   } catch {

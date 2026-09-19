@@ -105,11 +105,7 @@ test("malformed links and images stay literal without stalling", () => {
   assert.equal(renderChatMarkdown(recursiveLinks), `<p>${recursiveLinks}</p>`);
   assert.equal(renderChatMarkdown(nestedDestination), `<p>${nestedDestination}</p>`);
   const elapsed = performance.now() - started;
-  // Deliberately generous. The defect this guards is catastrophic backtracking, which is orders of
-  // magnitude - minutes or forever - against roughly 200ms when the matcher is linear. A budget
-  // tight enough to catch a 2x slowdown only measures how loaded the machine is, and this failed
-  // at 2.4s under a full parallel suite while passing at 0.2s alone.
-  assert.ok(elapsed < 15_000, `render took ${Math.round(elapsed)}ms`);
+  assert.ok(elapsed < 1_000, `render took ${Math.round(elapsed)}ms`);
 });
 
 test("destinations beyond the inline limit remain literal", () => {
