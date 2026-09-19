@@ -255,6 +255,45 @@ export function formatServerLogLine(line, now = new Date()) {
   return `${now.toISOString()} ${line}`;
 }
 
+let serverStdioTimestamped = false;
+
+export function createTimestampedWrite(write, now = () => new Date()) {
+  let atLineStart = true;
+  return function timestampedWrite(chunk, encoding, callback) {
+    let enc = encoding;
+    let cb = callback;
+    if (typeof encoding === "function") {
+      cb = encoding;
+      enc = undefined;
+    }
+    const str = chunkToString(chunk, enc);
+    let out = "";
+    for (let i = 0; i < str.length; i += 1) {
+      if (atLineStart) {
+        out += formatServerLogLine("", now());
+        atLineStart = false;
+      }
+      const ch = str[i];
+      out += ch;
+      if (ch === "\n") atLineStart = true;
+    }
+    return write(out, enc, cb);
+  };
+}
+
+export function installServerStdioTimestamps(now = () => new Date()) {
+  if (serverStdioTimestamped) return;
+  serverStdioTimestamped = true;
+  process.stdout.write = createTimestampedWrite(process.stdout.write.bind(process.stdout), now);
+  process.stderr.write = createTimestampedWrite(process.stderr.write.bind(process.stderr), now);
+}
+
+function chunkToString(chunk, encoding) {
+  if (typeof chunk === "string") return chunk;
+  if (Buffer.isBuffer(chunk)) return chunk.toString(typeof encoding === "string" ? encoding : "utf8");
+  return String(chunk);
+}
+
 // A detached server should not live forever. When no browser chrome or agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
 // `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
@@ -328,7 +367,10 @@ export async function serve({
   const verbose = debug || env.LAVISH_AXI_DEBUG === "1";
   // The detached server's stderr is appended to server.log across restarts, where an untimestamped
   // line cannot be dated or correlated with an outage. An injected logger formats its own lines.
-  const writeLog = typeof log === "function" ? log : (line) => process.stderr.write(`${formatServerLogLine(line)}\n`);
+  const writeLog =
+    typeof log === "function"
+      ? log
+      : (line) => process.stderr.write(`${serverStdioTimestamped ? line : formatServerLogLine(line)}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   if (networkWarning) writeLog(`[lavish] WARNING: ${networkWarning}`);
   let publicPort = port;
@@ -1797,6 +1839,24 @@ export async function serve({
       `Lavish server failed to bind any address${lastBindError ? `: ${lastBindError.message}` : ""}`,
       lastBindError ? { cause: lastBindError } : undefined,
     );
+  }
+  // The CLI control channel only probes the primary requested host and loopback. A process that
+  // bound neither is alive and unreachable, so close every listener already taken in this call.
+  if (!boundHosts.includes(LOOPBACK_HOST) && !boundHosts.includes(listenHosts[0])) {
+    const error = new Error(
+      `Lavish server failed to bind a control-channel address${lastBindError ? `: ${lastBindError.message}` : ""}`,
+      lastBindError ? { cause: lastBindError } : undefined,
+    );
+    await Promise.all(
+      httpServers.splice(0).map(
+        (httpServer) =>
+          new Promise((resolve) => {
+            httpServer.close(() => resolve(undefined));
+          }),
+      ),
+    );
+    boundHosts.length = 0;
+    throw error;
   }
   // Session URLs must name somewhere that is actually listening, so a fallback moves the link host
   // to loopback unless the operator named one explicitly.

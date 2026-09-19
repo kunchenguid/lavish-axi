@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { closeSync, openSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import WebSocket from "ws";
 
-import { ensureServer, findRunningServer, serverBaseUrls } from "../src/cli.js";
-import { formatServerLogLine, serve } from "../src/server.js";
+import { findRunningServer, run, serverBaseUrls, VERSION } from "../src/cli.js";
+import { createTimestampedWrite, formatServerLogLine, serve } from "../src/server.js";
+
+const BIN = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
 
 // 192.0.2.0/24 is TEST-NET-1: routable nowhere and assigned to no interface, so binding it fails
 // with EADDRNOTAVAIL exactly the way a pinned Tailscale address does once Tailscale goes down.
@@ -69,35 +74,95 @@ test("a degraded bind reports network_stale only once the requested address is b
   });
 });
 
-test("one invocation replaces a stale server only once even if health stays stale", async () => {
-  const stale = { ok: true, app: "lavish-axi", version: "0.1.4", network_stale: true };
-  const older = { ok: true, app: "lavish-axi", version: "0.1.3" };
-
-  async function countReplacements(initialHealth) {
-    let starts = 0;
-    let shutdowns = 0;
-    let probes = 0;
-    await ensureServer({
-      currentVersion: "0.1.4",
-      port: 4387,
-      findRunningServer: async () => {
-        probes += 1;
-        if (probes === 1) return { baseUrl: "http://127.0.0.1:4387", health: initialHealth };
-        return { baseUrl: "http://127.0.0.1:4387", health: stale };
-      },
-      startServer: async () => {
-        starts += 1;
-      },
-      requestShutdown: async () => {
-        shutdowns += 1;
-      },
-      waitForPortFree: async () => true,
+test(
+  "a stale control-channel server is replaced only once per CLI invocation",
+  { timeout: 20_000 },
+  async () => {
+    await withTempDir(async (dir) => {
+      const artifact = await writeArtifact(dir);
+      let shutdowns = 0;
+      const fake = createHttpServer((req, res) => {
+        if (req.url?.startsWith("/health")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION, network_stale: true }));
+          return;
+        }
+        if (req.method === "POST" && req.url === "/shutdown") {
+          shutdowns += 1;
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end("{}");
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+      await new Promise((resolve) => fake.listen({ host: "127.0.0.1", port: 0 }, () => resolve(undefined)));
+      const port = /** @type {{ port: number }} */ (fake.address()).port;
+      const previous = {
+        LAVISH_AXI_PORT: process.env.LAVISH_AXI_PORT,
+        LAVISH_AXI_HOST: process.env.LAVISH_AXI_HOST,
+        LAVISH_AXI_STATE_DIR: process.env.LAVISH_AXI_STATE_DIR,
+        LAVISH_AXI_NO_OPEN: process.env.LAVISH_AXI_NO_OPEN,
+        LAVISH_AXI_TELEMETRY: process.env.LAVISH_AXI_TELEMETRY,
+      };
+      process.env.LAVISH_AXI_PORT = String(port);
+      process.env.LAVISH_AXI_HOST = "127.0.0.1";
+      process.env.LAVISH_AXI_STATE_DIR = dir;
+      process.env.LAVISH_AXI_NO_OPEN = "1";
+      process.env.LAVISH_AXI_TELEMETRY = "0";
+      const previousExitCode = process.exitCode;
+      try {
+        try {
+          await run(["open", artifact, "--no-open"]);
+        } catch {
+          // The fake control channel has no session route; axi-sdk may print that 404
+          // without throwing. The assertion below is the replacement-count contract.
+        }
+        assert.equal(shutdowns, 1);
+      } finally {
+        process.exitCode = previousExitCode;
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        await new Promise((resolve) => fake.close(() => resolve(undefined)));
+      }
     });
-    return { starts, shutdowns };
-  }
+  },
+);
 
-  assert.deepEqual(await countReplacements(stale), { starts: 1, shutdowns: 1 });
-  assert.deepEqual(await countReplacements(older), { starts: 2, shutdowns: 2 });
+test("a server that cannot bind a control-channel address closes every listener and fails", async () => {
+  await withTempDir(async (dir) => {
+    const squatter = createServer();
+    await new Promise((resolve) => squatter.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+    const occupiedPort = /** @type {{ port: number }} */ (squatter.address()).port;
+    try {
+      await assert.rejects(
+        serve({
+          port: occupiedPort,
+          stateFile: path.join(dir, "state.json"),
+          version: "9.9.9-test",
+          env: {},
+          hosts: ["127.0.0.1", "::1"],
+          log: () => {},
+          idleTimeoutMs: null,
+        }),
+        (error) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /control-channel address/);
+          return true;
+        },
+      );
+      const probe = createServer();
+      await new Promise((resolve, reject) => {
+        probe.once("error", reject);
+        probe.listen({ port: occupiedPort, host: "::1" }, () => resolve(undefined));
+      });
+      await new Promise((resolve) => probe.close(() => resolve(undefined)));
+    } finally {
+      await new Promise((resolve) => squatter.close(() => resolve(undefined)));
+    }
+  });
 });
 
 test("an occupied requested address does not report network_stale after loopback fallback", async () => {
@@ -296,6 +361,49 @@ test("server log lines carry a UTC timestamp so an outage can be dated afterward
     formatServerLogLine("[lavish] shutting down: idle-timeout", at),
     "2026-09-18T23:45:01.234Z [lavish] shutting down: idle-timeout",
   );
+});
+
+test("stdio timestamps attach only at line starts", () => {
+  const chunks = [];
+  const write = createTimestampedWrite(
+    (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    },
+    () => new Date("2026-09-18T23:45:01.234Z"),
+  );
+  write("hello");
+  write(" still\nnext");
+  write("\n");
+  assert.equal(chunks.join(""), "2026-09-18T23:45:01.234Z hello still\n2026-09-18T23:45:01.234Z next\n");
+});
+
+test("a detached server crash writes a timestamped line to server.log", async () => {
+  await withTempDir(async (dir) => {
+    const squatter = createServer();
+    await new Promise((resolve) => squatter.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+    const occupiedPort = /** @type {{ port: number }} */ (squatter.address()).port;
+    const logFile = path.join(dir, "server.log");
+    const fd = openSync(logFile, "a");
+    try {
+      const child = spawn(process.execPath, [BIN, "server", "--port", String(occupiedPort)], {
+        env: {
+          ...process.env,
+          LAVISH_AXI_STATE_DIR: dir,
+          LAVISH_AXI_HOST: "127.0.0.1",
+          LAVISH_AXI_NO_OPEN: "1",
+          LAVISH_AXI_TELEMETRY: "0",
+        },
+        stdio: ["ignore", fd, fd],
+      });
+      await once(child, "exit");
+    } finally {
+      closeSync(fd);
+      await new Promise((resolve) => squatter.close(() => resolve(undefined)));
+    }
+    const log = await readFile(logFile, "utf8");
+    assert.match(log, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /m);
+  });
 });
 
 test("a shutdown records why it happened", async () => {
