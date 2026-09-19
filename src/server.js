@@ -307,7 +307,7 @@ export async function serve({
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
   let tailscalePhoneReady = false;
-  let unboundRequestedHosts = [];
+  const absentRequestedHosts = [];
   let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
@@ -411,9 +411,9 @@ export async function serve({
   }
 
   function requestedBindIsRecoverable() {
-    if (unboundRequestedHosts.length === 0) return false;
+    if (absentRequestedHosts.length === 0) return false;
     const present = localInterfaceAddresses(listInterfaces);
-    return unboundRequestedHosts.some((listenHost) => present.has(listenHost));
+    return absentRequestedHosts.some((listenHost) => present.has(listenHost));
   }
 
   async function reconcileNetwork() {
@@ -1768,6 +1768,7 @@ export async function serve({
     const error = await bindListener(listenHost);
     if (!error) continue;
     lastBindError = error;
+    if (isAddressAbsentBindError(error)) absentRequestedHosts.push(listenHost);
     if (listenHost === tailscale?.ipv4) {
       networkWarning = "Tailscale binding failed; there is no phone access. Lavish remains available on loopback.";
       writeLog(`[lavish] WARNING: ${networkWarning} Address: ${listenHost}:${boundPort}.`);
@@ -1797,9 +1798,6 @@ export async function serve({
       lastBindError ? { cause: lastBindError } : undefined,
     );
   }
-  // Requested listeners that never bound. Reconciliation reports stale only when one of these
-  // addresses is present on a local interface again - not while it is still gone.
-  unboundRequestedHosts = listenHosts.filter((listenHost) => !boundHosts.includes(listenHost));
   // Session URLs must name somewhere that is actually listening, so a fallback moves the link host
   // to loopback unless the operator named one explicitly.
   if (loopbackFallback) {
@@ -2010,6 +2008,10 @@ function tailscaleNetworkKey(tailscale) {
   if (tailscale.warning) return "incomplete";
   if (!tailscale.ipv4 || !tailscale.magicDnsName) return "incomplete";
   return `up\n${tailscale.ipv4}\n${tailscale.magicDnsName}`;
+}
+
+function isAddressAbsentBindError(error) {
+  return error instanceof Error && "code" in error && error.code === "EADDRNOTAVAIL";
 }
 
 function localInterfaceAddresses(listInterfaces) {

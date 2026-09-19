@@ -69,6 +69,41 @@ test("a degraded bind reports network_stale only once the requested address is b
   });
 });
 
+test("an occupied requested address does not report network_stale after loopback fallback", async () => {
+  await withTempDir(async (dir) => {
+    const occupiedHost = "::1";
+    const squatter = createServer();
+    await new Promise((resolve, reject) => {
+      squatter.once("error", reject);
+      squatter.listen({ port: 0, host: occupiedHost }, () => resolve(undefined));
+    });
+    const occupiedPort = /** @type {{ port: number }} */ (squatter.address()).port;
+    try {
+      const server = await serve({
+        port: occupiedPort,
+        stateFile: path.join(dir, "state.json"),
+        version: "9.9.9-test",
+        env: { LAVISH_AXI_HOST: occupiedHost },
+        log: () => {},
+        idleTimeoutMs: null,
+      });
+      try {
+        assert.deepEqual(server.hosts, ["127.0.0.1"]);
+        assert.equal(server.port, occupiedPort);
+        const health = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+          response.json(),
+        );
+        assert.equal(health.ok, true);
+        assert.equal(health.network_stale, undefined);
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await new Promise((resolve) => squatter.close(() => resolve(undefined)));
+    }
+  });
+});
+
 test("a sole unbindable host falls back to loopback instead of leaving no listener", async () => {
   await withTempDir(async (dir) => {
     const artifact = await writeArtifact(dir);
