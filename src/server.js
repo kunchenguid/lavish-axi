@@ -112,7 +112,8 @@ const BIND_RETRY_DELAYS_MS = [100, 250, 500];
 const WEBSOCKET_CLOSE_GRACE_MS = 250;
 // A half-open socket (a slept laptop, a dropped tailnet path) never emits `close`, so without an
 // application-level ping the server keeps counting a reviewer who is gone - which silently
-// suppresses idle shutdown and makes presence wrong. Reaped after two missed pongs.
+// suppresses idle shutdown and makes presence wrong. Reaped on the next heartbeat after one
+// unanswered ping.
 const LIVE_EVENT_HEARTBEAT_MS = 30_000;
 const BROWSER_DISCONNECT_GRACE_MS = 10_000;
 // An escaped popup can navigate to an artifact-owned HTML or SVG asset on the

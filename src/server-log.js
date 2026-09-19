@@ -48,6 +48,9 @@ export function installServerStdioTimestamps() {
 
 function chunkToString(chunk, encoding) {
   if (typeof chunk === "string") return chunk;
-  if (Buffer.isBuffer(chunk)) return chunk.toString(typeof encoding === "string" ? encoding : "utf8");
+  if (Buffer.isBuffer(chunk)) {
+    const bufferEncoding = /** @type {BufferEncoding} */ (typeof encoding === "string" ? encoding : "utf8");
+    return chunk.toString(bufferEncoding);
+  }
   return String(chunk);
 }

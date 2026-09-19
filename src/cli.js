@@ -1697,6 +1697,10 @@ async function canControlServerOnPort(port, healthBody, processMatchesLavish) {
   return processMatchesLavish(port);
 }
 
+/**
+ * @param {string} baseUrl
+ * @param {{ reconcileNetwork?: boolean, timeoutMs?: number, signal?: AbortSignal }} [options]
+ */
 async function fetchHealth(baseUrl, { reconcileNetwork = false, timeoutMs, signal } = {}) {
   try {
     const suffix = reconcileNetwork ? "?reconcile_network=1" : "";
