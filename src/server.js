@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
-import { homedir, networkInterfaces as listOsNetworkInterfaces } from "node:os";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,6 +53,7 @@ import {
 } from "./export-bundle.js";
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
+import { isLocalAddressPresent } from "./local-address.js";
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
@@ -279,7 +280,6 @@ export async function serve({
   allowedHosts,
   detectTailscale: detectTailscaleFn,
   lookupHost,
-  networkInterfaces: listInterfaces = listOsNetworkInterfaces,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 } = {}) {
   // Keep the transport dependency off fast metadata paths such as `--version`.
@@ -404,9 +404,7 @@ export async function serve({
   }
 
   function requestedBindIsRecoverable() {
-    if (absentRequestedHosts.length === 0) return false;
-    const present = localInterfaceAddresses(listInterfaces);
-    return absentRequestedHosts.some((listenHost) => present.has(listenHost));
+    return absentRequestedHosts.some((listenHost) => isLocalAddressPresent(listenHost));
   }
 
   async function reconcileNetwork() {
@@ -2023,20 +2021,6 @@ function tailscaleNetworkKey(tailscale) {
 
 function isAddressAbsentBindError(error) {
   return error instanceof Error && "code" in error && error.code === "EADDRNOTAVAIL";
-}
-
-function localInterfaceAddresses(listInterfaces) {
-  const addresses = new Set();
-  try {
-    for (const entries of Object.values(listInterfaces() || {})) {
-      for (const entry of entries || []) {
-        if (typeof entry?.address === "string" && entry.address) addresses.add(entry.address);
-      }
-    }
-  } catch {
-    return addresses;
-  }
-  return addresses;
 }
 
 function wantsHtml(req) {
