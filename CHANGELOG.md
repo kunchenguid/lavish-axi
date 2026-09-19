@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.73](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.72...lavish-axi-v0.1.73) (2026-09-19)
+
+
+### Bug Fixes
+
+* **server:** make live-review failures recoverable ([#353](https://github.com/kunchenguid/lavish-axi/issues/353)) ([c5bdea4](https://github.com/kunchenguid/lavish-axi/commit/c5bdea49c684ffd074a07d19232783dc37f6605e))
+
 ## [0.1.72](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.71...lavish-axi-v0.1.72) (2026-09-17)
 
 
