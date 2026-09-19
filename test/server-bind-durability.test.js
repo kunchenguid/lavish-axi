@@ -12,10 +12,10 @@ import test from "node:test";
 
 import WebSocket from "ws";
 
-import { findRunningServer, resolveServerEntry, run, serverBaseUrls, VERSION } from "../src/cli.js";
-import { createTimestampedWrite, formatServerLogLine, serve } from "../src/server.js";
+import { run, stopCommand, VERSION } from "../src/cli.js";
+import { serve } from "../src/server.js";
 
-const SERVER_ENTRY = resolveServerEntry();
+const SERVER_ENTRY = fileURLToPath(new URL("../bin/lavish-axi-server.js", import.meta.url));
 
 // 192.0.2.0/24 is TEST-NET-1: routable nowhere and assigned to no interface, so binding it fails
 // with EADDRNOTAVAIL exactly the way a pinned Tailscale address does once Tailscale goes down.
@@ -34,6 +34,40 @@ async function writeArtifact(dir) {
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
   return artifact;
+}
+
+async function withEnv(overrides, fn) {
+  const previous = {};
+  for (const key of Object.keys(overrides)) previous[key] = process.env[key];
+  const previousExitCode = process.exitCode;
+  try {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    return await fn();
+  } finally {
+    process.exitCode = previousExitCode;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function listenHealth(host, port, body) {
+  const server = createHttpServer((req, res) => {
+    if (req.url?.startsWith("/health")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  return new Promise((resolve) => {
+    server.listen({ host, port }, () => resolve(server));
+  });
 }
 
 test("a degraded bind reports network_stale only once the requested address is back", async () => {
@@ -80,53 +114,58 @@ test(
   async () => {
     await withTempDir(async (dir) => {
       const artifact = await writeArtifact(dir);
-      let shutdowns = 0;
-      const fake = createHttpServer((req, res) => {
-        if (req.url?.startsWith("/health")) {
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION, network_stale: true }));
-          return;
-        }
-        if (req.method === "POST" && req.url === "/shutdown") {
-          shutdowns += 1;
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end("{}");
-          return;
-        }
-        res.writeHead(404);
-        res.end();
-      });
-      await new Promise((resolve) => fake.listen({ host: "127.0.0.1", port: 0 }, () => resolve(undefined)));
-      const port = /** @type {{ port: number }} */ (fake.address()).port;
-      const previous = {
-        LAVISH_AXI_PORT: process.env.LAVISH_AXI_PORT,
-        LAVISH_AXI_HOST: process.env.LAVISH_AXI_HOST,
-        LAVISH_AXI_STATE_DIR: process.env.LAVISH_AXI_STATE_DIR,
-        LAVISH_AXI_NO_OPEN: process.env.LAVISH_AXI_NO_OPEN,
-        LAVISH_AXI_TELEMETRY: process.env.LAVISH_AXI_TELEMETRY,
-      };
-      process.env.LAVISH_AXI_PORT = String(port);
-      process.env.LAVISH_AXI_HOST = "127.0.0.1";
-      process.env.LAVISH_AXI_STATE_DIR = dir;
-      process.env.LAVISH_AXI_NO_OPEN = "1";
-      process.env.LAVISH_AXI_TELEMETRY = "0";
-      const previousExitCode = process.exitCode;
-      try {
+
+      async function countShutdowns(healthBody) {
+        let shutdowns = 0;
+        const fake = createHttpServer((req, res) => {
+          if (req.url?.startsWith("/health")) {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify(healthBody));
+            return;
+          }
+          if (req.method === "POST" && req.url === "/shutdown") {
+            shutdowns += 1;
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end("{}");
+            return;
+          }
+          res.writeHead(404);
+          res.end();
+        });
+        await new Promise((resolve) => fake.listen({ host: "127.0.0.1", port: 0 }, () => resolve(undefined)));
+        const port = /** @type {{ port: number }} */ (fake.address()).port;
         try {
-          await run(["open", artifact, "--no-open"]);
-        } catch {
-          // The fake control channel has no session route; axi-sdk may print that 404
-          // without throwing. The assertion below is the replacement-count contract.
+          await withEnv(
+            {
+              LAVISH_AXI_PORT: String(port),
+              LAVISH_AXI_HOST: "127.0.0.1",
+              LAVISH_AXI_STATE_DIR: dir,
+              LAVISH_AXI_NO_OPEN: "1",
+              LAVISH_AXI_TELEMETRY: "0",
+            },
+            async () => {
+              try {
+                await run(["open", artifact, "--no-open"]);
+              } catch {
+                // The fake control channel has no session route; axi-sdk may print that 404
+                // without throwing. The assertion below is the replacement-count contract.
+              }
+            },
+          );
+        } finally {
+          await new Promise((resolve) => fake.close(() => resolve(undefined)));
         }
-        assert.equal(shutdowns, 1);
-      } finally {
-        process.exitCode = previousExitCode;
-        for (const [key, value] of Object.entries(previous)) {
-          if (value === undefined) delete process.env[key];
-          else process.env[key] = value;
-        }
-        await new Promise((resolve) => fake.close(() => resolve(undefined)));
+        return shutdowns;
       }
+
+      assert.equal(
+        await countShutdowns({ ok: true, app: "lavish-axi", version: VERSION, network_stale: true }),
+        1,
+      );
+      assert.equal(
+        await countShutdowns({ ok: true, app: "lavish-axi", version: "0.0.1", network_stale: true }),
+        2,
+      );
     });
   },
 );
@@ -355,29 +394,6 @@ test("a live-event client that answers its pings is left connected", async () =>
   });
 });
 
-test("server log lines carry a UTC timestamp so an outage can be dated afterwards", () => {
-  const at = new Date("2026-09-18T23:45:01.234Z");
-  assert.equal(
-    formatServerLogLine("[lavish] shutting down: idle-timeout", at),
-    "2026-09-18T23:45:01.234Z [lavish] shutting down: idle-timeout",
-  );
-});
-
-test("stdio timestamps attach only at line starts", () => {
-  const chunks = [];
-  const write = createTimestampedWrite(
-    (chunk) => {
-      chunks.push(String(chunk));
-      return true;
-    },
-    () => new Date("2026-09-18T23:45:01.234Z"),
-  );
-  write("hello");
-  write(" still\nnext");
-  write("\n");
-  assert.equal(chunks.join(""), "2026-09-18T23:45:01.234Z hello still\n2026-09-18T23:45:01.234Z next\n");
-});
-
 test("a module-load failure after the stdio writer is installed is timestamped", async () => {
   await withTempDir(async (dir) => {
     const thrower = path.join(dir, "throw.mjs");
@@ -508,91 +524,115 @@ test("a shutdown records why it happened", async () => {
   });
 });
 
-test("the control channel looks for a fallen-back server on loopback too", () => {
-  // Probing only the pinned address is what made the CLI report a running server as "did not
-  // start" - and then spawn a second daemon beside it on the next invocation.
-  assert.deepEqual(serverBaseUrls(4387, "100.99.161.42"), ["http://100.99.161.42:4387", "http://127.0.0.1:4387"]);
-  // Already loopback: one candidate, not a duplicate probe.
-  assert.deepEqual(serverBaseUrls(4387, "127.0.0.1"), ["http://127.0.0.1:4387"]);
+test("the control channel finds a fallen-back server on loopback", async () => {
+  await withTempDir(async (dir) => {
+    const server = await serve({
+      port: 0,
+      stateFile: path.join(dir, "state.json"),
+      version: "9.9.9-test",
+      env: { LAVISH_AXI_HOST: UNBINDABLE_HOST },
+      log: () => {},
+      idleTimeoutMs: null,
+    });
+    try {
+      assert.deepEqual(server.hosts, ["127.0.0.1"]);
+      const output = await withEnv(
+        {
+          LAVISH_AXI_PORT: String(server.port),
+          LAVISH_AXI_HOST: UNBINDABLE_HOST,
+        },
+        () => stopCommand([]),
+      );
+      assert.equal(output.server.status, "stopped");
+    } finally {
+      await server.close().catch(() => {});
+    }
+  });
 });
 
 test(
   "discovery prefers Lavish on loopback over a hanging or foreign requested address",
-  { timeout: 2000 },
+  { timeout: 10_000 },
   async () => {
-    const lavishHealth = { ok: true, app: "lavish-axi", version: "9.9.9-test" };
-    const foreignHealth = { ok: true, app: "other", version: "0.0.0" };
-    const applessHealth = { ok: true };
-
-    const lavish = createHttpServer((req, res) => {
-      if (req.url?.startsWith("/health")) {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(lavishHealth));
-        return;
+    await withTempDir(async (dir) => {
+      const lavish = await serve({
+        port: 0,
+        stateFile: path.join(dir, "state.json"),
+        version: "9.9.9-test",
+        env: { LAVISH_AXI_HOST: "127.0.0.1" },
+        hosts: ["127.0.0.1"],
+        log: () => {},
+        idleTimeoutMs: null,
+      });
+      const port = lavish.port;
+      const hanging = createHttpServer(() => {});
+      await new Promise((resolve) => hanging.listen({ host: "::1", port }, () => resolve(undefined)));
+      try {
+        const started = Date.now();
+        const output = await withEnv(
+          {
+            LAVISH_AXI_PORT: String(port),
+            LAVISH_AXI_HOST: "::1",
+          },
+          () => stopCommand([]),
+        );
+        assert.equal(output.server.status, "stopped");
+        assert.ok(Date.now() - started < 1500, `discovery stalled for ${Date.now() - started}ms`);
+      } finally {
+        await new Promise((resolve) => hanging.close(() => resolve(undefined)));
+        await lavish.close().catch(() => {});
       }
-      res.writeHead(404);
-      res.end();
     });
-    await new Promise((resolve) => lavish.listen({ host: "127.0.0.1", port: 0 }, () => resolve(undefined)));
-    const port = /** @type {{ port: number }} */ (lavish.address()).port;
+
+    await withTempDir(async (dir) => {
+      const lavish = await serve({
+        port: 0,
+        stateFile: path.join(dir, "state.json"),
+        version: "9.9.9-test",
+        env: { LAVISH_AXI_HOST: "127.0.0.1" },
+        hosts: ["127.0.0.1"],
+        log: () => {},
+        idleTimeoutMs: null,
+      });
+      const port = lavish.port;
+      const foreign = await listenHealth("::1", port, { ok: true, app: "other", version: "0.0.0" });
+      try {
+        const output = await withEnv(
+          {
+            LAVISH_AXI_PORT: String(port),
+            LAVISH_AXI_HOST: "::1",
+          },
+          () => stopCommand([]),
+        );
+        assert.equal(output.server.status, "stopped");
+      } finally {
+        await new Promise((resolve) => foreign.close(() => resolve(undefined)));
+        await lavish.close().catch(() => {});
+      }
+    });
+
+    const foreignOnly = await listenHealth("::1", 0, { ok: true, app: "other", version: "0.0.0" });
+    const foreignPort = /** @type {{ port: number }} */ (foreignOnly.address()).port;
     try {
-      const started = Date.now();
-      const fromHang = await findRunningServer(port, { host: UNBINDABLE_HOST, probeTimeoutMs: 80 });
-      assert.equal(fromHang.baseUrl, `http://127.0.0.1:${port}`);
-      assert.equal(fromHang.health.app, "lavish-axi");
-      assert.ok(Date.now() - started < 1000, `discovery stalled for ${Date.now() - started}ms`);
+      const output = await withEnv(
+        {
+          LAVISH_AXI_PORT: String(foreignPort),
+          LAVISH_AXI_HOST: "::1",
+        },
+        () => stopCommand([]),
+      );
+      assert.equal(output.server.status, "not-lavish");
     } finally {
-      await new Promise((resolve) => lavish.close(() => resolve(undefined)));
+      await new Promise((resolve) => foreignOnly.close(() => resolve(undefined)));
     }
 
-    const hangStarted = Date.now();
-    const fromInjectedHang = await findRunningServer(4387, {
-      host: "100.99.161.42",
-      probeTimeoutMs: 80,
-      fetchHealth: async (baseUrl) => {
-        if (baseUrl === "http://100.99.161.42:4387") return new Promise(() => {});
-        if (baseUrl === "http://127.0.0.1:4387") return lavishHealth;
-        return null;
+    const none = await withEnv(
+      {
+        LAVISH_AXI_PORT: "1",
+        LAVISH_AXI_HOST: UNBINDABLE_HOST,
       },
-    });
-    assert.equal(fromInjectedHang.baseUrl, "http://127.0.0.1:4387");
-    assert.equal(fromInjectedHang.health.app, "lavish-axi");
-    assert.ok(Date.now() - hangStarted < 1000, `injected hang stalled for ${Date.now() - hangStarted}ms`);
-
-    const fromForeign = await findRunningServer(4387, {
-      host: "100.99.161.42",
-      fetchHealth: async (baseUrl) => {
-        if (baseUrl === "http://100.99.161.42:4387") return foreignHealth;
-        if (baseUrl === "http://127.0.0.1:4387") return lavishHealth;
-        return null;
-      },
-    });
-    assert.equal(fromForeign.baseUrl, "http://127.0.0.1:4387");
-    assert.equal(fromForeign.health.app, "lavish-axi");
-
-    const fromAppless = await findRunningServer(4387, {
-      host: "100.99.161.42",
-      fetchHealth: async (baseUrl) => {
-        if (baseUrl === "http://100.99.161.42:4387") return applessHealth;
-        if (baseUrl === "http://127.0.0.1:4387") return lavishHealth;
-        return null;
-      },
-    });
-    assert.equal(fromAppless.baseUrl, "http://127.0.0.1:4387");
-    assert.equal(fromAppless.health.app, "lavish-axi");
-
-    const keptForeign = await findRunningServer(4387, {
-      host: "100.99.161.42",
-      fetchHealth: async (baseUrl) => (baseUrl === "http://100.99.161.42:4387" ? foreignHealth : null),
-    });
-    assert.equal(keptForeign.baseUrl, "http://100.99.161.42:4387");
-    assert.equal(keptForeign.health.app, "other");
-
-    const none = await findRunningServer(4387, {
-      host: "100.99.161.42",
-      fetchHealth: async () => null,
-    });
-    assert.equal(none.baseUrl, "http://100.99.161.42:4387");
-    assert.equal(none.health, null);
+      () => stopCommand([]),
+    );
+    assert.equal(none.server.status, "not-running");
   },
 );

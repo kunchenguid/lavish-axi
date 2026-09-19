@@ -81,12 +81,6 @@ import {
   writeAttachment,
 } from "./attachment-store.js";
 
-export {
-  createTimestampedWrite,
-  formatServerLogLine,
-  installServerStdioTimestamps,
-} from "./server-log.js";
-
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
 const designAssetUrls = {

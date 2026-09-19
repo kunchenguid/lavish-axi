@@ -15,7 +15,7 @@ export function serverStdioIsTimestamped() {
   return Boolean(globalThis[STDIO_STAMPED]);
 }
 
-export function createTimestampedWrite(write, now = () => new Date()) {
+function createTimestampedWrite(write, now = () => new Date()) {
   let atLineStart = true;
   return function timestampedWrite(chunk, encoding, callback) {
     let enc = encoding;
@@ -39,11 +39,11 @@ export function createTimestampedWrite(write, now = () => new Date()) {
   };
 }
 
-export function installServerStdioTimestamps(now = () => new Date()) {
+export function installServerStdioTimestamps() {
   if (serverStdioIsTimestamped()) return;
   globalThis[STDIO_STAMPED] = true;
-  process.stdout.write = createTimestampedWrite(process.stdout.write.bind(process.stdout), now);
-  process.stderr.write = createTimestampedWrite(process.stderr.write.bind(process.stderr), now);
+  process.stdout.write = createTimestampedWrite(process.stdout.write.bind(process.stdout));
+  process.stderr.write = createTimestampedWrite(process.stderr.write.bind(process.stderr));
 }
 
 function chunkToString(chunk, encoding) {
