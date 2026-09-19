@@ -1,7 +1,7 @@
 // Trigger string Claude Code (and other agents) match against to auto-load the skill.
 // Kept terse and outcome-focused so it fires on "about to show something visual" intents.
 export const SKILL_DESCRIPTION =
-  "Turn complex or visual agent responses into rich, reviewable HTML artifacts the user can " +
+  "Turn complex or visual agent responses into rich, reviewable HTML artifacts (HTML files) the user can " +
   "annotate and send feedback on, using the lavish-axi CLI. Use when about to give a plan, " +
   "comparison, diagram, table, code diff, report, or anything easier to grasp visually than as prose.";
 
@@ -67,7 +67,7 @@ If lavish-axi output shows a follow-up command starting with \`lavish-axi\`, run
 
 $ARGUMENTS
 
-If the request above is non-empty, the user invoked \`/lavish\` explicitly - fetch the current CLI guidance, then build that artifact.
+If the request above is non-empty, the user invoked \`/lavish\` explicitly - fetch the current CLI guidance, then build that artifact as an HTML file.
 If it is empty, infer what to visualize from the conversation.
 `;
 
