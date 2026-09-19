@@ -2174,6 +2174,7 @@ test("Herdr poll chime is disabled unless both Lavish and Herdr opt in", () => {
 
 test("Herdr poll chime requests attention without making notification failure fatal", async () => {
   const calls = [];
+  /** @type {import("node:child_process").ChildProcess | undefined} */
   let child;
   const notified = notifyHerdrPollReady({
     env: { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" },
@@ -2185,6 +2186,7 @@ test("Herdr poll chime requests attention without making notification failure fa
   });
 
   assert.equal(notified, true);
+  assert.ok(child);
   child.ref();
   await once(child, "close");
   assert.deepEqual(calls, [
@@ -2229,7 +2231,9 @@ test("Herdr failures and a stalled notification do not delay poll feedback", { t
   for (const behavior of ["missing", "rejected", "stalled"]) {
     await t.test(behavior, async () => {
       const exitListeners = process.listenerCount("exit");
+      /** @type {import("node:child_process").ChildProcess | undefined} */
       let child;
+      /** @type {Promise<{ code: number | null, signal: NodeJS.Signals | null }> | undefined} */
       let closed;
       const response = await fetchJson(`http://127.0.0.1:${address.port}`, {
         onResponse() {
@@ -2256,6 +2260,8 @@ test("Herdr failures and a stalled notification do not delay poll feedback", { t
         },
       });
       try {
+        assert.ok(child);
+        assert.ok(closed);
         assert.deepEqual(response, { status: "feedback", prompts: [{ text: "Review this" }] });
         if (behavior === "stalled") {
           assert.equal(child.exitCode, null);
@@ -2268,7 +2274,7 @@ test("Herdr failures and a stalled notification do not delay poll feedback", { t
         }
         assert.equal(process.listenerCount("exit"), exitListeners);
       } finally {
-        child.kill("SIGKILL");
+        child?.kill("SIGKILL");
       }
     });
   }
