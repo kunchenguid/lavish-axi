@@ -8129,3 +8129,71 @@ test("a newer bounded sync replaces the transcript without overlap and rejects s
   });
   assert.equal(chrome.element("chatLog").children.length, 0);
 });
+
+// The live-event socket reconnects forever on a 5s cap, and a dead server is indistinguishable
+// from a quiet one: the page kept rendering its last state and told the user nothing until they
+// reloaded into a browser connection error.
+const LIVE_EVENT_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 5000];
+
+function dropLiveStream(chrome, delayMs) {
+  chrome.webSocketAt(chrome.webSocketCount() - 1).protocolListeners.get("close")();
+  chrome.runTimers(delayMs);
+}
+
+function recoverLiveStream(chrome) {
+  chrome.webSocketAt(chrome.webSocketCount() - 1).protocolListeners.get("open")();
+}
+
+test("a live stream that stays down says so, and reconnecting retires the notice", async () => {
+  const chrome = await createChromeHarness();
+  const banner = chrome.element("outdatedBanner");
+  assert.equal(banner.hidden, true);
+
+  // A few dropped reconnects is a flaky moment, not a server that went away.
+  for (const delay of LIVE_EVENT_RECONNECT_DELAYS_MS.slice(0, 4)) dropLiveStream(chrome, delay);
+  assert.equal(banner.hidden, true);
+
+  dropLiveStream(chrome, LIVE_EVENT_RECONNECT_DELAYS_MS[4]);
+  assert.equal(banner.hidden, false);
+  assert.match(chrome.element("outdatedText").textContent, /no longer running/);
+
+  // Recovery retires it on its own - the user never had to reload to find out.
+  recoverLiveStream(chrome);
+  assert.equal(banner.hidden, true);
+});
+
+test("a dismissed server-unreachable notice stays dismissed until the stream actually recovers", async () => {
+  const chrome = await createChromeHarness();
+  const banner = chrome.element("outdatedBanner");
+  for (const delay of LIVE_EVENT_RECONNECT_DELAYS_MS) dropLiveStream(chrome, delay);
+  assert.equal(banner.hidden, false);
+
+  chrome.element("outdatedDismiss").onclick();
+  assert.equal(banner.hidden, true);
+
+  // Every later reconnect also fails, and re-raising the banner they just dismissed would make it
+  // unclosable while the server stays down.
+  dropLiveStream(chrome, 5000);
+  dropLiveStream(chrome, 5000);
+  assert.equal(banner.hidden, true);
+
+  // A recovery followed by a fresh outage is a new event, so it may speak again.
+  recoverLiveStream(chrome);
+  for (const delay of LIVE_EVENT_RECONNECT_DELAYS_MS) dropLiveStream(chrome, delay);
+  assert.equal(banner.hidden, false);
+});
+
+test("a reconnect does not retire the banner a server replacement raised", async () => {
+  const chrome = await createChromeHarness();
+  const banner = chrome.element("outdatedBanner");
+  chrome.webSocket().listeners.get("chrome-outdated")({ data: JSON.stringify({ reason: "upgrade" }) });
+  assert.equal(banner.hidden, false);
+  assert.match(chrome.element("outdatedText").textContent, /Lavish was updated/);
+
+  // The server really was replaced; reconnecting to its successor does not make that untrue, and
+  // the page is still running the previous chrome.
+  dropLiveStream(chrome, LIVE_EVENT_RECONNECT_DELAYS_MS[0]);
+  recoverLiveStream(chrome);
+  assert.equal(banner.hidden, false);
+  assert.match(chrome.element("outdatedText").textContent, /Lavish was updated/);
+});

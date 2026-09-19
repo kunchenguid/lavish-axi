@@ -31,7 +31,15 @@ import {
   publishToHtmlApp,
   updateHtmlApp,
 } from "./html-app.js";
-import { clientHost, defaultPort, ensureStateDir, hostForUrl, serverLogFile, stateFile } from "./paths.js";
+import {
+  clientHost,
+  defaultPort,
+  ensureStateDir,
+  hostForUrl,
+  LOOPBACK_HOST,
+  serverLogFile,
+  stateFile,
+} from "./paths.js";
 import {
   computeVsCodePluginLocationsUpdate,
   linkCursorLocalPlugin,
@@ -1106,7 +1114,9 @@ function generatedPasswordNote(password) {
 // session), this stops the background process so it stops dangling between sessions.
 export async function stopCommand(args) {
   const port = Number(flagValue(args, "--port") || defaultPort());
-  const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
+  // A server that fell back to loopback answers there rather than at the requested bind host, and
+  // a `stop` that only dials the requested host reports "not-running" while leaving it running.
+  const { baseUrl } = await findRunningServer(port);
   return shutdownServerOnPort(port, { baseUrl, currentVersion: VERSION });
 }
 
@@ -1537,12 +1547,32 @@ function isHtmlPath(file) {
   return file.toLowerCase().endsWith(".html") || file.toLowerCase().endsWith(".htm");
 }
 
+// A server that could not bind its requested address falls back to loopback (see `serve()`), so
+// the control channel has to look there too. Without this the CLI reports "did not start" for a
+// server that IS running, and the next invocation spawns a duplicate daemon beside it.
+export function serverBaseUrls(port, host = clientHost()) {
+  const urls = [`http://${hostForUrl(host)}:${port}`];
+  const loopback = `http://${hostForUrl(LOOPBACK_HOST)}:${port}`;
+  if (!urls.includes(loopback)) urls.push(loopback);
+  return urls;
+}
+
+// Returns where a Lavish server actually answered, falling back to the primary URL when none did
+// so callers still have something to spawn against and report.
+async function findRunningServer(port, { reconcileNetwork = false } = {}) {
+  const candidates = serverBaseUrls(port);
+  for (const baseUrl of candidates) {
+    const health = await fetchHealth(baseUrl, { reconcileNetwork });
+    if (health) return { baseUrl, health };
+  }
+  return { baseUrl: candidates[0], health: null };
+}
+
 // `reloadKey` names the session this invocation is about to open. A version-driven replacement
 // reloads that chrome only; every other open review page is told it is outdated and left alone.
 async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   const port = defaultPort();
-  const baseUrl = `http://${hostForUrl(clientHost())}:${port}`;
-  const existing = await fetchHealth(baseUrl, { reconcileNetwork: true });
+  const { baseUrl, health: existing } = await findRunningServer(port, { reconcileNetwork: true });
   if (existing && !shouldRestartServer(VERSION, existing, forceRestart)) {
     return baseUrl;
   }
@@ -1570,12 +1600,12 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   let networkRestarted = false;
   let deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const health = await fetchHealth(baseUrl, { reconcileNetwork: true });
-    if (health && !shouldRestartServer(VERSION, health)) return baseUrl;
+    const { baseUrl: liveUrl, health } = await findRunningServer(port, { reconcileNetwork: true });
+    if (health && !shouldRestartServer(VERSION, health)) return liveUrl;
     if (health?.network_stale === true && health.app === "lavish-axi") {
-      if (networkRestarted) return baseUrl;
-      await requestShutdown(baseUrl, { reloadKey, reason: "" });
-      if (!(await waitForPortFree(baseUrl, 3000))) break;
+      if (networkRestarted) return liveUrl;
+      await requestShutdown(liveUrl, { reloadKey, reason: "" });
+      if (!(await waitForPortFree(liveUrl, 3000))) break;
       await startServer(port);
       networkRestarted = true;
       deadline = Date.now() + 5000;

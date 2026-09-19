@@ -198,6 +198,16 @@ const layoutGateMaxHoldMs =
 let chromeOutdatedReason = "";
 let chromeOutdatedGeneration = 0;
 let outdatedReloadInFlight = false;
+// The live-event socket reconnects forever on a 5s cap. Silence there is indistinguishable from a
+// healthy idle stream, so a page whose server has gone away keeps rendering its last state and
+// tells the user nothing until they reload into a connection error. Past this many consecutive
+// failures the banner says so, with the health-probed reload the banner already offers.
+const LIVE_EVENT_UNREACHABLE_FAILURES = 5;
+let liveEventFailures = 0;
+// Only a banner this path raised may be hidden by this path: a `chrome-outdated` event means the
+// server was replaced, which a reconnect does not disprove.
+let unreachableBannerOwned = false;
+let unreachableDismissed = false;
 /** @type {{ selector: string, revision: number } | null} */
 let unrestorableDraftMiss = null;
 let retiredDrafts = loadRetiredDrafts();
@@ -3935,7 +3945,17 @@ endButton.onclick = () => {
 };
 handoffTakeoverButton.onclick = () => location.reload();
 if (outdatedReloadButton) outdatedReloadButton.onclick = () => reloadChromeForOutdatedBanner();
-if (outdatedDismissButton) outdatedDismissButton.onclick = () => setChromeOutdated(false);
+if (outdatedDismissButton) {
+  outdatedDismissButton.onclick = () => {
+    // A dismissed unreachable banner stays dismissed until the stream actually recovers; without
+    // this the next failed reconnect puts it straight back on screen.
+    if (unreachableBannerOwned) {
+      unreachableBannerOwned = false;
+      unreachableDismissed = true;
+    }
+    setChromeOutdated(false);
+  };
+}
 document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
@@ -3998,6 +4018,12 @@ function connectLiveEvents() {
   const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
   socket.addEventListener("open", () => {
     eventReconnectDelayMs = 500;
+    liveEventFailures = 0;
+    unreachableDismissed = false;
+    if (unreachableBannerOwned) {
+      unreachableBannerOwned = false;
+      setChromeOutdated(false);
+    }
     refreshLayoutWarnings();
   });
   socket.addEventListener("message", (message) => {
@@ -4009,9 +4035,21 @@ function connectLiveEvents() {
     }
   });
   socket.addEventListener("close", () => {
+    liveEventFailures += 1;
+    noteLiveEventsUnreachable();
     setTimeout(connectLiveEvents, eventReconnectDelayMs);
     eventReconnectDelayMs = Math.min(eventReconnectDelayMs * 2, 5000);
   });
+}
+
+// Raise the existing banner once the stream has been down long enough to mean it, and never
+// against an ended session or a banner someone else owns. Reconnecting retires it.
+function noteLiveEventsUnreachable() {
+  if (liveEventFailures < LIVE_EVENT_UNREACHABLE_FAILURES) return;
+  if (ended || unreachableDismissed || unreachableBannerOwned) return;
+  if (outdatedBanner && !outdatedBanner.hidden) return;
+  unreachableBannerOwned = true;
+  setChromeOutdated(true, "");
 }
 
 events.set("reload", () => {

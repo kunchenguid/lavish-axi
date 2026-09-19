@@ -2170,21 +2170,30 @@ test("allowsAllHosts detects the '*' opt-out sentinel", () => {
   assert.equal(allowsAllHosts([]), false);
 });
 
-test("serve rejects fast when the bind host is unavailable", async () => {
+test("serve falls back promptly when the bind host is unavailable", async () => {
+  // This used to reject with EADDRNOTAVAIL, which is what took the whole server down whenever a
+  // pinned LAVISH_AXI_HOST was momentarily gone - no listener, and no agent able to heal it. The
+  // property this test has always really guarded is that the attempt stays BOUNDED, so that is
+  // what it asserts now; the fallback's reachability is owned by server-bind-durability.test.js.
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const startedAt = Date.now();
   try {
-    await assert.rejects(
-      serve({
-        port: 0,
-        stateFile: path.join(dir, "state.json"),
-        version: "9.9.9-test",
-        host: "192.0.2.1",
-      }),
-      (error) => {
-        const code = /** @type {NodeJS.ErrnoException} */ (error).code;
-        return code === "EADDRNOTAVAIL" || code === "EADDRINUSE";
-      },
-    );
+    const server = await serve({
+      port: 0,
+      stateFile: path.join(dir, "state.json"),
+      version: "9.9.9-test",
+      env: {},
+      detectTailscale: async () => null,
+      host: "192.0.2.1",
+      log: () => {},
+      idleTimeoutMs: null,
+    });
+    try {
+      assert.deepEqual(server.hosts, ["127.0.0.1"]);
+      assert.ok(Date.now() - startedAt < 5000, "the bind retry budget must stay bounded");
+    } finally {
+      await server.close();
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
