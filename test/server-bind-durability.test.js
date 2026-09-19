@@ -31,6 +31,44 @@ async function writeArtifact(dir) {
   return artifact;
 }
 
+test("a degraded bind reports network_stale only once the requested address is back", async () => {
+  await withTempDir(async (dir) => {
+    /** @type {string[]} */
+    let present = [];
+    const server = await serve({
+      port: 0,
+      stateFile: path.join(dir, "state.json"),
+      version: "9.9.9-test",
+      env: { LAVISH_AXI_HOST: UNBINDABLE_HOST },
+      networkInterfaces: () => ({
+        mock: present.map((address) => ({ address, family: "IPv4", internal: false })),
+      }),
+      log: () => {},
+      idleTimeoutMs: null,
+    });
+    try {
+      assert.deepEqual(server.hosts, ["127.0.0.1"]);
+
+      const stillGone = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+        response.json(),
+      );
+      assert.equal(stillGone.ok, true);
+      assert.equal(stillGone.network_stale, undefined);
+
+      present = [UNBINDABLE_HOST];
+      const recovered = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+        response.json(),
+      );
+      assert.equal(recovered.network_stale, true);
+
+      const ordinary = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json());
+      assert.equal(ordinary.network_stale, undefined);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 test("a sole unbindable host falls back to loopback instead of leaving no listener", async () => {
   await withTempDir(async (dir) => {
     const artifact = await writeArtifact(dir);

@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces as listOsNetworkInterfaces } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -289,6 +289,7 @@ export async function serve({
   allowedHosts,
   detectTailscale: detectTailscaleFn,
   lookupHost,
+  networkInterfaces: listInterfaces = listOsNetworkInterfaces,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 } = {}) {
   // Keep the transport dependency off fast metadata paths such as `--version`.
@@ -306,6 +307,7 @@ export async function serve({
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
   let tailscalePhoneReady = false;
+  let unboundRequestedHosts = [];
   let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
   const app = express();
@@ -406,6 +408,18 @@ export async function serve({
     client.sendEvent("agent-presence", { state: computePresence(key, activePolls, deliveredFeedback) });
     // A connection that attaches after the live end event still needs the terminal snapshot.
     if (session?.status === "ended") client.sendEvent("ended", { ended_by: session.ended_by || null });
+  }
+
+  function requestedBindIsRecoverable() {
+    if (unboundRequestedHosts.length === 0) return false;
+    const present = localInterfaceAddresses(listInterfaces);
+    return unboundRequestedHosts.some((listenHost) => present.has(listenHost));
+  }
+
+  async function reconcileNetwork() {
+    if (requestedBindIsRecoverable()) return true;
+    if (!(autoTailscale && typeof detect === "function")) return false;
+    return reconcileTailscaleNetwork();
   }
 
   async function reconcileTailscaleNetwork() {
@@ -634,10 +648,7 @@ export async function serve({
       res.status(503).json({ ok: false, app: "lavish-axi", version });
       return;
     }
-    const networkStale =
-      req.query.reconcile_network === "1" && autoTailscale && typeof detect === "function"
-        ? await reconcileTailscaleNetwork()
-        : false;
+    const networkStale = req.query.reconcile_network === "1" ? await reconcileNetwork() : false;
     res.json({
       ok: true,
       app: "lavish-axi",
@@ -1786,6 +1797,9 @@ export async function serve({
       lastBindError ? { cause: lastBindError } : undefined,
     );
   }
+  // Requested listeners that never bound. Reconciliation reports stale only when one of these
+  // addresses is present on a local interface again - not while it is still gone.
+  unboundRequestedHosts = listenHosts.filter((listenHost) => !boundHosts.includes(listenHost));
   // Session URLs must name somewhere that is actually listening, so a fallback moves the link host
   // to loopback unless the operator named one explicitly.
   if (loopbackFallback) {
@@ -1996,6 +2010,20 @@ function tailscaleNetworkKey(tailscale) {
   if (tailscale.warning) return "incomplete";
   if (!tailscale.ipv4 || !tailscale.magicDnsName) return "incomplete";
   return `up\n${tailscale.ipv4}\n${tailscale.magicDnsName}`;
+}
+
+function localInterfaceAddresses(listInterfaces) {
+  const addresses = new Set();
+  try {
+    for (const entries of Object.values(listInterfaces() || {})) {
+      for (const entry of entries || []) {
+        if (typeof entry?.address === "string" && entry.address) addresses.add(entry.address);
+      }
+    }
+  } catch {
+    return addresses;
+  }
+  return addresses;
 }
 
 function wantsHtml(req) {
