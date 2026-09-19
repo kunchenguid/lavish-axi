@@ -52,7 +52,7 @@ import {
 } from "./plugin.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
-import { installServerStdioTimestamps, resolveDesignAssetPath, serve } from "./server.js";
+import { resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { generateSharePassword } from "./share-password.js";
 import { initDefaultTelemetry } from "./telemetry.js";
@@ -1518,7 +1518,6 @@ function deepEqual(a, b) {
 }
 
 async function serverCommand(args) {
-  installServerStdioTimestamps();
   const port = Number(flagValue(args, "--port") || defaultPort());
   const debug = args.includes("--verbose") || process.env.LAVISH_AXI_DEBUG === "1";
   const server = await serve({ port, stateFile: stateFile(), version: VERSION, debug });
@@ -1801,14 +1800,14 @@ async function startServer(port) {
   }
 }
 
-// The detached server child must point at a node-executable entry that actually invokes
-// run(). In source layout that's `../bin/lavish-axi.js` (which calls run on import). In the
-// published bundle, only `dist/cli.mjs` ships and it self-invokes via the bundled bin
-// wrapper. Pick whichever exists.
+// The detached server child must stamp stdio before evaluating the CLI. In source layout that
+// is `../bin/lavish-axi-server.js`. In the published bundle only `dist/` ships, so the sibling
+// `server.mjs` bootstrap is the entry. Ordinary user-facing commands still use `bin/lavish-axi.js`
+// / `dist/cli.mjs`.
 export function resolveServerEntry() {
-  const binEntry = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
-  if (existsSync(binEntry)) return binEntry;
-  return fileURLToPath(import.meta.url);
+  const sourceEntry = fileURLToPath(new URL("../bin/lavish-axi-server.js", import.meta.url));
+  if (existsSync(sourceEntry)) return sourceEntry;
+  return fileURLToPath(new URL("./server.mjs", import.meta.url));
 }
 
 /**

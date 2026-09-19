@@ -2773,14 +2773,13 @@ test("server spawn options can persist detached server output to a log fd", () =
 });
 
 test("server entry resolves to a node-executable script that actually invokes run()", () => {
-  // Running from source, the entry must be `bin/lavish-axi.js` (the only file in the
-  // source tree that calls run() on import). In the published bundle only `dist/cli.mjs`
-  // ships - it embeds the bin wrapper so it self-invokes. Either way, spawning the entry
+  // Running from source, the detached entry must be `bin/lavish-axi-server.js` so stdio is
+  // stamped before the CLI module is evaluated. In the published bundle only `dist/` ships,
+  // so resolveServerEntry falls back to `dist/server.mjs`. Either way, spawning the entry
   // with `node <entry> server` must boot the server, not silently load the module and exit.
   const entry = resolveServerEntry();
   assert.ok(existsSync(entry), `server entry must exist on disk, got: ${entry}`);
-  // From source: bin/lavish-axi.js is present and preferred.
-  assert.equal(entry, fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)));
+  assert.equal(entry, fileURLToPath(new URL("../bin/lavish-axi-server.js", import.meta.url)));
 });
 
 test("local built CLI opens force a server restart while source and installed runs do not", () => {

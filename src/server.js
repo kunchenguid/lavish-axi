@@ -53,6 +53,7 @@ import {
 } from "./export-bundle.js";
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
+import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
   bindHost,
@@ -79,6 +80,12 @@ import {
   sweepAttachments,
   writeAttachment,
 } from "./attachment-store.js";
+
+export {
+  createTimestampedWrite,
+  formatServerLogLine,
+  installServerStdioTimestamps,
+} from "./server-log.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -244,56 +251,6 @@ export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = D
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-/**
- * Stamp a server log line with a UTC timestamp. server.log is append-only across restarts, so an
- * undated line cannot be correlated with an outage after the fact.
- * @param {string} line
- * @param {Date} [now]
- * @returns {string}
- */
-export function formatServerLogLine(line, now = new Date()) {
-  return `${now.toISOString()} ${line}`;
-}
-
-let serverStdioTimestamped = false;
-
-export function createTimestampedWrite(write, now = () => new Date()) {
-  let atLineStart = true;
-  return function timestampedWrite(chunk, encoding, callback) {
-    let enc = encoding;
-    let cb = callback;
-    if (typeof encoding === "function") {
-      cb = encoding;
-      enc = undefined;
-    }
-    const str = chunkToString(chunk, enc);
-    let out = "";
-    for (let i = 0; i < str.length; i += 1) {
-      if (atLineStart) {
-        out += formatServerLogLine("", now());
-        atLineStart = false;
-      }
-      const ch = str[i];
-      out += ch;
-      if (ch === "\n") atLineStart = true;
-    }
-    return write(out, enc, cb);
-  };
-}
-
-export function installServerStdioTimestamps(now = () => new Date()) {
-  if (serverStdioTimestamped) return;
-  serverStdioTimestamped = true;
-  process.stdout.write = createTimestampedWrite(process.stdout.write.bind(process.stdout), now);
-  process.stderr.write = createTimestampedWrite(process.stderr.write.bind(process.stderr), now);
-}
-
-function chunkToString(chunk, encoding) {
-  if (typeof chunk === "string") return chunk;
-  if (Buffer.isBuffer(chunk)) return chunk.toString(typeof encoding === "string" ? encoding : "utf8");
-  return String(chunk);
-}
-
 // A detached server should not live forever. When no browser chrome or agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
 // `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
@@ -370,7 +327,7 @@ export async function serve({
   const writeLog =
     typeof log === "function"
       ? log
-      : (line) => process.stderr.write(`${serverStdioTimestamped ? line : formatServerLogLine(line)}\n`);
+      : (line) => process.stderr.write(`${serverStdioIsTimestamped() ? line : formatServerLogLine(line)}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   if (networkWarning) writeLog(`[lavish] WARNING: ${networkWarning}`);
   let publicPort = port;

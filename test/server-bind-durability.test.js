@@ -7,15 +7,15 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import WebSocket from "ws";
 
-import { findRunningServer, run, serverBaseUrls, VERSION } from "../src/cli.js";
+import { findRunningServer, resolveServerEntry, run, serverBaseUrls, VERSION } from "../src/cli.js";
 import { createTimestampedWrite, formatServerLogLine, serve } from "../src/server.js";
 
-const BIN = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+const SERVER_ENTRY = resolveServerEntry();
 
 // 192.0.2.0/24 is TEST-NET-1: routable nowhere and assigned to no interface, so binding it fails
 // with EADDRNOTAVAIL exactly the way a pinned Tailscale address does once Tailscale goes down.
@@ -378,6 +378,38 @@ test("stdio timestamps attach only at line starts", () => {
   assert.equal(chunks.join(""), "2026-09-18T23:45:01.234Z hello still\n2026-09-18T23:45:01.234Z next\n");
 });
 
+test("a module-load failure after the stdio writer is installed is timestamped", async () => {
+  await withTempDir(async (dir) => {
+    const thrower = path.join(dir, "throw.mjs");
+    await writeFile(thrower, "throw new Error('cli-load-failed');\n");
+    const boot = path.join(dir, "boot.mjs");
+    const serverLog = pathToFileURL(fileURLToPath(new URL("../src/server-log.js", import.meta.url))).href;
+    await writeFile(
+      boot,
+      `import { installServerStdioTimestamps } from ${JSON.stringify(serverLog)};
+installServerStdioTimestamps();
+try {
+  await import(${JSON.stringify(pathToFileURL(thrower).href)});
+} catch (error) {
+  console.error(error);
+  process.exitCode = 1;
+}
+`,
+    );
+    const logFile = path.join(dir, "out.log");
+    const fd = openSync(logFile, "a");
+    try {
+      const child = spawn(process.execPath, [boot], { stdio: ["ignore", fd, fd] });
+      await once(child, "exit");
+    } finally {
+      closeSync(fd);
+    }
+    const log = await readFile(logFile, "utf8");
+    assert.match(log, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /m);
+    assert.match(log, /cli-load-failed/);
+  });
+});
+
 test("a detached server crash writes a timestamped line to server.log", async () => {
   await withTempDir(async (dir) => {
     const squatter = createServer();
@@ -386,7 +418,7 @@ test("a detached server crash writes a timestamped line to server.log", async ()
     const logFile = path.join(dir, "server.log");
     const fd = openSync(logFile, "a");
     try {
-      const child = spawn(process.execPath, [BIN, "server", "--port", String(occupiedPort)], {
+      const child = spawn(process.execPath, [SERVER_ENTRY, "server", "--port", String(occupiedPort)], {
         env: {
           ...process.env,
           LAVISH_AXI_STATE_DIR: dir,
