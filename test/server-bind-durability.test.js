@@ -9,7 +9,7 @@ import test from "node:test";
 
 import WebSocket from "ws";
 
-import { findRunningServer, serverBaseUrls } from "../src/cli.js";
+import { ensureServer, findRunningServer, serverBaseUrls } from "../src/cli.js";
 import { formatServerLogLine, serve } from "../src/server.js";
 
 // 192.0.2.0/24 is TEST-NET-1: routable nowhere and assigned to no interface, so binding it fails
@@ -67,6 +67,37 @@ test("a degraded bind reports network_stale only once the requested address is b
       await server.close();
     }
   });
+});
+
+test("one invocation replaces a stale server only once even if health stays stale", async () => {
+  const stale = { ok: true, app: "lavish-axi", version: "0.1.4", network_stale: true };
+  const older = { ok: true, app: "lavish-axi", version: "0.1.3" };
+
+  async function countReplacements(initialHealth) {
+    let starts = 0;
+    let shutdowns = 0;
+    let probes = 0;
+    await ensureServer({
+      currentVersion: "0.1.4",
+      port: 4387,
+      findRunningServer: async () => {
+        probes += 1;
+        if (probes === 1) return { baseUrl: "http://127.0.0.1:4387", health: initialHealth };
+        return { baseUrl: "http://127.0.0.1:4387", health: stale };
+      },
+      startServer: async () => {
+        starts += 1;
+      },
+      requestShutdown: async () => {
+        shutdowns += 1;
+      },
+      waitForPortFree: async () => true,
+    });
+    return { starts, shutdowns };
+  }
+
+  assert.deepEqual(await countReplacements(stale), { starts: 1, shutdowns: 1 });
+  assert.deepEqual(await countReplacements(older), { starts: 2, shutdowns: 2 });
 });
 
 test("an occupied requested address does not report network_stale after loopback fallback", async () => {

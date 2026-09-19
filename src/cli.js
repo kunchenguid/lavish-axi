@@ -1609,43 +1609,56 @@ async function probeHealth(healthFetcher, baseUrl, { reconcileNetwork, timeoutMs
 
 // `reloadKey` names the session this invocation is about to open. A version-driven replacement
 // reloads that chrome only; every other open review page is told it is outdated and left alone.
-async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
-  const port = defaultPort();
-  const { baseUrl, health: existing } = await findRunningServer(port, { reconcileNetwork: true });
-  if (existing && !shouldRestartServer(VERSION, existing, forceRestart)) {
+export async function ensureServer({
+  forceRestart = false,
+  reloadKey = "",
+  currentVersion = VERSION,
+  port = defaultPort(),
+  findRunningServer: findServer = findRunningServer,
+  startServer: starter = startServer,
+  requestShutdown: shutdownRequester = requestShutdown,
+  waitForPortFree: portFreeWaiter = waitForPortFree,
+  killProcessOnPort: portKiller = killProcessOnPort,
+  processMatchesLavish = processOnPortMatchesLavish,
+} = {}) {
+  const { baseUrl, health: existing } = await findServer(port, { reconcileNetwork: true });
+  if (existing && !shouldRestartServer(currentVersion, existing, forceRestart)) {
     return baseUrl;
   }
   if (existing) {
-    if (!(await canControlServerOnPort(port, existing, processOnPortMatchesLavish))) {
+    if (!(await canControlServerOnPort(port, existing, processMatchesLavish))) {
       throw new AxiError(`Port ${port} is occupied by a non-Lavish server`, "SERVER_ERROR", [
         `Stop the process using port ${port}, or set LAVISH_AXI_PORT to another port`,
       ]);
     }
     // Stale server from an older release is squatting on the port. Ask it to shut down
     // gracefully so the upgraded client doesn't keep handing users an old chrome.
-    await requestShutdown(baseUrl, { reloadKey, reason: serverReplacementReason(VERSION, existing, forceRestart) });
-    const freed = await waitForPortFree(baseUrl, 2000);
+    await shutdownRequester(baseUrl, {
+      reloadKey,
+      reason: serverReplacementReason(currentVersion, existing, forceRestart),
+    });
+    const freed = await portFreeWaiter(baseUrl, 2000);
     if (!freed) {
       // Pre-handshake servers (any release older than this change) don't expose /shutdown
       // so the POST 404'd. Fall back to SIGTERM by PID so the very first upgrade still
       // works, then keep waiting.
-      if (shouldKillProcessOnPort(VERSION, existing)) {
-        killProcessOnPort(port);
-        await waitForPortFree(baseUrl, 3000);
+      if (shouldKillProcessOnPort(currentVersion, existing)) {
+        portKiller(port);
+        await portFreeWaiter(baseUrl, 3000);
       }
     }
   }
-  await startServer(port);
-  let networkRestarted = false;
+  await starter(port);
+  let networkRestarted = existing?.network_stale === true && existing.app === "lavish-axi";
   let deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const { baseUrl: liveUrl, health } = await findRunningServer(port, { reconcileNetwork: true });
-    if (health && !shouldRestartServer(VERSION, health)) return liveUrl;
+    const { baseUrl: liveUrl, health } = await findServer(port, { reconcileNetwork: true });
+    if (health && !shouldRestartServer(currentVersion, health)) return liveUrl;
     if (health?.network_stale === true && health.app === "lavish-axi") {
       if (networkRestarted) return liveUrl;
-      await requestShutdown(liveUrl, { reloadKey, reason: "" });
-      if (!(await waitForPortFree(liveUrl, 3000))) break;
-      await startServer(port);
+      await shutdownRequester(liveUrl, { reloadKey, reason: "" });
+      if (!(await portFreeWaiter(liveUrl, 3000))) break;
+      await starter(port);
       networkRestarted = true;
       deadline = Date.now() + 5000;
       continue;
