@@ -747,7 +747,7 @@ export async function serve({
       const streamHeartbeat = timeoutMs === null;
       let heartbeat = null;
       if (streamHeartbeat) {
-        res.status(200).type("application/json");
+        res.status(200).type("application/json").set("Lavish-Poll-State", "listening");
         res.write(" ");
         heartbeat = setInterval(() => {
           if (!res.writableEnded) res.write(" ");

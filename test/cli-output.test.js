@@ -33,7 +33,9 @@ import {
   detectInvokingAgent,
   fetchJson,
   getCommandHelp,
+  herdrPollChimeEnabled,
   normalizeArgv,
+  notifyHerdrPollReady,
   resolveShareRequest,
   pollInterruptedText,
   pollWaitBannerText,
@@ -2159,6 +2161,52 @@ test("poll wait messages tell watching agents the silence is normal", () => {
   assert.match(interrupted, /user may still be reviewing/);
   assert.match(interrupted, /lavish-axi poll \/tmp\/report\.html/);
   assert.match(interrupted, /feedback remains queued until delivery/);
+});
+
+test("Herdr poll chime is disabled unless both Lavish and Herdr opt in", () => {
+  assert.equal(herdrPollChimeEnabled({}), false);
+  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1" }), false);
+  assert.equal(herdrPollChimeEnabled({ LAVISH_AXI_HERDR_CHIME: "1" }), false);
+  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "0" }), false);
+  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" }), true);
+});
+
+test("Herdr poll chime requests attention without making notification failure fatal", () => {
+  const calls = [];
+  const notified = notifyHerdrPollReady({
+    env: { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" },
+    runner(command, args, options) {
+      calls.push({ command, args, options });
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(notified, true);
+  assert.deepEqual(calls, [
+    {
+      command: "herdr",
+      args: [
+        "notification",
+        "show",
+        "Lavish review ready",
+        "--body",
+        "The artifact is open and Lavish is polling for your feedback.",
+        "--sound",
+        "request",
+      ],
+      options: { stdio: "ignore", timeout: 2_000 },
+    },
+  ]);
+
+  assert.equal(
+    notifyHerdrPollReady({
+      env: { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" },
+      runner() {
+        throw new Error("Herdr unavailable");
+      },
+    }),
+    false,
+  );
 });
 
 test("poll wait reporter writes a banner immediately and heartbeats on an interval", async () => {

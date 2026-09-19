@@ -3188,6 +3188,7 @@ test("long-poll sends heartbeat bytes before feedback arrives", async () => {
       fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send headers")), 500)),
     ]);
+    assert.equal(res.headers.get("lavish-poll-state"), "listening");
     const reader = res.body.getReader();
     try {
       const decoder = new TextDecoder();
@@ -5032,6 +5033,7 @@ test("immediate poll delivery leaves presence working and preserves the next sen
       body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
     });
     const immediate = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+    assert.equal(immediate.headers.get("lavish-poll-state"), null);
     assert.deepEqual(
       (await immediate.json()).prompts.map((prompt) => prompt.prompt),
       ["hello"],
@@ -5052,6 +5054,7 @@ test("immediate poll delivery leaves presence working and preserves the next sen
     assert.equal(submitted.status, 200);
 
     const nextPoll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    assert.equal(nextPoll.headers.get("lavish-poll-state"), null);
     const nextFeedback = await nextPoll.json();
     assert.equal(nextFeedback.status, "feedback");
     assert.deepEqual(
