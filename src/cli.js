@@ -400,19 +400,18 @@ async function pollCommand(args) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", ["Run `lavish-axi poll <html-file>`"]);
   }
   const ownerFlag = inspectValueFlag(args, "--owner");
-  if (ownerFlag.present && (!ownerFlag.value || ownerFlag.value.startsWith("-"))) {
-    throw new AxiError("--owner requires a non-empty label", "VALIDATION_ERROR", [
-      "Pass `--owner <label>` to identify the process listening for feedback",
-    ]);
+  const owner = ownerFlag.present ? String(ownerFlag.value || "").trim() : null;
+  if (ownerFlag.present && (!owner || owner.startsWith("-") || owner.toLowerCase() === "none")) {
+    throw new AxiError(
+      owner?.toLowerCase() === "none" ? "--owner none is reserved" : "--owner requires a non-empty label",
+      "VALIDATION_ERROR",
+      ["Pass `--owner <label>` to identify the process listening for feedback"],
+    );
   }
-  const owner = ownerFlag.present ? ownerFlag.value.trim() : null;
   const takeover = args.includes("--takeover");
   const agentReply = await resolveAgentReply(args);
   const absolute = await canonicalFile(file);
   const baseUrl = await ensureServer();
-  if (agentReply) {
-    await postJson(`${baseUrl}/api/${sessionKey(absolute)}/agent-reply`, { text: agentReply });
-  }
   const timeoutMs = flagValue(args, "--timeout-ms");
   const query = new URLSearchParams({ file: absolute });
   if (timeoutMs) query.set("timeoutMs", timeoutMs);
@@ -442,8 +441,16 @@ async function pollCommand(args) {
         narrateTicks: shouldNarratePollWaitTicks({ isTTY: process.stderr.isTTY }),
       });
   try {
+    const request = agentReply
+      ? {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ agent_reply: agentReply }),
+        }
+      : {};
     const response = await fetchJson(`${baseUrl}/api/poll?${query}`, {
-      retries: 3,
+      ...request,
+      retries: agentReply ? 0 : 3,
       retryDelayMs: 500,
       onResponse: (pollResponse) => {
         if (pollResponse.headers.get(POLL_STATE_HEADER) === "listening") notifyHerdrPollReady();
@@ -1598,7 +1605,16 @@ async function serverCommand(args) {
 
 async function visibleSessions() {
   const store = new SessionStore(stateFile());
-  return (await store.listSessions()).filter((session) => session.status !== "ended");
+  const sessions = (await store.listSessions()).filter((session) => session.status !== "ended");
+  const { health } = await findRunningServer(defaultPort());
+  const listeners = new Map(
+    Array.isArray(health?.listeners)
+      ? health.listeners
+          .filter((listener) => listener && typeof listener.key === "string")
+          .map((listener) => [listener.key, listener.label || "agent-listener"])
+      : [],
+  );
+  return sessions.map((session) => ({ ...session, listener: listeners.get(session.key) || "none" }));
 }
 
 async function assertHtmlFile(file) {
@@ -1893,11 +1909,22 @@ export function createServerSpawnOptions(logFd = null) {
   };
 }
 
-export async function fetchJson(url, { retries = 0, retryDelayMs = 250, onResponse = null } = {}) {
+/**
+ * @param {string} url
+ * @param {{ retries?: number, retryDelayMs?: number, onResponse?: ((response: Response) => void) | null, method?: string, headers?: Record<string, string>, body?: string }} [options]
+ */
+export async function fetchJson(
+  url,
+  { retries = 0, retryDelayMs = 250, onResponse = null, method = "GET", headers, body } = {},
+) {
   let response;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      response = await fetch(url);
+      response = await fetch(url, {
+        method,
+        ...(headers ? { headers } : {}),
+        ...(body === undefined ? {} : { body }),
+      });
       break;
     } catch (error) {
       if (error instanceof AxiError) throw error;

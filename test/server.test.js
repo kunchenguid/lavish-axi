@@ -4606,6 +4606,7 @@ test("send-and-end prompt submissions wake active polls with ended attribution",
       assert.equal(feedback.session_ended, true);
       assert.equal(feedback.ended_by, "user");
       assert.equal(feedback.prompts.length, 1);
+      assert.equal(await presence.next(), "working");
       assert.equal(await presence.next(), "waiting");
 
       const ended = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
@@ -4829,8 +4830,13 @@ test("exclusive listener ownership rejects a loser and reports a takeover", asyn
     const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
+    const health = await fetch(`${base}/health`).then((response) => response.json());
+    assert.deepEqual(
+      health.listeners.map((listener) => listener.label),
+      ["worker-7"],
+    );
     const state = JSON.parse(await readFile(stateFile, "utf8"));
-    assert.equal(state.sessions[key].listener, "worker-7");
+    assert.equal("listener" in state.sessions[key], false);
     const refused = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
     assert.equal(refused.status, 409);
     const refusedBody = await refused.json();
@@ -4880,6 +4886,94 @@ test("owner-labeled listeners publish external presence instead of an idle capta
     } finally {
       await stream.close();
     }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("bare polls have a visible agent listener identity and none is reserved", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const controller = new AbortController();
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }).catch(
+      (error) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const health = await fetch(`${base}/health`).then((response) => response.json());
+    assert.equal(health.listeners.find((listener) => listener.key === key).label, "agent-listener");
+    const conflict = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
+    assert.equal((await conflict.json()).holder.label, "agent-listener");
+    const reserved = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=none&timeoutMs=0`);
+    assert.equal(reserved.status, 400);
+    assert.equal((await reserved.json()).code, "VALIDATION_ERROR");
+    controller.abort();
+    await poll;
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a refused reply poll does not publish its reply before takeover", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  const stateFile = path.join(dir, "state.json");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const firstController = new AbortController();
+    const firstPoll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`, {
+      signal: firstController.signal,
+    }).catch((error) => error);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const refused = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent_reply: "must not publish" }),
+    });
+    assert.equal(refused.status, 409);
+    const stateAfterRefusal = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(
+      stateAfterRefusal.sessions[key].chat?.some((entry) => entry.role === "agent"),
+      false,
+    );
+
+    const takeover = await fetch(
+      `${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1&timeoutMs=1`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent_reply: "published once" }),
+      },
+    );
+    assert.deepEqual(await takeover.json(), { status: "waiting" });
+    const replaced = await (await firstPoll).json();
+    assert.equal(replaced.code, "LISTENER_REPLACED");
+    const stateAfterTakeover = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.deepEqual(
+      stateAfterTakeover.sessions[key].chat.filter((entry) => entry.role === "agent").map((entry) => entry.text),
+      ["published once"],
+    );
+    firstController.abort();
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -5930,6 +6024,7 @@ test("immediate send-and-end delivery clears working presence without an active 
       const feedback = await immediate.json();
       assert.equal(feedback.status, "feedback");
       assert.equal(feedback.session_ended, true);
+      assert.equal(await presence.next(), "working");
       assert.equal(await presence.next(), "waiting");
     } finally {
       await presence.close();
