@@ -450,7 +450,9 @@ async function pollCommand(args) {
       : {};
     const response = await fetchJson(`${baseUrl}/api/poll?${query}`, {
       ...request,
-      retries: agentReply ? 0 : 3,
+      // Poll ownership is claimed before the response is available. Retrying a transport failure
+      // can leave the first claim alive and make the retry reject itself as LISTENER_ACTIVE.
+      retries: 0,
       retryDelayMs: 500,
       onResponse: (pollResponse) => {
         if (pollResponse.headers.get(POLL_STATE_HEADER) === "listening") notifyHerdrPollReady();
