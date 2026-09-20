@@ -441,13 +441,14 @@ async function pollCommand(args) {
         narrateTicks: shouldNarratePollWaitTicks({ isTTY: process.stderr.isTTY }),
       });
   try {
-    const request = agentReply
-      ? {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ agent_reply: agentReply }),
-        }
-      : {};
+    const request =
+      agentReply || takeover
+        ? {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(agentReply ? { agent_reply: agentReply } : {}),
+          }
+        : {};
     const response = await fetchJson(`${baseUrl}/api/poll?${query}`, {
       ...request,
       // Poll ownership is claimed before the response is available. Retrying a transport failure

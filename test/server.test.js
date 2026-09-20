@@ -4844,8 +4844,17 @@ test("exclusive listener ownership rejects a loser and reports a takeover", asyn
     assert.equal(refusedBody.holder.label, "worker-7");
     assert.equal(typeof refusedBody.holder.age_ms, "number");
 
+    const rejectedGet = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1`);
+    assert.equal(rejectedGet.status, 405);
+    assert.deepEqual(await rejectedGet.json(), { error: "poll takeover requires POST" });
+    const stillHeld = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-9`);
+    assert.equal((await stillHeld.json()).holder.label, "worker-7");
+
     const takeover = new AbortController();
     const replacement = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
       signal: takeover.signal,
     }).catch((error) => error);
     const first = await poll;

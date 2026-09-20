@@ -737,9 +737,15 @@ export async function serve({
   }
 
   const handlePoll = async (req, res, next) => {
-    const agentReply = req.method === "POST" ? String(req.body?.agent_reply || "") : null;
-    if (req.method === "POST" && !agentReply.trim()) {
-      res.status(405).json({ error: "POST /api/poll requires agent_reply" });
+    const takeover = req.query.takeover === "1";
+    const agentReply =
+      req.method === "POST" && req.body?.agent_reply !== undefined ? String(req.body.agent_reply) : null;
+    if (takeover && req.method !== "POST") {
+      res.status(405).json({ error: "poll takeover requires POST" });
+      return;
+    }
+    if (req.method === "POST" && (agentReply === null ? !takeover : !agentReply.trim())) {
+      res.status(405).json({ error: "POST /api/poll requires agent_reply or takeover=1" });
       return;
     }
     // `close` is subscribed before the first `await` and re-checked after the listeners are armed,
@@ -782,7 +788,6 @@ export async function serve({
         return;
       }
       const owner = ownerValue || null;
-      const takeover = req.query.takeover === "1";
       if (hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         detachRequestClose();
         res.status(403).json({ error: "cross-origin poll takeover rejected" });
