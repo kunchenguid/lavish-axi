@@ -80,6 +80,42 @@ export class SessionStore {
     });
   }
 
+  async setListener(key, label) {
+    return this.lock.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return null;
+      session.listener = label || null;
+      await this.writeState(state);
+      return session;
+    });
+  }
+
+  async clearListener(key) {
+    return this.lock.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session || !session.listener) return session || null;
+      session.listener = null;
+      await this.writeState(state);
+      return session;
+    });
+  }
+
+  async clearListeners() {
+    return this.lock.runExclusive(async () => {
+      const state = await this.readState();
+      let changed = false;
+      for (const session of Object.values(state.sessions)) {
+        if (session.listener) {
+          session.listener = null;
+          changed = true;
+        }
+      }
+      if (changed) await this.writeState(state);
+    });
+  }
+
   async upsertSession(file, url) {
     // `canonicalFile` (a realpath) does not touch state, so resolve it before
     // taking the lock and keep only the read-modify-write inside the critical
@@ -100,6 +136,7 @@ export class SessionStore {
       url,
       status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
       pending_prompts: existing.pending_prompts || 0,
+      listener: existing.listener || null,
       prompts: existingPrompts,
       // The warning inbox is durable review state, not deliverable feedback: reopening a session
       // must never silently drop unresolved warnings the user has not triaged yet.
