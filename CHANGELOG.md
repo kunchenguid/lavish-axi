@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.75](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.74...lavish-axi-v0.1.75) (2026-09-20)
+
+
+### Features
+
+* add exclusive visible poll listeners ([#358](https://github.com/kunchenguid/lavish-axi/issues/358)) ([d5ac546](https://github.com/kunchenguid/lavish-axi/commit/d5ac5468e5db3099d08c574c120472c75f5374d2))
+
 ## [0.1.74](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.73...lavish-axi-v0.1.74) (2026-09-20)
 
 
