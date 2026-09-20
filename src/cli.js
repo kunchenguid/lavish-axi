@@ -1942,9 +1942,18 @@ export async function fetchJson(
       // Keep the generic transport error when the server did not send JSON.
     }
     if (payload?.code) {
-      throw new AxiError(payload.error || `Lavish Editor request failed: ${response.status}`, payload.code, [
-        "Use --takeover only when you intend to displace the current listener",
-      ]);
+      const holder = payload.code.startsWith("LISTENER_") && payload.holder;
+      const holderDetail =
+        holder && typeof holder.label === "string" && Number.isFinite(holder.age_ms)
+          ? ` (current listener: ${holder.label}; active for ${Math.max(0, holder.age_ms)}ms)`
+          : "";
+      const error = new AxiError(
+        `${payload.error || `Lavish Editor request failed: ${response.status}`}${holderDetail}`,
+        payload.code,
+        ["Use --takeover only when you intend to displace the current listener"],
+      );
+      if (holder) Object.assign(error, { holder });
+      throw error;
     }
     throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
   }

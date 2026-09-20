@@ -758,6 +758,15 @@ export async function serve({
       requestClosed = true;
       cleanupPoll?.();
     };
+    const onResponseClose = () => {
+      // Once the body has been parsed, a POST request's close event is no longer useful: the
+      // response socket is the authoritative signal for a client that aborts its long-poll.
+      if (req.method === "POST" && !res.writableEnded) {
+        requestClosed = true;
+        cleanupPoll?.();
+      }
+    };
+    res.on("close", onResponseClose);
     const detachRequestClose = () => req.off("close", onRequestClose);
     req.on("close", onRequestClose);
     try {
@@ -775,7 +784,7 @@ export async function serve({
       }
       const owner = ownerValue || null;
       const takeover = req.query.takeover === "1";
-      if (takeover && hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+      if (hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         detachRequestClose();
         res.status(403).json({ error: "cross-origin poll takeover rejected" });
         return;
@@ -785,7 +794,7 @@ export async function serve({
         if (currentHolder && !takeover) return { conflict: listenerConflict(currentHolder, "LISTENER_ACTIVE") };
         const nextHolder = { key, owner, startedAt: Date.now(), replaced: false, replace: null };
         claimedHolder = nextHolder;
-        const priorPresence = computePresence(key, activePolls, deliveredFeedback);
+        const priorPresence = presenceSignature(key, activePolls, deliveredFeedback);
         if (currentHolder) {
           // Install the successor before releasing the old response so its cleanup cannot emit a
           // transient "waiting" state or clear the successor's listener ownership.
@@ -881,6 +890,7 @@ export async function serve({
         refreshIdleTimer();
         cleanupPoll = null;
         detachRequestClose();
+        res.off("close", onResponseClose);
       };
       const respondReplacement = () => {
         if (responding || res.writableEnded) return;
@@ -904,6 +914,14 @@ export async function serve({
           // is only the non-terminal replacement for a poll that would otherwise keep waiting.
           const responseResult = forcedResult && result.status === "waiting" ? forcedResult : result;
           finalSessionEnded = responseResult?.session_ended === true;
+          if (holder.replaced) {
+            if (responseResult.status !== "waiting") await restoreClosedFeedback(key, responseResult);
+            if (!requestClosed && !res.writableEnded) {
+              if (streamHeartbeat) res.end(JSON.stringify(listenerConflict(holder, "LISTENER_REPLACED")));
+              else res.json(listenerConflict(holder, "LISTENER_REPLACED"));
+            }
+            return;
+          }
           if (requestClosed || res.writableEnded) {
             await restoreClosedFeedback(key, responseResult);
             return;
@@ -956,8 +974,10 @@ export async function serve({
         onBrowserDisconnected(key);
         return;
       }
-      const nextPresence = computePresence(key, activePolls, deliveredFeedback);
-      if (nextPresence !== previousPresence) events.emit("agent-presence", key, nextPresence);
+      const nextPresence = presenceSignature(key, activePolls, deliveredFeedback);
+      if (nextPresence !== previousPresence) {
+        events.emit("agent-presence", key, computePresence(key, activePolls, deliveredFeedback));
+      }
       timer = timeoutMs === null ? null : setTimeout(() => respond().catch(handleRespondError), timeoutMs);
     } catch (error) {
       cleanupPoll?.();
@@ -2510,6 +2530,10 @@ function clearFeedbackDelivery(key, activePolls, deliveredFeedback, events) {
 export function computePresence(key, activePolls, deliveredFeedback) {
   if (deliveredFeedback.has(key)) return "working";
   return activePolls.has(key) ? "listening" : "waiting";
+}
+
+function presenceSignature(key, activePolls, deliveredFeedback) {
+  return `${computePresence(key, activePolls, deliveredFeedback)}:${presenceMode(key, activePolls, deliveredFeedback)}`;
 }
 
 export function presenceMode(key, activePolls, deliveredFeedback) {
