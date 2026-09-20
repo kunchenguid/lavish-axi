@@ -15,7 +15,6 @@ function handleFatalServerError(kind, error) {
 }
 
 process.on("uncaughtException", (error) => handleFatalServerError("uncaught exception", error));
-process.on("unhandledRejection", (reason) => handleFatalServerError("unhandled rejection", reason));
 
 try {
   await import("./lavish-axi.js");
