@@ -84,7 +84,7 @@ const POLL_AGENT_REPLY_NEXT_POINTER =
   "The Conversation panel's Markdown subset is in `lavish-axi poll --help` and README.";
 const POLL_VALUE_FLAGS = ["--agent-reply", "--agent-reply-file", "--timeout-ms", "--owner"];
 const AGENT_REPLY_JSON_LIMIT_BYTES = 2 * 1024 * 1024;
-const AGENT_REPLY_JSON_ENVELOPE_BYTES = Buffer.byteLength(JSON.stringify({ text: "" }));
+const AGENT_REPLY_JSON_ENVELOPE_BYTES = Buffer.byteLength(JSON.stringify({ agent_reply: "" }));
 const AGENT_REPLY_INPUT_LIMIT_BYTES = AGENT_REPLY_JSON_LIMIT_BYTES - AGENT_REPLY_JSON_ENVELOPE_BYTES;
 const AGENT_REPLY_LIMIT_LABEL = "2 MB JSON request limit";
 const POLL_STATE_HEADER = "lavish-poll-state";
@@ -453,7 +453,6 @@ async function pollCommand(args) {
       // Poll ownership is claimed before the response is available. Retrying a transport failure
       // can leave the first claim alive and make the retry reject itself as LISTENER_ACTIVE.
       retries: 0,
-      retryDelayMs: 500,
       onResponse: (pollResponse) => {
         if (pollResponse.headers.get(POLL_STATE_HEADER) === "listening") notifyHerdrPollReady();
       },
@@ -2067,7 +2066,7 @@ async function readAgentReplyStream(stream) {
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks, bytes).toString("utf8");
-  if (Buffer.byteLength(JSON.stringify({ text })) > AGENT_REPLY_JSON_LIMIT_BYTES) {
+  if (Buffer.byteLength(JSON.stringify({ agent_reply: text })) > AGENT_REPLY_JSON_LIMIT_BYTES) {
     throw agentReplyTooLargeError();
   }
   return text;

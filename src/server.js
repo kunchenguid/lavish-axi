@@ -657,7 +657,6 @@ export async function serve({
       listeners: [...activePolls].map(([key, holder]) => ({
         key,
         label: listenerLabel(holder),
-        age_ms: Math.max(0, Date.now() - holder.startedAt),
       })),
     });
   });

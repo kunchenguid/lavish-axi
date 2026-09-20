@@ -211,7 +211,9 @@ test("resolveAgentReply reads --agent-reply-file and stdin, and refuses the unsa
 
 test("poll rejects over-limit agent reply files and stdin with an actionable error", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-agent-reply-limit-"));
-  const oversizedReply = Buffer.alloc(2 * 1024 * 1024, "a");
+  const jsonLimitBytes = 2 * 1024 * 1024;
+  const envelopeBytes = Buffer.byteLength(JSON.stringify({ agent_reply: "" }));
+  const oversizedReply = Buffer.alloc(jsonLimitBytes - envelopeBytes + 1, "a");
   const replyFile = path.join(dir, "oversized.md");
   await writeFile(replyFile, oversizedReply);
   const env = {
