@@ -505,7 +505,7 @@ net.Server.prototype.emit = function (event, ...args) {
       const child = spawn(process.execPath, [SERVER_ENTRY, "server", "--port", String(port)], {
         env: {
           ...process.env,
-          NODE_OPTIONS: `--import=${preload}`,
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
           LAVISH_AXI_STATE_DIR: dir,
           LAVISH_AXI_HOST: "127.0.0.1",
           LAVISH_AXI_NO_OPEN: "1",
@@ -554,7 +554,7 @@ test("an uncaught server exception is timestamped before deterministic exit", { 
     const child = spawn(process.execPath, [SERVER_ENTRY, "server", "--port", "0"], {
       env: {
         ...process.env,
-        NODE_OPTIONS: `--import=${preload}`,
+        NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
         LAVISH_AXI_STATE_DIR: dir,
         LAVISH_AXI_HOST: "127.0.0.1",
         LAVISH_AXI_NO_OPEN: "1",
