@@ -1739,7 +1739,9 @@ export async function serve({
     let retryIndex = 0;
     while (true) {
       try {
-        const httpServer = await listenHttp(app, boundPort, listenHost);
+        const httpServer = await listenHttp(app, boundPort, listenHost, (error) => {
+          writeLog(`[lavish] HTTP server error: ${error instanceof Error ? error.message : String(error)}`);
+        });
         httpServer.on("upgrade", handleEventUpgrade);
         if (boundPort === 0) boundPort = httpServer.address().port;
         httpServers.push(httpServer);
@@ -1988,15 +1990,20 @@ export async function serve({
   };
 }
 
-function listenHttp(app, port, host) {
+function listenHttp(app, port, host, onRuntimeError) {
   return new Promise((resolve, reject) => {
     const server = createServer(app);
+    let listening = false;
     const onError = (error) => {
-      server.off("listening", onListening);
-      reject(error);
+      if (!listening) {
+        server.off("listening", onListening);
+        reject(error);
+        return;
+      }
+      onRuntimeError?.(error);
     };
     const onListening = () => {
-      server.off("error", onError);
+      listening = true;
       const address = server.address();
       if (address && typeof address === "object" && isWildcardHost(address.address)) {
         server.close(() => reject(new Error(`Refusing all-interfaces listener at ${address.address}`)));
@@ -2004,7 +2011,9 @@ function listenHttp(app, port, host) {
       }
       resolve(server);
     };
-    server.once("error", onError);
+    // Keep this listener after startup: removing it when `listening` fires turns any later server
+    // error into an unhandled EventEmitter error that terminates the detached process silently.
+    server.on("error", onError);
     server.once("listening", onListening);
     // `host` has already been sanitized by resolveListenHosts. Keeping this helper
     // concrete is an important defense: Tailscale reachability must never turn into

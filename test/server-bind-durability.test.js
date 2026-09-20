@@ -477,6 +477,107 @@ test("a detached server crash writes a timestamped line to server.log", async ()
   });
 });
 
+test(
+  "a post-listen HTTP error is logged while the server remains controllably alive",
+  { timeout: 10_000 },
+  async () => {
+    await withTempDir(async (dir) => {
+      const preload = path.join(dir, "post-listen-error.mjs");
+      await writeFile(
+        preload,
+        `import net from "node:net";
+const originalEmit = net.Server.prototype.emit;
+net.Server.prototype.emit = function (event, ...args) {
+  if (event === "listening" && !this.__lavishPostListenRepro) {
+    this.__lavishPostListenRepro = true;
+    setImmediate(() => this.emit("error", new Error("post-listen-repro")));
+  }
+  return originalEmit.call(this, event, ...args);
+};
+`,
+      );
+      const holder = createServer();
+      await new Promise((resolve) => holder.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+      const port = /** @type {{ port: number }} */ (holder.address()).port;
+      await new Promise((resolve) => holder.close(() => resolve(undefined)));
+      const logFile = path.join(dir, "server.log");
+      const fd = openSync(logFile, "a");
+      const child = spawn(process.execPath, [SERVER_ENTRY, "server", "--port", String(port)], {
+        env: {
+          ...process.env,
+          NODE_OPTIONS: `--import=${preload}`,
+          LAVISH_AXI_STATE_DIR: dir,
+          LAVISH_AXI_HOST: "127.0.0.1",
+          LAVISH_AXI_NO_OPEN: "1",
+          LAVISH_AXI_TELEMETRY: "0",
+          LAVISH_AXI_IDLE_TIMEOUT_MS: "off",
+        },
+        stdio: ["ignore", fd, fd],
+      });
+      try {
+        let ready = false;
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          try {
+            const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+            if (health.ok) {
+              ready = true;
+              break;
+            }
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
+        assert.equal(ready, true, "post-listen error must not take down the server");
+        await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST" });
+        const [code] = await once(child, "exit");
+        assert.equal(code, 0);
+      } finally {
+        child.kill();
+        closeSync(fd);
+      }
+      const log = await readFile(logFile, "utf8");
+      assert.match(
+        log,
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[lavish\] HTTP server error: post-listen-repro$/m,
+      );
+    });
+  },
+);
+
+test("an uncaught server exception is timestamped before deterministic exit", { timeout: 10_000 }, async () => {
+  await withTempDir(async (dir) => {
+    const preload = path.join(dir, "uncaught-error.mjs");
+    await writeFile(preload, `setTimeout(() => { throw new Error("uncaught-repro"); }, 200);\n`);
+    const logFile = path.join(dir, "server.log");
+    const fd = openSync(logFile, "a");
+    const child = spawn(process.execPath, [SERVER_ENTRY, "server", "--port", "0"], {
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `--import=${preload}`,
+        LAVISH_AXI_STATE_DIR: dir,
+        LAVISH_AXI_HOST: "127.0.0.1",
+        LAVISH_AXI_NO_OPEN: "1",
+        LAVISH_AXI_TELEMETRY: "0",
+        LAVISH_AXI_IDLE_TIMEOUT_MS: "off",
+      },
+      stdio: ["ignore", fd, fd],
+    });
+    try {
+      const [code] = await once(child, "exit");
+      assert.equal(code, 1);
+    } finally {
+      child.kill();
+      closeSync(fd);
+    }
+    const log = await readFile(logFile, "utf8");
+    assert.match(
+      log,
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[lavish\] uncaught exception: Error: uncaught-repro$/m,
+    );
+  });
+});
+
 test("a shutdown records why it happened", async () => {
   await withTempDir(async (dir) => {
     const logs = [];
