@@ -3,15 +3,13 @@ run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ git
 
 on:
   pull_request:
-    # The gate judges the PR body against the head SHA on body-bearing events.
-    # A push carries no new body to judge but does move the head SHA. The
-    # pipeline pushes before
-    # it writes the deterministic Pipeline section, so a synchronize trigger
-    # pinned a FAILURE check run to the new head for a body the same run was
-    # about to fix. GitHub keeps that failure next to the later edited SUCCESS,
-    # and gh pr checks collapses same-named check runs by startedAt alone, so the
-    # CI monitor could park the run red forever.
-    types: [opened, edited, reopened]
+    # no-mistakes #773 originally dropped synchronize because the pipeline
+    # pushed the head before writing the body attestation, so a synchronize
+    # event pinned a FAILURE check to the new head before the body was rewritten.
+    # Since no-mistakes #994 the pipeline writes the attestation BEFORE it
+    # pushes, so synchronize is now exactly the event that judges a
+    # pipeline-pushed head - hence it is restored under T2.
+    types: [opened, edited, synchronize, reopened]
     branches:
       - main
     # Never create a run for a release-please PR. The job-level author exemption
@@ -25,6 +23,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events
@@ -61,4 +60,4 @@ jobs:
       # pull request this gate is judging. Bumping the pin is a separate,
       # deliberate pull request.
       - name: Verify no-mistakes signature and pipeline attestation in PR body
-        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@f6441c96c352a18b9cadcaef6b6c7017e9ac3970 # v1.80.1
