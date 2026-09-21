@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.76](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.75...lavish-axi-v0.1.76) (2026-09-21)
+
+
+### Features
+
+* **chrome:** add revision legend for agent-declared artifact edits ([#361](https://github.com/kunchenguid/lavish-axi/issues/361)) ([b4e82c6](https://github.com/kunchenguid/lavish-axi/commit/b4e82c63563cc9b4feaf947db53ec44902d10fb8))
+
 ## [0.1.75](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.74...lavish-axi-v0.1.75) (2026-09-20)
 
 
