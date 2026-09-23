@@ -1207,7 +1207,8 @@ export async function stopCommand(args) {
   // A server that fell back to loopback answers there rather than at the requested bind host, and
   // a `stop` that only dials the requested host reports "not-running" while leaving it running.
   // A same-port duplicate at another address is this installation's server too, so it stops as well.
-  const { baseUrl, duplicates } = await findRunningServer(port);
+  const { baseUrl, duplicates, foreign } = await findRunningServer(port);
+  if (foreign) throw otherInstallationError(port, foreign);
   await stopDuplicateServers(duplicates, { reason: "stop" });
   return shutdownServerOnPort(port, { baseUrl, currentVersion: VERSION });
 }
@@ -1220,21 +1221,21 @@ export async function shutdownServerOnPort(
     fetchHealth: healthFetcher = fetchHealth,
     requestShutdown: shutdownRequester = requestShutdown,
     waitForPortFree: portFreeWaiter = waitForPortFree,
-    killProcessOnPort: portKiller = killProcessOnPort,
-    processMatchesLavish = processOnPortMatchesLavish,
+    killServerProcess = killLavishListener,
+    processMatchesLavish = listenerMatchesLavish,
   } = {},
 ) {
   const health = await healthFetcher(baseUrl);
   if (!health) {
     return { server: { status: "not-running", port } };
   }
-  if (!(await canControlServerOnPort(port, health, processMatchesLavish))) {
+  if (!(await canControlServerOnPort(baseUrl, health, processMatchesLavish))) {
     return { server: { status: "not-lavish", port } };
   }
   await shutdownRequester(baseUrl, { reason: "stop" });
   let freed = await portFreeWaiter(baseUrl, 3000);
   if (!freed && shouldKillProcessOnPort(currentVersion, health)) {
-    portKiller(port);
+    if (!killServerProcess(baseUrl)) throw unidentifiedListenerError(baseUrl);
     freed = await portFreeWaiter(baseUrl, 3000);
   }
   return { server: { status: freed ? "stopped" : "stopping", port } };
@@ -1678,10 +1679,25 @@ function serverBaseUrl(host, port) {
   return `http://${hostForUrl(host)}:${port}`;
 }
 
-// A server is this installation's when it shares our state file. Servers from before `state_id`
-// existed cannot say, and are treated as ours: they are the stale daemons an upgrade must retire.
-function isSameInstallation(health) {
-  return typeof health?.state_id !== "string" || health.state_id === stateId();
+// A server is this installation's when it reports our state file. One from before `state_id`
+// existed (0.1.77 and older) cannot say, so it counts as ours only at an address this CLI controls -
+// its configured host or loopback - where replacing it is the upgrade path; anywhere else it may
+// belong to another installation and is never adopted or stopped.
+function isOwnedServer(entry, controlHosts) {
+  if (entry.health.app !== "lavish-axi") return false;
+  if (typeof entry.health.state_id === "string") return entry.health.state_id === stateId();
+  return controlHosts.has(entry.host);
+}
+
+// Another installation's Lavish server at an address this CLI controls is never used, replaced, or
+// stopped: its sessions and state file are not ours.
+function otherInstallationError(port, foreign) {
+  const dir = typeof foreign.health.state_dir === "string" ? foreign.health.state_dir : "an unknown state directory";
+  return new AxiError(
+    `Port ${port} is served by another Lavish installation at ${foreign.host} (state directory ${dir})`,
+    "SERVER_ERROR",
+    [`Set LAVISH_AXI_PORT to another port, or set LAVISH_AXI_STATE_DIR to ${dir} to use that installation`],
+  );
 }
 
 // Returns where a Lavish server actually answered, plus any OTHER Lavish daemon of this
@@ -1699,35 +1715,36 @@ async function findRunningServer(port, { reconcileNetwork = false } = {}) {
     }),
   );
   const found = probed.filter((entry) => entry !== null);
-  // A Lavish server reached only through the interface sweep has to be this installation's to be
-  // adopted: another user's server on another address is not ours to use or replace.
-  const chosen = found.find(
-    (entry) => entry.health.app === "lavish-axi" && (controlHosts.has(entry.host) || isSameInstallation(entry.health)),
-  );
+  const owned = found.filter((entry) => isOwnedServer(entry, controlHosts));
+  const foreign =
+    found.find(
+      (entry) =>
+        controlHosts.has(entry.host) && entry.health.app === "lavish-axi" && !isOwnedServer(entry, controlHosts),
+    ) ?? null;
+  const chosen = owned[0];
   if (!chosen) {
-    const foreign = found.find((entry) => controlHosts.has(entry.host));
-    return foreign
-      ? { baseUrl: foreign.baseUrl, health: foreign.health, duplicates: [] }
-      : { baseUrl: serverBaseUrl(clientHost(), port), health: null, duplicates: [] };
+    const other = found.find((entry) => controlHosts.has(entry.host));
+    return other
+      ? { baseUrl: other.baseUrl, health: other.health, duplicates: [], foreign }
+      : { baseUrl: serverBaseUrl(clientHost(), port), health: null, duplicates: [], foreign };
   }
   let health = chosen.health;
   if (reconcileNetwork) {
     health =
       (await probeHealth(chosen.baseUrl, { reconcileNetwork: true, timeoutMs: HEALTH_RECONCILE_TIMEOUT_MS })) ?? health;
   }
-  return { baseUrl: chosen.baseUrl, health, duplicates: sameInstallationDuplicates(found, chosen) };
+  return { baseUrl: chosen.baseUrl, health, duplicates: ownedDuplicates(owned, chosen), foreign };
 }
 
 // Other Lavish daemons of this installation on the same port. An address the chosen server itself
 // reports as bound is the chosen server, not a duplicate. A server too old to report its addresses
 // is about to be replaced by version, so every other address is retired with it: an old daemon left
 // holding loopback would otherwise make the upgraded server refuse to start.
-function sameInstallationDuplicates(found, chosen) {
+function ownedDuplicates(owned, chosen) {
   const covered = new Set([chosen.host, ...(Array.isArray(chosen.health.hosts) ? chosen.health.hosts : [])]);
   const duplicates = [];
-  for (const entry of found) {
-    if (entry === chosen || entry.health.app !== "lavish-axi" || covered.has(entry.host)) continue;
-    if (!isSameInstallation(entry.health)) continue;
+  for (const entry of owned) {
+    if (entry === chosen || covered.has(entry.host)) continue;
     duplicates.push(entry);
     for (const host of Array.isArray(entry.health.hosts) ? entry.health.hosts : [entry.host]) covered.add(host);
   }
@@ -1746,9 +1763,9 @@ async function stopDuplicateServers(duplicates, { reloadKey = "", reason = "" } 
   }
 }
 
-// Keep the running server, retiring any same-port duplicate first. The reconcile afterwards makes
-// the kept server bind an address the duplicate was holding right away, instead of on its next
-// background retry.
+// Keep the running server, retiring any same-port duplicate first. Only duplicates whose addresses
+// the kept server already requests reach here (`hostsToServe`), and the reconcile afterwards makes
+// it bind an address the duplicate was holding right away, instead of on its next background retry.
 async function adoptServer(baseUrl, duplicates, reloadKey) {
   if (duplicates.length === 0) return baseUrl;
   await stopDuplicateServers(duplicates, { reloadKey });
@@ -1796,6 +1813,16 @@ export function inheritedListenHosts(healthBodies, requiredHosts, inherited = []
   return hosts;
 }
 
+// Every address a kept server has to be asked to serve: this CLI's own, and every address a
+// same-port duplicate serves, so retiring that duplicate never takes its review links with it.
+function hostsToServe(requiredHosts, duplicates) {
+  return inheritedListenHosts(
+    duplicates.map((duplicate) => duplicate.health),
+    [],
+    requiredHosts,
+  );
+}
+
 async function probeHealth(baseUrl, { reconcileNetwork, timeoutMs }) {
   const health = await fetchHealth(baseUrl, { reconcileNetwork, timeoutMs });
   return health && typeof health === "object" ? health : null;
@@ -1806,14 +1833,17 @@ async function probeHealth(baseUrl, { reconcileNetwork, timeoutMs }) {
 async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   const port = defaultPort();
   const requiredHosts = await requiredServerHosts();
-  const { baseUrl, health: existing, duplicates } = await findRunningServer(port, { reconcileNetwork: true });
-  const missingHosts = existing?.app === "lavish-axi" ? missingServerHosts(existing, requiredHosts) : [];
+  const { baseUrl, health: existing, duplicates, foreign } = await findRunningServer(port, { reconcileNetwork: true });
+  if (foreign) throw otherInstallationError(port, foreign);
+  const missingHosts =
+    existing?.app === "lavish-axi" ? missingServerHosts(existing, hostsToServe(requiredHosts, duplicates)) : [];
   if (existing && !shouldRestartServer(VERSION, existing, forceRestart) && missingHosts.length === 0) {
     return adoptServer(baseUrl, duplicates, reloadKey);
   }
   let alsoListen = inheritedListenHosts([existing, ...duplicates.map((duplicate) => duplicate.health)], requiredHosts);
+  let unidentified = "";
   if (existing) {
-    if (!(await canControlServerOnPort(port, existing, processOnPortMatchesLavish))) {
+    if (!(await canControlServerOnPort(baseUrl, existing, listenerMatchesLavish))) {
       throw new AxiError(`Port ${port} is occupied by a non-Lavish server`, "SERVER_ERROR", [
         `Stop the process using port ${port}, or set LAVISH_AXI_PORT to another port`,
       ]);
@@ -1828,8 +1858,8 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       // so the POST 404'd. Fall back to SIGTERM by PID so the very first upgrade still
       // works, then keep waiting.
       if (shouldKillProcessOnPort(VERSION, existing)) {
-        killProcessOnPort(port);
-        await waitForPortFree(baseUrl, 3000);
+        if (killLavishListener(baseUrl)) await waitForPortFree(baseUrl, 3000);
+        else unidentified = baseUrl;
       }
     }
   }
@@ -1842,19 +1872,28 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     typeof existing.version === "string" &&
     existing.version === VERSION;
   let networkRestarted = replacedForNetwork;
-  let versionRestarted = false;
+  let raceRestarted = false;
   let deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const {
       baseUrl: liveUrl,
       health,
       duplicates: liveDuplicates,
+      foreign: liveForeign,
     } = await findRunningServer(port, { reconcileNetwork: true });
-    if (health && !shouldRestartServer(VERSION, health)) return adoptServer(liveUrl, liveDuplicates, reloadKey);
-    // Another daemon of an older release won the port while ours was starting (ours exits when a
-    // Lavish server already owns loopback). Retire it and start once more rather than wait it out.
-    if (health?.app === "lavish-axi" && health.network_stale !== true && !versionRestarted) {
-      versionRestarted = true;
+    if (liveForeign) throw otherInstallationError(port, liveForeign);
+    const liveMissing =
+      health?.app === "lavish-axi" ? missingServerHosts(health, hostsToServe(requiredHosts, liveDuplicates)) : [];
+    // Once is the bound: every replacement carries the hosts of the server it replaces, so two CLIs
+    // that each need their own address converge on one server instead of replacing each other.
+    if (health && !shouldRestartServer(VERSION, health) && (liveMissing.length === 0 || raceRestarted)) {
+      return adoptServer(liveUrl, liveDuplicates, reloadKey);
+    }
+    // Another daemon won the port while ours was starting (ours exits when a Lavish server already
+    // owns loopback) - an older release, or one missing an address this CLI needs. Retire it and
+    // start once more rather than wait it out.
+    if (health?.app === "lavish-axi" && health.network_stale !== true && !raceRestarted) {
+      raceRestarted = true;
       alsoListen = inheritedListenHosts(
         [health, ...liveDuplicates.map((duplicate) => duplicate.health)],
         requiredHosts,
@@ -1879,6 +1918,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     }
     await delay(100);
   }
+  if (unidentified) throw unidentifiedListenerError(unidentified);
   throw new AxiError("Lavish Editor server did not start", "SERVER_ERROR", [
     `Run \`lavish-axi server --port ${port}\` to inspect server startup`,
   ]);
@@ -1924,11 +1964,11 @@ export function shouldKillProcessOnPort(currentVersion, healthBody) {
   return healthBody.version !== currentVersion;
 }
 
-async function canControlServerOnPort(port, healthBody, processMatchesLavish) {
+async function canControlServerOnPort(baseUrl, healthBody, processMatchesLavish) {
   if (!healthBody || typeof healthBody !== "object") return false;
   if (healthBody.app === "lavish-axi") return true;
   if (typeof healthBody.version === "string" && healthBody.version !== "") return false;
-  return processMatchesLavish(port);
+  return processMatchesLavish(baseUrl);
 }
 
 /**
@@ -2008,45 +2048,53 @@ async function waitForPortFree(baseUrl, timeoutMs) {
   return false;
 }
 
-// Last-resort fallback for the bootstrap upgrade case: a pre-handshake server is squatting
-// on the port and doesn't expose /shutdown, so we resolve its PID via lsof and SIGTERM it.
-// macOS/Linux only - Windows users would need to kill manually, but lavish-axi isn't
-// shipped for Windows today.
-function killProcessOnPort(port) {
+// PIDs listening on exactly this server's address and port whose command is Lavish. Other
+// processes can share the port at other addresses, so nothing is identified by port alone.
+// macOS/Linux only (lsof) - lavish-axi isn't shipped for Windows today.
+function lavishListenerPids(baseUrl) {
+  const { hostname, port } = new URL(baseUrl);
   try {
-    const result = spawnSync("lsof", ["-t", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
-    if (result.status !== 0) return;
-    for (const line of result.stdout.split("\n")) {
-      const pid = Number(line.trim());
-      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch {
-          // Process already gone or permission denied - either way nothing we can do.
-        }
-      }
-    }
-  } catch {
-    // lsof missing or unsupported platform - the outer caller will surface SERVER_ERROR.
-  }
-}
-
-function processOnPortMatchesLavish(port) {
-  try {
-    const pids = spawnSync("lsof", ["-t", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
-    if (pids.status !== 0) return false;
-    for (const line of pids.stdout.split("\n")) {
+    const listing = spawnSync("lsof", ["-t", `-iTCP@${hostname}:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+    if (listing.status !== 0) return [];
+    const pids = [];
+    for (const line of listing.stdout.split("\n")) {
       const pid = Number(line.trim());
       if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
       const command = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
-      if (command.status === 0 && /lavish-axi/.test(command.stdout)) {
-        return true;
-      }
+      if (command.status === 0 && /lavish-axi/.test(command.stdout)) pids.push(pid);
     }
+    return pids;
   } catch {
-    return false;
+    return [];
   }
-  return false;
+}
+
+function listenerMatchesLavish(baseUrl) {
+  return lavishListenerPids(baseUrl).length > 0;
+}
+
+// Last-resort fallback for the bootstrap upgrade case: a pre-handshake server is squatting on the
+// port and doesn't expose /shutdown, so its PID is resolved and SIGTERM'd. Reports whether a Lavish
+// process was found to signal.
+function killLavishListener(baseUrl) {
+  const pids = lavishListenerPids(baseUrl);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Process already gone or permission denied - either way nothing we can do.
+    }
+  }
+  return pids.length > 0;
+}
+
+function unidentifiedListenerError(baseUrl) {
+  const { host } = new URL(baseUrl);
+  return new AxiError(
+    `The server at ${host} did not shut down, and no Lavish process listening there could be identified`,
+    "SERVER_ERROR",
+    [`Stop the process listening on ${host} yourself, or set LAVISH_AXI_PORT to another port`],
+  );
 }
 
 async function startServer(port, { alsoListen = [] } = {}) {

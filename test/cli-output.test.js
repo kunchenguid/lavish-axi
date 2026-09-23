@@ -2984,8 +2984,9 @@ test("shutdownServerOnPort kills pre-handshake Lavish servers when shutdown does
       shutdowns += 1;
     },
     waitForPortFree: async () => portFreeResults.shift() ?? false,
-    killProcessOnPort: () => {
+    killServerProcess: () => {
       kills += 1;
+      return true;
     },
     processMatchesLavish: () => true,
   });
@@ -3007,8 +3008,9 @@ test("shutdownServerOnPort ignores unidentified health responders", async () => 
       shutdowns += 1;
     },
     waitForPortFree: async () => false,
-    killProcessOnPort: () => {
+    killServerProcess: () => {
       kills += 1;
+      return true;
     },
     processMatchesLavish: () => false,
   });
@@ -3126,12 +3128,16 @@ test("fetchJson reports interrupted response body failures without retrying", as
 test("stop command shuts down the running server on the configured port", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-stop-test-`);
   const server = await serve({ port: 0, stateFile: `${dir}/state.json`, version: "9.9.9-test" });
+  const previousStateDir = process.env.LAVISH_AXI_STATE_DIR;
+  process.env.LAVISH_AXI_STATE_DIR = dir;
   try {
     const output = await stopCommand(["--port", String(server.port)]);
     assert.deepEqual(output, { server: { status: "stopped", port: server.port } });
     await server.done;
     await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
   } finally {
+    if (previousStateDir === undefined) delete process.env.LAVISH_AXI_STATE_DIR;
+    else process.env.LAVISH_AXI_STATE_DIR = previousStateDir;
     await server.close();
     await rm(dir, { force: true, recursive: true });
   }

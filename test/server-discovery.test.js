@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
@@ -10,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import WebSocket from "ws";
 
-import { inheritedListenHosts, run, VERSION } from "../src/cli.js";
+import { inheritedListenHosts, run, stopCommand, VERSION } from "../src/cli.js";
 import { serve } from "../src/server.js";
 
 // 192.0.2.0/24 is TEST-NET-1: assigned to no interface, so binding it fails with EADDRNOTAVAIL.
@@ -84,6 +85,21 @@ async function runCli(args) {
   }
 }
 
+async function captureCli(args) {
+  const write = process.stdout.write;
+  let output = "";
+  process.stdout.write = (chunk) => {
+    output += String(chunk);
+    return true;
+  };
+  try {
+    await run(args);
+  } finally {
+    process.stdout.write = write;
+  }
+  return output;
+}
+
 async function freePort(host = "127.0.0.1") {
   const probe = createServer();
   await new Promise((resolve) => probe.listen({ port: 0, host }, () => resolve(undefined)));
@@ -148,7 +164,8 @@ async function isResolved(promise) {
 }
 
 async function stateSessions(dir) {
-  const state = JSON.parse(await readFile(path.join(dir, "state.json"), "utf8"));
+  const raw = await readFile(path.join(dir, "state.json"), "utf8").catch(() => "{}");
+  const state = JSON.parse(raw);
   return Object.values(state.sessions || {}).map((session) => session.file);
 }
 
@@ -525,7 +542,8 @@ test(
       }
 
       // The same situation with a shared state file is the duplicate daemon pair the old discovery
-      // created: the one the CLI does not adopt is shut down over its own /shutdown.
+      // created. Retiring the duplicate must not take its address with it: review links already
+      // handed out there keep working, served by one server for both addresses.
       const duplicate = await serve({
         port,
         stateFile: path.join(dir, "state.json"),
@@ -537,12 +555,131 @@ test(
         idleTimeoutMs: null,
       });
       try {
+        const { key } = await openSession(otherHost, port, artifact);
         await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
         assert.ok(await waitFor(() => isResolved(duplicate.done)), "the duplicate daemon was not retired");
-        assert.equal(await isResolved(kept.done), false, "the adopted server was stopped");
+        const survivor = await health(otherHost, port);
+        assert.ok(survivor.hosts.includes("127.0.0.1") && survivor.hosts.includes(otherHost), survivor.hosts.join());
+        assert.deepEqual((await health("127.0.0.1", port)).hosts, survivor.hosts);
+        assert.equal(await getStatus(`http://${otherHost}:${port}/session/${key}`), 200);
+        assert.deepEqual(await stateSessions(dir), [artifact]);
       } finally {
         await duplicate.close().catch(() => {});
-        await kept.close();
+        await kept.close().catch(() => {});
+        await shutdownAt("127.0.0.1", port);
+        await shutdownAt(otherHost, port);
+      }
+    });
+  },
+);
+
+test("another installation's server on loopback is never used or stopped", { timeout: 20_000 }, async () => {
+  await withTempDir(async (dir) => {
+    const artifact = await writeArtifact(dir);
+    const otherInstallDir = await mkdtemp(path.join(tmpdir(), "lavish-discovery-other-"));
+    const port = await freePort();
+    const otherInstall = await serve({
+      port,
+      stateFile: path.join(otherInstallDir, "state.json"),
+      version: VERSION,
+      env: {},
+      detectTailscale: null,
+      hosts: ["127.0.0.1"],
+      log: () => {},
+      idleTimeoutMs: null,
+    });
+    try {
+      const output = await withEnv(cliEnv(dir, port, undefined), () => captureCli(["open", artifact, "--no-open"]));
+      assert.match(output, /SERVER_ERROR/);
+      assert.ok(output.includes(otherInstallDir), `expected the other state directory in ${output}`);
+      await withEnv(cliEnv(dir, port, undefined), () => assert.rejects(stopCommand([]), { code: "SERVER_ERROR" }));
+      assert.equal(await isResolved(otherInstall.done), false, "another installation's server was stopped");
+      assert.deepEqual(await stateSessions(otherInstallDir), []);
+    } finally {
+      await otherInstall.close();
+      await rm(otherInstallDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test(
+  "a server too old to name its installation is left alone when it is only reached at another address",
+  { timeout: 20_000 },
+  async (t) => {
+    const otherHost = otherLocalIpv4();
+    if (!otherHost) {
+      t.skip("host has no non-loopback IPv4 address");
+      return;
+    }
+    await withTempDir(async (dir) => {
+      const artifact = await writeArtifact(dir);
+      const port = await freePort(otherHost);
+      let shutdowns = 0;
+      // 0.1.77 and older report no state_id, so one found only by the interface sweep may be
+      // another installation's.
+      const old = createHttpServer((req, res) => {
+        if (req.url?.startsWith("/health")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: "0.1.77" }));
+          return;
+        }
+        if (req.method === "POST" && req.url === "/shutdown") shutdowns += 1;
+        res.writeHead(404).end();
+      });
+      await new Promise((resolve) => old.listen({ host: otherHost, port }, () => resolve(undefined)));
+      try {
+        await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+        assert.equal(shutdowns, 0, "the old server at another address was asked to shut down");
+        const started = await health("127.0.0.1", port);
+        assert.equal(started.version, VERSION);
+        assert.deepEqual(await stateSessions(dir), [artifact]);
+      } finally {
+        await new Promise((resolve) => old.close(() => resolve(undefined)));
+        await shutdownAt("127.0.0.1", port);
+      }
+    });
+  },
+);
+
+test(
+  "a loopback-only server that wins the port during a host replacement is replaced once more",
+  { timeout: 30_000 },
+  async (t) => {
+    const otherHost = otherLocalIpv4();
+    if (!otherHost) {
+      t.skip("host has no non-loopback IPv4 address");
+      return;
+    }
+    await withTempDir(async (dir) => {
+      const artifact = await writeArtifact(dir);
+      const port = await freePort(otherHost);
+      const loopbackOnly = () =>
+        serve({
+          port,
+          stateFile: path.join(dir, "state.json"),
+          version: VERSION,
+          env: {},
+          detectTailscale: null,
+          hosts: ["127.0.0.1"],
+          log: () => {},
+          idleTimeoutMs: null,
+        });
+      const first = await loopbackOnly();
+      // Another CLI with no host starts a loopback-only server the moment the first one exits,
+      // before the replacement this CLI spawns can bind.
+      const racer = first.done.then(() => loopbackOnly());
+      try {
+        await withEnv(cliEnv(dir, port, otherHost), () => runCli(["open", artifact, "--no-open"]));
+        const winner = await racer;
+        assert.equal(await isResolved(winner.done), true, "the racing loopback-only server was adopted");
+        const served = await health(otherHost, port);
+        assert.deepEqual([...served.hosts].sort(), ["127.0.0.1", otherHost].sort());
+        assert.deepEqual(await stateSessions(dir), [artifact]);
+      } finally {
+        await first.close().catch(() => {});
+        await (await racer.catch(() => null))?.close().catch(() => {});
+        await shutdownAt("127.0.0.1", port);
+        await shutdownAt(otherHost, port);
       }
     });
   },
@@ -669,6 +806,70 @@ test("a replacement for a changed network keeps explicit addresses but not the g
       assert.deepEqual(inheritedListenHosts([stale], []), ["::1"]);
     } finally {
       await server.close();
+    }
+  });
+});
+
+function lsofAvailable() {
+  return spawnSync("lsof", ["-v"]).error === undefined;
+}
+
+// A child process listening at host:port. The script's file name is what `ps` shows, so a
+// pre-handshake Lavish server is one whose name says lavish-axi and an unrelated one is not.
+async function spawnListener(dir, name, host, port, source) {
+  const script = path.join(dir, name);
+  await writeFile(script, source);
+  const child = spawn(process.execPath, [script, host, String(port)], { stdio: ["ignore", "pipe", "inherit"] });
+  const [line] = await once(child.stdout, "data");
+  assert.equal(String(line).trim(), "listening");
+  return child;
+}
+
+function exited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+test("stopping a pre-handshake server signals only the process at its own address", { timeout: 30_000 }, async (t) => {
+  const otherHost = otherLocalIpv4();
+  if (!otherHost || !lsofAvailable()) {
+    t.skip("host needs a non-loopback IPv4 address and lsof");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const port = await freePort(otherHost);
+    // Answers /health with no app or version and has no /shutdown, like the oldest releases.
+    const preHandshake = await spawnListener(
+      dir,
+      "lavish-axi-pre-handshake.mjs",
+      "127.0.0.1",
+      port,
+      `import { createServer } from "node:http";
+const [host, port] = process.argv.slice(2);
+createServer((req, res) => {
+  if (req.url.startsWith("/health")) res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+  else res.writeHead(404).end();
+}).listen({ host, port: Number(port) }, () => console.log("listening"));
+`,
+    );
+    const unrelated = await spawnListener(
+      dir,
+      "unrelated-service.mjs",
+      otherHost,
+      port,
+      `import { createServer } from "node:net";
+const [host, port] = process.argv.slice(2);
+createServer((socket) => socket.destroy()).listen({ host, port: Number(port) }, () => console.log("listening"));
+`,
+    );
+    try {
+      const output = await withEnv(cliEnv(dir, port, undefined), () => stopCommand([]));
+      assert.equal(output.server.status, "stopped");
+      assert.ok(await waitFor(() => exited(preHandshake)), "the pre-handshake server was not stopped");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(exited(unrelated), false, "a process at another address on the same port was signalled");
+    } finally {
+      preHandshake.kill();
+      unrelated.kill();
     }
   });
 });

@@ -710,6 +710,7 @@ export async function serve({
       app: "lavish-axi",
       version,
       state_id: serverStateId,
+      state_dir: path.dirname(stateFile),
       // Where this process is listening and every address it was asked to serve (bound or still
       // retrying). The CLI uses both to find one daemon per port whatever host it was configured
       // with, and to tell a same-port daemon at another address apart from this one.

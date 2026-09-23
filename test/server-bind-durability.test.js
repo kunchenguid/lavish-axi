@@ -627,6 +627,7 @@ test("the control channel finds a fallen-back server on loopback", async () => {
         {
           LAVISH_AXI_PORT: String(server.port),
           LAVISH_AXI_HOST: UNBINDABLE_HOST,
+          LAVISH_AXI_STATE_DIR: dir,
         },
         () => stopCommand([]),
       );
@@ -660,6 +661,7 @@ test(
           {
             LAVISH_AXI_PORT: String(port),
             LAVISH_AXI_HOST: "::1",
+            LAVISH_AXI_STATE_DIR: dir,
           },
           () => stopCommand([]),
         );
@@ -688,6 +690,7 @@ test(
           {
             LAVISH_AXI_PORT: String(port),
             LAVISH_AXI_HOST: "::1",
+            LAVISH_AXI_STATE_DIR: dir,
           },
           () => stopCommand([]),
         );
