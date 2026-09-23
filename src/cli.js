@@ -1778,6 +1778,24 @@ export function missingServerHosts(healthBody, requiredHosts) {
   return requiredHosts.filter((host) => !healthBody.requested_hosts.includes(host));
 }
 
+// Every address the replaced servers were asked to serve, so a replacement - for an upgrade, a
+// changed network, or a missing host - never drops another agent's address and its review links.
+// This CLI's own hosts come from its environment, and a server's Tailscale address is left out
+// once its network changed: the replacement detects the current one instead of retrying a gone one.
+export function inheritedListenHosts(healthBodies, requiredHosts, inherited = []) {
+  const hosts = [...inherited];
+  for (const health of healthBodies) {
+    if (!health || !Array.isArray(health.requested_hosts)) continue;
+    const staleHosts =
+      health.network_stale === true && Array.isArray(health.detected_hosts) ? health.detected_hosts : [];
+    for (const host of health.requested_hosts) {
+      if (host === LOOPBACK_HOST || requiredHosts.includes(host) || staleHosts.includes(host)) continue;
+      if (!hosts.includes(host)) hosts.push(host);
+    }
+  }
+  return hosts;
+}
+
 async function probeHealth(baseUrl, { reconcileNetwork, timeoutMs }) {
   const health = await fetchHealth(baseUrl, { reconcileNetwork, timeoutMs });
   return health && typeof health === "object" ? health : null;
@@ -1793,13 +1811,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   if (existing && !shouldRestartServer(VERSION, existing, forceRestart) && missingHosts.length === 0) {
     return adoptServer(baseUrl, duplicates, reloadKey);
   }
-  // A server that does not serve this CLI's configured host is replaced by one that serves it AND
-  // everything the old one was asked to serve. Replacing it with only this CLI's host would make
-  // two agents configured with different hosts replace each other on every invocation.
-  const alsoListen =
-    missingHosts.length > 0 && !shouldRestartServer(VERSION, existing, forceRestart)
-      ? existing.requested_hosts.filter((host) => host !== LOOPBACK_HOST && !requiredHosts.includes(host))
-      : [];
+  let alsoListen = inheritedListenHosts([existing, ...duplicates.map((duplicate) => duplicate.health)], requiredHosts);
   if (existing) {
     if (!(await canControlServerOnPort(port, existing, processOnPortMatchesLavish))) {
       throw new AxiError(`Port ${port} is occupied by a non-Lavish server`, "SERVER_ERROR", [
@@ -1843,6 +1855,11 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     // Lavish server already owns loopback). Retire it and start once more rather than wait it out.
     if (health?.app === "lavish-axi" && health.network_stale !== true && !versionRestarted) {
       versionRestarted = true;
+      alsoListen = inheritedListenHosts(
+        [health, ...liveDuplicates.map((duplicate) => duplicate.health)],
+        requiredHosts,
+        alsoListen,
+      );
       await stopDuplicateServers(liveDuplicates, { reloadKey });
       await requestShutdown(liveUrl, { reloadKey, reason: serverReplacementReason(VERSION, health) });
       if (!(await waitForPortFree(liveUrl, 3000))) break;
@@ -1852,6 +1869,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     }
     if (health?.network_stale === true && health.app === "lavish-axi") {
       if (networkRestarted) return adoptServer(liveUrl, liveDuplicates, reloadKey);
+      alsoListen = inheritedListenHosts([health], requiredHosts, alsoListen);
       await requestShutdown(liveUrl, { reloadKey, reason: "" });
       if (!(await waitForPortFree(liveUrl, 3000))) break;
       await startServer(port, { alsoListen });

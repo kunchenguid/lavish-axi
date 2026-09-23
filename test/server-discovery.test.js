@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import WebSocket from "ws";
 
-import { run, VERSION } from "../src/cli.js";
+import { inheritedListenHosts, run, VERSION } from "../src/cli.js";
 import { serve } from "../src/server.js";
 
 // 192.0.2.0/24 is TEST-NET-1: assigned to no interface, so binding it fails with EADDRNOTAVAIL.
@@ -126,6 +126,21 @@ async function waitFor(check, timeoutMs = 5000) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return false;
+}
+
+async function ipv6LoopbackAvailable() {
+  try {
+    await closeRaw(await listenRaw("::1", 0));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getStatus(url) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+  await response.arrayBuffer();
+  return response.status;
 }
 
 async function isResolved(promise) {
@@ -584,6 +599,79 @@ test(
     });
   },
 );
+
+test(
+  "an upgrade started by one agent keeps every address two agents asked the server to serve",
+  { timeout: 30_000 },
+  async (t) => {
+    const otherHost = otherLocalIpv4();
+    if (!otherHost || !(await ipv6LoopbackAvailable())) {
+      t.skip("host needs a non-loopback IPv4 address and IPv6 loopback");
+      return;
+    }
+    await withTempDir(async (dir) => {
+      const first = await writeArtifact(dir, "first.html");
+      const second = await writeArtifact(dir, "second.html");
+      const port = await freePort(otherHost);
+      // An older release serving two agents: one pinned to otherHost, one to ::1.
+      const old = await serve({
+        port,
+        stateFile: path.join(dir, "state.json"),
+        version: "0.0.1",
+        env: { LAVISH_AXI_HOST: otherHost },
+        extraListenHosts: ["::1"],
+        log: () => {},
+        idleTimeoutMs: null,
+      });
+      try {
+        const { key } = await openSession(otherHost, port, first);
+        await withEnv(cliEnv(dir, port, otherHost), () => runCli(["open", second, "--no-open"]));
+        assert.equal(await isResolved(old.done), true, "the old server was not replaced");
+        const upgraded = await health(otherHost, port);
+        assert.equal(upgraded.version, VERSION);
+        assert.deepEqual([...upgraded.hosts].sort(), ["127.0.0.1", "::1", otherHost].sort());
+        for (const origin of [`http://${otherHost}:${port}`, `http://[::1]:${port}`]) {
+          assert.equal(await getStatus(`${origin}/session/${key}`), 200, `review link at ${origin} stopped working`);
+        }
+        assert.deepEqual((await stateSessions(dir)).sort(), [first, second].sort());
+      } finally {
+        await old.close().catch(() => {});
+        await shutdownAt("127.0.0.1", port);
+      }
+    });
+  },
+);
+
+test("a replacement for a changed network keeps explicit addresses but not the gone Tailscale one", async (t) => {
+  const otherHost = otherLocalIpv4();
+  if (!otherHost || !(await ipv6LoopbackAvailable())) {
+    t.skip("host needs a non-loopback IPv4 address and IPv6 loopback");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const port = await freePort(otherHost);
+    let tailscale = { ipv4: otherHost, magicDnsName: "box.example.ts.net" };
+    const server = await serve({
+      port,
+      stateFile: path.join(dir, "state.json"),
+      version: VERSION,
+      env: {},
+      detectTailscale: async () => tailscale,
+      extraListenHosts: ["::1"],
+      log: () => {},
+      idleTimeoutMs: null,
+    });
+    try {
+      assert.deepEqual(inheritedListenHosts([await health("127.0.0.1", port)], []), [otherHost, "::1"]);
+      tailscale = null;
+      const stale = await health("127.0.0.1", port, "?reconcile_network=1");
+      assert.equal(stale.network_stale, true);
+      assert.deepEqual(inheritedListenHosts([stale], []), ["::1"]);
+    } finally {
+      await server.close();
+    }
+  });
+});
 
 test("discovery does not keep the CLI alive after a local address drops connections", { timeout: 30_000 }, async () => {
   await withTempDir(async (dir) => {

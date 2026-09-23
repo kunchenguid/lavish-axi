@@ -309,6 +309,7 @@ export async function serve({
     ...(lookupHost ? { lookup: lookupHost } : {}),
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
+  const tailscaleListenHosts = tailscale?.ipv4 ? listenHosts.filter((listenHost) => listenHost === tailscale.ipv4) : [];
   const serverStateId = stateId(stateFile);
   let tailscalePhoneReady = false;
   let tailscaleDetectionWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
@@ -714,6 +715,9 @@ export async function serve({
       // with, and to tell a same-port daemon at another address apart from this one.
       hosts: [...boundHosts],
       requested_hosts: [...listenHosts],
+      // The subset it chose itself from Tailscale detection, which a replacement for a changed
+      // network detects afresh instead of inheriting.
+      detected_hosts: tailscaleListenHosts,
       ...(networkStale ? { network_stale: true } : {}),
       ...(networkWarning ? { network_warning: networkWarning } : {}),
       listeners: [...activePolls].map(([key, holder]) => ({
