@@ -1,0 +1,12 @@
+DEGRADED OPEN: session:
+  file: /Users/kunchen/.no-mistakes/worktrees/e41c0f926200/01M35V0Z5AJ0H2YZD65Z11NBZQ/.live-rebind-90vRqi/board.html
+  url: "http://127.0.0.1:65434/session/cb8e34500f6de6aa"
+  status: opened
+network_warning: "Tailscale binding failed for 100.99.161.42:65434 (EADDRINUSE: another process is already listening there); there is no phone access and tailnet review links do not load. Lavish remains available on 127.0.0.1 and keeps retrying the tailnet address in the background."
+self_paint_warning: "This artifact never paints its own page surface: no background on html/body/:root, no bg-* class or data-theme on html/body, and no stylesheet t
+
+BLOCKED HEALTH: {"hosts":["127.0.0.1"],"requested_hosts":["127.0.0.1","100.99.161.42"],"network_warning":"Tailscale binding failed for 100.99.161.42:65434 (EADDRINUSE: another process is already listening there); there is no phone access and tailnet review links do not load. Lavish remains available on 127.0.0.1 and keeps retrying the tailnet address in the background."}
+
+RECOVERED HEALTH: {"hosts":["127.0.0.1","100.99.161.42"]}
+
+RESTORED TAILNET BOARD: HTTP 200

@@ -1,0 +1,29 @@
+✔ a live-event client that attaches while a later address is still binding does not crash the server (905.756625ms)
+✔ a requested address that is taken is retried in the background, reported loudly, and served once free (1011.129125ms)
+✔ a Tailscale address freed after startup is bound by the next reconcile and restores the MagicDNS link (872.489875ms)
+✔ a second server for a port whose loopback a Lavish server owns refuses to start (860.735292ms)
+✔ a client with no host finds a server listening only at another local address instead of spawning a duplicate (573.601416ms)
+✔ switching LAVISH_AXI_HOST from loopback to another address replaces the server once and keeps its sessions (2668.535958ms)
+✔ switching LAVISH_AXI_HOST from another address to loopback adopts the running server (1592.51375ms)
+✔ a same-port duplicate of this installation is retired, and another installation's server is left alone (2302.967292ms)
+✔ another installation's server on loopback is never used or stopped (1061.462625ms)
+✔ a server too old to name its installation is left alone when it is only reached at another address (1667.424375ms)
+✔ a loopback-only server that wins the port during a host replacement is replaced once more (4209.727625ms)
+✔ a server that still lacks this CLI's address after the one retry fails the open instead of adopting it (3935.316417ms)
+✔ an upgrade retires every older daemon on the port, including one that only holds another address (1651.3145ms)
+✔ an upgrade started by one agent keeps every address two agents asked the server to serve (2167.63275ms)
+✔ the second agent's upgrade accumulates its address beside the first agent's instead of replacing it (2168.381083ms)
+✔ an explicit host that does not resolve is served, retried, and reported instead of silently dropped (2264.846ms)
+✔ a replacement inherits every address still on this machine and drops one that is gone (864.564125ms)
+✔ a network-stale replacement by an agent with its own host keeps a Tailscale address that is still live (1651.883917ms)
+✔ a configured name whose DNS recovers is served at its address and is not replaced (1429.22675ms)
+✔ stopping a pre-handshake server signals only the process at its own address (4171.351458ms)
+✔ discovery does not keep the CLI alive after a local address drops connections (709.94925ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 38929.664709

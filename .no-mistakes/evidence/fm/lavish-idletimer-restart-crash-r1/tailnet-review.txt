@@ -1,0 +1,10 @@
+OPEN CLI: session:
+  file: /Users/kunchen/.no-mistakes/worktrees/e41c0f926200/01M35V0Z5AJ0H2YZD65Z11NBZQ/.live-tailnet-rpn9dU/board.html
+  url: "http://mac-home.tailf05efa.ts.net:65051/session/acf8964111d78d82"
+  status: opened
+self_paint_warning: "This artifact never paints its own page surface: no background on html/body/:root, no bg-* class or data-theme on html/body, and no stylesheet that could set one. Lavish injects no design system, so text that assumes a dark or light host surface can render invisible. Set an explicit background and readable text."
+next_step: "First fix the unpainted page surface flagged in self_paint_warning and save - Lavish live-reloads the artifact automatically, so you do not need to re-run `lavish-axi /Users/kunchen/.no-mistakes/worktrees/e41c0f926200/01M35V0Z5AJ0H2YZD65Z11NBZQ/.live-tailnet-rpn9dU/board.html`. Do not respond to the user just yet. Now you must run `lavish-axi poll /Users/kunchen/.no-mistakes/worktr
+
+HEALTH: {"hosts":["127.0.0.1","100.99.161.42"],"requested_hosts":["127.0.0.1","100.99.161.42"]}
+
+TAILNET REVIEW GET: HTTP 200, board title present true

@@ -1,0 +1,21 @@
+OPEN CLI: session:
+  file: /Users/kunchen/.no-mistakes/worktrees/e41c0f926200/01M35V0Z5AJ0H2YZD65Z11NBZQ/.live-review-gkqDKv/board.html
+  url: "http://127.0.0.1:63849/session/3b7605c360fc39af"
+  status: opened
+self_paint_warning: "This artifact never paints its own page surface: no background on html/body/:root, no bg-* class or data-theme on html/body, and no stylesheet that could set one. Lavish injects no design system, so text that assumes a dark or light host surface can render invisible. Set an explicit background and readable text."
+next_step: "First fix the unpainted page surface flagged in self_paint_warning and save - Lavish live-reloads the artifact automatically, so you do not need to re-run `lavish-axi /Users/kunchen/.no-mistakes/worktre
+
+HEALTH: {"hosts":["127.0.0.1"],"requested_hosts":["127.0.0.1"]}
+
+BOARD GET: 200, title Loopback review
+
+SEND FEEDBACK: HTTP 200, transcript entries 1
+
+POLL EXIT: 0, output: session:
+  file: /Users/kunchen/.no-mistakes/worktrees/e41c0f926200/01M35V0Z5AJ0H2YZD65Z11NBZQ/.live-review-gkqDKv/board.html
+  status: feedback
+prompts[1]{uid,prompt,selector,tag,text}:
+  "","","",general,Please change the heading to Final review
+next_step: "Apply the requested changes to /Users/kunchen/.no-mistakes/worktrees/e41c0f926200/01M35V0Z5AJ0H2YZD65Z11NBZQ/.live-review-gkqDKv/board.html. Do not respond to the user just yet. Now you must run `lavish-axi poll /Users/kunchen/.no-mistakes/worktrees/e41c0f926200/01M35V0Z5AJ0H2YZD65Z11NBZQ/.live-review-gkqDKv/board.html --agent-reply \"<message for the user>\"` without --timeout-ms unless the user ended the session. Keep the reply concise. Only when a longer reply is genuinely necessary, use Markdown structure - blank-line paragraphs, `- ` / `1. ` lists, `## ` headings - so it renders scannably instead of a wall of text, and pass that body with `--agent-reply-file <path>` (`-` reads stdin) so newlines survive quoting. The Conversation panel's Markdown subset is in `lavish-axi poll --help` and README. The poll waits silently until the user sends more feedback, ends the session, or leaves every review window disconnected past the reconnect grace period - never kill it. Keep the poll in the foreground by default and let it retur
+
+PERSISTED SESSIONS: 1
