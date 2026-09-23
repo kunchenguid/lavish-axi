@@ -305,12 +305,12 @@ export async function serve({
       ? [...hosts, ...extraListenHosts]
       : resolveListenHosts({ host, env, tailscale, extraHosts: extraListenHosts }),
   );
+  const lookupOptions = lookupHost ? { lookup: lookupHost } : {};
   const listenHosts = await resolveConcreteListenHosts(requestedListenHosts, {
-    ...(lookupHost ? { lookup: lookupHost } : {}),
+    ...lookupOptions,
     keepUnresolved: true,
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
-  const tailscaleListenHosts = tailscale?.ipv4 ? listenHosts.filter((listenHost) => listenHost === tailscale.ipv4) : [];
   const serverStateId = stateId(stateFile);
   let tailscalePhoneReady = false;
   let tailscaleDetectionWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
@@ -718,10 +718,9 @@ export async function serve({
       // retrying). The CLI uses both to find one daemon per port whatever host it was configured
       // with, and to tell a same-port daemon at another address apart from this one.
       hosts: [...boundHosts],
-      requested_hosts: [...listenHosts],
-      // The subset it chose itself from Tailscale detection, which a replacement for a changed
-      // network detects afresh instead of inheriting.
-      detected_hosts: tailscaleListenHosts,
+      // Configured names sit beside the addresses they resolved to, so a CLI that resolves the same
+      // name finds it served whichever form it compares.
+      requested_hosts: [...new Set([...listenHosts, ...requestedListenHosts])],
       ...(networkStale ? { network_stale: true } : {}),
       ...(networkWarning ? { network_warning: networkWarning } : {}),
       listeners: [...activePolls].map(([key, holder]) => ({
@@ -1956,8 +1955,19 @@ export async function serve({
 
   // One listen attempt. A listener that finishes binding after shutdown began is closed at once,
   // or it would keep the process alive with nothing left to serve.
+  // A configured name is resolved here, through the same lookup and all-interfaces refusal as at
+  // startup, so one that only resolves later is served at its address and reported by it. A name
+  // that resolves to an address already bound is served by that listener.
   async function listenOnce(listenHost) {
-    const httpServer = await listenHttp(app, boundPort, listenHost, (error) => {
+    const address = isIP(listenHost) ? listenHost : (await resolveConcreteListenHosts([listenHost], lookupOptions))[0];
+    if (address !== listenHost) {
+      if (!listenHosts.includes(address)) listenHosts.push(address);
+      if (boundHosts.includes(address)) {
+        boundHosts.push(listenHost);
+        return;
+      }
+    }
+    const httpServer = await listenHttp(app, boundPort, address, (error) => {
       writeLog(`[lavish] HTTP server error: ${error instanceof Error ? error.message : String(error)}`);
     });
     if (shuttingDown) {
@@ -1969,6 +1979,7 @@ export async function serve({
     if (!publicPort) publicPort = boundPort;
     httpServers.push(httpServer);
     boundHosts.push(listenHost);
+    if (address !== listenHost) boundHosts.push(address);
   }
 
   // Bind one address, retrying a transient failure. Whether anything else has bound yet is

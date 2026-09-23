@@ -927,36 +927,120 @@ test(
   },
 );
 
-test("a replacement for a changed network keeps explicit addresses but not the gone Tailscale one", async (t) => {
-  const otherHost = otherLocalIpv4();
-  if (!otherHost || !(await ipv6LoopbackAvailable())) {
-    t.skip("host needs a non-loopback IPv4 address and IPv6 loopback");
+test("a replacement inherits every address still on this machine and drops one that is gone", async (t) => {
+  if (!(await ipv6LoopbackAvailable())) {
+    t.skip("host needs IPv6 loopback");
     return;
   }
   await withTempDir(async (dir) => {
-    const port = await freePort(otherHost);
-    let tailscale = { ipv4: otherHost, magicDnsName: "box.example.ts.net" };
+    const port = await freePort();
     const server = await serve({
       port,
       stateFile: path.join(dir, "state.json"),
       version: VERSION,
       env: {},
-      detectTailscale: async () => tailscale,
-      extraListenHosts: ["::1"],
+      hosts: ["127.0.0.1", UNBINDABLE_HOST, "::1"],
       log: () => {},
       idleTimeoutMs: null,
     });
     try {
-      assert.deepEqual(inheritedListenHosts([await health("127.0.0.1", port)], []), [otherHost, "::1"]);
-      tailscale = null;
-      const stale = await health("127.0.0.1", port, "?reconcile_network=1");
-      assert.equal(stale.network_stale, true);
-      assert.deepEqual(inheritedListenHosts([stale], []), ["::1"]);
+      const running = await health("127.0.0.1", port);
+      assert.ok(running.requested_hosts.includes(UNBINDABLE_HOST));
+      assert.deepEqual(inheritedListenHosts([running], []), ["::1"]);
     } finally {
       await server.close();
     }
   });
 });
+
+test(
+  "a network-stale replacement by an agent with its own host keeps a Tailscale address that is still live",
+  { timeout: 30_000 },
+  async (t) => {
+    const otherHost = otherLocalIpv4();
+    if (!otherHost || !(await ipv6LoopbackAvailable())) {
+      t.skip("host needs a non-loopback IPv4 address and IPv6 loopback");
+      return;
+    }
+    await withTempDir(async (dir) => {
+      const artifact = await writeArtifact(dir);
+      const port = await freePort(otherHost);
+      // Tailscale stays up on the same address; only the MagicDNS name changes, which makes the
+      // running server network-stale.
+      let tailscale = { ipv4: otherHost, magicDnsName: "before.example.ts.net" };
+      const stale = await serve({
+        port,
+        stateFile: path.join(dir, "state.json"),
+        version: VERSION,
+        env: {},
+        detectTailscale: async () => tailscale,
+        log: () => {},
+        idleTimeoutMs: null,
+      });
+      try {
+        const { key } = await openSession(otherHost, port, artifact);
+        tailscale = { ipv4: otherHost, magicDnsName: "after.example.ts.net" };
+        // The agent pins ::1, so the replacement it starts does not detect Tailscale itself.
+        await withEnv(cliEnv(dir, port, "::1"), () => runCli(["open", artifact, "--no-open"]));
+        assert.equal(await isResolved(stale.done), true, "the network-stale server was not replaced");
+        const replacement = await health("127.0.0.1", port);
+        assert.ok(replacement.hosts.includes(otherHost), `lost the live tailnet address: ${replacement.hosts}`);
+        assert.equal(await getStatus(`http://${otherHost}:${port}/session/${key}`), 200);
+      } finally {
+        await stale.close().catch(() => {});
+        await shutdownAt("127.0.0.1", port);
+      }
+    });
+  },
+);
+
+test(
+  "a configured name whose DNS recovers is served at its address and is not replaced",
+  { timeout: 30_000 },
+  async (t) => {
+    const otherHost = otherLocalIpv4();
+    if (!otherHost) {
+      t.skip("host has no non-loopback IPv4 address");
+      return;
+    }
+    await withTempDir(async (dir) => {
+      const artifact = await writeArtifact(dir);
+      const port = await freePort(otherHost);
+      const name = "lavish-recovering.test";
+      let dnsUp = false;
+      const server = await serve({
+        port,
+        stateFile: path.join(dir, "state.json"),
+        version: VERSION,
+        env: { LAVISH_AXI_HOST: name },
+        lookupHost: async (host) => {
+          if (host !== name) return [{ address: host, family: host.includes(":") ? 6 : 4 }];
+          if (!dnsUp) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
+          return [{ address: otherHost, family: 4 }];
+        },
+        log: () => {},
+        idleTimeoutMs: null,
+      });
+      try {
+        assert.equal(await reachable(otherHost, port), false);
+        dnsUp = true;
+        const recovered = await health("127.0.0.1", port, "?reconcile_network=1");
+        assert.ok(recovered.requested_hosts.includes(name));
+        assert.ok(recovered.requested_hosts.includes(otherHost));
+        assert.equal(recovered.network_warning, undefined);
+        assert.equal(await reachable(otherHost, port), true);
+
+        // An agent pinned to the address that name resolves to finds it served.
+        await withEnv(cliEnv(dir, port, otherHost), () => runCli(["open", artifact, "--no-open"]));
+        assert.equal(await isResolved(server.done), false, "a server serving the address was replaced");
+      } finally {
+        await server.close().catch(() => {});
+        await shutdownAt("127.0.0.1", port);
+        await shutdownAt(otherHost, port);
+      }
+    });
+  },
+);
 
 function lsofAvailable() {
   return spawnSync("lsof", ["-v"]).error === undefined;

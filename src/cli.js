@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { get as httpGet } from "node:http";
+import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1793,16 +1794,21 @@ export function missingServerHosts(healthBody, requiredHosts) {
 
 // Every address the replaced servers were asked to serve, so a replacement - for an upgrade, a
 // changed network, or a missing host - never drops another agent's address and its review links.
-// This CLI's own hosts come from its environment, and a server's Tailscale address is left out
-// once its network changed: the replacement detects the current one instead of retrying a gone one.
-export function inheritedListenHosts(healthBodies, requiredHosts, inherited = []) {
+// This CLI's own hosts come from its environment. An address that is no longer on this machine (a
+// Tailscale IP from a network that went away) is left out, so the replacement does not retry it
+// forever; one still on a local interface is kept even when the network around it changed.
+export function inheritedListenHosts(
+  healthBodies,
+  requiredHosts,
+  inherited = [],
+  localAddresses = localInterfaceAddresses(),
+) {
   const hosts = [...inherited];
   for (const health of healthBodies) {
     if (!health || !Array.isArray(health.requested_hosts)) continue;
-    const staleHosts =
-      health.network_stale === true && Array.isArray(health.detected_hosts) ? health.detected_hosts : [];
     for (const host of health.requested_hosts) {
-      if (host === LOOPBACK_HOST || requiredHosts.includes(host) || staleHosts.includes(host)) continue;
+      if (host === LOOPBACK_HOST || requiredHosts.includes(host)) continue;
+      if (isIP(host) && !localAddresses.includes(host)) continue;
       if (!hosts.includes(host)) hosts.push(host);
     }
   }
