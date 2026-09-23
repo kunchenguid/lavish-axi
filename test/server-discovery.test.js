@@ -830,8 +830,97 @@ test(
           assert.equal(await getStatus(`${origin}/session/${key}`), 200, `review link at ${origin} stopped working`);
         }
         assert.deepEqual((await stateSessions(dir)).sort(), [first, second].sort());
+
+        // The other agent finds its address already served and keeps the same daemon.
+        await withEnv(cliEnv(dir, port, "::1"), () => runCli(["open", first, "--no-open"]));
+        const after = await health(otherHost, port);
+        assert.equal(after.version, VERSION);
+        assert.deepEqual([...after.hosts].sort(), [...upgraded.hosts].sort());
       } finally {
         await old.close().catch(() => {});
+        await shutdownAt("127.0.0.1", port);
+      }
+    });
+  },
+);
+
+test(
+  "the second agent's upgrade accumulates its address beside the first agent's instead of replacing it",
+  { timeout: 30_000 },
+  async (t) => {
+    const otherHost = otherLocalIpv4();
+    if (!otherHost || !(await ipv6LoopbackAvailable())) {
+      t.skip("host needs a non-loopback IPv4 address and IPv6 loopback");
+      return;
+    }
+    await withTempDir(async (dir) => {
+      const first = await writeArtifact(dir, "first.html");
+      const second = await writeArtifact(dir, "second.html");
+      const port = await freePort(otherHost);
+      // An older release started by the agent pinned to otherHost only.
+      const old = await serve({
+        port,
+        stateFile: path.join(dir, "state.json"),
+        version: "0.0.1",
+        env: { LAVISH_AXI_HOST: otherHost },
+        log: () => {},
+        idleTimeoutMs: null,
+      });
+      try {
+        const { key } = await openSession(otherHost, port, first);
+        await withEnv(cliEnv(dir, port, "::1"), () => runCli(["open", second, "--no-open"]));
+        assert.equal(await isResolved(old.done), true, "the old server was not replaced");
+        const upgraded = await health("[::1]", port);
+        assert.equal(upgraded.version, VERSION);
+        assert.deepEqual([...upgraded.hosts].sort(), ["127.0.0.1", "::1", otherHost].sort());
+        for (const origin of [`http://${otherHost}:${port}`, `http://[::1]:${port}`]) {
+          assert.equal(await getStatus(`${origin}/session/${key}`), 200, `review link at ${origin} stopped working`);
+        }
+
+        await withEnv(cliEnv(dir, port, otherHost), () => runCli(["open", first, "--no-open"]));
+        assert.deepEqual([...(await health(otherHost, port)).hosts].sort(), [...upgraded.hosts].sort());
+        assert.deepEqual((await stateSessions(dir)).sort(), [first, second].sort());
+      } finally {
+        await old.close().catch(() => {});
+        await shutdownAt("127.0.0.1", port);
+      }
+    });
+  },
+);
+
+test(
+  "an explicit host that does not resolve is served, retried, and reported instead of silently dropped",
+  { timeout: 30_000 },
+  async () => {
+    await withTempDir(async (dir) => {
+      const artifact = await writeArtifact(dir);
+      const unresolvable = "lavish-unresolvable.invalid";
+      const port = await freePort();
+      const loopbackOnly = await serve({
+        port,
+        stateFile: path.join(dir, "state.json"),
+        version: VERSION,
+        env: {},
+        detectTailscale: null,
+        hosts: ["127.0.0.1"],
+        log: () => {},
+        idleTimeoutMs: null,
+      });
+      try {
+        const output = await withEnv(cliEnv(dir, port, unresolvable), () =>
+          captureCli(["open", artifact, "--no-open"]),
+        );
+        assert.equal(await isResolved(loopbackOnly.done), true, "a server that never asked for the host was adopted");
+        assert.match(output, /network_warning/);
+        assert.ok(output.includes(unresolvable), `expected the unresolved host in ${output}`);
+        const replacement = await health("127.0.0.1", port, "?reconcile_network=1");
+        assert.ok(replacement.requested_hosts.includes(unresolvable));
+        assert.ok(replacement.network_warning.includes(unresolvable));
+        const log = await readFile(path.join(dir, "server.log"), "utf8");
+        assert.ok(log.includes(`WARNING: Could not bind ${unresolvable}`), log);
+        assert.deepEqual(await stateSessions(dir), [artifact]);
+      } finally {
+        await loopbackOnly.close().catch(() => {});
         await shutdownAt("127.0.0.1", port);
       }
     });

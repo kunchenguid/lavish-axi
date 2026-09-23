@@ -68,16 +68,24 @@ export function sanitizeListenHosts(hosts) {
 }
 
 /**
+ * With `keepUnresolved`, a name that does not resolve right now is kept as the name, so it is bound
+ * and retried like any other unavailable address and reported, instead of failing or vanishing. A
+ * name that resolves to an all-interfaces address is always refused.
  * @param {string[]} hosts
- * @param {{ lookup?: typeof dnsLookup }} [options]
+ * @param {{ lookup?: typeof dnsLookup, keepUnresolved?: boolean }} [options]
  * @returns {Promise<string[]>}
  */
-export async function resolveConcreteListenHosts(hosts, { lookup = dnsLookup } = {}) {
+export async function resolveConcreteListenHosts(hosts, { lookup = dnsLookup, keepUnresolved = false } = {}) {
   const resolved = [];
   for (const host of hosts) {
-    const addresses = await lookup(host, { all: true, verbatim: true });
+    const addresses = await lookup(host, { all: true, verbatim: true }).catch((error) => {
+      if (keepUnresolved) return [];
+      throw error;
+    });
     if (!Array.isArray(addresses) || addresses.length === 0) {
-      throw new Error(`Listen host did not resolve: ${host}`);
+      if (!keepUnresolved) throw new Error(`Listen host did not resolve: ${host}`);
+      if (!resolved.includes(host)) resolved.push(host);
+      continue;
     }
     if (addresses.some(({ address }) => isWildcardHost(address))) {
       throw new Error(`Listen host resolves to an all-interfaces address: ${host}`);

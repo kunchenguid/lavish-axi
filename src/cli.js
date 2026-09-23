@@ -1775,16 +1775,12 @@ async function adoptServer(baseUrl, duplicates, reloadKey) {
 
 // The concrete addresses this CLI's own LAVISH_AXI_HOST needs a server to serve. Without an explicit
 // host any running server will do: loopback is always served, and Tailscale is the server's to
-// detect. A host that cannot be resolved asks for nothing, so a transient DNS failure never
-// replaces a working server.
+// detect. A name that does not resolve right now is still required as the name, so the server is
+// asked to serve it, retries it, and reports it as network_warning instead of it being dropped.
 async function requiredServerHosts(env = process.env) {
   const envHost = env.LAVISH_AXI_HOST?.trim();
   if (!envHost || isWildcardHost(envHost)) return [];
-  try {
-    return await resolveConcreteListenHosts([clientHost(env)]);
-  } catch {
-    return [];
-  }
+  return resolveConcreteListenHosts([clientHost(env)], { keepUnresolved: true });
 }
 
 // Which required addresses a running server was never asked to serve. An address it was asked for

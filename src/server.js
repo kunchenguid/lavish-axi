@@ -307,6 +307,7 @@ export async function serve({
   );
   const listenHosts = await resolveConcreteListenHosts(requestedListenHosts, {
     ...(lookupHost ? { lookup: lookupHost } : {}),
+    keepUnresolved: true,
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
   const tailscaleListenHosts = tailscale?.ipv4 ? listenHosts.filter((listenHost) => listenHost === tailscale.ipv4) : [];
@@ -449,7 +450,9 @@ export async function serve({
         ? "EADDRINUSE: another process is already listening there"
         : code === "EADDRNOTAVAIL"
           ? "EADDRNOTAVAIL: that address is not on this machine right now"
-          : code || (error instanceof Error ? error.message : String(error));
+          : code === "ENOTFOUND" || code === "EAI_AGAIN"
+            ? `${code}: that name does not resolve right now`
+            : code || (error instanceof Error ? error.message : String(error));
     const address = `${hostForUrl(listenHost)}:${publicPort || port}`;
     const reachable = `Lavish remains available on ${boundHosts.map((bound) => hostForUrl(bound)).join(", ") || "loopback"}`;
     if (listenHost === tailscale?.ipv4) {
