@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import WebSocket from "ws";
 
@@ -581,3 +584,42 @@ test(
     });
   },
 );
+
+test("discovery does not keep the CLI alive after a local address drops connections", { timeout: 30_000 }, async () => {
+  await withTempDir(async (dir) => {
+    // A Tailscale IPv6 address drops connections to itself, so a probe of it never connects. The
+    // same shape here: a TEST-NET address that routes nowhere, injected as a local interface.
+    const preload = path.join(dir, "blackhole-interface.mjs");
+    await writeFile(
+      preload,
+      `import os from "node:os";
+const networkInterfaces = os.networkInterfaces;
+os.networkInterfaces = () => ({ ...networkInterfaces(), blackhole: [{ address: "${UNBINDABLE_HOST}", family: "IPv4", internal: false }] });
+`,
+    );
+    const port = await freePort();
+    const started = Date.now();
+    const child = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "stop", "--port", String(port)],
+      {
+        env: {
+          ...process.env,
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+          LAVISH_AXI_STATE_DIR: dir,
+          LAVISH_AXI_TELEMETRY: "0",
+          LAVISH_AXI_HOST: "127.0.0.1",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    const [code] = await once(child, "exit");
+    const elapsedMs = Date.now() - started;
+    assert.equal(code, 0);
+    assert.match(stdout, /not-running/);
+    // Before the fix the aborted probe's TCP connect kept the process alive until the OS gave up.
+    assert.ok(elapsedMs < 5000, `the CLI took ${elapsedMs}ms to exit`);
+  });
+});

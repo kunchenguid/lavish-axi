@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
+import { get as httpGet } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1654,6 +1655,8 @@ function isHtmlPath(file) {
 }
 
 const HEALTH_PROBE_TIMEOUT_MS = 500;
+const DEFAULT_HEALTH_TIMEOUT_MS = 2000;
+const MAX_HEALTH_BODY_BYTES = 256 * 1024;
 // A reconcile asks the server to re-detect Tailscale and retry any unbound address before
 // answering, which can take longer than a plain health read.
 const HEALTH_RECONCILE_TIMEOUT_MS = 3000;
@@ -1776,21 +1779,8 @@ export function missingServerHosts(healthBody, requiredHosts) {
 }
 
 async function probeHealth(baseUrl, { reconcileNetwork, timeoutMs }) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const health = await Promise.race([
-      Promise.resolve()
-        .then(() => fetchHealth(baseUrl, { reconcileNetwork, timeoutMs, signal: controller.signal }))
-        .catch(() => null),
-      new Promise((resolve) => {
-        controller.signal.addEventListener("abort", () => resolve(null), { once: true });
-      }),
-    ]);
-    return health && typeof health === "object" ? health : null;
-  } finally {
-    clearTimeout(timer);
-  }
+  const health = await fetchHealth(baseUrl, { reconcileNetwork, timeoutMs });
+  return health && typeof health === "object" ? health : null;
 }
 
 // `reloadKey` names the session this invocation is about to open. A version-driven replacement
@@ -1925,18 +1915,53 @@ async function canControlServerOnPort(port, healthBody, processMatchesLavish) {
 
 /**
  * @param {string} baseUrl
- * @param {{ reconcileNetwork?: boolean, timeoutMs?: number, signal?: AbortSignal }} [options]
+ * @param {{ reconcileNetwork?: boolean, timeoutMs?: number }} [options]
  */
-async function fetchHealth(baseUrl, { reconcileNetwork = false, timeoutMs, signal } = {}) {
-  try {
-    const suffix = reconcileNetwork ? "?reconcile_network=1" : "";
-    const abortSignal = signal ?? (timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined);
-    const response = await fetch(`${baseUrl}/health${suffix}`, abortSignal ? { signal: abortSignal } : {});
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
-    return null;
-  }
+// Plain node:http with the socket destroyed on every exit path, not fetch: an aborted fetch leaves
+// its TCP connect running, and discovery dials every local address - including a Tailscale IPv6
+// address that silently drops connections to itself - so each CLI invocation lingered for the OS
+// connect timeout (~10s) after printing its result.
+function fetchHealth(baseUrl, { reconcileNetwork = false, timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    /** @type {import("node:http").ClientRequest | null} */
+    let request = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request?.destroy();
+      resolve(value);
+    };
+    const abort = () => finish(null);
+    const timer = setTimeout(abort, timeoutMs);
+    try {
+      const url = new URL(`${baseUrl}/health${reconcileNetwork ? "?reconcile_network=1" : ""}`);
+      request = httpGet(url, { agent: false }, (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+          if (body.length > MAX_HEALTH_BODY_BYTES) finish(null);
+        });
+        response.on("end", () => {
+          if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+            finish(null);
+            return;
+          }
+          try {
+            finish(JSON.parse(body));
+          } catch {
+            finish(null);
+          }
+        });
+        response.on("error", abort);
+      });
+      request.on("error", abort);
+    } catch {
+      abort();
+    }
+  });
 }
 
 // `reason` is what every other open review page is told: this CLI has exactly two callers, and
