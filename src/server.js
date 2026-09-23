@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, get as httpGet } from "node:http";
 import { isIP } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -54,7 +54,6 @@ import {
 } from "./export-bundle.js";
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
-import { isLocalAddressPresent } from "./local-address.js";
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
@@ -68,6 +67,7 @@ import {
   resolveLinkHost,
   resolveListenHosts,
   sanitizeListenHosts,
+  stateId,
 } from "./paths.js";
 import { detectTailscale } from "./tailscale.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
@@ -111,6 +111,11 @@ const NETWORK_RECONCILE_CACHE_MS = 1_000;
 // still coming up fails the same way whichever host names it, and the single-pinned-host case has
 // no second listener to fall back on.
 const BIND_RETRY_DELAYS_MS = [100, 250, 500];
+// A requested address that still has not bound after that budget is retried in the background for
+// the life of the process (the last delay repeats), so a tailnet address held by a stale daemon or
+// absent while Tailscale restarts comes back without anyone restarting Lavish.
+const BIND_RECOVERY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+const LOOPBACK_OWNER_PROBE_TIMEOUT_MS = 500;
 const WEBSOCKET_CLOSE_GRACE_MS = 250;
 // A half-open socket (a slept laptop, a dropped tailnet path) never emits `close`, so without an
 // application-level ping the server keeps counting a reviewer who is gone - which silently
@@ -284,6 +289,8 @@ export async function serve({
   allowedHosts,
   detectTailscale: detectTailscaleFn,
   lookupHost,
+  extraListenHosts = [],
+  bindRecoveryDelaysMs = BIND_RECOVERY_DELAYS_MS,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 } = {}) {
   // Keep the transport dependency off fast metadata paths such as `--version`.
@@ -294,16 +301,29 @@ export async function serve({
   const detect = detectTailscaleFn === undefined ? detectTailscale : detectTailscaleFn;
   const tailscale = !hosts?.length && autoTailscale && typeof detect === "function" ? await detect() : null;
   const requestedListenHosts = sanitizeListenHosts(
-    hosts?.length ? hosts : resolveListenHosts({ host, env, tailscale }),
+    hosts?.length
+      ? [...hosts, ...extraListenHosts]
+      : resolveListenHosts({ host, env, tailscale, extraHosts: extraListenHosts }),
   );
   const listenHosts = await resolveConcreteListenHosts(requestedListenHosts, {
     ...(lookupHost ? { lookup: lookupHost } : {}),
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
+  const serverStateId = stateId(stateFile);
   let tailscalePhoneReady = false;
-  const absentRequestedHosts = [];
-  let networkWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
+  let tailscaleDetectionWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
+  // Requested addresses that have not bound yet, with the last error for each. Background recovery
+  // keeps retrying them and every surface that reports network health reads them from here, so a
+  // failed tailnet bind is never just one log line nobody sees.
+  /** @type {Map<string, Error>} */
+  const pendingBinds = new Map();
   let resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale, fallbackHost: host });
+  // Declared before anything listens: a live-event client or /shutdown can reach these handlers
+  // the moment the first listener binds, while later addresses are still retrying. Declaring them
+  // after the bind loop made that window a TDZ ReferenceError that crashed restarted servers.
+  let idleTimer = null;
+  let attachmentSweepTimer = null;
+  let bindRecoveryTimer = null;
   const app = express();
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
@@ -329,7 +349,7 @@ export async function serve({
       ? log
       : (line) => process.stderr.write(`${serverStdioIsTimestamped() ? line : formatServerLogLine(line)}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
-  if (networkWarning) writeLog(`[lavish] WARNING: ${networkWarning}`);
+  if (tailscaleDetectionWarning) writeLog(`[lavish] WARNING: ${tailscaleDetectionWarning}`);
   let publicPort = port;
   let serverReady = false;
   let networkReconcileCheckedAt = 0;
@@ -416,12 +436,44 @@ export async function serve({
     if (session?.status === "ended") client.sendEvent("ended", { ended_by: session.ended_by || null });
   }
 
-  function requestedBindIsRecoverable() {
-    return absentRequestedHosts.some((listenHost) => isLocalAddressPresent(listenHost));
+  function networkWarningField() {
+    const networkWarning = currentNetworkWarning();
+    return networkWarning ? { network_warning: networkWarning } : {};
   }
 
+  function describeBindFailure(listenHost, error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    const why =
+      code === "EADDRINUSE"
+        ? "EADDRINUSE: another process is already listening there"
+        : code === "EADDRNOTAVAIL"
+          ? "EADDRNOTAVAIL: that address is not on this machine right now"
+          : code || (error instanceof Error ? error.message : String(error));
+    const address = `${hostForUrl(listenHost)}:${publicPort || port}`;
+    const reachable = `Lavish remains available on ${boundHosts.map((bound) => hostForUrl(bound)).join(", ") || "loopback"}`;
+    if (listenHost === tailscale?.ipv4) {
+      return `Tailscale binding failed for ${address} (${why}); there is no phone access and tailnet review links do not load. ${reachable} and keeps retrying the tailnet address in the background.`;
+    }
+    const fellBack = boundHosts.length > 0 && boundHosts.every((bound) => bound === LOOPBACK_HOST);
+    return `Could not bind ${address} (${why}); ${fellBack ? "Lavish fell back to loopback and is" : "Lavish is"} not reachable at that address. ${reachable} and keeps retrying ${hostForUrl(listenHost)} in the background.`;
+  }
+
+  // Everything that reports network health reads this, so the warning appears and clears with the
+  // bind state instead of being stamped once at startup.
+  function currentNetworkWarning() {
+    return [
+      tailscaleDetectionWarning,
+      ...[...pendingBinds].map(([listenHost, error]) => describeBindFailure(listenHost, error)),
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  // A requested address that failed to bind is recovered in this process (retried now, and in the
+  // background), never by reporting the server stale: a restart cannot free a port another process
+  // holds, and it would drop every live review connection for an address that comes back on its own.
   async function reconcileNetwork() {
-    if (requestedBindIsRecoverable()) return true;
+    await retryPendingBinds();
     if (!(autoTailscale && typeof detect === "function")) return false;
     return reconcileTailscaleNetwork();
   }
@@ -434,7 +486,9 @@ export async function serve({
         const detectedTailscale = await detect();
         const detectedNetwork = tailscaleNetworkKey(detectedTailscale);
         const stale = detectedNetwork !== activeTailscaleNetwork;
-        if (stale) networkWarning = typeof detectedTailscale?.warning === "string" ? detectedTailscale.warning : "";
+        if (stale) {
+          tailscaleDetectionWarning = typeof detectedTailscale?.warning === "string" ? detectedTailscale.warning : "";
+        }
         return stale;
       } catch {
         return false;
@@ -649,10 +703,17 @@ export async function serve({
       return;
     }
     const networkStale = req.query.reconcile_network === "1" ? await reconcileNetwork() : false;
+    const networkWarning = currentNetworkWarning();
     res.json({
       ok: true,
       app: "lavish-axi",
       version,
+      state_id: serverStateId,
+      // Where this process is listening and every address it was asked to serve (bound or still
+      // retrying). The CLI uses both to find one daemon per port whatever host it was configured
+      // with, and to tell a same-port daemon at another address apart from this one.
+      hosts: [...boundHosts],
+      requested_hosts: [...listenHosts],
       ...(networkStale ? { network_stale: true } : {}),
       ...(networkWarning ? { network_warning: networkWarning } : {}),
       listeners: [...activePolls].map(([key, holder]) => ({
@@ -698,7 +759,7 @@ export async function serve({
           file,
           url: sessionUrl,
           status: "user-ended",
-          ...(networkWarning ? { network_warning: networkWarning } : {}),
+          ...networkWarningField(),
         });
         return;
       }
@@ -715,7 +776,7 @@ export async function serve({
         file,
         url,
         status: "opened",
-        ...(networkWarning ? { network_warning: networkWarning } : {}),
+        ...networkWarningField(),
       });
     } catch (error) {
       next(error);
@@ -1885,6 +1946,23 @@ export async function serve({
   let boundPort = port;
   let lastBindError = null;
 
+  // One listen attempt. A listener that finishes binding after shutdown began is closed at once,
+  // or it would keep the process alive with nothing left to serve.
+  async function listenOnce(listenHost) {
+    const httpServer = await listenHttp(app, boundPort, listenHost, (error) => {
+      writeLog(`[lavish] HTTP server error: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    if (shuttingDown) {
+      httpServer.close();
+      throw new Error("Lavish server is shutting down");
+    }
+    httpServer.on("upgrade", handleEventUpgrade);
+    if (boundPort === 0) boundPort = httpServer.address().port;
+    if (!publicPort) publicPort = boundPort;
+    httpServers.push(httpServer);
+    boundHosts.push(listenHost);
+  }
+
   // Bind one address, retrying a transient failure. Whether anything else has bound yet is
   // deliberately NOT consulted here: that check used to run before the retry, which made both the
   // retry and the loopback fallback unreachable whenever the first (or only) host failed - exactly
@@ -1893,16 +1971,10 @@ export async function serve({
     let retryIndex = 0;
     while (true) {
       try {
-        const httpServer = await listenHttp(app, boundPort, listenHost, (error) => {
-          writeLog(`[lavish] HTTP server error: ${error instanceof Error ? error.message : String(error)}`);
-        });
-        httpServer.on("upgrade", handleEventUpgrade);
-        if (boundPort === 0) boundPort = httpServer.address().port;
-        httpServers.push(httpServer);
-        boundHosts.push(listenHost);
+        await listenOnce(listenHost);
         return null;
       } catch (error) {
-        if (retryIndex < BIND_RETRY_DELAYS_MS.length) {
+        if (!shuttingDown && retryIndex < BIND_RETRY_DELAYS_MS.length) {
           await new Promise((resolve) => setTimeout(resolve, BIND_RETRY_DELAYS_MS[retryIndex]));
           retryIndex += 1;
           continue;
@@ -1912,33 +1984,105 @@ export async function serve({
     }
   }
 
-  for (const listenHost of listenHosts) {
+  // Session URLs, the Host allowlist, and phone readiness all follow what is actually bound, so
+  // they are recomputed whenever a listener comes up rather than frozen at startup.
+  function applyNetworkState() {
+    tailscalePhoneReady = Boolean(tailscale?.ipv4 && boundHosts.includes(tailscale.ipv4));
+    if (linkHostName != null) {
+      resolvedLinkHost = linkHostName;
+    } else if (tailscalePhoneReady) {
+      resolvedLinkHost = resolveLinkHost({ env, tailscale, fallbackHost: host });
+    } else if (boundHosts.includes(listenHosts[0])) {
+      resolvedLinkHost = resolveLinkHost({ env, tailscale: null, fallbackHost: host });
+    } else {
+      // Session URLs must name somewhere that is actually listening, so while the requested host
+      // is unbound the link host moves to loopback unless the operator named one explicitly.
+      resolvedLinkHost = resolveLinkHost({ env, tailscale: null, fallbackHost: LOOPBACK_HOST });
+    }
+    const servesHost = (candidate) => candidate !== tailscale?.ipv4 || tailscalePhoneReady;
+    const nextAllowedHostnames = buildAllowedHostnames({
+      host: requestedListenHosts[0],
+      hosts: [...requestedListenHosts.filter(servesHost), ...listenHosts.filter(servesHost), ...boundHosts],
+      linkHost: resolvedLinkHost,
+      allowedHosts: extraHosts,
+    });
+    allowedHostnames.clear();
+    for (const allowedHostname of nextAllowedHostnames) allowedHostnames.add(allowedHostname);
+  }
+
+  // A later attempt for every requested address still unbound. Shared by the background schedule
+  // and by /health?reconcile_network=1, so a CLI invocation right after the address frees up binds
+  // it immediately instead of waiting for the next tick.
+  let bindRecoveryInFlight = null;
+  async function retryPendingBinds() {
+    if (pendingBinds.size === 0 || shuttingDown) return;
+    if (!bindRecoveryInFlight) {
+      bindRecoveryInFlight = (async () => {
+        let bound = false;
+        for (const listenHost of [...pendingBinds.keys()]) {
+          if (shuttingDown) return;
+          try {
+            await listenOnce(listenHost);
+            pendingBinds.delete(listenHost);
+            bound = true;
+            writeLog(`[lavish] now listening on ${hostForUrl(listenHost)}:${boundPort} after an earlier bind failure.`);
+          } catch (error) {
+            if (!shuttingDown) pendingBinds.set(listenHost, error instanceof Error ? error : new Error(String(error)));
+          }
+        }
+        if (bound) applyNetworkState();
+      })().finally(() => {
+        bindRecoveryInFlight = null;
+      });
+    }
+    await bindRecoveryInFlight;
+  }
+
+  let bindRecoveryAttempt = 0;
+  function scheduleBindRecovery() {
+    if (shuttingDown || pendingBinds.size === 0 || bindRecoveryTimer || !bindRecoveryDelaysMs.length) return;
+    const delay = bindRecoveryDelaysMs[Math.min(bindRecoveryAttempt, bindRecoveryDelaysMs.length - 1)];
+    bindRecoveryAttempt += 1;
+    bindRecoveryTimer = setTimeout(() => {
+      bindRecoveryTimer = null;
+      retryPendingBinds()
+        .catch(() => {})
+        .finally(() => scheduleBindRecovery());
+    }, delay);
+    bindRecoveryTimer.unref?.();
+  }
+
+  // Loopback is bound first because it is this port's control address: every CLI probes it
+  // whatever its own LAVISH_AXI_HOST says. Whoever holds it owns the port, so a second Lavish
+  // server started concurrently (two agents with different host settings) loses here and exits
+  // instead of taking the remaining addresses and splitting one port across two daemons that share
+  // one state file.
+  const bindOrder = listenHosts.includes(LOOPBACK_HOST)
+    ? [LOOPBACK_HOST, ...listenHosts.filter((listenHost) => listenHost !== LOOPBACK_HOST)]
+    : listenHosts;
+  for (const listenHost of bindOrder) {
     const error = await bindListener(listenHost);
     if (!error) continue;
     lastBindError = error;
-    if (isAddressAbsentBindError(error)) absentRequestedHosts.push(listenHost);
-    if (listenHost === tailscale?.ipv4) {
-      networkWarning = "Tailscale binding failed; there is no phone access. Lavish remains available on loopback.";
-      writeLog(`[lavish] WARNING: ${networkWarning} Address: ${listenHost}:${boundPort}.`);
-    } else {
-      logEvent?.(`failed to bind ${listenHost}:${boundPort}: ${error.message}`);
+    if (listenHost === LOOPBACK_HOST && isAddressInUseBindError(error)) {
+      const owner = await probeLavishHealth(LOOPBACK_HOST, boundPort);
+      if (owner) {
+        throw new Error(
+          `Another Lavish server (version ${owner.version || "unknown"}) already owns port ${boundPort} on ${LOOPBACK_HOST}; not starting a second one.`,
+          { cause: error },
+        );
+      }
     }
+    pendingBinds.set(listenHost, error);
   }
 
   // Loopback floor. A server that cannot reach its requested address is still far more useful on
   // loopback than absent: the local agent CLI keeps working, and the next invocation finds THIS
-  // server instead of spawning a duplicate beside it. Only reached when nothing else bound, so a
-  // healthy multi-listener startup is untouched.
-  let loopbackFallback = false;
+  // server instead of spawning a duplicate beside it. Only reached when nothing else bound and
+  // loopback was not requested, so a healthy multi-listener startup is untouched.
   if (httpServers.length === 0 && !listenHosts.includes(LOOPBACK_HOST)) {
     const error = await bindListener(LOOPBACK_HOST);
-    if (error) {
-      lastBindError = error;
-    } else {
-      loopbackFallback = true;
-      networkWarning = `Could not bind ${listenHosts.join(", ")}; Lavish fell back to loopback and is not reachable at that address.`;
-      writeLog(`[lavish] WARNING: ${networkWarning} Address: ${listenHosts[0]}:${boundPort}.`);
-    }
+    if (error) lastBindError = error;
   }
   if (httpServers.length === 0) {
     throw new Error(
@@ -1964,25 +2108,15 @@ export async function serve({
     boundHosts.length = 0;
     throw error;
   }
-  // Session URLs must name somewhere that is actually listening, so a fallback moves the link host
-  // to loopback unless the operator named one explicitly.
-  if (loopbackFallback) {
-    resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale: null, fallbackHost: LOOPBACK_HOST });
-  }
-  tailscalePhoneReady = Boolean(tailscale?.ipv4 && boundHosts.includes(tailscale.ipv4));
-  if (tailscale?.ipv4 && !tailscalePhoneReady) {
-    resolvedLinkHost = linkHostName ?? resolveLinkHost({ env, tailscale: null, fallbackHost: host });
-    const fallbackAllowedHostnames = buildAllowedHostnames({
-      host: requestedListenHosts[0],
-      hosts: [...requestedListenHosts.filter((requestedHost) => requestedHost !== tailscale.ipv4), ...boundHosts],
-      linkHost: resolvedLinkHost,
-      allowedHosts: extraHosts,
-    });
-    allowedHostnames.clear();
-    for (const allowedHostname of fallbackAllowedHostnames) allowedHostnames.add(allowedHostname);
-  }
+  applyNetworkState();
   publicPort = httpServers[0].address().port;
+  // Always logged, not only under --verbose: an address that silently stopped serving is what left
+  // tailnet review links dead for most of an hour with nothing but a debug line to show for it.
+  for (const [listenHost, error] of pendingBinds) {
+    writeLog(`[lavish] WARNING: ${describeBindFailure(listenHost, error)}`);
+  }
   serverReady = true;
+  scheduleBindRecovery();
 
   // `cause` is log-only and never reaches a chrome: `reason` is the user-facing SHUTDOWN_REASONS
   // value, and widening it here would let an internal cause render as a banner line that claims
@@ -1998,6 +2132,10 @@ export async function serve({
     if (attachmentSweepTimer) {
       clearInterval(attachmentSweepTimer);
       attachmentSweepTimer = null;
+    }
+    if (bindRecoveryTimer) {
+      clearTimeout(bindRecoveryTimer);
+      bindRecoveryTimer = null;
     }
     // Only the chrome whose artifact is being reopened is reloaded: the replacement server
     // adopts that session via state.json once it binds, and the caller named it. Every other
@@ -2041,7 +2179,6 @@ export async function serve({
 
   // Idle self-shutdown: the timer only runs while nothing is connected. Any live event chrome or
   // active long-poll cancels it; losing the last connection (re)arms it.
-  let idleTimer = null;
   function refreshIdleTimer() {
     if (idleTimer) {
       clearTimeout(idleTimer);
@@ -2098,7 +2235,6 @@ export async function serve({
   // and then on a fixed interval; skipped entirely when neither a TTL nor a disk
   // cap is configured. Never touches attachments referenced by pending prompts.
   const attachmentSweepEnabled = attachmentConfig.ttlMs != null || attachmentConfig.maxDiskBytes != null;
-  let attachmentSweepTimer = null;
   async function sweepAttachmentsNow() {
     try {
       // The reference snapshot AND the enumerate/delete run as one critical section
@@ -2183,8 +2319,41 @@ function tailscaleNetworkKey(tailscale) {
   return `up\n${tailscale.ipv4}\n${tailscale.magicDnsName}`;
 }
 
-function isAddressAbsentBindError(error) {
-  return error instanceof Error && "code" in error && error.code === "EADDRNOTAVAIL";
+function isAddressInUseBindError(error) {
+  return error instanceof Error && "code" in error && error.code === "EADDRINUSE";
+}
+
+// Whether a Lavish server answers /health at this address. Bounded, because a foreign process
+// that accepts the connection and never answers must not stall startup, and the socket is
+// destroyed on every exit path: a lingering probe connection keeps a failed server process alive
+// and holds the other process's close() open.
+function probeLavishHealth(host, port) {
+  return new Promise((resolve) => {
+    const request = httpGet({ host, port, path: "/health", agent: false }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > 64 * 1024) request.destroy();
+      });
+      response.on("end", () => {
+        request.destroy();
+        try {
+          const parsed = JSON.parse(body);
+          resolve(parsed && typeof parsed === "object" && parsed.app === "lavish-axi" ? parsed : null);
+        } catch {
+          resolve(null);
+        }
+      });
+      response.on("error", () => resolve(null));
+    });
+    request.setTimeout(LOOPBACK_OWNER_PROBE_TIMEOUT_MS, () => {
+      request.destroy();
+      resolve(null);
+    });
+    request.on("error", () => resolve(null));
+    request.on("close", () => resolve(null));
+  });
 }
 
 function wantsHtml(req) {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { mkdir } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -31,20 +32,24 @@ export function bindHost(env = process.env) {
 
 /**
  * Concrete listen addresses. Never includes 0.0.0.0 / ::.
- * When LAVISH_AXI_HOST is unset, bind loopback plus Tailscale IPv4 if present.
- * An explicit LAVISH_AXI_HOST stays that single safe concrete address.
- * @param {{ host?: string, env?: NodeJS.ProcessEnv, tailscale?: { ipv4?: string } | null }} [options]
+ * The first entry is the primary (requested) host. Loopback is always included: it is the one
+ * address every CLI probes whatever its own LAVISH_AXI_HOST says, so a server pinned to a
+ * Tailscale or LAN address is still found by a client configured without one instead of that
+ * client spawning a second daemon on the same port. When LAVISH_AXI_HOST is unset, the Tailscale
+ * IPv4 is added when present.
+ * @param {{ host?: string, env?: NodeJS.ProcessEnv, tailscale?: { ipv4?: string } | null, extraHosts?: string[] }} [options]
  * @returns {string[]}
  */
-export function resolveListenHosts({ host, env = process.env, tailscale = null } = {}) {
+export function resolveListenHosts({ host, env = process.env, tailscale = null, extraHosts = [] } = {}) {
   const envHost = env.LAVISH_AXI_HOST?.trim() || "";
   const autoTailscale = !envHost;
   const requested = host || bindHost(env);
   const primary = isWildcardHost(requested) ? LOOPBACK_HOST : requested || LOOPBACK_HOST;
-  const hosts = [primary];
+  const hosts = [primary, LOOPBACK_HOST];
   if (autoTailscale && tailscale?.ipv4 && tailscale.ipv4 !== primary && !isWildcardHost(tailscale.ipv4)) {
     hosts.push(tailscale.ipv4);
   }
+  hosts.push(...extraHosts);
   return sanitizeListenHosts(hosts);
 }
 
@@ -129,6 +134,13 @@ export function stateDir() {
 
 export function stateFile() {
   return path.join(stateDir(), "state.json");
+}
+
+// Which Lavish installation a server belongs to, reported by /health. A CLI only ever stops a
+// duplicate daemon that shares its own state file, so another user's (or another test's) server on
+// the same port at a different address is never touched.
+export function stateId(file = stateFile()) {
+  return createHash("sha256").update(path.resolve(file)).digest("hex").slice(0, 16);
 }
 
 export function serverLogFile() {
