@@ -1886,8 +1886,9 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       health?.app === "lavish-axi" ? missingServerHosts(health, hostsToServe(requiredHosts, liveDuplicates)) : [];
     // Once is the bound: every replacement carries the hosts of the server it replaces, so two CLIs
     // that each need their own address converge on one server instead of replacing each other.
-    if (health && !shouldRestartServer(VERSION, health) && (liveMissing.length === 0 || raceRestarted)) {
-      return adoptServer(liveUrl, liveDuplicates, reloadKey);
+    if (health && !shouldRestartServer(VERSION, health)) {
+      if (liveMissing.length === 0) return adoptServer(liveUrl, liveDuplicates, reloadKey);
+      if (raceRestarted) throw missingHostsError(port, liveMissing);
     }
     // Another daemon won the port while ours was starting (ours exits when a Lavish server already
     // owns loopback) - an older release, or one missing an address this CLI needs. Retire it and
@@ -1907,7 +1908,10 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       continue;
     }
     if (health?.network_stale === true && health.app === "lavish-axi") {
-      if (networkRestarted) return adoptServer(liveUrl, liveDuplicates, reloadKey);
+      if (networkRestarted) {
+        if (liveMissing.length > 0) throw missingHostsError(port, liveMissing);
+        return adoptServer(liveUrl, liveDuplicates, reloadKey);
+      }
       alsoListen = inheritedListenHosts([health], requiredHosts, alsoListen);
       await requestShutdown(liveUrl, { reloadKey, reason: "" });
       if (!(await waitForPortFree(liveUrl, 3000))) break;
@@ -1922,6 +1926,14 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   throw new AxiError("Lavish Editor server did not start", "SERVER_ERROR", [
     `Run \`lavish-axi server --port ${port}\` to inspect server startup`,
   ]);
+}
+
+function missingHostsError(port, missingHosts) {
+  return new AxiError(
+    `The Lavish server on port ${port} does not serve ${missingHosts.join(", ")}, and replacing it did not stick`,
+    "SERVER_ERROR",
+    ["Run `lavish-axi stop`, then retry"],
+  );
 }
 
 // Pure helper so the upgrade-detection logic is unit-testable without spinning up HTTP.

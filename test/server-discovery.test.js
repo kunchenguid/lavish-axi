@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
 import { inheritedListenHosts, run, stopCommand, VERSION } from "../src/cli.js";
+import { stateId } from "../src/paths.js";
 import { serve } from "../src/server.js";
 
 // 192.0.2.0/24 is TEST-NET-1: assigned to no interface, so binding it fails with EADDRNOTAVAIL.
@@ -679,6 +680,64 @@ test(
         await first.close().catch(() => {});
         await (await racer.catch(() => null))?.close().catch(() => {});
         await shutdownAt("127.0.0.1", port);
+        await shutdownAt(otherHost, port);
+      }
+    });
+  },
+);
+
+test(
+  "a server that still lacks this CLI's address after the one retry fails the open instead of adopting it",
+  { timeout: 30_000 },
+  async (t) => {
+    const otherHost = otherLocalIpv4();
+    if (!otherHost) {
+      t.skip("host has no non-loopback IPv4 address");
+      return;
+    }
+    await withTempDir(async (dir) => {
+      const artifact = await writeArtifact(dir);
+      const port = await freePort(otherHost);
+      // A loopback-only server of this installation that another CLI restarts every time this one
+      // shuts it down: after each /shutdown it answers like a Lavish server still starting (503),
+      // which frees the port for this CLI's probes but makes the server it spawns stand down.
+      let shutdowns = 0;
+      let startingUntil = 0;
+      const loopbackOnly = createHttpServer((req, res) => {
+        if (req.url?.startsWith("/health")) {
+          const starting = Date.now() < startingUntil;
+          res.writeHead(starting ? 503 : 200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify(
+              starting
+                ? { ok: false, app: "lavish-axi", version: VERSION }
+                : {
+                    ok: true,
+                    app: "lavish-axi",
+                    version: VERSION,
+                    state_id: stateId(path.join(dir, "state.json")),
+                    hosts: ["127.0.0.1"],
+                    requested_hosts: ["127.0.0.1"],
+                  },
+            ),
+          );
+          return;
+        }
+        if (req.method === "POST" && req.url === "/shutdown") {
+          shutdowns += 1;
+          startingUntil = Date.now() + 1200;
+        }
+        res.writeHead(404).end();
+      });
+      await new Promise((resolve) => loopbackOnly.listen({ host: "127.0.0.1", port }, () => resolve(undefined)));
+      try {
+        const output = await withEnv(cliEnv(dir, port, otherHost), () => captureCli(["open", artifact, "--no-open"]));
+        assert.equal(shutdowns, 2, "expected the initial replacement plus exactly one retry");
+        assert.match(output, /SERVER_ERROR/);
+        assert.ok(output.includes(otherHost), `expected the missing address in ${output}`);
+        assert.match(output, /lavish-axi stop/);
+      } finally {
+        await new Promise((resolve) => loopbackOnly.close(() => resolve(undefined)));
         await shutdownAt(otherHost, port);
       }
     });
