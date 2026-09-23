@@ -148,7 +148,7 @@ test("a stale control-channel server is replaced only once per CLI invocation", 
   });
 });
 
-test("a server that cannot bind a control-channel address closes every listener and fails", async () => {
+test("an occupied loopback control address prevents binding another listener", async () => {
   await withTempDir(async (dir) => {
     // Drops each connection: startup probes an occupied loopback port for a Lavish owner, and a
     // connection nobody reads would hold this server's close() open.
@@ -168,7 +168,7 @@ test("a server that cannot bind a control-channel address closes every listener 
         }),
         (error) => {
           assert.ok(error instanceof Error);
-          assert.match(error.message, /control-channel address/);
+          assert.match(error.message, /Loopback .* already in use/);
           return true;
         },
       );
@@ -284,9 +284,10 @@ test("a bind that cannot succeed anywhere still fails loudly and names the cause
         }),
         (error) => {
           assert.ok(error instanceof Error);
-          assert.match(error.message, /failed to bind any address/);
-          // The cause has to survive: "failed to bind" with no errno is undiagnosable in server.log.
-          assert.match(error.message, /EADDRINUSE/);
+          assert.match(error.message, /Loopback .* already in use/);
+          // The cause has to survive so a caller can diagnose the occupied port.
+          assert.ok(error.cause instanceof Error && "code" in error.cause);
+          assert.equal(error.cause.code, "EADDRINUSE");
           return true;
         },
       );

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -375,6 +375,69 @@ test("a second server for a port whose loopback a Lavish server owns refuses to 
       // port is exactly what the loopback owner check exists to prevent.
       const probe = await listenRaw(otherHost, owner.port);
       await closeRaw(probe);
+    } finally {
+      await owner.close();
+    }
+  });
+});
+
+test("a foreign loopback listener prevents a pinned server from claiming the same port", async (t) => {
+  const otherHost = otherLocalIpv4();
+  if (!otherHost) {
+    t.skip("host has no non-loopback IPv4 address");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const loopback = await listenRaw("127.0.0.1", 0);
+    const port = /** @type {import('node:net').AddressInfo} */ (loopback.address()).port;
+    try {
+      const contender = await serve({
+        port,
+        stateFile: path.join(dir, "state.json"),
+        version: "9.9.9-test",
+        env: { LAVISH_AXI_HOST: otherHost },
+        log: () => {},
+        idleTimeoutMs: null,
+      }).then(
+        (server) => ({ server, error: null }),
+        (error) => ({ server: null, error }),
+      );
+      try {
+        assert.match(contender.error?.message || "", /loopback.*already in use|already in use.*loopback/i);
+        const available = await listenRaw(otherHost, port);
+        await closeRaw(available);
+      } finally {
+        await contender.server?.close();
+      }
+    } finally {
+      await closeRaw(loopback);
+    }
+  });
+});
+
+test("a symlinked state directory adopts the daemon started at its target", async () => {
+  await withTempDir(async (dir) => {
+    const alias = path.join(dir, "alias");
+    await symlink(dir, alias, "dir");
+    const artifact = await writeArtifact(dir);
+    const port = await freePort();
+    const owner = await serve({
+      port,
+      stateFile: path.join(dir, "state.json"),
+      version: VERSION,
+      env: { LAVISH_AXI_HOST: "127.0.0.1" },
+      detectTailscale: null,
+      log: () => {},
+      idleTimeoutMs: null,
+    });
+    try {
+      await withEnv(cliEnv(alias, port, "127.0.0.1"), async () => {
+        await runCli(["open", artifact, "--no-open"]);
+      });
+      assert.equal(await isResolved(owner.done), false, "the original daemon was replaced");
+      const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+      assert.equal(health.state_id, stateId(path.join(alias, "state.json")));
+      assert.equal(health.version, VERSION);
     } finally {
       await owner.close();
     }

@@ -2085,12 +2085,12 @@ export async function serve({
     lastBindError = error;
     if (listenHost === LOOPBACK_HOST && isAddressInUseBindError(error)) {
       const owner = await probeLavishHealth(LOOPBACK_HOST, boundPort);
-      if (owner) {
-        throw new Error(
-          `Another Lavish server (version ${owner.version || "unknown"}) already owns port ${boundPort} on ${LOOPBACK_HOST}; not starting a second one.`,
-          { cause: error },
-        );
-      }
+      throw new Error(
+        owner
+          ? `Another Lavish server (version ${owner.version || "unknown"}) already owns port ${boundPort} on ${LOOPBACK_HOST}; not starting a second one.`
+          : `Loopback ${LOOPBACK_HOST}:${boundPort} is already in use; not starting a Lavish server on another address.`,
+        { cause: error },
+      );
     }
     pendingBinds.set(listenHost, error);
   }

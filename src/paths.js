@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
+import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -146,9 +147,21 @@ export function stateFile() {
 
 // Which Lavish installation a server belongs to, reported by /health. A CLI only ever stops a
 // duplicate daemon that shares its own state file, so another user's (or another test's) server on
-// the same port at a different address is never touched.
+// the same port at a different address is never touched. Resolve the directory, not the state file:
+// state.json may not exist yet when the server first reports its identity.
 export function stateId(file = stateFile()) {
-  return createHash("sha256").update(path.resolve(file)).digest("hex").slice(0, 16);
+  const directory = path.dirname(path.resolve(file));
+  let canonicalDirectory;
+  try {
+    canonicalDirectory = realpathSync(directory);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    canonicalDirectory = directory;
+  }
+  return createHash("sha256")
+    .update(path.join(canonicalDirectory, path.basename(file)))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 export function serverLogFile() {
