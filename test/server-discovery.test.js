@@ -592,7 +592,11 @@ test("another installation's server on loopback is never used or stopped", { tim
     try {
       const output = await withEnv(cliEnv(dir, port, undefined), () => captureCli(["open", artifact, "--no-open"]));
       assert.match(output, /SERVER_ERROR/);
-      assert.ok(output.includes(otherInstallDir), `expected the other state directory in ${output}`);
+      // TOON escapes backslashes in quoted Windows paths.
+      assert.ok(
+        output.includes(otherInstallDir.replaceAll("\\", "\\\\")),
+        `expected the other state directory in ${output}`,
+      );
       await withEnv(cliEnv(dir, port, undefined), () => assert.rejects(stopCommand([]), { code: "SERVER_ERROR" }));
       assert.equal(await isResolved(otherInstall.done), false, "another installation's server was stopped");
       assert.deepEqual(await stateSessions(otherInstallDir), []);
