@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.79](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.78...lavish-axi-v0.1.79) (2026-09-25)
+
+
+### Features
+
+* add standalone answer copying to input playbook ([#377](https://github.com/kunchenguid/lavish-axi/issues/377)) ([f4ed5ff](https://github.com/kunchenguid/lavish-axi/commit/f4ed5ff63e8a76eb86190ce944499fd67ecff455))
+
 ## [0.1.78](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.77...lavish-axi-v0.1.78) (2026-09-23)
 
 
