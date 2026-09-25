@@ -47,12 +47,14 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - Adopt, replace, or stop only a server `isOwnedServer` owns. Another installation's server at a control address is a `SERVER_ERROR`, never used, replaced, or stopped. [Process model](docs/invariants.md#process-model).
 - Every server replacement passes all previously requested hosts through `inheritedListenHosts` (`--also-listen`), dropping only IPs no longer on a local interface. [Process model](docs/invariants.md#process-model).
 - Loopback is always requested. An unresolvable `LAVISH_AXI_HOST` is kept (`keepUnresolved`) and retried, never silently dropped. [Process model](docs/invariants.md#process-model).
+- A wildcard listen request becomes loopback, and an alias that resolves to an all-interfaces address is refused. Never open a wildcard listener. [Process model](docs/invariants.md#process-model).
 - Health probes use `node:http` and destroy the socket on every exit. Do not use `fetch`. [Process model](docs/invariants.md#process-model).
 - Loopback binds first and is the port lock. A failed requested address stays in `pendingBinds` and is retried. Declare request-handler timers before the first bind. [Process model](docs/invariants.md#process-model).
 - Host allowlist, then Origin/Referer guard. Header-less CLI control requests must keep working. `*` skips hostname membership and still rejects a malformed forwarded authority. [Process model](docs/invariants.md#process-model).
 - Live-event WebSockets keep the ping/pong heartbeat so half-open sockets terminate. Idle self-shutdown keys off tracked live connections, not session status. [Process model](docs/invariants.md#process-model).
 - The detached server entrypoint logs `uncaughtException` and exits 1 explicitly. Each listener keeps its `error` handler after `listening`. [Process model](docs/invariants.md#process-model).
 - `/api/:key/prompts`, `/share`, whiteboard writes, and attachment upload/delete are same-origin guarded. The key alone must never queue a prompt or publish. [Request flow](docs/invariants.md#request-flow).
+- Poll control `GET` and `POST` requests reject a present foreign Origin or Referer while header-less CLI requests keep working. [Request flow](docs/invariants.md#request-flow).
 - The chrome page (`/session/:key`) answers `X-Frame-Options: DENY` and `frame-ancestors 'none'`. Keep that header off `/artifact/*` and `/whiteboard-frame`, which are framed. [Request flow](docs/invariants.md#request-flow).
 - The artifact route injects only the one SDK `<script>` tag. Served artifact bytes otherwise match the file on disk. [Request flow](docs/invariants.md#request-flow).
 - Artifact asset serving (`/artifact/:key/<path>`) resolves with `realpath` and never serves a symlink target outside the artifact directory. [Request flow](docs/invariants.md#request-flow).
@@ -62,6 +64,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - Only agent chat entries render as HTML. User entries are always escaped. [Request flow](docs/invariants.md#request-flow).
 - A note's Sending state is derived from the existing send bookkeeping, never tracked separately. [Request flow](docs/invariants.md#request-flow).
 - `/api/:key/prompts` rejects every new batch for an ended session. Only the internal `restore` replay is exempt. [Request flow](docs/invariants.md#request-flow).
+- A session the user ended never reopens without explicit opt-in (`reopen: true`, the CLI's `--reopen`). [Request flow](docs/invariants.md#request-flow).
 - Poll ownership is exclusive per session in `activePolls`. Takeover installs the new holder before releasing the old one, and claims, including the reply write, serialize through `pollOwnershipLock`. [Request flow](docs/invariants.md#request-flow).
 - Every poll exit path undoes the presence it set and cancels the disconnect grace timer. `/api/poll` subscribes to closure before its first `await`. [Request flow](docs/invariants.md#request-flow).
 - Poll stdout is reserved for the final JSON/TOON response. Recurring wait ticks go to stderr only on a TTY, and notification failure never affects the poll. [Request flow](docs/invariants.md#request-flow).
