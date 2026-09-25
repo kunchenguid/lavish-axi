@@ -697,8 +697,29 @@ export async function serve({
     return defaultJsonParser(req, res, next);
   });
 
-  app.get("/", (_req, res) => {
-    res.type("html").send(createLandingHtml());
+  app.get("/", async (req, res) => {
+    // The index below discloses every open session's file path and a working
+    // capability URL, so it must never reach a caller that isn't this machine
+    // talking to itself. `X-Forwarded-Host` means a reverse proxy relayed the
+    // request; the proxy's own loopback hop to this process would otherwise
+    // make every proxied client look like loopback (#308 round 2).
+    if (!isLoopbackRequestAddress(req) || req.headers["x-forwarded-host"] !== undefined) {
+      res.type("html").send(createLandingHtml());
+      return;
+    }
+    let sessions;
+    try {
+      sessions = await store.listSessions();
+    } catch {
+      // A corrupt or unreadable state.json must not take the landing page down with it: the
+      // plain card keeps serving and discloses nothing (Greptile P2).
+      logEvent?.("session index fell back to landing card: state unreadable");
+      res.type("html").send(createLandingHtml());
+      return;
+    }
+    const listeners = new Map([...activePolls].map(([key, holder]) => [key, listenerLabel(holder)]));
+    const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1);
+    res.type("html").send(createSessionsIndexHtml({ sessions, listeners, page }));
   });
 
   app.get("/health", async (req, res) => {
@@ -2384,6 +2405,64 @@ function createLandingHtml() {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lavish Editor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ef;color:#25221f;font:16px/1.5 system-ui,sans-serif}.card{width:min(560px,calc(100% - 40px));padding:32px;border:1px solid #d9d0c5;border-radius:16px;background:#fffdf9;box-shadow:0 12px 40px #25221f18}h1{margin:0 0 12px;font-size:26px}p{margin:0}</style></head><body><main class="card"><h1>Lavish Editor is running</h1><p>Open the review session URL printed by your agent.</p></main></body></html>`;
 }
 
+const SESSIONS_INDEX_PAGE_SIZE = 10;
+const ENDED_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const ENDED_HISTORY_LIMIT = 20;
+
+// The read-only session index served at GET / (#308). Open sessions sort newest-first and
+// paginate server-side; recently ended sessions render greyed WITHOUT links and only on page
+// 1, because reopening a user-ended session is the CLI's `--reopen`, never the browser.
+// Every stored value renders through escapeHtml - state.json content is never markup.
+export function createSessionsIndexHtml({ sessions, listeners, page }) {
+  const byUpdatedDesc = (a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+  const open = sessions.filter((session) => session.status !== "ended").sort(byUpdatedDesc);
+  const ended = sessions
+    .filter(
+      (session) =>
+        session.status === "ended" &&
+        Date.now() - new Date(session.updated_at || 0).getTime() <= ENDED_HISTORY_WINDOW_MS,
+    )
+    .sort(byUpdatedDesc)
+    .slice(0, ENDED_HISTORY_LIMIT);
+  if (open.length === 0 && ended.length === 0) return createLandingHtml();
+
+  const pageCount = Math.max(1, Math.ceil(open.length / SESSIONS_INDEX_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pageSessions = open.slice((currentPage - 1) * SESSIONS_INDEX_PAGE_SIZE, currentPage * SESSIONS_INDEX_PAGE_SIZE);
+  // state.json is not schema-validated, so a stored value interpolates only after coercing to a
+  // bounded integer - a nonnumeric pending_prompts can never render as markup (Greptile P2).
+  const pendingCount = (session) => {
+    const value = Number(session.pending_prompts);
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+  };
+  const openRows = pageSessions
+    .map(
+      (session) =>
+        `<li class="session"><a href="/session/${encodeURIComponent(session.key)}">Open</a> <span class="file">${escapeHtml(session.file)}</span> <span class="status">${escapeHtml(session.status)}</span> <span class="pending">${pendingCount(session)} pending</span> <span class="listener">${escapeHtml(listeners.get(session.key) || "none")}</span></li>`,
+    )
+    .join("");
+  const nav = [
+    currentPage > 1 ? `<a href="/?page=${currentPage - 1}">Previous</a>` : "",
+    currentPage < pageCount ? `<a href="/?page=${currentPage + 1}">Next</a>` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const openSection = `<h2>Open</h2>${
+    openRows ? `<ul class="sessions">${openRows}</ul><p class="pages">${nav}</p>` : "<p>No open sessions.</p>"
+  }`;
+  const endedRows =
+    currentPage === 1
+      ? ended
+          .map(
+            (session) =>
+              `<li class="session ended"><span class="file">${escapeHtml(session.file)}</span> <span class="status">ended</span> <span class="pending">${pendingCount(session)} pending</span></li>`,
+          )
+          .join("")
+      : "";
+  const endedSection = endedRows ? `<h2>Recently ended</h2><ul class="sessions">${endedRows}</ul>` : "";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lavish Editor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ef;color:#25221f;font:16px/1.5 system-ui,sans-serif}.card{width:min(560px,calc(100% - 40px));padding:32px;border:1px solid #d9d0c5;border-radius:16px;background:#fffdf9;box-shadow:0 12px 40px #25221f18}h1{margin:0 0 12px;font-size:26px}h2{margin:18px 0 8px;font-size:15px}p{margin:0}.sessions{margin:0;padding:0;list-style:none}.session{padding:6px 0;border-bottom:1px solid #efe9e1;font-size:14px}.session .file{overflow-wrap:anywhere}.session .status,.session .pending,.session .listener{color:#6d675f;margin-left:8px}.session.ended{color:#a39a8f}.session.ended .status,.session.ended .pending{color:#a39a8f}a{color:inherit;font-weight:700}.pages a{margin-right:10px}</style></head><body><main class="card"><h1>Lavish Editor is running</h1>${openSection}${endedSection}</main></body></html>`;
+}
+
 function createDeniedHtml({ title, message, workingUrl }) {
   const safeTitle = escapeHtml(title);
   const safeMessage = escapeHtml(message);
@@ -2455,6 +2534,16 @@ export function buildAllowedHostnames({ host, hosts = [], linkHost: linkHostName
 // allowlist, for operators who front the server with their own auth/proxy.
 export function allowsAllHosts(allowedHosts = []) {
   return allowedHosts.some((value) => String(value).trim() === "*");
+}
+
+const LOOPBACK_ADDRESS_PATTERN = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+
+// Whether the TCP peer for this request is this machine talking to itself.
+// Used to gate disclosure (the GET / session index) on something a Host or
+// Origin header can never prove, since both are attacker-controlled.
+export function isLoopbackRequestAddress(req) {
+  const address = req.socket?.remoteAddress ?? req.ip ?? "";
+  return LOOPBACK_ADDRESS_PATTERN.test(String(address));
 }
 
 function parseHostAuthority(value) {
