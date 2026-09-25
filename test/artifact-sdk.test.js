@@ -10,6 +10,7 @@ import {
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
+  sanitizeChromeThemeTokens,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -323,4 +324,31 @@ test("isModeToggleHotkeyEvent rejects extra shift or alt modifiers", () => {
 test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () => {
   assert.equal(isModeToggleHotkeyEvent({ key: "e", metaKey: true }), false);
   assert.equal(isModeToggleHotkeyEvent({ key: "Enter", metaKey: true }), false);
+});
+
+test("sanitizeChromeThemeTokens keeps well-formed custom properties with plain values", () => {
+  assert.deepEqual(sanitizeChromeThemeTokens({ "--accent": "#a8461e", "--color-scheme": "light" }), {
+    "--accent": "#a8461e",
+    "--color-scheme": "light",
+  });
+  assert.deepEqual(sanitizeChromeThemeTokens({ "--shadow-floating": "0 20px 70px rgba(20, 20, 19, 0.18)" }), {
+    "--shadow-floating": "0 20px 70px rgba(20, 20, 19, 0.18)",
+  });
+});
+
+test("sanitizeChromeThemeTokens drops anything that could escape the declaration", () => {
+  assert.equal(sanitizeChromeThemeTokens({ "--accent": "red; background: url(x)" }), null);
+  assert.equal(sanitizeChromeThemeTokens({ "--accent": "red}body{display:none" }), null);
+  assert.equal(sanitizeChromeThemeTokens({ "--accent": "</style><script>" }), null);
+  assert.equal(sanitizeChromeThemeTokens({ color: "red", "--Bad": "red", "-- x": "red" }), null);
+  assert.equal(sanitizeChromeThemeTokens({ "--accent": 42 }), null);
+  assert.deepEqual(sanitizeChromeThemeTokens({ "--fg": "#fff", "--accent": "x;y" }), { "--fg": "#fff" });
+});
+
+test("sanitizeChromeThemeTokens reads a missing or malformed theme as the card's own default", () => {
+  assert.equal(sanitizeChromeThemeTokens(null), null);
+  assert.equal(sanitizeChromeThemeTokens(undefined), null);
+  assert.equal(sanitizeChromeThemeTokens("--accent: red"), null);
+  assert.equal(sanitizeChromeThemeTokens(["--accent", "red"]), null);
+  assert.equal(sanitizeChromeThemeTokens({}), null);
 });

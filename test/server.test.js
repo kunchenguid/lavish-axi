@@ -433,6 +433,54 @@ test("createChromeHtml exposes attachment limits and Conversation attachment con
   assert.match(html, /"attachmentAcceptedMime":\["image\/png","image\/jpeg","image\/webp"\]/);
 });
 
+test("createChromeHtml applies a stored theme in <head>, before the stylesheet paints", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const head = html.slice(0, html.indexOf("</head>"));
+  assert.match(
+    head,
+    /<link rel="stylesheet" href="\/chrome\.css">\n<style id="lavishThemes">[^<]*:root\[data-lavish-theme="paper"\]/,
+  );
+  assert.match(head, /<script data-lavish-theme-boot>try\{[^<]*lavish-axi:chrome-theme[^<]*<\/script>/);
+  // The default theme is the stylesheet itself: nothing to override, nothing to select.
+  assert.doesNotMatch(head, /data-lavish-theme="brass"/);
+});
+
+test("createChromeHtml offers every theme as a radio in the More menu, default checked", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const menu = html.slice(html.indexOf('id="moreMenu"'), html.indexOf('id="end"'));
+  const group = menu.match(
+    /<div class="theme-swatches" role="radiogroup" aria-labelledby="themeLabel">([\s\S]*?)<\/div>/,
+  );
+  assert.ok(group, "the More menu must carry a labelled theme radio group");
+  const radios = [
+    ...group[1].matchAll(
+      /<button class="theme-swatch" id="themeSwatch-([a-z]+)" type="button" role="radio" aria-checked="(true|false)"/g,
+    ),
+  ];
+  assert.deepEqual(
+    radios.map(([, id]) => id),
+    ["brass", "paper", "daylight", "graphite", "fjord"],
+  );
+  assert.deepEqual(
+    radios.filter(([, , checked]) => checked === "true").map(([, id]) => id),
+    ["brass"],
+  );
+  assert.match(menu, /id="themeCurrent">Brass</);
+});
+
+test("createChromeHtml hands the chrome client its themes through the session JSON", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const session = JSON.parse(html.match(/<script id="lavish-session" type="application\/json">([^<]*)<\/script>/)[1]);
+  assert.equal(session.defaultChromeTheme, "brass");
+  assert.equal(session.chromeThemeStorageKey, "lavish-axi:chrome-theme");
+  assert.deepEqual(
+    session.chromeThemes.map((theme) => theme.id),
+    ["brass", "paper", "daylight", "graphite", "fjord"],
+  );
+  assert.equal(session.chromeThemes[0].sdk, null);
+  assert.equal(session.chromeThemes[1].sdk["--accent"], "#a8461e");
+});
+
 test("the accepted image types the chrome enforces and offers come from one value", () => {
   // The file picker's accept attribute and the list the composer filters pastes
   // and drops against must never be able to disagree.
@@ -809,7 +857,9 @@ test("chrome declares the Lavish design-system tokens", async () => {
 test("artifact SDK uses design-token aliases for annotation highlight and shadow UI", () => {
   const js = createSdkJs("abc");
 
-  assert.match(js, /--lavish-accent:#f4c95d/);
+  // The outline accent follows the chrome theme and falls back to brass before one arrives.
+  assert.match(js, /chromeThemeTokens\["--accent"\]\) \|\| "#f4c95d"/);
+  assert.match(js, /":root\{--lavish-accent:" \+\s*accent \+/);
   assert.match(js, /--lavish-annotate-outline:2px solid var\(--lavish-accent\)/);
   assert.match(js, /el\.style\.outline\s*=\s*["']var\(--lavish-annotate-outline,2px solid #f4c95d\)["']/);
   assert.match(js, /el\.style\.outlineOffset\s*=\s*["']var\(--lavish-annotate-offset,2px\)["']/);

@@ -120,6 +120,8 @@
   --warn-bg-hover: rgba(93, 77, 27, 0.5);
   --warn-line: rgba(244, 201, 93, 0.35);
   --warn-line-strong: rgba(244, 201, 93, 0.6);
+  --warn-badge: var(--brass-500);
+  --warn-badge-ink: var(--brass-ink);
   --danger-soft: rgba(240, 100, 100, 0.1);
   --danger-line: rgba(240, 100, 100, 0.4);
   --notice-bg: var(--amber-900);
@@ -296,8 +298,8 @@ body.lavish {
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-pill);
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--warn-badge);
+  color: var(--warn-badge-ink);
   font-size: 11px;
   font-weight: var(--w-bold);
   line-height: 1;
@@ -632,6 +634,51 @@ body.lavish {
   height: 1px;
   background: var(--border);
   margin: 4px 0;
+}
+.menu-theme {
+  padding: 7px 10px 9px;
+}
+.menu-theme-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.theme-current {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.theme-swatches {
+  display: flex;
+  gap: 6px;
+}
+/* Each swatch is the theme's own bar ground ringed in its accent, so the choice shows what
+   the chrome will look like instead of naming it. The swatch colors arrive inline from
+   src/chrome-theme.js; the selected ring is drawn in the current theme's text color. */
+.theme-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  cursor: pointer;
+}
+.theme-swatch:hover {
+  border-color: var(--border-strong);
+}
+.theme-swatch[aria-checked="true"] {
+  border-color: var(--fg);
+}
+.theme-swatch-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--swatch-ground);
+  border: 5px solid var(--swatch-accent);
+  box-shadow: 0 0 0 1px var(--border);
 }
 .menu-item {
   display: flex;
