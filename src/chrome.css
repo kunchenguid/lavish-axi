@@ -104,6 +104,30 @@
   --dur-slow: 320ms;
   --annotate-outline: 2px solid var(--accent);
   --annotate-offset: 2px;
+  /* Role tokens. Rules below reference these, never the raw palette, so a
+     theme only has to override this layer. Values here are the default look. */
+  --color-scheme: dark;
+  --bg-hover: var(--steel-700);
+  --bg-row-active: var(--ink-700);
+  --fg-code: var(--cream-200);
+  --accent-line: rgba(244, 201, 93, 0.4);
+  --accent-highlight: rgba(244, 201, 93, 0.22);
+  --accent-highlight-line: rgba(244, 201, 93, 0.35);
+  --accent-pulse: rgba(244, 201, 93, 0.55);
+  --accent-pulse-end: rgba(244, 201, 93, 0);
+  --warn-fg: var(--brass-400);
+  --warn-bg: rgba(37, 35, 15, 0.72);
+  --warn-bg-hover: rgba(93, 77, 27, 0.5);
+  --warn-line: rgba(244, 201, 93, 0.35);
+  --warn-line-strong: rgba(244, 201, 93, 0.6);
+  --danger-soft: rgba(240, 100, 100, 0.1);
+  --danger-line: rgba(240, 100, 100, 0.4);
+  --notice-bg: var(--amber-900);
+  --notice-line: var(--amber-700);
+  --scrim: rgba(15, 17, 21, 0.72);
+  --scrim-strong: rgba(15, 17, 21, 0.86);
+  --scrim-heavy: rgba(15, 17, 21, 0.92);
+  --shadow-scroll-edge: 0 -10px 14px -10px rgba(0, 0, 0, 0.55);
 }
 * {
   box-sizing: border-box;
@@ -125,7 +149,7 @@ body {
   text-rendering: optimizeLegibility;
 }
 body.lavish {
-  color-scheme: dark;
+  color-scheme: var(--color-scheme);
 }
 :focus-visible {
   outline: var(--annotate-outline);
@@ -244,10 +268,10 @@ body.lavish {
   gap: 6px;
   height: 34px;
   padding: 0 10px;
-  border: 1px solid rgba(244, 201, 93, 0.35);
+  border: 1px solid var(--warn-line);
   border-radius: 9px;
-  background: rgba(37, 35, 15, 0.72);
-  color: var(--brass-400);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
   font-family: inherit;
   font-size: var(--text-sm);
   font-weight: var(--w-bold);
@@ -256,8 +280,8 @@ body.lavish {
 }
 .warnings-button:hover:not(:disabled),
 .warnings-button[aria-expanded="true"] {
-  border-color: rgba(244, 201, 93, 0.6);
-  background: rgba(93, 77, 27, 0.5);
+  border-color: var(--warn-line-strong);
+  background: var(--warn-bg-hover);
   color: var(--accent-hover);
 }
 .warnings-button:disabled {
@@ -363,7 +387,7 @@ body.lavish {
   border-color: var(--border-strong);
 }
 .warning-row.is-outstanding {
-  background: var(--ink-700);
+  background: var(--bg-row-active);
 }
 .warning-select {
   width: 14px;
@@ -406,24 +430,24 @@ body.lavish {
   padding: 2px 6px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-subtle);
-  background: var(--ink-800);
+  background: var(--bg-panel);
   color: var(--fg-faint);
   font-size: 10px;
   line-height: 1.4;
   white-space: nowrap;
 }
 .warning-chip.severity {
-  border-color: rgba(240, 100, 100, 0.4);
+  border-color: var(--danger-line);
   color: var(--danger);
 }
 .warning-chip.status-queued,
 .warning-chip.status-unverified {
-  border-color: rgba(244, 201, 93, 0.4);
+  border-color: var(--accent-line);
   color: var(--accent);
 }
 .warning-chip.status-recurring,
 .warning-chip.status-reopened {
-  border-color: rgba(240, 100, 100, 0.4);
+  border-color: var(--danger-line);
   color: var(--danger);
 }
 .warning-target {
@@ -466,7 +490,7 @@ body.lavish {
   border-top: var(--hairline-subtle);
   /* The list scrolls under this footer, so lift it with a soft shadow - otherwise a row clipped
      mid-content at the boundary reads as broken rather than scrollable. */
-  box-shadow: 0 -10px 14px -10px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--shadow-scroll-edge);
   padding: 10px var(--space-8) 12px;
   display: flex;
   flex-direction: column;
@@ -501,7 +525,7 @@ body.lavish {
 .more-button:hover:not(:disabled),
 .more-button[aria-expanded="true"] {
   border-color: var(--border-strong);
-  background: var(--steel-700);
+  background: var(--bg-hover);
   color: var(--fg);
 }
 .more-button:disabled {
@@ -553,7 +577,7 @@ body.lavish {
   color: var(--fg-muted);
 }
 .menu-file:hover {
-  background: var(--steel-700);
+  background: var(--bg-hover);
 }
 .menu-file > svg {
   opacity: 0.7;
@@ -625,7 +649,7 @@ body.lavish {
   color: var(--fg);
 }
 .menu-item:hover:not(:disabled) {
-  background: var(--steel-700);
+  background: var(--bg-hover);
 }
 .menu-item:disabled {
   cursor: not-allowed;
@@ -667,7 +691,7 @@ body.lavish {
   padding: 0 5px;
   border-radius: 9px;
   background: var(--accent);
-  color: var(--brass-ink);
+  color: var(--accent-ink);
   font: 700 11px/18px var(--font-sans);
   text-align: center;
 }
@@ -772,7 +796,7 @@ body.lavish {
 }
 
 .revision-reveal:hover {
-  background: var(--steel-700);
+  background: var(--bg-hover);
 }
 
 .revisions-foot {
@@ -794,7 +818,7 @@ body.lavish {
   opacity: 1;
 }
 .menu-item.danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-soft);
 }
 .button {
   border: 0;
@@ -831,7 +855,7 @@ body.lavish {
   color: var(--danger);
 }
 .button-danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-soft);
 }
 .button-danger > svg {
   flex-shrink: 0;
@@ -843,7 +867,7 @@ body.lavish {
   display: grid;
   place-items: center;
   padding: var(--space-16);
-  background: rgba(15, 17, 21, 0.72);
+  background: var(--scrim);
 }
 .share-overlay[hidden] {
   display: none;
@@ -1248,8 +1272,8 @@ body.lavish {
 }
 /* A selected range keeps the artifact's own highlight: brass means attention is here. */
 .anchor-excerpt.text {
-  background: rgba(244, 201, 93, 0.22);
-  box-shadow: 0 0 0 1px rgba(244, 201, 93, 0.35);
+  background: var(--accent-highlight);
+  box-shadow: 0 0 0 1px var(--accent-highlight-line);
   color: var(--fg);
   border-radius: 3px;
   padding: 0 3px;
@@ -1333,7 +1357,7 @@ body.lavish {
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--cream-200);
+  color: var(--fg-code);
 }
 .chat-md code {
   font-family: var(--font-mono);
@@ -1342,7 +1366,7 @@ body.lavish {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 5px;
-  color: var(--cream-200);
+  color: var(--fg-code);
 }
 .chat-md pre code {
   background: none;
@@ -1518,9 +1542,9 @@ body.lavish {
 }
 .send-hint.persistent {
   padding: var(--space-4);
-  border: 1px solid var(--amber-700);
+  border: 1px solid var(--notice-line);
   border-radius: var(--radius-sm);
-  background: var(--amber-900);
+  background: var(--notice-bg);
   color: var(--accent-hover);
 }
 .send-hint[hidden] {
@@ -1535,7 +1559,7 @@ body.lavish {
 .ended-overlay {
   position: fixed;
   inset: var(--bar-h) 0 0 0;
-  background: rgba(15, 17, 21, 0.86);
+  background: var(--scrim-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1791,7 +1815,7 @@ body.layout-gate-active iframe#artifact {
     position: fixed;
     inset: var(--bar-h) 0 0 0;
     z-index: 29;
-    background: rgba(15, 17, 21, 0.72);
+    background: var(--scrim);
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--dur-slow) var(--ease);
@@ -1836,10 +1860,10 @@ body.layout-gate-active iframe#artifact {
 }
 @keyframes dock-pulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(244, 201, 93, 0.55);
+    box-shadow: 0 0 0 0 var(--accent-pulse);
   }
   100% {
-    box-shadow: 0 0 0 10px rgba(244, 201, 93, 0);
+    box-shadow: 0 0 0 10px var(--accent-pulse-end);
   }
 }
 
@@ -1850,7 +1874,7 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 17, 21, 0.92);
+  background: var(--scrim-heavy);
   z-index: 80;
   display: flex;
 }
