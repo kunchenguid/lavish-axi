@@ -120,7 +120,8 @@ test("the count-cap notice reads as an error, not as the passive keyboard hint",
   // The cap notice replaces the card's gray hint line, so without its own error
   // styling it reads as passive help text and a rejected drop goes unnoticed.
   assert.match(sdk, /lavish-hint-alert/);
-  assert.match(sdk, /\.lavish-hint-alert\{[^}]*color:#ff9d7a/);
+  assert.match(sdk, /\.lavish-hint-alert\{[^}]*color:var\(--alert\)/);
+  assert.match(sdk, /--alert:#ff9d7a;/);
   assert.match(sdk, /attachNotice\.classList\.add\("lavish-hint-alert"\)/);
   // Clearing the notice restores the neutral hint instead of leaving stale red text.
   assert.match(sdk, /attachNotice\.classList\.remove\("lavish-hint-alert"\)/);

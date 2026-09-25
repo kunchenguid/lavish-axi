@@ -335,8 +335,19 @@ function artifactFrameSrcForLoad(load) {
     "artifact_revision=" +
     encodeURIComponent(load.revision) +
     "&artifact_load_token=" +
-    encodeURIComponent(load.token)
+    encodeURIComponent(load.token) +
+    "&lavish_theme=" +
+    encodeURIComponent(currentChromeThemeId())
   );
+}
+
+// Read from the root attribute rather than the theme state further down this file: a load can
+// begin before that state is initialized, and the inline boot script has already set the
+// attribute from storage by then. No attribute is the default theme.
+function currentChromeThemeId() {
+  const root = document.documentElement;
+  const id = root && typeof root.getAttribute === "function" ? root.getAttribute("data-lavish-theme") : null;
+  return id || (typeof sessionData.defaultChromeTheme === "string" ? sessionData.defaultChromeTheme : "brass");
 }
 
 function escapeHtml(value) {
@@ -4206,6 +4217,77 @@ chatInput.addEventListener("keydown", (event) => {
   }
 });
 chatInput.addEventListener("input", () => hideSendHint());
+
+// Chrome themes. The values are server-owned (src/chrome-theme.js) and arrive in the session
+// JSON because this file cannot import. The choice is a per-browser preference, so it lives in
+// localStorage rather than the per-tab sessionStorage the queue uses. The inline boot script in
+// <head> has already applied a stored theme before first paint; this keeps the picker, its
+// label, and the annotation card inside the artifact frame in step with it.
+const CHROME_THEMES = (Array.isArray(sessionData.chromeThemes) ? sessionData.chromeThemes : []).filter(
+  (theme) => theme && typeof theme.id === "string" && typeof theme.name === "string",
+);
+const DEFAULT_CHROME_THEME =
+  typeof sessionData.defaultChromeTheme === "string" ? sessionData.defaultChromeTheme : "brass";
+const CHROME_THEME_STORAGE_KEY =
+  typeof sessionData.chromeThemeStorageKey === "string" ? sessionData.chromeThemeStorageKey : "lavish-axi:chrome-theme";
+
+function chromeThemeById(id) {
+  return (
+    CHROME_THEMES.find((theme) => theme.id === id) ||
+    CHROME_THEMES.find((theme) => theme.id === DEFAULT_CHROME_THEME) ||
+    null
+  );
+}
+
+function readStoredChromeTheme() {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(CHROME_THEME_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+let chromeTheme = chromeThemeById(readStoredChromeTheme());
+
+function postChromeThemeToFrame() {
+  // null asks the card to drop any override and paint its own default theme.
+  postToFrame({
+    type: "lavish:setTheme",
+    id: chromeTheme ? chromeTheme.id : null,
+    tokens: chromeTheme ? chromeTheme.sdk || null : null,
+  });
+}
+
+function applyChromeTheme(theme, { persist = false } = {}) {
+  if (!theme) return;
+  chromeTheme = theme;
+  const root = document.documentElement;
+  if (root) {
+    if (theme.id === DEFAULT_CHROME_THEME) root.removeAttribute("data-lavish-theme");
+    else root.setAttribute("data-lavish-theme", theme.id);
+  }
+  for (const entry of CHROME_THEMES) {
+    const swatch = document.getElementById("themeSwatch-" + entry.id);
+    if (swatch) swatch.setAttribute("aria-checked", String(entry.id === theme.id));
+  }
+  const label = document.getElementById("themeCurrent");
+  if (label) label.textContent = theme.name;
+  if (persist) {
+    try {
+      if (typeof localStorage !== "undefined") localStorage.setItem(CHROME_THEME_STORAGE_KEY, theme.id);
+    } catch {
+      // Storage is disabled: the theme still applies to this page, it just won't be remembered.
+    }
+  }
+  postChromeThemeToFrame();
+}
+
+for (const theme of CHROME_THEMES) {
+  const swatch = document.getElementById("themeSwatch-" + theme.id);
+  if (swatch) swatch.onclick = () => applyChromeTheme(theme, { persist: true });
+}
+applyChromeTheme(chromeTheme);
+
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
@@ -4290,6 +4372,8 @@ document.addEventListener(
 frame.addEventListener("load", () => {
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
+  // Every load is a fresh document with a fresh SDK, so the annotation card learns the theme again.
+  postChromeThemeToFrame();
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });

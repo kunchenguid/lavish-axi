@@ -233,7 +233,10 @@ export function createDesignOutput() {
       how: 'Append one entry per round to the `data-lavish-revisions` JSON (oldest first, stable `id`s), and put `data-lavish-revision="<id>"` on each block you actually edited or added. Lavish reads them and never restyles the page, so the saved file looks the same opened directly.',
     },
     theme_usage: [
-      'Default to `<html data-theme="luxury">` - it matches the Lavish look. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it.',
+      'Default to `<html data-theme="night">` for a dark page or `<html data-theme="corporate">` for a light one: both keep body text neutral, so `primary` is free to mark what needs the reviewer. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it. Avoid `luxury` for review surfaces unless asked - its base text is gold and its `primary` is white, so every paragraph already reads as emphasis.',
+      "Spend `primary` only on what needs the reviewer - an open question, the chosen option, the control that submits it. Headings, links, labels, section numbers, and finished work stay in the base text colors; an accent that marks everything marks nothing.",
+      "Only when the user asks the artifact to follow the Lavish editor theme: Lavish sets `data-lavish-theme` on the artifact's `<html>` to the reviewer's editor theme (`brass`, `paper`, `daylight`, `graphite`, `fjord`), so key your palettes off `html[data-lavish-theme=\"paper\"]` and friends, and keep a complete default for when the file is opened directly and the attribute is absent.",
+      "Build text hierarchy from distinct text colors (for example `text-base-content` for questions and key facts, a quieter tone for explanations, a muted tone for sources and timestamps) rather than one color at stepped opacity, and keep every level at 4.5:1 contrast or better against its surface.",
       'Set a nested section theme with `<section data-theme="night">`.',
       "Prefer semantic colors such as `bg-base-100`, `bg-base-200`, `text-base-content`, `bg-primary`, `text-primary-content`, `alert-warning`, and `btn-primary` so themes remain readable.",
       "Avoid hardcoded Tailwind color names for text and surfaces unless the user asked for exact colors.",

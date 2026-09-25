@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 import { chatEntryForPrompt } from "../src/chat-messages.js";
+import { serializeChromeThemes } from "../src/chrome-theme.js";
 import { createChromeHtml } from "../src/server.js";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
@@ -81,6 +82,9 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  // Opt-in localStorage, for the per-browser chrome theme preference. Left off, the global is
+  // absent, which the client must tolerate the same way it tolerates disabled storage.
+  localStore = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -172,6 +176,9 @@ async function createChromeHarness({
       style: {},
       setAttribute(name, value) {
         this[name] = String(value);
+      },
+      removeAttribute(name) {
+        delete this[name];
       },
       addEventListener(type, handler) {
         listeners.set(type, handler);
@@ -393,6 +400,11 @@ async function createChromeHarness({
       }
     },
     document: {
+      documentElement: Object.assign(element("html"), {
+        getAttribute(name) {
+          return name in this ? String(this[name]) : null;
+        },
+      }),
       body: element("body"),
       get activeElement() {
         return activeElement;
@@ -436,6 +448,15 @@ async function createChromeHarness({
       },
     },
   };
+  if (localStore) {
+    Object.assign(context, {
+      localStorage: {
+        getItem: (key) => (localStore.has(key) ? localStore.get(key) : null),
+        setItem: (key, value) => localStore.set(key, String(value)),
+        removeItem: (key) => localStore.delete(key),
+      },
+    });
+  }
   const mediaQueries = [];
   if (mobile) {
     context.window.matchMedia = (query) => {
@@ -8339,4 +8360,86 @@ test("a mark naming an undeclared revision never reaches the legend", async () =
   });
 
   assert.equal(chrome.element("revisionsSummary").textContent, "1 revision · 0 marked blocks");
+});
+
+const themedSessionData = {
+  ...defaultSessionData,
+  chromeThemes: serializeChromeThemes(),
+  defaultChromeTheme: "brass",
+  chromeThemeStorageKey: "lavish-axi:chrome-theme",
+};
+
+// Messages are built inside the client's VM realm; round-trip them so deepEqual compares values.
+function themeMessages(chrome) {
+  return JSON.parse(JSON.stringify(chrome.postedToFrame.filter((message) => message.type === "lavish:setTheme")));
+}
+
+function checkedSwatches(chrome) {
+  return serializeChromeThemes()
+    .map((theme) => theme.id)
+    .filter((id) => chrome.element(`themeSwatch-${id}`)["aria-checked"] === "true");
+}
+
+test("a stored chrome theme selects its swatch and label and themes the annotation card on load", async () => {
+  const localStore = new Map([["lavish-axi:chrome-theme", "paper"]]);
+  const chrome = await createChromeHarness({
+    sessionData: themedSessionData,
+    localStore,
+    artifactSrc: "/artifact/abc/index.html",
+  });
+  const paper = serializeChromeThemes().find((theme) => theme.id === "paper");
+
+  assert.equal(chrome.element("html")["data-lavish-theme"], "paper");
+  assert.deepEqual(checkedSwatches(chrome), ["paper"]);
+  assert.equal(chrome.element("themeCurrent").textContent, "Paper");
+  // The frame's load re-sends the theme, because a reload is a fresh document with a fresh SDK.
+  assert.deepEqual(themeMessages(chrome).at(-1), { type: "lavish:setTheme", id: "paper", tokens: paper.sdk });
+});
+
+test("choosing a chrome theme applies it, remembers it, and re-themes the card; brass clears the override", async () => {
+  const localStore = new Map();
+  const chrome = await createChromeHarness({ sessionData: themedSessionData, localStore });
+  const fjord = serializeChromeThemes().find((theme) => theme.id === "fjord");
+
+  chrome.element("themeSwatch-fjord").click();
+  assert.equal(chrome.element("html")["data-lavish-theme"], "fjord");
+  assert.equal(localStore.get("lavish-axi:chrome-theme"), "fjord");
+  assert.deepEqual(checkedSwatches(chrome), ["fjord"]);
+  assert.equal(chrome.element("themeCurrent").textContent, "Fjord");
+  assert.deepEqual(themeMessages(chrome).at(-1), { type: "lavish:setTheme", id: "fjord", tokens: fjord.sdk });
+
+  chrome.element("themeSwatch-brass").click();
+  assert.equal("data-lavish-theme" in chrome.element("html"), false);
+  assert.equal(localStore.get("lavish-axi:chrome-theme"), "brass");
+  assert.deepEqual(checkedSwatches(chrome), ["brass"]);
+  assert.deepEqual(themeMessages(chrome).at(-1), { type: "lavish:setTheme", id: "brass", tokens: null });
+});
+
+test("an unknown stored theme or missing storage leaves the default theme in place", async () => {
+  const unknown = await createChromeHarness({
+    sessionData: themedSessionData,
+    localStore: new Map([["lavish-axi:chrome-theme", "neon"]]),
+  });
+  assert.equal("data-lavish-theme" in unknown.element("html"), false);
+  assert.deepEqual(checkedSwatches(unknown), ["brass"]);
+
+  const noStorage = await createChromeHarness({ sessionData: themedSessionData });
+  assert.deepEqual(checkedSwatches(noStorage), ["brass"]);
+  noStorage.element("themeSwatch-daylight").click();
+  assert.equal(noStorage.element("html")["data-lavish-theme"], "daylight");
+});
+
+test("each artifact load asks for the current chrome theme so the SDK applies it before first paint", async () => {
+  const localStore = new Map([["lavish-axi:chrome-theme", "graphite"]]);
+  const chrome = await createChromeHarness({
+    sessionData: themedSessionData,
+    localStore,
+    artifactSrc: "/artifact/abc/index.html",
+  });
+  assert.match(chrome.frame.src, /[?&]lavish_theme=graphite(&|$)/);
+
+  chrome.element("themeSwatch-paper").click();
+  chrome.element("reloadArtifact").click();
+  await flushPromises();
+  assert.match(chrome.frame.src, /[?&]lavish_theme=paper(&|$)/);
 });
