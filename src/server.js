@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, writeFile } from "node:fs/promises";
 import { createServer, get as httpGet } from "node:http";
 import { isIP } from "node:net";
 import { homedir } from "node:os";
@@ -58,6 +58,7 @@ import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
   bindHost,
+  controlTokenFile,
   extraAllowedHosts,
   hostForUrl,
   IPV6_LOOPBACK_HOST,
@@ -255,6 +256,48 @@ export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = D
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
+// POST /shutdown terminates the whole process with no other precondition, so it needs a real
+// credential rather than trusting the immediate socket peer address: peer address is spoofable by
+// topology in both directions - it 403s a legitimate control-channel call made directly to a
+// pinned non-loopback LAVISH_AXI_HOST (the CLI's control channel dials that address, not only
+// loopback), and it does NOT stop a local reverse proxy forwarding an unauthenticated remote
+// request, because the proxy's own connection to this server is always loopback regardless of who
+// it is fronting. This control token is persisted owner-only beside state.json (never in it - it
+// is not session state) and required on every /shutdown request via the Lavish-Control-Token
+// header, independent of which listener it arrives on.
+export function isValidControlToken(header, token) {
+  if (typeof header !== "string" || !header) return false;
+  const actualBuffer = Buffer.from(header, "utf8");
+  const expectedBuffer = Buffer.from(token, "utf8");
+  return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+// Minted ONCE per state directory, not per server start: discovery can legitimately run more than
+// one server process against the same state.json at once (a same-port duplicate daemon pair
+// awaiting retirement, or a replacement starting before the old one has stopped), and a fresh
+// token on every start would overwrite the file a still-running older process needs to recognize
+// itself in - it can never regenerate that file's content to match its own in-memory value, so its
+// own legitimate shutdown would 403 forever. The `wx` flag makes "create if absent" atomic across
+// racing processes; whichever one loses the race reads back the winner's token instead of
+// clobbering it, so every process for this state directory converges on the same credential.
+async function ensureControlToken(file) {
+  const minted = crypto.randomBytes(32).toString("hex");
+  try {
+    await writeFile(file, minted, { mode: 0o600, flag: "wx" });
+    return minted;
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  try {
+    const existing = (await readFile(file, "utf8")).trim();
+    if (existing) return existing;
+  } catch {
+    // The file vanished between the EEXIST and this read - fall back to the token this call
+    // minted so the server still has a usable credential rather than none at all.
+  }
+  return minted;
+}
+
 // A detached server should not live forever. When no browser chrome or agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
 // `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
@@ -328,6 +371,9 @@ export async function serve({
   let bindRecoveryTimer = null;
   const app = express();
   const store = new SessionStore(stateFile);
+  // /shutdown's credential - resolved before any listener binds, so a caller who just got a
+  // healthy /health probe can always read a currently-valid token from disk.
+  const controlToken = await ensureControlToken(controlTokenFile(stateFile));
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();
@@ -736,6 +782,12 @@ export async function serve({
   });
 
   app.post("/shutdown", (req, res) => {
+    // See the control-token comment above isValidControlToken: this terminates the whole
+    // process, so it needs a real credential, not the immediate socket peer address.
+    if (!isValidControlToken(req.headers["lavish-control-token"], controlToken)) {
+      res.status(403).json({ status: "forbidden" });
+      return;
+    }
     // The caller names the session it is about to reopen, and only that session's chrome is
     // reloaded. A call that names none reloads nothing. It also names why it is shutting this
     // server down, because the banner every other chrome shows has to be true for that reason;

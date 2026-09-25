@@ -35,6 +35,11 @@ import {
   serve,
 } from "../src/server.js";
 import { canonicalFile, sessionKey, SessionStore } from "../src/session-store.js";
+import { controlTokenFile } from "../src/paths.js";
+
+async function controlTokenFor(stateFilePath) {
+  return (await readFile(controlTokenFile(stateFilePath), "utf8")).trim();
+}
 
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
@@ -1566,7 +1571,10 @@ test("Tailscale mode binds concrete listeners, serves the MagicDNS link, and tea
     const shutdown = await rawRequest(server.port, "/shutdown", {
       method: "POST",
       host: `${tailscaleIpv4}:${server.port}`,
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "lavish-control-token": await controlTokenFor(path.join(dir, "state.json")),
+      },
       body: "{}",
     });
     assert.equal(shutdown.status, 200);
@@ -4071,13 +4079,90 @@ test("POST /api/:key/share rejects requests without provenance headers", async (
 
 test("POST /shutdown stops the listener so the client can spawn a fresh server", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const stateFile = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
   try {
-    const res = await fetch(`http://127.0.0.1:${server.port}/shutdown`, { method: "POST" });
+    const token = await controlTokenFor(stateFile);
+    const res = await fetch(`http://127.0.0.1:${server.port}/shutdown`, {
+      method: "POST",
+      headers: { "lavish-control-token": token },
+    });
     assert.equal(res.status, 200);
     await server.done;
     await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
   } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Peer address is not authorization (see the comment above isValidControlToken in src/server.js):
+// a loopback socket - exactly what a local reverse proxy fronting a remote, unauthenticated
+// client would present to this server - must still be rejected without the real credential.
+test("POST /shutdown rejects a loopback request that lacks the control token", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test", idleTimeoutMs: null });
+  try {
+    const missing = await fetch(`http://127.0.0.1:${server.port}/shutdown`, { method: "POST" });
+    assert.equal(missing.status, 403);
+    assert.deepEqual(await missing.json(), { status: "forbidden" });
+
+    // A forged X-Forwarded-For/X-Forwarded-Host claiming a remote client - what an attacker
+    // routed through a local proxy would send - must not substitute for the credential either.
+    const forwarded = await fetch(`http://127.0.0.1:${server.port}/shutdown`, {
+      method: "POST",
+      headers: {
+        "lavish-control-token": "wrong-token",
+        "x-forwarded-for": "203.0.113.7",
+        "x-forwarded-host": "attacker.example",
+      },
+    });
+    assert.equal(forwarded.status, 403);
+
+    const health = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json());
+    assert.equal(health.ok, true);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// The regression this whole change exists to fix: the CLI's control channel legitimately dials a
+// pinned non-loopback LAVISH_AXI_HOST directly (`clientHost()` returns that address first), not
+// only through a loopback socket - so a peer-address check that only trusts literal loopback
+// strings 403s a legitimate direct connection here even though loopback also binds alongside it.
+test("POST /shutdown accepts a direct non-loopback request bearing the valid control token", async (t) => {
+  const pinnedHost = availableConcreteIpv4();
+  if (!pinnedHost) {
+    t.skip("host has no non-loopback IPv4 address to bind directly");
+    return;
+  }
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  const server = await serve({
+    port: 0,
+    stateFile,
+    version: "9.9.9-test",
+    env: { LAVISH_AXI_HOST: pinnedHost },
+    idleTimeoutMs: null,
+  });
+  try {
+    // Loopback always binds alongside a pinned host now (see AGENTS.md's Process model section) -
+    // this test is about the credential working over the pinned address itself, not exclusivity.
+    assert.ok(server.addresses.some((address) => address.address === pinnedHost));
+    const token = await controlTokenFor(stateFile);
+    const unauthorized = await fetch(`http://${pinnedHost}:${server.port}/shutdown`, { method: "POST" });
+    assert.equal(unauthorized.status, 403);
+
+    const res = await fetch(`http://${pinnedHost}:${server.port}/shutdown`, {
+      method: "POST",
+      headers: { "lavish-control-token": token },
+    });
+    assert.equal(res.status, 200);
+    await server.done;
+  } finally {
+    await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -4177,6 +4262,7 @@ async function openShutdownBroadcastServer() {
     base,
     dir,
     server,
+    token: await controlTokenFor(path.join(dir, "state.json")),
     openedKey: await openSession(opened),
     otherKey: await openSession(other),
   };
@@ -4195,13 +4281,13 @@ function outdatedReason(events) {
 }
 
 test("a version-driven shutdown reloads only the chrome whose session it names", async () => {
-  const { base, dir, server, openedKey, otherKey } = await openShutdownBroadcastServer();
+  const { base, dir, server, token, openedKey, otherKey } = await openShutdownBroadcastServer();
   const openedStream = await collectEventStream(base, openedKey);
   const otherStream = await collectEventStream(base, otherKey);
   try {
     await fetch(`${base}/shutdown`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "lavish-control-token": token },
       body: JSON.stringify({ reload_key: openedKey, reason: "upgrade" }),
     });
 
@@ -4225,13 +4311,13 @@ test("a version-driven shutdown reloads only the chrome whose session it names",
 });
 
 test("a shutdown that names no session reloads nobody", async () => {
-  const { base, dir, server, openedKey, otherKey } = await openShutdownBroadcastServer();
+  const { base, dir, server, token, openedKey, otherKey } = await openShutdownBroadcastServer();
   const openedStream = await collectEventStream(base, openedKey);
   const otherStream = await collectEventStream(base, otherKey);
   try {
     await fetch(`${base}/shutdown`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "lavish-control-token": token },
       body: JSON.stringify({ reason: "stop" }),
     });
 
@@ -4251,13 +4337,13 @@ test("a shutdown that names no session reloads nobody", async () => {
 // A page must never be told something the shutdown did not claim, so an unnamed or unrecognized
 // reason reaches the chrome as no reason at all.
 test("a shutdown that names no reason claims none", async () => {
-  const { base, dir, server, openedKey, otherKey } = await openShutdownBroadcastServer();
+  const { base, dir, server, token, openedKey, otherKey } = await openShutdownBroadcastServer();
   const openedStream = await collectEventStream(base, openedKey);
   const otherStream = await collectEventStream(base, otherKey);
   try {
     await fetch(`${base}/shutdown`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "lavish-control-token": token },
       body: JSON.stringify({ reason: "because" }),
     });
 

@@ -36,6 +36,7 @@ import {
 import { localInterfaceAddresses } from "./local-address.js";
 import {
   clientHost,
+  controlTokenFile,
   defaultPort,
   ensureStateDir,
   hostForUrl,
@@ -2036,6 +2037,18 @@ function fetchHealth(baseUrl, { reconcileNetwork = false, timeoutMs = DEFAULT_HE
   });
 }
 
+// The server's /shutdown credential, regenerated per server start and persisted owner-only
+// beside state.json (see controlTokenFile). Read fresh for every request rather than cached,
+// since the running server may have been replaced since the last read. Best-effort: a missing
+// file (talking to a pre-token server mid-upgrade) means no header is sent at all.
+async function readControlToken() {
+  try {
+    return (await readFile(controlTokenFile(stateFile()), "utf8")).trim();
+  } catch {
+    return "";
+  }
+}
+
 // `reason` is what every other open review page is told: this CLI has exactly two callers, and
 // each knows which of them it is.
 async function requestShutdown(baseUrl, { reloadKey = "", reason = "" } = {}) {
@@ -2043,9 +2056,13 @@ async function requestShutdown(baseUrl, { reloadKey = "", reason = "" } = {}) {
   if (reloadKey) body.reload_key = reloadKey;
   if (reason) body.reason = reason;
   try {
+    const token = await readControlToken();
     await fetch(`${baseUrl}/shutdown`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { "lavish-control-token": token } : {}),
+      },
       body: JSON.stringify(body),
     });
   } catch {

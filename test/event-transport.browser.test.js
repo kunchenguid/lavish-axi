@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { controlTokenFile } from "../src/paths.js";
 
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -57,11 +59,17 @@ async function startServer(root, env, port) {
   }
 }
 
-async function stopServer(server, base, reason = "stop") {
+// `stateDir` may hold a control-token file written by the currently-running server (see
+// AGENTS.md's /shutdown section) - absent for the pre-token `baseCommit` server this suite also
+// stops, in which case no header is sent and that older server, which checks nothing, still obeys.
+async function stopServer(server, base, stateDir, reason = "stop") {
   if (!server || server.child.exitCode !== null) return;
+  const token = await readFile(controlTokenFile(path.join(stateDir, "state.json")), "utf8")
+    .then((value) => value.trim())
+    .catch(() => "");
   await fetch(`${base}/shutdown`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(token ? { "lavish-control-token": token } : {}) },
     body: JSON.stringify({ reason }),
     signal: AbortSignal.timeout(2000),
   }).catch(() => {});
@@ -191,7 +199,7 @@ test(
       );
       assert.match(draftStored, /draft survives server replacement/);
 
-      await stopServer(oldServer, base, "stop");
+      await stopServer(oldServer, base, lavishEnv.LAVISH_AXI_STATE_DIR, "stop");
       oldServer = undefined;
       currentServer = await startServer(repoRoot, lavishEnv, port);
       run("chrome-devtools-axi", ["newpage", sessions[6].url, "--background"], chromeEnv);
@@ -292,8 +300,8 @@ test(
         }
       }
     } finally {
-      await stopServer(oldServer, base);
-      await stopServer(currentServer, base);
+      await stopServer(oldServer, base, lavishEnv.LAVISH_AXI_STATE_DIR);
+      await stopServer(currentServer, base, lavishEnv.LAVISH_AXI_STATE_DIR);
       const stopped = spawnSync("chrome-devtools-axi", ["stop"], {
         cwd: repoRoot,
         env: { ...process.env, ...chromeEnv },
