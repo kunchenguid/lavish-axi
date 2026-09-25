@@ -195,6 +195,7 @@ export const PLAYBOOKS = [
     ],
     structure: [
       "Make each decision surface visible: what is being chosen, what the options mean, and what happens next.",
+      "Put open decisions first, ahead of finished or authorized work, and let finished work collapse to a quiet one-line status so the eye lands on what still needs the reviewer.",
       "For a tracked batch, give every candidate item a short, stable, visible ID and let the reviewer select or disposition items with editable native controls.",
       "Keep reversible selection state local in the artifact until the user explicitly submits that question.",
       "Pair each question with a Submit or Queue answer control that sends exactly one prompt for the final answer.",
@@ -210,12 +211,18 @@ export const PLAYBOOKS = [
       "For a tracked batch, queue the final selected set once in a concise, bounded data.items array; include each item's stable ID, concise label, and requested disposition, and explicitly tell the agent to account for every submitted ID before reporting completion.",
       "Call window.lavish.sendQueuedPrompts() only when the control should immediately send committed feedback instead of waiting for the user to press Send to Agent.",
       "Make queued prompts specific enough that the agent can act without asking a follow-up question.",
+      "Show every option of a short choice as a visible radio card or segmented control; reserve a select for long lists, because a closed dropdown hides the alternatives the reviewer is weighing.",
+      "Say what each option will do before the reviewer picks it: label its side effect beside it - 'Posts 3 messages', 'Approves the PR', 'Publishes the site', or 'No side effects' - and give options that act outside the page one shared warning color.",
+      "When you recommend an option, mark exactly one as suggested and give the reason in a line; never pre-select it for the reviewer.",
+      "Highlight the one fact in a sentence that decides the question with a <mark> or a bold phrase, not the whole paragraph.",
+      "Across several questions, show progress such as '1 of 3 decided' and keep it distinct from what has actually been queued.",
       "Keep native browser controls accessible and readable on mobile.",
     ],
     pitfalls: [
       "Do not queue one prompt per radio change, checkbox toggle, dropdown change, or choice-button click when the user can still change their mind.",
       "Do not create controls whose queued prompt is unclear or too vague to execute.",
       "Do not hide the difference between selected locally and queued for the agent.",
+      "Do not color headings, links, labels, and numbers with the accent that marks open decisions; an accent that marks everything marks nothing.",
       "Do not require interaction for content the user only needs to read.",
     ],
     lavish_notes: [
