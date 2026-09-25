@@ -13,6 +13,11 @@ A GitHub Actions check (`Require no-mistakes`) runs on PRs targeting `main` and 
 It also requires the machine-readable pipeline attestation that no-mistakes >= 1.46.0 writes next to that signature: the `review`, `test`, and `document` steps must all be recorded as `completed`, and the attested `head_sha` must be the PR's current head.
 The check runs on opened, edited, synchronize, and reopened, including pushed commits. That is safe because no-mistakes #994 writes the attestation before it pushes, so a pipeline-pushed head already has a matching body; a commit pushed outside the pipeline still fails until you `git push no-mistakes` again so the body carries an attestation for the new head.
 The release and dependency bots are exempt so their automation keeps working, but regular contributor PRs without the signature and a current attestation will not be reviewed or merged.
+A PR whose body no-mistakes did not rewrite for the current head, and that then goes red, is the attestation contract, not a flake.
+
+`.github/workflows/no-mistakes-required.yml` is a thin caller of the shared `kunchenguid/no-mistakes` composite action, pinned to an immutable commit SHA and never `@main`.
+Enforcement logic and its tests live upstream. Change them there, and bump this repo's pin in a deliberate separate PR.
+This repo still owns its `on:`, `paths-ignore`, `concurrency`, `permissions`, job name, and author-exemption `if:`.
 
 ## Workflow
 

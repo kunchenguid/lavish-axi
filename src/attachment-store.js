@@ -488,7 +488,7 @@ export async function resolveAttachment(stateDir, key, id) {
 // derive the mime from the (already-validated) id extension, WITHOUT reading the
 // image bytes to recompute dimensions the route never uses. Returns { file, mime }
 // or null. Pairs with sendFile so a render is one stat + one streamed read, not two
-// full reads (see D6 in AGENTS.md).
+// full reads (see D6 in docs/invariants.md).
 export async function statAttachmentForServe(stateDir, key, id) {
   if (!isValidAttachmentKey(key) || !isValidAttachmentId(id)) return null;
   const file = attachmentFile(stateDir, key, id);
