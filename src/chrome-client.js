@@ -335,8 +335,19 @@ function artifactFrameSrcForLoad(load) {
     "artifact_revision=" +
     encodeURIComponent(load.revision) +
     "&artifact_load_token=" +
-    encodeURIComponent(load.token)
+    encodeURIComponent(load.token) +
+    "&lavish_theme=" +
+    encodeURIComponent(currentChromeThemeId())
   );
+}
+
+// Read from the root attribute rather than the theme state further down this file: a load can
+// begin before that state is initialized, and the inline boot script has already set the
+// attribute from storage by then. No attribute is the default theme.
+function currentChromeThemeId() {
+  const root = document.documentElement;
+  const id = root && typeof root.getAttribute === "function" ? root.getAttribute("data-lavish-theme") : null;
+  return id || (typeof sessionData.defaultChromeTheme === "string" ? sessionData.defaultChromeTheme : "brass");
 }
 
 function escapeHtml(value) {
@@ -4240,7 +4251,11 @@ let chromeTheme = chromeThemeById(readStoredChromeTheme());
 
 function postChromeThemeToFrame() {
   // null asks the card to drop any override and paint its own default theme.
-  postToFrame({ type: "lavish:setTheme", tokens: chromeTheme ? chromeTheme.sdk || null : null });
+  postToFrame({
+    type: "lavish:setTheme",
+    id: chromeTheme ? chromeTheme.id : null,
+    tokens: chromeTheme ? chromeTheme.sdk || null : null,
+  });
 }
 
 function applyChromeTheme(theme, { persist = false } = {}) {

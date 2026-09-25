@@ -42,6 +42,7 @@ import {
   DEFAULT_CHROME_THEME,
   createChromeThemeBootJs,
   createChromeThemeCss,
+  resolveChromeTheme,
   serializeChromeThemes,
 } from "./chrome-theme.js";
 import * as mermaidNode from "./mermaid-node.js";
@@ -1508,7 +1509,11 @@ export async function serve({
           );
         return;
       }
-      res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
+      res.type("html").send(
+        injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token, {
+          theme: req.query.lavish_theme,
+        }),
+      );
     } catch (error) {
       next(error);
     }
@@ -1593,6 +1598,7 @@ export async function serve({
         createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token, {
           maxAttachmentCount: attachmentConfig.maxPerPrompt,
           maxAttachmentBytes: attachmentConfig.maxBytes,
+          chromeTheme: req.query.theme,
         }),
       );
     } catch (error) {
@@ -3078,13 +3084,13 @@ function serializeModuleHelpers(module) {
  * @param {string} key
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
- * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[] }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[], chromeTheme?: unknown }} [options]
  */
 export function createSdkJs(
   key,
   artifactRevision = 0,
   artifactLoadToken = "",
-  { maxAttachmentCount, maxAttachmentBytes, acceptedImageMime = ACCEPTED_IMAGE_MIME } = {},
+  { maxAttachmentCount, maxAttachmentBytes, acceptedImageMime = ACCEPTED_IMAGE_MIME, chromeTheme } = {},
 ) {
   const mermaidHelperSource = serializeModuleHelpers(mermaidNode);
   const tableHelperSource = serializeModuleHelpers(tableCellHelpers);
@@ -3100,6 +3106,9 @@ export function createSdkJs(
     maxAttachmentCount: Number.isFinite(maxAttachmentCount) ? maxAttachmentCount : undefined,
     maxAttachmentBytes: Number.isFinite(maxAttachmentBytes) ? maxAttachmentBytes : undefined,
     acceptedImageMime: acceptedImageMime.map(String),
+    // The reviewer's chrome theme, resolved server-side so the SDK can theme its card and mark
+    // the artifact root on its first run rather than after the chrome's load-time message.
+    chromeTheme: sdkChromeTheme(chromeTheme),
   };
   return `(() => {
 const key=${JSON.stringify(key)};
@@ -3128,6 +3137,13 @@ ${tableHelperSource.declarations}
 ${revisionHelperSource.declarations}
 (${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key, ${JSON.stringify(sdkOptions)});
 })();`;
+}
+
+/** @param {unknown} requested */
+function sdkChromeTheme(requested) {
+  const id = resolveChromeTheme(requested);
+  const theme = serializeChromeThemes().find((entry) => entry.id === id);
+  return { id, tokens: theme ? theme.sdk : null };
 }
 
 function escapeHtml(value) {

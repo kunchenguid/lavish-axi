@@ -470,7 +470,7 @@ export function deriveAttachmentNoticeState(state = {}) {
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
  * @param {string} [sessionKey]
- * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[] }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[], chromeTheme?: { id: string, tokens: Record<string, string> | null } }} [options]
  */
 export function createArtifactSdk(
   deriveQueueKey,
@@ -1220,8 +1220,14 @@ export function createArtifactSdk(
   // styling is never touched, so the page still renders as its author wrote it.
   let chromeThemeTokens = null;
   let paintedThemeProperties = [];
-  function setChromeTheme(tokens) {
+  // The theme id also goes on the artifact root as data-lavish-theme: a viewer preference, like
+  // prefers-color-scheme, that an artifact written to follow the editor can style. It restyles
+  // nothing by itself, and the saved file never carries it.
+  function setChromeTheme(id, tokens) {
     chromeThemeTokens = sanitizeChromeThemeTokens(tokens);
+    if (typeof id === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(id)) {
+      document.documentElement.setAttribute("data-lavish-theme", id);
+    }
     paintChromeTheme();
   }
 
@@ -1239,6 +1245,7 @@ export function createArtifactSdk(
     const cursorStyle = document.getElementById("lavish-cursor-style");
     if (cursorStyle) cursorStyle.textContent = annotationCursorCss();
   }
+  if (options.chromeTheme) setChromeTheme(options.chromeTheme.id, options.chromeTheme.tokens);
 
   function setAnnotationMode(enabled) {
     annotationMode = !!enabled;
@@ -2519,7 +2526,7 @@ export function createArtifactSdk(
     if (event.source !== parent) return;
     const msg = event.data || {};
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
-    if (msg.type === "lavish:setTheme") setChromeTheme(msg.tokens);
+    if (msg.type === "lavish:setTheme") setChromeTheme(msg.id, msg.tokens);
     if (msg.type === "lavish:attachmentResult") {
       if (!isTrustedAttachmentResult(event, { parentWindow: parent, nonce: ATTACHMENT_NONCE })) return;
       activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);

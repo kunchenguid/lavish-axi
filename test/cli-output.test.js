@@ -437,6 +437,15 @@ test("design output spends one accent on what needs the reviewer and builds text
   assert.ok(output.theme_usage.some((item) => /opacity/i.test(item) && /4\.5:1/.test(item)));
 });
 
+test("design output lets an artifact follow the editor theme only on request", () => {
+  const output = createDesignOutput();
+  const item = output.theme_usage.find((entry) => entry.includes("data-lavish-theme"));
+
+  assert.ok(item, "the design output must name the data-lavish-theme attribute");
+  assert.match(item, /^Only when the user asks/);
+  assert.match(item, /opened directly/);
+});
+
 test("playbook index output lists known playbooks with concise descriptions", () => {
   const output = createPlaybookOutput([]);
 

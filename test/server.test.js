@@ -6604,3 +6604,14 @@ test("the live transcript carries rendered html for agent replies and never for 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the SDK applies the reviewer's chrome theme at startup, falling back to the default", () => {
+  const paper = createSdkJs("abc", 0, "", { chromeTheme: "paper" });
+  const options = JSON.parse(paper.match(/, (\{"acceptedImageMime"[^\n]*\})\);\n\}\)\(\);$/)[1]);
+  assert.equal(options.chromeTheme.id, "paper");
+  assert.equal(options.chromeTheme.tokens["--accent"], "#a8461e");
+
+  const unknown = createSdkJs("abc", 0, "", { chromeTheme: "neon" });
+  const fallback = JSON.parse(unknown.match(/, (\{"acceptedImageMime"[^\n]*\})\);\n\}\)\(\);$/)[1]);
+  assert.deepEqual(fallback.chromeTheme, { id: "brass", tokens: null });
+});

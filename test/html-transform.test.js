@@ -41,3 +41,14 @@ test("carries the per-load token into the SDK request", () => {
 
   assert.match(result, /sdk\.js\?key=abc123&artifact_revision=7&artifact_load_token=load%20token%2F7/);
 });
+
+test("carries the reviewer's chrome theme into the SDK request so it applies before first paint", () => {
+  const result = injectLavishSdk("<body></body>", "abc123", 7, "t", { theme: "paper" });
+
+  assert.match(result, /sdk\.js\?key=abc123&artifact_revision=7&artifact_load_token=t&theme=paper"/);
+});
+
+test("drops a theme that is not a known chrome theme", () => {
+  assert.doesNotMatch(injectLavishSdk("<body></body>", "abc123", 7, "t", { theme: 'x"><script>' }), /theme=/);
+  assert.doesNotMatch(injectLavishSdk("<body></body>", "abc123", 7, "t", { theme: "neon" }), /theme=/);
+});
