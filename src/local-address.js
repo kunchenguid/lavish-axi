@@ -20,7 +20,7 @@ export function discoveryHosts(controlHosts, { env = process.env, interfaces } =
   for (const host of controlHosts) {
     if (!hosts.includes(host)) hosts.push(host);
   }
-  if (env[DISCOVER_ALL_INTERFACES_ENV]?.trim() !== "1") return hosts;
+  if (env[DISCOVER_ALL_INTERFACES_ENV] !== "1") return hosts;
   for (const address of localInterfaceAddresses(interfaces)) {
     if (!hosts.includes(address)) hosts.push(address);
   }

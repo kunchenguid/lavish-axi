@@ -72,6 +72,7 @@ function cliEnv(dir, port, host) {
     LAVISH_AXI_NO_OPEN: "1",
     LAVISH_AXI_TELEMETRY: "0",
     LAVISH_AXI_IDLE_TIMEOUT_MS: "60000",
+    LAVISH_AXI_DISCOVER_ALL_INTERFACES: undefined,
   };
 }
 
