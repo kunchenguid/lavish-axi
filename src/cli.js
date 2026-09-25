@@ -33,7 +33,7 @@ import {
   publishToHtmlApp,
   updateHtmlApp,
 } from "./html-app.js";
-import { localInterfaceAddresses } from "./local-address.js";
+import { discoveryHosts, localInterfaceAddresses } from "./local-address.js";
 import {
   clientHost,
   defaultPort,
@@ -1663,17 +1663,12 @@ const MAX_HEALTH_BODY_BYTES = 256 * 1024;
 // answering, which can take longer than a plain health read.
 const HEALTH_RECONCILE_TIMEOUT_MS = 3000;
 
-// Every address a Lavish server on this port could be answering at, in preference order: the host
-// this CLI is configured for, loopback, then every other local interface address. Agents on one
-// machine do not share LAVISH_AXI_HOST, and a CLI that only dialed its own host (plus loopback)
-// concluded nothing was running while a server pinned to the tailnet address held the port, then
-// spawned a second daemon beside it on the same port and the same state file.
+// The addresses a Lavish server on this port could be answering at: the host this CLI is
+// configured for and loopback. Agents on one machine do not share LAVISH_AXI_HOST, so loopback is
+// the meeting point - every server binds it first as the port lock. See `discoveryHosts` for the
+// opt-in sweep that also finds a pre-0.1.78 server pinned to another address alone.
 function serverCandidateHosts() {
-  const hosts = [clientHost(), LOOPBACK_HOST];
-  for (const address of localInterfaceAddresses()) {
-    if (!hosts.includes(address)) hosts.push(address);
-  }
-  return hosts;
+  return discoveryHosts([clientHost(), LOOPBACK_HOST]);
 }
 
 function serverBaseUrl(host, port) {
