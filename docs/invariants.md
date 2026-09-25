@@ -141,7 +141,7 @@ Absolute `file://` paths in non-inlined regions are redacted to `about:blank` so
 The transform records `warnings` rather than failing, split into unresolved local assets (such as `load-failed`, `outside-root`, `too-large`, or unsupported local references left external) and notices (such as `csp-meta` or `file-url-redacted`).
 It is dependency-injectable (`readLocalFile`, `resolveAbsolute`, `confineDir`, size caps) so it is testable without disk; the server passes `resolveAbsolute: resolveDesignAssetPath` to inline legacy `/design/*` references from the packaged assets.
 The chrome's **Export standalone HTML** overflow-menu item `GET`s `/api/:key/export`; the CLI exposes the same transform as `lavish-axi export`, server-independently.
-Lavish's only `Content-Security-Policy` is the chrome page's `frame-ancestors 'none'`; it constrains nothing about artifact content (the sandboxed iframe relies on the `sandbox` attribute, not CSP). Author-set CSP meta tags are preserved and reported as export notices because they may still block exported inline assets.
+Lavish sends two `Content-Security-Policy` headers, and neither restricts which assets artifact content may load: the chrome page answers `frame-ancestors 'none'`, and every `/artifact/*` response carries only the `sandbox` directive matching the iframe's `sandbox` attribute, so an escaped popup stays opaque-origin (see [Things to know when editing](#things-to-know-when-editing)). Exports and hosted shares carry neither header. Author-set CSP meta tags are preserved and reported as export notices because they may still block exported inline assets.
 
 <a id="hosted-sharing-ht-mlapp"></a>
 
