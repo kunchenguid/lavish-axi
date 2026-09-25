@@ -71,6 +71,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - The chrome never promotes presence to `working` on send. It renders only the state the live stream reports. [Request flow](docs/invariants.md#request-flow).
 - Poll feedback field order is `prompts`, `artifact_failures`, `next_step`, then `dom_snapshot`. Never move `next_step` after the snapshot. [Request flow](docs/invariants.md#request-flow).
 - `takeFeedback` is destructive. A disconnected poll restores through `queuePrompts` `restore`: prepend, do not re-plan, re-emit `feedback`, and exempt only the request-wide attachment-ref cap. [Request flow](docs/invariants.md#request-flow).
+- A disconnected-poll restore never overwrites a newer `dom_snapshot` or `artifact_failures` recorded after the take. [Request flow](docs/invariants.md#request-flow).
 - A layout warning clears only on a newer artifact revision plus a complete pass at the same viewport class. Do not emit `feedback` for a detection. [Passive layout-warning inbox](docs/invariants.md#passive-layout-warning-inbox).
 - The chrome never decides that a warning went away. Display strings come from `serializeLayoutWarnings`. [Passive layout-warning inbox](docs/invariants.md#passive-layout-warning-inbox).
 - The active artifact load is durable in `session.artifact_load`. Only a newer `beginArtifactLoad` retires it, and only an explicit takeover reload replaces a superseded reviewer. [Passive layout-warning inbox](docs/invariants.md#passive-layout-warning-inbox).
@@ -100,7 +101,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - A dedup upload's mtime refresh is never swallowed into success. Env limits floor before the bounds check and require `>= 1`, and only `0`/`off` disables one. [Image attachments](docs/invariants.md#image-attachments).
 - Attachment files and dirs are owner-only (`0600`/`0700`), set explicitly at creation and re-asserted by `ensureAttachmentDir`. [Image attachments](docs/invariants.md#image-attachments).
 - Export makes no outbound requests. Local reads stay inside the artifact directory after `realpath`. A symlink must not escape. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
-- Export and share redact absolute `file://` URLs to `about:blank` so local paths never leak. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
+- Export and share inline confined same-directory resources and redact every other absolute `file://` URL to `about:blank` so local paths never leak. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
 - Exports strip the injected SDK and escape inlined `</script>`/`</style>`. Hosted shares never include the SDK. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
 - `--unpublish` is not a deletion. There is no clear-password path. Empty share flag values are refused. A lost create response must not offer a recovery the host cannot perform. Suggested commands never contain a password placeholder. [Hosted sharing (ht-ml.app)](docs/invariants.md#hosted-sharing-ht-mlapp).
 - Share passwords are minted only in `src/share-password.js`. Lavish persists neither the password nor `update_key`. [Hosted sharing (ht-ml.app)](docs/invariants.md#hosted-sharing-ht-mlapp).
@@ -119,6 +120,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - Serialized SDK helper modules export only functions. `serializeModuleHelpers` throws on any other export. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Mermaid pan and zoom touch only the live SVG `viewBox`, never the saved artifact. `normalizeMermaidNodeTarget` strips node targets to their fixed shape. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Table-cell annotations name a row or column only when it is provable and stay silent otherwise. `snapshot()` never computes table targets. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
+- A text annotation's `prompt.selector` names the container, not the selected range. Never target text by selector alone. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Annotation handlers ignore native controls, editable regions, and `data-lavish-action` elements. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - `resetRevisionLegend()` runs only when `replaceArtifactFrame` actually assigns `frame.src`. Reject over-long revision ids and selectors. Lookups use `Map`/`Set`. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - The revision legend's per-row cap derives from `revisionPalette()` length, never a second number. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
