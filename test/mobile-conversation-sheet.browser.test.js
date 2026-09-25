@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 // left the chat log a 72px sliver, and on a short phone the chat log had no height at all while
 // the Send row ran past the viewport. The sheet replaces that split, and these assertions are the
 // geometry an end user would notice: nothing clipped, every control inside the viewport, the
-// artifact never under the dock, and the desktop layout untouched.
+// artifact never under the dock, and the desktop panel collapsing to a rail without losing the
+// conversation behind it.
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -64,14 +65,20 @@ const GEOMETRY = `() => {
   const rect = (el) => { const r = el.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) }; };
   const scroll = document.getElementById("panelScroll");
   const panel = document.getElementById("panel");
+  const toggle = document.getElementById("panelToggle");
+  const probe = document.body.appendChild(document.createElement("span"));
+  probe.style.color = "var(--accent)";
+  const accent = getComputedStyle(probe).color;
+  probe.remove();
   return JSON.stringify({
     viewport: { width: innerWidth, height: innerHeight },
     open: document.body.classList.contains("sheet-open"),
+    collapsed: document.body.classList.contains("panel-collapsed"),
     panelPosition: getComputedStyle(panel).position,
     panel: rect(panel),
     head: rect(document.getElementById("panelHead")),
     frame: rect(document.getElementById("artifact")),
-    chat: { visible: scroll.clientHeight, content: scroll.scrollHeight, inert: scroll.inert },
+    chat: { visible: scroll.clientHeight, content: scroll.scrollHeight, inert: scroll.inert, scrollTop: scroll.scrollTop },
     composer: {
       ...rect(document.getElementById("chatComposer")),
       visible: document.getElementById("chatComposer").clientHeight,
@@ -87,13 +94,17 @@ const GEOMETRY = `() => {
     sendAndEnd: rect(document.getElementById("sendAndEnd")),
     textarea: rect(document.getElementById("chatInput")),
     summary: document.getElementById("panelSummary").textContent,
-    toggleLabel: document.getElementById("panelToggle").getAttribute("aria-label"),
+    toggleLabel: toggle.getAttribute("aria-label"),
+    toggleExpanded: toggle.getAttribute("aria-expanded"),
+    toggleAccent: getComputedStyle(toggle).color === accent,
+    activeElement: document.activeElement?.id || "",
+    draft: document.getElementById("chatInput").value,
     documentScrollable: document.documentElement.scrollHeight > innerHeight || document.documentElement.scrollWidth > innerWidth,
   });
 }`;
 
 test(
-  "the conversation is a dock and bottom sheet on a phone, and unchanged on desktop",
+  "the conversation is a dock and bottom sheet on a phone, and collapses to a rail on desktop",
   { skip: !runBrowserE2e, timeout: 300_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-mobile-sheet-"));
@@ -126,8 +137,14 @@ test(
       return value;
     }
 
+    // chrome-devtools-axi 0.1.34 rejects a numeric `wait`, so the pause runs on the page instead.
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      run(
+        "chrome-devtools-axi",
+        ["eval", `() => new Promise((resolve) => setTimeout(resolve, ${ms}))`],
+        chromeEnv,
+        ms + 45_000,
+      );
     }
 
     function emulate(viewport) {
@@ -240,8 +257,9 @@ test(
       }
 
       // ---- Portrait phone ----
-      emulate("390x844x3,mobile,touch");
       open(url);
+      emulate("390x844x3,mobile,touch");
+      wait(500);
       let g = geometry();
       assertDocked(g);
       assert.equal(g.summary, "Agent not listening");
@@ -307,17 +325,109 @@ test(
       assert.equal(g.panel.bottom, g.viewport.height);
       assertPopulatedComposerUsable(g);
 
-      // ---- Desktop: a side panel, never a sheet ----
+      // ---- Desktop: a side panel, never a sheet, that collapses to a rail ----
+      // Two long replies make the desktop log scroll, so there is a reading position to keep.
+      for (const reply of ["Desktop detail one. ", "Desktop detail two. "]) {
+        run(
+          process.execPath,
+          [
+            "bin/lavish-axi.js",
+            "poll",
+            artifact,
+            "--agent-reply",
+            reply + "Keep this in the conversation while the artifact stays visible. ".repeat(12),
+            "--timeout-ms",
+            "200",
+          ],
+          lavishEnv,
+          30_000,
+        );
+      }
       emulate("1440x1000x1");
       open(url, 3000);
       g = geometry();
       assert.equal(g.open, false);
+      assert.equal(g.collapsed, false);
       assert.notEqual(g.panelPosition, "fixed");
       assert.equal(g.panel.top, 56);
       assert.equal(g.panel.bottom, g.viewport.height);
       assert.equal(g.panel.right - g.panel.left, 360, "desktop panel keeps its width");
       assert.equal(g.chat.inert, false);
+      assert.equal(g.toggleExpanded, "true");
+      assert.equal(g.toggleLabel, "Hide conversation");
       assert.equal(g.frame.right, g.panel.left, "artifact and panel sit side by side");
+
+      // Collapse from the keyboard with a reading position and an unsent draft behind the rail.
+      const readingPosition = evaluate(`() => {
+        const scroll = document.getElementById("panelScroll");
+        scroll.scrollTop = 40;
+        document.getElementById("chatInput").value = "Keep this draft";
+        document.getElementById("panelToggle").focus();
+        return scroll.scrollTop;
+      }`);
+      assert.equal(readingPosition, 40, "the desktop log is tall enough to hold a reading position");
+      run("chrome-devtools-axi", ["press", "Space"], chromeEnv);
+      wait(300);
+      g = geometry();
+      assert.equal(g.collapsed, true);
+      assert.equal(g.panel.right - g.panel.left, 48, "the rail is only the toggle");
+      assert.equal(g.frame.right, g.panel.left, "the artifact takes the reclaimed width");
+      assert.equal(g.chat.inert, true);
+      assert.equal(g.toggleExpanded, "false");
+      assert.equal(g.toggleLabel, "Show conversation");
+      assert.equal(g.activeElement, "panelToggle");
+      assert.equal(g.toggleAccent, false);
+      assert.equal(g.documentScrollable, false);
+
+      // Nothing landed: expanding returns to the reading position with the draft intact.
+      run("chrome-devtools-axi", ["press", "Space"], chromeEnv);
+      wait(300);
+      g = geometry();
+      assert.equal(g.collapsed, false);
+      assert.equal(g.panel.right - g.panel.left, 360);
+      assert.equal(g.chat.inert, false);
+      assert.equal(g.chat.scrollTop, 40, "collapsing does not lose the reading position");
+      assert.equal(g.draft, "Keep this draft");
+
+      // A reply lands behind the rail: the toggle says so, and expanding lands on the newest bubble.
+      run("chrome-devtools-axi", ["press", "Space"], chromeEnv);
+      wait(300);
+      run(
+        process.execPath,
+        ["bin/lavish-axi.js", "poll", artifact, "--agent-reply", "Landed behind the rail.", "--timeout-ms", "200"],
+        lavishEnv,
+        30_000,
+      );
+      wait(500);
+      g = geometry();
+      assert.equal(g.collapsed, true);
+      assert.equal(g.toggleAccent, true, "the rail signals what landed behind it");
+      run("chrome-devtools-axi", ["press", "Space"], chromeEnv);
+      wait(300);
+      g = geometry();
+      assert.equal(g.collapsed, false);
+      assert.equal(g.toggleAccent, false);
+      assert.ok(
+        g.chat.scrollTop + g.chat.visible >= g.chat.content - 1,
+        `expanding after a reply opens on the newest bubble: ${JSON.stringify(g.chat)}`,
+      );
+
+      // A notice the composer raises behind the rail carries the same signal until it is dismissed.
+      run("chrome-devtools-axi", ["press", "Space"], chromeEnv);
+      wait(300);
+      evaluate('() => { document.getElementById("outdatedBanner").hidden = false; return "ok"; }');
+      assert.equal(geometry().toggleAccent, true, "a notice behind the rail is signalled");
+      evaluate('() => { document.getElementById("outdatedBanner").hidden = true; return "ok"; }');
+      assert.equal(geometry().toggleAccent, false);
+
+      // The rail is desktop state only: at phone width the same tab gets its dock.
+      emulate("390x844x3,mobile,touch");
+      wait(500);
+      g = geometry();
+      assert.equal(g.collapsed, false, "the rail never leaks into the phone sheet");
+      assert.equal(g.panelPosition, "fixed");
+      assert.equal(g.chat.inert, true);
+      assert.equal(g.toggleLabel, "Show conversation");
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       run("chrome-devtools-axi", ["stop"], chromeEnv);
