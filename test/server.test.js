@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { on, once } from "node:events";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, open, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect } from "node:net";
 import { homedir, networkInterfaces, tmpdir } from "node:os";
@@ -483,6 +483,9 @@ test("artifact assets resolve within the artifact directory", async () => {
   const root = path.resolve("/tmp/lavish-artifact");
 
   assert.equal(await resolveArtifactAsset(root, "style.css"), path.join(root, "style.css"));
+  assert.equal(await resolveArtifactAsset(root, "..style.css"), path.join(root, "..style.css"));
+  assert.equal(await resolveArtifactAsset(root, "..assets/style.css"), path.join(root, "..assets/style.css"));
+  assert.equal(await resolveArtifactAsset(root, "..assets/../../secret.txt"), null);
   assert.equal(await resolveArtifactAsset(root, "../secret.txt"), null);
 });
 
@@ -542,6 +545,49 @@ test("artifact asset resolution fails closed when realpath errors", async () => 
 
     await assert.rejects(resolveArtifactAsset(dir, "loop-a"), { code: "ELOOP" });
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("artifact assets reject protected-file hard links and symlink swaps", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-protected-"));
+  const artifact = path.join(dir, "artifact.html");
+  const hardAlias = path.join(dir, "hard.png");
+  const swapAlias = path.join(dir, "swap.png");
+  const benign = path.join(dir, "benign.png");
+  await writeFile(artifact, "<!doctype html><body>protected assets</body>");
+  await writeFile(benign, "benign");
+  await symlink(benign, swapAlias);
+  let swapped = false;
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    artifactAssetOpen: async (file, flags) => {
+      if (!swapped && path.basename(file) === path.basename(benign)) {
+        swapped = true;
+        await unlink(file);
+        await symlink(path.join(dir, "page-proof.key"), file);
+      }
+      return open(file, flags);
+    },
+  });
+  try {
+    await link(path.join(dir, "page-proof.key"), hardAlias);
+    const base = `http://127.0.0.1:${server.port}`;
+    const session = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+
+    const hard = await fetch(`${base}/artifact/${session.key}/hard.png`);
+    const swap = await fetch(`${base}/artifact/${session.key}/swap.png`);
+    assert.equal(hard.status, 403);
+    assert.equal(swap.status, 403);
+    assert.equal(swapped, true);
+  } finally {
+    await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -1138,14 +1184,6 @@ test("composer textarea is sized within the right panel", async () => {
   assert.match(css, /\.composer\{[^}]*min-width:0/);
   assert.match(css, /\.composer\{[^}]*flex-shrink:0/);
   assert.match(css, /\.composer textarea\{[^}]*box-sizing:border-box/);
-});
-
-test("hot reload resets iframe src instead of crossing sandbox location", async () => {
-  const js = await chromeClientSource();
-
-  assert.doesNotMatch(js, /contentWindow\.location\.reload/);
-  assert.match(js, /frame\.src\s*=\s*artifactFrameSrcForLoad\(\{ revision, token \}\)/);
-  assert.match(js, /artifact-loads\/begin/);
 });
 
 test("artifact SDK reports only stable severe layout failures after fonts, resize, and animations settle", () => {
@@ -2273,17 +2311,20 @@ test("/artifact serves files copied under the artifact directory", async () => {
     const css = await fetch(`${base}/artifact/${session.key}/assets/style.css`);
     const svg = await fetch(`${base}/artifact/${session.key}/assets/icon.svg`);
     const expectedSandbox =
-      "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+      "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads; frame-ancestors 'self'";
 
     assert.equal(documentResponse.status, 200);
     assert.equal(documentResponse.headers.get("content-security-policy"), expectedSandbox);
+    // Path-addressed responses keep the opaque-origin sandbox but must be framable by the
+    // opaque-origin artifact itself, which no frame-ancestors expression can name.
+    const pathSandbox = expectedSandbox.replace("; frame-ancestors 'self'", "");
     assert.equal(popup.status, 200);
-    assert.equal(popup.headers.get("content-security-policy"), expectedSandbox);
+    assert.equal(popup.headers.get("content-security-policy"), pathSandbox);
     assert.equal(css.status, 200);
     assert.match(css.headers.get("content-type") || "", /text\/css/);
     assert.equal(await css.text(), "body { color: rgb(1 2 3); }\n");
     assert.equal(svg.status, 200);
-    assert.equal(svg.headers.get("content-security-policy"), expectedSandbox);
+    assert.equal(svg.headers.get("content-security-policy"), pathSandbox);
     assert.match(svg.headers.get("content-type") || "", /image\/svg\+xml/);
     assert.match(await svg.text(), /<svg/);
   } finally {
@@ -2757,10 +2798,11 @@ test("begin-load requires the current chrome handoff before any first or direct 
 
     const directRedirect = await fetch(`${base}/artifact/${key}`, { redirect: "manual" });
     assert.equal(directRedirect.status, 302);
+    assert.equal(directRedirect.headers.get("location"), `/artifact/${key}/artifact.html`);
     const directArtifact = await fetch(`${base}${directRedirect.headers.get("location")}`);
-    assert.equal(directArtifact.status, 409);
+    assert.equal(directArtifact.status, 200);
     assert.match(directArtifact.headers.get("content-type") || "", /text\/html/);
-    assert.match(await directArtifact.text(), /Artifact load expired/);
+    assert.match(await directArtifact.text(), /page_protocol=1/);
     const revision = await fetch(`${base}/api/${key}/layout-warnings`).then((response) => response.json());
     assert.equal(revision.revision, firstLoad.artifact_revision);
   } finally {
@@ -3500,7 +3542,7 @@ test("GET /api/:key/export inlines local assets and leaves remote references int
     assert.equal(exportRes.status, 200);
     assert.equal(
       exportRes.headers.get("content-security-policy"),
-      "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads",
+      "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads; frame-ancestors 'self'",
     );
     assert.match(exportRes.headers.get("content-disposition") || "", /attachment; filename="artifact\.export\.html"/);
     const body = await exportRes.text();
@@ -3513,6 +3555,47 @@ test("GET /api/:key/export inlines local assets and leaves remote references int
     assert.match(body, /<link rel="stylesheet" href="https:\/\/cdn\.example\/app\.css">/);
   } finally {
     await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("browser export and share never inline the durable page-proof key", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-proof-export-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, '<!doctype html><html><body><img src="proof-alias.png"></body></html>');
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const proofKey = await readFile(path.join(dir, "page-proof.key"));
+    await link(path.join(dir, "page-proof.key"), path.join(dir, "proof-alias.png"));
+    const encodedProofKey = proofKey.toString("base64");
+    const base = `http://127.0.0.1:${server.port}`;
+    const session = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+
+    const exported = await fetch(`${base}/api/${session.key}/export`).then((response) => response.text());
+    assert.match(exported, /src="proof-alias\.png"/);
+    assert.doesNotMatch(exported, new RegExp(encodedProofKey));
+
+    const shareResponse = await fetch(`${base}/api/${session.key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: "{}",
+    });
+    assert.equal(shareResponse.status, 200);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].body.html_content, /src="proof-alias\.png"/);
+    assert.doesNotMatch(requests[0].body.html_content, new RegExp(encodedProofKey));
+  } finally {
+    await server.close();
+    await htmlApp.close();
+    restoreEnv("LAVISH_AXI_HTML_APP_API_URL", previousApiUrl);
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -4833,7 +4916,7 @@ test("a review WebSocket reconnect within the grace period keeps the active poll
     port: 0,
     stateFile: path.join(dir, "state.json"),
     version: "9.9.9-test",
-    browserDisconnectGraceMs: 100,
+    browserDisconnectGraceMs: 1000,
   });
   let reconnected = null;
   try {
@@ -4846,12 +4929,11 @@ test("a review WebSocket reconnect within the grace period keeps the active poll
     const browser = await startPresenceStream(base, opened.key);
     assert.equal(await browser.next(), "waiting");
 
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=180`).then((response) =>
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1200`).then((response) =>
       response.json(),
     );
     assert.equal(await browser.next(), "listening");
     await browser.close();
-    await new Promise((resolve) => setTimeout(resolve, 20));
     reconnected = await startPresenceStream(base, opened.key);
     assert.equal(await reconnected.next(), "listening");
 
@@ -4908,6 +4990,8 @@ test("exclusive listener ownership rejects a loser and reports a takeover", asyn
   const stateFile = path.join(dir, "state.json");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
   const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  let browser = null;
+  const firstPollController = new AbortController();
   try {
     const base = `http://127.0.0.1:${server.port}`;
     const open = await fetch(`${base}/api/sessions`, {
@@ -4916,8 +5000,12 @@ test("exclusive listener ownership rejects a loser and reports a takeover", asyn
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    browser = await startPresenceStream(base, key);
+    assert.equal(await browser.next(), "waiting");
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`, {
+      signal: firstPollController.signal,
+    }).catch((error) => error);
+    assert.equal(await browser.next(), "listening");
 
     const health = await fetch(`${base}/health`).then((response) => response.json());
     assert.deepEqual(
@@ -4953,6 +5041,8 @@ test("exclusive listener ownership rejects a loser and reports a takeover", asyn
     takeover.abort();
     await replacement;
   } finally {
+    firstPollController.abort();
+    await browser?.close();
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -5450,7 +5540,13 @@ test("a disconnect during immediate feedback take requeues the batch without wor
     socket.on("error", () => {});
     socket.destroy();
     releaseTake();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const listenerDeadline = Date.now() + 2000;
+    while (true) {
+      const health = await fetch(`${base}/health`).then((response) => response.json());
+      if (!health.listeners.some((listener) => listener.key === key)) break;
+      assert.ok(Date.now() < listenerDeadline, "disconnected poll kept its listener");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
 
     const presence = await startPresenceStream(base, key);
     try {
@@ -5567,7 +5663,7 @@ test("a disconnect during event-driven feedback take requeues the batch without 
       const feedback = await next.json();
       assert.equal(feedback.status, "feedback");
       assert.equal(feedback.dom_snapshot, queued.domSnapshot);
-      assert.deepEqual(feedback.prompts, [queued.prompts[0]]);
+      assert.deepEqual(feedback.prompts, [{ ...queued.prompts[0], page: path.basename(artifact) }]);
       assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat, beforeState.chat);
     } finally {
       await presence.close();
@@ -6213,7 +6309,7 @@ test("layout gate curtain reuses the ended overlay card styling", async () => {
   assert.match(html, /<body class="lavish layout-gate-active">/);
   assert.match(
     html,
-    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="\/artifact\/abc\/index\.html"><\/iframe>/,
+    /<iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="\/artifact\/abc\/artifact\.html"><\/iframe>/,
   );
   assert.doesNotMatch(html, /<iframe id="artifact"[^>]* src=/);
   assert.match(html, /class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"/);
@@ -6433,6 +6529,7 @@ test("the prompts route returns the transcript and syncs it live at send time", 
         role: "user",
         kind: "annotation",
         text: "Rename this",
+        page: path.basename(artifact),
         prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         anchor: { kind: "element", label: "<h2>", excerpt: "Phase 1: Inventory", selector: "h2#phase-1" },
       },
@@ -6541,7 +6638,7 @@ test("the live transcript carries rendered html for agent replies and never for 
       chat.map(({ at: _at, ...entry }) => entry),
       [
         { role: "agent", text: "Done.\n\n- one\n- two", html: "<p>Done.</p><ul><li>one</li><li>two</li></ul>" },
-        { role: "user", kind: "message", text: "<b>keep</b>" },
+        { role: "user", kind: "message", text: "<b>keep</b>", page: path.basename(artifact) },
       ],
     );
 

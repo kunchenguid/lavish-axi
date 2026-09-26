@@ -2,7 +2,7 @@
 
 `lavish-axi` exists so that a person reviewing what an agent rendered can point at it and be understood exactly.
 It is operated by the agent and serves the collaboration between that agent and its human user, turning the person's pointing, selecting, drawing, and typing into instructions the agent receives as their own words.
-It owns exactly one thing: the review loop between one person and one agent over one local HTML file.
+It owns exactly one thing: the review loop between one person and one agent over one local HTML entry file and its authored, root-contained HTML siblings.
 
 ## The artifact stays the author's
 
@@ -63,4 +63,4 @@ It is not an MCP server and it has no marketplace, because the CLI is already th
 It does not translate a whiteboard back into Mermaid, and it does not repair artifacts on the user's behalf.
 
 A change aligns when it carries a human's intent to the agent more precisely, when it keeps the artifact portable and the review uninterrupted, and when it lands in the one surface that already owns the contract it touches.
-A change should be resisted when it acts on the artifact without the reviewer asking, when it makes the served artifact diverge from the saved file, when it spends the agent's tokens or the human's waiting time without earning them, or when it quietly widens Lavish past one person, one agent, and one local HTML file.
+A change should be resisted when it acts on the artifact without the reviewer asking, when it makes the served artifact diverge from the saved file, when it spends the agent's tokens or the human's waiting time without earning them, or when it quietly widens Lavish past one person, one agent, and one entry-owned local HTML artifact.

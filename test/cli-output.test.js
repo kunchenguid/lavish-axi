@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -1007,6 +1007,50 @@ test("export command writes a portable HTML file next to the artifact", async ()
   }
 });
 
+test("export and share never inline the durable page-proof key", async () => {
+  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-proof-export-`);
+  const artifact = path.join(dir, "report.html");
+  const proofKey = path.join(dir, "page-proof.key");
+  const proofAlias = path.join(dir, "proof-alias.png");
+  const marker = "PAGE-PROOF-SECRET-MARKER";
+  await writeFile(proofKey, marker, "utf8");
+  await link(proofKey, proofAlias);
+  await writeFile(artifact, '<!doctype html><html><body><img src="proof-alias.png"></body></html>', "utf8");
+  const requests = [];
+  const htmlApp = await startFakeHtmlApp(requests);
+  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
+  const previousStateDir = process.env.LAVISH_AXI_STATE_DIR;
+  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
+  process.env.LAVISH_AXI_STATE_DIR = dir;
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "export", artifact],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: { ...process.env, LAVISH_AXI_TELEMETRY: "0" },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const exported = await readFile(path.join(dir, "report.export.html"), "utf8");
+    assert.match(exported, /src="proof-alias\.png"/);
+    assert.doesNotMatch(exported, new RegExp(Buffer.from(marker).toString("base64")));
+
+    await shareCommand([artifact]);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].body.html_content, /src="proof-alias\.png"/);
+    assert.doesNotMatch(requests[0].body.html_content, new RegExp(Buffer.from(marker).toString("base64")));
+  } finally {
+    await htmlApp.close();
+    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
+    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
+    if (previousStateDir === undefined) delete process.env.LAVISH_AXI_STATE_DIR;
+    else process.env.LAVISH_AXI_STATE_DIR = previousStateDir;
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
 test("export command treats --out value as an option operand, not the source file", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-export-test-`);
   const artifact = `${dir}/report.html`;
@@ -1813,6 +1857,9 @@ test("poll feedback and the next step are emitted before the bulky DOM snapshot"
     status: "feedback",
     prompts: [{ prompt: "Ship it", tag: "message" }],
     artifact_failures: [{ kind: "artifact-unavailable", detail: "HTTP 404", severity: "fatal" }],
+    session_ended: true,
+    ended_by: "user",
+    snapshot_page: "sub/index.html",
     dom_snapshot: "large snapshot",
   };
   const server = createServer((req, res) => {
@@ -1859,18 +1906,38 @@ test("poll feedback and the next step are emitted before the bulky DOM snapshot"
     const promptsIndex = stdout.indexOf("prompts[");
     const failuresIndex = stdout.indexOf("artifact_failures[");
     const nextStepIndex = stdout.indexOf("next_step:");
+    const snapshotPageIndex = stdout.indexOf("snapshot_page:");
     const snapshotIndex = stdout.indexOf("dom_snapshot:");
     assert.ok(promptsIndex >= 0, "poll stdout contains prompts");
     assert.ok(failuresIndex >= 0, "poll stdout contains artifact_failures");
     assert.ok(nextStepIndex >= 0, "poll stdout contains next_step");
+    assert.ok(snapshotPageIndex >= 0, "poll stdout contains snapshot_page");
     assert.ok(snapshotIndex >= 0, "poll stdout contains dom_snapshot");
     assert.ok(promptsIndex < failuresIndex, "prompts precede artifact_failures in poll stdout");
     assert.ok(failuresIndex < nextStepIndex, "artifact_failures precede next_step in poll stdout");
-    assert.ok(nextStepIndex < snapshotIndex, "next_step precedes dom_snapshot in poll stdout");
+    assert.ok(nextStepIndex < snapshotPageIndex, "next_step precedes snapshot_page in poll stdout");
+    assert.ok(snapshotPageIndex < snapshotIndex, "snapshot_page immediately precedes dom_snapshot in poll stdout");
+    assert.equal(
+      stdout.slice(snapshotPageIndex, snapshotIndex).trim(),
+      "snapshot_page: sub/index.html",
+      "no output field separates the snapshot label from its content",
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(stateDir, { force: true, recursive: true });
   }
+});
+
+test("empty feedback keeps the null snapshot label adjacent to empty snapshot content", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: { status: "feedback", prompts: [], snapshot_page: "must-not-survive", dom_snapshot: "" },
+  });
+  const keys = Object.keys(output);
+  const pageIndex = keys.indexOf("snapshot_page");
+  assert.equal(output.snapshot_page, null);
+  assert.equal(output.dom_snapshot, "");
+  assert.equal(keys[pageIndex + 1], "dom_snapshot");
 });
 
 test("feedback next step is Codex-aware when requested", () => {
@@ -1898,6 +1965,109 @@ test("detected layout warnings never appear in poll output", () => {
   assert.equal("layout_warnings" in output, false);
   assert.equal("artifact_failures" in output, false);
   assert.match(output.next_step, /Apply the requested changes/);
+});
+
+test("feedback guidance edits the attributed sibling instead of assuming the session entry", () => {
+  const output = createPollOutput({
+    file: "/tmp/site/start.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [
+        {
+          prompt: "Tighten this heading",
+          tag: "annotation",
+          text: "Details",
+          page: "sub/details.html",
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /Apply the requested changes to sub\/details\.html/);
+  assert.match(output.next_step, /start\.html remains only the session control target/);
+  assert.doesNotMatch(output.next_step, /changes to \/tmp\/site\/start\.html/);
+});
+
+test("accepted legacy feedback keeps entry attribution while modern null batches are rejected", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-cli-attribution-"));
+  const artifact = path.join(dir, "entry.html");
+  await writeFile(artifact, "<!doctype html><body>Entry</body>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "attribution-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+
+    const legacyPost = await fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [{ prompt: "Update the entry", tag: "message" }],
+        domSnapshot: "body Entry",
+      }),
+    });
+    assert.equal(legacyPost.status, 200);
+    const legacyPoll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+      (response) => response.json(),
+    );
+    const legacyOutput = createPollOutput({ file: artifact, response: legacyPoll });
+    assert.equal(legacyOutput.prompts[0].page, "entry.html");
+    assert.equal(legacyOutput.snapshot_page, "entry.html");
+    assert.match(legacyOutput.next_step, /Apply the requested changes to entry\.html/);
+
+    const modernPost = await fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        page_protocol: 1,
+        prompts: [{ prompt: "Keep restored writing", tag: "message", page: null, page_proof: "" }],
+        domSnapshot: "body Unknown",
+        snapshot_page: null,
+        snapshot_page_proof: "",
+      }),
+    });
+    assert.equal(modernPost.status, 400);
+    assert.equal((await modernPost.json()).status, "invalid-page-context");
+    const modernPoll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+      (response) => response.json(),
+    );
+    assert.equal(modernPoll.status, "waiting", "rejected modern feedback must not enter the legacy entry queue");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mixed and unavailable attribution guidance keeps per-item pages and refuses an entry guess", () => {
+  const output = createPollOutput({
+    file: "/tmp/site/start.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [
+        {
+          prompt: "Fix selected warnings",
+          tag: "layout-warnings",
+          target: {
+            type: "layout-warnings",
+            warnings: [
+              { id: "wa", page: "a.html" },
+              { id: "wb", page: "b.html" },
+              { id: "wu", page: null },
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /page named on that prompt, warning, or failure/);
+  assert.match(output.next_step, /a\.html, b\.html/);
+  assert.match(output.next_step, /do not assume the session entry is that target/);
 });
 
 test("a queued layout-warnings batch reads as ordinary feedback with lifecycle guidance", () => {

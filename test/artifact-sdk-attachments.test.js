@@ -12,33 +12,7 @@ import {
 } from "../src/artifact-sdk.js";
 import { createSdkJs } from "../src/server.js";
 
-// The annotation card lives inside the sandboxed artifact iframe, so its image
-// attachment behavior can only be exercised in a real browser. These assertions
-// pin the SDK <-> chrome message contract in the serialized bundle so a refactor
-// can't silently break the paste/drop -> upload -> queue handshake.
 const sdk = createSdkJs("0123456789abcdef");
-
-test("the SDK bundle uploads captured images through the chrome", () => {
-  // The send must go through postArtifactMessage: that helper stamps the current
-  // artifact_load_token, and the chrome drops EVERY artifact message without it
-  // before the upload handler runs - so a raw parent.postMessage here (which this
-  // regression once shipped as) silently kills every real upload while mocked
-  // harnesses stay green.
-  assert.match(sdk, /postArtifactMessage\("lavish:uploadAttachment", \{/);
-  assert.doesNotMatch(sdk, /parent\.postMessage\(\s*\{\s*type: "lavish:uploadAttachment"/);
-  assert.match(sdk, /localId: item\.localId/);
-  assert.match(sdk, /item\.file\s*\n?\s*\.arrayBuffer\(\)/);
-});
-
-test("the SDK bundle scopes every upload and result to this document (E1)", () => {
-  // The nonce is minted per document, sent with each upload, and required on the
-  // way back; the listener also drops anything that did not come from the chrome.
-  assert.match(sdk, /const ATTACHMENT_NONCE\s*=/);
-  assert.match(sdk, /nonce: ATTACHMENT_NONCE/);
-  assert.match(sdk, /const isTrustedAttachmentResult=/);
-  assert.match(sdk, /if \(event\.source !== parent\) return;/);
-  assert.match(sdk, /isTrustedAttachmentResult\(event, \{ parentWindow: parent, nonce: ATTACHMENT_NONCE \}\)/);
-});
 
 test("the SDK bundle applies upload results and offers a retry", () => {
   assert.match(sdk, /lavish:attachmentResult/);

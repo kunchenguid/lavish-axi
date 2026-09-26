@@ -7,6 +7,7 @@ import { isIP } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pipeline } from "node:stream/promises";
 
 import chokidar from "chokidar";
 import express from "express";
@@ -40,11 +41,15 @@ import * as mermaidNode from "./mermaid-node.js";
 import * as tableCellHelpers from "./table-cell.js";
 import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
 import {
+  WhiteboardStoreError,
   isValidDiagramIndex,
   isValidWhiteboardKey,
   loadWhiteboard,
+  loadWhiteboardForPage,
   saveWhiteboard,
+  saveWhiteboardForPage,
   writeWhiteboardFeedbackFiles,
+  writeWhiteboardFeedbackFilesForPage,
 } from "./whiteboard-store.js";
 import {
   buildSelfContainedHtml,
@@ -56,6 +61,25 @@ import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from 
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
 import { injectLavishSdk } from "./html-transform.js";
+import {
+  artifactDestinationPathMatches,
+  canonicalArtifactRoot,
+  createChromeAuthNonce,
+  isArtifactHtmlPage,
+  isChromeAuthNonce,
+  loadPageProofKey,
+  normalizeReviewPageIdentity,
+  pageProofKeyIdentity,
+  readResolvedArtifactPage,
+  resolveArtifactEntry,
+  resolveArtifactPage,
+  signChromeAuth,
+  signPageProof,
+  signHistoricalDestination,
+  verifyChromeAuth,
+  verifyHistoricalDestination,
+  verifyPageProof,
+} from "./artifact-page.js";
 import {
   bindHost,
   extraAllowedHosts,
@@ -83,6 +107,7 @@ import {
   sweepAttachments,
   writeAttachment,
 } from "./attachment-store.js";
+import { openVerifiedLocalFile } from "./verified-local-file.js";
 
 const chromeClientUrl = new URL("./chrome-client.js", import.meta.url);
 const chromeCssUrl = new URL("./chrome.css", import.meta.url);
@@ -126,8 +151,19 @@ const BROWSER_DISCONNECT_GRACE_MS = 10_000;
 // An escaped popup can navigate to an artifact-owned HTML or SVG asset on the
 // server origin. Keep every artifact response sandboxed at the response layer
 // so active documents stay opaque-origin even when they are top-level.
-const ARTIFACT_CONTENT_SECURITY_POLICY =
+const ARTIFACT_SANDBOX_POLICY =
   "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+// Strict framing for responses with no authenticated handshake of their own: the legacy virtual
+// entry (whose full SDK talks to whatever parent frames it) and the export download.
+const ARTIFACT_CONTENT_SECURITY_POLICY = `${ARTIFACT_SANDBOX_POLICY}; frame-ancestors 'self'`;
+// Path-addressed artifact responses cannot use frame-ancestors: the reviewed artifact is
+// opaque-origin, so an authored nested sibling iframe can never satisfy 'self' and would be
+// blocked. Framing is therefore not the boundary here. A protocol-1 document stays inert unless it
+// is a direct child of its top window AND that parent, posting from this server's origin, presents
+// the server-issued chrome-auth MAC for this document's nonce, which only a same-origin
+// current-generation chrome can obtain. A foreign parent renders authored HTML and receives no
+// token, proof, or review authority.
+const ARTIFACT_PATH_CONTENT_SECURITY_POLICY = ARTIFACT_SANDBOX_POLICY;
 // Sweep orphaned/expired attachments periodically, not just at startup: a
 // detached server can run for days, and an upload whose /prompts follow-up never
 // arrived would otherwise linger until the next restart.
@@ -137,6 +173,23 @@ const ATTACHMENT_SWEEP_INTERVAL_MS = 60 * 60_000;
 // text the user would read as a fact.
 const SHUTDOWN_REASONS = new Set(["upgrade", "local-build", "stop"]);
 const AGENT_LISTENER_LABEL = "agent-listener";
+
+// Route-level failures are intentionally kept separate from Express/body-parser errors. Their
+// messages never include a filesystem path or a proof, and the route can turn a malformed or
+// stale page claim into a bounded actionable 4xx instead of leaking the store's raw exception.
+class WhiteboardRouteError extends Error {
+  /**
+   * @param {number} status
+   * @param {string} code
+   * @param {string} message
+   */
+  constructor(status, code, message) {
+    super(message);
+    this.name = "WhiteboardRouteError";
+    this.status = status;
+    this.code = code;
+  }
+}
 
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
 // layout-warning batch is outstanding, the agent is applying several related edits, so widen the
@@ -158,7 +211,7 @@ export function defaultWhiteboardAssetsDir() {
 // PNG preview data URL), which outgrow the default 2 MB JSON cap. Only the
 // whiteboard write routes get the larger limit.
 export function isWhiteboardWriteApiPath(pathname) {
-  return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?$/.test(String(pathname || ""));
+  return /^\/api\/[0-9a-f]{16}\/whiteboard\/\d{1,3}(\/feedback-files)?(?:[?#].*)?$/.test(String(pathname || ""));
 }
 
 // The attachment upload carries raw image bytes, not JSON, so it bypasses both
@@ -269,6 +322,19 @@ export function resolveIdleTimeoutMs(env = process.env) {
   return value;
 }
 
+function artifactDocumentUrl(key, servedRoute) {
+  const encodedRoute = String(servedRoute)
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `/artifact/${encodeURIComponent(String(key))}/${encodedRoute}`;
+}
+
+function artifactEntryUrl(session) {
+  const entryRoute = path.basename(session.file);
+  return artifactDocumentUrl(session.key, entryRoute);
+}
+
 /**
  * @param {{ [key: string]: any }} [options]
  */
@@ -292,6 +358,9 @@ export async function serve({
   extraListenHosts = [],
   bindRecoveryDelaysMs = BIND_RECOVERY_DELAYS_MS,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
+  artifactPageOpen,
+  artifactPageStat,
+  artifactAssetOpen,
 } = {}) {
   // Keep the transport dependency off fast metadata paths such as `--version`.
   const { WebSocket, WebSocketServer } = await import("ws");
@@ -327,6 +396,9 @@ export async function serve({
   let attachmentSweepTimer = null;
   let bindRecoveryTimer = null;
   const app = express();
+  const stateDirectory = path.dirname(path.resolve(stateFile));
+  const pageProofKey = await loadPageProofKey(stateDirectory);
+  const protectedPageProofKeyIdentity = pageProofKeyIdentity(pageProofKey);
   const store = new SessionStore(stateFile);
   const events = new EventEmitter();
   const watchers = new Map();
@@ -512,6 +584,25 @@ export async function serve({
     markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
   }
 
+  // Page proofs are server-private attribution credentials. They survive the
+  // destructive-take restore path, but never cross the poll boundary to the
+  // agent/CLI once a batch is actually delivered.
+  function publicFeedbackResult(result) {
+    if (!result || result.status !== "feedback") return result;
+    const publicResult = { ...result };
+    if (Array.isArray(publicResult.prompts)) {
+      publicResult.prompts = publicResult.prompts.map((prompt) => {
+        if (!prompt || typeof prompt !== "object") return prompt;
+        const sanitized = { ...prompt };
+        delete sanitized.page_proof;
+        return sanitized;
+      });
+    }
+    delete publicResult.snapshot_page_proof;
+    delete publicResult.feedback_batch;
+    return publicResult;
+  }
+
   // `takeFeedback` is destructive: it clears the batch from `state.json` before anything is
   // written to the response. A client that disconnected while that take was in flight would
   // otherwise lose the feedback for good, so put it back verbatim through the store's `restore`
@@ -533,7 +624,10 @@ export async function serve({
         key,
         {
           dom_snapshot: result.dom_snapshot || "",
+          snapshot_page: result.snapshot_page ?? null,
+          snapshot_page_proof: result.snapshot_page_proof || "",
           prompts,
+          ...(result.feedback_batch ? { feedback_batch: result.feedback_batch } : {}),
           ...(Array.isArray(result.artifact_failures) ? { artifact_failures: result.artifact_failures } : {}),
         },
         {
@@ -677,6 +771,451 @@ export async function serve({
   const attachmentConfig = resolveAttachmentConfig();
   // Attachment bytes are content-addressed on disk alongside the whiteboard sidecars.
   const attachmentStateRoot = path.dirname(stateFile);
+
+  function validatePageClaim(session, canonicalRoot, page, proof, { allowMissing = true } = {}) {
+    const hasPage = page !== undefined;
+    if (!hasPage && allowMissing) return { ok: true, page: undefined, proof: "" };
+    if (page === null || page === "") {
+      return { ok: String(proof || "") === "", page: null, proof: "" };
+    }
+    const normalized = normalizeReviewPageIdentity(page, session.file);
+    const valid = Boolean(
+      normalized &&
+      normalized === page &&
+      verifyPageProof(pageProofKey, session.key, canonicalRoot, normalized, proof, session.file),
+    );
+    return { ok: valid, page: valid ? normalized : null, proof: valid ? String(proof) : "" };
+  }
+
+  async function validateLivePageContext({ session, page, proof }) {
+    const canonicalRoot = await canonicalArtifactRoot(path.dirname(session.file));
+    const claim = validatePageClaim(session, canonicalRoot, page, proof, { allowMissing: false });
+    return claim.ok ? claim : { ok: false, page: null, proof: "" };
+  }
+
+  /**
+   * Read durable whiteboard page context from either the query string or the JSON body. Keeping
+   * both spellings here lets GETs stay cache-free and lets the two JSON writes keep their existing
+   * route paths. A request that supplies the same field twice must supply the same value; the
+   * route never lets a query value silently override a body claim.
+   */
+  function whiteboardRequestContext(req) {
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const query = req.query && typeof req.query === "object" && !Array.isArray(req.query) ? req.query : {};
+
+    const readField = (names) => {
+      const bodyFields = names.filter((name) => Object.hasOwn(body, name));
+      const queryFields = names.filter((name) => Object.hasOwn(query, name));
+      const present = bodyFields.length > 0 || queryFields.length > 0;
+      const values = [...bodyFields.map((name) => body[name]), ...queryFields.map((name) => query[name])];
+      if (!present) return { present: false, value: undefined, conflict: false };
+      const first = values[0];
+      const conflict = values.some((value) => value !== first);
+      return { present: true, value: first, conflict };
+    };
+
+    const page = readField(["page"]);
+    const proof = readField(["page_proof", "pageProof"]);
+    const protocol = readField(["page_protocol", "pageProtocol"]);
+    const modern = page.present || proof.present || protocol.value === 1 || protocol.value === "1";
+    if (!modern) return { ok: true, modern: false, page: undefined, proof: "" };
+    if (page.conflict || proof.conflict) {
+      return {
+        ok: false,
+        modern: true,
+        status: 400,
+        code: "WHITEBOARD_PAGE_CONTEXT_CONFLICT",
+        error: "page and page_proof must match across the request",
+      };
+    }
+    if (typeof page.value !== "string" || page.value.length === 0) {
+      return {
+        ok: false,
+        modern: true,
+        status: 400,
+        code: "WHITEBOARD_PAGE_REQUIRED",
+        error: "a durable whiteboard page is required",
+      };
+    }
+    if (typeof proof.value !== "string" || proof.value.length === 0) {
+      return {
+        ok: false,
+        modern: true,
+        status: 400,
+        code: "WHITEBOARD_PAGE_PROOF_REQUIRED",
+        error: "a durable whiteboard page proof is required",
+      };
+    }
+    return { ok: true, modern: true, page: page.value, proof: proof.value };
+  }
+
+  function rejectWhiteboardRoute(res, failure) {
+    const status = Number(failure?.status) || 500;
+    const code = String(failure?.code || "WHITEBOARD_REQUEST_FAILED");
+    const message = String(failure?.message || "whiteboard request failed");
+    res.status(status).json({ error: message, code });
+  }
+
+  function handleWhiteboardRouteError(error, res, next) {
+    if (error instanceof WhiteboardRouteError) {
+      rejectWhiteboardRoute(res, error);
+      return;
+    }
+    if (error instanceof WhiteboardStoreError) {
+      const status = error.code === "PAGE_MISMATCH" ? 409 : 400;
+      const message = error.code === "PAGE_MISMATCH" ? "whiteboard page mismatch" : "invalid whiteboard request";
+      rejectWhiteboardRoute(res, new WhiteboardRouteError(status, error.code, message));
+      return;
+    }
+    // Root/page resolution and a durable store read can race a user deleting or replacing an
+    // artifact. Keep those expected filesystem failures on the route's bounded error surface;
+    // an unexpected exception still reaches the normal server error handler.
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      rejectWhiteboardRoute(
+        res,
+        new WhiteboardRouteError(404, "WHITEBOARD_PAGE_NOT_FOUND", "whiteboard page not found"),
+      );
+      return;
+    }
+    if (error?.code === "EACCES" || error?.code === "EPERM" || error?.code === "ELOOP") {
+      rejectWhiteboardRoute(
+        res,
+        new WhiteboardRouteError(403, "WHITEBOARD_PAGE_FORBIDDEN", "whiteboard page is not readable"),
+      );
+      return;
+    }
+    if (error instanceof SyntaxError) {
+      rejectWhiteboardRoute(
+        res,
+        new WhiteboardRouteError(409, "WHITEBOARD_RECORD_INVALID", "whiteboard record is invalid"),
+      );
+      return;
+    }
+    next(error);
+  }
+
+  async function authorizeWhiteboardRequest(req, res, { write = false, source = false } = {}) {
+    const context = whiteboardRequestContext(req);
+    if (!context.ok) {
+      rejectWhiteboardRoute(res, new WhiteboardRouteError(context.status, context.code, context.error));
+      return null;
+    }
+    // Modern durable reads are browser content operations too. Unlike the old entry-only GETs,
+    // they must carry a real same-origin signal; Origin:null, hostile Origin, and header-less
+    // callers therefore cannot use a durable page proof to read another page's content.
+    if ((context.modern || write) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+      res.status(403).json({ error: "cross-origin whiteboard request rejected", code: "WHITEBOARD_ORIGIN" });
+      return null;
+    }
+
+    const key = String(req.params.key || "");
+    if (!isValidWhiteboardKey(key)) {
+      rejectWhiteboardRoute(res, new WhiteboardRouteError(404, "WHITEBOARD_NOT_FOUND", "whiteboard not found"));
+      return null;
+    }
+    const session = await store.findByKey(key);
+    if (!session) {
+      res.status(404).json({ error: "session not found" });
+      return null;
+    }
+    if (!context.modern) {
+      // Legacy callers intentionally remain entry-only. They must never select a sibling by
+      // omission, and the old direct sidecar paths stay readable for already queued prompts.
+      if (!source) return { session, context, file: session.file, storagePage: undefined };
+      const resolution = await resolveArtifactEntry(session.file, {
+        ...(artifactPageStat ? { statFile: artifactPageStat } : {}),
+      });
+      if (resolution.reason !== "ok") {
+        rejectWhiteboardRoute(
+          res,
+          new WhiteboardRouteError(
+            resolution.reason === "missing" ? 404 : 403,
+            resolution.reason === "missing" ? "WHITEBOARD_PAGE_NOT_FOUND" : "WHITEBOARD_PAGE_FORBIDDEN",
+            resolution.reason === "missing" ? "whiteboard page not found" : "whiteboard page is not eligible",
+          ),
+        );
+        return null;
+      }
+      const html = await freshWhiteboardSource(resolution, res);
+      if (html === null) return null;
+      return { session, context, file: resolution.file, storagePage: undefined, source: html };
+    }
+
+    const canonicalRoot = await canonicalArtifactRoot(path.dirname(session.file));
+    const normalized = normalizeReviewPageIdentity(context.page, session.file);
+    if (!normalized || normalized !== context.page) {
+      rejectWhiteboardRoute(
+        res,
+        new WhiteboardRouteError(400, "WHITEBOARD_PAGE_INVALID", "invalid durable whiteboard page"),
+      );
+      return null;
+    }
+    if (!verifyPageProof(pageProofKey, key, canonicalRoot, normalized, context.proof, session.file)) {
+      res.status(403).json({ error: "invalid durable whiteboard page proof", code: "WHITEBOARD_PAGE_PROOF" });
+      return null;
+    }
+    const entryPage = normalizeReviewPageIdentity(path.basename(session.file), session.file);
+    const storagePage = normalized === entryPage ? undefined : normalized;
+    if (source) {
+      const entryFile = path.basename(session.file);
+      const resolution = await resolveArtifactPage(path.dirname(session.file), normalized, {
+        entryFile,
+        ...(artifactPageStat ? { statFile: artifactPageStat } : {}),
+      });
+      if (resolution.reason === "missing") {
+        rejectWhiteboardRoute(
+          res,
+          new WhiteboardRouteError(404, "WHITEBOARD_PAGE_NOT_FOUND", "whiteboard page not found"),
+        );
+        return null;
+      }
+      if (resolution.reason !== "ok" || resolution.page !== normalized) {
+        rejectWhiteboardRoute(
+          res,
+          new WhiteboardRouteError(403, "WHITEBOARD_PAGE_FORBIDDEN", "whiteboard page is not eligible"),
+        );
+        return null;
+      }
+      const html = await freshWhiteboardSource(resolution, res);
+      if (html === null) return null;
+      return { session, context, file: resolution.file, storagePage, source: html };
+    }
+    // Durable sidecars remain addressable after the source page is deleted. The proof is still
+    // session/root/page-bound, but this operation deliberately does not re-read the page.
+    return { session, context, file: null, storagePage };
+  }
+
+  function parseWhiteboardIndex(req, res) {
+    const raw = req.params.index;
+    if (!isValidDiagramIndex(raw)) {
+      rejectWhiteboardRoute(
+        res,
+        new WhiteboardRouteError(400, "WHITEBOARD_INDEX_INVALID", "invalid whiteboard diagram index"),
+      );
+      return null;
+    }
+    return Number(raw);
+  }
+
+  async function readArtifactPageContent(resolution) {
+    return readResolvedArtifactPage(resolution, {
+      forbiddenFileIdentities: [protectedPageProofKeyIdentity],
+      ...(artifactPageOpen ? { openFile: artifactPageOpen } : {}),
+    });
+  }
+
+  async function readArtifactSource(file) {
+    const resolution = await resolveArtifactEntry(file, {
+      ...(artifactPageStat ? { statFile: artifactPageStat } : {}),
+    });
+    return readArtifactPageContent(resolution);
+  }
+
+  async function freshWhiteboardSource(resolution, res) {
+    try {
+      return await readArtifactPageContent(resolution);
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+        rejectWhiteboardRoute(
+          res,
+          new WhiteboardRouteError(404, "WHITEBOARD_PAGE_NOT_FOUND", "whiteboard page not found"),
+        );
+        return null;
+      }
+      if (
+        error?.code === "EACCES" ||
+        error?.code === "EPERM" ||
+        error?.code === "ELOOP" ||
+        error?.code === "ARTIFACT_PAGE_CHANGED"
+      ) {
+        rejectWhiteboardRoute(
+          res,
+          new WhiteboardRouteError(403, "WHITEBOARD_PAGE_FORBIDDEN", "whiteboard page is not readable"),
+        );
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  // The accepted canonical file/inode follows the generation through its document GET.
+  // Resolving the lexical alias again is a safety check, never permission to switch targets.
+  const loadDestinations = new Map();
+
+  async function validateReloadDestination(session, destination) {
+    const entryRoute = path.basename(session.file);
+    const root = path.dirname(session.file);
+    const canonicalRoot = await canonicalArtifactRoot(root);
+    const entryPage = normalizeReviewPageIdentity(entryRoute, session.file);
+    /**
+     * @type {{
+     *   ok: true,
+     *   artifactUrl: string,
+     *   page?: string,
+     *   pageProof?: string,
+     *   servedRoute?: string,
+     *   resolution?: Awaited<ReturnType<typeof resolveArtifactPage>>,
+     * }}
+     */
+    const entry = {
+      ok: true,
+      artifactUrl: artifactEntryUrl(session),
+      ...(entryPage
+        ? {
+            page: entryPage,
+            pageProof: signPageProof(pageProofKey, session.key, canonicalRoot, entryPage, session.file),
+            servedRoute: entryRoute,
+          }
+        : {}),
+    };
+    if (destination === undefined || destination === null) {
+      return entry;
+    }
+    const invalid = () => /** @type {{ ok: false }} */ ({ ok: false });
+    if (!destination || typeof destination !== "object" || Array.isArray(destination)) return invalid();
+    const route = destination.route;
+    const page = destination.page;
+    const proof = destination.page_proof;
+    const rawUrl = destination.url;
+    const query = destination.query;
+    const fragment = destination.fragment;
+    if (
+      typeof route !== "string" ||
+      !route ||
+      typeof page !== "string" ||
+      !page ||
+      typeof proof !== "string" ||
+      !proof ||
+      typeof rawUrl !== "string" ||
+      !rawUrl ||
+      typeof query !== "string" ||
+      typeof fragment !== "string" ||
+      Buffer.byteLength(rawUrl, "utf8") > 64 * 1024 ||
+      rawUrl.includes("\0") ||
+      rawUrl.includes("\\") ||
+      rawUrl.includes("\r") ||
+      rawUrl.includes("\n") ||
+      !rawUrl.startsWith("/") ||
+      rawUrl.startsWith("//")
+    ) {
+      return invalid();
+    }
+
+    const claim = validatePageClaim(session, canonicalRoot, page, proof, { allowMissing: false });
+    if (!claim.ok || claim.page === null) return invalid();
+    const resolution = await resolveArtifactPage(root, route, {
+      entryFile: entryRoute,
+      ...(artifactPageStat ? { statFile: artifactPageStat } : {}),
+    });
+    if (resolution.reason !== "ok" || resolution.page !== claim.page) return invalid();
+
+    try {
+      const base = "http://lavish.invalid";
+      const parsed = new URL(rawUrl, base);
+      const expectedPath = artifactDocumentUrl(session.key, resolution.servedRoute || route);
+      if (
+        parsed.origin !== base ||
+        !artifactDestinationPathMatches(rawUrl.split(/[?#]/, 1)[0], expectedPath) ||
+        !artifactDestinationPathMatches(parsed.pathname, expectedPath) ||
+        parsed.search.slice(1) !== query ||
+        parsed.hash.slice(1) !== fragment
+      ) {
+        return invalid();
+      }
+      // The reload discriminator is chrome-owned and added only after this
+      // endpoint returns. An authored query with the same name is ambiguous,
+      // so fail closed instead of silently rewriting user navigation state.
+      for (const name of parsed.searchParams.keys()) {
+        if (name === "__lavish_reload") return invalid();
+      }
+      return {
+        ok: /** @type {const} */ (true),
+        artifactUrl: parsed.pathname + parsed.search + parsed.hash,
+        page: claim.page,
+        pageProof: claim.proof,
+        servedRoute: resolution.servedRoute || route,
+        resolution,
+      };
+    } catch {
+      return invalid();
+    }
+  }
+
+  async function validateHistoricalPage(session, historicalPage) {
+    const invalid = () => /** @type {{ ok: false }} */ ({ ok: false });
+    if (!historicalPage || typeof historicalPage !== "object" || Array.isArray(historicalPage)) return invalid();
+    const canonicalRoot = await canonicalArtifactRoot(path.dirname(session.file));
+    if (
+      !verifyHistoricalDestination(
+        pageProofKey,
+        session.key,
+        canonicalRoot,
+        session.file,
+        historicalPage,
+        historicalPage.document_id,
+        historicalPage.receipt,
+      )
+    )
+      return invalid();
+    return validateReloadDestination(session, historicalPage);
+  }
+
+  async function validatePromptContext(session, prompts, payload) {
+    const modern = Number(payload?.page_protocol) === 1;
+    const canonicalRoot = await canonicalArtifactRoot(path.dirname(session.file));
+    const entryPage = normalizeReviewPageIdentity(path.basename(session.file), session.file);
+    const invalid = [];
+    for (const [index, prompt] of prompts.entries()) {
+      const claim = validatePageClaim(session, canonicalRoot, prompt?.page, prompt?.page_proof, {
+        allowMissing: !modern,
+      });
+      if (!claim.ok || (modern && !Object.hasOwn(prompt || {}, "page")))
+        invalid.push({ index, prompt_id: prompt?.prompt_id || "" });
+      else if (!modern) {
+        prompt.page = entryPage;
+        prompt.page_proof = "";
+      } else if (claim.page !== undefined) {
+        prompt.page = claim.page;
+        prompt.page_proof = claim.proof;
+      }
+    }
+    if (modern && prompts.length > 0) {
+      const page = prompts[0]?.page;
+      if (typeof page !== "string" || prompts.some((prompt) => prompt.page !== page)) invalid.push({ kind: "batch" });
+    }
+    const snapshot = String(payload?.domSnapshot || payload?.dom_snapshot || "");
+    const snapshotClaim = validatePageClaim(
+      session,
+      canonicalRoot,
+      payload?.snapshot_page,
+      payload?.snapshot_page_proof,
+      {
+        allowMissing: !modern,
+      },
+    );
+    if (snapshot && (!snapshotClaim.ok || (modern && !Object.hasOwn(payload || {}, "snapshot_page")))) {
+      invalid.push({ kind: "snapshot" });
+    }
+    if (modern && snapshot && prompts.length && snapshotClaim.page !== prompts[0].page)
+      invalid.push({ kind: "snapshot-page" });
+    if (invalid.length) {
+      return {
+        ok: false,
+        result: {
+          invalid_page_context: true,
+          invalid: invalid.slice(0, 8),
+        },
+      };
+    }
+    if (snapshot) {
+      payload.snapshot_page = modern ? (snapshotClaim.page === undefined ? null : snapshotClaim.page) : entryPage;
+      payload.snapshot_page_proof = snapshotClaim.proof;
+    } else {
+      payload.snapshot_page = null;
+      payload.snapshot_page_proof = "";
+    }
+    return { ok: true };
+  }
   // The store owns the ONE shared lock covering BOTH state consistency AND the
   // attachment lifecycle. It serializes every state.json read-modify-write
   // internally (E1); the server routes its attachment disk sections - upload
@@ -777,7 +1316,7 @@ export async function serve({
       }
       logEvent?.(`session opened key=${key} file=${file}`);
       await syncOutstandingRepairs(key);
-      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
+      await watchSession(session, watchers, events, logEvent, reloadDebounceMs, readArtifactSource);
       res.json({
         key,
         file,
@@ -919,7 +1458,7 @@ export async function serve({
         releasePollListener(holder, activePolls, deliveredFeedback, events);
         if (immediate.session_ended) clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
         detachRequestClose();
-        res.json(immediate);
+        res.json(publicFeedbackResult(immediate));
         return;
       }
       if (holder.replaced) {
@@ -1001,9 +1540,9 @@ export async function serve({
           }
           finishFeedbackDelivery(key, responseResult);
           if (streamHeartbeat) {
-            res.end(JSON.stringify(responseResult));
+            res.end(JSON.stringify(publicFeedbackResult(responseResult)));
           } else {
-            res.json(responseResult);
+            res.json(publicFeedbackResult(responseResult));
           }
         } finally {
           cleanup();
@@ -1080,6 +1619,7 @@ export async function serve({
         resolveAttachment: (sessionKeyValue, id) => resolveAttachment(attachmentStateRoot, sessionKeyValue, id),
         maxPerPrompt: attachmentConfig.maxPerPrompt,
         maxPromptBytes: attachmentConfig.maxPromptBytes,
+        validatePromptContext: (prompts, payload, session) => validatePromptContext(session, prompts, payload),
       });
       if (!result) {
         res.status(404).json({ error: "session not found" });
@@ -1090,6 +1630,14 @@ export async function serve({
       // its queue and goes read-only itself in case it missed the live `ended` event.
       if (result.ended) {
         res.status(409).json({ status: "ended", error: "session already ended", ended_by: result.ended_by });
+        return;
+      }
+      if (result.invalid_page_context) {
+        res.status(400).json({
+          status: "invalid-page-context",
+          error: "one or more feedback items have invalid page attribution",
+          invalid: Array.isArray(result.invalid) ? result.invalid : [],
+        });
         return;
       }
       // Atomic attachment rejection (C4): the batch resolved-and-persisted nothing
@@ -1147,6 +1695,7 @@ export async function serve({
     try {
       const result = await store.recordLayoutDiagnostics(req.params.key, req.body || {}, {
         viewportClasses: diagnosticViewportClasses,
+        validatePageContext: validateLivePageContext,
       });
       if (!result) {
         res.status(404).json({ error: "session not found" });
@@ -1156,6 +1705,10 @@ export async function serve({
       if (!result.stale) {
         await syncOutstandingRepairs(req.params.key);
         if (result.changed) events.emit("layout-warnings", req.params.key, result.warnings);
+      }
+      if (result.invalid_page_context) {
+        res.status(400).json({ status: "invalid-page-context", error: "invalid diagnostic page attribution" });
+        return;
       }
       res.json({ status: result.stale ? "stale" : "recorded", active_count: activeCount, warnings: result.warnings });
     } catch (error) {
@@ -1180,9 +1733,26 @@ export async function serve({
   // /api/:key/prompts with the rest of the ordinary feedback queue.
   app.post("/api/:key/layout-warnings/queue", async (req, res, next) => {
     try {
-      const result = await store.prepareLayoutWarningFixes(req.params.key, req.body?.ids);
+      const modern = Number(req.body?.page_protocol) === 1;
+      const session = modern ? await store.findByKey(req.params.key) : null;
+      if (modern && session) {
+        const validation = await validatePromptContext(session, [req.body], req.body);
+        if (!validation.ok) {
+          res.status(400).json({ status: "invalid-page-context" });
+          return;
+        }
+      }
+      const result = await store.prepareLayoutWarningFixes(
+        req.params.key,
+        req.body?.ids,
+        modern ? { page: req.body?.page } : {},
+      );
       if (!result) {
         res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (result.invalid_page_context) {
+        res.status(400).json({ status: "invalid-page-context" });
         return;
       }
       res.json({
@@ -1214,12 +1784,18 @@ export async function serve({
   // to load. There is no usable review to triage from, so this still reaches the agent directly.
   app.post("/api/:key/artifact-failures", async (req, res, next) => {
     try {
-      const result = await store.recordArtifactFailures(req.params.key, req.body || {});
+      const result = await store.recordArtifactFailures(req.params.key, req.body || {}, {
+        validatePageContext: validateLivePageContext,
+      });
       if (!result) {
         res.status(404).json({ error: "session not found" });
         return;
       }
       if (result.stale) {
+        if (result.invalid_page_context) {
+          res.status(400).json({ status: "invalid-page-context", error: "invalid failure page attribution" });
+          return;
+        }
         res.status(409).json({ status: "stale" });
         return;
       }
@@ -1265,11 +1841,12 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
-      const source = await readFile(session.file, "utf8");
+      const source = await readArtifactSource(session.file);
       const root = path.dirname(session.file);
       const { html, warnings } = await buildSelfContainedHtml(source, {
         baseDir: root,
         confineDir: root,
+        forbiddenFileIdentities: [protectedPageProofKeyIdentity],
         resolveAbsolute: resolveDesignAssetPath,
       });
       const { unresolved, notices } = splitExportWarnings(warnings);
@@ -1310,11 +1887,12 @@ export async function serve({
       // the alphabet and length rules, free to drift from the one the CLI uses.
       const generatePassword = body.generate_password === true;
       const password = generatePassword ? generateSharePassword() : optionalBodyString(body.password);
-      const source = await readFile(session.file, "utf8");
+      const source = await readArtifactSource(session.file);
       const root = path.dirname(session.file);
       const { html, warnings } = await buildSelfContainedHtml(source, {
         baseDir: root,
         confineDir: root,
+        forbiddenFileIdentities: [protectedPageProofKeyIdentity],
         resolveAbsolute: resolveDesignAssetPath,
       });
       let site;
@@ -1392,8 +1970,8 @@ export async function serve({
         return;
       }
       const session = chromeLoad.session;
-      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
-      const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
+      await watchSession(session, watchers, events, logEvent, reloadDebounceMs, readArtifactSource);
+      const artifactHtml = await readArtifactSource(session.file).catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
       // Nothing legitimately frames the review chrome - it is the top-level
       // page, and shares/exports ship standalone HTML rather than embedding it.
@@ -1422,8 +2000,17 @@ export async function serve({
     }
   });
 
-  app.get("/artifact/:key", (req, res) => {
-    res.redirect(`/artifact/${req.params.key}/index.html`);
+  app.get("/artifact/:key", async (req, res, next) => {
+    try {
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        sendSessionNotFound(req, res);
+        return;
+      }
+      res.redirect(artifactEntryUrl(session));
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
@@ -1450,6 +2037,21 @@ export async function serve({
 
   app.post("/api/:key/artifact-loads/begin", async (req, res, next) => {
     try {
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        res.status(404).json({ error: "session not found" });
+        return;
+      }
+      const hasHistoricalPage = req.body?.historical_page !== undefined;
+      const destination = hasHistoricalPage
+        ? req.body?.destination === undefined
+          ? await validateHistoricalPage(session, req.body.historical_page)
+          : { ok: /** @type {const} */ (false) }
+        : await validateReloadDestination(session, req.body?.destination);
+      if (!destination.ok) {
+        res.status(400).json({ status: "invalid-destination" });
+        return;
+      }
       const result = await store.beginArtifactLoad(req.params.key, {
         requestId: req.body?.request_id,
         requestSequence: req.body?.request_sequence,
@@ -1463,44 +2065,354 @@ export async function serve({
         res.status(409).json({ status: result.stale });
         return;
       }
-      res.json({ artifact_revision: result.artifact_revision, artifact_load_token: result.artifact_load_token });
+      if (destination.resolution) {
+        loadDestinations.set(req.params.key, {
+          token: result.artifact_load_token,
+          route: destination.servedRoute,
+          resolution: destination.resolution,
+          documentRead: false,
+        });
+      } else if (loadDestinations.get(req.params.key)?.token !== result.artifact_load_token) {
+        loadDestinations.delete(req.params.key);
+      }
+      res.json({
+        artifact_revision: result.artifact_revision,
+        artifact_load_token: result.artifact_load_token,
+        artifact_url: destination.artifactUrl,
+        page: destination.page,
+        page_proof: destination.pageProof,
+        served_route: destination.servedRoute,
+      });
     } catch (error) {
       next(error);
     }
   });
 
+  // The chrome proves itself to a protocol-1 document before that document reveals anything. Only
+  // a same-origin caller holding the CURRENT artifact generation may learn the MAC for a nonce, so
+  // a foreign parent (which can read the nonce from `lavish:ready`) and a superseded chrome both
+  // get nothing. The MAC omits the load token on purpose: a BFCache-restored document from an
+  // older generation must still recognize the chrome so the stale-recovery path can run.
+  app.post("/api/:key/artifact-bindings/chrome-auth", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+        res.status(403).json({ status: "cross-origin" });
+        return;
+      }
+      const generation = await store.verifyArtifactLoad(
+        req.params.key,
+        req.body?.artifact_load_token,
+        req.body?.artifact_revision,
+      );
+      if (!generation) {
+        res.status(404).json({ status: "session-not-found" });
+        return;
+      }
+      if (!generation.valid) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      const nonce = req.body?.document_nonce;
+      if (!isChromeAuthNonce(nonce)) {
+        res.status(400).json({ status: "invalid-nonce" });
+        return;
+      }
+      res.setHeader("cache-control", "no-store");
+      res.json({ chrome_auth: signChromeAuth(pageProofKey, req.params.key, nonce) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/:key/artifact-bindings/validate", async (req, res, next) => {
+    try {
+      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+        res.status(403).json({ status: "cross-origin" });
+        return;
+      }
+      const session = await store.findByKey(req.params.key);
+      if (!session) {
+        res.status(404).json({ status: "session-not-found" });
+        return;
+      }
+      const generation = await store.verifyArtifactLoad(
+        req.params.key,
+        req.body?.artifact_load_token,
+        req.body?.artifact_revision,
+      );
+      if (!generation?.valid) {
+        res.status(409).json({ status: "stale" });
+        return;
+      }
+      const root = path.dirname(session.file);
+      const canonicalRoot = await canonicalArtifactRoot(root);
+      const claim = validatePageClaim(session, canonicalRoot, req.body?.page, req.body?.page_proof, {
+        allowMissing: false,
+      });
+      const route = req.body?.served_route;
+      if (!claim.ok || claim.page === null || typeof route !== "string" || !route) {
+        res.status(403).json({ status: "invalid-page-binding" });
+        return;
+      }
+      const entryRoute = path.basename(session.file);
+      const resolved = await resolveArtifactPage(root, route, {
+        entryFile: entryRoute,
+        ...(artifactPageStat ? { statFile: artifactPageStat } : {}),
+      });
+      if (resolved.reason !== "ok" || resolved.page !== claim.page || resolved.servedRoute !== route) {
+        res.status(403).json({ status: "invalid-page-binding" });
+        return;
+      }
+      if (req.body?.destination !== undefined) {
+        if (!req.body.destination) {
+          res.status(403).json({ status: "invalid-destination" });
+          return;
+        }
+        const destination = await validateReloadDestination(session, req.body.destination);
+        if (!destination.ok || destination.page !== claim.page || destination.servedRoute !== route) {
+          res.status(403).json({ status: "invalid-destination" });
+          return;
+        }
+        // Filesystem validation awaits: recheck the generation after it, before minting.
+        const current = await store.verifyArtifactLoad(
+          req.params.key,
+          req.body.artifact_load_token,
+          req.body.artifact_revision,
+        );
+        if (!current?.valid) {
+          res.status(409).json({ status: "stale" });
+          return;
+        }
+        const receipt = signHistoricalDestination(
+          pageProofKey,
+          session.key,
+          canonicalRoot,
+          session.file,
+          { page: destination.page, route: destination.servedRoute, url: destination.artifactUrl },
+          req.body.document_id,
+        );
+        if (!receipt) {
+          res.status(403).json({ status: "invalid-destination" });
+          return;
+        }
+        res.json({ receipt });
+        return;
+      }
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  const expiredArtifactLoad = (res) =>
+    res
+      .status(409)
+      .type("html")
+      .send(
+        "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
+      );
+
+  async function serveLegacyVirtualEntry(req, res) {
+    const key = req.params[0];
+    const token = String(req.query.artifact_load_token || "");
+    const revision = req.query.artifact_revision;
+    const beforeRead = await store.verifyArtifactLoad(key, token, revision);
+    if (!beforeRead) {
+      sendSessionNotFound(req, res);
+      return;
+    }
+    if (!beforeRead.valid) {
+      expiredArtifactLoad(res);
+      return;
+    }
+    const resolution = await resolveArtifactEntry(beforeRead.session.file, {
+      ...(artifactPageStat ? { statFile: artifactPageStat } : {}),
+    });
+    if (resolution.reason !== "ok") {
+      res
+        .status(resolution.reason === "missing" ? 404 : 403)
+        .send(resolution.reason === "missing" ? "Not found" : "Forbidden");
+      return;
+    }
+    let html;
+    try {
+      html = await readArtifactPageContent(resolution);
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+        res.status(404).send("Not found");
+        return;
+      }
+      if (
+        error?.code === "EACCES" ||
+        error?.code === "EPERM" ||
+        error?.code === "ELOOP" ||
+        error?.code === "ARTIFACT_PAGE_CHANGED"
+      ) {
+        res.status(403).send("Forbidden");
+        return;
+      }
+      throw error;
+    }
+    const verified = await store.verifyArtifactLoad(key, token, revision);
+    if (!verified?.valid) {
+      expiredArtifactLoad(res);
+      return;
+    }
+    res.setHeader("cache-control", "no-store");
+    res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
+  }
+
+  async function serveArtifactPath(req, res, requestedPath = undefined) {
+    const key = req.params[0];
+    const assetPath = requestedPath === undefined ? req.params[1] : requestedPath;
+    const session = await store.findByKey(key);
+    if (!session) {
+      sendSessionNotFound(req, res);
+      return;
+    }
+    const root = path.dirname(session.file);
+    const entryName = path.basename(session.file);
+    const documentEligible = isArtifactHtmlPage(assetPath) || assetPath === entryName;
+    const pageResolution = documentEligible
+      ? await resolveArtifactPage(root, assetPath, {
+          entryFile: entryName,
+          ...(artifactPageStat ? { statFile: artifactPageStat } : {}),
+        })
+      : null;
+    if (documentEligible) {
+      if (pageResolution.reason !== "ok") {
+        res
+          .status(pageResolution.reason === "missing" ? 404 : 403)
+          .send(pageResolution.reason === "missing" ? "Not found" : "Forbidden");
+        return;
+      }
+      const canonicalRoot = await canonicalArtifactRoot(root);
+      const pageProof = signPageProof(pageProofKey, key, canonicalRoot, pageResolution.page, session.file);
+      const beforeRead = await store.currentArtifactLoad(key);
+      const hadActiveGeneration = Boolean(beforeRead?.valid);
+      const recovered = loadDestinations.get(key);
+      const pinned =
+        recovered?.token === beforeRead?.artifact_load_token && recovered.route === assetPath
+          ? recovered.resolution
+          : null;
+      if (pinned && (pinned.file !== pageResolution.file || pinned.page !== pageResolution.page)) {
+        res.status(403).send("Historical destination changed");
+        return;
+      }
+      let html;
+      try {
+        html = await readArtifactPageContent(pinned && !recovered.documentRead ? pinned : pageResolution);
+      } catch (error) {
+        if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+          res.status(404).send("Not found");
+          return;
+        }
+        if (
+          error?.code === "EACCES" ||
+          error?.code === "EPERM" ||
+          error?.code === "ELOOP" ||
+          error?.code === "ARTIFACT_PAGE_CHANGED"
+        ) {
+          res.status(403).send("Forbidden");
+          return;
+        }
+        throw error;
+      }
+      const afterRead = await store.currentArtifactLoad(key);
+      if (
+        hadActiveGeneration &&
+        (!afterRead?.valid ||
+          afterRead.artifact_revision !== beforeRead.artifact_revision ||
+          afterRead.artifact_load_token !== beforeRead.artifact_load_token)
+      ) {
+        expiredArtifactLoad(res);
+        return;
+      }
+      if (pinned && loadDestinations.get(key) === recovered) recovered.documentRead = true;
+      res.setHeader("cache-control", "no-store");
+      const chromeNonce = createChromeAuthNonce();
+      res.type("html").send(
+        injectLavishSdk(
+          html,
+          key,
+          hadActiveGeneration ? afterRead?.artifact_revision : null,
+          hadActiveGeneration ? afterRead?.artifact_load_token : "",
+          {
+            pageProtocol: 1,
+            page: pageResolution.page,
+            pageProof,
+            chromeNonce,
+            chromeAuth: signChromeAuth(pageProofKey, key, chromeNonce),
+            servedRoute: pageResolution.servedRoute || assetPath,
+          },
+        ),
+      );
+      return;
+    }
+
+    const file = await resolveArtifactAsset(root, assetPath);
+    if (!file) {
+      res.status(403).send("Forbidden");
+      return;
+    }
+    let opened;
+    try {
+      opened = await openVerifiedLocalFile(file, {
+        confineDir: root,
+        forbiddenFileIdentities: [protectedPageProofKeyIdentity],
+        ...(artifactAssetOpen ? { openFile: artifactAssetOpen } : {}),
+      });
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+        res.status(404).send("Not found");
+        return;
+      }
+      if (
+        error?.code === "EACCES" ||
+        error?.code === "EPERM" ||
+        error?.code === "ELOOP" ||
+        error?.code === "OUTSIDE_ROOT" ||
+        error?.code === "FILE_CHANGED"
+      ) {
+        res.status(403).send("Forbidden");
+        return;
+      }
+      throw error;
+    }
+    if (!opened) {
+      res.status(403).send("Forbidden");
+      return;
+    }
+    // Express treats any string containing '/' as a MIME type, not a filename.
+    res.type(path.extname(opened.file) || "application/octet-stream");
+    res.setHeader("content-length", String(opened.stats.size));
+    try {
+      await pipeline(opened.handle.createReadStream({ autoClose: false }), res);
+    } finally {
+      await opened.handle.close();
+    }
+  }
+
+  // The historical virtual index is recognized only when both old generation fields are present.
+  // Without either field, index.html is a real root-contained sibling; with only one, fail closed
+  // rather than guessing whether the caller meant the compatibility route.
   app.get(/^\/artifact\/([^/]+)\/index\.html$/, async (req, res, next) => {
     try {
-      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
-      const key = req.params[0];
-      const token = String(req.query.artifact_load_token || "");
-      const revision = req.query.artifact_revision;
-      const beforeRead = await store.verifyArtifactLoad(key, token, revision);
-      if (!beforeRead) {
-        sendSessionNotFound(req, res);
+      const hasRevision = Object.prototype.hasOwnProperty.call(req.query, "artifact_revision");
+      const hasToken = Object.prototype.hasOwnProperty.call(req.query, "artifact_load_token");
+      res.setHeader(
+        "content-security-policy",
+        hasRevision && hasToken ? ARTIFACT_CONTENT_SECURITY_POLICY : ARTIFACT_PATH_CONTENT_SECURITY_POLICY,
+      );
+      if (hasRevision && hasToken) {
+        await serveLegacyVirtualEntry(req, res);
         return;
       }
-      if (!beforeRead.valid) {
-        res
-          .status(409)
-          .type("html")
-          .send(
-            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
-          );
+      if (hasRevision || hasToken) {
+        expiredArtifactLoad(res);
         return;
       }
-      const html = await readFile(beforeRead.session.file, "utf8");
-      const verified = await store.verifyArtifactLoad(key, token, revision);
-      if (!verified?.valid) {
-        res
-          .status(409)
-          .type("html")
-          .send(
-            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
-          );
-        return;
-      }
-      res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
+      await serveArtifactPath(req, res, "index.html");
     } catch (error) {
       next(error);
     }
@@ -1508,21 +2420,8 @@ export async function serve({
 
   app.get(/^\/artifact\/([^/]+)\/(.+)$/, async (req, res, next) => {
     try {
-      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
-      const key = req.params[0];
-      const assetPath = req.params[1];
-      const session = await store.findByKey(key);
-      if (!session) {
-        sendSessionNotFound(req, res);
-        return;
-      }
-      const root = path.dirname(session.file);
-      const file = await resolveArtifactAsset(root, assetPath);
-      if (!file) {
-        res.status(403).send("Forbidden");
-        return;
-      }
-      res.sendFile(file, { dotfiles: "allow" });
+      res.setHeader("content-security-policy", ARTIFACT_PATH_CONTENT_SECURITY_POLICY);
+      await serveArtifactPath(req, res);
     } catch (error) {
       next(error);
     }
@@ -1568,23 +2467,54 @@ export async function serve({
 
   app.get("/sdk.js", async (req, res, next) => {
     try {
-      const verified = await store.verifyArtifactLoad(
-        String(req.query.key || ""),
-        req.query.artifact_load_token,
-        req.query.artifact_revision,
-      );
+      const key = String(req.query.key || "");
+      const protocol = String(req.query.page_protocol || "");
+      const pageAware = protocol === "1";
+      const verified = await store.verifyArtifactLoad(key, req.query.artifact_load_token, req.query.artifact_revision);
       if (!verified) {
         sendSessionNotFound(req, res);
         return;
+      }
+      let pageContext = {};
+      if (pageAware) {
+        const page = String(req.query.page || "");
+        const proof = String(req.query.page_proof || "");
+        const servedRoute = String(req.query.served_route || "");
+        const root = path.dirname(verified.session.file);
+        const canonicalRoot = await canonicalArtifactRoot(root);
+        const pageValid = verifyPageProof(pageProofKey, key, canonicalRoot, page, proof, verified.session.file);
+        const exactEntryRoute =
+          path.sep === "/" && page === path.basename(verified.session.file) && servedRoute === page;
+        const routeValid =
+          servedRoute &&
+          !servedRoute.includes("\0") &&
+          (!servedRoute.includes("\\") || exactEntryRoute) &&
+          !path.isAbsolute(servedRoute) &&
+          !servedRoute.startsWith("/");
+        if (!pageValid || !routeValid || (page.includes("\\") && !exactEntryRoute)) {
+          res.status(403).json({ status: "invalid-page-proof" });
+          return;
+        }
+        const chromeNonce = String(req.query.chrome_nonce || "");
+        const chromeAuth = String(req.query.chrome_auth || "");
+        pageContext = { pageProtocol: 1, page, pageProof: proof, servedRoute, chromeNonce, chromeAuth };
       }
       if (!verified.valid) {
         res.status(409).json({ status: "stale" });
         return;
       }
+      // A protocol-1 SDK without server-issued chrome-auth material could never authenticate its
+      // parent; refuse it rather than ship a bootstrap with nothing to compare against.
+      if (pageAware && !verifyChromeAuth(pageProofKey, key, pageContext.chromeNonce, pageContext.chromeAuth)) {
+        res.status(403).json({ status: "invalid-chrome-auth" });
+        return;
+      }
+      res.setHeader("cache-control", "no-store");
       res.type("application/javascript").send(
-        createSdkJs(String(req.query.key || ""), verified.artifact_revision, verified.artifact_load_token, {
+        createSdkJs(key, verified.artifact_revision, verified.artifact_load_token, {
           maxAttachmentCount: attachmentConfig.maxPerPrompt,
           maxAttachmentBytes: attachmentConfig.maxBytes,
+          ...pageContext,
         }),
       );
     } catch (error) {
@@ -1648,34 +2578,31 @@ export async function serve({
   // order. The hash feeds whiteboard staleness detection.
   app.get("/api/:key/mermaid-sources", async (req, res, next) => {
     try {
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
-        res.status(404).json({ error: "session not found" });
-        return;
-      }
-      const html = await readFile(session.file, "utf8").catch(() => "");
-      const sources = extractMermaidSources(html).map(({ index, source }) => ({
+      const authorized = await authorizeWhiteboardRequest(req, res, { source: true });
+      if (!authorized) return;
+      const sources = extractMermaidSources(authorized.source).map(({ index, source }) => ({
         index,
         source,
         hash: mermaidSourceHash(source),
       }));
       res.json({ sources });
     } catch (error) {
-      next(error);
+      handleWhiteboardRouteError(error, res, next);
     }
   });
 
   app.get("/api/:key/whiteboard/:index", async (req, res, next) => {
     try {
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
-      const whiteboard = await loadWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index));
+      const index = parseWhiteboardIndex(req, res);
+      if (index === null) return;
+      const authorized = await authorizeWhiteboardRequest(req, res);
+      if (!authorized) return;
+      const whiteboard = authorized.storagePage
+        ? await loadWhiteboardForPage(whiteboardStateRoot, req.params.key, authorized.storagePage, index)
+        : await loadWhiteboard(whiteboardStateRoot, req.params.key, index);
       res.json({ whiteboard });
     } catch (error) {
-      next(error);
+      handleWhiteboardRouteError(error, res, next);
     }
   });
 
@@ -1694,9 +2621,82 @@ export async function serve({
         res.status(403).json({ error: "invalid whiteboard channel" });
         return;
       }
+      const context = whiteboardRequestContext(req);
+      if (!context.ok) {
+        rejectWhiteboardRoute(res, new WhiteboardRouteError(context.status, context.code, context.error));
+        return;
+      }
+      // Old clients only carry the frame-issued session token. Protocol-1 channels additionally
+      // bind a durable page proof to the currently active generation. Durable content routes do
+      // not use these live fields; this check is intentionally scoped to channel establishment.
+      if (context.modern) {
+        const canonicalRoot = await canonicalArtifactRoot(path.dirname(session.file));
+        const normalized = normalizeReviewPageIdentity(context.page, session.file);
+        if (!normalized || normalized !== context.page) {
+          rejectWhiteboardRoute(
+            res,
+            new WhiteboardRouteError(400, "WHITEBOARD_PAGE_INVALID", "invalid durable whiteboard page"),
+          );
+          return;
+        }
+        if (!verifyPageProof(pageProofKey, req.params.key, canonicalRoot, normalized, context.proof, session.file)) {
+          res.status(403).json({ error: "invalid durable whiteboard page proof", code: "WHITEBOARD_PAGE_PROOF" });
+          return;
+        }
+        const body = req.body || {};
+        const artifactLoadToken = body.artifact_load_token ?? body.artifactLoadToken;
+        const revisionValue = body.artifact_revision ?? body.artifactRevision;
+        const sequenceValue = body.document_sequence ?? body.documentSequence;
+        const revision =
+          typeof revisionValue === "number" && Number.isSafeInteger(revisionValue)
+            ? revisionValue
+            : typeof revisionValue === "string" && /^\d+$/.test(revisionValue)
+              ? Number(revisionValue)
+              : NaN;
+        const documentSequence =
+          typeof sequenceValue === "number" && Number.isSafeInteger(sequenceValue)
+            ? sequenceValue
+            : typeof sequenceValue === "string" && /^\d+$/.test(sequenceValue)
+              ? Number(sequenceValue)
+              : NaN;
+        if (
+          typeof artifactLoadToken !== "string" ||
+          !artifactLoadToken ||
+          !Number.isSafeInteger(revision) ||
+          revision < 0 ||
+          !Number.isSafeInteger(documentSequence) ||
+          documentSequence <= 0
+        ) {
+          rejectWhiteboardRoute(
+            res,
+            new WhiteboardRouteError(
+              400,
+              "WHITEBOARD_CHANNEL_CONTEXT_REQUIRED",
+              "whiteboard channel requires current artifact context",
+            ),
+          );
+          return;
+        }
+        const channel = await store.authenticateWhiteboardChannel(
+          req.params.key,
+          artifactLoadToken,
+          revision,
+          documentSequence,
+        );
+        if (channel?.status !== "authenticated" && channel?.status !== "stale-sequence") {
+          res
+            .status(409)
+            .json({ error: "whiteboard channel artifact context is stale", code: "WHITEBOARD_CHANNEL_STALE" });
+          return;
+        }
+        if (channel.status === "stale-sequence") {
+          res.status(409).json({ error: "whiteboard channel document is stale", code: "WHITEBOARD_CHANNEL_SEQUENCE" });
+          return;
+        }
+      }
       res.json({ status: "authenticated" });
     } catch (error) {
-      next(error);
+      handleWhiteboardRouteError(error, res, next);
     }
   });
 
@@ -1706,25 +2706,25 @@ export async function serve({
   // loopback server.
   app.put("/api/:key/whiteboard/:index", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
-        res.status(403).json({ error: "cross-origin whiteboard write rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidWhiteboardKey(req.params.key) || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
+      const index = parseWhiteboardIndex(req, res);
+      if (index === null) return;
+      const authorized = await authorizeWhiteboardRequest(req, res, { write: true });
+      if (!authorized) return;
       const body = req.body || {};
-      await saveWhiteboard(whiteboardStateRoot, req.params.key, Number(req.params.index), {
+      const options = {
         sourceHash: String(body.source_hash || body.sourceHash || ""),
         textMetricsVersion: Number(body.text_metrics_version || body.textMetricsVersion) || 0,
         scene: body.scene ?? null,
         baseline: body.baseline ?? null,
-      });
+      };
+      if (authorized.storagePage) {
+        await saveWhiteboardForPage(whiteboardStateRoot, req.params.key, authorized.storagePage, index, options);
+      } else {
+        await saveWhiteboard(whiteboardStateRoot, req.params.key, index, options);
+      }
       res.json({ status: "saved" });
     } catch (error) {
-      next(error);
+      handleWhiteboardRouteError(error, res, next);
     }
   });
 
@@ -1733,25 +2733,24 @@ export async function serve({
   // target. Files stay on this machine; the prompt carries only the paths.
   app.post("/api/:key/whiteboard/:index/feedback-files", async (req, res, next) => {
     try {
-      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
-        res.status(403).json({ error: "cross-origin whiteboard write rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session || !isValidWhiteboardKey(req.params.key) || !isValidDiagramIndex(req.params.index)) {
-        res.status(404).json({ error: "whiteboard not found" });
-        return;
-      }
+      const index = parseWhiteboardIndex(req, res);
+      if (index === null) return;
+      const authorized = await authorizeWhiteboardRequest(req, res, { write: true });
+      if (!authorized) return;
       const body = req.body || {};
-      const { scenePath, previewPath } = await writeWhiteboardFeedbackFiles(
-        whiteboardStateRoot,
-        req.params.key,
-        Number(req.params.index),
-        { scene: body.scene ?? null, pngDataUrl: String(body.pngDataUrl || body.png_data_url || "") },
-      );
+      const options = { scene: body.scene ?? null, pngDataUrl: String(body.pngDataUrl || body.png_data_url || "") };
+      const { scenePath, previewPath } = authorized.storagePage
+        ? await writeWhiteboardFeedbackFilesForPage(
+            whiteboardStateRoot,
+            req.params.key,
+            authorized.storagePage,
+            index,
+            options,
+          )
+        : await writeWhiteboardFeedbackFiles(whiteboardStateRoot, req.params.key, index, options);
       res.json({ scene_path: scenePath, preview_path: previewPath });
     } catch (error) {
-      next(error);
+      handleWhiteboardRouteError(error, res, next);
     }
   });
 
@@ -2587,7 +3586,7 @@ function optionalBodyString(value) {
 export async function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     return null;
   }
   let real;
@@ -2620,11 +3619,18 @@ export async function resolveArtifactAsset(root, assetPath) {
 /**
  * @param {(key: string) => number} reloadDebounceMs
  */
-async function watchSession(session, watchers, events, logEvent, reloadDebounceMs = () => RELOAD_DEBOUNCE_MS) {
+async function watchSession(
+  session,
+  watchers,
+  events,
+  logEvent,
+  reloadDebounceMs = () => RELOAD_DEBOUNCE_MS,
+  readSource = undefined,
+) {
   if (watchers.has(session.key)) {
     return;
   }
-  const target = await resolveWatchTarget(session);
+  const target = await resolveWatchTarget(session, { readSource });
   if (watchers.has(session.key)) {
     return;
   }
@@ -2648,13 +3654,13 @@ async function watchSession(session, watchers, events, logEvent, reloadDebounceM
 // itself; an artifact opts back into directory-wide live reload via either a
 // `data-lavish-live-reload-root` attribute on its root element or
 // `<meta name="lavish-live-reload" content="root">`.
-export async function resolveWatchTarget(session) {
+export async function resolveWatchTarget(session, { readSource = (file) => readFile(file, "utf8") } = {}) {
   const baseOptions = {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
   };
   try {
-    const html = await readFile(session.file, "utf8");
+    const html = await readSource(session.file);
     if (hasLiveReloadRootOptIn(html)) {
       return {
         path: path.dirname(session.file),
@@ -2985,8 +3991,11 @@ export function createChromeHtml(
     // artifact cannot hand all its revisions the same colour and pattern and
     // collapse the one signal that tells the rounds apart.
     revisionPalette: artifactRevisions.revisionPalette(),
+    pageProtocol: 1,
+    entryPage: normalizeReviewPageIdentity(path.basename(session.file), session.file),
   });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
+  const entryArtifactPath = artifactEntryUrl(session);
   const bodyClass = layoutGateEnabled ? "lavish layout-gate-active" : "lavish";
   const layoutGateHidden = layoutGateEnabled ? "" : " hidden";
   const modeHotkeyUpper = MODE_TOGGLE_HOTKEY_KEY.toUpperCase();
@@ -3002,7 +4011,7 @@ ${faviconTag}
 </head>
 <body class="${bodyClass}">
 <div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><div class="revisions-wrap" id="revisionsWrap" hidden><button class="revisions-button" id="revisionsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="revisionsDrawer"><span class="revisions-button-text">Revisions</span><span class="revisions-count" id="revisionsCount">0</span></button><div class="menu revisions-drawer" id="revisionsDrawer" role="dialog" aria-labelledby="revisionsTitle" aria-describedby="revisionsSummary" hidden><div class="revisions-head"><h2 class="revisions-title" id="revisionsTitle">Revisions</h2><p class="revisions-summary" id="revisionsSummary"></p></div><div class="revisions-list" id="revisionsList"></div><div class="revisions-foot"><p class="revisions-note">The agent declares these in the artifact itself. Reveal flashes the next block it marked for that revision; nothing about the page is restyled, so the saved file still looks the way it does here.</p></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><div class="panel-scrim" id="panelScrim"></div><aside class="panel" id="panel"><div class="panel-head" id="panelHead"><span class="panel-handle" aria-hidden="true"></span><div class="panel-head-row"><h2>Conversation</h2><span class="panel-summary" id="panelSummary" role="status" aria-live="polite"></span><button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">${chromeIcons.chevronUp}</button></div></div><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="chat chat-queued" id="queuedLog"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="${entryArtifactPath}"></iframe></div><div class="panel-scrim" id="panelScrim"></div><aside class="panel" id="panel"><div class="panel-head" id="panelHead"><span class="panel-handle" aria-hidden="true"></span><div class="panel-head-row"><h2>Conversation</h2><span class="panel-summary" id="panelSummary" role="status" aria-live="polite"></span><button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">${chromeIcons.chevronUp}</button></div></div><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="chat chat-queued" id="queuedLog"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label class="share-check"><input id="shareGenerate" type="checkbox"><span>Generate a password (makes this page private)</span></label><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label id="shareUrlResult">Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label id="sharePasswordResult" hidden>Password (shared secret)<div class="share-copy-row"><input id="sharePasswordOut" readonly><button class="share-copy-btn" id="copySharePassword" type="button">Copy password</button></div></label><label id="shareSiteIdResult" hidden>Site ID<div class="share-copy-row"><input id="shareSiteId" readonly><button class="share-copy-btn" id="copyShareSiteId" type="button">Copy site ID</button></div></label><label id="shareUpdateKeyResult">Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note" id="shareUpdateKeyNote">Keep the update key private. ht-ml.app returns it once and it is the only way to update this page later; the service has no delete. Republish this page&#39;s HTML with <code>lavish-axi share &lt;file&gt; --site &lt;site id&gt; --update-key &lt;key&gt;</code>, and add <code>--private</code> to also lock it behind a new generated password.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button><button class="button ended-action layout-gate-bypass" id="layoutGateBypass" type="button" hidden>Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
@@ -3055,13 +4064,23 @@ function serializeModuleHelpers(module) {
  * @param {string} key
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
- * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[] }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[], pageProtocol?: number, page?: string | null, pageProof?: string, servedRoute?: string, chromeNonce?: string, chromeAuth?: string }} [options]
  */
 export function createSdkJs(
   key,
   artifactRevision = 0,
   artifactLoadToken = "",
-  { maxAttachmentCount, maxAttachmentBytes, acceptedImageMime = ACCEPTED_IMAGE_MIME } = {},
+  {
+    maxAttachmentCount,
+    maxAttachmentBytes,
+    acceptedImageMime = ACCEPTED_IMAGE_MIME,
+    pageProtocol = 0,
+    page = null,
+    pageProof = "",
+    servedRoute = "",
+    chromeNonce = "",
+    chromeAuth = "",
+  } = {},
 ) {
   const mermaidHelperSource = serializeModuleHelpers(mermaidNode);
   const tableHelperSource = serializeModuleHelpers(tableCellHelpers);
@@ -3069,6 +4088,10 @@ export function createSdkJs(
   const revisionNumber = Number(artifactRevision);
   const revision = Number.isFinite(revisionNumber) && revisionNumber >= 0 ? Math.trunc(revisionNumber) : 0;
   const loadToken = String(artifactLoadToken || "").slice(0, 200);
+  const pageProtocolNumber = pageProtocol === 1 ? 1 : 0;
+  const pageIdentity = page === null || page === undefined ? null : String(page);
+  const pageProofValue = String(pageProof || "");
+  const servedRouteValue = String(servedRoute || "");
   // The per-prompt attachment cap is authoritative on the server (attachment-store.js);
   // pass it to the SDK so the annotation card's local count guard matches the server
   // limit instead of a hardcoded literal (W1). The card is still only a UX guide - the
@@ -3082,6 +4105,10 @@ export function createSdkJs(
 const key=${JSON.stringify(key)};
 const artifactRevision=${revision};
 const artifactLoadToken=${JSON.stringify(loadToken)};
+const pageProtocol=${pageProtocolNumber};
+const page=${JSON.stringify(pageIdentity)};
+const pageProof=${JSON.stringify(pageProofValue)};
+const servedRoute=${JSON.stringify(servedRouteValue)};
 const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
@@ -3102,7 +4129,17 @@ ${mermaidHelperSource.declarations}
 const mermaidHelpers={ ${mermaidHelperSource.names.join(", ")} };
 ${tableHelperSource.declarations}
 ${revisionHelperSource.declarations}
-(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key, ${JSON.stringify(sdkOptions)});
+(${createArtifactSdk.toString()})(deriveQueueKey, isNativeInteractiveControl, mermaidHelpers, artifactRevision, artifactLoadToken, key, ${JSON.stringify(
+    {
+      ...sdkOptions,
+      pageProtocol: pageProtocolNumber,
+      page: pageIdentity,
+      pageProof: pageProofValue,
+      servedRoute: servedRouteValue,
+      chromeNonce: String(chromeNonce || ""),
+      chromeAuth: String(chromeAuth || ""),
+    },
+  )});
 })();`;
 }
 

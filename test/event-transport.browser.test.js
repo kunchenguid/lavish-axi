@@ -228,7 +228,7 @@ test(
           "chrome-devtools-axi",
           [
             "eval",
-            `() => new Promise((resolve, reject) => { const deadline = Date.now() + 10000; const expectedDraft = ${index === 0 ? '"draft survives server replacement"' : '""'}; const check = () => { const draft = sessionStorage.getItem("lavish-axi:review-state:${session.key}") || ""; if (window.__lavishChromeReady && document.getElementById("artifact")?.src && (!expectedDraft || draft.includes(expectedDraft))) return resolve(true); if (Date.now() >= deadline) return reject(new Error("real legacy chrome did not migrate")); setTimeout(check, 25); }; check(); })`,
+            `() => new Promise((resolve, reject) => { const deadline = Date.now() + 10000; const expectedDraft = ${index === 0 ? '"draft survives server replacement"' : '""'}; const check = () => { const draft = sessionStorage.getItem("lavish-axi:review-state:${session.key}") || ""; if (window.__lavishChromeReady && currentArtifactBinding?.page === ${JSON.stringify(`board-${index + 1}.html`)} && document.getElementById("chatInput")?.disabled === false && (!expectedDraft || draft.includes(expectedDraft))) return resolve(true); if (Date.now() >= deadline) return reject(new Error("real legacy chrome did not migrate")); setTimeout(check, 25); }; check(); })`,
           ],
           chromeEnv,
           12_000,

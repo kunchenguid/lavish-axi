@@ -9,7 +9,7 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import { get as httpGet } from "node:http";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -18,6 +18,8 @@ import { fileURLToPath } from "node:url";
 
 import { AxiError, installSessionStartHooks, RESERVED_COMMANDS, runAxiCli } from "axi-sdk-js";
 
+import { pageProofKeyPath } from "./artifact-page.js";
+import { fileIdentityForPath, readVerifiedLocalFile } from "./verified-local-file.js";
 import { createDesignOutput, DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "./design-reference.js";
 import {
   buildSelfContainedHtml,
@@ -395,10 +397,18 @@ async function openCommand(args) {
 // through its own fatal path, and the self-paint check always fails open.
 async function selfPaintWarningForFile(absolute) {
   try {
-    return analyzeSelfPaint(await readFile(absolute, "utf8")).painted ? undefined : SELF_PAINT_WARNING;
+    return analyzeSelfPaint((await readArtifactSource(absolute)).source).painted ? undefined : SELF_PAINT_WARNING;
   } catch {
     return undefined;
   }
+}
+
+async function readArtifactSource(file) {
+  const forbiddenFileIdentities = [await fileIdentityForPath(pageProofKeyPath(path.dirname(stateFile())))].filter(
+    Boolean,
+  );
+  const bytes = await readVerifiedLocalFile(file, { confineDir: path.dirname(file), forbiddenFileIdentities });
+  return { source: bytes.toString("utf8"), forbiddenFileIdentities };
 }
 
 export function shouldOpenBrowser(args, env) {
@@ -529,6 +539,7 @@ export function startPollWaitReporter({
  *   prompts?: any[],
  *   artifact_failures?: any[],
  *   next_step?: string,
+ *   snapshot_page?: string | null,
  *   dom_snapshot?: string,
  * }}
  */
@@ -551,6 +562,7 @@ export function createPollOutput({ file, response, agent = "generic" }) {
       prompts: response.prompts || [],
       ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
       next_step: createFeedbackNextStep(file, artifactFailures, sessionEnded, endedBy, response.prompts || [], agent),
+      snapshot_page: response.dom_snapshot ? (response.snapshot_page ?? null) : null,
       dom_snapshot: response.dom_snapshot || "",
     };
   }
@@ -575,8 +587,9 @@ export function createPollOutput({ file, response, agent = "generic" }) {
 
 function createFeedbackNextStep(file, artifactFailures, sessionEnded, endedBy, prompts = [], agent = "generic") {
   const count = artifactFailures.length;
+  const attributionNote = feedbackAttributionNote(file, prompts, artifactFailures);
   const whiteboardNote = prompts.some((prompt) => prompt && prompt.tag === "whiteboard")
-    ? `This feedback includes whiteboard edits (tag "whiteboard"): read the edit summary in the prompt text first, and only when it is not enough, open the target's scenePath (.excalidraw scene JSON) or previewPath (PNG) local files for detail. The artifact's Mermaid source stays authoritative - apply the edits by updating the Mermaid text in ${file} (Lavish live-reloads it); never try to write the .excalidraw scene back. `
+    ? `This feedback includes whiteboard edits (tag "whiteboard"): read the edit summary in the prompt text first, and only when it is not enough, open the target's scenePath (.excalidraw scene JSON) or previewPath (PNG) local files for detail. The attributed page's Mermaid source stays authoritative - apply the edits to that page's Mermaid text; never try to write the .excalidraw scene back. `
     : "";
   const layoutNote = prompts.some((prompt) => prompt && prompt.tag === "layout-warnings")
     ? `This feedback includes layout issues the user selected from the Lavish Layout issues inbox (tag "layout-warnings"): the target lists the exact warning ids and targets. Apply every listed fix in one pass before saving so the user's review refreshes once. Queueing is a repair request, not a resolution - Lavish only marks a warning resolved after a newer artifact load and a complete check at the same viewport no longer detects it. `
@@ -588,21 +601,46 @@ function createFeedbackNextStep(file, artifactFailures, sessionEnded, endedBy, p
     const failureNote =
       count > 0
         ? endedBy === "user"
-          ? `${count} fatal artifact failure${count === 1 ? "" : "s"} arrived alongside this final feedback - the review surface itself could not be used. Repair ${file}, then open it directly and confirm it renders without reopening this ended Lavish session. `
-          : `${count} fatal artifact failure${count === 1 ? "" : "s"} arrived alongside this final feedback - the review surface itself could not be used. Repair ${file}, then run \`lavish-axi ${file}\` to open a fresh session. `
+          ? `${count} fatal artifact failure${count === 1 ? "" : "s"} arrived alongside this final feedback - the review surface itself could not be used. Repair the attributed page, then open it directly and confirm it renders without reopening this ended Lavish session. `
+          : `${count} fatal artifact failure${count === 1 ? "" : "s"} arrived alongside this final feedback - the review surface itself could not be used. Repair the attributed page, then run \`lavish-axi ${file}\` to open a fresh session. `
         : "";
     if (endedBy === "user") {
       const reopenNote =
         count > 0
           ? ""
           : ` Only run \`lavish-axi ${file} --reopen\` if the user explicitly asks for further review or something genuinely important needs their visual attention.`;
-      return `${failureNote}${layoutNote}${whiteboardNote}${attachmentNote}This was the last feedback before the user ended the session. Stop polling ${file} and do not reopen it - deliver any remaining updates directly in this conversation instead.${reopenNote}`;
+      return `${failureNote}${attributionNote}${layoutNote}${whiteboardNote}${attachmentNote}This was the last feedback before the user ended the session. Stop polling ${file} and do not reopen it - deliver any remaining updates directly in this conversation instead.${reopenNote}`;
     }
-    return `${failureNote}${layoutNote}${whiteboardNote}${attachmentNote}This was the last feedback before the Lavish Editor session ended. Stop polling ${file}. Deliver any remaining updates directly in this conversation, or run \`lavish-axi ${file}\` to open a fresh session if the user needs further visual review.`;
+    return `${failureNote}${attributionNote}${layoutNote}${whiteboardNote}${attachmentNote}This was the last feedback before the Lavish Editor session ended. Stop polling ${file}. Deliver any remaining updates directly in this conversation, or run \`lavish-axi ${file}\` to open a fresh session if the user needs further visual review.`;
   }
-  const prefix =
-    count > 0 ? artifactFailuresPrefix(file, artifactFailures) : `Apply the requested changes to ${file}. `;
-  return `${prefix}${layoutNote}${whiteboardNote}${attachmentNote}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms unless the user ended the session. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_NEXT_POINTER} The poll waits silently until the user sends more feedback, ends the session, or leaves every review window disconnected past the reconnect grace period - never kill it. ${pollExecutionGuidance({ agent })}`;
+  const prefix = count > 0 ? artifactFailuresPrefix(file, artifactFailures) : "";
+  return `${prefix}${attributionNote}${layoutNote}${whiteboardNote}${attachmentNote}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms unless the user ended the session. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_NEXT_POINTER} The poll waits silently until the user sends more feedback, ends the session, or leaves every review window disconnected past the reconnect grace period - never kill it. ${pollExecutionGuidance({ agent })}`;
+}
+
+function feedbackAttributionNote(file, prompts, artifactFailures) {
+  const pages = new Set();
+  let unavailable = false;
+  const observe = (value) => {
+    if (typeof value === "string" && value) pages.add(value);
+    else unavailable = true;
+  };
+  for (const prompt of prompts) {
+    if (prompt?.tag === "layout-warnings" && Array.isArray(prompt?.target?.warnings)) {
+      for (const warning of prompt.target.warnings) observe(warning?.page);
+    } else {
+      observe(prompt?.page);
+    }
+  }
+  for (const failure of artifactFailures) observe(failure?.page);
+
+  const listed = [...pages];
+  const controlNote = `${file} remains only the session control target for poll, open, and end.`;
+  if (listed.length === 1 && !unavailable)
+    return `Apply the requested changes to ${listed[0]}, relative to the session entry directory. ${controlNote} `;
+  if (listed.length > 0) {
+    return `Apply each requested change to the page named on that prompt, warning, or failure (${listed.join(", ")}). ${unavailable ? "Some feedback has unavailable page attribution; use its words and supplied context to identify the target and do not assume the session entry is that target. " : ""}${controlNote} `;
+  }
+  return `Apply the requested changes using the user's words and supplied context. Page attribution is unavailable; do not assume the session entry is the edit target. ${controlNote} `;
 }
 
 // The narrow fatal path. Ordinary layout findings never reach the poll: they wait in the user's
@@ -615,7 +653,7 @@ function artifactFailuresPrefix(file, artifactFailures) {
     .map((failure) => `${failure.kind}: ${failure.detail}`)
     .slice(0, 5)
     .join("; ");
-  return `${count} fatal artifact failure${plural} detected - the review surface could not be used (${details}). Repair ${file} so it renders with all of its local assets, then re-check in the browser. Lavish live-reloads the artifact automatically after you save, so you do not need to re-run \`lavish-axi ${file}\` for this. `;
+  return `${count} fatal artifact failure${plural} detected - the review surface could not be used (${details}). Repair the attributed page so it renders with all of its local assets, then re-check in the browser. Lavish live-reloads watched entry edits automatically; an unwatched sibling needs the existing manual Reload artifact action after you save. You do not need to start another session with \`lavish-axi ${file}\`. `;
 }
 
 function createEndedNextStep(file, endedBy) {
@@ -649,10 +687,11 @@ async function exportCommand(args) {
   const absolute = await canonicalFile(file);
   const root = path.dirname(absolute);
   const output = path.resolve(flagValue(args, "--out") || path.join(root, exportFileName(absolute)));
-  const source = await readFile(absolute, "utf8");
+  const { source, forbiddenFileIdentities } = await readArtifactSource(absolute);
   const { html, warnings } = await buildSelfContainedHtml(source, {
     baseDir: root,
     confineDir: root,
+    forbiddenFileIdentities,
     resolveAbsolute: resolveDesignAssetPath,
   });
   await writeFile(output, html);
@@ -715,10 +754,11 @@ export async function shareCommand(args) {
   await assertHtmlFile(request.file);
   const absolute = await canonicalFile(request.file);
   const root = path.dirname(absolute);
-  const source = await readFile(absolute, "utf8");
+  const { source, forbiddenFileIdentities } = await readArtifactSource(absolute);
   const { html, warnings } = await buildSelfContainedHtml(source, {
     baseDir: root,
     confineDir: root,
+    forbiddenFileIdentities,
     resolveAbsolute: resolveDesignAssetPath,
   });
   const selfPaintWarning = analyzeSelfPaint(source).painted ? undefined : SELF_PAINT_WARNING;

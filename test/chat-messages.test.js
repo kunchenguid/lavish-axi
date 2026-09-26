@@ -100,14 +100,16 @@ test("malformed links and images stay literal without stalling", () => {
   const brackets = "[".repeat(30_000) + " " + "![".repeat(30_000);
   const recursiveLinks = "[x](https://a(".repeat(10_000);
   const nestedDestination = "[x](https://example.test/" + "(".repeat(30_000);
-  const started = performance.now();
+  const wallStarted = performance.now();
+  const cpuStarted = process.cpuUsage();
   assert.equal(renderChatMarkdown(brackets), `<p>${brackets}</p>`);
   assert.equal(renderChatMarkdown(recursiveLinks), `<p>${recursiveLinks}</p>`);
   assert.equal(renderChatMarkdown(nestedDestination), `<p>${nestedDestination}</p>`);
-  const elapsed = performance.now() - started;
-  // Catastrophic backtracking would blow this budget by orders of magnitude;
-  // the wide margin absorbs slower/shared CI runners (observed ~1.1s on windows-latest).
-  assert.ok(elapsed < 10_000, `render took ${Math.round(elapsed)}ms`);
+  const wallElapsed = performance.now() - wallStarted;
+  const cpu = process.cpuUsage(cpuStarted);
+  const cpuElapsed = (cpu.user + cpu.system) / 1_000;
+  assert.ok(cpuElapsed < 1_000, `render consumed ${Math.round(cpuElapsed)}ms CPU`);
+  assert.ok(wallElapsed < 5_000, `render stalled for ${Math.round(wallElapsed)}ms`);
 });
 
 test("destinations beyond the inline limit remain literal", () => {

@@ -45,10 +45,43 @@ export function viewportClassLabel(viewportClass) {
   return "Desktop";
 }
 
-// Stable identity: the diagnostic rule, the normalized target identity, and the viewport class.
-// Magnitude is deliberately excluded so a finding that gets worse (or slightly better) updates
-// the one record instead of inflating the count with a near-duplicate.
-export function layoutWarningFingerprint({ rule, target, viewportClass }) {
+// Stable identity: the diagnostic rule, the normalized target identity, the viewport class, and
+// the canonical page. Magnitude is deliberately excluded so a finding that gets worse (or
+// slightly better) updates the one record instead of inflating the count with a near-duplicate.
+// `page` is nullable for legacy/unavailable observations; it is still part of the input so the
+// same selector on two sibling documents can never share a record.
+export function layoutWarningFingerprint({ rule, target, viewportClass, page = null }) {
+  const payload = `${normalizeText(rule)}|${normalizeText(target)}|${normalizeText(viewportClass)}|${normalizeWarningPage(page) || ""}`;
+  return crypto.createHash("sha256").update(payload).digest("hex").slice(0, 16);
+}
+
+// Warning records receive page identities from the server's page resolver. Keep this small local
+// normalizer as a defensive boundary for stored records and pure callers; it mirrors the
+// root-relative identity rules without consulting the filesystem.
+export function normalizeWarningPage(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") return null;
+  // Already authenticated identities may be exact POSIX entry basenames.
+  // Preserve their literal bytes; this function never resolves a route.
+  if (value.includes("\\")) return !value.includes("/") && !value.includes("\0") ? value : null;
+  const page = value.replace(/^\.\/+/, "");
+  if (!page || page.startsWith("/") || /^[A-Za-z]:\//.test(page) || page.includes("\0")) return null;
+  const parts = [];
+  for (const part of page.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (!parts.length) return null;
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.length ? parts.join("/") : null;
+}
+
+// The pre-page-schema identity is used only to keep an old stored record alive until the typed
+// migration can recompute its fingerprint. New records always use layoutWarningFingerprint().
+function legacyLayoutWarningFingerprint({ rule, target, viewportClass }) {
   const payload = `${normalizeText(rule)}|${normalizeText(target)}|${normalizeText(viewportClass)}`;
   return crypto.createHash("sha256").update(payload).digest("hex").slice(0, 16);
 }
@@ -107,13 +140,13 @@ export function describeLayoutWarning(warning) {
     viewportWidth: warning?.viewport_width ?? warning?.viewportWidth,
   };
   const description = RULE_DESCRIPTIONS[warning?.rule ?? warning?.kind];
-  if (!description) {
-    return {
-      title: "Layout failure",
-      explanation: `The browser proved a severe layout failure on this element${normalized.overflowPx ? ` (${pxText(normalized.overflowPx)})` : ""}.`,
-    };
-  }
-  return { title: description.title, explanation: description.explain(normalized) };
+  const explanation = description
+    ? description.explain(normalized)
+    : `The browser proved a severe layout failure on this element${normalized.overflowPx ? ` (${pxText(normalized.overflowPx)})` : ""}.`;
+  return {
+    title: description?.title || "Layout failure",
+    explanation,
+  };
 }
 
 const STATUS_LABELS = {
@@ -162,7 +195,7 @@ export function isSelectableLayoutWarning(warning) {
  * Fold one completed (or failed) browser diagnostic pass into the stored warning records.
  *
  * @param {any[]} warnings stored records
- * @param {{ complete?: boolean, targetPresenceComplete?: boolean, viewportWidth?: number, revision?: number, at?: string, findings?: any[] }} pass
+ * @param {{ complete?: boolean, targetPresenceComplete?: boolean, viewportWidth?: number, revision?: number, at?: string, page?: string|null, findings?: any[] }} pass
  * @returns {{ warnings: any[], changed: boolean }}
  */
 export function applyDiagnosticPass(warnings, pass) {
@@ -171,26 +204,74 @@ export function applyDiagnosticPass(warnings, pass) {
   const revision = Math.max(0, Math.trunc(finiteNumber(pass?.revision)));
   const viewportWidth = finiteNumber(pass?.viewportWidth);
   const viewportClass = viewportClassFor(viewportWidth);
+  const page = normalizeWarningPage(pass?.page);
   const complete = pass?.complete !== false;
   const targetPresenceComplete = pass?.targetPresenceComplete === true;
   const observations = new Map();
+  const legacyObservations = new Map();
   for (const finding of normalizeFindings(pass?.findings, viewportWidth)) {
     const fingerprint = layoutWarningFingerprint({
       rule: finding.rule,
       target: finding.selector,
       viewportClass,
+      page,
     });
     if (!observations.has(fingerprint)) observations.set(fingerprint, finding);
+    if (page === null) {
+      const legacyFingerprint = legacyLayoutWarningFingerprint({
+        rule: finding.rule,
+        target: finding.selector,
+        viewportClass,
+      });
+      if (!legacyObservations.has(legacyFingerprint)) legacyObservations.set(legacyFingerprint, finding);
+    }
   }
 
   const next = previous.map((warning) => {
     // A pass for one viewport class is silent about every other class. A desktop pass can never
     // clear a phone-specific warning.
-    if (warning.viewport_class !== viewportClass) return warning;
+    if (warning.viewport_class !== viewportClass || normalizeWarningPage(warning.page) !== page) return warning;
 
-    const observation = observations.get(warning.fingerprint);
+    const expectedFingerprint = layoutWarningFingerprint({
+      rule: warning.rule,
+      target: warning.selector,
+      viewportClass,
+      page,
+    });
+    const legacyFingerprint =
+      page === null
+        ? legacyLayoutWarningFingerprint({ rule: warning.rule, target: warning.selector, viewportClass })
+        : "";
+    // `id` is a durable selection identity and may intentionally differ from the current
+    // fingerprint after legacy migration. Match observations by the record's fingerprint first,
+    // then by the recomputed tuple; only the null-page legacy fallback uses the old identity.
+    const matchedFingerprint = observations.has(warning.fingerprint)
+      ? warning.fingerprint
+      : observations.has(expectedFingerprint)
+        ? expectedFingerprint
+        : legacyFingerprint && legacyObservations.has(legacyFingerprint)
+          ? legacyFingerprint
+          : "";
+    const observation = matchedFingerprint
+      ? observations.get(matchedFingerprint) || legacyObservations.get(matchedFingerprint)
+      : undefined;
     if (observation) {
-      observations.delete(warning.fingerprint);
+      observations.delete(matchedFingerprint);
+      observations.delete(
+        layoutWarningFingerprint({ rule: warning.rule, target: warning.selector, viewportClass, page }),
+      );
+      // A null-page pre-schema record may match only through its legacy fingerprint. Remove the
+      // observation under its new fingerprint too, or the post-pass loop would append a duplicate
+      // warning after successfully updating the retained record.
+      observations.delete(
+        layoutWarningFingerprint({
+          rule: observation.rule,
+          target: observation.selector,
+          viewportClass,
+          page,
+        }),
+      );
+      legacyObservations.delete(legacyFingerprint);
       return recordDetection(warning, observation, { at, revision, viewportWidth });
     }
     // Absence is only evidence when the pass actually completed.
@@ -203,7 +284,7 @@ export function applyDiagnosticPass(warnings, pass) {
   });
 
   for (const [fingerprint, observation] of observations) {
-    next.push(createWarning(fingerprint, observation, { at, revision, viewportClass, viewportWidth }));
+    next.push(createWarning(fingerprint, observation, { at, revision, viewportClass, viewportWidth, page }));
   }
 
   const pruned = pruneWarnings(next);
@@ -286,6 +367,7 @@ export function serializeLayoutWarning(warning) {
   return {
     id: warning.id,
     fingerprint: warning.fingerprint,
+    page: normalizeWarningPage(warning.page),
     rule: warning.rule,
     severity: warning.severity,
     status: warning.status,
@@ -335,6 +417,7 @@ export function layoutWarningPromptPayload(warnings) {
     artifact_revision: Math.max(0, Math.trunc(finiteNumber(selected[0]?.queued_revision))),
     warnings: selected.map((warning) => ({
       id: warning.id,
+      page: normalizeWarningPage(warning.page),
       rule: warning.rule,
       selector: warning.selector,
       component: warning.component,
@@ -360,6 +443,7 @@ export function normalizeLayoutWarningsTarget(target) {
     type: "layout-warnings",
     warnings: warnings.slice(0, MAX_QUEUED_WARNINGS_PER_PROMPT).map((warning) => ({
       id: normalizeText(warning?.id).slice(0, 64),
+      page: normalizeWarningPage(warning?.page),
       rule: normalizeText(warning?.rule).slice(0, 64),
       selector: normalizeText(warning?.selector).slice(0, 300),
       component: normalizeText(warning?.component).slice(0, 120),
@@ -391,11 +475,12 @@ export function resolveDiagnosticViewportClasses(env = process.env) {
 // internals
 // ---------------------------------------------------------------------------
 
-function createWarning(fingerprint, observation, { at, revision, viewportClass, viewportWidth }) {
+function createWarning(fingerprint, observation, { at, revision, viewportClass, viewportWidth, page }) {
   return withHistory(
     {
       id: fingerprint,
       fingerprint,
+      page: normalizeWarningPage(page),
       rule: observation.rule,
       severity: "error",
       status: "open",

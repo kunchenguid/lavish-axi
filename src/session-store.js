@@ -7,8 +7,10 @@ import {
   dismissLayoutWarning as dismissWarningRecord,
   hasOutstandingRepairRequest,
   isSelectableLayoutWarning,
+  layoutWarningFingerprint,
   layoutWarningPromptPayload,
   markObsoleteViewportWarnings,
+  normalizeWarningPage,
   normalizeLayoutWarningsTarget,
   normalizeStoredWarnings,
   queueLayoutWarnings as queueWarningRecords,
@@ -20,6 +22,10 @@ import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
 import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./whiteboard-core.js";
 
 export const LAYOUT_WARNINGS_TARGET_TYPE = "layout-warnings";
+// Server state gained page attribution after the original entry-only schema.  The marker is
+// deliberately a small integer rather than a proof or a visited-page registry: migration only
+// records that the bounded, typed rewrite has happened once for this session.
+export const PAGE_SCHEMA_VERSION = 1;
 const MAX_ARTIFACT_FAILURES = 20;
 // How long a just-delivered attachment stays referenced after `takeFeedback`
 // hands its path to the agent. The sweeper's reference set is built from PENDING
@@ -120,9 +126,11 @@ export class SessionStore {
       key,
       file: absolute,
       url,
+      page_schema: normalizePageSchema(existing.page_schema) || PAGE_SCHEMA_VERSION,
       status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
       pending_prompts: existing.pending_prompts || 0,
       prompts: existingPrompts,
+      ...(Array.isArray(existing.feedback_batches) ? { feedback_batches: existing.feedback_batches } : {}),
       // The warning inbox is durable review state, not deliverable feedback: reopening a session
       // must never silently drop unresolved warnings the user has not triaged yet.
       layout_warnings: normalizeStoredWarnings(existing.layout_warnings),
@@ -130,7 +138,7 @@ export class SessionStore {
       // The reviewer's open tab is holding this token, so reopening the artifact must not retire
       // it: only a newer `beginArtifactLoad` retires a load.
       artifact_load: normalizeStoredArtifactLoad(existing.artifact_load),
-      artifact_failures: Array.isArray(existing.artifact_failures) ? existing.artifact_failures : [],
+      artifact_failures: normalizeArtifactFailures(existing.artifact_failures),
       // Carried across a reopen on purpose: this list is what keeps a just-delivered
       // attachment out of the sweeper's reach, and re-opening the artifact during the
       // grace window would otherwise erase that protection while the agent is still
@@ -138,6 +146,8 @@ export class SessionStore {
       // any new session field must be added here too.
       delivered_attachments: Array.isArray(existing.delivered_attachments) ? existing.delivered_attachments : [],
       dom_snapshot: existing.dom_snapshot || "",
+      snapshot_page: Object.hasOwn(existing, "snapshot_page") ? normalizeStoredPage(existing.snapshot_page) : null,
+      snapshot_page_proof: String(existing.snapshot_page_proof || ""),
       chat: existing.chat || [],
       chat_revision: normalizeRevision(existing.chat_revision),
       // Compact prompt_id acks for bubbles evicted by the stored-chat byte bound. Reopening
@@ -145,6 +155,7 @@ export class SessionStore {
       chat_ack_ids: Array.isArray(existing.chat_ack_ids) ? existing.chat_ack_ids : [],
       updated_at: new Date().toISOString(),
     };
+    if (Array.isArray(session.feedback_batches)) syncFeedbackBatches(session);
     state.sessions[key] = session;
     await this.writeState(state);
     return session;
@@ -208,6 +219,29 @@ export class SessionStore {
       });
     }
     const normalizedPrompts = normalized.map((entry) => entry.prompt);
+    const contextValidation = options.validatePromptContext
+      ? await options.validatePromptContext(normalizedPrompts, payload, session)
+      : { ok: true };
+    if (!contextValidation?.ok) return contextValidation?.result || { invalid_page_context: true };
+    const modernBatch = Number(payload?.page_protocol) === 1 || (restoring && payload?.feedback_batch?.modern === true);
+    if (!restoring && modernBatch && normalizedPrompts.length) {
+      const page = normalizeStoredPage(normalizedPrompts[0]?.page);
+      if (
+        page === null ||
+        normalizedPrompts.some((prompt) => normalizeStoredPage(prompt.page) !== page) ||
+        (String(payload.domSnapshot || payload.dom_snapshot || "") &&
+          normalizeStoredPage(payload.snapshot_page) !== page)
+      )
+        return { invalid_page_context: true };
+    }
+    if (!restoring) {
+      const warningContextValidation = validateLayoutWarningClaims(
+        session.layout_warnings,
+        normalizedPrompts,
+        Number(payload?.page_protocol) === 1,
+      );
+      if (!warningContextValidation.ok) return warningContextValidation.result;
+    }
     // Resolve every attachment BEFORE mutating anything. If any prompt's images
     // can't be fully honored - malformed, an unknown id, or over the per-prompt
     // count/byte cap - reject the WHOLE batch and persist nothing (C4). Silently
@@ -272,6 +306,7 @@ export class SessionStore {
           acceptedPrompts.push(plan.prompt);
           continue;
         }
+        plan.prompt.target = authoritativeLayoutWarningTarget(warnings, plan.prompt.target);
         const result = queueWarningRecords(warnings, plan.queueIds, { revision, at });
         warnings = result.warnings;
         if (result.queued.length > 0 || !plan.hadKnownWarning) acceptedPrompts.push(plan.prompt);
@@ -285,28 +320,62 @@ export class SessionStore {
       ? []
       : acceptedPrompts.map((prompt) => chatEntryForPrompt(prompt, at)).filter(Boolean);
     const existingPrompts = Array.isArray(session.prompts) ? session.prompts : [];
-    const storedPrompts = restoring ? acceptedPrompts : acceptedPrompts.map(agentFacingPrompt);
-    session.prompts = restoring ? [...storedPrompts, ...existingPrompts] : [...existingPrompts, ...storedPrompts];
+    // A restore replays a batch that was already accepted, so it does not need to retain any
+    // transport-only credentials either. Keep the same agent-facing shape on both paths; this
+    // prevents a legacy state file (or a future restore caller) from reintroducing page proofs
+    // into the next poll response.
+    const storedPrompts = acceptedPrompts.map(agentFacingPrompt);
+    const batched = modernBatch || Array.isArray(session.feedback_batches);
+    if (batched) {
+      const failures = restoring ? normalizeArtifactFailures(payload.artifact_failures) : [];
+      if (storedPrompts.length || failures.length) {
+        const page = normalizeStoredPage(
+          (restoring ? payload?.feedback_batch?.page : undefined) ?? storedPrompts[0]?.page ?? failures[0]?.page,
+        );
+        appendFeedbackBatch(
+          session,
+          {
+            id: restoring ? String(payload?.feedback_batch?.id || crypto.randomUUID()) : crypto.randomUUID(),
+            modern: modernBatch,
+            page,
+            prompts: storedPrompts,
+            artifact_failures: failures,
+            dom_snapshot: String(payload.domSnapshot || payload.dom_snapshot || ""),
+            snapshot_page: normalizeStoredPage(payload.snapshot_page),
+            snapshot_page_proof: String(payload.snapshot_page_proof || ""),
+            snapshot_updated:
+              restoring && typeof payload?.feedback_batch?.snapshot_updated === "boolean"
+                ? payload.feedback_batch.snapshot_updated
+                : storedPrompts.length > 0 || Boolean(payload.domSnapshot || payload.dom_snapshot),
+          },
+          { restore: restoring },
+        );
+      }
+    } else {
+      session.prompts = restoring ? [...storedPrompts, ...existingPrompts] : [...existingPrompts, ...storedPrompts];
+    }
     session.chat = [...(session.chat || []), ...userMessages];
     applyTranscriptBound(session);
     if (userMessages.length > 0) session.chat_revision = normalizeRevision(session.chat_revision) + 1;
-    if (restoring) {
-      const restoredFailures = Array.isArray(payload.artifact_failures)
-        ? JSON.parse(JSON.stringify(payload.artifact_failures))
-        : [];
+    if (restoring && !batched) {
+      const restoredFailures = normalizeArtifactFailures(payload.artifact_failures);
       const existingFailures = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
       session.artifact_failures = mergeArtifactFailures(restoredFailures, existingFailures).failures;
     }
     session.pending_prompts = session.prompts.length;
     const restoredSnapshot = String(payload.domSnapshot || payload.dom_snapshot || "");
-    if (!restoring || (existingPrompts.length === 0 && !session.dom_snapshot)) {
+    const restoredSnapshotPage = normalizeStoredPage(payload.snapshot_page);
+    const restoredSnapshotProof = String(payload.snapshot_page_proof || "");
+    if (!batched && (!restoring || (existingPrompts.length === 0 && !session.dom_snapshot))) {
       session.dom_snapshot = restoredSnapshot;
+      session.snapshot_page = restoredSnapshot ? restoredSnapshotPage : null;
+      session.snapshot_page_proof = restoredSnapshot ? restoredSnapshotProof : "";
     }
     session.status =
       shouldEndSession || alreadyEnded
         ? "ended"
         : session.prompts.length > 0 ||
-            (restoring && Array.isArray(session.artifact_failures) && session.artifact_failures.length > 0)
+            ((restoring || batched) && Array.isArray(session.artifact_failures) && session.artifact_failures.length > 0)
           ? "feedback"
           : "open";
     if (shouldEndSession) session.ended_by = "user";
@@ -388,6 +457,7 @@ export class SessionStore {
       const load = {
         artifactRevision,
         artifactLoadToken,
+        lastDocumentSequence: 0,
         lastPassSequence: 0,
         requestId: normalizedRequestId,
         requestSequence: normalizedRequestSequence,
@@ -426,10 +496,58 @@ export class SessionStore {
     });
   }
 
+  async authenticateWhiteboardChannel(key, artifactLoadToken, artifactRevision, documentSequence) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return null;
+      const load = this.#activeArtifactLoad(session);
+      const revision = parseRevisionValue(artifactRevision);
+      if (
+        !load ||
+        !String(artifactLoadToken || "") ||
+        String(artifactLoadToken) !== load.artifactLoadToken ||
+        revision !== load.artifactRevision
+      ) {
+        return { session, status: "stale" };
+      }
+      if (documentSequence < Number(load.lastDocumentSequence || 0)) {
+        return { session, status: "stale-sequence" };
+      }
+      if (documentSequence > Number(load.lastDocumentSequence || 0)) {
+        load.lastDocumentSequence = documentSequence;
+        load.lastPassSequence = 0;
+        session.artifact_load = serializeArtifactLoad(load);
+        await this.writeState(state);
+      }
+      return { session, status: "authenticated" };
+    });
+  }
+
+  // Native navigation inside the artifact does not carry the query string that the chrome adds
+  // to the initial iframe URL.  Page routes use this read-only snapshot to stamp the same active
+  // generation onto an eligible sibling without minting a second load or weakening the existing
+  // token/revision checks used by the entry document and SDK route.
+  async currentArtifactLoad(key) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return null;
+      const load = this.#activeArtifactLoad(session);
+      return {
+        session,
+        valid: Boolean(load?.artifactLoadToken),
+        artifact_revision: load?.artifactRevision ?? normalizeRevision(session.artifact_revision),
+        artifact_load_token: load?.artifactLoadToken || "",
+      };
+    });
+  }
+
   // Fold one browser diagnostic pass into the passive warning inbox. This deliberately does NOT
   // touch session status or queue feedback: detection alone must never wake an agent.
   /**
-   * @param {{ viewportClasses?: string[] }} [options]
+   * @param {{ viewportClasses?: string[], validatePageContext?: (context: any) => Promise<any> }} [options]
+   * @returns {Promise<any>}
    */
   async recordLayoutDiagnostics(key, payload, options = {}) {
     return this.runExclusive(async () => {
@@ -444,20 +562,38 @@ export class SessionStore {
       const artifactLoadToken = String(payload?.artifact_load_token || payload?.artifactLoadToken || "");
       const reportedRevision = parseDiagnosticRevision(payload);
       const passSequence = parsePassSequence(payload);
+      const pageContext = await validateLivePageContext(session, payload, options);
+      const documentSequence = parseDocumentSequence(payload);
+      const modernContext = hasDocumentContext(payload);
       if (
         !load ||
         artifactLoadToken !== load.artifactLoadToken ||
         !reportedRevision.present ||
         reportedRevision.value !== load.artifactRevision ||
         !passSequence.present ||
-        passSequence.value <= load.lastPassSequence
+        passSequence.value === null ||
+        (modernContext && (documentSequence.value === null || documentSequence.value <= 0)) ||
+        !pageContext.ok ||
+        (modernContext &&
+          (documentSequence.value < Number(load.lastDocumentSequence || 0) ||
+            (documentSequence.value === Number(load.lastDocumentSequence || 0) &&
+              passSequence.value <= Number(load.lastPassSequence || 0)))) ||
+        (!modernContext && passSequence.value <= Number(load.lastPassSequence || 0))
       ) {
         return {
           session,
           changed: false,
           stale: true,
+          ...(pageContext.ok ? {} : { invalid_page_context: true }),
           warnings: serializeLayoutWarnings(session.layout_warnings),
         };
+      }
+      // Every request has been authenticated and fully ordered before this high-water update.
+      // A newer document starts its pass counter at one; equal documents retain pass ordering.
+      const documentAdvanced = modernContext && documentSequence.value > Number(load.lastDocumentSequence || 0);
+      if (documentAdvanced) {
+        load.lastDocumentSequence = documentSequence.value;
+        load.lastPassSequence = 0;
       }
       load.lastPassSequence = passSequence.value;
       const at = new Date().toISOString();
@@ -466,6 +602,7 @@ export class SessionStore {
         targetPresenceComplete: payload.target_presence_complete === true || payload.targetPresenceComplete === true,
         viewportWidth: payload.viewport_width ?? payload.viewportWidth,
         findings: payload.findings || payload.layout_warnings || payload.layoutWarnings || [],
+        page: pageContext.page,
         revision,
         at,
       });
@@ -477,6 +614,10 @@ export class SessionStore {
         changed = changed || obsolete.changed;
       }
       if (!changed) {
+        if (documentAdvanced) {
+          session.artifact_load = serializeArtifactLoad(load);
+          await this.writeState(state);
+        }
         return { session, changed: false, warnings: serializeLayoutWarnings(warnings) };
       }
       session.layout_warnings = warnings;
@@ -492,7 +633,7 @@ export class SessionStore {
   }
 
   // Prepare the user's explicit triage action. The ordinary prompt queue commits it when sent.
-  async prepareLayoutWarningFixes(key, ids) {
+  async prepareLayoutWarningFixes(key, ids, options = {}) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
@@ -502,6 +643,18 @@ export class SessionStore {
       const revision = normalizeRevision(session.artifact_revision);
       const at = new Date().toISOString();
       const result = queueWarningRecords(session.layout_warnings, ids, { revision, at });
+      const pages = new Set(result.queued.map((warning) => normalizeWarningPage(warning.page)));
+      if (
+        pages.size > 1 ||
+        (Object.hasOwn(options, "page") && result.queued.some((warning) => warning.page !== options.page))
+      )
+        return {
+          session,
+          invalid_page_context: true,
+          queued: [],
+          prompt: null,
+          warnings: serializeLayoutWarnings(session.layout_warnings),
+        };
       if (!result.queued.length) {
         return { session, queued: [], prompt: null, warnings: serializeLayoutWarnings(session.layout_warnings) };
       }
@@ -537,7 +690,8 @@ export class SessionStore {
   // served, or one of its own local assets cannot be loaded). These are NOT layout findings and
   // do not enter the passive inbox - they still reach the agent immediately, because there is no
   // usable review for the user to triage from.
-  async recordArtifactFailures(key, payload) {
+  /** @returns {Promise<any>} */
+  async recordArtifactFailures(key, payload, options = {}) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
@@ -547,25 +701,96 @@ export class SessionStore {
       const load = this.#activeArtifactLoad(session);
       const artifactLoadToken = String(payload?.artifact_load_token || payload?.artifactLoadToken || "");
       const reportedRevision = parseDiagnosticRevision(payload);
+      const pageContext = await validateLivePageContext(session, payload, options);
+      const documentSequence = parseDocumentSequence(payload);
+      const boundDocument = hasDocumentContext(payload) && pageContext.page !== null;
+      const sequenceInput = payload?.document_sequence ?? payload?.documentSequence;
+      const proofInput = payload?.page_proof || payload?.pageProof || "";
+      const invalidPageContext =
+        !pageContext.ok ||
+        (boundDocument &&
+          (!pageContext.proof ||
+            typeof proofInput !== "string" ||
+            !["number", "string"].includes(typeof sequenceInput)));
       if (
         !load ||
         artifactLoadToken !== load.artifactLoadToken ||
         !reportedRevision.present ||
-        reportedRevision.value !== load.artifactRevision
+        reportedRevision.value !== load.artifactRevision ||
+        invalidPageContext ||
+        (boundDocument &&
+          (documentSequence.value === null ||
+            documentSequence.value <= 0 ||
+            documentSequence.value < Number(load.lastDocumentSequence || 0)))
       ) {
-        return { session, changed: false, stale: true };
+        return { session, changed: false, stale: true, ...(invalidPageContext ? { invalid_page_context: true } : {}) };
       }
-      const normalized = normalizeArtifactFailures(payload?.failures);
+      const documentAdvanced = boundDocument && documentSequence.value > Number(load.lastDocumentSequence || 0);
+      if (documentAdvanced) {
+        load.lastDocumentSequence = documentSequence.value;
+        load.lastPassSequence = 0;
+      }
+      // Fatal browser reports predate the optional page_protocol flag. A complete
+      // page/proof/document tuple has already passed validation and live ordering
+      // above, so it belongs to the same FIFO as modern prompts on that page.
+      // Unbound pre-SDK failures and genuine protocol-0 reports stay legacy.
+      const modernBatch = boundDocument || Number(payload?.page_protocol) === 1;
+      if (modernBatch && pageContext.page === null)
+        return { session, changed: false, stale: true, invalid_page_context: true };
+      const normalized = normalizeArtifactFailures(payload?.failures, pageContext.page);
+      if (modernBatch || Array.isArray(session.feedback_batches)) {
+        ensureFeedbackBatches(session);
+        // Repeated diagnostics must not resurrect the same pending observation in
+        // a later batch merely because navigation moved away and returned.
+        const fresh = normalized.filter(
+          (failure) =>
+            !session.artifact_failures.some(
+              (old) => old.page === failure.page && old.kind === failure.kind && old.detail === failure.detail,
+            ),
+        );
+        if (!fresh.length) {
+          if (documentAdvanced) {
+            session.artifact_load = serializeArtifactLoad(load);
+            await this.writeState(state);
+          }
+          return { session, changed: false, failures: session.artifact_failures };
+        }
+        appendFeedbackBatch(
+          session,
+          {
+            id: crypto.randomUUID(),
+            modern: modernBatch,
+            page: pageContext.page,
+            prompts: [],
+            artifact_failures: fresh,
+            dom_snapshot: "",
+            snapshot_page: null,
+            snapshot_page_proof: "",
+            snapshot_updated: false,
+          },
+          { keepSnapshot: true },
+        );
+        if (session.status !== "ended") session.status = "feedback";
+        if (documentAdvanced) session.artifact_load = serializeArtifactLoad(load);
+        session.updated_at = new Date().toISOString();
+        await this.writeState(state);
+        return { session, changed: true, failures: session.artifact_failures };
+      }
       const previous = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
       const { failures, changed } = mergeArtifactFailures(previous, normalized);
       if (!changed) {
-        return { session, changed: false };
+        if (documentAdvanced) {
+          session.artifact_load = serializeArtifactLoad(load);
+          await this.writeState(state);
+        }
+        return { session, changed: false, failures };
       }
       session.artifact_failures = failures;
+      session.artifact_load = serializeArtifactLoad(load);
       if (session.status !== "ended") session.status = "feedback";
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
-      return { session, changed: true };
+      return { session, changed: true, failures };
     });
   }
 
@@ -600,10 +825,15 @@ export class SessionStore {
       }
       // Prompts queued before the session ended (a browser send-and-end) must still reach the
       // agent, so deliver them before reporting the ended state; the next poll then sees ended.
-      const prompts = session.prompts || [];
+      const batch = Array.isArray(session.feedback_batches) ? session.feedback_batches[0] : null;
+      const prompts = batch ? batch.prompts : session.prompts || [];
       // Layout warnings stay passive until the user queues them. Only fatal artifact
       // failures can reach the agent without explicit user action.
-      const artifactFailures = Array.isArray(session.artifact_failures) ? session.artifact_failures : [];
+      const artifactFailures = batch
+        ? batch.artifact_failures
+        : Array.isArray(session.artifact_failures)
+          ? session.artifact_failures
+          : [];
       const alreadyEnded = session.status === "ended";
       if (prompts.length === 0 && artifactFailures.length === 0) {
         return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
@@ -611,9 +841,23 @@ export class SessionStore {
       const result = {
         status: "feedback",
         dom_snapshot: session.dom_snapshot || "",
-        prompts,
+        snapshot_page: session.dom_snapshot ? normalizeStoredPage(session.snapshot_page) : null,
+        snapshot_page_proof: session.dom_snapshot ? String(session.snapshot_page_proof || "") : "",
+        prompts: prompts.map(agentFacingPrompt),
         ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
-        ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
+        ...(batch
+          ? {
+              feedback_batch: {
+                id: batch.id,
+                page: batch.page,
+                modern: batch.modern,
+                snapshot_updated: batch.snapshot_updated,
+              },
+            }
+          : {}),
+        ...(alreadyEnded && (!batch || session.feedback_batches.length === 1)
+          ? { session_ended: true, ended_by: session.ended_by }
+          : {}),
       };
       // Delivery clears pending prompts, so retain the attachment ids for a bounded
       // grace window while the polling agent opens the absolute paths it received.
@@ -637,12 +881,19 @@ export class SessionStore {
       const current = [...deliveredIds].map((id) => ({ id, at: deliveredNow }));
       const historyRoom = Math.max(0, MAX_DELIVERED_ATTACHMENTS - current.length);
       session.delivered_attachments = [...carried.slice(-historyRoom), ...current];
-      session.prompts = [];
-      session.artifact_failures = [];
-      session.pending_prompts = 0;
-      session.dom_snapshot = "";
+      if (batch) {
+        session.feedback_batches.shift();
+        syncFeedbackBatches(session);
+      } else {
+        session.prompts = [];
+        session.artifact_failures = [];
+        session.pending_prompts = 0;
+        session.dom_snapshot = "";
+        session.snapshot_page = null;
+        session.snapshot_page_proof = "";
+      }
       if (!alreadyEnded) {
-        session.status = "open";
+        session.status = session.prompts.length || session.artifact_failures.length ? "feedback" : "open";
       }
       session.updated_at = new Date().toISOString();
       await this.writeState(state);
@@ -731,9 +982,25 @@ export class SessionStore {
       const state = { sessions: parsed.sessions || {} };
       let changed = false;
       for (const session of Object.values(state.sessions)) {
-        if (!session || typeof session !== "object" || !applyTranscriptBound(session)) continue;
-        session.chat_revision = normalizeRevision(session.chat_revision) + 1;
-        changed = true;
+        if (!session || typeof session !== "object" || Array.isArray(session)) continue;
+        const migrated = migrateLegacySession(session);
+        // Upgrade old aggregate multi-page queues before their first poll, even
+        // if no new browser submission arrives after this server restarts.
+        const pages = new Set(
+          [...(session.prompts || []), ...(session.artifact_failures || [])]
+            .map((item) => normalizeStoredPage(item.page))
+            .filter((page) => page !== null),
+        );
+        if (!Array.isArray(session.feedback_batches) && pages.size > 1) {
+          ensureFeedbackBatches(session);
+          changed = true;
+        }
+        if (Array.isArray(session.feedback_batches)) syncFeedbackBatches(session);
+        const bounded = applyTranscriptBound(session);
+        if (migrated || bounded) {
+          if (bounded) session.chat_revision = normalizeRevision(session.chat_revision) + 1;
+          changed = true;
+        }
       }
       if (changed) await this.writeState(state);
       return state;
@@ -757,6 +1024,271 @@ export async function canonicalFile(file) {
 
 export function sessionKey(file) {
   return crypto.createHash("sha256").update(file).digest("hex").slice(0, 16);
+}
+
+// Once present, feedback_batches owns delivery. Flat fields are compatibility
+// projections for status, attachment retention and the existing restore audit;
+// they are never drained independently of the FIFO.
+function syncFeedbackBatches(session) {
+  const batches = session.feedback_batches;
+  session.prompts = batches.flatMap((batch) => batch.prompts);
+  session.artifact_failures = batches.flatMap((batch) => batch.artifact_failures);
+  session.pending_prompts = session.prompts.length;
+  const first = batches[0];
+  session.dom_snapshot = first?.dom_snapshot || "";
+  session.snapshot_page = session.dom_snapshot ? normalizeStoredPage(first.snapshot_page) : null;
+  session.snapshot_page_proof = session.dom_snapshot ? String(first.snapshot_page_proof || "") : "";
+  if (session.status !== "ended") session.status = batches.length ? "feedback" : "open";
+}
+
+function ensureFeedbackBatches(session) {
+  if (Array.isArray(session.feedback_batches)) return;
+  const batches = [];
+  const makeBatch = (page) => ({
+    id: crypto.randomUUID(),
+    modern: false,
+    page,
+    prompts: [],
+    artifact_failures: [],
+    dom_snapshot: "",
+    snapshot_page: null,
+    snapshot_page_proof: "",
+    snapshot_updated: false,
+  });
+  // Legacy aggregate state did not record cross-channel arrival order. Preserve
+  // prompt order, attach each failure to its last matching page batch, and keep
+  // the one recoverable snapshot only on its recorded page; invent no context.
+  for (const prompt of session.prompts || []) {
+    const page = normalizeStoredPage(prompt.page);
+    if (!batches.length || batches.at(-1).page !== page) batches.push(makeBatch(page));
+    batches.at(-1).prompts.push(prompt);
+  }
+  for (const failure of session.artifact_failures || []) {
+    const page = normalizeStoredPage(failure.page);
+    let batch = batches.findLast((candidate) => candidate.page === page);
+    if (!batch) {
+      batch = makeBatch(page);
+      batches.push(batch);
+    }
+    batch.artifact_failures.push(failure);
+  }
+  const snapshotBatch = batches.findLast((batch) => batch.page === normalizeStoredPage(session.snapshot_page));
+  if (snapshotBatch && session.dom_snapshot) {
+    snapshotBatch.dom_snapshot = session.dom_snapshot;
+    snapshotBatch.snapshot_page = session.snapshot_page;
+    snapshotBatch.snapshot_page_proof = session.snapshot_page_proof || "";
+    snapshotBatch.snapshot_updated = true;
+  }
+  session.feedback_batches = batches;
+  syncFeedbackBatches(session);
+}
+
+function appendFeedbackBatch(session, incoming, { restore = false, keepSnapshot = false } = {}) {
+  ensureFeedbackBatches(session);
+  const batches = session.feedback_batches;
+  if (restore && batches.some((batch) => batch.id === incoming.id)) return;
+  const tail = batches.at(-1);
+  // Coalescing only the adjacent tail preserves A -> B -> A arrival order.
+  if (!restore && tail && tail.page === incoming.page && tail.modern === incoming.modern) {
+    tail.prompts.push(...incoming.prompts);
+    tail.artifact_failures = mergeArtifactFailures(tail.artifact_failures, incoming.artifact_failures).failures;
+    if (!keepSnapshot) {
+      tail.dom_snapshot = incoming.dom_snapshot;
+      tail.snapshot_page = incoming.dom_snapshot ? incoming.snapshot_page : null;
+      tail.snapshot_page_proof = incoming.dom_snapshot ? incoming.snapshot_page_proof : "";
+      tail.snapshot_updated = incoming.snapshot_updated;
+    }
+  } else if (restore) {
+    const first = batches[0];
+    if (first && first.page === incoming.page && first.modern === incoming.modern) {
+      // No intervening page: restore earlier writing before the newer same-page
+      // work, while its latest snapshot (including an explicit clear) wins.
+      first.prompts.unshift(...incoming.prompts);
+      first.artifact_failures = mergeArtifactFailures(incoming.artifact_failures, first.artifact_failures).failures;
+      // Diagnostics do not clear snapshots. Distinguish their lack of context
+      // from a newer prompt submission that explicitly cleared its snapshot.
+      if (!first.snapshot_updated && incoming.snapshot_updated) {
+        first.dom_snapshot = incoming.dom_snapshot;
+        first.snapshot_page = incoming.snapshot_page;
+        first.snapshot_page_proof = incoming.snapshot_page_proof;
+        first.snapshot_updated = true;
+      }
+      first.id = incoming.id;
+    } else batches.unshift(incoming);
+  } else batches.push(incoming);
+  syncFeedbackBatches(session);
+}
+
+/**
+ * Rewrite one pre-page-schema session in place.
+ *
+ * The store can establish only the saved entry identity here. It must not mint a page proof (the
+ * server owns that key and its verification boundary), and it never treats arbitrary page-less
+ * chat as entry feedback. A missing `file` is therefore a deliberate no-op: the caller that
+ * later supplies canonical entry context can run this same migration again.
+ *
+ * @param {any} session
+ * @param {{ entryPage?: string | ((session: any) => string | null | undefined) }} [options]
+ * @returns {boolean} whether the session was changed
+ */
+export function migrateLegacySession(session, options = {}) {
+  if (!session || typeof session !== "object" || Array.isArray(session)) return false;
+  if (normalizePageSchema(session.page_schema) >= PAGE_SCHEMA_VERSION) return false;
+
+  const entryPage = resolveMigrationEntryPage(session, options.entryPage);
+  if (!entryPage) return false;
+
+  let changed = false;
+  const warnings = Array.isArray(session.layout_warnings) ? session.layout_warnings : [];
+  if (migrateLegacyWarnings(warnings, entryPage)) changed = true;
+  if (migrateLegacyPrompts(session, entryPage, warnings)) changed = true;
+  if (migrateLegacyChat(session)) changed = true;
+  if (migrateLegacyFailures(session, entryPage)) changed = true;
+  if (migrateLegacySnapshot(session, entryPage)) changed = true;
+
+  // Mark completion even when this session had no legacy fields. That makes a second state read
+  // byte-stable and prevents a future caller from interpreting a newly added explicit null as
+  // evidence that it was an old entry item.
+  if (session.page_schema !== PAGE_SCHEMA_VERSION) {
+    session.page_schema = PAGE_SCHEMA_VERSION;
+    changed = true;
+  }
+  return changed;
+}
+
+function normalizePageSchema(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+}
+
+function resolveMigrationEntryPage(session, supplied) {
+  let candidate = supplied;
+  if (typeof supplied === "function") {
+    try {
+      candidate = supplied(session);
+    } catch {
+      candidate = null;
+    }
+  }
+  if (candidate === undefined) {
+    const file = typeof session.file === "string" ? session.file : "";
+    if (!file || file.includes("\0")) return null;
+    candidate = path.basename(file);
+  }
+  if (typeof candidate !== "string") return null;
+  return normalizeWarningPage(candidate);
+}
+
+function migrateLegacyPrompts(session, entryPage, warnings) {
+  if (!Array.isArray(session.prompts)) return false;
+  let changed = false;
+  const warningById = new Map(
+    warnings
+      .filter((warning) => warning && typeof warning === "object" && !Array.isArray(warning))
+      .map((warning) => [String(warning.id || ""), warning])
+      .filter(([id]) => id),
+  );
+  for (const prompt of session.prompts) {
+    if (!prompt || typeof prompt !== "object" || Array.isArray(prompt)) continue;
+    if (prompt.tag === "layout-warnings" && prompt.target?.type === LAYOUT_WARNINGS_TARGET_TYPE) {
+      const items = Array.isArray(prompt.target.warnings) ? prompt.target.warnings : [];
+      for (const item of items) {
+        if (
+          !item ||
+          typeof item !== "object" ||
+          Array.isArray(item) ||
+          (Object.hasOwn(item, "page") && item.page !== "")
+        )
+          continue;
+        const warning = warningById.get(String(item.id || ""));
+        item.page = warning && Object.hasOwn(warning, "page") ? normalizeWarningPage(warning.page) : null;
+        changed = true;
+      }
+      // Historical batches may predate page isolation. Preserve their recorded
+      // attribution; do not invent a common page while migrating old transcripts.
+      continue;
+    }
+    if (Object.hasOwn(prompt, "page") && prompt.page !== "") continue;
+    prompt.page = entryPage;
+    changed = true;
+  }
+  return changed;
+}
+
+function migrateLegacyChat(session) {
+  if (!Array.isArray(session.chat)) return false;
+  let changed = false;
+  for (const entry of session.chat) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || Object.hasOwn(entry, "page")) continue;
+    // Chat can have been typed over an ineligible/remote document. Its words are durable, but
+    // there is no server-established page provenance to recover.
+    entry.page = null;
+    changed = true;
+  }
+  return changed;
+}
+
+function migrateLegacyFailures(session, entryPage) {
+  if (!Array.isArray(session.artifact_failures)) return false;
+  let changed = false;
+  for (const failure of session.artifact_failures) {
+    if (
+      !failure ||
+      typeof failure !== "object" ||
+      Array.isArray(failure) ||
+      (Object.hasOwn(failure, "page") && failure.page !== "")
+    )
+      continue;
+    failure.page = entryPage;
+    changed = true;
+  }
+  return changed;
+}
+
+function migrateLegacySnapshot(session, entryPage) {
+  const snapshot = String(session.dom_snapshot || "");
+  let changed = false;
+  if (!snapshot) {
+    if (!Object.hasOwn(session, "snapshot_page") || session.snapshot_page !== null) {
+      session.snapshot_page = null;
+      changed = true;
+    }
+    if (!Object.hasOwn(session, "snapshot_page_proof") || session.snapshot_page_proof !== "") {
+      session.snapshot_page_proof = "";
+      changed = true;
+    }
+    return changed;
+  }
+  // Older writers sometimes serialized an unavailable page as an empty string. It is not the
+  // explicit modern null sentinel, so a nonempty historical snapshot may still recover entry
+  // provenance in that case.
+  if (!Object.hasOwn(session, "snapshot_page") || session.snapshot_page === "") {
+    session.snapshot_page = entryPage;
+    changed = true;
+  }
+  return changed;
+}
+
+function migrateLegacyWarnings(warnings, entryPage) {
+  let changed = false;
+  for (const warning of warnings) {
+    if (
+      !warning ||
+      typeof warning !== "object" ||
+      Array.isArray(warning) ||
+      (Object.hasOwn(warning, "page") && warning.page !== "")
+    )
+      continue;
+    warning.page = entryPage;
+    warning.fingerprint = layoutWarningFingerprint({
+      rule: warning.rule || warning.kind,
+      target: warning.selector,
+      viewportClass: warning.viewport_class,
+      page: entryPage,
+    });
+    changed = true;
+  }
+  return changed;
 }
 
 function applyTranscriptBound(session) {
@@ -784,6 +1316,13 @@ function normalizePrompt(prompt) {
     tag: String(prompt.tag || ""),
     text: String(prompt.text || ""),
   };
+  // Preserve the claim as supplied until the server's page-proof validator sees it. Coercing an
+  // invalid path (or a non-string value) to null here would turn an untrusted claim into the
+  // legitimate "no page" value and let it bypass atomic context validation. Validated production
+  // requests are canonicalized by the server before this prompt can be persisted; this raw value
+  // is deliberately only an intermediate trust-boundary representation.
+  if (Object.hasOwn(prompt || {}, "page")) normalized.page = prompt.page;
+  if (Object.hasOwn(prompt || {}, "page_proof")) normalized.page_proof = String(prompt.page_proof || "");
   const promptId = normalizePromptId(prompt.prompt_id);
   if (promptId) normalized.prompt_id = promptId;
   const target = normalizeTarget(prompt.target);
@@ -796,9 +1335,10 @@ function normalizePrompt(prompt) {
 // Settlement identity is transcript-owned. The agent-facing prompt list must not carry it:
 // poll output stays the reviewer's words, and a restore replay never re-appends chat.
 function agentFacingPrompt(prompt) {
-  if (!prompt || typeof prompt !== "object" || prompt.prompt_id === undefined) return prompt;
+  if (!prompt || typeof prompt !== "object") return prompt;
   const rest = { ...prompt };
-  delete rest.prompt_id;
+  if (rest.prompt_id !== undefined) delete rest.prompt_id;
+  delete rest.page_proof;
   return rest;
 }
 
@@ -947,6 +1487,51 @@ function planLayoutWarningPrompt(warnings, prompt, revision) {
   return { warningIds, expectedRevision, conflicts, queueIds, hadKnownWarning };
 }
 
+function validateLayoutWarningClaims(warnings, prompts, modern = false) {
+  const records = normalizeStoredWarnings(warnings);
+  const invalid = [];
+  for (const [promptIndex, prompt] of (Array.isArray(prompts) ? prompts : []).entries()) {
+    if (prompt?.tag !== "layout-warnings" || prompt.target?.type !== LAYOUT_WARNINGS_TARGET_TYPE) continue;
+    for (const [warningIndex, item] of (Array.isArray(prompt.target.warnings)
+      ? prompt.target.warnings
+      : []
+    ).entries()) {
+      const record = records.find((candidate) => candidate.id === String(item.id || ""));
+      const recordPage = record ? normalizeWarningPage(record.page) : null;
+      if (
+        (modern && (!record || typeof prompt.page !== "string" || recordPage !== prompt.page)) ||
+        (!modern && typeof prompt.page === "string" && recordPage !== null && recordPage !== prompt.page)
+      ) {
+        invalid.push({ index: promptIndex, warning_index: warningIndex, prompt_id: prompt.prompt_id || "" });
+        continue;
+      }
+      if (!Object.hasOwn(item || {}, "page") || item.page === null || item.page === "") continue;
+      const claimed = normalizeWarningPage(item.page);
+      if (!record || claimed === null || claimed !== recordPage) {
+        invalid.push({ index: promptIndex, warning_index: warningIndex, prompt_id: prompt.prompt_id || "" });
+      }
+    }
+  }
+  return invalid.length
+    ? { ok: false, result: { invalid_page_context: true, invalid: invalid.slice(0, 8) } }
+    : { ok: true };
+}
+
+function authoritativeLayoutWarningTarget(warnings, target) {
+  const normalized = normalizeLayoutWarningsTarget(target);
+  const records = normalizeStoredWarnings(warnings);
+  return {
+    ...normalized,
+    warnings: normalized.warnings.map((item) => {
+      const record = records.find((candidate) => candidate.id === item.id);
+      return {
+        ...item,
+        page: record ? normalizeWarningPage(record.page) : null,
+      };
+    }),
+  };
+}
+
 // The active artifact load, in the shape state.json carries it. Snake-cased like every other
 // stored field, and complete: the fences a begin is judged against (`request_id`,
 // `request_sequence`, `handoff_token`) belong to the same epoch as the token, so a process that
@@ -954,8 +1539,10 @@ function planLayoutWarningPrompt(warnings, prompt, revision) {
 // begin the previous process already overtook win.
 function serializeArtifactLoad(load) {
   return {
+    schema_version: 2,
     artifact_load_token: load.artifactLoadToken,
     artifact_revision: load.artifactRevision,
+    last_document_sequence: load.lastDocumentSequence,
     last_pass_sequence: load.lastPassSequence,
     request_id: load.requestId,
     request_sequence: load.requestSequence,
@@ -963,11 +1550,12 @@ function serializeArtifactLoad(load) {
   };
 }
 
-// Every key `serializeArtifactLoad` writes. A record this code wrote always carries all six, so a
-// record missing one was not written by this code and cannot be read as a whole.
+// #371 wrote the first six fields before page-scoped document fencing existed. Versioned loads
+// require all seven; the complete older shape restores with the new fence at zero.
 const STORED_ARTIFACT_LOAD_FIELDS = [
   "artifact_load_token",
   "artifact_revision",
+  "last_document_sequence",
   "last_pass_sequence",
   "request_id",
   "request_sequence",
@@ -977,10 +1565,10 @@ const STORED_ARTIFACT_LOAD_FIELDS = [
 // All of the epoch or none of it. Restoring a partial record would honor the token while some
 // fence it travels with defaulted away: without `handoff_token` the load answers 200 to everyone
 // while its own reviewer's next begin is told `no-handoff`, and without `request_sequence` a begin
-// the previous process already overtook wins. So an older or hand-edited state.json degrades to
-// the pre-persistence behaviour - one re-handshake and a fresh epoch - rather than admitting a
-// load the store can only partly describe. Presence and type are what is checked, not value:
-// `request_id` is legitimately "" and both sequence fences are legitimately 0 on a just-begun
+// the previous process already overtook wins. A partial versioned state.json degrades to the
+// pre-persistence behaviour - one re-handshake and a fresh epoch - rather than admitting a load
+// the store can only partly describe. Presence and type are what is checked, not value:
+// `request_id` is legitimately "" and each sequence fence is legitimately 0 on a just-begun
 // load. The revision is not: `beginArtifactLoad` only mints positive ones, so 0 is a value this
 // code never wrote and a load restored with it would be served at a revision that never existed.
 // The two tokens are additionally required non-empty, which rejects nothing this code wrote
@@ -989,7 +1577,12 @@ const STORED_ARTIFACT_LOAD_FIELDS = [
 // a token-less pass.
 function restoreArtifactLoad(stored) {
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) return null;
-  if (STORED_ARTIFACT_LOAD_FIELDS.some((field) => !Object.hasOwn(stored, field))) return null;
+  const versioned = Object.hasOwn(stored, "schema_version");
+  if (versioned && stored.schema_version !== 2) return null;
+  const priorEpoch = !versioned && !Object.hasOwn(stored, "last_document_sequence");
+  if (STORED_ARTIFACT_LOAD_FIELDS.some((field) => field !== "last_document_sequence" && !Object.hasOwn(stored, field)))
+    return null;
+  if (!priorEpoch && !Object.hasOwn(stored, "last_document_sequence")) return null;
   const artifactLoadToken = stored.artifact_load_token;
   const handoffToken = stored.handoff_token;
   const requestId = stored.request_id;
@@ -998,10 +1591,25 @@ function restoreArtifactLoad(stored) {
   if (typeof requestId !== "string") return null;
   const artifactRevision = parseSequenceValue(stored.artifact_revision);
   if (artifactRevision === 0) return null;
+  const lastDocumentSequence = priorEpoch ? 0 : parseSequenceValue(stored.last_document_sequence);
   const lastPassSequence = parseSequenceValue(stored.last_pass_sequence);
   const requestSequence = parseSequenceValue(stored.request_sequence);
-  if (artifactRevision === null || lastPassSequence === null || requestSequence === null) return null;
-  return { artifactRevision, artifactLoadToken, lastPassSequence, requestId, requestSequence, handoffToken };
+  if (
+    artifactRevision === null ||
+    lastDocumentSequence === null ||
+    lastPassSequence === null ||
+    requestSequence === null
+  )
+    return null;
+  return {
+    artifactRevision,
+    artifactLoadToken,
+    lastDocumentSequence,
+    lastPassSequence,
+    requestId,
+    requestSequence,
+    handoffToken,
+  };
 }
 
 function normalizeStoredArtifactLoad(stored) {
@@ -1039,9 +1647,48 @@ function parsePassSequence(payload) {
   return { present, value: Number.isSafeInteger(value) && value > 0 ? value : null };
 }
 
+function parseDocumentSequence(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const present = Object.hasOwn(source, "document_sequence") || Object.hasOwn(source, "documentSequence");
+  const value = Number(source.document_sequence ?? source.documentSequence);
+  return { present, value: Number.isSafeInteger(value) && value > 0 ? value : null };
+}
+
+function hasDocumentContext(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  return (
+    Object.hasOwn(source, "page") ||
+    Object.hasOwn(source, "page_proof") ||
+    Object.hasOwn(source, "pageProof") ||
+    Object.hasOwn(source, "document_sequence") ||
+    Object.hasOwn(source, "documentSequence")
+  );
+}
+
+async function validateLivePageContext(session, payload, options) {
+  const modern = hasDocumentContext(payload);
+  if (!modern) return { ok: true, page: null, proof: "", legacy: true };
+  const page = Object.hasOwn(payload || {}, "page") ? payload.page : undefined;
+  const proof = String(payload?.page_proof || payload?.pageProof || "");
+  const validator = options?.validatePageContext || options?.validatePageClaim;
+  if (typeof validator === "function") {
+    const result = await validator({ session, page, proof, payload });
+    if (!result || result.ok === false) return { ok: false, page: null, proof: "" };
+    const canonicalPage = Object.hasOwn(result, "page")
+      ? normalizeWarningPage(result.page)
+      : normalizeWarningPage(page);
+    return { ok: true, page: canonicalPage, proof: String(result.proof || proof) };
+  }
+  // The HTTP server supplies the proof validator. Pure store callers still get page isolation;
+  // their page is normalized here and cannot be used to authorize a network request.
+  if (page === null || page === "") return { ok: proof === "", page: null, proof: "" };
+  const normalized = normalizeWarningPage(page);
+  return { ok: Boolean(normalized), page: normalized, proof };
+}
+
 const ARTIFACT_FAILURE_KINDS = new Set(["artifact-unavailable", "artifact-asset-unavailable"]);
 
-// The single merge policy for `session.artifact_failures`, shared by both writers that add to it
+// The single merge policy for legacy failures and each FIFO page batch, shared by both writers
 // (a fresh report and a closed-poll restore), which is why `earlier` is always the chronologically
 // older side. A repeat of a failure already on file is not a second failure, and the list stays
 // bounded because state.json is rewritten wholesale.
@@ -1057,24 +1704,35 @@ function mergeArtifactFailures(earlier, later) {
   const merged = Array.isArray(earlier) ? [...earlier] : [];
   let changed = false;
   for (const failure of Array.isArray(later) ? later : []) {
-    if (merged.some((item) => item.kind === failure.kind && item.detail === failure.detail)) continue;
+    if (
+      merged.some(
+        (item) =>
+          normalizeWarningPage(item.page) === normalizeWarningPage(failure.page) &&
+          item.kind === failure.kind &&
+          item.detail === failure.detail,
+      )
+    )
+      continue;
     merged.push(failure);
     changed = true;
   }
   return { failures: merged.slice(-MAX_ARTIFACT_FAILURES), changed };
 }
 
-function normalizeArtifactFailures(failures) {
+function normalizeArtifactFailures(failures, capturedPage = undefined) {
   if (!Array.isArray(failures)) return [];
+  const hasCapturedPage = capturedPage !== undefined;
+  const normalizedCapturedPage = hasCapturedPage ? normalizeWarningPage(capturedPage) : null;
   return failures
     .filter((failure) => failure && typeof failure === "object" && !Array.isArray(failure))
     .map((failure) => ({
       kind: String(failure.kind || ""),
       detail: String(failure.detail || "").slice(0, 300),
+      page: hasCapturedPage ? normalizedCapturedPage : normalizeWarningPage(failure.page),
       severity: "fatal",
     }))
     .filter((failure) => ARTIFACT_FAILURE_KINDS.has(failure.kind))
-    .slice(0, MAX_ARTIFACT_FAILURES);
+    .slice(-MAX_ARTIFACT_FAILURES);
 }
 
 function normalizeTarget(target) {
@@ -1084,4 +1742,17 @@ function normalizeTarget(target) {
   if (target.type === LAYOUT_WARNINGS_TARGET_TYPE) return normalizeLayoutWarningsTarget(target);
   // text-range and any other/legacy target shapes pass through unchanged.
   return JSON.parse(JSON.stringify(target));
+}
+
+function normalizeStoredPage(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const page = String(value);
+  if (
+    page.length > 16 * 1024 ||
+    page.includes("\0") ||
+    (page.includes("\\") && page.includes("/")) ||
+    page.startsWith("/")
+  )
+    return null;
+  return page;
 }
