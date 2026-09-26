@@ -1402,8 +1402,14 @@ export async function serve({
       // /artifact/* is framed by this page and /whiteboard-frame is framed by
       // that artifact document, whose sandbox gives it an opaque origin no
       // frame-ancestors expression can name.
-      res.setHeader("x-frame-options", "DENY");
-      res.setHeader("content-security-policy", "frame-ancestors 'none'");
+      //
+      // LAVISH_AXI_ALLOW_FRAMING suppresses these headers so a reverse proxy
+      // (godoxy, Caddy, nginx, …) can manage its own framing policy. The
+      // operator is then responsible for CSP/XFO at the proxy layer.
+      if (!process.env.LAVISH_AXI_ALLOW_FRAMING) {
+        res.setHeader("x-frame-options", "DENY");
+        res.setHeader("content-security-policy", "frame-ancestors 'none'");
+      }
       res.type("html").send(
         createChromeHtml(session, {
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
