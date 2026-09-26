@@ -242,9 +242,8 @@ let workingBubble = null;
 let displayedChat = initialChat.slice();
 let chatRevision = initialChatRevision;
 // Settlement is by per-submission identity, not displayed content: two tabs can queue notes
-// whose chat projection is identical (same selected text under one container, different range
-// boundaries) without settling each other, and a reload after a lost POST response still
-// recognizes an already-accepted note.
+// whose chat projection is identical (the same note text on the same element) without settling
+// each other, and a reload after a lost POST response still recognizes an already-accepted note.
 let submitQueuedPromise = null;
 const pendingSubmissions = [];
 /** @type {{ prompts?: any[] } | null} */
@@ -950,8 +949,8 @@ function promptAcknowledgedInChat(prompt, chat) {
 function settleQueuedFromTranscript(chat, shouldRender = true) {
   if (!Array.isArray(chat) || !queued.length) return false;
   // Match by the per-submission identity only. Displayed content is not identity: two tabs
-  // can send the same selected text under one container with different range boundaries,
-  // and each note must settle exactly once against its own acknowledgement.
+  // can send the same note text against the same element, and each note must settle exactly
+  // once against its own acknowledgement.
   const settledPrompts = new Set();
   for (const prompt of queued) {
     if (!promptAcknowledgedInChat(prompt, chat)) continue;

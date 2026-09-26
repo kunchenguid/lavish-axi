@@ -70,7 +70,7 @@ const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "
 const RESERVED = new Set(RESERVED_COMMANDS);
 const DESCRIPTION =
   "Lavish Editor helps agents turn rich HTML artifacts into collaborative human review surfaces. Whenever you are about to give user a complex response that will be easier to understand via a rich / interactive page, consider using Lavish Editor. " +
-  "First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements or selected text, queue prompts, and send feedback back through `lavish-axi poll`.";
+  "First generate an interactive HTML artifact according to user request, then run `lavish-axi <html-file>` so the user can visually review it, annotate elements, queue prompts, and send feedback back through `lavish-axi poll`.";
 export const POLL_WAKE_PATH_RULES = Object.freeze([
   "Keep the poll in the foreground by default and let it return the feedback directly to the agent.",
   "A background poll is allowed only through a harness-native tracked background-job facility whose completion result is guaranteed to resume or notify the same agent.",

@@ -107,6 +107,10 @@ function cell(tag, text) {
 function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionMarkElements = [] } = {}) {
   const posted = [];
   const documentListeners = [];
+  // What `document.getSelection()` hands back. The SDK only stringifies it, but a Selection is an
+  // object in the browser, so the stub is one too rather than a bare string the real API never
+  // returns.
+  let documentSelection = null;
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
   // re-query is a real timer, and asserting on it means running it rather than assuming it.
   const timers = [];
@@ -160,7 +164,7 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
       querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
-      getSelection: () => null,
+      getSelection: () => documentSelection,
     },
   };
   const windowListeners = [];
@@ -185,10 +189,21 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
     posted,
     body,
     api: sandbox.window.lavish,
-    click(target) {
+    // The press point the click guard measures against comes from a real mousedown, so a test that
+    // cares about pointer movement has to deliver one; clicks that do not carry coordinates leave
+    // the guard with nothing to measure, exactly as an unmoved click does.
+    mousedown(target, { clientX = 0, clientY = 0, button = 0 } = {}) {
+      const listener = documentListeners.find((entry) => entry.type === "mousedown");
+      assert.ok(listener, "the SDK registers a document mousedown listener");
+      listener.handler({ target, button, clientX, clientY });
+    },
+    click(target, { clientX = 0, clientY = 0 } = {}) {
       const listener = documentListeners.find((entry) => entry.type === "click");
       assert.ok(listener, "the SDK registers a document click listener");
-      listener.handler({ target, preventDefault() {}, stopPropagation() {} });
+      listener.handler({ target, clientX, clientY, preventDefault() {}, stopPropagation() {} });
+    },
+    setDocumentSelection(text) {
+      documentSelection = { toString: () => text };
     },
     setDocumentQuery(query) {
       documentQuery = query;
@@ -381,6 +396,94 @@ test("the served SDK bundle annotates elements outside tables with no table targ
 
   assert.equal(message.prompt.tag, "p");
   assert.equal(message.prompt.target, undefined);
+});
+
+// Selecting text in annotate mode used to open a card on mouseup; the card took focus, which
+// cleared the document selection, so Cmd/Ctrl+C copied nothing. The guard that replaced it is
+// measured here by driving the real listeners the served bundle registers: a card opening or not
+// is the observable behaviour, and a renamed helper or a reordered statement cannot fake it.
+test("the served SDK bundle does not annotate a click that ends a drag-select", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "The quick brown fox jumps over the lazy dog."));
+
+  sdk.mousedown(paragraph, { clientX: 40, clientY: 60 });
+  sdk.setDocumentSelection("quick brown fox");
+  sdk.click(paragraph, { clientX: 220, clientY: 60 });
+
+  assert.deepEqual(sdk.cards(), [], "a click that ends a drag-select must leave the selection alone");
+});
+
+// An artifact that calls preventDefault() on pointerdown suppresses the compatibility mousedown
+// while Chrome still fires click and keeps the standing selection, so the next click carries no
+// fresh press point. It must annotate rather than measure against the previous press.
+test("the served SDK bundle annotates a click with no fresh mousedown after a drag-select", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "The quick brown fox jumps over the lazy dog."));
+
+  sdk.mousedown(paragraph, { clientX: 40, clientY: 60 });
+  sdk.setDocumentSelection("quick brown fox");
+  sdk.click(paragraph, { clientX: 220, clientY: 60 });
+  assert.deepEqual(sdk.cards(), [], "the drag-select click is the suppressed one");
+
+  sdk.click(paragraph, { clientX: 400, clientY: 60 });
+
+  const message = sdk.queue("Reword this");
+  assert.equal(message.prompt.tag, "p");
+});
+
+// A non-primary press never produces a click (it produces auxclick), so nothing would consume its
+// press point. It has to clear the press point instead, or the next mousedown-less click measures
+// against a press the reviewer only made to open the context menu.
+test("the served SDK bundle annotates a mousedown-less click after a non-primary press", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "The quick brown fox jumps over the lazy dog."));
+
+  sdk.mousedown(paragraph, { clientX: 40, clientY: 60 });
+  sdk.setDocumentSelection("quick brown fox");
+  sdk.click(paragraph, { clientX: 220, clientY: 60 });
+  assert.deepEqual(sdk.cards(), [], "the drag-select click is the suppressed one");
+
+  sdk.mousedown(paragraph, { clientX: 220, clientY: 60, button: 2 });
+  sdk.click(paragraph, { clientX: 400, clientY: 60 });
+
+  const message = sdk.queue("Reword this");
+  assert.equal(message.prompt.tag, "p");
+});
+
+test("the served SDK bundle annotates a click that did not move, even inside an existing selection", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "The quick brown fox jumps over the lazy dog."));
+  sdk.setDocumentSelection("quick brown fox");
+
+  sdk.mousedown(paragraph, { clientX: 120, clientY: 60 });
+  sdk.click(paragraph, { clientX: 120, clientY: 60 });
+
+  const message = sdk.queue("Reword this");
+  assert.equal(message.prompt.tag, "p");
+});
+
+test("the served SDK bundle annotates an unmoved click when nothing is selected", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.mousedown(paragraph, { clientX: 15, clientY: 20 });
+  sdk.click(paragraph, { clientX: 15, clientY: 20 });
+
+  const message = sdk.queue("Reword this");
+  assert.equal(message.prompt.tag, "p");
+});
+
+// A drag has to leave something selected to count: dragging a slider or a canvas moves the pointer
+// without selecting anything, and that click must still annotate.
+test("the served SDK bundle annotates a moved click that selected nothing", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.mousedown(paragraph, { clientX: 40, clientY: 60 });
+  sdk.click(paragraph, { clientX: 220, clientY: 60 });
+
+  const message = sdk.queue("Reword this");
+  assert.equal(message.prompt.tag, "p");
 });
 
 // closeCard() clears the element highlight, so that highlight standing or gone is the observable proof of close.

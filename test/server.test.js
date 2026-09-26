@@ -604,16 +604,8 @@ test("annotation card keeps the selected element highlighted while open", () => 
   assert.match(js, /if \(hovered && hovered !== selected\)/);
 });
 
-test("artifact SDK can annotate selected text ranges with stable anchors", () => {
-  const js = createSdkJs("abc");
-
-  assert.match(js, /document\.getSelection\(\)/);
-  assert.match(js, /function textSelectionContext/);
-  assert.match(js, /type:\s*["']text-range["']/);
-  assert.match(js, /start:\s*rangeBoundary\(range\.startContainer, range\.startOffset\)/);
-  assert.match(js, /end:\s*rangeBoundary\(range\.endContainer, range\.endOffset\)/);
-  assert.match(js, /commonAncestorSelector/);
-});
+// "Selecting text is left to the browser" is a behaviour, so it is covered by driving the served
+// bundle's own listeners in test/artifact-sdk-bundle.test.js, not by grepping this bundle's text.
 
 test("annotation hover remains active while another element is selected", () => {
   const js = createSdkJs("abc");
@@ -732,12 +724,6 @@ test("artifact SDK lets disclosure controls handle their own clicks", () => {
   assert.match(js, /isInteractiveControl\(event\.target\)/);
   assert.doesNotMatch(clickHandler, /isDirectDetailsElement\(event\.target\)/);
   assert.doesNotMatch(js, /function isDirectDetailsElement/);
-});
-
-test("artifact SDK does not annotate text selected inside native controls", () => {
-  const js = createSdkJs("abc");
-
-  assert.match(js, /isInteractiveControl\(ancestor\)/);
 });
 
 test("artifact SDK shows native cursors on form controls in annotation mode", () => {

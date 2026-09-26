@@ -120,7 +120,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - Serialized SDK helper modules export only functions. `serializeModuleHelpers` throws on any other export. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Mermaid pan and zoom touch only the live SVG `viewBox`, never the saved artifact. `normalizeMermaidNodeTarget` strips node targets to their fixed shape. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Table-cell annotations name a row or column only when it is provable and stay silent otherwise. `snapshot()` never computes table targets. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
-- A text annotation's `prompt.selector` names the container, not the selected range. Never target text by selector alone. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
+- A drag-selection never opens an annotation card (`endsTextDrag`), so it stays copyable; an unmoved click still annotates. [Request flow](docs/invariants.md#request-flow).
 - Annotation handlers ignore native controls, editable regions, and `data-lavish-action` elements. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - `resetRevisionLegend()` runs only when `replaceArtifactFrame` actually assigns `frame.src`. Reject over-long revision ids and selectors. Lookups use `Map`/`Set`. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - The revision legend's per-row cap derives from `revisionPalette()` length, never a second number. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).

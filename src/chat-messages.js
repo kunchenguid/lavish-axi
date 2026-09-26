@@ -393,9 +393,11 @@ function withSelector(anchor, selector) {
 }
 
 // The anchor names what a note was attached to, in the annotation card's own words: the card
-// said "Annotate <h2>", "Annotate text", "Annotate cell: ...", or "Annotate node: ...", so the
-// transcript says `<h2>`, `text`, `cell`, `node`. A cell without a provable row or column label
-// falls back to the element form rather than inventing a name, the rule the card follows too.
+// says "Annotate <h2>", "Annotate cell: ...", or "Annotate node: ...", so the transcript says
+// `<h2>`, `cell`, `node`. A cell without a provable row or column label falls back to the
+// element form rather than inventing a name, the rule the card follows too. The `text` form is
+// legacy - the card no longer annotates a selection - but older transcript entries and an
+// artifact-supplied `text-range` target still render through it.
 function promptAnchor(prompt, kind) {
   if (kind === "message") return null;
   const target = prompt.target && typeof prompt.target === "object" ? prompt.target : null;

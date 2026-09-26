@@ -31,10 +31,10 @@ HTML is the new markdown. Lavish is the new editor for your HTML artifacts.
 Agents are good at producing rich HTML artifacts, but the human-agent collaboration loop on such artifacts is lacking and falls back into screenshots and long responses for “tell me what to change.”
 That loses the thing HTML is best at: interactivity.
 
-Lavish Editor opens agent-generated HTML files in a local browser, lets you pinpoint elements and selected text, edit diagrams your agent authored as Mermaid whiteboards, and send feedback to the agent to address.
+Lavish Editor opens agent-generated HTML files in a local browser, lets you pinpoint elements, edit diagrams your agent authored as Mermaid whiteboards, and send feedback to the agent to address.
 
 - **Local-first** - Review local HTML artifacts with a local CLI and no cloud dependency in the core feedback loop; hosted sharing through third-party ht-ml.app is explicit and opt-in.
-- **Human-AI collaboration** - Annotate elements and selected text ranges, edit Mermaid whiteboard diagrams, and send messages to the agent without leaving Lavish Editor.
+- **Human-AI collaboration** - Annotate elements, edit Mermaid whiteboard diagrams, and send messages to the agent without leaving Lavish Editor.
 - **Battery included** - Lavish Editor teaches your agent good visualization for common use cases such as product or technical plans, design explorations and more out of the box.
 
 Lavish Editor is an [AXI](https://axi.md), which means -
@@ -145,9 +145,9 @@ pnpm link
 └───────┬────────────────┘
         ▼
 ┌────────────────────────┐
-│ Human annotates text   │
-│ or elements, sends     │
-│ chat, or queues layout │
+│ Human annotates        │
+│ elements, sends chat,  │
+│ or queues layout       │
 │ issues from the inbox  │
 └───────┬────────────────┘
         ▼
@@ -202,7 +202,7 @@ pnpm link
   For reversible choices, let option clicks update local state, then queue exactly one final answer from a per-question submit or Queue answer button with `window.lavish.queuePrompt()`.
   If someone may open a decision artifact as a standalone HTML file, `lavish-axi playbook input` provides an optional Copy all answers control they can use to paste their form answers back into chat.
   Mark only custom (non-native) clickable elements with `data-lavish-action` so Lavish does not annotate them, and use `data-lavish-question` or `queueKey` when pre-send updates for the same question should replace each other.
-  Everything you send is part of the conversation: a note on an element, a text selection, a table cell, a diagram node, a whiteboard, a layout-issue batch, or a composer message each becomes a bubble on your side of the Conversation panel, with an anchor line naming what it was attached to (the element tag, text selection, table cell, diagram node, whiteboard, or layout issues), a quoted excerpt, and, when available, the selector on hover. A note you have queued but not sent sits at the end of the conversation as a dashed bubble labelled **Queued** with a remove control; while its batch is in flight it reads **Sending**, and once the server accepts it, it settles in place as a sent bubble in every tab of the session. The panel keeps the newest stored transcript up to 5 MiB; older bubbles drop from view, but an accepted note still settles and is not sent twice. Agent replies render a small Markdown subset - paragraphs, line breaks, headings as bold lead lines, bullet and numbered lists, fenced and inline code, bold, italic, and http(s) links - while tables, images, and raw HTML stay as the text the agent wrote; your own messages keep their line breaks and are never parsed.
+  Everything you send is part of the conversation: a note on an element, a table cell, a diagram node, a whiteboard, a layout-issue batch, or a composer message each becomes a bubble on your side of the Conversation panel, with an anchor line naming what it was attached to (the element tag, table cell, diagram node, whiteboard, or layout issues), a quoted excerpt, and, when available, the selector on hover. A note you have queued but not sent sits at the end of the conversation as a dashed bubble labelled **Queued** with a remove control; while its batch is in flight it reads **Sending**, and once the server accepts it, it settles in place as a sent bubble in every tab of the session. The panel keeps the newest stored transcript up to 5 MiB; older bubbles drop from view, but an accepted note still settles and is not sent twice. Agent replies render a small Markdown subset - paragraphs, line breaks, headings as bold lead lines, bullet and numbered lists, fenced and inline code, bold, italic, and http(s) links - while tables, images, and raw HTML stay as the text the agent wrote; your own messages keep their line breaks and are never parsed.
   On wider screens, the conversation and the queued notes share one scrollable Conversation panel above a sticky composer, so long feedback queues do not push the text box or send controls off screen.
   The browser chrome keeps editing actions in the overflow menu (copy path, reload artifact, copy DOM snapshot, export standalone HTML, publish link, end session), while the composer exposes **Send & End** beside **Send to Agent** to submit queued prompts and user-ended attribution together. Once **Send & End** starts, Lavish pauses new feedback, waits up to 5 seconds for feedback preparation already underway, keeps any open annotation draft intact until delivery succeeds, then holds that exact terminal batch. A completed reservation survives a page reload, including when its prompts were already delivered and only the pending end remains; incomplete preparation is not restored. If preparation times out, Lavish keeps the review open and its existing queue editable with a visible error. A transient delivery failure permits only retrying the same terminal batch through **Send & End** until it succeeds. If a snapshot makes the request too large (HTTP 413), Lavish retries that exact batch once without the optional snapshot. An actionable attachment rejection (HTTP 400), recoverable layout-selection conflict (HTTP 409), or unrecoverable 413 instead cancels the terminal reservation without ending the session, keeps the prompts queued, and restores editing, removal, **Send to Agent**, **Send & End**, and **End session** so the reviewer can revise or remove stale feedback before submitting again.
   Composer feedback is visibly queued before the text box clears and stays queued until acknowledged. Send waits up to 5 seconds for the artifact's DOM snapshot, then delivers without that optional context if the frame no longer answers; a late snapshot cannot submit the batch twice. A failed or still-unacknowledged POST keeps the queue and shows persistent recovery guidance unless a transcript sync proves the server already accepted that feedback.
@@ -220,7 +220,7 @@ pnpm link
   A plain `lavish-axi <html-file>` after a user-initiated end refuses to reopen the browser and returns guidance instead; pass `--reopen` only when the user asks for further review or something important needs their visual attention.
   Agent-initiated ends keep reopening normally, same as before.
   `lavish-axi poll`'s `ended` response and the `feedback` response for the final batch before an end both carry `next_step` guidance telling the agent to stop polling and deliver remaining updates in chat instead of reopening.
-- **Precise targets** - Text annotations include selected text plus range anchors, and text selections carry those anchors only.
+- **Precise targets** - A click annotates the element under the cursor. Selecting text is left to the browser, and a click that ends a drag-select does not open an annotation card, so a drag-selection stays copyable with Cmd+C or Ctrl+C.
   Clicking an element inside a table also carries the cell's visible row and column names alongside the exact CSS locator, so filtered or sorted rows do not make feedback look misdirected.
   When merged cells make either name ambiguous, Lavish leaves that name out rather than guessing; an explicit `<th scope="row">` remains authoritative even when a `rowspan` makes the row's position ambiguous.
   The CSS locator still points at the exact element you clicked, so an annotation with an omitted name is only less descriptive, never mislabelled.

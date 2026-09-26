@@ -31,7 +31,6 @@ Everything is fake — there's no `lavish-axi` server backing it. The reply text
 This is a **kit**, not a build of the product. Skipped:
 
 - The real iframe sandbox + `postMessage` wire (the artifact is rendered inline; we listen to clicks directly).
-- Text-range selection annotations; the product can annotate selected text, but this kit only recreates element-click annotations.
 - The open-time layout gate that masks artifacts until the production in-iframe audit reports no error-severity layout findings.
 - The `EventSource` reload pipe, the `chokidar` watcher.
 - DOM snapshot serialization. `lavish.snapshot()` would produce something like the tree in `src/artifact-sdk.js`; we don't.
