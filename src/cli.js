@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
-import { get as httpGet } from "node:http";
+import { get as httpGet, request as httpRequest } from "node:http";
 import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -1985,6 +1985,49 @@ async function canControlServerOnPort(baseUrl, healthBody, processMatchesLavish)
   return processMatchesLavish(baseUrl);
 }
 
+// Plain node:http for every CLI<->server loopback call, not fetch: Node 24.18's bundled undici
+// calls socket.setTypeOfService on each HTTP/1 connect, macOS loopback rejects IP_TOS with
+// EINVAL, and the error surfaces asynchronously from the socket event handler where no try/catch
+// or promise rejection can intercept it. Buffering the whole response keeps the fetch-shaped
+// {ok,status,json,text} contract used by the call sites below.
+function httpJson(urlString, { method = "GET", headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    /** @type {import("node:http").ClientRequest | null} */
+    let request = null;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      request?.destroy();
+      reject(error);
+    };
+    try {
+      const url = new URL(urlString);
+      request = httpRequest(url, { method, agent: false, headers }, (response) => {
+        settled = true;
+        const raw = new Promise((resolveBody, rejectBody) => {
+          const chunks = [];
+          response.on("data", (chunk) => chunks.push(chunk));
+          response.on("error", rejectBody);
+          response.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
+        });
+        resolve({
+          ok: response.statusCode >= 200 && response.statusCode < 300,
+          status: response.statusCode,
+          headers: { get: (name) => response.headers[String(name).toLowerCase()] ?? null },
+          text: () => raw,
+          json: async () => JSON.parse(await raw),
+        });
+      });
+      request.on("error", fail);
+      if (body !== undefined) request.write(body);
+      request.end();
+    } catch (error) {
+      fail(error);
+    }
+  });
+}
+
 /**
  * @param {string} baseUrl
  * @param {{ reconcileNetwork?: boolean, timeoutMs?: number }} [options]
@@ -2043,7 +2086,7 @@ async function requestShutdown(baseUrl, { reloadKey = "", reason = "" } = {}) {
   if (reloadKey) body.reload_key = reloadKey;
   if (reason) body.reason = reason;
   try {
-    await fetch(`${baseUrl}/shutdown`, {
+    await httpJson(`${baseUrl}/shutdown`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -2166,7 +2209,7 @@ export async function fetchJson(
   let response;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      response = await fetch(url, {
+      response = await httpJson(url, {
         method,
         ...(headers ? { headers } : {}),
         ...(body === undefined ? {} : { body }),
@@ -2214,7 +2257,7 @@ export async function fetchJson(
 async function postJson(url, body) {
   let response;
   try {
-    response = await fetch(url, {
+    response = await httpJson(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
