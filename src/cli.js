@@ -2016,6 +2016,11 @@ function httpJson(urlString, { method = "GET", headers = {}, body } = {}) {
           response.on("aborted", () => rejectBody(new Error("response aborted")));
           response.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
         });
+        // Callers that only await headers (requestShutdown) never consume the
+        // body; an aborted response would otherwise surface as an unhandled
+        // rejection and kill the CLI. Attach a no-op catch here while callers
+        // that do await text()/json() still observe the rejection.
+        raw.catch(() => {});
         resolve({
           ok: response.statusCode >= 200 && response.statusCode < 300,
           status: response.statusCode,

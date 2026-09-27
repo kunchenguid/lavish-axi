@@ -1384,6 +1384,27 @@ export async function serve({
     }
   });
 
+  // LAVISH_AXI_ALLOW_FRAMING may suppress framing headers for a reverse proxy
+  // (godoxy, Caddy, nginx, …) that manages its own framing policy. A bare
+  // flag value ("1"/"true") suppresses everywhere and is only safe when the
+  // direct listener is unreachable by potential framers; a comma-separated
+  // hostname list suppresses only for matching Host headers, so direct
+  // listeners (127.0.0.1, Tailscale IP, LAN address) keep DENY.
+  const framingAllowedForRequest = (req) => {
+    const raw = process.env.LAVISH_AXI_ALLOW_FRAMING;
+    if (!raw) return false;
+    const value = raw.trim().toLowerCase();
+    if (value === "1" || value === "true" || value === "*" || value === "all") return true;
+    const allowed = value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const host = String(req.headers.host ?? "")
+      .split(":")[0]
+      .toLowerCase();
+    return allowed.includes(host);
+  };
+
   app.get("/session/:key", async (req, res, next) => {
     try {
       const chromeLoad = await store.issueReviewerHandoff(req.params.key);
@@ -1403,10 +1424,10 @@ export async function serve({
       // that artifact document, whose sandbox gives it an opaque origin no
       // frame-ancestors expression can name.
       //
-      // LAVISH_AXI_ALLOW_FRAMING suppresses these headers so a reverse proxy
-      // (godoxy, Caddy, nginx, …) can manage its own framing policy. The
-      // operator is then responsible for CSP/XFO at the proxy layer.
-      if (!process.env.LAVISH_AXI_ALLOW_FRAMING) {
+      // framingAllowedForRequest above honors LAVISH_AXI_ALLOW_FRAMING: an
+      // exact hostname list keeps direct listeners protected, while a bare
+      // flag trusts the operator to hold the framing policy at the proxy.
+      if (!framingAllowedForRequest(req)) {
         res.setHeader("x-frame-options", "DENY");
         res.setHeader("content-security-policy", "frame-ancestors 'none'");
       }
