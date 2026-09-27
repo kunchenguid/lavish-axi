@@ -1386,7 +1386,7 @@ export async function serve({
 
   // LAVISH_AXI_ALLOW_FRAMING may suppress framing headers for a reverse proxy
   // (godoxy, Caddy, nginx, …) that manages its own framing policy. A bare
-  // flag value ("1"/"true") suppresses everywhere and is only safe when the
+  // flag value ("1"/"true"/"*") suppresses everywhere and is only safe when the
   // direct listener is unreachable by potential framers; a comma-separated
   // hostname list suppresses only for matching Host headers, so direct
   // listeners (127.0.0.1, Tailscale IP, LAN address) keep DENY.

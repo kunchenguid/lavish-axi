@@ -2031,7 +2031,12 @@ test("LAVISH_AXI_ALLOW_FRAMING host list suppresses framing only for matching ho
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    linkHost: "lavish.example.org",
+  });
   const base = `http://127.0.0.1:${server.port}`;
   const fetchChromeWithHost = (key, host) =>
     new Promise((resolve, reject) => {
