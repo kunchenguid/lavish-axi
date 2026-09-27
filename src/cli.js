@@ -1990,6 +1990,10 @@ async function canControlServerOnPort(baseUrl, healthBody, processMatchesLavish)
 // EINVAL, and the error surfaces asynchronously from the socket event handler where no try/catch
 // or promise rejection can intercept it. Buffering the whole response keeps the fetch-shaped
 // {ok,status,json,text} contract used by the call sites below.
+/**
+ * @param {string} urlString
+ * @param {{ method?: string, headers?: Record<string, string>, body?: string }} [options]
+ */
 function httpJson(urlString, { method = "GET", headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     /** @type {import("node:http").ClientRequest | null} */

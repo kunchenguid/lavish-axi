@@ -55,7 +55,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - The detached server entrypoint logs `uncaughtException` and exits 1 explicitly. Each listener keeps its `error` handler after `listening`. [Process model](docs/invariants.md#process-model).
 - `/api/:key/prompts`, `/share`, whiteboard writes, and attachment upload/delete are same-origin guarded. The key alone must never queue a prompt or publish. [Request flow](docs/invariants.md#request-flow).
 - Poll control `GET` and `POST` requests reject a present foreign Origin or Referer while header-less CLI requests keep working. [Request flow](docs/invariants.md#request-flow).
-- The chrome page (`/session/:key`) answers `X-Frame-Options: DENY` and `frame-ancestors 'none'`. Keep that header off `/artifact/*` and `/whiteboard-frame`, which are framed. `LAVISH_AXI_ALLOW_FRAMING` suppresses both so a reverse proxy can own framing policy. [Request flow](docs/invariants.md#request-flow).
+- The chrome page (`/session/:key`) answers `X-Frame-Options: DENY` and `frame-ancestors 'none'`. Keep that header off `/artifact/*` and `/whiteboard-frame`, which are framed. [Request flow](docs/invariants.md#request-flow).
 - The artifact route injects only the one SDK `<script>` tag. Served artifact bytes otherwise match the file on disk. [Request flow](docs/invariants.md#request-flow).
 - Artifact asset serving (`/artifact/:key/<path>`) resolves with `realpath` and never serves a symlink target outside the artifact directory. [Request flow](docs/invariants.md#request-flow).
 - Layout detection never emits `feedback`. Only a user prompt and the narrow fatal artifact-failure path may wake `lavish-axi poll`. [Request flow](docs/invariants.md#request-flow).
