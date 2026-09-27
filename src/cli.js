@@ -2013,6 +2013,7 @@ function httpJson(urlString, { method = "GET", headers = {}, body } = {}) {
           const chunks = [];
           response.on("data", (chunk) => chunks.push(chunk));
           response.on("error", rejectBody);
+          response.on("aborted", () => rejectBody(new Error("response aborted")));
           response.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
         });
         resolve({
