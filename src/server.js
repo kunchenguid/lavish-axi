@@ -1394,7 +1394,7 @@ export async function serve({
     const raw = process.env.LAVISH_AXI_ALLOW_FRAMING;
     if (!raw) return false;
     const value = raw.trim().toLowerCase();
-    if (value === "1" || value === "true" || value === "*" || value === "all") return true;
+    if (value === "1" || value === "true" || value === "*") return true;
     const allowed = value
       .split(",")
       .map((entry) => entry.trim())
