@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.80](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.79...lavish-axi-v0.1.80) (2026-09-29)
+
+
+### Features
+
+* **cli:** add a reply command with server acceptance receipt ([#392](https://github.com/kunchenguid/lavish-axi/issues/392)) ([ae66e1a](https://github.com/kunchenguid/lavish-axi/commit/ae66e1ad082b192930f19800ad56d4d322f577e4))
+
 ## [0.1.79](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.78...lavish-axi-v0.1.79) (2026-09-25)
 
 
