@@ -219,7 +219,7 @@ test("reply exits 0 only after the server accepts, delivers the reply, and clear
       assert.match(reply.stdout, /status: sent/);
       assert.match(reply.stdout, /no longer showing Working/);
       assert.doesNotMatch(reply.stdout, /status: waiting/);
-      assert.ok(reply.stdout.includes(absolute));
+      assert.ok(reply.stdout.includes(`file: ${path.sep === "\\" ? JSON.stringify(absolute) : absolute}`));
     } finally {
       await live.close();
     }
