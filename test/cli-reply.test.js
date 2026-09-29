@@ -12,7 +12,7 @@ import WebSocket from "ws";
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
-import { VERSION } from "../src/cli.js";
+import { postAgentReply, VERSION } from "../src/cli.js";
 import { serve } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
 
@@ -362,4 +362,41 @@ test("poll --agent-reply still posts inside the poll and does not return a sent 
     const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
     assert.equal(chrome.initialChat.at(-1).text, "Still posted by poll.");
   });
+});
+
+test("reply fails with a timeout when the server stalls before headers or mid-body", async () => {
+  const stalls = {
+    "/headers": (_req, _res) => {},
+    "/body": (_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write('{"status":');
+    },
+  };
+  const received = [];
+  const stalling = createServer((req, res) => {
+    received.push(req.url);
+    stalls[req.url](req, res);
+  });
+  await new Promise((resolve) => stalling.listen(0, "127.0.0.1", () => resolve()));
+  const port = /** @type {import("node:net").AddressInfo} */ (stalling.address()).port;
+  try {
+    for (const stage of Object.keys(stalls)) {
+      const started = Date.now();
+      await assert.rejects(
+        postAgentReply(`http://127.0.0.1:${port}${stage}`, "stalled", "/tmp/artifact.html", { timeoutMs: 300 }),
+        (/** @type {import("axi-sdk-js").AxiError} */ error) => {
+          assert.equal(error.code, "SERVER_ERROR");
+          assert.match(error.message, /did not confirm the agent reply within 300ms/);
+          assert.ok(error.suggestions.some((hint) => hint.includes("lavish-axi reply /tmp/artifact.html")));
+          return true;
+        },
+        stage,
+      );
+      assert.ok(Date.now() - started < 5_000, `${stage} stall was bounded`);
+    }
+    assert.deepEqual(received, Object.keys(stalls));
+  } finally {
+    stalling.closeAllConnections();
+    await new Promise((resolve) => stalling.close(() => resolve()));
+  }
 });
