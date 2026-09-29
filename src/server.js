@@ -790,9 +790,9 @@ export async function serve({
     }
   });
 
-  async function publishAgentReply(key, text) {
-    const session = await store.addAgentReply(key, text);
-    if (!session) return null;
+  async function publishAgentReply(key, text, { requireOpen = false } = {}) {
+    const session = await store.addAgentReply(key, text, { requireOpen });
+    if (!session || (requireOpen && session.status === "ended")) return session;
     const lastEntry = session.chat?.at(-1);
     const entry = serializeChat([
       lastEntry?.role === "agent" ? lastEntry : { role: "agent", text, at: session.updated_at },
@@ -1244,9 +1244,15 @@ export async function serve({
 
   app.post("/api/:key/agent-reply", async (req, res, next) => {
     try {
-      const session = await publishAgentReply(req.params.key, String(req.body?.text || ""));
+      const session = await publishAgentReply(req.params.key, String(req.body?.text || ""), {
+        requireOpen: true,
+      });
       if (!session) {
         res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (session.status === "ended") {
+        res.status(409).json({ status: "ended", ended_by: session.ended_by });
         return;
       }
       res.json({ status: "sent" });

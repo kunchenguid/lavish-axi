@@ -349,7 +349,7 @@ export function createOpenOutput({
     session: { file, url, status },
     ...(networkWarning ? { network_warning: networkWarning } : {}),
     ...(selfPaintWarning ? { self_paint_warning: selfPaintWarning } : {}),
-    next_step: `${networkPrefix}${selfPaintPrefix}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, and it stays silent the whole time - that is normal, never kill it. Layout issues the browser detects do not return this poll; they wait in the user's Layout issues inbox until the user queues them, then arrive as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use. ${pollExecutionGuidance({ agent })} After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show a concise response in Lavish Editor and wait for more feedback. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_NEXT_POINTER} If the user ends the session, stop polling and do not reopen it by re-running \`lavish-axi ${file}\` unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-axi ${file} --reopen\`.`,
+    next_step: `${networkPrefix}${selfPaintPrefix}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file}\`. This command long-polls until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, and it stays silent the whole time - that is normal, never kill it. Layout issues the browser detects do not return this poll; they wait in the user's Layout issues inbox until the user queues them, then arrive as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use. ${pollExecutionGuidance({ agent })} After applying feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show a concise response in Lavish Editor and keep waiting for more feedback. If instead you are handing back a result without starting another long-poll, run \`lavish-axi reply ${file} --agent-reply "<message for the user>"\` to get an acceptance receipt. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_NEXT_POINTER} If the user ends the session, stop polling and do not reopen it by re-running \`lavish-axi ${file}\` unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-axi ${file} --reopen\`.`,
   };
 }
 
@@ -654,7 +654,7 @@ function createFeedbackNextStep(file, artifactFailures, sessionEnded, endedBy, p
   }
   const prefix =
     count > 0 ? artifactFailuresPrefix(file, artifactFailures) : `Apply the requested changes to ${file}. `;
-  return `${prefix}${layoutNote}${whiteboardNote}${attachmentNote}Do not respond to the user just yet. Now you must run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms unless the user ended the session. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_NEXT_POINTER} The poll waits silently until the user sends more feedback, ends the session, or leaves every review window disconnected past the reconnect grace period - never kill it. ${pollExecutionGuidance({ agent })}`;
+  return `${prefix}${layoutNote}${whiteboardNote}${attachmentNote}Do not respond to the user just yet. If you are continuing to wait for feedback, run \`lavish-axi poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to reply and keep polling. If instead you are handing back a result without starting another long-poll, run \`lavish-axi reply ${file} --agent-reply "<message for the user>"\` to post it and receive an acceptance receipt. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_NEXT_POINTER} The poll waits silently until the user sends more feedback, ends the session, or leaves every review window disconnected past the reconnect grace period - never kill it. ${pollExecutionGuidance({ agent })}`;
 }
 
 // The narrow fatal path. Ordinary layout findings never reach the poll: they wait in the user's
@@ -2314,6 +2314,11 @@ export async function postAgentReply(url, text, file, { timeoutMs = AGENT_REPLY_
   if (response.status === 404) {
     throw new AxiError("No active Lavish Editor session for this file", "NOT_FOUND", [
       `Run \`lavish-axi ${file}\` first`,
+    ]);
+  }
+  if (response.status === 409 && payload?.status === "ended") {
+    throw new AxiError("Lavish Editor session has ended; reply was not sent", "SESSION_ENDED", [
+      createEndedNextStep(file, payload.ended_by),
     ]);
   }
   if (!response.ok || payload?.status !== "sent") {

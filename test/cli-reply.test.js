@@ -306,6 +306,47 @@ test("reply refuses a missing session, an unreachable server, and a non-success 
   }
 });
 
+test("reply refuses user-ended and agent-ended sessions without changing the transcript", async () => {
+  for (const endedBy of ["user", "agent"]) {
+    await withArtifact(async ({ artifact, env, base, key }) => {
+      const live = await openLiveEvents(base, key);
+      try {
+        if (endedBy === "user") {
+          const ended = await fetch(`${base}/api/${key}/end`, {
+            method: "POST",
+            headers: { "content-type": "application/json", origin: base },
+            body: "{}",
+          });
+          assert.equal(ended.status, 200);
+        } else {
+          const ended = await runCli(["end", artifact], { env });
+          assert.equal(ended.status, 0, ended.stderr || ended.stdout);
+        }
+        const before = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+        const refused = await runCli(["reply", artifact, "--agent-reply", "Should not land."], { env });
+        assert.notEqual(refused.status, 0);
+        assert.match(refused.stdout, /SESSION_ENDED/);
+        assert.match(refused.stdout, /Stop polling/);
+        assert.match(refused.stdout, /directly in this conversation/);
+        if (endedBy === "user") assert.match(refused.stdout, /--reopen/);
+        else assert.doesNotMatch(refused.stdout, /--reopen/);
+        assert.doesNotMatch(refused.stdout, /status: sent/);
+        const after = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+        assert.deepEqual(after.initialChat, before.initialChat);
+
+        const poll = await runCli(["poll", artifact, "--agent-reply", "Poll still posts.", "--timeout-ms", "0"], {
+          env,
+        });
+        assert.equal(poll.status, 0, poll.stderr || poll.stdout);
+        const polled = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+        assert.equal(polled.initialChat.at(-1).text, "Poll still posts.");
+      } finally {
+        await live.close();
+      }
+    });
+  }
+});
+
 test("reply rejects missing, conflicting, empty, and unreadable reply input", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-reply-flags-"));
   const artifact = path.join(dir, "artifact.html");
