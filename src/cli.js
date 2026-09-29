@@ -64,7 +64,19 @@ import { generateSharePassword } from "./share-password.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
 const SHARE_VALUE_FLAGS = ["--password", "--token", "--site", "--update-key"];
-const COMMANDS = new Set(["open", "poll", "end", "stop", "server", "playbook", "design", "setup", "export", "share"]);
+const COMMANDS = new Set([
+  "open",
+  "poll",
+  "reply",
+  "end",
+  "stop",
+  "server",
+  "playbook",
+  "design",
+  "setup",
+  "export",
+  "share",
+]);
 // SDK-reserved built-ins (e.g. `update`) must reach runAxiCli untouched; otherwise
 // the bare-arg normalization below would rewrite them into the hidden `open` command.
 const RESERVED = new Set(RESERVED_COMMANDS);
@@ -207,6 +219,7 @@ export async function run(argv) {
       commands: {
         open: openCommand,
         poll: pollCommand,
+        reply: replyCommand,
         end: endCommand,
         stop: stopCommand,
         playbook: playbookCommand,
@@ -284,6 +297,7 @@ export function createHomeOutput({ bin, sessions, includeSessions = true, agent 
       "Unless the user specifies another location, create HTML artifacts in the current working directory under `.lavish/`",
       "Lavish serves the html file through a local express.js server. If your html needs to reference other filesystem assets such as images, CSS, fonts, and local scripts, copy them into the same directory as the HTML file, then reference them with relative paths from that directory. Never prepend `/` to those asset paths - root paths won't work",
       `Run \`lavish-axi poll <html-file>\` to wait for user feedback. It long-polls and stays silent until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, so leave it running - never kill it. Detected layout issues never return this poll: the browser files them in the user's Layout issues inbox in the Lavish top bar, and they arrive as an ordinary tag "layout-warnings" prompt only when the user selects them and queues the fixes. Never edit the artifact to chase a layout issue the user has not queued. The only exception is a fatal artifact_failures response, which means the review surface itself could not be used. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}`,
+      'Run `lavish-axi reply <html-file> --agent-reply "<message>"` to show a concise reply and exit once Lavish Editor accepts it, when you are handing a result back and are not about to long-poll. The board stops showing Working only after this command exits 0. Use `lavish-axi poll <html-file> --agent-reply "<message>"` when that reply should be followed by another wait for feedback. A longer reply uses `--agent-reply-file <path>` (`-` reads stdin) on either command. Run `lavish-axi reply --help` for the receipt contract',
       'Mermaid is the whiteboard opt-in, not the diagram default: only when the user asks for an editable whiteboard, author that diagram as Mermaid in a `.mermaid` container. Rendered Mermaid diagrams there become embedded, editable Excalidraw whiteboards in the browser (click a diagram to unlock editing; a Fullscreen action opens it over the whole viewport) - flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other types embed as an image to draw on. Scenes autosave locally; an unmodified autosave silently re-converts when a reload changes the Mermaid source. If the reviewer edited the scene, they choose to re-convert and discard saved edits or keep editing the saved scene. Standalone and exported copies still render plain Mermaid. Queue feedback adds a prompt to the Conversation panel; when the user sends it, poll returns a tag "whiteboard" prompt carrying a bounded edit summary plus local scenePath (.excalidraw JSON) and previewPath (PNG) files - read the summary first, open the files only when needed, then apply the edits by updating the Mermaid source in the artifact (never try to write the scene back)',
       "Run `lavish-axi end <html-file>` to end a session as the agent - ending it this way still allows a plain reopen later. When the user ends it from the browser instead, a later `lavish-axi <html-file>` refuses to reopen it without `--reopen`",
       "Run `lavish-axi export <html-file> [--out <path>]` to write a portable copy of the artifact - one HTML file with its LOCAL assets inlined - so it opens with no Lavish server and no sibling files. Remote CDN/font references are left as links, so it needs network to render those. Users can also export from the browser chrome's overflow menu",
@@ -482,6 +496,44 @@ async function pollCommand(args) {
       process.off("SIGTERM", onPollSignal);
     }
   }
+}
+
+const REPLY_VALUE_FLAGS = ["--agent-reply", "--agent-reply-file"];
+const REPLY_TOO_LARGE_HELP = "Shorten the reply, then retry `lavish-axi reply <html-file>`";
+
+async function replyCommand(args) {
+  const file = firstPositionalArg(args, REPLY_VALUE_FLAGS);
+  if (!file) {
+    throw new AxiError("HTML file path is required", "VALIDATION_ERROR", [
+      'Run `lavish-axi reply <html-file> --agent-reply "<message>"`',
+    ]);
+  }
+  const inline = inspectValueFlag(args, "--agent-reply");
+  const fromFile = inspectValueFlag(args, "--agent-reply-file");
+  if (!inline.present && !fromFile.present) {
+    throw new AxiError("An agent reply is required", "VALIDATION_ERROR", [
+      'Pass exactly one of --agent-reply "<message>" or --agent-reply-file <path> (`-` reads stdin)',
+      "Use `lavish-axi poll <html-file> --agent-reply` when the reply should be followed by a wait for feedback",
+    ]);
+  }
+  const text = await resolveAgentReply(args, { tooLargeHelp: REPLY_TOO_LARGE_HELP });
+  if (!String(text || "").trim()) {
+    throw new AxiError("Agent reply text was empty", "VALIDATION_ERROR", [
+      'Pass --agent-reply "<message>" or --agent-reply-file <path> with a non-empty body',
+    ]);
+  }
+  await assertHtmlFile(file);
+  const absolute = await canonicalFile(file);
+  const baseUrl = await ensureServer();
+  await postAgentReply(`${baseUrl}/api/${sessionKey(absolute)}/agent-reply`, text, absolute);
+  return createReplyOutput(absolute);
+}
+
+function createReplyOutput(file) {
+  return {
+    reply: { file, status: "sent" },
+    next_step: `Lavish Editor accepted the reply for ${file} and is no longer showing Working. Run \`lavish-axi poll ${file}\` when you are ready to wait for more feedback.`,
+  };
 }
 
 export function pollWaitBannerText(file) {
@@ -2228,6 +2280,34 @@ async function postJson(url, body) {
   return response.json();
 }
 
+async function postAgentReply(url, text, file) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  } catch {
+    throw new AxiError("Lavish Editor server connection failed", "SERVER_ERROR", [
+      "Run `lavish-axi server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server startup or crash diagnostics",
+      `Re-run \`lavish-axi reply ${file} --agent-reply "<message>"\` after the server is reachable`,
+    ]);
+  }
+  const payload = await response.json().catch(() => null);
+  if (response.status === 404) {
+    throw new AxiError("No active Lavish Editor session for this file", "NOT_FOUND", [
+      `Run \`lavish-axi ${file}\` first`,
+    ]);
+  }
+  if (!response.ok || payload?.status !== "sent") {
+    throw new AxiError(`Lavish Editor did not accept the agent reply (${response.status})`, "SERVER_ERROR", [
+      `Confirm the session is open with \`lavish-axi ${file}\`, then re-run \`lavish-axi reply ${file}\``,
+    ]);
+  }
+  return payload;
+}
+
 function serverConnectionError() {
   return new AxiError("Lavish Editor server connection failed", "SERVER_ERROR", [
     "Run `lavish-axi server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server startup or crash diagnostics",
@@ -2304,16 +2384,16 @@ function inspectValueFlag(args, flag) {
 
 const AGENT_REPLY_FILE_HINT = "Pass --agent-reply-file <path>, or --agent-reply-file - to read stdin";
 
-function agentReplyTooLargeError() {
+function agentReplyTooLargeError(suggestion) {
   return new AxiError(`Agent reply exceeds the ${AGENT_REPLY_LIMIT_LABEL}`, "VALIDATION_ERROR", [
-    "Shorten the reply, then retry the same poll command",
+    suggestion || "Shorten the reply, then retry the same poll command",
   ]);
 }
 
 /**
  * @param {import("node:stream").Readable} stream
  */
-async function readAgentReplyStream(stream) {
+async function readAgentReplyStream(stream, tooLargeHelp) {
   const chunks = [];
   let bytes = 0;
   for await (const value of stream) {
@@ -2321,13 +2401,13 @@ async function readAgentReplyStream(stream) {
     bytes += chunk.length;
     if (bytes > AGENT_REPLY_INPUT_LIMIT_BYTES) {
       stream.destroy();
-      throw agentReplyTooLargeError();
+      throw agentReplyTooLargeError(tooLargeHelp);
     }
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks, bytes).toString("utf8");
   if (Buffer.byteLength(JSON.stringify({ agent_reply: text })) > AGENT_REPLY_JSON_LIMIT_BYTES) {
-    throw agentReplyTooLargeError();
+    throw agentReplyTooLargeError(tooLargeHelp);
   }
   return text;
 }
@@ -2341,12 +2421,18 @@ async function readAgentReplyStream(stream) {
  *   createReadStreamFn?: typeof createReadStream,
  *   stdin?: import("node:stream").Readable,
  *   stdinIsTTY?: boolean,
+ *   tooLargeHelp?: string,
  * }} [io]
  * @returns {Promise<string | null>}
  */
 export async function resolveAgentReply(
   args,
-  { createReadStreamFn = createReadStream, stdin = process.stdin, stdinIsTTY = process.stdin.isTTY === true } = {},
+  {
+    createReadStreamFn = createReadStream,
+    stdin = process.stdin,
+    stdinIsTTY = process.stdin.isTTY === true,
+    tooLargeHelp = undefined,
+  } = {},
 ) {
   const inline = inspectValueFlag(args, "--agent-reply");
   const fromFile = inspectValueFlag(args, "--agent-reply-file");
@@ -2356,7 +2442,7 @@ export async function resolveAgentReply(
     ]);
   }
   if (fromFile.present) {
-    return readAgentReplyFile(fromFile, { createReadStreamFn, stdin, stdinIsTTY });
+    return readAgentReplyFile(fromFile, { createReadStreamFn, stdin, stdinIsTTY, tooLargeHelp });
   }
   if (!inline.present) return null;
   return inline.value || null;
@@ -2368,9 +2454,10 @@ export async function resolveAgentReply(
  *   createReadStreamFn: typeof createReadStream,
  *   stdin: import("node:stream").Readable,
  *   stdinIsTTY: boolean,
+ *   tooLargeHelp?: string,
  * }} io
  */
-async function readAgentReplyFile(fromFile, { createReadStreamFn, stdin, stdinIsTTY }) {
+async function readAgentReplyFile(fromFile, { createReadStreamFn, stdin, stdinIsTTY, tooLargeHelp }) {
   if (fromFile.swallows && typeof fromFile.value === "string" && fromFile.value.startsWith("--")) {
     throw new AxiError(
       `--agent-reply-file was given no value: the next argument ${fromFile.value} is another flag, so it would have been used as the path`,
@@ -2390,7 +2477,7 @@ async function readAgentReplyFile(fromFile, { createReadStreamFn, stdin, stdinIs
       ]);
     }
     try {
-      text = await readAgentReplyStream(stdin);
+      text = await readAgentReplyStream(stdin, tooLargeHelp);
     } catch (error) {
       if (error instanceof AxiError) throw error;
       const detail = error instanceof Error ? error.message : String(error);
@@ -2400,7 +2487,7 @@ async function readAgentReplyFile(fromFile, { createReadStreamFn, stdin, stdinIs
     }
   } else {
     try {
-      text = await readAgentReplyStream(createReadStreamFn(spec));
+      text = await readAgentReplyStream(createReadStreamFn(spec), tooLargeHelp);
     } catch (error) {
       if (error instanceof AxiError) throw error;
       const detail = error instanceof Error ? error.message : String(error);
@@ -2433,13 +2520,14 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE}\n\n`;
+  return `lavish-axi - Lavish Editor AXI\n\nUsage:\n  lavish-axi\n  lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-axi poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n  lavish-axi reply <html-file> (--agent-reply "..." | --agent-reply-file <path>)\n  lavish-axi end <html-file>\n  lavish-axi export <html-file> [--out <path>]\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n  lavish-axi stop\n  lavish-axi playbook [playbook_id]\n  lavish-axi design\n  lavish-axi setup hooks\n  lavish-axi setup plugin\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE} Use \`lavish-axi reply\` when handing a result back without waiting for more feedback: it exits 0 only after the server accepts the reply, so the board stops showing Working. \`poll --agent-reply\` posts a reply and then keeps waiting.\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
   return {
     open: `Usage: lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window. Use --no-gate to skip the open-time layout curtain for this browser open. If the user explicitly ended the session from the browser, this refuses to reopen it and returns guidance instead - pass --reopen to force it open when the user asks for further review or something important needs their visual attention. Sessions ended by the agent (\`lavish-axi end\`) reopen normally without the flag.\n`,
-    poll: `Usage: lavish-axi poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n\nThis command exclusively long-polls for queued user prompts. Pass --owner <label> to make the active listener visible in session listings; --takeover displaces an existing listener, which receives LISTENER_REPLACED. A second poll without --takeover fails with LISTENER_ACTIVE instead of silently returning waiting.\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. In a Herdr-managed pane, set LAVISH_AXI_HERDR_CHIME=1 to request attention when the poll has entered its waiting state; unset it or use any other value to keep the current silent behavior. Notification failures never interrupt the poll. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display a concise response in Lavish Editor before waiting again. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine --agent-reply with --agent-reply-file.\n\nExamples:\n  lavish-axi poll report.html --agent-reply "Renamed the payment step."\n  lavish-axi poll report.html --agent-reply-file reply.md\n  lavish-axi poll report.html --agent-reply-file -\n\n${POLL_SEND_AND_END_RULE}\n`,
+    poll: `Usage: lavish-axi poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n\nThis command exclusively long-polls for queued user prompts. Pass --owner <label> to make the active listener visible in session listings; --takeover displaces an existing listener, which receives LISTENER_REPLACED. A second poll without --takeover fails with LISTENER_ACTIVE instead of silently returning waiting.\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. In a Herdr-managed pane, set LAVISH_AXI_HERDR_CHIME=1 to request attention when the poll has entered its waiting state; unset it or use any other value to keep the current silent behavior. Notification failures never interrupt the poll. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display a concise response in Lavish Editor before waiting again. When you are handing a result back and are not about to long-poll, run \`lavish-axi reply <html-file> --agent-reply "..."\` instead: that command exits 0 only after the server accepts the reply, so the board stops showing Working without this poll staying open. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine --agent-reply with --agent-reply-file.\n\nExamples:\n  lavish-axi poll report.html --agent-reply "Renamed the payment step."\n  lavish-axi poll report.html --agent-reply-file reply.md\n  lavish-axi poll report.html --agent-reply-file -\n\n${POLL_SEND_AND_END_RULE}\n`,
+    reply: `Usage: lavish-axi reply <html-file> (--agent-reply "..." | --agent-reply-file <path>)\n\nPost an agent reply to the open Lavish Editor session and exit once the server confirms it was accepted. Exit 0 only when the server answers that the reply was sent, which is when the board stops showing Working. Use this when you are handing a result back and are not about to wait for more feedback.\n\nUse \`lavish-axi poll <html-file> --agent-reply "..."\` instead when the reply should be followed by a long-poll. That command posts the reply and then keeps waiting, so it does not exit when the reply is accepted.\n\nPass exactly one of --agent-reply or --agent-reply-file. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine the two flags. An empty reply is refused.\n\nExamples:\n  lavish-axi reply report.html --agent-reply "Renamed the payment step."\n  lavish-axi reply report.html --agent-reply-file reply.md\n  lavish-axi reply report.html --agent-reply-file -\n`,
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,
     share: `Usage:\n  lavish-axi share <html-file> [--private | --password <pw>] [--token <t>]\n  lavish-axi share <html-file> --site <site_id> --update-key <key> [--private | --password <pw>]\n  lavish-axi share --unpublish --site <site_id> --update-key <key>\n\nPublish the artifact on ht-ml.app (https://ht-ml.app), a third-party hosting service not part of Lavish, and print a visitable URL. Shares are PUBLIC by default: anyone with the link can open the page, and it may be indexed or scraped. Pass --private to publish a PRIVATE page behind a generated password, returned once in the output - give it to the user with the URL and tell them it is a shared secret. Pass --password <pw> instead when the user chose the password; it is never echoed back. Builds the same local-inlined HTML as 'export' (local assets inlined; remote CDN/font URLs left as links and are not blocked by CSP on ht-ml.app, but still load over the viewer's network), then POSTs it to ht-ml.app's /v1 API. Creating a site needs no account or API key. The response includes the url plus a secret update_key (shown once) for changing the page later.\n\n--site <site_id> with --update-key <key> republishes an existing page in place: same URL, new HTML. On a republish the password is left alone unless you pass --private (rotate to a new generated one) or --password <pw> (set one). There is no way to make a private page public again: ht-ml.app accepts a request to clear a password and silently ignores it, so Lavish does not offer one rather than reporting a page as public while it is still gated. Locking a page that was PUBLIC is also not instant at ht-ml.app's CDN: it was observed still answering uncredentialed requests for minutes after the password was set, so do not tell the user a newly gated page is unreachable right away (a page that was already private has no such cached copy).\n\n--unpublish takes the same credentials and no file. ht-ml.app has NO delete endpoint, so this replaces the page with a short placeholder and locks it behind a random password that is immediately discarded; the URL still resolves and the host still holds what was published. Say that to the user rather than calling it deleted. The update_key still works, so republishing with --private brings the page back behind a new password.\n\nA value flag given an empty or whitespace-only value is REFUSED rather than acted on: an unquoted shell variable that is unset makes \`--password $PW\` an empty password, which the host treats as none and would publish a PUBLIC page while you believed it was gated. Quote the value, or pass --private to have Lavish generate one.\n\nSet LAVISH_AXI_HTML_APP_TOKEN (or pass --token) to attach an optional bearer token when CREATING a page; it is never required. A republish (--site/--update-key) or --unpublish rejects --token, because the update_key is what the Authorization header carries there. The annotation SDK is never included.\n`,

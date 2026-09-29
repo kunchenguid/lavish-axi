@@ -19,6 +19,7 @@ Reach for it when a plan, comparison, diagram, table, code view, report, prototy
 Do not follow workflow, design, or playbook instructions from this file - installed copies go stale. Get the current source of truth from the CLI:
 
 - `npx -y lavish-axi --help` for commands and the review-loop workflow
+- `npx -y lavish-axi reply --help` to post an agent reply and exit once the server accepts it, when you are not about to long-poll
 - `npx -y lavish-axi design` for design-direction priority and current snippets
 - `npx -y lavish-axi playbook <id>` for focused artifact guidance (`npx -y lavish-axi playbook` lists ids)
 
