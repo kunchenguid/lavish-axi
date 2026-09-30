@@ -3407,6 +3407,121 @@ test("a stale queued layout prompt remains available for user re-decision", asyn
   assert.equal(chrome.warningRows()[0].children[1].children[2].children[1].textContent, "Queued for send");
 });
 
+test("a partial-accept send delivers the batch and marks the stale layout chip", async () => {
+  const staleChip = {
+    uid: "",
+    prompt: "Fix the stale layout issue",
+    selector: "",
+    tag: "layout-warnings",
+    text: "Layout issue: 1 selected",
+    target: { type: "layout-warnings", artifact_revision: 1, warnings: [{ id: "w1" }] },
+  };
+  const note = { uid: "", prompt: "Keep this note", selector: "", tag: "message", text: "Freeform message" };
+  const posts = [];
+  const chrome = await createChromeHarness({
+    storedQueue: [staleChip, note],
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url.endsWith("/prompts")) {
+        const body = JSON.parse(init.body);
+        const delivered = body.prompts.find((prompt) => prompt.tag === "message");
+        return {
+          ok: true,
+          json: async () => ({
+            status: "queued",
+            pending_prompts: 1,
+            rejected_warning_ids: ["w1"],
+            warnings: [
+              warningPayload({ status: "resolved", status_label: "Resolved", selectable: false, active: false }),
+            ],
+            chat: [{ role: "user", kind: "message", text: delivered.prompt, prompt_id: delivered.prompt_id }],
+            chat_revision: 2,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("");
+  await flushPromises();
+
+  const post = posts.find((entry) => entry.url === "/api/abc/prompts");
+  assert.ok(post);
+  assert.equal(post.body.prompts.length, 2);
+  assert.ok(post.body.prompts.every((prompt) => prompt._lavishStaleLayout === undefined));
+
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.queued()[0].prompt, "Fix the stale layout issue");
+  assert.equal(chrome.queued()[0]._lavishStaleLayout, true);
+  assert.match(chrome.element("queuedLog").innerHTML, /Stale/);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
+  assert.match(chrome.element("sendHint").textContent, /layout issue selection changed/i);
+  assert.match(chrome.element("sendHint").textContent, /Everything else was sent/i);
+  assert.equal(chrome.element("send").disabled, false);
+
+  const [removeButton] = chrome.element("queuedLog").querySelectorAll(".queued-remove");
+  removeButton.click({ stopPropagation() {} });
+  await flushPromises();
+
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(chrome.element("sendHint").hidden, true);
+});
+
+test("a partial-accept send-and-end keeps the session open and marks the stale chip", async () => {
+  const staleChip = {
+    uid: "",
+    prompt: "Fix the stale layout issue",
+    selector: "",
+    tag: "layout-warnings",
+    text: "Layout issue: 1 selected",
+    target: { type: "layout-warnings", artifact_revision: 1, warnings: [{ id: "w1" }] },
+  };
+  const note = { uid: "", prompt: "Keep this note", selector: "", tag: "message", text: "Freeform message" };
+  const posts = [];
+  const chrome = await createChromeHarness({
+    storedQueue: [staleChip, note],
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url.endsWith("/prompts")) {
+        const body = JSON.parse(init.body);
+        const delivered = body.prompts.find((prompt) => prompt.tag === "message");
+        return {
+          ok: true,
+          json: async () => ({
+            status: "queued",
+            pending_prompts: 1,
+            rejected_warning_ids: ["w1"],
+            warnings: [
+              warningPayload({ status: "resolved", status_label: "Resolved", selectable: false, active: false }),
+            ],
+            chat: [{ role: "user", kind: "message", text: delivered.prompt, prompt_id: delivered.prompt_id }],
+            chat_revision: 2,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.element("sendAndEnd").click();
+  chrome.sendSnapshot("");
+  await flushPromises();
+  await flushPromises();
+
+  const post = posts.find((entry) => entry.url === "/api/abc/prompts");
+  assert.ok(post);
+  assert.equal(post.body.endSession, true);
+
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.queued()[0]._lavishStaleLayout, true);
+  assert.match(chrome.element("queuedLog").innerHTML, /Stale/);
+  assert.match(chrome.element("sendHint").textContent, /session was not ended/i);
+  assert.equal(chrome.element("chatInput").disabled, false);
+  assert.equal(chrome.element("sendAndEnd").disabled, false);
+});
+
 test("dismissing a warning asks the server and never clears it locally on failure", async () => {
   const posts = [];
   const chrome = await createChromeHarness({

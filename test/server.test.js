@@ -3154,6 +3154,188 @@ test("stale layout prompts return a conflict without entering feedback", async (
   }
 });
 
+test("a stale layout prompt rejects only itself while the rest of the batch is queued", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
+
+    const firstLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, firstLoad));
+    const recorded = await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        artifactMutation(firstLoad, {
+          artifact_pass_sequence: 1,
+          complete: true,
+          viewport_width: 1440,
+          findings: [finding],
+        }),
+      ),
+    }).then((res) => res.json());
+    const prepared = await fetch(`${base}/api/${key}/layout-warnings/queue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [recorded.warnings[0].id] }),
+    }).then((res) => res.json());
+
+    const secondLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, secondLoad));
+    await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...artifactMutation(secondLoad, { artifact_pass_sequence: 1 }),
+        complete: true,
+        target_presence_complete: true,
+        viewport_width: 1440,
+        findings: [],
+      }),
+    });
+    const response = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [
+          { ...prepared.prompt, uid: "", selector: "", tag: "layout-warnings" },
+          { uid: "", prompt: "unrelated reviewer comment", selector: "", tag: "message", text: "Freeform message" },
+        ],
+      }),
+    });
+    const queued = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(queued.status, "queued");
+    assert.deepEqual(queued.rejected_warning_ids, [recorded.warnings[0].id]);
+    assert.equal(queued.warnings[0].status, "resolved");
+    assert.equal(queued.pending_prompts, 1);
+    assert.equal(queued.chat.length, 1);
+    assert.equal(queued.chat[0].text, "unrelated reviewer comment");
+
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=100`).then((res) =>
+      res.json(),
+    );
+    assert.equal(poll.status, "feedback");
+    assert.equal(poll.prompts.length, 1);
+    assert.equal(poll.prompts[0].prompt, "unrelated reviewer comment");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a send-and-end batch stays open while a stale layout chip remains", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const finding = { selector: "p", kind: "clipped-text", axis: "vertical", overflowPx: 27, severity: "error" };
+
+    const firstLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, firstLoad));
+    const recorded = await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        artifactMutation(firstLoad, {
+          artifact_pass_sequence: 1,
+          complete: true,
+          viewport_width: 1440,
+          findings: [finding],
+        }),
+      ),
+    }).then((res) => res.json());
+    const prepared = await fetch(`${base}/api/${key}/layout-warnings/queue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [recorded.warnings[0].id] }),
+    }).then((res) => res.json());
+
+    const secondLoad = await beginArtifactLoad(base, key);
+    await fetch(artifactLoadUrl(base, key, secondLoad));
+    await fetch(`${base}/api/${key}/layout-diagnostics`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...artifactMutation(secondLoad, { artifact_pass_sequence: 1 }),
+        complete: true,
+        target_presence_complete: true,
+        viewport_width: 1440,
+        findings: [],
+      }),
+    });
+    const response = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        endSession: true,
+        prompts: [
+          { ...prepared.prompt, uid: "", selector: "", tag: "layout-warnings" },
+          { uid: "", prompt: "unrelated reviewer comment", selector: "", tag: "message", text: "Freeform message" },
+        ],
+      }),
+    });
+    const queued = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(queued.status, "queued");
+    assert.deepEqual(queued.rejected_warning_ids, [recorded.warnings[0].id]);
+    assert.equal(queued.pending_prompts, 1);
+
+    // The end was refused with the stale chip: the session still polls as feedback, not ended.
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=100`).then((res) =>
+      res.json(),
+    );
+    assert.equal(poll.status, "feedback");
+    assert.equal(poll.prompts.length, 1);
+    assert.equal(poll.prompts[0].prompt, "unrelated reviewer comment");
+    assert.equal(poll.session_ended, undefined);
+
+    // Once the queue is clean a send-and-end ends normally again. The presence
+    // stream keeps a live connection so the server does not self-shutdown on end.
+    const presence = await startPresenceStream(base, key);
+    try {
+      const finalPoll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
+      const final = await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({
+          endSession: true,
+          prompts: [{ uid: "", prompt: "all done", selector: "", tag: "message", text: "all done" }],
+        }),
+      });
+      assert.equal(final.status, 200);
+      const endedPoll = await finalPoll;
+      assert.equal(endedPoll.status, "feedback");
+      assert.equal(endedPoll.session_ended, true);
+      assert.equal(endedPoll.ended_by, "user");
+    } finally {
+      await presence.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a newer complete matching-viewport pass resolves a warning and a different viewport cannot", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");

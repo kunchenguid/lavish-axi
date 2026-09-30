@@ -236,11 +236,11 @@ export class SessionStore {
     const at = new Date().toISOString();
     let warnings = normalizeStoredWarnings(session.layout_warnings);
     let acceptedPrompts;
+    const conflicts = new Set();
     if (restoring) {
       acceptedPrompts = normalizedPrompts;
     } else {
       const layoutPlans = [];
-      const conflicts = new Set();
       for (const prompt of normalizedPrompts) {
         const warningIds = layoutWarningPromptIds(prompt);
         if (warningIds === null) {
@@ -258,23 +258,27 @@ export class SessionStore {
         for (const id of plan.conflicts) conflicts.add(id);
         layoutPlans.push({ prompt, ...plan });
       }
-      if (conflicts.size > 0) {
-        return {
-          conflict: true,
-          session,
-          warning_ids: [...conflicts],
-          warnings: serializeLayoutWarnings(warnings),
-        };
-      }
       acceptedPrompts = [];
       for (const plan of layoutPlans) {
         if (plan.warningIds === null) {
           acceptedPrompts.push(plan.prompt);
           continue;
         }
+        // A stale layout chip rejects only its own prompt: the rest of the batch is
+        // unrelated feedback that still has to reach the queue. A batch with nothing
+        // deliverable left keeps the atomic 409 below.
+        if (plan.conflicts.length > 0) continue;
         const result = queueWarningRecords(warnings, plan.queueIds, { revision, at });
         warnings = result.warnings;
         if (result.queued.length > 0 || !plan.hadKnownWarning) acceptedPrompts.push(plan.prompt);
+      }
+      if (conflicts.size > 0 && acceptedPrompts.length === 0) {
+        return {
+          conflict: true,
+          session,
+          warning_ids: [...conflicts],
+          warnings: serializeLayoutWarnings(warnings),
+        };
       }
     }
     session.layout_warnings = warnings;
@@ -302,17 +306,26 @@ export class SessionStore {
     if (!restoring || (existingPrompts.length === 0 && !session.dom_snapshot)) {
       session.dom_snapshot = restoredSnapshot;
     }
+    // A send-and-end whose batch still holds stale layout chips does not end the
+    // session: the leftovers need a deliberate resolution first, the same veto a
+    // fully conflicting batch already had.
+    const ending = shouldEndSession && conflicts.size === 0;
     session.status =
-      shouldEndSession || alreadyEnded
+      ending || alreadyEnded
         ? "ended"
         : session.prompts.length > 0 ||
             (restoring && Array.isArray(session.artifact_failures) && session.artifact_failures.length > 0)
           ? "feedback"
           : "open";
-    if (shouldEndSession) session.ended_by = "user";
+    if (ending) session.ended_by = "user";
     session.updated_at = new Date().toISOString();
     await this.writeState(state);
-    return { ...session, fresh_feedback: !restoring && acceptedPrompts.length > 0 };
+    const result = { ...session, fresh_feedback: !restoring && acceptedPrompts.length > 0 };
+    if (conflicts.size > 0) {
+      result.rejected_warning_ids = [...conflicts];
+      result.warnings = serializeLayoutWarnings(session.layout_warnings);
+    }
+    return result;
   }
 
   async issueReviewerHandoff(key) {

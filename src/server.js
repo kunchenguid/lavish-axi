@@ -1115,14 +1115,17 @@ export async function serve({
         return;
       }
       const freshFeedback = session.fresh_feedback === true;
-      if (shouldEndSession) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
+      // The store refuses to end while the batch still holds stale layout chips, so the
+      // side effects of a user end key off the recorded status rather than the request flag.
+      const sessionEnded = shouldEndSession && session.status === "ended";
+      if (sessionEnded) clearFeedbackDelivery(req.params.key, activePolls, deliveredFeedback, events);
       let publishedSession = session;
       if (hasLayoutWarningPrompt) {
         await syncOutstandingRepairs(req.params.key);
         publishedSession = (await store.findByKey(req.params.key)) || session;
         events.emit("layout-warnings", req.params.key, serializeLayoutWarnings(publishedSession.layout_warnings));
       }
-      if (shouldEndSession) events.emit("ended", req.params.key, publishedSession.ended_by);
+      if (sessionEnded) events.emit("ended", req.params.key, publishedSession.ended_by);
       else if (freshFeedback) events.emit("feedback", req.params.key, publishedSession.ended_by);
       // The accepted batch is part of the conversation now: answer with the transcript so the
       // sending chrome can settle its queued bubbles in place, and sync every other tab of this
@@ -1131,9 +1134,12 @@ export async function serve({
       res.json({
         status: "queued",
         pending_prompts: publishedSession.pending_prompts,
+        ...(Array.isArray(session.rejected_warning_ids) && session.rejected_warning_ids.length > 0
+          ? { rejected_warning_ids: session.rejected_warning_ids, warnings: session.warnings }
+          : {}),
         ...serializeChatSync(publishedSession),
       });
-      if (shouldEndSession) await shutdownIfNoLiveSessions();
+      if (sessionEnded) await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);
     }
