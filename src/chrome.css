@@ -1199,6 +1199,15 @@ body.lavish {
   align-items: center;
   gap: 8px;
 }
+.bubble.queued:not(.editing) {
+  cursor: pointer;
+}
+.bubble.queued.editing {
+  align-self: stretch;
+  max-width: 100%;
+  border-color: var(--accent);
+}
+.queued-edit,
 .queued-remove {
   display: flex;
   align-items: center;
@@ -1212,12 +1221,50 @@ body.lavish {
   color: var(--fg-muted);
   cursor: pointer;
 }
+.queued-edit:disabled,
 .queued-remove:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
+.queued-edit svg,
 .queued-remove svg {
   display: block;
+}
+.queued-edit-input {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  padding: 8px;
+  font: inherit;
+  box-sizing: border-box;
+}
+.queued-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.queued-edit-actions button {
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: var(--w-bold);
+  cursor: pointer;
+}
+.queued-edit-cancel {
+  background: var(--border);
+  color: var(--fg);
+}
+.queued-edit-save {
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 /* The anchor line names what a note is attached to, in the annotation card's words. */
 .anchor {

@@ -261,6 +261,12 @@ let terminalSubmission =
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendAcknowledgementTimer;
 let lastScroll = { x: 0, y: 0 };
+// The queued note open for editing in the panel, by prompt identity, and its unsaved words.
+let editingPromptId = "";
+let editingDraft = "";
+let editFocusPending = false;
+// The selector list last told to the artifact, so a render that changes nothing stays quiet.
+let postedQueuedAnchors = "[]";
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
 // it as it changes and the chrome replays it once the new document is up. It is persisted per
@@ -486,6 +492,8 @@ function persistTerminalReservation(reserved) {
 
 const REMOVE_ICON_SVG =
   '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const EDIT_ICON_SVG =
+  '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M6.5 1.5L8.5 3.5L3.5 8.5H1.5V6.5L6.5 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
 const ANCHOR_EXCERPT_MAX = 120;
 const ANCHOR_SELECTOR_MAX = 512;
 const ANCHOR_LABEL_MAX = 40;
@@ -587,20 +595,48 @@ function userBubbleTextHtml(entry, text) {
 }
 
 // A queued note is the user bubble in its not-yet-sent state: dashed, labelled Queued (Sending
-// while its batch is in flight), and removable until then. It settles in place as a sent bubble
-// once the server's transcript carries it, so nothing moves between regions.
+// while its batch is in flight), and editable and removable until then. It settles in place as a
+// sent bubble once the server's transcript carries it, so nothing moves between regions.
 function queuedBubbleHtml(prompt, index) {
   const sending = isPromptSending(prompt);
+  if (!sending && editingPromptId && promptIdentity(prompt) === editingPromptId) {
+    return queuedEditorHtml(prompt, index);
+  }
   return (
-    '<div class="bubble user queued"><small>' +
+    '<div class="bubble user queued" data-index="' +
+    index +
+    '"><small>' +
     (sending ? "Sending\u2026" : "Queued") +
-    ' <button class="queued-remove" type="button" aria-label="Remove queued prompt" data-index="' +
+    ' <button class="queued-edit" type="button" aria-label="Edit queued prompt" data-index="' +
+    index +
+    '">' +
+    EDIT_ICON_SVG +
+    '</button><button class="queued-remove" type="button" aria-label="Remove queued prompt" data-index="' +
     index +
     '">' +
     REMOVE_ICON_SVG +
     "</button></small>" +
     anchorHtml(promptAnchor(prompt)) +
     userBubbleTextHtml(prompt, prompt.prompt) +
+    bubbleAttachmentsHtml(prompt) +
+    "</div>"
+  );
+}
+
+// The same bubble while its words are being revised. The anchor and images stay as they were:
+// an edit changes what the note says, not what it points at.
+function queuedEditorHtml(prompt, index) {
+  return (
+    '<div class="bubble user queued editing" data-index="' +
+    index +
+    '"><small>Editing</small>' +
+    anchorHtml(promptAnchor(prompt)) +
+    '<textarea class="queued-edit-input" aria-label="Edit queued prompt" data-index="' +
+    index +
+    '">' +
+    escapeHtml(editingDraft) +
+    '</textarea><div class="queued-edit-actions"><button class="queued-edit-cancel" type="button">Cancel</button>' +
+    '<button class="queued-edit-save" type="button">Save</button></div>' +
     bubbleAttachmentsHtml(prompt) +
     "</div>"
   );
@@ -624,6 +660,11 @@ function isPromptSending(prompt) {
 }
 
 function render() {
+  const editing = editingPromptId ? queued.find((prompt) => promptIdentity(prompt) === editingPromptId) : null;
+  // A note that left the queue or started sending takes its editor with it.
+  if (editingPromptId && (!editing || !isPromptEditable(editing))) endQueuedEdit();
+  const keepEditFocus = editFocusPending || queuedLog.contains(document.activeElement);
+  editFocusPending = false;
   queuedLog.innerHTML = queued.map((prompt, index) => queuedBubbleHtml(prompt, index)).join("");
 
   for (const button of queuedLog.querySelectorAll(".queued-remove")) {
@@ -632,6 +673,18 @@ function render() {
     removeButton.disabled = terminalSubmission !== null || isPromptSending(prompt);
     removeButton.addEventListener("click", (event) => removeQueuedPrompt(Number(removeButton.dataset.index), event));
   }
+  for (const button of queuedLog.querySelectorAll(".queued-edit")) {
+    const editButton = /** @type {HTMLButtonElement} */ (button);
+    editButton.disabled = !isPromptEditable(queued[Number(editButton.dataset.index)]);
+  }
+  if (editingPromptId && keepEditFocus) {
+    const input = /** @type {HTMLTextAreaElement | null} */ (queuedLog.querySelector(".queued-edit-input"));
+    if (input) {
+      input.focus();
+      input.setSelectionRange?.(input.value.length, input.value.length);
+    }
+  }
+  postQueuedAnchors();
   updateSendState();
   scrollPanelToBottom();
   renderSheetSummary();
@@ -1060,6 +1113,7 @@ function setReviewState(state) {
 }
 
 function hasUnsentDraft() {
+  if (editingPromptId) return true;
   return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
 }
 
@@ -1338,16 +1392,139 @@ function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+function isPromptEditable(prompt) {
+  return Boolean(prompt) && !terminalSubmission && !isPromptSending(prompt);
+}
+
+function editQueuedPrompt(index, { reveal = true } = {}) {
+  const prompt = queued[index];
+  if (ended || !isPromptEditable(prompt)) return;
+  const id = promptIdentity(prompt);
+  if (!id || id === editingPromptId) return;
+  // Moving to another note keeps what was typed into the first, the way leaving a field does.
+  commitQueuedEdit();
+  editingPromptId = id;
+  editingDraft = String(prompt.prompt || "");
+  editFocusPending = true;
+  if (isMobileSheet()) setSheetOpen(true);
+  render();
+  if (reveal && prompt.selector) postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector) });
+}
+
+function endQueuedEdit() {
+  editingPromptId = "";
+  editingDraft = "";
+}
+
+// Writes the open edit into its note without rendering. Returns whether the queue changed. A note
+// cleared of words and images is removed, as if its remove control had been used.
+function commitQueuedEdit() {
+  if (!editingPromptId) return false;
+  const index = queued.findIndex((prompt) => promptIdentity(prompt) === editingPromptId);
+  const text = editingDraft.trim();
+  endQueuedEdit();
+  const prompt = queued[index];
+  if (!isPromptEditable(prompt)) return false;
+  if (!text && !attachmentCount(prompt)) {
+    queued.splice(index, 1);
+    afterQueuedPromptRemoved();
+  } else {
+    // In place, not replaced: the send bookkeeping tracks notes by object identity.
+    prompt.prompt = text;
+    persistQueuedPrompts();
+  }
+  return true;
+}
+
+function saveQueuedEdit() {
+  commitQueuedEdit();
+  render();
+}
+
+function cancelQueuedEdit() {
+  endQueuedEdit();
+  render();
+}
+
+// A click on an element the artifact knows carries a queued note. The artifact names only the
+// selector, so the most a forged message can do is open one of the user's own notes for editing.
+function editQueuedAnchor(selector) {
+  if (!selector) return;
+  for (let index = queued.length - 1; index >= 0; index--) {
+    if (isElementAnchoredPrompt(queued[index]) && queued[index].selector === selector) {
+      if (isPromptEditable(queued[index])) {
+        editQueuedPrompt(index, { reveal: false });
+        return;
+      }
+      break;
+    }
+  }
+  // The note is already on its way, or gone: the click still deserves the card it would have had.
+  postToFrame({ type: "lavish:annotateElement", selector });
+}
+
+// Notes that point at a whole element, cell, or diagram node, which a later click on that same
+// target can find again. A text selection's note is about the words, not the element around them.
+function isElementAnchoredPrompt(prompt) {
+  const kind = promptAnchor(prompt)?.kind;
+  return Boolean(prompt.selector) && (kind === "element" || kind === "cell" || kind === "node");
+}
+
+// Tells the artifact which element selectors carry a queued note. Only selectors cross into the
+// frame: the artifact is agent-authored, and the note text stays in the chrome.
+function postQueuedAnchors(force = false) {
+  const selectors = [
+    ...new Set(queued.filter((prompt) => isElementAnchoredPrompt(prompt)).map((prompt) => String(prompt.selector))),
+  ];
+  const signature = JSON.stringify(selectors);
+  if (!force && signature === postedQueuedAnchors) return;
+  postedQueuedAnchors = signature;
+  postToFrame({ type: "lavish:queuedAnchors", selectors });
+}
+
+queuedLog.addEventListener("click", (event) => {
+  const target = /** @type {Element | null} */ (event.target);
+  if (!target || typeof target.closest !== "function") return;
+  // The remove control owns its own click, and an editor's textarea is for typing.
+  if (target.closest(".queued-remove") || target.closest(".queued-edit-input")) return;
+  if (target.closest(".queued-edit-save")) return saveQueuedEdit();
+  if (target.closest(".queued-edit-cancel")) return cancelQueuedEdit();
+  const bubble = /** @type {HTMLElement | null} */ (target.closest(".queued-edit") || target.closest(".bubble.queued"));
+  if (bubble) editQueuedPrompt(Number(bubble.dataset.index));
+});
+queuedLog.addEventListener("input", (event) => {
+  const target = /** @type {HTMLTextAreaElement | null} */ (event.target);
+  if (target && typeof target.closest === "function" && target.closest(".queued-edit-input")) {
+    editingDraft = String(target.value || "");
+  }
+});
+queuedLog.addEventListener("keydown", (event) => {
+  const target = /** @type {Element | null} */ (event.target);
+  if (!target || typeof target.closest !== "function" || !target.closest(".queued-edit-input")) return;
+  // The annotation card's keys: Enter keeps the words, Shift+Enter breaks the line.
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    saveQueuedEdit();
+  } else if (event.key === "Escape" && !event.isComposing) {
+    event.preventDefault();
+    cancelQueuedEdit();
+  }
+});
+
 function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
   if (terminalSubmission || isPromptSending(queued[index])) return;
   queued.splice(index, 1);
+  afterQueuedPromptRemoved();
+  render();
+}
+
+function afterQueuedPromptRemoved() {
   persistQueuedPrompts();
   if (!queued.length) {
     clearSendAcknowledgementWarning();
     if (sendFailureOwner?.kind !== "preparation") clearPersistentSendFailure();
   }
-  render();
 }
 
 function promptQueueKey(prompt) {
@@ -1660,6 +1837,8 @@ function sendQueued(endAfter) {
     return;
   }
   closeMenus();
+  // Send delivers what the panel shows, so an open edit is kept rather than sent stale.
+  if (commitQueuedEdit()) render();
 
   // A pending or failed chip holds back only the COMPOSER message (and an
   // explicit end, which would strand the chips) - queued annotation prompts
@@ -3965,6 +4144,7 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:revisions") applyRevisionMessage(msg);
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
+  if (msg.type === "lavish:editQueuedAnchor") editQueuedAnchor(String(msg.selector || ""));
 });
 
 // The sandboxed artifact iframe can't reach the loopback server (opaque origin),
@@ -4293,6 +4473,7 @@ frame.addEventListener("load", () => {
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });
+  postQueuedAnchors(true);
   if (overlayIndex !== null) {
     inlineWhiteboardChannels.delete(overlayIndex);
     postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: overlayIndex });
