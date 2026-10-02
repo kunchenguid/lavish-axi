@@ -1451,7 +1451,7 @@ function cancelQueuedEdit() {
 function editQueuedAnchor(selector) {
   if (!selector) return;
   for (let index = queued.length - 1; index >= 0; index--) {
-    if (isElementAnchoredPrompt(queued[index]) && queued[index].selector === selector) {
+    if (isElementAnchoredPrompt(queued[index]) && queuedAnchorSelectorsOf(queued[index]).includes(selector)) {
       if (isPromptEditable(queued[index])) {
         editQueuedPrompt(index, { reveal: false });
         return;
@@ -1470,11 +1470,20 @@ function isElementAnchoredPrompt(prompt) {
   return Boolean(prompt.selector) && (kind === "element" || kind === "cell" || kind === "node");
 }
 
+// A diagram node or table cell is one target however deep the click lands, so its note answers
+// to the node's or cell's own selector as well as the clicked element's.
+function queuedAnchorSelectorsOf(prompt) {
+  const target = prompt.target && typeof prompt.target === "object" ? prompt.target : null;
+  const type = String(target?.type || "");
+  const whole = type === "mermaid-node" || type === "table-cell" ? String(target.selector || "") : "";
+  return whole ? [String(prompt.selector), whole] : [String(prompt.selector)];
+}
+
 // Tells the artifact which element selectors carry a queued note. Only selectors cross into the
 // frame: the artifact is agent-authored, and the note text stays in the chrome.
 function postQueuedAnchors(force = false) {
   const selectors = [
-    ...new Set(queued.filter((prompt) => isElementAnchoredPrompt(prompt)).map((prompt) => String(prompt.selector))),
+    ...new Set(queued.filter((prompt) => isElementAnchoredPrompt(prompt)).flatMap(queuedAnchorSelectorsOf)),
   ];
   const signature = JSON.stringify(selectors);
   if (!force && signature === postedQueuedAnchors) return;
@@ -1504,9 +1513,11 @@ queuedLog.addEventListener("keydown", (event) => {
   // The annotation card's keys: Enter keeps the words, Shift+Enter breaks the line.
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
+    event.stopPropagation();
     saveQueuedEdit();
   } else if (event.key === "Escape" && !event.isComposing) {
     event.preventDefault();
+    event.stopPropagation();
     cancelQueuedEdit();
   }
 });

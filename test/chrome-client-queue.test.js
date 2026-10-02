@@ -8364,11 +8364,17 @@ function queuedLogKey(chrome, key, index = 0) {
     isComposing: false,
     target: queuedLogNode(["queued-edit-input"], index),
     defaultPrevented: false,
+    propagationStopped: false,
     preventDefault() {
       this.defaultPrevented = true;
     },
+    stopPropagation() {
+      this.propagationStopped = true;
+    },
   };
   chrome.element("queuedLog").dispatch("keydown", event);
+  // The log's listener runs first and the key bubbles on to the document unless it stops there.
+  if (!event.propagationStopped) chrome.dispatchDocumentKeydown({ key, target: event.target });
   return event;
 }
 
@@ -8509,4 +8515,38 @@ test("a note that is already sending cannot be opened for editing", async () => 
     type: "lavish:annotateElement",
     selector: "main > h2",
   });
+});
+
+test("Escape in the queued-note editor cancels the edit and leaves the phone sheet open", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  chrome.element("panelHead").dispatch("click", {});
+  queueHeadingNote(chrome);
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+
+  queuedLogKey(chrome, "Escape");
+
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+  assert.equal(sheetState(chrome).open, true);
+});
+
+test("a diagram node's note is found from any part of the node", async () => {
+  const chrome = await createChromeHarness();
+  const node = { type: "mermaid-node", diagramId: "mermaid-1", nodeId: "flowchart-A-0", label: "Start" };
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Rename this step",
+      selector: "g#flowchart-A-0 > span",
+      tag: "mermaid-node",
+      text: "Start",
+      target: { ...node, selector: "g#flowchart-A-0" },
+    },
+  });
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors.selectors)), ["g#flowchart-A-0 > span", "g#flowchart-A-0"]);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "g#flowchart-A-0" });
+
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Rename this step</);
 });

@@ -2603,10 +2603,13 @@ export function createArtifactSdk(
         ignoreNextClick = false;
         return;
       }
-      // The same selector the card would queue under, so a note is found again by the click
-      // that made it.
-      const selector = queuedAnchorSelectors.size ? context(event.target, { table: true }).selector : "";
-      if (selector && queuedAnchorSelectors.has(selector)) {
+      // The selectors the card would queue under: the clicked element's own, and the diagram
+      // node's or table cell's, so any click inside that node or cell finds its note again.
+      const clicked = queuedAnchorSelectors.size ? context(event.target, { table: true }) : null;
+      const selector = [clicked?.selector, clicked?.target?.selector].find(
+        (candidate) => candidate && queuedAnchorSelectors.has(candidate),
+      );
+      if (selector) {
         closeCard();
         postArtifactMessage("lavish:editQueuedAnchor", { selector });
         return;

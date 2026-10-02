@@ -605,3 +605,55 @@ test("the chrome can hand an element click back for a fresh card", () => {
 
   assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
 });
+
+// A Mermaid node as the SDK sees one: a `<g class="node">` inside an SVG Mermaid rendered.
+function buildMermaidNode(sdk) {
+  const svg = appendTo(sdk.body, createElement("svg"));
+  svg.id = "mermaid-1";
+  const node = appendTo(svg, createElement("g"));
+  node.id = "flowchart-A-0";
+  const matchesTag = node.matches;
+  node.matches = (selectorList) =>
+    String(selectorList)
+      .split(",")
+      .some((part) => part.trim() === "g.node") || matchesTag(selectorList);
+  const label = appendTo(node, cell("span", "Start"));
+  const shape = appendTo(node, createElement("rect"));
+  return { label, shape };
+}
+
+test("a note queued from a diagram node's label opens again from the node's shape", () => {
+  const sdk = bootSdk();
+  const { label, shape } = buildMermaidNode(sdk);
+  sdk.click(label);
+  const queued = sdk.queue("Rename this step");
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [queued.prompt.selector, queued.prompt.target.selector],
+  });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(shape);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.target.selector);
+});
+
+test("a note queued on a table cell opens again from markup inside the cell", () => {
+  const sdk = bootSdk();
+  const { evidence, badge } = buildTable(sdk);
+  sdk.click(evidence);
+  const queued = sdk.queue("Explain this");
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [queued.prompt.selector, queued.prompt.target.selector],
+  });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(badge);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+});
