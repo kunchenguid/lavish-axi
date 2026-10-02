@@ -8550,3 +8550,25 @@ test("a diagram node's note is found from any part of the node", async () => {
 
   assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Rename this step</);
 });
+
+test("a table cell's note tells the artifact only the exact element it was queued on", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Explain this app",
+      selector: "td:nth-of-type(3) > strong",
+      tag: "strong",
+      text: "Drive",
+      target: {
+        type: "table-cell",
+        selector: "td:nth-of-type(3)",
+        rowLabel: "Media",
+        columnLabel: "Evidence",
+      },
+    },
+  });
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors.selectors)), ["td:nth-of-type(3) > strong"]);
+});

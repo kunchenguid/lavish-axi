@@ -641,19 +641,23 @@ test("a note queued from a diagram node's label opens again from the node's shap
   assert.equal(message.selector, queued.prompt.target.selector);
 });
 
-test("a note queued on a table cell opens again from markup inside the cell", () => {
+test("a click inside a table cell opens only the note on the exact element clicked", () => {
   const sdk = bootSdk();
-  const { evidence, badge } = buildTable(sdk);
+  const { evidence } = buildTable(sdk);
+  const strong = appendTo(evidence, cell("strong", "Drive"));
+  const em = appendTo(evidence, cell("em", "Cursor"));
   sdk.click(evidence);
-  const queued = sdk.queue("Explain this");
+  const cellNote = sdk.queue("Explain this cell");
+  sdk.click(strong);
+  const strongNote = sdk.queue("Explain this app");
   sdk.sendChromeMessage({
     type: "lavish:queuedAnchors",
-    selectors: [queued.prompt.selector, queued.prompt.target.selector],
+    selectors: [cellNote.prompt.selector, strongNote.prompt.selector],
   });
   const cardsBefore = sdk.cards().length;
 
-  sdk.click(badge);
+  sdk.click(em);
 
-  assert.equal(sdk.cards().length, cardsBefore);
-  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
 });

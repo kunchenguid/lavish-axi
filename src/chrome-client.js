@@ -1470,12 +1470,11 @@ function isElementAnchoredPrompt(prompt) {
   return Boolean(prompt.selector) && (kind === "element" || kind === "cell" || kind === "node");
 }
 
-// A diagram node or table cell is one target however deep the click lands, so its note answers
-// to the node's or cell's own selector as well as the clicked element's.
+// A diagram node is one target however deep the click lands, so its note answers to the node's
+// own selector as well as the clicked element's. Other notes name only the exact element.
 function queuedAnchorSelectorsOf(prompt) {
   const target = prompt.target && typeof prompt.target === "object" ? prompt.target : null;
-  const type = String(target?.type || "");
-  const whole = type === "mermaid-node" || type === "table-cell" ? String(target.selector || "") : "";
+  const whole = target?.type === "mermaid-node" ? String(target.selector || "") : "";
   return whole ? [String(prompt.selector), whole] : [String(prompt.selector)];
 }
 
