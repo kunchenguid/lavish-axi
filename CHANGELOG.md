@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.81](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.80...lavish-axi-v0.1.81) (2026-10-03)
+
+
+### Features
+
+* **chrome:** edit queued annotations in place ([#394](https://github.com/kunchenguid/lavish-axi/issues/394)) ([5f0be78](https://github.com/kunchenguid/lavish-axi/commit/5f0be78ff9efa0e25a1bdc1bebd4bdce2aae047d))
+
 ## [0.1.80](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.79...lavish-axi-v0.1.80) (2026-09-29)
 
 
