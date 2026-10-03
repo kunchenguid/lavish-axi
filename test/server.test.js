@@ -2000,6 +2000,80 @@ test("the session chrome page refuses to be framed", async () => {
   }
 });
 
+test("LAVISH_AXI_ALLOW_FRAMING suppresses framing headers on the chrome page", async () => {
+  const previousFraming = process.env.LAVISH_AXI_ALLOW_FRAMING;
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    process.env.LAVISH_AXI_ALLOW_FRAMING = "1";
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+
+    const chrome = await fetch(`${base}/session/${key}`);
+    assert.equal(chrome.status, 200);
+    assert.equal(chrome.headers.get("x-frame-options"), null);
+    assert.equal(chrome.headers.get("content-security-policy"), null);
+  } finally {
+    restoreEnv("LAVISH_AXI_ALLOW_FRAMING", previousFraming);
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LAVISH_AXI_ALLOW_FRAMING host list suppresses framing only for matching hosts", async () => {
+  const previousFraming = process.env.LAVISH_AXI_ALLOW_FRAMING;
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    linkHost: "lavish.example.org",
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  const fetchChromeWithHost = (key, host) =>
+    new Promise((resolve, reject) => {
+      const request = httpRequest(
+        { host: "127.0.0.1", port: server.port, path: `/session/${key}`, headers: { host }, agent: false },
+        (response) => {
+          response.resume();
+          resolve(response);
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
+  try {
+    process.env.LAVISH_AXI_ALLOW_FRAMING = "lavish.example.org, proxy.internal";
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+
+    const viaProxy = await fetchChromeWithHost(key, "lavish.example.org");
+    assert.equal(viaProxy.statusCode, 200);
+    assert.equal(viaProxy.headers["x-frame-options"], undefined);
+    assert.equal(viaProxy.headers["content-security-policy"], undefined);
+
+    const direct = await fetchChromeWithHost(key, "127.0.0.1");
+    assert.equal(direct.statusCode, 200);
+    assert.equal(direct.headers["x-frame-options"], "DENY");
+    assert.equal(direct.headers["content-security-policy"], "frame-ancestors 'none'");
+  } finally {
+    restoreEnv("LAVISH_AXI_ALLOW_FRAMING", previousFraming);
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("loopback server honors the configured link host but still rejects others", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({
