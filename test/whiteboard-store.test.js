@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,11 +7,18 @@ import test from "node:test";
 import {
   decodePngDataUrl,
   isValidDiagramIndex,
+  isValidWhiteboardPage,
   isValidWhiteboardKey,
   loadWhiteboard,
+  loadWhiteboardForPage,
   saveWhiteboard,
+  saveWhiteboardForPage,
+  whiteboardPageDigest,
+  whiteboardPageDir,
   whiteboardFeedbackPaths,
+  whiteboardFeedbackPathsForPage,
   writeWhiteboardFeedbackFiles,
+  writeWhiteboardFeedbackFilesForPage,
 } from "../src/whiteboard-store.js";
 
 const KEY = "0123456789abcdef";
@@ -133,4 +140,134 @@ test("decodePngDataUrl only accepts base64 PNG data URLs", () => {
   assert.equal(decodePngDataUrl("data:image/jpeg;base64,abcd"), null);
   assert.equal(decodePngDataUrl("not-a-data-url"), null);
   assert.equal(decodePngDataUrl(null), null);
+});
+
+test("same diagram index on two canonical pages has separate working and feedback sidecars", async () => {
+  await withTempDir(async (dir) => {
+    const pageA = "index.html";
+    const pageB = "review.html";
+    const sceneA = { elements: [{ id: "entry" }] };
+    const sceneB = { elements: [{ id: "sibling" }] };
+
+    await saveWhiteboardForPage(dir, KEY, pageA, 2, { sourceHash: "source-a", scene: sceneA });
+    await saveWhiteboardForPage(dir, KEY, pageB, 2, { sourceHash: "source-b", scene: sceneB });
+
+    const loadedA = await loadWhiteboardForPage(dir, KEY, pageA, 2);
+    const loadedB = await loadWhiteboardForPage(dir, KEY, pageB, 2);
+    assert.deepEqual(loadedA.scene, sceneA);
+    assert.deepEqual(loadedB.scene, sceneB);
+    assert.equal(loadedA.page, pageA);
+    assert.equal(loadedB.page, pageB);
+    assert.notEqual(whiteboardPageDir(dir, KEY, pageA), whiteboardPageDir(dir, KEY, pageB));
+
+    const feedbackA = await writeWhiteboardFeedbackFilesForPage(dir, KEY, pageA, 2, {
+      scene: sceneA,
+      pngDataUrl: PNG_DATA_URL,
+    });
+    const feedbackB = await writeWhiteboardFeedbackFilesForPage(dir, KEY, pageB, 2, {
+      scene: sceneB,
+      pngDataUrl: PNG_DATA_URL,
+    });
+    assert.notEqual(feedbackA.scenePath, feedbackB.scenePath);
+    assert.deepEqual(JSON.parse(await readFile(feedbackA.scenePath, "utf8")).elements, sceneA.elements);
+    assert.deepEqual(JSON.parse(await readFile(feedbackB.scenePath, "utf8")).elements, sceneB.elements);
+  });
+});
+
+test("canonical pages with reserved filename characters retain whiteboard identity", async () => {
+  await withTempDir(async (dir) => {
+    const page = "sub folder/report#draft?.html";
+    const scene = { elements: [{ id: "reserved" }] };
+    assert.equal(isValidWhiteboardPage(page), true);
+    await saveWhiteboardForPage(dir, KEY, page, 3, { sourceHash: "reserved-hash", scene });
+    const loaded = await loadWhiteboardForPage(dir, KEY, page, 3);
+    assert.equal(loaded.page, page);
+    assert.deepEqual(loaded.scene, scene);
+    const feedback = await writeWhiteboardFeedbackFilesForPage(dir, KEY, page, 3, {
+      scene,
+      pngDataUrl: PNG_DATA_URL,
+    });
+    assert.deepEqual(JSON.parse(await readFile(feedback.scenePath, "utf8")).elements, scene.elements);
+  });
+});
+
+test("page digest uses the complete canonical page and is collision-resistant for shared prefixes", () => {
+  const prefix = `nested/${"x".repeat(300)}`;
+  const pageA = `${prefix}-a.html`;
+  const pageB = `${prefix}-b.html`;
+  const digestA = whiteboardPageDigest(pageA);
+  const digestB = whiteboardPageDigest(pageB);
+  assert.match(digestA, /^[0-9a-f]{64}$/);
+  assert.match(digestB, /^[0-9a-f]{64}$/);
+  assert.notEqual(digestA, digestB);
+});
+
+test("page-aware reads reject a record whose stored page does not match its namespace", async () => {
+  await withTempDir(async (dir) => {
+    const page = "one.html";
+    await saveWhiteboardForPage(dir, KEY, page, 0, { sourceHash: "hash", scene: { elements: [] } });
+    const recordPath = path.join(whiteboardPageDir(dir, KEY, page), "0.json");
+    const record = JSON.parse(await readFile(recordPath, "utf8"));
+    record.page = "other.html";
+    await writeFile(recordPath, `${JSON.stringify(record)}\n`);
+
+    await assert.rejects(
+      () => loadWhiteboardForPage(dir, KEY, page, 0),
+      (error) => /** @type {{ code?: string }} */ (error)?.code === "PAGE_MISMATCH",
+    );
+    await assert.rejects(
+      () => saveWhiteboardForPage(dir, KEY, page, 0, { sourceHash: "new", scene: { elements: [] } }),
+      (error) => /** @type {{ code?: string }} */ (error)?.code === "PAGE_MISMATCH",
+    );
+  });
+});
+
+test("legacy entry sidecars stay at index-only paths and are never a sibling fallback", async () => {
+  await withTempDir(async (dir) => {
+    const entryScene = { elements: [{ id: "legacy-entry" }] };
+    await saveWhiteboard(dir, KEY, 1, { sourceHash: "entry-hash", scene: entryScene });
+    const entryPaths = whiteboardFeedbackPaths(dir, KEY, 1);
+    assert.ok(entryPaths.scenePath.endsWith(path.join(KEY, "1.excalidraw")));
+
+    await writeWhiteboardFeedbackFiles(dir, KEY, 1, { scene: entryScene, pngDataUrl: PNG_DATA_URL });
+    const sibling = "nested/review.html";
+    assert.equal(await loadWhiteboardForPage(dir, KEY, sibling, 1), null);
+
+    await saveWhiteboardForPage(dir, KEY, sibling, 1, {
+      sourceHash: "sibling-hash",
+      scene: { elements: [{ id: "sibling" }] },
+    });
+    assert.equal((await loadWhiteboard(dir, KEY, 1)).source_hash, "entry-hash");
+    assert.equal((await loadWhiteboardForPage(dir, KEY, sibling, 1)).source_hash, "sibling-hash");
+    assert.equal(whiteboardFeedbackPaths(dir, KEY, 1).scenePath, entryPaths.scenePath);
+    assert.notEqual(whiteboardFeedbackPathsForPage(dir, KEY, sibling, 1).scenePath, entryPaths.scenePath);
+  });
+});
+
+test("invalid page and diagram index inputs fail closed", async () => {
+  const invalidPages = [
+    null,
+    "",
+    "../outside.html",
+    "/absolute.html",
+    "nested\\page.html",
+    "nested//page.html",
+    "nested/./page.html",
+  ];
+  for (const page of invalidPages) {
+    assert.equal(isValidWhiteboardPage(page), false, `page should be invalid: ${String(page)}`);
+  }
+  await withTempDir(async (dir) => {
+    for (const page of invalidPages) {
+      await assert.rejects(() => saveWhiteboardForPage(dir, KEY, page, 0, { scene: null }), /invalid/i);
+      assert.throws(() => whiteboardFeedbackPathsForPage(dir, KEY, page, 0), /invalid/i);
+    }
+    /** @type {any[]} */
+    const invalidIndexes = [null, "", "1.2", true, -1, 1000, " 1", "1 "];
+    for (const index of invalidIndexes) {
+      assert.equal(isValidDiagramIndex(index), false, `index should be invalid: ${String(index)}`);
+      await assert.rejects(() => saveWhiteboard(dir, KEY, index, { scene: null }), /invalid/i);
+      assert.throws(() => whiteboardFeedbackPaths(dir, KEY, index), /invalid/i);
+    }
+  });
 });

@@ -45,10 +45,11 @@ function pass(
     viewportWidth = 1440,
     complete = true,
     targetPresenceComplete = true,
+    page = null,
     at = "2026-07-30T00:00:00.000Z",
   } = {},
 ) {
-  return { findings, revision, viewportWidth, complete, targetPresenceComplete, at };
+  return { findings, revision, viewportWidth, complete, targetPresenceComplete, page, at };
 }
 
 function detect(findings, options) {
@@ -107,6 +108,44 @@ test("a repeated observation of the same fingerprint updates one record", () => 
   assert.equal(worse.warnings.length, 1, "a worse magnitude is the same issue, not a new one");
   assert.equal(worse.warnings[0].overflow_px, 400);
   assert.equal(activeLayoutWarningCount(worse.warnings), 1);
+});
+
+test("a retained legacy warning id can update, queue, and dismiss after fingerprint migration", () => {
+  const page = "entry.html";
+  const detected = detect([OVERFLOW], { revision: 1, page });
+  const legacy = {
+    ...detected[0],
+    id: "legacy-warning-id",
+    fingerprint: layoutWarningFingerprint({
+      rule: detected[0].rule,
+      target: detected[0].selector,
+      viewportClass: detected[0].viewport_class,
+      page,
+    }),
+  };
+  const observed = applyDiagnosticPass([legacy], pass([{ ...OVERFLOW, overflowPx: 300 }], { revision: 2, page }));
+
+  assert.equal(observed.warnings.length, 1, "the observation updates the migrated record in place");
+  assert.equal(observed.warnings[0].id, "legacy-warning-id");
+  assert.equal(observed.warnings[0].overflow_px, 300);
+  assert.equal(observed.warnings[0].fingerprint, legacy.fingerprint);
+
+  const queued = queueLayoutWarnings(observed.warnings, ["legacy-warning-id"], { revision: 2 });
+  assert.equal(queued.queued.length, 1, "selection resolves by retained id, not fingerprint");
+  assert.equal(queued.warnings[0].status, "queued");
+  const dismissed = dismissLayoutWarning(queued.warnings, "legacy-warning-id", { revision: 2 });
+  assert.equal(dismissed.changed, false, "queued records remain protected from dismissal");
+
+  const recurring = applyDiagnosticPass(
+    queued.warnings,
+    pass([{ ...OVERFLOW, overflowPx: 301 }], { revision: 3, page }),
+  );
+  assert.equal(recurring.warnings.length, 1, "a later observation does not create a duplicate");
+  assert.equal(recurring.warnings[0].id, "legacy-warning-id");
+  assert.equal(recurring.warnings[0].status, "recurring");
+  const dismissedAfterCheck = dismissLayoutWarning(recurring.warnings, "legacy-warning-id", { revision: 3 });
+  assert.equal(dismissedAfterCheck.changed, true);
+  assert.equal(dismissedAfterCheck.warnings[0].status, "dismissed");
 });
 
 test("a warning is not resolved by a repeat pass on the same artifact revision", () => {
@@ -256,6 +295,28 @@ test("a viewport removed from the diagnostic set is marked obsolete with a reaso
   assert.notEqual(obsolete.warnings[0].status, "resolved", "obsolete must never read as fixed");
 });
 
+test("removing a global viewport marks matching warnings obsolete on every page", () => {
+  const pageA = detect([OVERFLOW], { revision: 1, viewportWidth: 390, page: "a.html" });
+  const pageB = detect([OVERFLOW], { revision: 1, viewportWidth: 390, page: "b.html" });
+  const obsolete = markObsoleteViewportWarnings([...pageA, ...pageB], ["desktop"], { revision: 2 });
+
+  assert.equal(obsolete.changed, true);
+  assert.deepEqual(
+    obsolete.warnings.map((warning) => [warning.page, warning.status]),
+    [
+      ["a.html", "obsolete"],
+      ["b.html", "obsolete"],
+    ],
+  );
+});
+
+test("warning records preserve authenticated literal entry basenames without interpreting backslashes as paths", () => {
+  const result = applyDiagnosticPass([], pass([OVERFLOW], { page: "nested\\page.html" }));
+  assert.equal(result.warnings[0].page, "nested\\page.html");
+  const invalid = applyDiagnosticPass([], pass([OVERFLOW], { page: "sub/nested\\page.html" }));
+  assert.equal(invalid.warnings[0].page, null);
+});
+
 test("the configured diagnostic viewport set falls back to every class", () => {
   assert.deepEqual(resolveDiagnosticViewportClasses({}), ["mobile", "compact", "desktop"]);
   assert.deepEqual(resolveDiagnosticViewportClasses({ LAVISH_AXI_DIAGNOSTIC_VIEWPORTS: "desktop, mobile" }), [
@@ -334,6 +395,21 @@ test("stored records describe their real magnitude, not a zero", () => {
   const [warning] = serializeLayoutWarnings(detect([CLIPPED], { revision: 1, viewportWidth: 1080 }));
   assert.match(warning.explanation, /27px/);
   assert.match(warning.explanation, /bottom edge/);
+});
+
+test("warning descriptions omit page disclosure while serialized and queued attribution remains intact", () => {
+  const [detected] = detect([CLIPPED], { revision: 1, viewportWidth: 390 });
+  for (const page of ["a.html", "sub/b.html", null]) {
+    const record = { ...detected, page };
+    const [warning] = serializeLayoutWarnings([record]);
+    assert.equal(warning.page, page);
+    assert.doesNotMatch(warning.explanation, /Page unavailable|a\.html|sub\/b\.html/);
+    assert.match(warning.explanation, /27px/);
+    assert.match(warning.explanation, /bottom edge/);
+    const queued = layoutWarningPromptPayload([record]);
+    assert.equal(queued.target.warnings[0].page, page);
+    assert.match(queued.prompt, /27px/);
+  }
 });
 
 test("serialized warnings carry everything the drawer renders", () => {

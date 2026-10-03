@@ -1,4 +1,4 @@
-/* global CSS, Element, MutationObserver, ResizeObserver, document, getComputedStyle, parent, window */
+/* global CSS, Element, MutationObserver, ResizeObserver, document, getComputedStyle, parent, top, window */
 
 import { readArtifactRevisions } from "./artifact-revisions.js";
 import * as mermaidHelpers from "./mermaid-node.js";
@@ -416,12 +416,20 @@ export function planClipboardPaste(clipboardData, acceptedMime) {
  * The nonce is compared by exact string identity - no coercion, no truthiness -
  * so a hostile `{nonce: true}` or `{nonce: [realNonce]}` cannot pass.
  *
- * @param {{ source?: unknown, data?: { nonce?: unknown } }} event the message event
- * @param {{ parentWindow?: unknown, nonce?: string }} context this document's upload identity
+ * @param {{ source?: unknown, target?: unknown, currentTarget?: unknown, data?: { nonce?: unknown } }} event the message event
+ * @param {{ parentWindow?: unknown, port?: unknown, nonce?: string }} context this document's upload identity
  * @returns {boolean}
  */
 export function isTrustedAttachmentResult(event, context = {}) {
-  if (!event || !context.parentWindow || event.source !== context.parentWindow) return false;
+  if (!event) return false;
+  if (context.port) {
+    // MessagePort delivery has no WindowProxy source.  `target`/`currentTarget` is
+    // the port that the chrome handed this document, which is the transport trust
+    // boundary for the protocol-1 path.
+    if (event.target !== context.port && event.currentTarget !== context.port) return false;
+  } else if (!context.parentWindow || event.source !== context.parentWindow) {
+    return false;
+  }
   const expected = context.nonce;
   if (typeof expected !== "string" || !expected) return false;
   const actual = (event.data || {}).nonce;
@@ -449,7 +457,7 @@ export function deriveAttachmentNoticeState(state = {}) {
  * @param {number} [artifactRevision]
  * @param {string} [artifactLoadToken]
  * @param {string} [sessionKey]
- * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[] }} [options]
+ * @param {{ maxAttachmentCount?: number, maxAttachmentBytes?: number, acceptedImageMime?: string[], transportPort?: MessagePort | null, binding?: { page: string | null, pageProof: string, servedRoute: string, documentId: string, documentSequence: number } | null, pageProtocol?: number, page?: string | null, pageProof?: string, servedRoute?: string, chromeNonce?: string, chromeAuth?: string }} [options]
  */
 export function createArtifactSdk(
   deriveQueueKey,
@@ -460,9 +468,279 @@ export function createArtifactSdk(
   sessionKey = "",
   options = {},
 ) {
+  const transportPort = options?.transportPort || null;
+  const binding = options?.binding || null;
+  const pageProtocol = options?.pageProtocol === 1 ? 1 : 0;
+  const embeddedPage = options?.page === null || options?.page === undefined ? null : String(options.page);
+  const embeddedPageProof = String(options?.pageProof || "");
+  const embeddedServedRoute = String(options?.servedRoute || "");
+  const embeddedChromeNonce = String(options?.chromeNonce || "");
+  const embeddedChromeAuth = String(options?.chromeAuth || "");
+
+  // Protocol 1 deliberately has a tiny inert bootstrap.  An eligible HTML
+  // document can be opened directly, inside a nested frame, or in a popup; none
+  // of those contexts is allowed to become a review surface.  Only the current
+  // artifact iframe (a direct child of the chrome) announces readiness.  The
+  // full SDK is installed only after the chrome proves possession of this exact
+  // WindowProxy through a fresh MessageChannel challenge.
+  if (pageProtocol === 1 && !transportPort) {
+    const directArtifactChild = window !== parent && parent === top;
+    if (!directArtifactChild) return;
+    const documentId =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : "doc-" + Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
+    let accepted = false;
+    let fullSdkInstalled = false;
+    let readyRetryTimer;
+    let readyAttempt = 0;
+    const READY_RETRY_LIMIT = 24;
+    const READY_RETRY_DELAY_MS = 250;
+    const acceptedBinding = {
+      page: embeddedPage,
+      pageProof: embeddedPageProof,
+      servedRoute: embeddedServedRoute,
+      documentId,
+      documentSequence: 0,
+    };
+    const transportBridge = {
+      currentPort: null,
+      handlers: new Set(),
+      wrappers: new Map(),
+      postMessage(message) {
+        if (!this.currentPort) throw new Error("artifact transport is not bound");
+        this.currentPort.postMessage(message);
+      },
+      addEventListener(type, handler) {
+        if (type !== "message" || typeof handler !== "function") return;
+        this.handlers.add(handler);
+        if (this.currentPort) this.attach(handler);
+      },
+      removeEventListener(type, handler) {
+        if (type !== "message") return;
+        const wrapper = this.wrappers.get(handler);
+        if (wrapper && this.currentPort) this.currentPort.removeEventListener("message", wrapper);
+        this.wrappers.delete(handler);
+        this.handlers.delete(handler);
+      },
+      attach(handler) {
+        if (!this.currentPort || this.wrappers.has(handler)) return;
+        const bridge = this;
+        const wrapper = (event) =>
+          handler({
+            data: event.data,
+            source: event.source,
+            ports: event.ports,
+            target: bridge,
+            currentTarget: bridge,
+          });
+        this.wrappers.set(handler, wrapper);
+        this.currentPort.addEventListener("message", wrapper);
+      },
+      bind(port) {
+        this.unbind();
+        this.currentPort = port;
+        for (const handler of this.handlers) this.attach(handler);
+        port.start?.();
+      },
+      unbind() {
+        const oldPort = this.currentPort;
+        if (!oldPort) return;
+        for (const wrapper of this.wrappers.values()) oldPort.removeEventListener("message", wrapper);
+        this.wrappers.clear();
+        this.currentPort = null;
+        try {
+          oldPort.close();
+        } catch {
+          // A closed port is already retired.
+        }
+      },
+      start() {
+        this.currentPort?.start?.();
+      },
+    };
+    const currentDocumentDestination = () =>
+      String(window.location?.pathname || "") +
+      String(window.location?.search || "") +
+      String(window.location?.hash || "");
+    const stopReadyRetry = () => {
+      if (readyRetryTimer) window.clearTimeout(readyRetryTimer);
+      readyRetryTimer = undefined;
+    };
+    // The sandbox makes location.origin "null" even for a page served by this
+    // server. The injected SDK script URL retains the server's tuple origin.
+    const chromeOrigin = (() => {
+      try {
+        return new URL(/** @type {HTMLScriptElement | null} */ (document.currentScript)?.src).origin;
+      } catch {
+        return "";
+      }
+    })();
+    const readyListener = (event) => {
+      if (accepted || event.source !== parent) return;
+      if (!chromeOrigin || chromeOrigin === "null" || event.origin !== chromeOrigin) return;
+      const message = event.data || {};
+      const port = event.ports && event.ports[0];
+      if (message.type !== "lavish:challenge" || !port) return;
+      const challenge = String(message.challenge || "");
+      if (!challenge || challenge.length > 200) return;
+      // Authenticate the chrome BEFORE revealing anything. Artifact pages may be framed by any
+      // parent (an authored nested iframe needs that), so `event.source === parent` proves
+      // nothing about who the parent is. Only this server's same-origin, current-generation
+      // chrome can obtain the MAC for this document's nonce, but it fetches one for whatever
+      // nonce its frame's occupant announces, so an external page left in the review frame can
+      // relay a genuine MAC to a copy it frames elsewhere. The origin check above is what refuses
+      // that relay; a foreign parent's challenge is dropped silently either way and never
+      // receives the load token, page proof, or a bound port.
+      if (!embeddedChromeAuth || message.chrome_auth !== embeddedChromeAuth) return;
+      const response = {
+        type: "lavish:challengeResponse",
+        page_protocol: 1,
+        page: embeddedPage,
+        page_proof: embeddedPageProof,
+        served_route: embeddedServedRoute,
+        destination: currentDocumentDestination(),
+        artifact_load_token: String(artifactLoadToken || ""),
+        artifact_revision: artifactRevision,
+        document_id: documentId,
+        challenge,
+      };
+      let portActivated = false;
+      const activationTimeout = window.setTimeout(() => {
+        if (portActivated) return;
+        port.removeEventListener("message", activateListener);
+        try {
+          port.close();
+        } catch {
+          // An abandoned challenge port is already unusable.
+        }
+      }, 5000);
+      const activateListener = (activationEvent) => {
+        const activation = activationEvent.data || {};
+        if (activation.type !== "lavish:activate") return;
+        if (
+          activation.document_id !== documentId ||
+          activation.page !== embeddedPage ||
+          activation.page_proof !== embeddedPageProof ||
+          activation.artifact_load_token !== String(artifactLoadToken || "") ||
+          Number(activation.artifact_revision) !== Number(artifactRevision) ||
+          !Number.isSafeInteger(Number(activation.document_sequence)) ||
+          Number(activation.document_sequence) <= 0
+        )
+          return;
+        portActivated = true;
+        window.clearTimeout(activationTimeout);
+        accepted = true;
+        stopReadyRetry();
+        port.removeEventListener("message", activateListener);
+        acceptedBinding.documentSequence = Number(activation.document_sequence);
+        transportBridge.bind(port);
+        if (!fullSdkInstalled) {
+          fullSdkInstalled = true;
+          createArtifactSdk(
+            deriveQueueKey,
+            isNativeInteractive,
+            mermaid,
+            artifactRevision,
+            artifactLoadToken,
+            sessionKey,
+            {
+              ...options,
+              pageProtocol: 0,
+              transportPort: /** @type {any} */ (transportBridge),
+              binding: acceptedBinding,
+            },
+          );
+        }
+      };
+      port.addEventListener("message", activateListener);
+      port.start?.();
+      try {
+        port.postMessage(response);
+      } catch {
+        port.removeEventListener("message", activateListener);
+      }
+    };
+    const announceReady = () => {
+      if (accepted) return;
+      // The nonce is not a secret: it only names which MAC the chrome must fetch.
+      parent.postMessage(
+        { type: "lavish:ready", page_protocol: 1, document_id: documentId, document_nonce: embeddedChromeNonce },
+        "*",
+      );
+      readyAttempt += 1;
+      if (readyAttempt < READY_RETRY_LIMIT) {
+        stopReadyRetry();
+        readyRetryTimer = window.setTimeout(announceReady, READY_RETRY_DELAY_MS);
+      }
+    };
+    window.addEventListener("message", readyListener);
+    // A generation can contain several native documents. Retire the live port
+    // before navigation commits. If this exact document returns from BFCache,
+    // it reuses its single installed SDK but obtains a fresh chrome sequence and
+    // MessagePort; no duplicate DOM or input listeners are installed.
+    window.addEventListener("pagehide", () => {
+      if (!accepted) return;
+      try {
+        transportBridge.postMessage({
+          type: "lavish:documentDeparting",
+          page_protocol: 1,
+          page: embeddedPage,
+          page_proof: embeddedPageProof,
+          served_route: embeddedServedRoute,
+          destination: currentDocumentDestination(),
+          artifact_load_token: String(artifactLoadToken || ""),
+          artifact_revision: artifactRevision,
+          document_id: documentId,
+          document_sequence: acceptedBinding.documentSequence,
+        });
+      } catch {
+        // The chrome may already have retired the binding.
+      }
+      accepted = false;
+      transportBridge.unbind();
+    });
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted || accepted) return;
+      readyAttempt = 0;
+      announceReady();
+    });
+    announceReady();
+    return;
+  }
+
   const { isMermaidSvg, mermaidNodeFrom, mermaidNodeElement } = mermaid;
   function postArtifactMessage(type, payload = {}) {
-    parent.postMessage({ type, ...payload, artifact_load_token: String(artifactLoadToken || "") }, "*");
+    const message = {
+      type,
+      ...payload,
+      artifact_load_token: String(artifactLoadToken || ""),
+      artifact_revision: artifactRevision,
+      ...(transportPort
+        ? {
+            page_protocol: 1,
+            page: binding?.page ?? null,
+            page_proof: binding?.pageProof || "",
+            served_route: binding?.servedRoute || "",
+            destination:
+              String(window.location?.pathname || "") +
+              String(window.location?.search || "") +
+              String(window.location?.hash || ""),
+            document_id: binding?.documentId || "",
+            document_sequence: binding?.documentSequence || 0,
+          }
+        : {}),
+    };
+    if (transportPort) {
+      try {
+        transportPort.postMessage(message);
+      } catch {
+        // A departed document's port is intentionally a dead end.  The chrome
+        // retires the binding and any durable continuation retains its capture.
+      }
+      return;
+    }
+    parent.postMessage(message, "*");
   }
   let annotationMode = true;
   let hovered = null;
@@ -961,10 +1239,19 @@ export function createArtifactSdk(
   // hosting the Excalidraw whiteboard frame - the artifact file keeps its
   // Mermaid source and still renders plain diagrams when opened standalone or
   // exported. The index of the container among `.mermaid` elements in document
-  // order is the diagram's identity; the server recovers the matching source
-  // from the artifact file. This SDK owns their lifecycle during fullscreen
-  // transitions.
-  const whiteboardEmbeds = new Map(); // container -> { iframe, index }
+  // order is the diagram's identity within its canonical page; the server
+  // recovers the matching source from the artifact file. Keep the page in the
+  // lookup key even though one SDK instance belongs to one document: this is
+  // what prevents a stale chrome command for page A from finding diagram 0 on
+  // page B after an authored navigation reuses the same iframe.
+  // The canonical page and the Mermaid document-order index are the durable
+  // whiteboard identity. Keep the DOM container on the value only as a local
+  // deduplication aid; never let a bare index select an entry.
+  const whiteboardEmbeds = new Map(); // identityKey -> { container, iframe, index, page, identityKey }
+
+  function whiteboardIdentityKey(page, index) {
+    return JSON.stringify([page === null || page === undefined ? null : String(page), Number(index)]);
+  }
 
   function mermaidContainerIndex(container) {
     return [...document.querySelectorAll(".mermaid")].indexOf(container);
@@ -980,9 +1267,13 @@ export function createArtifactSdk(
   function embedWhiteboard(svg) {
     const container = svg.closest(".mermaid");
     if (!container) return;
-    const existing = whiteboardEmbeds.get(container);
+    const existing = [...whiteboardEmbeds.values()].find((entry) => entry.container === container);
     if (existing && existing.iframe.isConnected) {
+      whiteboardEmbeds.delete(existing.identityKey);
       existing.index = mermaidContainerIndex(container);
+      existing.page = embeddedPage;
+      existing.identityKey = whiteboardIdentityKey(existing.page, existing.index);
+      whiteboardEmbeds.set(existing.identityKey, existing);
       return;
     }
     const index = mermaidContainerIndex(container);
@@ -1010,15 +1301,28 @@ export function createArtifactSdk(
     // inside the hidden container instead of destroying the editor.
     container.style.display = "none";
     container.insertAdjacentElement("afterend", iframe);
-    whiteboardEmbeds.set(container, { iframe, index, diagramId: svg.id || "" });
+    const identityKey = whiteboardIdentityKey(embeddedPage, index);
+    whiteboardEmbeds.set(identityKey, {
+      container,
+      iframe,
+      index,
+      page: embeddedPage,
+      identityKey,
+      diagramId: svg.id || "",
+    });
   }
 
   function whiteboardEmbedEntries() {
     return [...whiteboardEmbeds.values()].filter((entry) => entry.iframe.isConnected);
   }
 
-  function whiteboardEntryByIndex(index) {
-    return whiteboardEmbedEntries().find((entry) => entry.index === Number(index)) || null;
+  function whiteboardEntryByIndex(index, page = embeddedPage) {
+    const identityKey = whiteboardIdentityKey(page, index);
+    return (
+      whiteboardEmbedEntries().find(
+        (entry) => entry.identityKey === identityKey || (entry.index === Number(index) && entry.page === page),
+      ) || null
+    );
   }
 
   function whiteboardFrameSrc(entry) {
@@ -1032,20 +1336,26 @@ export function createArtifactSdk(
     return `/whiteboard-frame?${params}`;
   }
 
-  window.addEventListener("message", (event) => {
-    if (event.source !== parent) return;
-    const msg = event.data || {};
-    // While the chrome overlay edits a diagram fullscreen, its inline frame is
-    // parked on about:blank so two editors never autosave the same sidecar;
-    // resume reboots the frame, which re-inits from the latest saved scene.
+  function handleWhiteboardControlMessage(msg) {
+    if (!msg || (transportPort && msg.page_protocol !== 1)) return;
+    const messagePage = Object.hasOwn(msg, "page") ? (msg.page === null ? null : String(msg.page || "")) : embeddedPage;
+    const targetPage = messagePage === null || messagePage === embeddedPage ? messagePage : embeddedPage;
+
     if (msg.type === "lavish:suspendWhiteboard") {
-      const target = whiteboardEntryByIndex(msg.diagramIndex);
+      const target = whiteboardEntryByIndex(msg.diagramIndex, targetPage);
       if (target) target.iframe.src = "about:blank";
     }
     if (msg.type === "lavish:resumeWhiteboard") {
-      const target = whiteboardEntryByIndex(msg.diagramIndex);
+      const target = whiteboardEntryByIndex(msg.diagramIndex, targetPage);
       if (target) target.iframe.src = whiteboardFrameSrc(target);
     }
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== parent) return;
+    const msg = event.data || {};
+    handleWhiteboardControlMessage(msg);
+    if (msg.type === "lavish:suspendWhiteboard" || msg.type === "lavish:resumeWhiteboard") return;
     if (msg.type === "lavish:requestLayoutDiagnostics") scheduleLayoutAudit(true);
   });
 
@@ -2456,14 +2766,29 @@ export function createArtifactSdk(
     snapshot,
   };
 
-  window.addEventListener("message", (event) => {
-    // The chrome is the only legitimate sender. This listener is on `window`, so
-    // without the source check the artifact could post to itself and drive the SDK.
-    if (event.source !== parent) return;
+  const handleInboundMessage = (event) => {
+    // The legacy transport is guarded by the parent WindowProxy. Protocol 1 is
+    // already on the authenticated MessagePort; its tuple check prevents a
+    // stale command from being applied after a rebinding.
+    if (!transportPort && event.source !== parent) return;
     const msg = event.data || {};
+    if (
+      transportPort &&
+      (msg.document_id !== binding?.documentId ||
+        Number(msg.document_sequence) !== Number(binding?.documentSequence) ||
+        msg.artifact_load_token !== String(artifactLoadToken || "") ||
+        Number(msg.artifact_revision) !== Number(artifactRevision))
+    )
+      return;
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
     if (msg.type === "lavish:attachmentResult") {
-      if (!isTrustedAttachmentResult(event, { parentWindow: parent, nonce: ATTACHMENT_NONCE })) return;
+      if (
+        !isTrustedAttachmentResult(event, {
+          ...(transportPort ? { port: transportPort } : { parentWindow: parent }),
+          nonce: ATTACHMENT_NONCE,
+        })
+      )
+        return;
       activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);
     }
     if (msg.type === "lavish:requestSnapshot") {
@@ -2477,7 +2802,25 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
-  });
+    handleWhiteboardControlMessage(msg);
+  };
+  if (transportPort) {
+    transportPort.addEventListener("message", handleInboundMessage);
+    transportPort.start?.();
+    const announceDestination = () => postArtifactMessage("lavish:documentDestination");
+    window.addEventListener("hashchange", announceDestination);
+    window.addEventListener("popstate", announceDestination);
+    for (const method of window.history ? ["pushState", "replaceState"] : []) {
+      const original = window.history[method];
+      window.history[method] = function (...args) {
+        const result = Reflect.apply(original, this, args);
+        announceDestination();
+        return result;
+      };
+    }
+  } else {
+    window.addEventListener("message", handleInboundMessage);
+  }
 
   // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
   // from the layout audit and never becomes a finding of its own.

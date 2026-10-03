@@ -1,6 +1,7 @@
-import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { fileIdentityForPath, readVerifiedLocalFile } from "./verified-local-file.js";
 
 // Builds a portable copy of a Lavish artifact by inlining only its LOCAL assets - files on disk
 // the artifact references by relative path, fetchable file:// URL, or a trusted root-absolute
@@ -115,9 +116,12 @@ const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
  * @param {string} html
  * @param {object} [options]
  * @param {string} [options.baseDir] Directory to resolve relative references against.
- * @param {(absPath: string, readOptions?: { allowOutsideRoot?: boolean, maxAssetBytes?: number, maxBundleBytes?: number, maxBundleRemaining?: number }) => Promise<Uint8Array>} [options.readLocalFile] Read a local file (default applies the real-path confinement guard).
+ * @param {(absPath: string, readOptions?: { allowOutsideRoot?: boolean, maxAssetBytes?: number, maxBundleBytes?: number, maxBundleRemaining?: number }) => Promise<Uint8Array>} [options.readLocalFile] Read a local file (default applies the verified-open confinement guard).
+ * @param {typeof import("node:fs/promises").open} [options.openLocalFile] Open a local file for the default reader.
  * @param {(refPath: string) => (string|null)} [options.resolveAbsolute] Map a root-absolute ref (e.g. /design/x.css) to a local path.
  * @param {string} [options.confineDir] Reject local refs that resolve (lexically or via symlink) outside this directory.
+ * @param {string[]} [options.forbiddenLocalFiles] Canonical local files that must never be bundled.
+ * @param {Array<{dev: bigint, ino: bigint}>} [options.forbiddenFileIdentities] Already captured protected identities, independent of replaceable pathnames.
  * @param {number} [options.maxAssetBytes] Per-asset inline cap; larger local files are left as references with a warning.
  * @param {number} [options.maxBundleBytes] Per-bundle inline cap across all inlined local assets.
  * @param {number} [options.maxDepth] Local stylesheet-import recursion guard.
@@ -125,13 +129,29 @@ const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
  */
 export async function buildSelfContainedHtml(html, options = {}) {
   const confineDir = options.confineDir ? path.resolve(options.confineDir) : null;
+  const forbiddenFileIdentities = [
+    ...(options.forbiddenFileIdentities || []),
+    ...(
+      await Promise.all(
+        (Array.isArray(options.forbiddenLocalFiles) ? options.forbiddenLocalFiles : []).map((file) =>
+          fileIdentityForPath(path.resolve(String(file))),
+        ),
+      )
+    ).filter(Boolean),
+  ];
+  const readLocalFile =
+    options.readLocalFile ||
+    ((absPath, readOptions = {}) =>
+      readVerifiedLocalFile(absPath, {
+        confineDir: readOptions.allowOutsideRoot ? null : confineDir,
+        forbiddenFileIdentities,
+        ...(options.openLocalFile ? { openFile: options.openLocalFile } : {}),
+        ...readOptions,
+      }));
   const ctx = {
     baseDir: options.baseDir || process.cwd(),
     confineDir,
-    readLocalFile:
-      options.readLocalFile ||
-      ((absPath, readOptions = {}) =>
-        guardedRead(absPath, readOptions.allowOutsideRoot ? null : confineDir, readOptions)),
+    readLocalFile,
     resolveAbsolute: typeof options.resolveAbsolute === "function" ? options.resolveAbsolute : () => null,
     maxAssetBytes: resolveBytes(
       options.maxAssetBytes,
@@ -3281,38 +3301,6 @@ async function readBudgeted(descriptor, ref, ctx, options = {}) {
   }
   if (countBytes) ctx.inlinedBytes += buffer.length;
   return buffer;
-}
-
-// Default local read: resolve the real (symlink-followed) path and refuse to read anything that
-// escapes the artifact directory, so a symlink inside the directory cannot exfiltrate an outside
-// file (e.g. ~/.ssh/id_rsa) into an exported or publicly shared bundle.
-async function guardedRead(absPath, confineDir, readOptions = {}) {
-  const real = await realpath(absPath);
-  if (confineDir) {
-    let root;
-    try {
-      root = await realpath(confineDir);
-    } catch {
-      root = path.resolve(confineDir);
-    }
-    if (isOutside(root, real)) {
-      throw Object.assign(new Error(`refusing to read ${absPath} outside the artifact directory`), {
-        code: "OUTSIDE_ROOT",
-      });
-    }
-  }
-  const stats = await stat(real);
-  if (Number.isFinite(readOptions.maxAssetBytes) && stats.size > readOptions.maxAssetBytes) {
-    throw Object.assign(new Error(`${stats.size} bytes exceeds per-asset cap ${readOptions.maxAssetBytes}`), {
-      code: "TOO_LARGE",
-    });
-  }
-  if (Number.isFinite(readOptions.maxBundleRemaining) && stats.size > readOptions.maxBundleRemaining) {
-    throw Object.assign(new Error(`would exceed per-bundle cap ${readOptions.maxBundleBytes}`), {
-      code: "TOO_LARGE",
-    });
-  }
-  return readFile(real);
 }
 
 // --- helpers ----------------------------------------------------------------
