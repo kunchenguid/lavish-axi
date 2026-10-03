@@ -67,6 +67,8 @@ function matchesSelector(el, selector) {
     const value = el.getAttribute("contenteditable");
     return value !== null && value !== "false";
   }
+  const attributeValue = selector.match(/^\[([a-z-]+)='([^']*)'\]$/i);
+  if (attributeValue) return el.getAttribute(attributeValue[1]) === attributeValue[2];
   if (/^[a-z]+$/i.test(selector)) return el.tagName.toLowerCase() === selector.toLowerCase();
   return false;
 }
@@ -83,6 +85,35 @@ test("isNativeInteractiveControl leaves details body descendants annotatable", (
   assert.equal(isNativeInteractiveControl(details), false);
   assert.equal(isNativeInteractiveControl(bodyText), false);
   assert.equal(isNativeInteractiveControl(bodyLink), false);
+});
+
+test("isNativeInteractiveControl passes through interactive ARIA widgets and their descendants", () => {
+  for (const role of [
+    "button",
+    "checkbox",
+    "combobox",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "radio",
+    "switch",
+    "tab",
+    "treeitem",
+  ]) {
+    const label = node("span");
+    const widget = node("div", { role }, [label]);
+    node("div", {}, [widget]);
+
+    assert.equal(isNativeInteractiveControl(widget), true, role);
+    assert.equal(isNativeInteractiveControl(label), true, role);
+  }
+});
+
+test("isNativeInteractiveControl leaves ARIA content and link roles annotatable", () => {
+  for (const role of ["link", "menu", "listbox", "dialog", "region", "presentation"]) {
+    assert.equal(isNativeInteractiveControl(node("div", { role })), false, role);
+  }
 });
 
 test("isNativeInteractiveControl allows details as a text selection ancestor", () => {

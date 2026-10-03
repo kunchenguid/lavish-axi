@@ -119,7 +119,9 @@ export function isNativeInteractiveControl(el) {
     el &&
     el.closest &&
     el.closest(
-      "button,input,select,textarea,option,optgroup,label,summary,[contenteditable]:not([contenteditable='false'])",
+      "button,input,select,textarea,option,optgroup,label,summary,[contenteditable]:not([contenteditable='false'])," +
+        "[role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox']," +
+        "[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']",
     )
   );
 }
@@ -1149,9 +1151,9 @@ export function createArtifactSdk(
   }
 
   // Native interactive controls (radios, checkboxes, inputs, selects, buttons,
-  // labels, disclosure summaries, editable regions) should toggle/focus/type
-  // natively instead of triggering annotation, just like elements marked with
-  // data-lavish-action.
+  // labels, disclosure summaries, editable regions, interactive ARIA widgets)
+  // should toggle/focus/type natively instead of triggering annotation, just
+  // like elements marked with data-lavish-action.
   function isInteractiveControl(el) {
     return isNativeInteractive(el);
   }
@@ -1193,7 +1195,7 @@ export function createArtifactSdk(
       style = document.createElement("style");
       style.id = "lavish-cursor-style";
       style.textContent =
-        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
+        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image'],[role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']{cursor:pointer!important}";
       document.head.appendChild(style);
     }
     if (!annotationMode && style) style.remove();
