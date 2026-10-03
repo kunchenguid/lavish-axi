@@ -20,6 +20,7 @@ import {
   CHROME_LAYOUT_GATE_MAX_HOLD_MS,
   createChromeHtml,
   createSdkJs,
+  createSessionsIndexHtml,
   displayPathParts,
   exportContentDisposition,
   extractArtifactHead,
@@ -27,6 +28,7 @@ import {
   hostnameFromHostHeader,
   isAllowedHostHeader,
   isAllowedRequestHost,
+  isLoopbackRequestAddress,
   readAttachmentUploadBody,
   resolveArtifactAsset,
   resolveDesignAssetPath,
@@ -6548,6 +6550,378 @@ test("the live transcript carries rendered html for agent replies and never for 
     // The page bootstraps the same transcript, so a reload renders structure without a live event.
     const page = await fetch(`${base}/session/${opened.key}`).then((response) => response.text());
     assert.match(page, /"html":"\\u003cp\\u003eDone\.\\u003c\/p\\u003e\\u003cul\\u003e/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// #308: GET / replaces the static landing card with a server-rendered, read-only session
+// index. Open sessions come first, paginated, each with an Open link; recently ended
+// sessions render greyed without one, because reopening a user-ended session is CLI
+// `--reopen` only by design. All file paths render through escapeHtml.
+async function openIndexSession(base, artifact) {
+  const response = await fetch(`${base}/api/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ file: artifact }),
+  });
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
+function indexSessionLinks(html) {
+  return html.match(/href="[^"]*\/session\/[0-9a-f]{16}[^"]*"/g) || [];
+}
+
+test("GET / session index lists an open session with its status, pending count, and an Open link", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await openIndexSession(base, artifact);
+
+    const index = await fetch(`${base}/`).then((response) => response.text());
+    assert.match(index, /<h1>Lavish Editor is running<\/h1>/);
+    assert.ok(index.includes("artifact.html"), "the index names the session's file");
+    assert.match(index, /\bopen\b/, "the row shows the session status");
+    assert.ok(
+      index.includes(`href="/session/${opened.key}"`),
+      "open session rows link to the session page on this server's origin",
+    );
+    assert.match(index, />Open<\/a>/, "the link is labelled Open");
+    assert.match(index, /0 pending/, "a session with no queued feedback shows a zero pending count");
+
+    const queued = await fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+    });
+    assert.equal(queued.status, 200);
+    const withPending = await fetch(`${base}/`).then((response) => response.text());
+    assert.match(withPending, /1 pending/, "queued feedback is reflected in the pending count");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index renders a just-ended session greyed in history without a link", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await openIndexSession(base, artifact);
+    // Hold a poll open across the end: ending the LAST open session with no live
+    // connections shuts the server down by design, and the index fetch would race it.
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1500`)
+      .then((response) => response.json())
+      .catch((error) => ({ error: String(error) }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const ended = await fetch(`${base}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.equal(ended.status, 200);
+
+    const index = await fetch(`${base}/`).then((response) => response.text());
+    assert.ok(index.includes("artifact.html"), "a recently ended session stays visible");
+    assert.match(index, /recently ended/i, "ended sessions sit under their own section");
+    assert.match(index, /class="[^"]*\bended\b/, "ended rows carry a greyed styling hook");
+    assert.ok(!index.includes(`href="${opened.url}"`), "an ended session never renders an Open link");
+    assert.equal(indexSessionLinks(index).length, 0);
+    assert.equal((await poll).status, "ended");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index omits sessions ended more than 7 days ago", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const staleArtifact = path.join(dir, "stale-ended.html");
+  const freshArtifact = path.join(dir, "fresh-ended.html");
+  await writeFile(staleArtifact, "<!doctype html><html><body></body></html>");
+  await writeFile(freshArtifact, "<!doctype html><html><body></body></html>");
+  const dayMs = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const endedSession = (file, updatedAt) => ({
+    key: sessionKey(file),
+    file,
+    url: `http://localhost:0/session/${sessionKey(file)}`,
+    status: "ended",
+    ended_by: "user",
+    pending_prompts: 0,
+    prompts: [],
+    dom_snapshot: "",
+    chat: [],
+    updated_at: new Date(updatedAt).toISOString(),
+  });
+  await writeFile(
+    path.join(dir, "state.json"),
+    `${JSON.stringify({
+      sessions: {
+        [sessionKey(staleArtifact)]: endedSession(staleArtifact, now - 8 * dayMs),
+        [sessionKey(freshArtifact)]: endedSession(freshArtifact, now - 1 * dayMs),
+      },
+    })}\n`,
+  );
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const index = await fetch(`http://127.0.0.1:${server.port}/`).then((response) => response.text());
+    assert.ok(index.includes("fresh-ended.html"), "an ended session inside the window stays listed");
+    assert.ok(!index.includes("stale-ended.html"), "an ended session older than 7 days drops off");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index shows the active poll listener label for an open session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await openIndexSession(base, artifact);
+
+    // The catch arms immediately so a torn-down server (on an earlier assertion failure)
+    // cannot surface the dropped poll socket as this test's failure reason.
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=index-worker&timeoutMs=1500`)
+      .then((response) => response.json())
+      .catch((error) => ({ error: String(error) }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const listening = await fetch(`${base}/`).then((response) => response.text());
+    assert.ok(listening.includes("index-worker"), "the row shows the active poll's owner label");
+
+    assert.deepEqual(await poll, { status: "waiting" });
+    const idle = await fetch(`${base}/`).then((response) => response.text());
+    assert.ok(!idle.includes("index-worker"), "the label leaves once the poll releases");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index paginates open sessions and keeps ended history on page 1", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifacts = [];
+  for (let index = 1; index <= 11; index += 1) {
+    const artifact = path.join(dir, `file-${String(index).padStart(2, "0")}.html`);
+    await writeFile(artifact, "<!doctype html><html><body></body></html>");
+    artifacts.push(artifact);
+  }
+  const endedArtifact = path.join(dir, "ended.html");
+  await writeFile(endedArtifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    for (const artifact of artifacts) {
+      await openIndexSession(base, artifact);
+    }
+    await openIndexSession(base, endedArtifact);
+    const ended = await fetch(`${base}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: endedArtifact }),
+    });
+    assert.equal(ended.status, 200);
+
+    const first = await fetch(`${base}/`).then((response) => response.text());
+    assert.equal(indexSessionLinks(first).length, 10, "page 1 shows one page of open sessions");
+    assert.match(first, /href="[^"]*\?page=2"/, "page 1 links to the next page");
+    assert.ok(first.includes("ended.html"), "recently ended history stays on page 1");
+
+    const second = await fetch(`${base}/?page=2`).then((response) => response.text());
+    assert.equal(indexSessionLinks(second).length, 1, "page 2 shows the remaining open session");
+    assert.doesNotMatch(second, /\?page=3/, "the last page has no next link");
+    assert.ok(/\?page=1/.test(second) || second.includes('href="/"'), "page 2 links back");
+    assert.ok(!second.includes("ended.html"), "ended history does not repeat on later pages");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index keeps the original landing copy when no sessions exist", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const index = await fetch(`http://127.0.0.1:${server.port}/`).then((response) => response.text());
+    assert.match(index, /Lavish Editor is running/);
+    assert.match(index, /Open the review session URL printed by your agent\./);
+    assert.equal(indexSessionLinks(index).length, 0);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index escapes file paths in session rows", async () => {
+  // `<` and `>` are illegal in a real filename on Windows, so this seeds state.json
+  // directly (as the ended-session tests above do) instead of opening a session
+  // against an actual file with that name - state.json can carry any string
+  // regardless of the host filesystem's naming rules (e.g. a session recorded on
+  // a different OS, or hand-edited state), and the render path under test only
+  // reads that stored string.
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "x<img src=x>.html");
+  await writeFile(
+    path.join(dir, "state.json"),
+    `${JSON.stringify({
+      sessions: {
+        [sessionKey(artifact)]: {
+          key: sessionKey(artifact),
+          file: artifact,
+          url: `http://localhost:0/session/${sessionKey(artifact)}`,
+          status: "open",
+          pending_prompts: 0,
+          prompts: [],
+          dom_snapshot: "",
+          chat: [],
+          updated_at: new Date().toISOString(),
+        },
+      },
+    })}\n`,
+  );
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const index = await fetch(`http://127.0.0.1:${server.port}/`).then((response) => response.text());
+    assert.ok(!index.includes("<img src=x>"), "a file name must never render as markup");
+    assert.ok(index.includes("&lt;img src=x&gt;.html"), "the escaped file name still renders");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index coerces a nonnumeric stored pending_prompts to a number", () => {
+  // Greptile P2: state.json is not schema-validated, so a malformed pending_prompts must never
+  // interpolate as markup - it renders as an integer, like any other pending count.
+  const html = createSessionsIndexHtml({
+    sessions: [
+      {
+        key: "deadbeefdeadbeef",
+        file: "/tmp/lavish/a.html",
+        status: "open",
+        updated_at: new Date(0).toISOString(),
+        pending_prompts: "<img src=x>",
+      },
+    ],
+    listeners: new Map(),
+    page: 1,
+  });
+  assert.ok(!html.includes("<img src=x>"), "a stored nonnumeric pending_prompts must never render as markup");
+  assert.match(html, /\b0 pending\b/, "a nonnumeric pending_prompts coerces to 0");
+});
+
+test("GET / session index falls back to the landing card when state.json is unreadable", async () => {
+  // Greptile P2: a corrupt or unreadable state file must not 500 the landing page; the plain
+  // card keeps working and discloses nothing.
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    await writeFile(path.join(dir, "state.json"), "not json");
+    const base = `http://127.0.0.1:${server.port}`;
+    const response = await fetch(`${base}/`);
+    assert.equal(response.status, 200, "a corrupt state.json never 500s the landing page");
+    const html = await response.text();
+    assert.match(html, /Lavish Editor is running/);
+    assert.ok(!html.includes("<ul"), "the fallback is the plain card, not a broken index");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("isLoopbackRequestAddress accepts only loopback-shaped addresses", () => {
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "127.0.0.1" } }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "127.5.9.20" } }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "::1" } }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "::ffff:127.0.0.1" } }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: {}, ip: "127.0.0.1" }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "100.64.12.34" } }), false);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "::ffff:100.64.12.34" } }), false);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: undefined } }), false);
+  assert.equal(isLoopbackRequestAddress({ socket: {} }), false);
+});
+
+// #308 round 2: a client reaching the process over a non-loopback interface, or a
+// loopback client whose request traversed a reverse proxy (X-Forwarded-Host present),
+// must never see the session index - only the plain landing card, with no file paths,
+// pending counts, or capability links.
+test("GET / session index is withheld from a genuinely non-loopback client", async (t) => {
+  const tailscaleIpv4 = availableConcreteIpv4();
+  if (!tailscaleIpv4) {
+    t.skip("host has no non-loopback IPv4 address to connect through");
+    return;
+  }
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: {},
+    detectTailscale: async () => ({ ipv4: tailscaleIpv4, magicDnsName: "review-phone.example.ts.net" }),
+    idleTimeoutMs: null,
+  });
+  try {
+    const loopbackBase = `http://127.0.0.1:${server.port}`;
+    await openIndexSession(loopbackBase, artifact);
+
+    const loopbackIndex = await fetch(`${loopbackBase}/`).then((response) => response.text());
+    assert.ok(loopbackIndex.includes("artifact.html"), "loopback still gets the full session index");
+
+    const remoteIndex = await fetch(`http://${tailscaleIpv4}:${server.port}/`).then((response) => response.text());
+    assert.match(
+      remoteIndex,
+      /Open the review session URL printed by your agent\./,
+      "non-loopback gets the landing card",
+    );
+    assert.ok(!remoteIndex.includes("artifact.html"), "non-loopback never sees a session file path");
+    assert.equal(indexSessionLinks(remoteIndex).length, 0, "non-loopback gets no capability links");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index is withheld from a loopback request carrying X-Forwarded-Host", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    host: "127.0.0.1",
+    linkHost: "127.0.0.1",
+    allowedHosts: ["proxy.example"],
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await openIndexSession(base, artifact);
+
+    const proxied = await rawRequest(server.port, "/", {
+      host: `127.0.0.1:${server.port}`,
+      headers: { "x-forwarded-host": "proxy.example" },
+    });
+    assert.equal(proxied.status, 200);
+    assert.match(proxied.body, /Open the review session URL printed by your agent\./);
+    assert.ok(!proxied.body.includes("artifact.html"), "a proxied loopback hop never sees a session file path");
+    assert.equal(indexSessionLinks(proxied.body).length, 0, "a proxied loopback hop gets no capability links");
+
+    const direct = await fetch(`${base}/`).then((response) => response.text());
+    assert.ok(direct.includes("artifact.html"), "a direct loopback request without a proxy still sees the index");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
