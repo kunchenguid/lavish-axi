@@ -664,6 +664,18 @@ function render() {
   // A note that left the queue or started sending takes its editor with it.
   if (editingPromptId && (!editing || !isPromptEditable(editing))) endQueuedEdit();
   const keepEditFocus = editFocusPending || queuedLog.contains(document.activeElement);
+  // A re-render while the reviewer is typing keeps their caret and scroll; only a freshly opened
+  // edit starts at the end of its words.
+  const previousInput = /** @type {HTMLTextAreaElement | null} */ (queuedLog.querySelector(".queued-edit-input"));
+  const caret =
+    !editFocusPending && previousInput && previousInput === document.activeElement
+      ? {
+          start: previousInput.selectionStart,
+          end: previousInput.selectionEnd,
+          direction: previousInput.selectionDirection,
+          scrollTop: previousInput.scrollTop,
+        }
+      : null;
   editFocusPending = false;
   queuedLog.innerHTML = queued.map((prompt, index) => queuedBubbleHtml(prompt, index)).join("");
 
@@ -681,7 +693,12 @@ function render() {
     const input = /** @type {HTMLTextAreaElement | null} */ (queuedLog.querySelector(".queued-edit-input"));
     if (input) {
       input.focus();
-      input.setSelectionRange?.(input.value.length, input.value.length);
+      if (caret) {
+        input.setSelectionRange?.(caret.start, caret.end, caret.direction);
+        input.scrollTop = caret.scrollTop;
+      } else {
+        input.setSelectionRange?.(input.value.length, input.value.length);
+      }
     }
   }
   postQueuedAnchors();
@@ -1569,6 +1586,9 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
   if (queueKey) {
     const index = queued.findIndex((item) => promptQueueKey(item) === queueKey);
     if (index !== -1) {
+      // An open edit follows its note to the replacement so the reviewer's draft is not lost.
+      if (editingPromptId && promptIdentity(queued[index]) === editingPromptId)
+        editingPromptId = promptIdentity(prompt);
       queued[index] = prompt;
     } else {
       queued.push(prompt);
