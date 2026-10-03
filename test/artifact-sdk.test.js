@@ -67,6 +67,10 @@ function matchesSelector(el, selector) {
     const value = el.getAttribute("contenteditable");
     return value !== null && value !== "false";
   }
+  if (selector.endsWith(":not(a[href])")) {
+    const isLinkAnchor = el.tagName.toLowerCase() === "a" && el.getAttribute("href") !== null;
+    return !isLinkAnchor && matchesSelector(el, selector.slice(0, -":not(a[href])".length));
+  }
   const attributeValue = selector.match(/^\[([a-z-]+)='([^']*)'\]$/i);
   if (attributeValue) return el.getAttribute(attributeValue[1]) === attributeValue[2];
   if (/^[a-z]+$/i.test(selector)) return el.tagName.toLowerCase() === selector.toLowerCase();
@@ -113,6 +117,17 @@ test("isNativeInteractiveControl passes through interactive ARIA widgets and the
 test("isNativeInteractiveControl leaves ARIA content and link roles annotatable", () => {
   for (const role of ["link", "menu", "listbox", "dialog", "region", "presentation"]) {
     assert.equal(isNativeInteractiveControl(node("div", { role })), false, role);
+  }
+});
+
+test("isNativeInteractiveControl leaves anchors with a widget role annotatable", () => {
+  for (const role of ["menuitem", "tab", "button"]) {
+    const label = node("span");
+    const anchor = node("a", { href: "/details", role }, [label]);
+    node("div", {}, [anchor]);
+
+    assert.equal(isNativeInteractiveControl(anchor), false, role);
+    assert.equal(isNativeInteractiveControl(label), false, role);
   }
 });
 
