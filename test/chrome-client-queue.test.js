@@ -8606,14 +8606,8 @@ test("a re-render while editing a queued note keeps the reviewer's caret and scr
   assert.equal(editor.scrollTop, 12);
 });
 
-test("an open edit survives the artifact re-queuing the same keyed note", async () => {
-  const posts = [];
-  const chrome = await createChromeHarness({
-    fetchImpl: async (url, init = {}) => {
-      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
-      return { ok: true };
-    },
-  });
+test("a keyed replacement closes the open edit and hands its typed words back as unsent", async () => {
+  const chrome = await createChromeHarness();
   const choice = (prompt, selector, text) => ({
     type: "lavish:queuePrompt",
     prompt: { prompt, selector, tag: "choice", text, _lavishQueueKey: "plan" },
@@ -8624,10 +8618,32 @@ test("an open edit survives the artifact re-queuing the same keyed note", async 
 
   chrome.sendFrameMessage(choice("Use plan B", "input#plan-b", "Plan B"));
 
-  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Use plan A, but cheaper</);
-  queuedLogKey(chrome, "Enter");
   assert.deepEqual(
     chrome.queued().map((prompt) => [prompt.prompt, prompt.selector]),
-    [["Use plan A, but cheaper", "input#plan-b"]],
+    [["Use plan B", "input#plan-b"]],
   );
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+  const notes = retiredDraftNotes(chrome);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].innerHTML, /Unsent annotation/);
+  assert.match(notes[0].innerHTML, /Use plan A, but cheaper/);
+});
+
+test("a keyed replacement of an untouched open edit leaves no unsent note", async () => {
+  const chrome = await createChromeHarness();
+  const choice = (prompt, selector, text) => ({
+    type: "lavish:queuePrompt",
+    prompt: { prompt, selector, tag: "choice", text, _lavishQueueKey: "plan" },
+  });
+  chrome.sendFrameMessage(choice("Use plan A", "input#plan-a", "Plan A"));
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+
+  chrome.sendFrameMessage(choice("Use plan B", "input#plan-b", "Plan B"));
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Use plan B"],
+  );
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+  assert.equal(retiredDraftNotes(chrome).length, 0);
 });

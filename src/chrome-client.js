@@ -1179,7 +1179,7 @@ function renderRetiredDraft(text, stored = true) {
   const el = document.createElement("div");
   el.className = "bubble note";
   el.innerHTML =
-    "<small>Unsent annotation</small><div>The element this note was attached to is no longer in the artifact, so Lavish could not reopen the card. Your text is kept here:</div>" +
+    "<small>Unsent annotation</small><div>The artifact removed or replaced what this note was attached to, so Lavish could not keep it open. Your text is kept here:</div>" +
     '<div class="note-draft">' +
     escapeHtml(text) +
     "</div>" +
@@ -1586,9 +1586,13 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
   if (queueKey) {
     const index = queued.findIndex((item) => promptQueueKey(item) === queueKey);
     if (index !== -1) {
-      // An open edit follows its note to the replacement so the reviewer's draft is not lost.
-      if (editingPromptId && promptIdentity(queued[index]) === editingPromptId)
-        editingPromptId = promptIdentity(prompt);
+      // The replacement is the artifact's newer answer. Words typed against the old answer never
+      // move onto it; they are handed back to the reviewer instead.
+      if (editingPromptId && promptIdentity(queued[index]) === editingPromptId) {
+        const draft = editingDraft.trim();
+        endQueuedEdit();
+        if (draft !== String(queued[index].prompt || "").trim()) keepRetiredDraft(draft);
+      }
       queued[index] = prompt;
     } else {
       queued.push(prompt);
