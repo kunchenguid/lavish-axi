@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.82](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.81...lavish-axi-v0.1.82) (2026-10-04)
+
+
+### Bug Fixes
+
+* **sdk:** let interactive ARIA widgets pass through annotation ([#397](https://github.com/kunchenguid/lavish-axi/issues/397)) ([2ca57dd](https://github.com/kunchenguid/lavish-axi/commit/2ca57ddf12101fd561f6bf75c7cb6e0856c14cd5)), closes [#94](https://github.com/kunchenguid/lavish-axi/issues/94)
+
 ## [0.1.81](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.80...lavish-axi-v0.1.81) (2026-10-03)
 
 
