@@ -678,6 +678,13 @@ export async function serve({
     });
   }
 
+  // Pre-fix state.json can still name a non-HTML path. Never read that file back to a caller.
+  function refuseNonHtmlArtifact(session, res) {
+    if (isHtmlPath(session.file)) return false;
+    res.status(403).send("Forbidden");
+    return true;
+  }
+
   if (!allowAnyHostname) {
     app.use((req, res, next) => {
       const requestHost = { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] };
@@ -1324,6 +1331,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const source = await readFile(session.file, "utf8");
       const root = path.dirname(session.file);
       const { html, warnings } = await buildSelfContainedHtml(source, {
@@ -1363,6 +1371,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const body = req.body || {};
       // The password is generated here rather than in the chrome because chrome-client.js is
       // served raw and cannot import modules: a browser-side generator would be a second copy of
@@ -1451,6 +1460,7 @@ export async function serve({
         return;
       }
       const session = chromeLoad.session;
+      if (refuseNonHtmlArtifact(session, res)) return;
       await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
@@ -1539,10 +1549,7 @@ export async function serve({
         sendSessionNotFound(req, res);
         return;
       }
-      if (!isHtmlPath(beforeRead.session.file)) {
-        res.status(403).send("Forbidden");
-        return;
-      }
+      if (refuseNonHtmlArtifact(beforeRead.session, res)) return;
       if (!beforeRead.valid) {
         res
           .status(409)
@@ -1579,10 +1586,7 @@ export async function serve({
         sendSessionNotFound(req, res);
         return;
       }
-      if (!isHtmlPath(session.file)) {
-        res.status(403).send("Forbidden");
-        return;
-      }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const root = artifactTreeRoot(session.file);
       const file = await resolveArtifactAsset(root, assetPath);
       if (!file) {
@@ -1720,6 +1724,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const html = await readFile(session.file, "utf8").catch(() => "");
       const sources = extractMermaidSources(html).map(({ index, source }) => ({
         index,

@@ -2504,7 +2504,7 @@ test("/artifact serves same-tree assets and refuses hidden siblings for an HTML 
   }
 });
 
-test("/artifact refuses a stored session whose file is not HTML", async () => {
+test("leftover non-HTML sessions are refused before any session.file content read", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const secret = path.join(dir, "secret.txt");
   await writeFile(secret, "outside-secret\n");
@@ -2520,10 +2520,26 @@ test("/artifact refuses a stored session whose file is not HTML", async () => {
     const base = `http://127.0.0.1:${server.port}`;
     const documentResponse = await fetch(`${base}/artifact/${key}/index.html`);
     const sibling = await fetch(`${base}/artifact/${key}/.env`);
+    const exported = await fetch(`${base}/api/${key}/export`);
+    const shared = await fetch(`${base}/api/${key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({}),
+    });
+    const mermaid = await fetch(`${base}/api/${key}/mermaid-sources`);
+    const chrome = await fetch(`${base}/session/${key}`);
     assert.equal(documentResponse.status, 403);
     assert.doesNotMatch(await documentResponse.text(), /outside-secret/);
     assert.equal(sibling.status, 403);
     assert.doesNotMatch(await sibling.text(), /hidden-secret/);
+    assert.equal(exported.status, 403);
+    assert.doesNotMatch(await exported.text(), /outside-secret/);
+    assert.equal(shared.status, 403);
+    assert.doesNotMatch(await shared.text(), /outside-secret/);
+    assert.equal(mermaid.status, 403);
+    assert.doesNotMatch(await mermaid.text(), /outside-secret/);
+    assert.equal(chrome.status, 403);
+    assert.doesNotMatch(await chrome.text(), /outside-secret/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
