@@ -532,24 +532,6 @@ test("artifact assets still resolve a symlink that stays inside the artifact dir
   }
 });
 
-test("artifact assets refuse hidden request paths inside the artifact directory", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  try {
-    await writeFile(path.join(dir, ".env"), "hidden-secret\n");
-    await mkdir(path.join(dir, ".git"));
-    await writeFile(path.join(dir, ".git", "config"), "hidden-secret\n");
-    await writeFile(path.join(dir, "style.css"), "body{}\n");
-    await symlink(path.join(dir, ".env"), path.join(dir, "visible.css"));
-
-    assert.equal(await resolveArtifactAsset(dir, "style.css"), path.join(dir, "style.css"));
-    assert.equal(await resolveArtifactAsset(dir, ".env"), null);
-    assert.equal(await resolveArtifactAsset(dir, ".git/config"), null);
-    assert.equal(await resolveArtifactAsset(dir, "visible.css"), null);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("artifact asset resolution fails closed when realpath errors", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   try {
@@ -2451,7 +2433,7 @@ test("/api/sessions refuses an HTML symlink to a non-HTML file", async () => {
   }
 });
 
-test("/artifact serves same-tree assets and refuses hidden siblings for an HTML session", async () => {
+test("/artifact serves same-tree assets for an HTML session", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const dir = path.join(parent, ".lavish");
   const assetDir = path.join(dir, "assets");
@@ -2464,10 +2446,6 @@ test("/artifact serves same-tree assets and refuses hidden siblings for an HTML 
   );
   await writeFile(path.join(assetDir, "style.css"), "body { color: rgb(1 2 3); }\n");
   await writeFile(path.join(dir, "about.htm"), "<!doctype html><html><body>about</body></html>");
-  await writeFile(path.join(dir, ".env"), "hidden-secret\n");
-  await mkdir(path.join(dir, ".git"));
-  await writeFile(path.join(dir, ".git", "config"), "hidden-secret\n");
-  await symlink(path.join(dir, ".env"), path.join(dir, "visible.css"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
   try {
     const base = `http://127.0.0.1:${server.port}`;
@@ -2482,9 +2460,6 @@ test("/artifact serves same-tree assets and refuses hidden siblings for an HTML 
     const documentResponse = await fetch(artifactLoadUrl(base, session.key, load));
     const css = await fetch(`${base}/artifact/${session.key}/assets/style.css`);
     const page = await fetch(`${base}/artifact/${session.key}/about.htm`);
-    const env = await fetch(`${base}/artifact/${session.key}/.env`);
-    const git = await fetch(`${base}/artifact/${session.key}/.git/config`);
-    const alias = await fetch(`${base}/artifact/${session.key}/visible.css`);
 
     assert.equal(documentResponse.status, 200);
     assert.match(await documentResponse.text(), /<a href="about.html">about<\/a>/);
@@ -2492,12 +2467,6 @@ test("/artifact serves same-tree assets and refuses hidden siblings for an HTML 
     assert.equal(await css.text(), "body { color: rgb(1 2 3); }\n");
     assert.equal(page.status, 200);
     assert.match(await page.text(), /about/);
-    assert.equal(env.status, 403);
-    assert.doesNotMatch(await env.text(), /hidden-secret/);
-    assert.equal(git.status, 403);
-    assert.doesNotMatch(await git.text(), /hidden-secret/);
-    assert.equal(alias.status, 403);
-    assert.doesNotMatch(await alias.text(), /hidden-secret/);
   } finally {
     await server.close();
     await rm(parent, { recursive: true, force: true });

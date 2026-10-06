@@ -70,13 +70,7 @@ import {
   stateId,
 } from "./paths.js";
 import { detectTailscale } from "./tailscale.js";
-import {
-  artifactTreeRoot,
-  hasHiddenPathSegment,
-  isArtifactPathError,
-  isHtmlPath,
-  resolveAllowedArtifactFile,
-} from "./artifact-path.js";
+import { artifactTreeRoot, isArtifactPathError, isHtmlPath, resolveAllowedArtifactFile } from "./artifact-path.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import { AsyncMutex } from "./async-mutex.js";
 import { generateSharePassword } from "./share-password.js";
@@ -2654,14 +2648,12 @@ function optionalBodyString(value) {
 
 // Confines an asset request lexically first, then - like export-bundle.js's guardedRead -
 // resolves the real (symlink-followed) path and refuses anything that escapes the session's
-// artifact tree (the HTML file's directory). Hidden (dot-prefixed) relative segments are
-// outside that tree even when they sit beside the artifact, so `.env` cannot ride along
-// with `style.css`. A symlink placed beside the artifact still cannot make this route serve
-// an outside file (e.g. ~/.ssh/id_rsa).
+// artifact tree (the HTML file's directory), so a symlink placed beside the artifact can't
+// make this route serve an outside file (e.g. ~/.ssh/id_rsa).
 export async function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
-  if (relative.startsWith("..") || path.isAbsolute(relative) || hasHiddenPathSegment(relative)) {
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return null;
   }
   let real;
@@ -2683,12 +2675,7 @@ export async function resolveArtifactAsset(root, assetPath) {
     realRoot = path.resolve(root);
   }
   const relativeReal = path.relative(realRoot, real);
-  if (
-    relativeReal === ".." ||
-    relativeReal.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(relativeReal) ||
-    hasHiddenPathSegment(relativeReal)
-  ) {
+  if (relativeReal === ".." || relativeReal.startsWith(`..${path.sep}`) || path.isAbsolute(relativeReal)) {
     return null;
   }
   // Hand back the resolved path, not the requested one: a real path contains no symlinks, so

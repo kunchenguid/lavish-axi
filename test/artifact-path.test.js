@@ -4,13 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import {
-  ARTIFACT_HTML_ERROR,
-  artifactTreeRoot,
-  hasHiddenPathSegment,
-  isHtmlPath,
-  resolveAllowedArtifactFile,
-} from "../src/artifact-path.js";
+import { ARTIFACT_HTML_ERROR, artifactTreeRoot, isHtmlPath, resolveAllowedArtifactFile } from "../src/artifact-path.js";
 
 test("isHtmlPath matches the CLI .html / .htm rule", () => {
   assert.equal(isHtmlPath("report.html"), true);
@@ -21,16 +15,6 @@ test("isHtmlPath matches the CLI .html / .htm rule", () => {
   assert.equal(isHtmlPath("report.html.bak"), false);
   assert.equal(isHtmlPath("/etc/passwd"), false);
   assert.equal(isHtmlPath(""), false);
-});
-
-test("hasHiddenPathSegment is about the request-relative path, not a dotted root", () => {
-  assert.equal(hasHiddenPathSegment("style.css"), false);
-  assert.equal(hasHiddenPathSegment("assets/icon.svg"), false);
-  assert.equal(hasHiddenPathSegment("pages/about.html"), false);
-  assert.equal(hasHiddenPathSegment(".env"), true);
-  assert.equal(hasHiddenPathSegment(".git/config"), true);
-  assert.equal(hasHiddenPathSegment("assets/.secret"), true);
-  assert.equal(hasHiddenPathSegment("vendor/.git/HEAD"), true);
 });
 
 test("artifactTreeRoot is the HTML file's directory", () => {

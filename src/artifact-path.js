@@ -23,19 +23,6 @@ export function artifactTreeRoot(file) {
   return path.dirname(file);
 }
 
-/**
- * Hidden (dot-prefixed) request or resolved segments are outside the intended tree.
- * Roots that themselves live under a dot-directory (`.lavish/artifact.html`) stay allowed
- * because this inspects the path relative to that root, not the root.
- * @param {string} relativePath
- * @returns {boolean}
- */
-export function hasHiddenPathSegment(relativePath) {
-  return String(relativePath || "")
-    .split(/[/\\]/)
-    .some((part) => part.startsWith(".") && part !== "." && part !== "..");
-}
-
 export class ArtifactPathError extends Error {
   /** @type {"VALIDATION_ERROR"} */
   code = "VALIDATION_ERROR";
