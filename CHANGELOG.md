@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.83](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.82...lavish-axi-v0.1.83) (2026-10-06)
+
+
+### Features
+
+* **chrome:** per-note emoji delivery receipts (seen, working, done) ([#400](https://github.com/kunchenguid/lavish-axi/issues/400)) ([cd202ac](https://github.com/kunchenguid/lavish-axi/commit/cd202acec10daa8241de99051b9b563f8ac979ce))
+* **sdk:** Ctrl/Cmd-click follows a link in annotate mode ([#399](https://github.com/kunchenguid/lavish-axi/issues/399)) ([8c12ff2](https://github.com/kunchenguid/lavish-axi/commit/8c12ff268f7814f0ee944a20b3d656d3caeef750))
+
 ## [0.1.82](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.81...lavish-axi-v0.1.82) (2026-10-04)
 
 
