@@ -141,11 +141,11 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
       observe() {}
       disconnect() {}
     },
-    URL: {
-      createObjectURL() {
+    URL: class extends URL {
+      static createObjectURL() {
         return "blob:lavish-test";
-      },
-      revokeObjectURL() {},
+      }
+      static revokeObjectURL() {}
     },
     getComputedStyle: () => ({}),
     setTimeout: scheduleTimer,
@@ -191,15 +191,15 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
     body,
     api: sandbox.window.lavish,
     // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
-    click(target, modifiers = {}) {
-      const listener = documentListeners.find((entry) => entry.type === "click");
+    click(target, modifiers = {}, type = "click") {
+      const listener = documentListeners.find((entry) => entry.type === type);
       assert.ok(listener, "the SDK registers a document click listener");
       const event = {
         target,
         ctrlKey: false,
         metaKey: false,
-        ...modifiers,
         defaultPrevented: false,
+        ...modifiers,
         preventDefault() {
           event.defaultPrevented = true;
         },
@@ -773,4 +773,74 @@ test("Ctrl-click on a link after a text selection does not eat the next plain cl
   sdk.click(paragraph);
 
   assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// Exercise the served SDK, including nested card content and links added after boot.
+for (const href of [
+  "/session/0123456789abcdef",
+  "../../session/0123456789abcdef",
+  "http://127.0.0.1/session/0123456789abcdef?review=1#notes",
+  "https://m4-mini.tailb2a35c.ts.net:4387/session/0123456789abcdef",
+  "//another-lavish-host:4387/session/0123456789abcdef/",
+]) {
+  test(`explore mode opens session link ${href} outside the artifact`, () => {
+    const sdk = bootSdk();
+    sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: false });
+    const { link, inner } = buildLink(sdk);
+    link.setAttribute("href", href);
+    link.setAttribute("target", "_self");
+    link.setAttribute("rel", "opener external");
+    const event = sdk.click(inner);
+    assert.equal(event.defaultPrevented, false, "native link activation retains browser modifiers");
+    assert.equal(link.getAttribute("target"), "_blank");
+    assert.equal(link.getAttribute("rel"), "external noopener");
+    assert.equal(sdk.cards().length, 0);
+  });
+}
+
+test("session links remain annotatable, with modifier and middle clicks opening outside the artifact", () => {
+  const sdk = bootSdk();
+  const { link, inner } = buildLink(sdk);
+  link.setAttribute("href", "/session/0123456789abcdef");
+  assert.equal(sdk.click(inner).defaultPrevented, true);
+  assert.equal(sdk.cards().length, 1);
+  assert.equal(link.getAttribute("target"), null);
+  assert.equal(sdk.click(inner, { metaKey: true }).defaultPrevented, false);
+  assert.equal(link.getAttribute("target"), "_blank");
+  link.setAttribute("target", "_self");
+  assert.equal(sdk.click(inner, { button: 1 }, "auxclick").defaultPrevented, false);
+  assert.equal(link.getAttribute("target"), "_blank");
+});
+
+for (const href of [
+  "#section",
+  "other.html#section",
+  "https://example.com/spec",
+  "https://example.com/session/user",
+  "/session/0123456789abcdef/other",
+  "mailto:jacob@example.com",
+  "javascript:void(0)",
+]) {
+  test(`ordinary navigation ${href} retains its author-defined target`, () => {
+    const sdk = bootSdk();
+    sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: false });
+    const { link } = buildLink(sdk);
+    link.setAttribute("href", href);
+    link.setAttribute("target", "content");
+    assert.equal(sdk.click(link).defaultPrevented, false);
+    assert.equal(link.getAttribute("target"), "content");
+    assert.equal(link.getAttribute("rel"), null);
+  });
+}
+
+test("download and cancelled session links do not change their targets", () => {
+  const sdk = bootSdk();
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: false });
+  const { link } = buildLink(sdk);
+  link.setAttribute("href", "/session/0123456789abcdef");
+  sdk.click(link, { defaultPrevented: true });
+  assert.equal(link.getAttribute("target"), null);
+  link.setAttribute("download", "session.html");
+  sdk.click(link);
+  assert.equal(link.getAttribute("target"), null);
 });
