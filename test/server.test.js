@@ -532,6 +532,24 @@ test("artifact assets still resolve a symlink that stays inside the artifact dir
   }
 });
 
+test("artifact assets refuse hidden request paths inside the artifact directory", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  try {
+    await writeFile(path.join(dir, ".env"), "hidden-secret\n");
+    await mkdir(path.join(dir, ".git"));
+    await writeFile(path.join(dir, ".git", "config"), "hidden-secret\n");
+    await writeFile(path.join(dir, "style.css"), "body{}\n");
+    await symlink(path.join(dir, ".env"), path.join(dir, "visible.css"));
+
+    assert.equal(await resolveArtifactAsset(dir, "style.css"), path.join(dir, "style.css"));
+    assert.equal(await resolveArtifactAsset(dir, ".env"), null);
+    assert.equal(await resolveArtifactAsset(dir, ".git/config"), null);
+    assert.equal(await resolveArtifactAsset(dir, "visible.css"), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("artifact asset resolution fails closed when realpath errors", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   try {
@@ -2378,6 +2396,137 @@ test("/artifact still rejects lexical .. traversal that reaches the server unnor
   } finally {
     await server.close();
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("/api/sessions refuses a non-HTML path so its directory cannot become an artifact tree", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const secret = path.join(dir, "secret.txt");
+  await writeFile(secret, "outside-secret\n");
+  await writeFile(path.join(dir, ".env"), "hidden-secret\n");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const created = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: secret }),
+    });
+    const body = await created.json();
+    assert.equal(created.status, 400);
+    assert.equal(body.status, "error");
+    assert.equal(body.code, "VALIDATION_ERROR");
+    assert.match(body.error, /HTML file/);
+
+    const key = sessionKey(await canonicalFile(secret));
+    const leak = await fetch(`${base}/artifact/${key}/.env`);
+    assert.equal(leak.status, 404);
+    assert.doesNotMatch(await leak.text(), /hidden-secret/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/api/sessions refuses an HTML symlink to a non-HTML file", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const secret = path.join(dir, "secret.txt");
+  const decoy = path.join(dir, "decoy.html");
+  await writeFile(secret, "outside-secret\n");
+  await symlink(secret, decoy);
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const created = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: decoy }),
+    });
+    const body = await created.json();
+    assert.equal(created.status, 400);
+    assert.equal(body.code, "VALIDATION_ERROR");
+    assert.match(body.error, /HTML file/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/artifact serves same-tree assets and refuses hidden siblings for an HTML session", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const dir = path.join(parent, ".lavish");
+  const assetDir = path.join(dir, "assets");
+  const artifact = path.join(dir, "artifact.html");
+  await mkdir(dir);
+  await mkdir(assetDir);
+  await writeFile(
+    artifact,
+    '<!doctype html><html><head><link rel="stylesheet" href="assets/style.css"></head><body><a href="about.html">about</a></body></html>',
+  );
+  await writeFile(path.join(assetDir, "style.css"), "body { color: rgb(1 2 3); }\n");
+  await writeFile(path.join(dir, "about.htm"), "<!doctype html><html><body>about</body></html>");
+  await writeFile(path.join(dir, ".env"), "hidden-secret\n");
+  await mkdir(path.join(dir, ".git"));
+  await writeFile(path.join(dir, ".git", "config"), "hidden-secret\n");
+  await symlink(path.join(dir, ".env"), path.join(dir, "visible.css"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.equal(sessionRes.status, 200);
+    const session = await sessionRes.json();
+    const load = await beginArtifactLoad(base, session.key);
+    const documentResponse = await fetch(artifactLoadUrl(base, session.key, load));
+    const css = await fetch(`${base}/artifact/${session.key}/assets/style.css`);
+    const page = await fetch(`${base}/artifact/${session.key}/about.htm`);
+    const env = await fetch(`${base}/artifact/${session.key}/.env`);
+    const git = await fetch(`${base}/artifact/${session.key}/.git/config`);
+    const alias = await fetch(`${base}/artifact/${session.key}/visible.css`);
+
+    assert.equal(documentResponse.status, 200);
+    assert.match(await documentResponse.text(), /<a href="about.html">about<\/a>/);
+    assert.equal(css.status, 200);
+    assert.equal(await css.text(), "body { color: rgb(1 2 3); }\n");
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /about/);
+    assert.equal(env.status, 403);
+    assert.doesNotMatch(await env.text(), /hidden-secret/);
+    assert.equal(git.status, 403);
+    assert.doesNotMatch(await git.text(), /hidden-secret/);
+    assert.equal(alias.status, 403);
+    assert.doesNotMatch(await alias.text(), /hidden-secret/);
+  } finally {
+    await server.close();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("/artifact refuses a stored session whose file is not HTML", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const secret = path.join(dir, "secret.txt");
+  await writeFile(secret, "outside-secret\n");
+  await writeFile(path.join(dir, ".env"), "hidden-secret\n");
+  const absolute = await canonicalFile(secret);
+  const key = sessionKey(absolute);
+  await writeFile(
+    path.join(dir, "state.json"),
+    `${JSON.stringify({ sessions: { [key]: { key, file: absolute, url: "http://127.0.0.1/session/test", status: "open" } } }, null, 2)}\n`,
+  );
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const documentResponse = await fetch(`${base}/artifact/${key}/index.html`);
+    const sibling = await fetch(`${base}/artifact/${key}/.env`);
+    assert.equal(documentResponse.status, 403);
+    assert.doesNotMatch(await documentResponse.text(), /outside-secret/);
+    assert.equal(sibling.status, 403);
+    assert.doesNotMatch(await sibling.text(), /hidden-secret/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

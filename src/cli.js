@@ -59,6 +59,7 @@ import {
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { resolveDesignAssetPath, serve } from "./server.js";
+import { isHtmlPath } from "./artifact-path.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { generateSharePassword } from "./share-password.js";
 import { initDefaultTelemetry } from "./telemetry.js";
@@ -1702,10 +1703,6 @@ async function assertHtmlFile(file) {
       "Create the HTML artifact first, then run `lavish-axi <html-file>`",
     ]);
   }
-}
-
-function isHtmlPath(file) {
-  return file.toLowerCase().endsWith(".html") || file.toLowerCase().endsWith(".htm");
 }
 
 const HEALTH_PROBE_TIMEOUT_MS = 500;
