@@ -33,6 +33,8 @@ import {
   convertExcalidrawSkeletonsAfterFontsLoad,
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
+  placeLibraryIcons,
+  prepareLibraryIconSkeletons,
   repairSavedSceneTextMetrics,
   resolveWhiteboardInitAction,
   restoreMermaidLabelLineBreaks,
@@ -42,6 +44,7 @@ import {
   summarizeSceneEdits,
   WHITEBOARD_TEXT_METRICS_VERSION,
 } from "./whiteboard-core.js";
+import { findLibraryItem, parseLibraryIconDirectives, toExcalidrawLibraryItems } from "./whiteboard-libraries.js";
 
 const SAVE_DEBOUNCE_MS = 800;
 
@@ -57,6 +60,8 @@ const state = {
   currentSourceHash: "",
   baselineElements: [],
   files: {},
+  // User-supplied Excalidraw libraries, passed in by the chrome.
+  libraries: [],
   imageFallback: false,
   textMetricsVersion: WHITEBOARD_TEXT_METRICS_VERSION,
   channelId: "",
@@ -328,7 +333,13 @@ function EditorApp({ elements, appState, files, theme, startLocked }) {
     "div",
     { style: { position: "relative", width: "100%", height: "100%" } },
     React.createElement(Excalidraw, {
-      initialData: { elements, appState, files: files || undefined, scrollToContent: true },
+      initialData: {
+        elements,
+        appState,
+        files: files || undefined,
+        libraryItems: toExcalidrawLibraryItems(state.libraries),
+        scrollToContent: true,
+      },
       theme,
       viewModeEnabled: locked,
       onChange: scheduleSave,
@@ -430,7 +441,11 @@ async function convertSource(source) {
   const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: "16px" },
   });
-  const skeletons = restoreMermaidLabelLineBreaks(parsedSkeletons);
+  const icons = parseLibraryIconDirectives(source).map((directive) => ({
+    ...directive,
+    item: findLibraryItem(state.libraries, directive.ref),
+  }));
+  const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsedSkeletons), icons);
   const materialize = (input) => {
     // Preserve Mermaid node/edge identity for edit summaries; regenerate only
     // when upstream emitted colliding ids (parallel edges), where uniqueness
@@ -441,16 +456,19 @@ async function convertSource(source) {
     }
     return elements;
   };
-  const elements = restoreMermaidLabelLineBreaks(
-    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-      convert: materialize,
-      loadFonts: async (fallbackElements) => {
-        await loadSceneFonts(fallbackElements, files);
-      },
-    }),
-    { measure: measureSceneText },
+  const elements = placeLibraryIcons(
+    restoreMermaidLabelLineBreaks(
+      await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+        convert: materialize,
+        loadFonts: async (fallbackElements) => {
+          await loadSceneFonts(fallbackElements, files);
+        },
+      }),
+      { measure: measureSceneText },
+    ),
+    (ref) => findLibraryItem(state.libraries, ref),
   );
-  return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
+  return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements), missingIcons: missing };
 }
 
 // Theme is passed only through the <Excalidraw theme> prop - putting it in
@@ -505,6 +523,11 @@ async function startFromConversion(init) {
     );
   }
   mountEditor({ elements, appState: defaultAppState(), files, theme: init.theme });
+  if (converted.missingIcons.length > 0) {
+    const refs = [...new Set(converted.missingIcons.map((icon) => icon.ref))].join(", ");
+    const count = converted.missingIcons.length;
+    showStatus(`${count} library icon${count === 1 ? "" : "s"} not shown: ${refs}`);
+  }
   // View-only conversion still autosaves so a same-hash reopen can restore.
   // Hash mismatch does not treat that sidecar as user edits; see
   // resolveWhiteboardInitAction.
@@ -632,6 +655,7 @@ async function handleInit(init) {
   state.diagramId = String(init.diagramId || "");
   state.currentSource = String(init.source || "");
   state.currentSourceHash = String(init.sourceHash || "");
+  state.libraries = Array.isArray(init.libraries) ? init.libraries : [];
   const theme = init.theme === "dark" ? "dark" : "light";
   document.getElementById("wbTitle").textContent = `Whiteboard · diagram ${state.diagramIndex + 1}`;
 

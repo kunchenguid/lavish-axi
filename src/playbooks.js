@@ -27,7 +27,7 @@ export const PLAYBOOKS = [
       "Keep labels to a few words and put prose beside the figure in HTML - SVG text does not wrap, so short labels are also the overflow discipline.",
       "Keep figures self-contained: no external images, fonts, or scripts, so exports render offline.",
       "Render-verify before serving: screenshot the artifact in light, dark, and a narrow viewport - the layout audit deliberately skips SVG interiors.",
-      "When the user asked for a whiteboard, initialize Mermaid theme-aware with the `lavish-axi design` snippet rather than hardcoding one theme.",
+      "When the user asked for a whiteboard, initialize Mermaid theme-aware with the `lavish-axi design` snippet rather than hardcoding one theme; to show flowchart nodes as icons from the user's Excalidraw libraries, follow `whiteboard_tooling.library_icons` there.",
     ],
     pitfalls: [
       "Do not cram every file or function into one figure when a layered explanation would be clearer.",

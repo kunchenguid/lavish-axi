@@ -38,7 +38,9 @@ import {
 import * as artifactRevisions from "./artifact-revisions.js";
 import * as mermaidNode from "./mermaid-node.js";
 import * as tableCellHelpers from "./table-cell.js";
-import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
+import { extractMermaidSources, whiteboardSourceHash } from "./mermaid-source.js";
+import { createExcalidrawLibraryCache, excalidrawLibrariesDir } from "./whiteboard-library-store.js";
+import { parseLibraryIconDirectives } from "./whiteboard-libraries.js";
 import {
   isValidDiagramIndex,
   isValidWhiteboardKey,
@@ -614,6 +616,8 @@ export async function serve({
   }
   // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
   const whiteboardStateRoot = path.dirname(stateFile);
+  const loadExcalidrawLibraries = createExcalidrawLibraryCache();
+  const libraryDir = excalidrawLibrariesDir(whiteboardStateRoot);
 
   // DNS-rebinding guard. isSameOriginRequest (used on /share and the whiteboard
   // write routes) stops classic cross-origin CSRF but NOT DNS rebinding: a page
@@ -1720,12 +1724,31 @@ export async function serve({
       }
       if (refuseNonHtmlArtifact(session, res)) return;
       const html = await readFile(session.file, "utf8").catch(() => "");
-      const sources = extractMermaidSources(html).map(({ index, source }) => ({
+      const extracted = extractMermaidSources(html);
+      const usesLibraries = extracted.some(({ source }) => parseLibraryIconDirectives(source).length > 0);
+      const libraries = usesLibraries ? (await loadExcalidrawLibraries(libraryDir)).libraries : [];
+      const sources = extracted.map(({ index, source }) => ({
         index,
         source,
-        hash: mermaidSourceHash(source),
+        hash: whiteboardSourceHash(source, libraries),
       }));
       res.json({ sources });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // User-supplied Excalidraw libraries for every whiteboard's library panel and
+  // for `%% lavish-icon` nodes. Read-only: Lavish never writes that directory.
+  app.get("/api/whiteboard-libraries", async (req, res, next) => {
+    try {
+      if (hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+        res.status(403).json({ error: "cross-origin whiteboard library request rejected" });
+        return;
+      }
+      const { libraries } = await loadExcalidrawLibraries(libraryDir);
+      res.setHeader("cache-control", "no-store");
+      res.json({ libraries: libraries.map(({ id, items }) => ({ id, items })) });
     } catch (error) {
       next(error);
     }

@@ -23,6 +23,7 @@ import {
   createDesignOutput,
   createExportOutput,
   createHomeOutput,
+  createLibrariesOutput,
   createOpenOutput,
   createPollOutput,
   createPlaybookOutput,
@@ -3547,4 +3548,96 @@ test("createShareUnpublishOutput separates the immediate content swap from the l
   assert.match(output.next_step, /cach/i, "the lagging lock must still be disclosed");
   assert.match(output.next_step, /readable without the password/i);
   assert.doesNotMatch(output.next_step, /no visitor can read the old content/i);
+});
+
+function fixtureLibraries() {
+  const item = (library, name) => ({ ref: `${library}/${name}`, name, elements: [] });
+  return [
+    { id: "aws", items: [item("aws", "AWS Lambda"), item("aws", "Lambda Function"), item("aws", "Amazon S3")] },
+    { id: "system-design", items: [item("system-design", "Queue")] },
+  ];
+}
+
+test("libraries output tells the user where to put files when none are installed", () => {
+  const output = createLibrariesOutput({
+    dir: "/home/me/.lavish-axi/excalidraw-libraries",
+    libraries: [],
+    skipped: [],
+  });
+  assert.equal(output.dir, "/home/me/.lavish-axi/excalidraw-libraries");
+  assert.deepEqual(output.libraries, []);
+  assert.match(output.help.join("\n"), /\.excalidrawlib/);
+  assert.equal(output.items, undefined);
+});
+
+test("libraries output lists counts, skips, and points at item search", () => {
+  const output = createLibrariesOutput({
+    dir: "/x",
+    libraries: fixtureLibraries(),
+    skipped: [{ file: "/x/broken.excalidrawlib", reason: "not valid JSON" }],
+  });
+  assert.deepEqual(output.libraries, [
+    { id: "aws", items: 3 },
+    { id: "system-design", items: 1 },
+  ]);
+  assert.deepEqual(output.skipped, [{ file: "broken.excalidrawlib", reason: "not valid JSON" }]);
+  assert.equal(output.items, undefined);
+  const help = output.help.join("\n");
+  assert.match(help, /lavish-axi libraries --search <text>/);
+  assert.match(help, /lavish-axi design/);
+});
+
+test("libraries output filters item refs by search terms and library", () => {
+  const searched = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "lambda" });
+  assert.deepEqual(searched.items, [{ ref: "aws/AWS Lambda" }, { ref: "aws/Lambda Function" }]);
+  const both = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "aws lambda" });
+  assert.deepEqual(both.items, [{ ref: "aws/AWS Lambda" }, { ref: "aws/Lambda Function" }]);
+  const library = createLibrariesOutput({
+    dir: "/x",
+    libraries: fixtureLibraries(),
+    skipped: [],
+    library: "system-design",
+  });
+  assert.deepEqual(library.items, [{ ref: "system-design/Queue" }]);
+  const none = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "kafka" });
+  assert.deepEqual(none.items, []);
+});
+
+test("libraries output bounds long item listings", () => {
+  const many = Array.from({ length: 120 }, (_, index) => ({
+    ref: `big/Icon ${index}`,
+    name: `Icon ${index}`,
+    elements: [],
+  }));
+  const output = createLibrariesOutput({
+    dir: "/x",
+    libraries: [{ id: "big", items: many }],
+    skipped: [],
+    library: "big",
+  });
+  assert.equal(output.items.length, 50);
+  assert.equal(output.more_items, 70);
+  assert.match(output.help.join("\n"), /--search/);
+});
+
+test("libraries help documents the command and the directory", () => {
+  const help = getCommandHelp("libraries");
+  assert.match(help, /lavish-axi libraries \[--search <text>\] \[--library <id>\]/);
+  assert.match(help, /excalidraw-libraries/);
+  assert.equal(normalizeArgv(["libraries"])[0], "libraries");
+});
+
+test("design output owns the library icon directive and the diagram playbook points at it", () => {
+  const icons = createDesignOutput().whiteboard_tooling.library_icons;
+  assert.match(icons.use_when, /lavish-axi libraries/);
+  assert.equal(icons.syntax, "%% lavish-icon <node-id> <library-id>/<item name>");
+  assert.match(icons.example, /^flowchart /);
+  assert.match(icons.example, /%% lavish-icon api /);
+  assert.match(icons.notes, /plain node/);
+  assert.match(icons.notes, /Added library item/);
+
+  const diagram = JSON.stringify(createPlaybookOutput(["diagram"]));
+  assert.match(diagram, /whiteboard_tooling\.library_icons/);
+  assert.doesNotMatch(diagram, /%% lavish-icon/, "the syntax has one owner surface");
+  assert.doesNotMatch(JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })), /lavish-icon|libraries/);
 });

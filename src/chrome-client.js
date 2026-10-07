@@ -3581,6 +3581,21 @@ async function fetchMermaidSources() {
   return Array.isArray(data.sources) ? data.sources : [];
 }
 
+// One fetch per chrome page; every whiteboard frame gets the same libraries.
+let whiteboardLibrariesRequest = null;
+function fetchWhiteboardLibraries() {
+  if (!whiteboardLibrariesRequest) {
+    whiteboardLibrariesRequest = fetch("/api/whiteboard-libraries")
+      .then((response) => (response.ok ? response.json() : { libraries: [] }))
+      .then((data) => (Array.isArray(data.libraries) ? data.libraries : []))
+      .catch(() => {
+        whiteboardLibrariesRequest = null;
+        return [];
+      });
+  }
+  return whiteboardLibrariesRequest;
+}
+
 async function authenticateWhiteboardChannel(token) {
   const response = await fetch("/api/" + key + "/whiteboard-channel", {
     method: "POST",
@@ -3612,6 +3627,7 @@ async function handleWhiteboardReady(index, mode, isCurrent) {
     if (!source) throw new Error("this diagram's Mermaid source was not found in the artifact file");
     const savedResponse = await fetch("/api/" + key + "/whiteboard/" + index);
     const saved = savedResponse.ok ? (await savedResponse.json()).whiteboard : null;
+    const libraries = await fetchWhiteboardLibraries();
     const record = whiteboardRecord(index);
     record.source = String(source.source || "");
     record.sourceHash = String(source.hash || "");
@@ -3624,6 +3640,7 @@ async function handleWhiteboardReady(index, mode, isCurrent) {
       source: record.source,
       sourceHash: record.sourceHash,
       saved,
+      libraries,
       theme: whiteboardTheme(),
     });
     return true;

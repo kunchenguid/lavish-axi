@@ -16,6 +16,16 @@ import {
 } from "../src/server.js";
 import { mermaidSourceHash } from "../src/mermaid-source.js";
 
+const libraryFile = (items) =>
+  JSON.stringify({
+    type: "excalidrawlib",
+    version: 2,
+    libraryItems: items.map(([name, width]) => ({
+      name,
+      elements: [{ id: name, type: "rectangle", x: 0, y: 0, width, height: 10 }],
+    })),
+  });
+
 const ARTIFACT_HTML = `<!doctype html><html><body>
 <h1>Demo</h1>
 <pre class="mermaid">flowchart TD
@@ -27,7 +37,7 @@ const ARTIFACT_HTML = `<!doctype html><html><body>
 const PNG_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
-async function startWhiteboardServer() {
+async function startWhiteboardServer({ html = ARTIFACT_HTML } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-wb-server-"));
   const assetsDir = path.join(dir, "whiteboard-assets");
   await mkdir(path.join(assetsDir, "fonts", "Excalifont"), { recursive: true });
@@ -35,7 +45,7 @@ async function startWhiteboardServer() {
   await writeFile(path.join(assetsDir, "whiteboard.css"), "body{}\n");
   await writeFile(path.join(assetsDir, "fonts", "Excalifont", "Excalifont-Regular.woff2"), "fake-font");
   const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, ARTIFACT_HTML);
+  await writeFile(artifact, html);
   const server = await serve({
     port: 0,
     stateFile: path.join(dir, "state.json"),
@@ -325,6 +335,75 @@ test("the whiteboard frame page is served with the sandboxed chrome overlay poin
       /id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"/,
     );
     assert.doesNotMatch(chrome, /id="artifact"[^>]*allow-same-origin/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("GET /api/whiteboard-libraries serves the user's libraries and refreshes on change", async () => {
+  const ctx = await startWhiteboardServer();
+  try {
+    const empty = await fetch(`${ctx.base}/api/whiteboard-libraries`).then((res) => res.json());
+    assert.deepEqual(empty, { libraries: [] });
+
+    const libraryDir = path.join(ctx.dir, "excalidraw-libraries");
+    await mkdir(libraryDir);
+    await writeFile(path.join(libraryDir, "AWS Icons.excalidrawlib"), libraryFile([["Lambda", 10]]));
+    await writeFile(path.join(libraryDir, "broken.excalidrawlib"), "{");
+    await writeFile(path.join(libraryDir, "notes.txt"), "ignored");
+    const loaded = await fetch(`${ctx.base}/api/whiteboard-libraries`).then((res) => res.json());
+    assert.deepEqual(
+      loaded.libraries.map((library) => [library.id, library.items.map((item) => item.ref)]),
+      [["aws-icons", ["aws-icons/Lambda"]]],
+    );
+    assert.equal(loaded.libraries[0].file, undefined, "local paths stay on the server");
+
+    await writeFile(
+      path.join(libraryDir, "AWS Icons.excalidrawlib"),
+      libraryFile([
+        ["Lambda", 10],
+        ["S3", 10],
+      ]),
+    );
+    const refreshed = await fetch(`${ctx.base}/api/whiteboard-libraries`).then((res) => res.json());
+    assert.deepEqual(
+      refreshed.libraries[0].items.map((item) => item.name),
+      ["Lambda", "S3"],
+    );
+
+    const foreign = await fetch(`${ctx.base}/api/whiteboard-libraries`, {
+      headers: { origin: "https://evil.example" },
+    });
+    assert.equal(foreign.status, 403);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("mermaid-sources hashes follow referenced library items only for icon diagrams", async () => {
+  const iconFlowchart = "flowchart LR\n  %% lavish-icon api aws-icons/Lambda\n  api[Orders API] --&gt; db[(Orders)]";
+  const ctx = await startWhiteboardServer({
+    html: `<!doctype html><html><body><pre class="mermaid">${iconFlowchart}</pre><pre class="mermaid">flowchart TD\n  A --&gt; B</pre></body></html>`,
+  });
+  try {
+    const hashes = () =>
+      fetch(`${ctx.base}/api/${ctx.key}/mermaid-sources`)
+        .then((res) => res.json())
+        .then((data) => data.sources.map((source) => source.hash));
+    const [withoutLibrary, plain] = await hashes();
+    assert.equal(plain, mermaidSourceHash("flowchart TD\n  A --> B"));
+    assert.notEqual(withoutLibrary, mermaidSourceHash(iconFlowchart.replace("--&gt;", "-->")));
+
+    const libraryDir = path.join(ctx.dir, "excalidraw-libraries");
+    await mkdir(libraryDir);
+    await writeFile(path.join(libraryDir, "aws-icons.excalidrawlib"), libraryFile([["Lambda", 10]]));
+    const [withLibrary, plainAgain] = await hashes();
+    assert.notEqual(withLibrary, withoutLibrary);
+    assert.equal(plainAgain, plain);
+
+    await writeFile(path.join(libraryDir, "aws-icons.excalidrawlib"), libraryFile([["Lambda", 20]]));
+    const [changedItem] = await hashes();
+    assert.notEqual(changedItem, withLibrary);
   } finally {
     await ctx.close();
   }

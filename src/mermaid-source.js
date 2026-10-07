@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 
 import { parse } from "parse5";
 
+import { libraryIconSignature } from "./whiteboard-libraries.js";
+
 // Server-side extraction of Mermaid diagram sources from raw artifact HTML.
 //
 // The design snippet (`lavish-axi design`) renders diagrams from elements with
@@ -85,4 +87,17 @@ export function normalizeMermaidSource(source) {
 // Stable identity for "did the underlying diagram change" staleness checks.
 export function mermaidSourceHash(source) {
   return crypto.createHash("sha256").update(normalizeMermaidSource(source)).digest("hex").slice(0, 16);
+}
+
+// The whiteboard's staleness hash. A diagram with `%% lavish-icon` lines also
+// depends on the library items they name, so a changed item re-converts an
+// unmodified scene; every other diagram keeps its plain source hash.
+export function whiteboardSourceHash(source, libraries) {
+  const signature = libraryIconSignature(source, libraries);
+  if (!signature) return mermaidSourceHash(source);
+  return crypto
+    .createHash("sha256")
+    .update(`${normalizeMermaidSource(source)}\n${signature}`)
+    .digest("hex")
+    .slice(0, 16);
 }
