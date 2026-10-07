@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.84](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.83...lavish-axi-v0.1.84) (2026-10-07)
+
+
+### Bug Fixes
+
+* **server:** constrain sessions and assets to HTML artifact trees ([#406](https://github.com/kunchenguid/lavish-axi/issues/406)) ([ca8ca78](https://github.com/kunchenguid/lavish-axi/commit/ca8ca78f88ab5ef6a86cadda731af3f4425c9296))
+
 ## [0.1.83](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.82...lavish-axi-v0.1.83) (2026-10-06)
 
 
