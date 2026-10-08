@@ -4,9 +4,9 @@ import test from "node:test";
 import {
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
-  LIBRARY_ICON_MAX_HEIGHT,
+  LIBRARY_ICON_GROWN_SPACING,
+  LIBRARY_ICON_HEIGHT,
   LIBRARY_ICON_MAX_WIDTH,
-  LIBRARY_ICON_MIN_SIZE,
   libraryIconMermaidConfig,
   libraryIconSize,
   normalizeExcalidrawSceneTarget,
@@ -639,7 +639,7 @@ function vertexSkeleton(id, opts = {}) {
   };
 }
 
-// Drawn at twice the 80px icon height, so it renders at half scale.
+// Drawn at 160px, so it renders at 0.4 scale (64px icons).
 function lambdaItem() {
   return {
     ref: "aws/AWS Lambda",
@@ -680,24 +680,35 @@ function itemOfSize(width, height) {
   return { ref: "x/y", elements: [{ id: "r", type: "rectangle", x: 0, y: 0, width, height }] };
 }
 
-test("libraryIconMermaidConfig widens flowchart spacing only when an icon resolves", () => {
-  assert.deepEqual(libraryIconMermaidConfig([]), {});
-  assert.deepEqual(libraryIconMermaidConfig([{ item: null }]), {});
-  assert.deepEqual(libraryIconMermaidConfig([{ item: null }, { item: lambdaItem() }]), {
-    flowchart: { curve: "linear", nodeSpacing: 120, rankSpacing: 120 },
+test("libraryIconMermaidConfig adds spacing only on the axis icon nodes grow along", () => {
+  const icon = [{ item: lambdaItem() }];
+  assert.deepEqual(libraryIconMermaidConfig([], "flowchart TB"), {});
+  assert.deepEqual(libraryIconMermaidConfig([{ item: null }], "flowchart TB"), {});
+  // Icon nodes grow taller: in a top-down chart that is the gap between ranks,
+  // in a left-right chart the gap between nodes of one rank.
+  assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart TB\n  a --> b"), {
+    flowchart: { curve: "linear", nodeSpacing: 50, rankSpacing: LIBRARY_ICON_GROWN_SPACING },
   });
+  assert.deepEqual(libraryIconMermaidConfig(icon, "%% note\ngraph TD\n  a --> b"), {
+    flowchart: { curve: "linear", nodeSpacing: 50, rankSpacing: LIBRARY_ICON_GROWN_SPACING },
+  });
+  assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart LR\n  a --> b"), {
+    flowchart: { curve: "linear", nodeSpacing: LIBRARY_ICON_GROWN_SPACING, rankSpacing: 50 },
+  });
+  assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart RL"), libraryIconMermaidConfig(icon, "flowchart LR"));
+  assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart"), libraryIconMermaidConfig(icon, "flowchart TB"));
 });
 
-test("libraryIconSize keeps an item's drawn size within the icon bounds", () => {
-  assert.deepEqual(libraryIconSize(itemOfSize(65, 70)), { scale: 1, width: 65, height: 70 });
-  const tall = libraryIconSize(itemOfSize(65, 93));
-  assert.equal(tall.height, LIBRARY_ICON_MAX_HEIGHT);
-  assert.equal(tall.scale, LIBRARY_ICON_MAX_HEIGHT / 93);
+test("libraryIconSize scales every item to one icon height within a width cap", () => {
+  assert.deepEqual(libraryIconSize(itemOfSize(65, 93)).height, LIBRARY_ICON_HEIGHT);
+  assert.deepEqual(libraryIconSize(itemOfSize(20, 20)), {
+    scale: LIBRARY_ICON_HEIGHT / 20,
+    width: LIBRARY_ICON_HEIGHT,
+    height: LIBRARY_ICON_HEIGHT,
+  });
   const wide = libraryIconSize(itemOfSize(300, 40));
   assert.equal(wide.width, LIBRARY_ICON_MAX_WIDTH);
-  const tiny = libraryIconSize(itemOfSize(20, 10));
-  assert.equal(tiny.width, LIBRARY_ICON_MIN_SIZE);
-  assert.equal(tiny.height, LIBRARY_ICON_MIN_SIZE / 2);
+  assert.ok(wide.height < LIBRARY_ICON_HEIGHT);
 });
 
 test("prepareLibraryIconSkeletons grows the node around icon and label, keeping its center", () => {
@@ -707,9 +718,9 @@ test("prepareLibraryIconSkeletons grows the node around icon and label, keeping 
   ]);
   assert.deepEqual(missing, []);
   const node = prepared[0];
-  // 80px icon over a one-line label, with padding; the box shrinks to fit.
-  assert.equal(node.width, 96);
-  assert.equal(node.height, 122);
+  // 64px icon over a one-line label, with padding; the box shrinks to fit.
+  assert.equal(node.width, 80);
+  assert.equal(node.height, 106);
   assert.equal(node.y + node.height / 2, 220);
   assert.equal(node.x + node.width / 2, 160);
   assert.equal(node.strokeColor, "transparent");
@@ -804,7 +815,7 @@ test("prepareLibraryIconSkeletons extends arrows that ended on a wider original 
     { nodeId: "api", ref: "aws/AWS Lambda", item: lambdaItem() },
   ]);
   const [api, arrow] = prepared;
-  assert.equal(api.x, 250 - 96 / 2);
+  assert.equal(api.x, 250 - 80 / 2);
   assert.equal(arrow.x, 0, "the far end does not move");
   assert.deepEqual(arrow.points.at(-1), [api.x - 4, 0]);
 });
@@ -844,16 +855,16 @@ test("placeLibraryIcons scales the item into the top of the node with determinis
   assert.deepEqual(text.groupIds, [iconGroup, "subgraph_group_vpc"]);
   assert.equal(text.y + text.height, node.y + node.height - 5);
   assert.deepEqual(bg.groupIds, ["api:icon:item", iconGroup, "subgraph_group_vpc"]);
-  assert.equal(bg.width, 80);
-  assert.equal(bg.height, 80);
-  assert.equal(bg.x, 100 + (120 - 80) / 2);
+  assert.equal(bg.width, 64);
+  assert.equal(bg.height, 64);
+  assert.equal(bg.x, 100 + (120 - 64) / 2);
   assert.equal(bg.y, 180 + 8);
   assert.deepEqual(mark.points, [
     [0, 0],
-    [30, -60],
-    [60, 0],
+    [24, -48],
+    [48, 0],
   ]);
-  assert.equal(cap.fontSize, 20);
+  assert.equal(cap.fontSize, 16);
   assert.equal(cap.containerId, "api:icon:0");
   assert.deepEqual(bg.customData, { lavishLibraryRef: "aws/AWS Lambda" });
   assert.equal(item.elements[0].x, 100, "library item is not mutated");

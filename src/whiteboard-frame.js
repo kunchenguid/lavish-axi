@@ -446,7 +446,7 @@ async function convertSource(source) {
   }));
   const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: `${MERMAID_FONT_SIZE}px` },
-    ...libraryIconMermaidConfig(icons),
+    ...libraryIconMermaidConfig(icons, source),
   });
   const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsedSkeletons), icons, {
     labelFontSize: MERMAID_FONT_SIZE,

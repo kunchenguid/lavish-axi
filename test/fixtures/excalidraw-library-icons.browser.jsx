@@ -94,7 +94,7 @@ async function convert(source) {
   }));
   const parsed = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: "16px" },
-    ...libraryIconMermaidConfig(icons),
+    ...libraryIconMermaidConfig(icons, source),
   });
   const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsed.elements), icons, {
     labelFontSize: 16,

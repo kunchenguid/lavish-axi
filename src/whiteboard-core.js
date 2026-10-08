@@ -188,15 +188,15 @@ export function restoreMermaidLabelLineBreaks(elements, { measure } = {}) {
 // into a library icon above its label. The vertex keeps its Mermaid id,
 // bindings, and label so edit summaries still speak in Mermaid node ids; it
 // only grows to fit the icon and turns transparent.
-// Icons keep the size their library drew them at (labelled AWS icons are
-// about 65x93 with a 20px caption) within these bounds, so captions stay
-// readable and wide items keep their shape.
-export const LIBRARY_ICON_MAX_HEIGHT = 80;
-export const LIBRARY_ICON_MAX_WIDTH = 140;
-export const LIBRARY_ICON_MIN_SIZE = 48;
-// Mermaid spacing for diagrams with icon nodes: icon nodes are taller than the
-// boxes Mermaid lays out, and the default 50px gap lets neighbours overlap.
-export const LIBRARY_ICON_FLOWCHART_SPACING = 120;
+// Every icon is scaled to one height so a diagram's icons read as a set;
+// very wide items are capped by width instead.
+export const LIBRARY_ICON_HEIGHT = 64;
+export const LIBRARY_ICON_MAX_WIDTH = 120;
+// Icon nodes are about 50px taller than the boxes Mermaid lays out, so the
+// gap along that axis needs Mermaid's default 50px plus that growth, or
+// neighbours overlap. The other axis keeps Mermaid's default.
+export const LIBRARY_ICON_GROWN_SPACING = 100;
+const MERMAID_DEFAULT_SPACING = 50;
 const LIBRARY_ICON_PADDING = 8;
 const LIBRARY_ICON_LABEL_GAP = 6;
 const LIBRARY_ICON_ARROW_GAP = 4;
@@ -228,15 +228,21 @@ function commonBounds(elements) {
  * converter merges `flowchart` shallowly over its own, so its linear curve is
  * restated here.
  * @param {{ item: unknown }[]} icons
+ * @param {string} source
  * @returns {{ flowchart?: { curve: "linear", nodeSpacing: number, rankSpacing: number } }}
  */
-export function libraryIconMermaidConfig(icons) {
+export function libraryIconMermaidConfig(icons, source) {
   if (!(Array.isArray(icons) && icons.some((icon) => icon.item))) return {};
+  const header = String(source || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^(flowchart|graph)\b/i.test(line));
+  const leftRight = /^(?:flowchart|graph)\s+(LR|RL)\b/i.test(header || "");
   return {
     flowchart: {
       curve: "linear",
-      nodeSpacing: LIBRARY_ICON_FLOWCHART_SPACING,
-      rankSpacing: LIBRARY_ICON_FLOWCHART_SPACING,
+      nodeSpacing: leftRight ? LIBRARY_ICON_GROWN_SPACING : MERMAID_DEFAULT_SPACING,
+      rankSpacing: leftRight ? MERMAID_DEFAULT_SPACING : LIBRARY_ICON_GROWN_SPACING,
     },
   };
 }
@@ -245,11 +251,7 @@ export function libraryIconSize(item) {
   const bounds = commonBounds(item.elements);
   const width = Math.max(bounds.width, 1);
   const height = Math.max(bounds.height, 1);
-  const scale = Math.min(
-    LIBRARY_ICON_MAX_HEIGHT / height,
-    LIBRARY_ICON_MAX_WIDTH / width,
-    Math.max(1, LIBRARY_ICON_MIN_SIZE / Math.max(width, height)),
-  );
+  const scale = Math.min(LIBRARY_ICON_HEIGHT / height, LIBRARY_ICON_MAX_WIDTH / width);
   return { scale, width: width * scale, height: height * scale };
 }
 
