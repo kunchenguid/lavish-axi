@@ -58,6 +58,40 @@ test("parseExcalidrawLibrary reads v1 element arrays and derives names", () => {
   );
 });
 
+test("parseExcalidrawLibrary names unnamed items after their title text", () => {
+  const text = (value, fontSize) => ({
+    id: value,
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    text: value,
+    fontSize,
+  });
+  const library = parseExcalidrawLibrary(
+    JSON.stringify({
+      library: [
+        [square("a"), text("{", 29), text("}", 29), text("Document DB", 18)],
+        [square("b"), text("Key", 6), text("Key", 6), text("Value", 6), text("Cache", 22)],
+        [square("c"), text("Mobile", 16), text("Lorem ipsum dolor sit amet,\nconsectetur adipiscing elit", 2.5)],
+        [
+          square("d"),
+          text("Web Application", 16.5),
+          ...["G", "o", "o", "g", "l", "e"].map((letter) => text(letter, 13.7)),
+        ],
+        [square("e"), text("7", 10), text("Archive", 17)],
+        [square("f"), text("?", 20)],
+      ],
+    }),
+    { id: "sys" },
+  );
+  assert.deepEqual(
+    library.items.map((item) => item.name),
+    ["Document DB", "Cache", "Mobile", "Web Application", "Archive", "item-6"],
+  );
+});
+
 test("parseExcalidrawLibrary de-duplicates names case-insensitively and drops deleted elements", () => {
   const library = parseExcalidrawLibrary(
     JSON.stringify({

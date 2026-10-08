@@ -201,8 +201,10 @@ test("mounted Excalidraw autosaves prompt only after genuine edits", { timeout: 
 test("library icon nodes keep their arrows attached and panel inserts stay named", { timeout: 90_000 }, async (t) => {
   const result = await runBrowserFixture(t, "excalidraw-library-icons");
   if (!result) return;
-  assert.equal(result.lrNode.arrows, 2);
-  assert.equal(result.tdNode.arrows, 2);
+  assert.equal(result.lrNode.arrows, 3);
+  assert.equal(result.tdNode.arrows, 3);
+  assert.equal(result.lrNode.nodes, 4);
+  assert.equal(result.tdNode.nodes, 4);
   assert.equal(result.panelItems, 1);
   assert.equal(result.dropped, 2);
   assert.match(result.summary, /^Added library item fixture\/Gear near \(/);

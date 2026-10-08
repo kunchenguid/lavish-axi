@@ -4,7 +4,11 @@ import test from "node:test";
 import {
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
-  LIBRARY_ICON_SIZE,
+  LIBRARY_ICON_MAX_HEIGHT,
+  LIBRARY_ICON_MAX_WIDTH,
+  LIBRARY_ICON_MIN_SIZE,
+  libraryIconMermaidConfig,
+  libraryIconSize,
   normalizeExcalidrawSceneTarget,
   placeLibraryIcons,
   prepareLibraryIconSkeletons,
@@ -635,34 +639,35 @@ function vertexSkeleton(id, opts = {}) {
   };
 }
 
+// Drawn at twice the 80px icon height, so it renders at half scale.
 function lambdaItem() {
   return {
     ref: "aws/AWS Lambda",
     name: "AWS Lambda",
     elements: [
-      { id: "bg", type: "rectangle", x: 100, y: 100, width: 80, height: 80, groupIds: ["item"] },
+      { id: "bg", type: "rectangle", x: 100, y: 100, width: 160, height: 160, groupIds: ["item"] },
       {
         id: "mark",
         type: "line",
-        x: 110,
-        y: 170,
-        width: 60,
-        height: 60,
+        x: 120,
+        y: 240,
+        width: 120,
+        height: 120,
         points: [
           [0, 0],
-          [30, -60],
-          [60, 0],
+          [60, -120],
+          [120, 0],
         ],
         groupIds: ["item"],
       },
       {
         id: "cap",
         type: "text",
-        x: 120,
-        y: 130,
-        width: 40,
-        height: 20,
-        fontSize: 20,
+        x: 140,
+        y: 160,
+        width: 80,
+        height: 40,
+        fontSize: 40,
         text: "λ",
         groupIds: ["item"],
         containerId: "bg",
@@ -671,6 +676,30 @@ function lambdaItem() {
   };
 }
 
+function itemOfSize(width, height) {
+  return { ref: "x/y", elements: [{ id: "r", type: "rectangle", x: 0, y: 0, width, height }] };
+}
+
+test("libraryIconMermaidConfig widens flowchart spacing only when an icon resolves", () => {
+  assert.deepEqual(libraryIconMermaidConfig([]), {});
+  assert.deepEqual(libraryIconMermaidConfig([{ item: null }]), {});
+  assert.deepEqual(libraryIconMermaidConfig([{ item: null }, { item: lambdaItem() }]), {
+    flowchart: { curve: "linear", nodeSpacing: 120, rankSpacing: 120 },
+  });
+});
+
+test("libraryIconSize keeps an item's drawn size within the icon bounds", () => {
+  assert.deepEqual(libraryIconSize(itemOfSize(65, 70)), { scale: 1, width: 65, height: 70 });
+  const tall = libraryIconSize(itemOfSize(65, 93));
+  assert.equal(tall.height, LIBRARY_ICON_MAX_HEIGHT);
+  assert.equal(tall.scale, LIBRARY_ICON_MAX_HEIGHT / 93);
+  const wide = libraryIconSize(itemOfSize(300, 40));
+  assert.equal(wide.width, LIBRARY_ICON_MAX_WIDTH);
+  const tiny = libraryIconSize(itemOfSize(20, 10));
+  assert.equal(tiny.width, LIBRARY_ICON_MIN_SIZE);
+  assert.equal(tiny.height, LIBRARY_ICON_MIN_SIZE / 2);
+});
+
 test("prepareLibraryIconSkeletons grows the node around icon and label, keeping its center", () => {
   const skeletons = [vertexSkeleton("api", { x: 100, y: 200, width: 120, height: 40 })];
   const { skeletons: prepared, missing } = prepareLibraryIconSkeletons(skeletons, [
@@ -678,8 +707,9 @@ test("prepareLibraryIconSkeletons grows the node around icon and label, keeping 
   ]);
   assert.deepEqual(missing, []);
   const node = prepared[0];
-  assert.equal(node.width, 120);
-  assert.ok(node.height >= LIBRARY_ICON_SIZE + 16 + 20, `height ${node.height}`);
+  // 80px icon over a one-line label, with padding; the box shrinks to fit.
+  assert.equal(node.width, 96);
+  assert.equal(node.height, 122);
   assert.equal(node.y + node.height / 2, 220);
   assert.equal(node.x + node.width / 2, 160);
   assert.equal(node.strokeColor, "transparent");
@@ -741,6 +771,31 @@ test("prepareLibraryIconSkeletons trims bound arrow endpoints to the grown node 
   assert.equal(outgoing.y + outgoing.points.at(-1)[1], 200, "the far end does not move");
 });
 
+test("prepareLibraryIconSkeletons extends arrows that ended on a wider original box", () => {
+  const skeletons = [
+    vertexSkeleton("api", { x: 100, y: 100, width: 300, height: 40 }),
+    {
+      id: "user_api",
+      type: "arrow",
+      x: 0,
+      y: 120,
+      points: [
+        [0, 0],
+        [100, 0],
+      ],
+      start: { id: "user" },
+      end: { id: "api" },
+    },
+  ];
+  const { skeletons: prepared } = prepareLibraryIconSkeletons(skeletons, [
+    { nodeId: "api", ref: "aws/AWS Lambda", item: lambdaItem() },
+  ]);
+  const [api, arrow] = prepared;
+  assert.equal(api.x, 250 - 96 / 2);
+  assert.equal(arrow.x, 0, "the far end does not move");
+  assert.deepEqual(arrow.points.at(-1), [api.x - 4, 0]);
+});
+
 test("prepareLibraryIconSkeletons reports missing items and nodes and skips subgraphs", () => {
   const skeletons = [vertexSkeleton("vpc", { groupIds: ["subgraph_group_vpc"] }), vertexSkeleton("api")];
   const { skeletons: prepared, missing } = prepareLibraryIconSkeletons(skeletons, [
@@ -776,17 +831,16 @@ test("placeLibraryIcons scales the item into the top of the node with determinis
   assert.deepEqual(text.groupIds, [iconGroup, "subgraph_group_vpc"]);
   assert.equal(text.y + text.height, node.y + node.height - 5);
   assert.deepEqual(bg.groupIds, ["api:icon:item", iconGroup, "subgraph_group_vpc"]);
-  assert.equal(bg.width, LIBRARY_ICON_SIZE);
-  assert.equal(bg.height, LIBRARY_ICON_SIZE);
-  assert.equal(bg.x, 100 + (120 - LIBRARY_ICON_SIZE) / 2);
+  assert.equal(bg.width, 80);
+  assert.equal(bg.height, 80);
+  assert.equal(bg.x, 100 + (120 - 80) / 2);
   assert.equal(bg.y, 180 + 8);
-  const scale = LIBRARY_ICON_SIZE / 80;
   assert.deepEqual(mark.points, [
     [0, 0],
-    [30 * scale, -60 * scale],
-    [60 * scale, 0],
+    [30, -60],
+    [60, 0],
   ]);
-  assert.equal(cap.fontSize, 20 * scale);
+  assert.equal(cap.fontSize, 20);
   assert.equal(cap.containerId, "api:icon:0");
   assert.deepEqual(bg.customData, { lavishLibraryRef: "aws/AWS Lambda" });
   assert.equal(item.elements[0].x, 100, "library item is not mutated");

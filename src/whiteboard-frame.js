@@ -33,6 +33,7 @@ import {
   convertExcalidrawSkeletonsAfterFontsLoad,
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
+  libraryIconMermaidConfig,
   placeLibraryIcons,
   prepareLibraryIconSkeletons,
   repairSavedSceneTextMetrics,
@@ -438,13 +439,14 @@ async function loadSceneFonts(elements, files) {
 }
 
 async function convertSource(source) {
-  const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
-    themeVariables: { fontSize: "16px" },
-  });
   const icons = parseLibraryIconDirectives(source).map((directive) => ({
     ...directive,
     item: findLibraryItem(state.libraries, directive.ref),
   }));
+  const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
+    themeVariables: { fontSize: "16px" },
+    ...libraryIconMermaidConfig(icons),
+  });
   const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsedSkeletons), icons);
   const materialize = (input) => {
     // Preserve Mermaid node/edge identity for edit summaries; regenerate only

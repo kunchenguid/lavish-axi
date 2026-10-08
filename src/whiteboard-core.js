@@ -188,7 +188,15 @@ export function restoreMermaidLabelLineBreaks(elements, { measure } = {}) {
 // into a library icon above its label. The vertex keeps its Mermaid id,
 // bindings, and label so edit summaries still speak in Mermaid node ids; it
 // only grows to fit the icon and turns transparent.
-export const LIBRARY_ICON_SIZE = 48;
+// Icons keep the size their library drew them at (labelled AWS icons are
+// about 65x93 with a 20px caption) within these bounds, so captions stay
+// readable and wide items keep their shape.
+export const LIBRARY_ICON_MAX_HEIGHT = 80;
+export const LIBRARY_ICON_MAX_WIDTH = 140;
+export const LIBRARY_ICON_MIN_SIZE = 48;
+// Mermaid spacing for diagrams with icon nodes: icon nodes are taller than the
+// boxes Mermaid lays out, and the default 50px gap lets neighbours overlap.
+export const LIBRARY_ICON_FLOWCHART_SPACING = 120;
 const LIBRARY_ICON_PADDING = 8;
 const LIBRARY_ICON_LABEL_GAP = 6;
 const LIBRARY_ICON_ARROW_GAP = 4;
@@ -215,9 +223,34 @@ function commonBounds(elements) {
   return { minX, minY, width: maxX - minX, height: maxY - minY };
 }
 
-function iconScale(item) {
-  const { width, height } = commonBounds(item.elements);
-  return LIBRARY_ICON_SIZE / Math.max(width, height, 1);
+/**
+ * Extra Mermaid config for a diagram that places at least one icon. The
+ * converter merges `flowchart` shallowly over its own, so its linear curve is
+ * restated here.
+ * @param {{ item: unknown }[]} icons
+ * @returns {{ flowchart?: { curve: "linear", nodeSpacing: number, rankSpacing: number } }}
+ */
+export function libraryIconMermaidConfig(icons) {
+  if (!(Array.isArray(icons) && icons.some((icon) => icon.item))) return {};
+  return {
+    flowchart: {
+      curve: "linear",
+      nodeSpacing: LIBRARY_ICON_FLOWCHART_SPACING,
+      rankSpacing: LIBRARY_ICON_FLOWCHART_SPACING,
+    },
+  };
+}
+
+export function libraryIconSize(item) {
+  const bounds = commonBounds(item.elements);
+  const width = Math.max(bounds.width, 1);
+  const height = Math.max(bounds.height, 1);
+  const scale = Math.min(
+    LIBRARY_ICON_MAX_HEIGHT / height,
+    LIBRARY_ICON_MAX_WIDTH / width,
+    Math.max(1, LIBRARY_ICON_MIN_SIZE / Math.max(width, height)),
+  );
+  return { scale, width: width * scale, height: height * scale };
 }
 
 function isFlowchartVertexSkeleton(skeleton, nodeId) {
@@ -264,10 +297,24 @@ function insideBox(point, box) {
 }
 
 // Excalidraw binds skeleton arrows without rerouting them, so an arrow that
-// ended on the node's old edge would end inside the grown node. Walk back from
-// the endpoint to the first point outside and cut the path where it enters.
-function trimPathEnd(points, box) {
-  if (points.length < 2 || !insideBox(points.at(-1), box)) return points;
+// ended on the node's old edge would stop short of, or end inside, the
+// resized node. Extend the last segment to the new edge, or walk back to the
+// first point outside and cut the path where it enters.
+function fitPathEnd(points, box) {
+  if (points.length < 2) return points;
+  if (!insideBox(points.at(-1), box)) {
+    const end = points.at(-1);
+    const previous = points.at(-2);
+    const length = Math.hypot(end[0] - previous[0], end[1] - previous[1]);
+    if (length === 0) return points;
+    const reach = (box.maxX - box.minX + box.maxY - box.minY) * 4;
+    const far = [
+      end[0] + ((end[0] - previous[0]) / length) * reach,
+      end[1] + ((end[1] - previous[1]) / length) * reach,
+    ];
+    const entry = segmentEntryPoint(end, far, box);
+    return entry ? [...points.slice(0, -1), entry] : points;
+  }
   let outside = points.length - 2;
   while (outside >= 0 && insideBox(points[outside], box)) outside -= 1;
   if (outside < 0) return points;
@@ -279,8 +326,8 @@ function trimArrowSkeleton(arrow, startBox, endBox) {
   const x = Number(arrow.x) || 0;
   const y = Number(arrow.y) || 0;
   let points = arrow.points.map((point) => [x + (Number(point?.[0]) || 0), y + (Number(point?.[1]) || 0)]);
-  if (endBox) points = trimPathEnd(points, endBox);
-  if (startBox) points = trimPathEnd(points.slice().reverse(), startBox).reverse();
+  if (endBox) points = fitPathEnd(points, endBox);
+  if (startBox) points = fitPathEnd(points.slice().reverse(), startBox).reverse();
   const [originX, originY] = points[0];
   return { ...arrow, x: originX, y: originY, points: points.map(([px, py]) => [px - originX, py - originY]) };
 }
@@ -308,20 +355,14 @@ export function prepareLibraryIconSkeletons(skeletons, icons) {
       continue;
     }
     const node = list[index];
-    const { width: itemWidth, height: itemHeight } = commonBounds(icon.item.elements);
-    const scale = iconScale(icon.item);
+    const iconSize = libraryIconSize(icon.item);
     const label = estimateMultilineLabelBox(node.label.text, node.label.fontSize);
     const width = Number(node.width) || 0;
     const height = Number(node.height) || 0;
-    const nextWidth = Math.max(
-      width,
-      itemWidth * scale + 2 * LIBRARY_ICON_PADDING,
-      label.width + 2 * LIBRARY_ICON_PADDING,
-    );
-    const nextHeight = Math.max(
-      height,
-      LIBRARY_ICON_PADDING + itemHeight * scale + LIBRARY_ICON_LABEL_GAP + label.height + LIBRARY_ICON_PADDING,
-    );
+    // The box is invisible, so it hugs icon and label; arrows are refitted below.
+    const nextWidth = Math.max(iconSize.width, label.width) + 2 * LIBRARY_ICON_PADDING;
+    const nextHeight =
+      LIBRARY_ICON_PADDING + iconSize.height + LIBRARY_ICON_LABEL_GAP + label.height + LIBRARY_ICON_PADDING;
     const x = (Number(node.x) || 0) - (nextWidth - width) / 2;
     const y = (Number(node.y) || 0) - (nextHeight - height) / 2;
     grown.set(icon.nodeId, {
@@ -364,7 +405,7 @@ export function prepareLibraryIconSkeletons(skeletons, icons) {
 
 function cloneIconElements(item, { idPrefix, ref, left, top, outerGroupIds }) {
   const { minX, minY } = commonBounds(item.elements);
-  const scale = iconScale(item);
+  const { scale } = libraryIconSize(item);
   const ids = new Map(item.elements.map((element, index) => [element.id, `${idPrefix}:${index}`]));
   const mapId = (id) => (ids.has(id) ? ids.get(id) : null);
   const mapBinding = (binding) =>
@@ -424,8 +465,7 @@ export function placeLibraryIcons(elements, resolveItem) {
     if (!item || !Array.isArray(item.elements) || item.elements.length === 0) continue;
     const iconGroup = `${node.id}:icon`;
     const outerGroupIds = [iconGroup, ...(Array.isArray(node.groupIds) ? node.groupIds : [])];
-    const { width } = commonBounds(item.elements);
-    const left = (Number(node.x) || 0) + ((Number(node.width) || 0) - width * iconScale(item)) / 2;
+    const left = (Number(node.x) || 0) + ((Number(node.width) || 0) - libraryIconSize(item).width) / 2;
     const top = (Number(node.y) || 0) + LIBRARY_ICON_PADDING;
     updates.set(node.id, { ...node, groupIds: outerGroupIds });
     const label = list.find((element) => element?.type === "text" && element.containerId === node.id);

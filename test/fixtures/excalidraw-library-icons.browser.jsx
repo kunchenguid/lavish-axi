@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import "@excalidraw/excalidraw/index.css";
 
 import {
+  libraryIconMermaidConfig,
   placeLibraryIcons,
   prepareLibraryIconSkeletons,
   restoreMermaidLabelLineBreaks,
@@ -44,12 +45,18 @@ const libraries = [
 const sources = {
   lr: `flowchart LR
   %% lavish-icon api fixture/Gear
+  %% lavish-icon db fixture/Gear
+  %% lavish-icon q fixture/Gear
   user([Customer]) --> api[Orders API]
-  api --> db[(Orders table)]`,
+  api --> db[(Orders table)]
+  api --> q[Order events]`,
   td: `flowchart TD
   %% lavish-icon api fixture/gear
+  %% lavish-icon db fixture/Gear
+  %% lavish-icon q fixture/Gear
   user[Customer] --> api[Orders API]
-  api --> db[Orders table]`,
+  api --> db[Orders table]
+  api --> q[Order events]`,
 };
 
 function sleep(ms) {
@@ -81,11 +88,14 @@ function strictlyInside(point, box) {
 }
 
 async function convert(source) {
-  const parsed = await parseMermaidToExcalidraw(source, { themeVariables: { fontSize: "16px" } });
   const icons = parseLibraryIconDirectives(source).map((directive) => ({
     ...directive,
     item: findLibraryItem(libraries, directive.ref),
   }));
+  const parsed = await parseMermaidToExcalidraw(source, {
+    themeVariables: { fontSize: "16px" },
+    ...libraryIconMermaidConfig(icons),
+  });
   const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsed.elements), icons);
   if (missing.length > 0) throw new Error(`icons were missing: ${JSON.stringify(missing)}`);
   const materialized = restoreMermaidLabelLineBreaks(convertToExcalidrawElements(skeletons, { regenerateIds: false }));
@@ -98,7 +108,9 @@ function checkIconNode(elements, layout) {
   const node = elements.find((element) => element.id === "api");
   if (!node) throw new Error(`${layout}: icon node lost its Mermaid id`);
   if (node.strokeColor !== "transparent") throw new Error(`${layout}: icon node box is still drawn`);
-  const icon = elements.filter((element) => element.customData?.lavishLibraryRef === "fixture/Gear");
+  const icon = elements.filter(
+    (element) => element.customData?.lavishLibraryRef === "fixture/Gear" && element.groupIds.includes("api:icon"),
+  );
   if (icon.length !== 2) throw new Error(`${layout}: expected 2 icon elements, got ${icon.length}`);
   const label = elements.find((element) => element.type === "text" && element.containerId === "api");
   if (!label) throw new Error(`${layout}: icon node lost its label`);
@@ -121,7 +133,7 @@ function checkIconNode(elements, layout) {
       element.type === "arrow" &&
       (element.startBinding?.elementId === "api" || element.endBinding?.elementId === "api"),
   );
-  if (arrows.length !== 2) throw new Error(`${layout}: expected 2 arrows bound to the icon node, got ${arrows.length}`);
+  if (arrows.length !== 3) throw new Error(`${layout}: expected 3 arrows bound to the icon node, got ${arrows.length}`);
   for (const arrow of arrows) {
     const endpoint =
       arrow.endBinding?.elementId === "api"
@@ -131,7 +143,16 @@ function checkIconNode(elements, layout) {
     const gap = distanceToBox(endpoint, node);
     if (gap > 8) throw new Error(`${layout}: arrow ${arrow.id} stops ${gap}px short of the node`);
   }
-  return { nodeHeight: Math.round(node.height), arrows: arrows.length };
+  const nodes = elements.filter(
+    (element) => ["rectangle", "ellipse", "diamond"].includes(element.type) && !element.customData?.lavishLibraryRef,
+  );
+  for (const [index, a] of nodes.entries()) {
+    for (const b of nodes.slice(index + 1)) {
+      const overlaps = a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+      if (overlaps) throw new Error(`${layout}: nodes ${a.id} and ${b.id} overlap`);
+    }
+  }
+  return { nodeHeight: Math.round(node.height), arrows: arrows.length, nodes: nodes.length };
 }
 
 async function insertFromLibraryPanel(elements) {

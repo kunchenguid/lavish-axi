@@ -38,16 +38,21 @@ function liveElements(elements) {
   );
 }
 
+// Unnamed items (common in v1 libraries) are named after their title: the
+// largest text that has at least two letters or digits. That skips decoration
+// such as braces, single glyphs, and small placeholder copy.
 function derivedItemName(item, elements, index) {
   const explicit = collapseWhitespace(item?.name);
   if (explicit) return explicit.slice(0, ITEM_NAME_MAX_CHARS);
-  const text = collapseWhitespace(
-    elements
-      .filter((element) => element.type === "text")
-      .map((element) => element.text)
-      .join(" "),
-  );
-  if (text) return text.slice(0, ITEM_NAME_MAX_CHARS);
+  let title = null;
+  for (const element of elements) {
+    if (element.type !== "text") continue;
+    const text = collapseWhitespace(element.text);
+    if ((text.match(/[\p{L}\p{N}]/gu) || []).length < 2) continue;
+    const fontSize = Number(element.fontSize) || 0;
+    if (!title || fontSize > title.fontSize) title = { text, fontSize };
+  }
+  if (title) return title.text.slice(0, ITEM_NAME_MAX_CHARS);
   return `item-${index + 1}`;
 }
 
