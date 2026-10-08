@@ -3581,19 +3581,13 @@ async function fetchMermaidSources() {
   return Array.isArray(data.sources) ? data.sources : [];
 }
 
-// One fetch per chrome page; every whiteboard frame gets the same libraries.
-let whiteboardLibrariesRequest = null;
+// Fetched per init so a frame converts with the libraries its source hash was
+// computed from; a failed fetch converts without libraries.
 function fetchWhiteboardLibraries() {
-  if (!whiteboardLibrariesRequest) {
-    whiteboardLibrariesRequest = fetch("/api/whiteboard-libraries")
-      .then((response) => (response.ok ? response.json() : { libraries: [] }))
-      .then((data) => (Array.isArray(data.libraries) ? data.libraries : []))
-      .catch(() => {
-        whiteboardLibrariesRequest = null;
-        return [];
-      });
-  }
-  return whiteboardLibrariesRequest;
+  return fetch("/api/whiteboard-libraries")
+    .then((response) => (response.ok ? response.json() : { libraries: [] }))
+    .then((data) => (Array.isArray(data.libraries) ? data.libraries : []))
+    .catch(() => []);
 }
 
 async function authenticateWhiteboardChannel(token) {
@@ -3622,12 +3616,13 @@ function whiteboardRecord(index) {
 
 async function handleWhiteboardReady(index, mode, isCurrent) {
   try {
+    const librariesRequest = fetchWhiteboardLibraries();
     const sources = await fetchMermaidSources();
     const source = sources.find((item) => item.index === index);
     if (!source) throw new Error("this diagram's Mermaid source was not found in the artifact file");
     const savedResponse = await fetch("/api/" + key + "/whiteboard/" + index);
     const saved = savedResponse.ok ? (await savedResponse.json()).whiteboard : null;
-    const libraries = await fetchWhiteboardLibraries();
+    const libraries = await librariesRequest;
     const record = whiteboardRecord(index);
     record.source = String(source.source || "");
     record.sourceHash = String(source.hash || "");
