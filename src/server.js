@@ -55,7 +55,7 @@ import {
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
-import { injectLavishSdk, injectSessionLinkNavigationBytes } from "./html-transform.js";
+import { injectLavishSdk, injectSessionLinkNavigationBytes, siblingHtmlContentType } from "./html-transform.js";
 import { SESSION_LINK_NAVIGATION_JS } from "./session-link-navigation.js";
 import {
   bindHost,
@@ -1599,8 +1599,8 @@ export async function serve({
           res.status(403).send("Forbidden");
           return;
         }
-        // Let the browser honor the original BOM or charset declaration.
-        res.setHeader("Content-Type", "text/html");
+        // Honor declared encodings while retaining UTF-8 for undeclared pages.
+        res.setHeader("Content-Type", siblingHtmlContentType(html));
         res.send(injectSessionLinkNavigationBytes(html, origin));
         return;
       }

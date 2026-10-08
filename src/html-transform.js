@@ -74,3 +74,41 @@ export function injectSessionLinkNavigationBytes(bytes, servedOrigin) {
   if (bigEndian) transformed.swap16();
   return Buffer.concat([transformed, bytes.subarray(codeUnits.length)]);
 }
+
+// Keep the historical UTF-8 transport default only when the document does not
+// declare its own encoding. Parse markup so comments and script text do not count.
+export function siblingHtmlContentType(bytes) {
+  if (
+    (bytes[0] === 0xff && bytes[1] === 0xfe) ||
+    (bytes[0] === 0xfe && bytes[1] === 0xff) ||
+    (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+  ) {
+    return "text/html";
+  }
+  const nodes = [...parse(bytes.toString("latin1")).childNodes];
+  while (nodes.length) {
+    const node = nodes.pop();
+    if ("tagName" in node && node.tagName === "meta" && node.namespaceURI === "http://www.w3.org/1999/xhtml") {
+      const attrs = new Map(node.attrs.map(({ name, value }) => [name, value]));
+      const label =
+        attrs.get("charset") ??
+        (attrs.get("http-equiv")?.toLowerCase() === "content-type"
+          ? /charset\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s;]+))/i
+              .exec(attrs.get("content") ?? "")
+              ?.slice(1)
+              .find((value) => value !== undefined)
+          : undefined);
+      if (label) {
+        try {
+          // HTML supports x-user-defined even though TextDecoder does not.
+          if (label.trim().toLowerCase() !== "x-user-defined") new TextDecoder(label);
+          return "text/html";
+        } catch {
+          // An invalid label does not override the UTF-8 fallback.
+        }
+      }
+    }
+    if ("childNodes" in node) nodes.push(...node.childNodes);
+  }
+  return "text/html; charset=utf-8";
+}

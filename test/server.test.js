@@ -6844,16 +6844,34 @@ test("sibling navigation uses only validated HTTPS proxy origins with author CSP
   }
 });
 
-for (const encoding of ["utf16le", "utf16be", "utf8", "utf8-bom", "latin1"]) {
+for (const encoding of [
+  "utf16le",
+  "utf16be",
+  "utf8",
+  "utf8-bom",
+  "latin1",
+  "utf8-undeclared",
+  "utf8-comment",
+  "utf8-invalid",
+  "latin1-http-equiv",
+]) {
   test(`sibling HTML preserves ${encoding} bytes and injects an executable helper`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "lavish-sibling-encoding-"));
     const artifact = path.join(dir, "artifact.html");
-    const source = '<html><head><meta charset="windows-1252"></head><body><p>Café</p></body></html>';
+    const declarations = {
+      "utf8-undeclared": "",
+      "utf8-comment": '<!-- <meta charset="windows-1252"> -->',
+      "utf8-invalid": '<meta charset="invalid-encoding">',
+      "latin1-http-equiv": '<meta content="text/html; charset=windows-1252" http-equiv="Content-Type">',
+    };
+    const fallback = encoding.startsWith("utf8-") && encoding !== "utf8-bom";
+    const declaration = declarations[encoding] ?? '<meta charset="windows-1252">';
+    const source = `<html><head>${declaration}</head><body><p>Café</p></body></html>`;
     const encode = (html) => {
       if (encoding === "utf8-bom") return Buffer.from("\ufeff" + html, "utf8");
       if (encoding === "utf16be") return Buffer.from("\ufeff" + html, "utf16le").swap16();
       if (encoding === "utf16le") return Buffer.from("\ufeff" + html, "utf16le");
-      return Buffer.from(html, encoding === "latin1" ? "latin1" : "utf8");
+      return Buffer.from(html, encoding.startsWith("latin1") ? "latin1" : "utf8");
     };
     const original = encode(source);
     await writeFile(artifact, "<body>Source</body>");
@@ -6868,8 +6886,12 @@ for (const encoding of ["utf16le", "utf16be", "utf8", "utf8-bom", "latin1"]) {
       }).then((res) => res.json());
       const response = await fetch(`${base}/artifact/${key}/sibling.html`);
       assert.equal(response.status, 200);
-      assert.doesNotMatch(response.headers.get("content-type"), /charset/i);
+      assert.equal(response.headers.get("content-type"), fallback ? "text/html; charset=utf-8" : "text/html");
       const delivered = Buffer.from(await response.arrayBuffer());
+      if (fallback) {
+        const charset = response.headers.get("content-type").split("charset=")[1];
+        assert.ok(new TextDecoder(charset).decode(delivered).includes("<p>Café</p>"));
+      }
       const expected = source.replace("</body>", `<script src="${base}/session-link-navigation.js"></script></body>`);
       assert.deepEqual(delivered, encode(expected));
       assert.deepEqual(await readFile(path.join(dir, "sibling.html")), original);
