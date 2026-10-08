@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createWhiteboardPersistencePayload,
+  whiteboardSaveIsHeld,
   findDuplicateElementIds,
   LIBRARY_ICON_GROWN_SPACING,
   LIBRARY_ICON_HEIGHT,
@@ -122,17 +123,20 @@ test("whiteboard persistence payload keeps migration and baseline fields togethe
   );
 });
 
-test("whiteboard persistence payload holds an unedited conversion made without libraries", () => {
+test("an unedited conversion made without libraries is held from autosave but keeps its payload", () => {
   const baselineElements = [rect("A")];
   const state = { sceneSourceHash: "hash-1", textMetricsVersion: 1, baselineElements, librariesUnavailable: true };
-  assert.equal(createWhiteboardPersistencePayload(state, { elements: [rect("A")] }), null);
-  const edited = { elements: [rect("A"), rect("added")] };
-  assert.deepEqual(createWhiteboardPersistencePayload(state, edited), {
+  const unedited = { elements: [rect("A")] };
+  assert.equal(whiteboardSaveIsHeld(state, unedited), true);
+  // Queued feedback still carries the full scene, baseline and hash.
+  assert.deepEqual(createWhiteboardPersistencePayload(state, unedited), {
     sourceHash: "hash-1",
     textMetricsVersion: 1,
-    scene: edited,
+    scene: unedited,
     baseline: { elements: baselineElements },
   });
+  assert.equal(whiteboardSaveIsHeld(state, { elements: [rect("A"), rect("added")] }), false);
+  assert.equal(whiteboardSaveIsHeld({ ...state, librariesUnavailable: false }, unedited), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -724,6 +728,16 @@ test("libraryIconSize scales every item to one icon height within a width cap", 
   assert.ok(wide.height < LIBRARY_ICON_HEIGHT);
 });
 
+test("libraryIconSize measures rotated elements by their rotated bounds", () => {
+  const rotated = {
+    ref: "x/bar",
+    elements: [{ id: "bar", type: "rectangle", x: 0, y: 0, width: 100, height: 10, angle: Math.PI / 2 }],
+  };
+  const size = libraryIconSize(rotated);
+  assert.ok(Math.abs(size.height - LIBRARY_ICON_HEIGHT) < 1e-9, `height ${size.height}`);
+  assert.ok(Math.abs(size.width - LIBRARY_ICON_HEIGHT / 10) < 1e-9, `width ${size.width}`);
+});
+
 test("prepareLibraryIconSkeletons grows the node around icon and label, keeping its center", () => {
   const skeletons = [vertexSkeleton("api", { x: 100, y: 200, width: 120, height: 40 })];
   const { skeletons: prepared, missing } = prepareLibraryIconSkeletons(skeletons, [
@@ -925,4 +939,56 @@ test("summarizeSceneEdits reports a moved reviewer-dropped item once", () => {
   const summary = summarizeSceneEdits(baseline, edited);
   assert.deepEqual(summary.lines, ["Moved library item sys/Queue by (0, 30)"]);
   assert.equal(summary.stats.moved, 1);
+});
+
+test("summarizeSceneEdits reports a moved part of a multi-element library item", () => {
+  const ref = { lavishLibraryRef: "sys/Queue" };
+  const baseline = [
+    rect("q1", { groupIds: ["g"], customData: ref }),
+    rect("q2", { y: 50, groupIds: ["g"], customData: ref }),
+  ];
+  const edited = [baseline[0], { ...baseline[1], y: 90 }];
+  const summary = summarizeSceneEdits(baseline, edited);
+  assert.deepEqual(summary.lines, ["Resized library item sys/Queue by (0, 40)"]);
+  assert.equal(summary.stats.moved, 1);
+});
+
+test("summarizeSceneEdits reports text edited inside an icon node's icon", () => {
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const baseline = [
+    rect("api", { groupIds: ["api:icon"] }),
+    boundLabel("api-label", "api", "Orders API"),
+    {
+      id: "api:icon:0",
+      type: "text",
+      x: 10,
+      y: 10,
+      width: 20,
+      height: 10,
+      text: "λ",
+      groupIds: ["api:icon"],
+      customData: ref,
+    },
+  ];
+  const edited = [baseline[0], baseline[1], { ...baseline[2], text: "μ" }];
+  const summary = summarizeSceneEdits(baseline, edited);
+  assert.deepEqual(summary.lines, ['Edited library item aws/AWS Lambda in rectangle "Orders API" (api)']);
+  assert.equal(summary.stats.relabeled, 1);
+});
+
+test("summarizeSceneEdits reports an icon resized within its node, relative to the node", () => {
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const baseline = [
+    rect("api", { groupIds: ["api:icon"] }),
+    boundLabel("api-label", "api", "Orders API"),
+    rect("api:icon:0", { x: 20, y: 5, width: 40, height: 40, groupIds: ["api:icon"], customData: ref }),
+  ];
+  const resized = [baseline[0], baseline[1], { ...baseline[2], width: 60, height: 60 }];
+  assert.deepEqual(summarizeSceneEdits(baseline, resized).lines, [
+    'Resized library item aws/AWS Lambda by (20, 20) in rectangle "Orders API" (api)',
+  ]);
+  const movedTogether = baseline.map((element) => ({ ...element, x: element.x + 100 }));
+  assert.deepEqual(summarizeSceneEdits(baseline, movedTogether).lines, [
+    'Moved by (100, 0): rectangle "Orders API" (api)',
+  ]);
 });

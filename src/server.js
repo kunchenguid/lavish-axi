@@ -1726,13 +1726,17 @@ export async function serve({
       const html = await readFile(session.file, "utf8").catch(() => "");
       const extracted = extractMermaidSources(html);
       const usesLibraries = extracted.some(({ source }) => parseLibraryIconDirectives(source).length > 0);
-      const libraries = usesLibraries ? (await loadExcalidrawLibraries(libraryDir)).libraries : [];
+      const snapshot = usesLibraries ? await loadExcalidrawLibraries(libraryDir) : null;
+      const libraries = snapshot ? snapshot.libraries : [];
       const sources = extracted.map(({ index, source }) => ({
         index,
         source,
         hash: whiteboardSourceHash(source, libraries),
       }));
-      res.json({ sources });
+      // The chrome compares this with /api/whiteboard-libraries' version: a
+      // library file that changed between the two requests means the frame's
+      // libraries do not match these hashes.
+      res.json(snapshot ? { sources, libraries_version: snapshot.version } : { sources });
     } catch (error) {
       next(error);
     }
@@ -1746,9 +1750,9 @@ export async function serve({
         res.status(403).json({ error: "cross-origin whiteboard library request rejected" });
         return;
       }
-      const { libraries } = await loadExcalidrawLibraries(libraryDir);
+      const { libraries, version } = await loadExcalidrawLibraries(libraryDir);
       res.setHeader("cache-control", "no-store");
-      res.json({ libraries: libraries.map(({ id, items }) => ({ id, items })) });
+      res.json({ libraries: libraries.map(({ id, items }) => ({ id, items })), version });
     } catch (error) {
       next(error);
     }

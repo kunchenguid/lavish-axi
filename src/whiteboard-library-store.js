@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -29,8 +30,12 @@ async function listLibraryFiles(dir) {
   for (const name of names.sort()) {
     if (!name.toLowerCase().endsWith(LIBRARY_FILE_EXTENSION)) continue;
     const file = path.join(dir, name);
-    const info = await stat(file).catch(() => null);
-    if (info?.isFile()) files.push({ name, file, size: info.size, mtimeMs: info.mtimeMs });
+    try {
+      const info = await stat(file);
+      files.push({ name, file, size: info.size, mtimeMs: info.mtimeMs, isFile: info.isFile() });
+    } catch (error) {
+      files.push({ name, file, size: 0, mtimeMs: 0, error: error?.code || String(error) });
+    }
   }
   return files;
 }
@@ -45,7 +50,15 @@ export async function loadExcalidrawLibraries(dir) {
   const ids = new Set();
   let totalBytes = 0;
   let totalItems = 0;
-  for (const { name, file, size } of await listLibraryFiles(dir)) {
+  for (const { name, file, size, isFile, error } of await listLibraryFiles(dir)) {
+    if (error) {
+      skipped.push({ file, reason: `could not read the file (${error})` });
+      continue;
+    }
+    if (!isFile) {
+      skipped.push({ file, reason: "not a file" });
+      continue;
+    }
     const id = libraryIdFromFileName(name);
     if (!id) {
       skipped.push({ file, reason: "file name has no letters or digits to use as a library id" });
@@ -83,19 +96,22 @@ export async function loadExcalidrawLibraries(dir) {
 }
 
 /**
- * Re-parses only when a library file is added, removed, or rewritten.
- * @returns {(dir: string) => ReturnType<typeof loadExcalidrawLibraries>}
+ * Re-parses only when a library file is added, removed, or rewritten. Each
+ * snapshot carries a `version`, so callers can tell whether two requests saw
+ * the same libraries.
+ * @returns {(dir: string) => Promise<Awaited<ReturnType<typeof loadExcalidrawLibraries>> & { version: string }>}
  */
 export function createExcalidrawLibraryCache() {
   let signature = "";
-  /** @type {ReturnType<typeof loadExcalidrawLibraries> | null} */
+  /** @type {Promise<Awaited<ReturnType<typeof loadExcalidrawLibraries>> & { version: string }> | null} */
   let cached = null;
   return async (dir) => {
     const files = await listLibraryFiles(dir);
     const next = JSON.stringify([dir, files.map(({ name, size, mtimeMs }) => [name, size, mtimeMs])]);
     if (!cached || next !== signature) {
       signature = next;
-      cached = loadExcalidrawLibraries(dir);
+      const version = createHash("sha256").update(next).digest("hex").slice(0, 16);
+      cached = loadExcalidrawLibraries(dir).then((result) => ({ ...result, version }));
       cached.catch(() => {
         signature = "";
       });

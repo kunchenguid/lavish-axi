@@ -3574,11 +3574,18 @@ function postToWhiteboard(index, placement, message) {
   else postToInlineWhiteboard(index, message);
 }
 
-async function fetchMermaidSources() {
+async function fetchMermaidSourcesData() {
   const response = await fetch("/api/" + key + "/mermaid-sources");
   if (!response.ok) throw new Error("could not read the artifact's Mermaid sources");
   const data = await response.json();
-  return Array.isArray(data.sources) ? data.sources : [];
+  return {
+    sources: Array.isArray(data.sources) ? data.sources : [],
+    librariesVersion: typeof data.libraries_version === "string" ? data.libraries_version : "",
+  };
+}
+
+async function fetchMermaidSources() {
+  return (await fetchMermaidSourcesData()).sources;
 }
 
 // Fetched per init so a frame converts with the libraries its source hash was
@@ -3587,7 +3594,11 @@ async function fetchMermaidSources() {
 function fetchWhiteboardLibraries() {
   return fetch("/api/whiteboard-libraries")
     .then((response) => (response.ok ? response.json() : null))
-    .then((data) => (Array.isArray(data?.libraries) ? data.libraries : null))
+    .then((data) =>
+      Array.isArray(data?.libraries)
+        ? { libraries: data.libraries, version: typeof data.version === "string" ? data.version : "" }
+        : null,
+    )
     .catch(() => null);
 }
 
@@ -3618,12 +3629,16 @@ function whiteboardRecord(index) {
 async function handleWhiteboardReady(index, mode, isCurrent) {
   try {
     const librariesRequest = fetchWhiteboardLibraries();
-    const sources = await fetchMermaidSources();
+    const { sources, librariesVersion } = await fetchMermaidSourcesData();
     const source = sources.find((item) => item.index === index);
     if (!source) throw new Error("this diagram's Mermaid source was not found in the artifact file");
     const savedResponse = await fetch("/api/" + key + "/whiteboard/" + index);
     const saved = savedResponse.ok ? (await savedResponse.json()).whiteboard : null;
-    const libraries = await librariesRequest;
+    const librariesData = await librariesRequest;
+    // A library file that changed between the two requests leaves the frame
+    // with libraries that do not match this source hash: treat that like a
+    // failed fetch, so the conversion's autosave is held.
+    const librariesMatch = Boolean(librariesData) && (!librariesVersion || librariesData.version === librariesVersion);
     const record = whiteboardRecord(index);
     record.source = String(source.source || "");
     record.sourceHash = String(source.hash || "");
@@ -3636,8 +3651,8 @@ async function handleWhiteboardReady(index, mode, isCurrent) {
       source: record.source,
       sourceHash: record.sourceHash,
       saved,
-      libraries: libraries || [],
-      librariesUnavailable: !libraries,
+      libraries: librariesData ? librariesData.libraries : [],
+      librariesUnavailable: !librariesMatch,
       theme: whiteboardTheme(),
     });
     return true;

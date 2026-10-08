@@ -77,15 +77,16 @@ export function parseExcalidrawLibrary(text, { id }) {
   else throw new Error("no libraryItems or library array");
 
   const items = [];
-  const seen = new Map();
+  const taken = new Set();
   rawItems.forEach((item, index) => {
     const elements = liveElements(item?.elements);
     if (elements.length === 0) return;
     const baseName = derivedItemName(item, elements, index);
-    const key = baseName.toLowerCase();
-    const count = (seen.get(key) || 0) + 1;
-    seen.set(key, count);
-    const name = count === 1 ? baseName : `${baseName} #${count}`;
+    // Reserve every final name, so a generated "Queue #2" never collides with
+    // an item that was already called "Queue #2".
+    let name = baseName;
+    for (let suffix = 2; taken.has(normalizeLibraryRef(name)); suffix += 1) name = `${baseName} #${suffix}`;
+    taken.add(normalizeLibraryRef(name));
     items.push({ ref: `${id}/${name}`, name, elements });
   });
   if (items.length === 0) throw new Error("no usable items");

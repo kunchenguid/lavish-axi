@@ -344,7 +344,9 @@ test("GET /api/whiteboard-libraries serves the user's libraries and refreshes on
   const ctx = await startWhiteboardServer();
   try {
     const empty = await fetch(`${ctx.base}/api/whiteboard-libraries`).then((res) => res.json());
-    assert.deepEqual(empty, { libraries: [] });
+    assert.deepEqual(empty.libraries, []);
+    const plainSources = await fetch(`${ctx.base}/api/${ctx.key}/mermaid-sources`).then((res) => res.json());
+    assert.equal(plainSources.libraries_version, undefined, "no icon lines, no library snapshot to match");
 
     const libraryDir = path.join(ctx.dir, "excalidraw-libraries");
     await mkdir(libraryDir);
@@ -397,6 +399,14 @@ test("mermaid-sources hashes follow referenced library items only for icon diagr
     const libraryDir = path.join(ctx.dir, "excalidraw-libraries");
     await mkdir(libraryDir);
     await writeFile(path.join(libraryDir, "aws-icons.excalidrawlib"), libraryFile([["Lambda", 10]]));
+    const versions = async () => {
+      const sources = await fetch(`${ctx.base}/api/${ctx.key}/mermaid-sources`).then((res) => res.json());
+      const libraries = await fetch(`${ctx.base}/api/whiteboard-libraries`).then((res) => res.json());
+      return [sources.libraries_version, libraries.version];
+    };
+    const [sourcesVersion, librariesVersion] = await versions();
+    assert.match(librariesVersion, /^[0-9a-f]{16}$/);
+    assert.equal(sourcesVersion, librariesVersion, "both routes report the snapshot they used");
     const [withLibrary, plainAgain] = await hashes();
     assert.notEqual(withLibrary, withoutLibrary);
     assert.equal(plainAgain, plain);
@@ -404,6 +414,9 @@ test("mermaid-sources hashes follow referenced library items only for icon diagr
     await writeFile(path.join(libraryDir, "aws-icons.excalidrawlib"), libraryFile([["Lambda", 20]]));
     const [changedItem] = await hashes();
     assert.notEqual(changedItem, withLibrary);
+    const [changedSourcesVersion, changedLibrariesVersion] = await versions();
+    assert.equal(changedSourcesVersion, changedLibrariesVersion);
+    assert.notEqual(changedLibrariesVersion, librariesVersion);
   } finally {
     await ctx.close();
   }

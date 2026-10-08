@@ -204,3 +204,19 @@ test("toExcalidrawLibraryItems groups multi-element items that are not grouped a
   );
   assert.deepEqual(single.elements[0].groupIds, []);
 });
+
+test("parseExcalidrawLibrary keeps every generated ref unique", () => {
+  const library = parseExcalidrawLibrary(
+    JSON.stringify({
+      libraryItems: [
+        { name: "Queue", elements: [square("a")] },
+        { name: "queue", elements: [square("b")] },
+        { name: "Queue #2", elements: [square("c")] },
+      ],
+    }),
+    { id: "sys" },
+  );
+  const refs = library.items.map((item) => item.ref.toLowerCase());
+  assert.equal(new Set(refs).size, 3);
+  for (const item of library.items) assert.equal(findLibraryItem([library], item.ref), item);
+});

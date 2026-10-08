@@ -44,6 +44,7 @@ import {
   sceneIsImageFallback,
   summarizeSceneEdits,
   WHITEBOARD_TEXT_METRICS_VERSION,
+  whiteboardSaveIsHeld,
 } from "./whiteboard-core.js";
 import { findLibraryItem, parseLibraryIconDirectives, toExcalidrawLibraryItems } from "./whiteboard-libraries.js";
 
@@ -234,12 +235,11 @@ function currentScene() {
 function postSave(flushId = "") {
   const scene = currentScene();
   if (!scene) return false;
-  const payload = createWhiteboardPersistencePayload(state, scene);
-  if (!payload) return false;
+  if (whiteboardSaveIsHeld(state, scene)) return false;
   post({
     type: "lavish-whiteboard:save",
     diagramIndex: state.diagramIndex,
-    ...payload,
+    ...createWhiteboardPersistencePayload(state, scene),
     ...(flushId ? { flushId } : {}),
   });
   return true;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -54,10 +54,38 @@ test("the library cache re-reads only when the directory changes", async () => {
     await writeFile(path.join(dir, "two.excalidrawlib"), library("B"));
     const second = await load(dir);
     assert.notEqual(second, first);
+    assert.match(first.version, /^[0-9a-f]{16}$/);
+    assert.notEqual(second.version, first.version);
+    assert.equal((await load(dir)).version, second.version);
     assert.deepEqual(
       second.libraries.map((entry) => entry.id),
       ["one", "two"],
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadExcalidrawLibraries reports unreadable and non-file entries as skipped", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-libraries-broken-"));
+  try {
+    await writeFile(path.join(dir, "ok.excalidrawlib"), library("A"));
+    await mkdir(path.join(dir, "folder.excalidrawlib"));
+    let linked = false;
+    try {
+      await symlink(path.join(dir, "missing-target"), path.join(dir, "dangling.excalidrawlib"));
+      linked = true;
+    } catch {
+      t.diagnostic("symlinks unavailable; dangling-link case not exercised");
+    }
+    const { libraries, skipped } = await loadExcalidrawLibraries(dir);
+    assert.deepEqual(
+      libraries.map((entry) => entry.id),
+      ["ok"],
+    );
+    const reasons = new Map(skipped.map((entry) => [path.basename(entry.file), entry.reason]));
+    assert.equal(reasons.get("folder.excalidrawlib"), "not a file");
+    if (linked) assert.match(reasons.get("dangling.excalidrawlib") || "", /could not read/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

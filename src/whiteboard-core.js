@@ -203,15 +203,49 @@ const LIBRARY_ICON_ARROW_GAP = 4;
 const LIBRARY_ICON_LABEL_BOTTOM_PADDING = 5;
 const ICON_NODE_CUSTOM_DATA_KEY = "lavishIconNode";
 
+// Axis-aligned bounds as drawn. Excalidraw rotates an element about the
+// centre of its unrotated box (for linear elements, the box of its points).
 function elementBounds(element) {
   const x = Number(element.x) || 0;
   const y = Number(element.y) || 0;
-  if (Array.isArray(element.points) && element.points.length > 0) {
-    const xs = element.points.map((point) => x + (Number(point?.[0]) || 0));
-    const ys = element.points.map((point) => y + (Number(point?.[1]) || 0));
-    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-  }
-  return [x, y, x + (Number(element.width) || 0), y + (Number(element.height) || 0)];
+  const corners =
+    Array.isArray(element.points) && element.points.length > 0
+      ? element.points.map((point) => [x + (Number(point?.[0]) || 0), y + (Number(point?.[1]) || 0)])
+      : [
+          [x, y],
+          [x + (Number(element.width) || 0), y + (Number(element.height) || 0)],
+        ];
+  const box = [
+    Math.min(...corners.map((c) => c[0])),
+    Math.min(...corners.map((c) => c[1])),
+    Math.max(...corners.map((c) => c[0])),
+    Math.max(...corners.map((c) => c[1])),
+  ];
+  const angle = Number(element.angle) || 0;
+  if (angle === 0) return box;
+  const cx = (box[0] + box[2]) / 2;
+  const cy = (box[1] + box[3]) / 2;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const outline =
+    corners.length > 2
+      ? corners
+      : [
+          [box[0], box[1]],
+          [box[2], box[1]],
+          [box[2], box[3]],
+          [box[0], box[3]],
+        ];
+  const turned = outline.map(([px, py]) => [
+    cx + (px - cx) * cos - (py - cy) * sin,
+    cy + (px - cx) * sin + (py - cy) * cos,
+  ]);
+  return [
+    Math.min(...turned.map((c) => c[0])),
+    Math.min(...turned.map((c) => c[1])),
+    Math.max(...turned.map((c) => c[0])),
+    Math.max(...turned.map((c) => c[1])),
+  ];
 }
 
 function commonBounds(elements) {
@@ -573,14 +607,18 @@ export function repairSavedSceneTextMetrics(elements, { measure }) {
   return { elements: repairedElements, repaired };
 }
 
+// A conversion drawn while the libraries were unavailable is missing its
+// icons, yet its source hash assumes them. Hold its view-only autosave so the
+// next open re-converts; once the reviewer edits it, it saves as usual.
+// Queued feedback is never held: it always carries the full scene.
+export function whiteboardSaveIsHeld(state, scene) {
+  if (!state?.librariesUnavailable) return false;
+  const baselineElements = Array.isArray(state?.baselineElements) ? state.baselineElements : [];
+  return !savedSceneHasPreservableEdits({ scene, baseline: { elements: baselineElements } });
+}
+
 export function createWhiteboardPersistencePayload(state, scene) {
   const baselineElements = Array.isArray(state?.baselineElements) ? state.baselineElements : [];
-  if (
-    state?.librariesUnavailable &&
-    !savedSceneHasPreservableEdits({ scene, baseline: { elements: baselineElements } })
-  ) {
-    return null;
-  }
   return {
     sourceHash: String(state?.sceneSourceHash || ""),
     textMetricsVersion: Math.max(0, Math.floor(Number(state?.textMetricsVersion) || 0)),
@@ -797,13 +835,10 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     if (libraryRefOf(el)) {
       const key = libraryGroupKey(el);
       if (!movedItems.has(key)) {
-        movedItems.set(key, {
-          ref: libraryRefOf(el),
-          group: libraryGroupOf(el),
-          dx: Math.round((el.x ?? 0) - (before.x ?? 0)),
-          dy: Math.round((el.y ?? 0) - (before.y ?? 0)),
-        });
+        movedItems.set(key, { ref: libraryRefOf(el), group: libraryGroupOf(el), before: [], after: [] });
       }
+      movedItems.get(key).before.push(before);
+      movedItems.get(key).after.push(el);
       continue;
     }
 
@@ -833,12 +868,34 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     }
   }
 
-  for (const { ref, group, dx, dy } of movedItems.values()) {
-    // An icon node's icon moves with its node, which reports the move.
-    if (iconNodeFor(edited, group)) continue;
-    if (Math.abs(dx) <= SUMMARY_MOVE_EPSILON_PX && Math.abs(dy) <= SUMMARY_MOVE_EPSILON_PX) continue;
-    stats.moved += 1;
-    lines.push(clampLine(`Moved library item ${ref} by (${dx}, ${dy})`));
+  for (const { ref, group, before, after } of movedItems.values()) {
+    // Geometry is compared for the item as a whole. An icon node's icon is
+    // measured relative to its node, which reports its own moves.
+    const node = iconNodeFor(edited, group);
+    const nodeBefore = node ? baselineMap.get(node.id) : null;
+    const shiftX = node && nodeBefore ? (node.x ?? 0) - (nodeBefore.x ?? 0) : 0;
+    const shiftY = node && nodeBefore ? (node.y ?? 0) - (nodeBefore.y ?? 0) : 0;
+    const was = commonBounds(before);
+    const now = commonBounds(after);
+    const dx = Math.round(now.minX - was.minX - shiftX);
+    const dy = Math.round(now.minY - was.minY - shiftY);
+    const dw = Math.round(now.width - was.width);
+    const dh = Math.round(now.height - was.height);
+    const where = node ? ` in ${describeElement(node, editedText)}` : "";
+    const movedFar = Math.abs(dx) > SUMMARY_MOVE_EPSILON_PX || Math.abs(dy) > SUMMARY_MOVE_EPSILON_PX;
+    const resized = Math.abs(dw) > SUMMARY_MOVE_EPSILON_PX || Math.abs(dh) > SUMMARY_MOVE_EPSILON_PX;
+    if (movedFar || resized) {
+      stats.moved += 1;
+      const parts = [];
+      if (movedFar) parts.push(`Moved library item ${ref} by (${dx}, ${dy})`);
+      if (resized)
+        parts.push(movedFar ? `resized it by (${dw}, ${dh})` : `Resized library item ${ref} by (${dw}, ${dh})`);
+      lines.push(clampLine(`${parts.join(" and ")}${where}`));
+    }
+    if (before.some((element, index) => libraryContentDiffers(element, after[index]))) {
+      stats.relabeled += 1;
+      lines.push(clampLine(`Edited library item ${ref}${where}`));
+    }
   }
 
   const total = STAT_KEYS.reduce((sum, key) => sum + stats[key], 0);
@@ -850,6 +907,20 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
   }
   if (total === 0) bounded.push("No element changes detected (view-only or style-only edits).");
   return { lines: bounded, stats, totalChanges: total };
+}
+
+const LIBRARY_GEOMETRY_KEYS = new Set(["x", "y", "width", "height", "points", "lastCommittedPoint"]);
+
+// A change inside a library item other than where it sits or how big it is:
+// edited text, a reshaped or restyled-in-substance part. Style-only keys stay
+// benign, as for every other element.
+function libraryContentDiffers(before, after) {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (key === "isDeleted" || LIBRARY_GEOMETRY_KEYS.has(key)) continue;
+    if (valuesDiffer(before[key], after[key], key, true)) return true;
+  }
+  return false;
 }
 
 function libraryRefOf(el) {
