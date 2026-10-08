@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import WebSocket from "ws";
+import { injectSessionLinkNavigation } from "../src/html-transform.js";
 
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
@@ -6786,7 +6787,7 @@ test("sibling HTML preserves missing-file statuses and sandbox headers", async (
     const policy = response.headers.get("content-security-policy");
     assert.match(policy, /sandbox/);
     assert.doesNotMatch(policy, /allow-same-origin|allow-top-navigation/);
-    assert.equal(await response.text(), '<body>Sibling<script src="/session-link-navigation.js"></script></body>');
+    assert.equal(await response.text(), injectSessionLinkNavigation("<body>Sibling</body>"));
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

@@ -97,7 +97,9 @@ test(
       }
       await writeFile(
         path.join(root, "sibling.html"),
-        `<h1>Local sibling content</h1><a href="${urls[0]}"><span>Session A from sibling</span></a>`,
+        `<!doctype html><html><head><base href="https://example.com/pages/">
+        <script type="module" src="${base}/session-link-navigation.js"></script></head><body>
+        <h1>Local sibling content</h1><a href="${urls[0]}"><span>Session A from sibling</span></a></body></html>`,
       );
       await chrome("open", urls[0]);
       await chrome("wait", "Artifact A");

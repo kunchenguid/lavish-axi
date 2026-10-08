@@ -13,6 +13,12 @@ export function injectLavishSdk(html, key, artifactRevision, artifactLoadToken =
   return `${html}\n${script}`;
 }
 
+const SESSION_LINK_LOADER = `(() => {
+  const script = document.createElement("script");
+  script.src = new URL("/session-link-navigation.js", location.href).href;
+  document.head.appendChild(script);
+})();`;
+
 export function injectSessionLinkNavigation(html) {
   const document = parse(html, { sourceCodeLocationInfo: true });
   const nodes = [...document.childNodes];
@@ -28,18 +34,18 @@ export function injectSessionLinkNavigation(html) {
           .toLowerCase();
         const executable =
           !type ||
-          type === "module" ||
           /^(?:application\/(?:x-)?(?:java|ecma)script|text\/(?:(?:x-)?(?:java|ecma)script|javascript1\.[0-5]|jscript|livescript))$/.test(
             type,
           );
-        if (attrs.get("src") === "/session-link-navigation.js" && executable && !attrs.has("nomodule")) {
+        const content = node.childNodes.map((child) => ("value" in child ? child.value : "")).join("");
+        if (!attrs.has("src") && executable && !attrs.has("nomodule") && content === SESSION_LINK_LOADER) {
           return html;
         }
       }
     }
     if ("childNodes" in node) nodes.push(...node.childNodes);
   }
-  const script = '<script src="/session-link-navigation.js"></script>';
+  const script = `<script>${SESSION_LINK_LOADER}</script>`;
   if (bodyEnd !== undefined) return html.slice(0, bodyEnd) + script + html.slice(bodyEnd);
   return `${html}\n${script}`;
 }
