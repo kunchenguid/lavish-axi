@@ -64,6 +64,9 @@ const state = {
   files: {},
   // User-supplied Excalidraw libraries, passed in by the chrome.
   libraries: [],
+  // The chrome could not fetch the libraries: a conversion is persisted only
+  // once it carries user edits, so the next open re-converts with them.
+  librariesUnavailable: false,
   imageFallback: false,
   textMetricsVersion: WHITEBOARD_TEXT_METRICS_VERSION,
   channelId: "",
@@ -231,10 +234,12 @@ function currentScene() {
 function postSave(flushId = "") {
   const scene = currentScene();
   if (!scene) return false;
+  const payload = createWhiteboardPersistencePayload(state, scene);
+  if (!payload) return false;
   post({
     type: "lavish-whiteboard:save",
     diagramIndex: state.diagramIndex,
-    ...createWhiteboardPersistencePayload(state, scene),
+    ...payload,
     ...(flushId ? { flushId } : {}),
   });
   return true;
@@ -661,6 +666,7 @@ async function handleInit(init) {
   state.currentSource = String(init.source || "");
   state.currentSourceHash = String(init.sourceHash || "");
   state.libraries = Array.isArray(init.libraries) ? init.libraries : [];
+  state.librariesUnavailable = init.librariesUnavailable === true;
   const theme = init.theme === "dark" ? "dark" : "light";
   document.getElementById("wbTitle").textContent = `Whiteboard · diagram ${state.diagramIndex + 1}`;
 

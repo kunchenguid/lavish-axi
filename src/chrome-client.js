@@ -3582,12 +3582,13 @@ async function fetchMermaidSources() {
 }
 
 // Fetched per init so a frame converts with the libraries its source hash was
-// computed from; a failed fetch converts without libraries.
+// computed from; a failed fetch resolves null and the frame converts without
+// libraries.
 function fetchWhiteboardLibraries() {
   return fetch("/api/whiteboard-libraries")
-    .then((response) => (response.ok ? response.json() : { libraries: [] }))
-    .then((data) => (Array.isArray(data.libraries) ? data.libraries : []))
-    .catch(() => []);
+    .then((response) => (response.ok ? response.json() : null))
+    .then((data) => (Array.isArray(data?.libraries) ? data.libraries : null))
+    .catch(() => null);
 }
 
 async function authenticateWhiteboardChannel(token) {
@@ -3635,7 +3636,8 @@ async function handleWhiteboardReady(index, mode, isCurrent) {
       source: record.source,
       sourceHash: record.sourceHash,
       saved,
-      libraries,
+      libraries: libraries || [],
+      librariesUnavailable: !libraries,
       theme: whiteboardTheme(),
     });
     return true;

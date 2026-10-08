@@ -574,11 +574,18 @@ export function repairSavedSceneTextMetrics(elements, { measure }) {
 }
 
 export function createWhiteboardPersistencePayload(state, scene) {
+  const baselineElements = Array.isArray(state?.baselineElements) ? state.baselineElements : [];
+  if (
+    state?.librariesUnavailable &&
+    !savedSceneHasPreservableEdits({ scene, baseline: { elements: baselineElements } })
+  ) {
+    return null;
+  }
   return {
     sourceHash: String(state?.sceneSourceHash || ""),
     textMetricsVersion: Math.max(0, Math.floor(Number(state?.textMetricsVersion) || 0)),
     scene: scene ?? null,
-    baseline: { elements: Array.isArray(state?.baselineElements) ? state.baselineElements : [] },
+    baseline: { elements: baselineElements },
   };
 }
 

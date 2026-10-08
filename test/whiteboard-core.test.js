@@ -122,6 +122,19 @@ test("whiteboard persistence payload keeps migration and baseline fields togethe
   );
 });
 
+test("whiteboard persistence payload holds an unedited conversion made without libraries", () => {
+  const baselineElements = [rect("A")];
+  const state = { sceneSourceHash: "hash-1", textMetricsVersion: 1, baselineElements, librariesUnavailable: true };
+  assert.equal(createWhiteboardPersistencePayload(state, { elements: [rect("A")] }), null);
+  const edited = { elements: [rect("A"), rect("added")] };
+  assert.deepEqual(createWhiteboardPersistencePayload(state, edited), {
+    sourceHash: "hash-1",
+    textMetricsVersion: 1,
+    scene: edited,
+    baseline: { elements: baselineElements },
+  });
+});
+
 // ---------------------------------------------------------------------------
 // resolveWhiteboardInitAction
 // ---------------------------------------------------------------------------
