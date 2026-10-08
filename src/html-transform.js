@@ -10,3 +10,12 @@ export function injectLavishSdk(html, key, artifactRevision, artifactLoadToken =
   }
   return `${html}\n${script}`;
 }
+
+export function injectSessionLinkNavigation(html) {
+  if (/<script\b[^>]*\bsrc=["']\/session-link-navigation\.js["']/i.test(html)) return html;
+  const script = '<script src="/session-link-navigation.js"></script>';
+  if (/<\/body\s*>/i.test(html)) {
+    return html.replace(/<\/body\s*>/i, `${script}</body>`);
+  }
+  return `${html}\n${script}`;
+}

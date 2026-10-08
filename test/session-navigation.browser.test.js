@@ -95,7 +95,10 @@ test(
         );
         await store.upsertSession(files[i], urls[i]);
       }
-      await writeFile(path.join(root, "sibling.html"), "<h1>Local sibling content</h1>");
+      await writeFile(
+        path.join(root, "sibling.html"),
+        `<h1>Local sibling content</h1><a href="${urls[0]}"><span>Session A from sibling</span></a>`,
+      );
       await chrome("open", urls[0]);
       await chrome("wait", "Artifact A");
       // Real user input toggles mode through the production chrome/SDK exchange.
@@ -123,7 +126,24 @@ test(
       await clickLink("Local sibling");
       await chrome("wait", "Local sibling content");
       assert.deepEqual(await pageIds(), previousPages, "local documents stay in the artifact frame");
-      assert.equal((await editorState()).url, urls[2]);
+      const siblingState = decode(
+        await chrome(
+          "eval",
+          `() => JSON.stringify({url: location.href, sandbox: document.getElementById('artifact')?.getAttribute('sandbox')})`,
+        ),
+      );
+      assert.equal(siblingState.url, urls[2]);
+      assert.doesNotMatch(siblingState.sandbox, /allow-same-origin|allow-top-navigation/);
+      const previousSiblingPages = await pageIds();
+      await clickLink("Session A from sibling");
+      await selectNewPage(previousSiblingPages);
+      await chrome("wait", "Artifact A");
+      const siblingLinkEditor = await editorState();
+      assert.equal(siblingLinkEditor.url, urls[0]);
+      assert.equal(siblingLinkEditor.ready, true);
+      assert.equal(siblingLinkEditor.opener, false);
+      const pagesAfterOpen = await pageIds();
+      assert.ok(previousSiblingPages.every((id) => pagesAfterOpen.includes(id)));
     } finally {
       await chrome("stop").catch(() => {});
       await server.close();

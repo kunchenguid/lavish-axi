@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { injectLavishSdk } from "../src/html-transform.js";
+import { injectLavishSdk, injectSessionLinkNavigation } from "../src/html-transform.js";
 
 test("injects the Lavish SDK before the closing body tag", () => {
   const html = "<!doctype html><html><body><h1>Hi</h1></body></html>";
@@ -40,4 +40,15 @@ test("carries the per-load token into the SDK request", () => {
   const result = injectLavishSdk("<body></body>", "abc123", 7, "load token/7");
 
   assert.match(result, /sdk\.js\?key=abc123&artifact_revision=7&artifact_load_token=load%20token%2F7/);
+});
+
+test("injects sibling-document navigation support once before the closing body tag", () => {
+  const html = "<!doctype html><html><body><h1>Sibling</h1></body></html>";
+  const transformed = injectSessionLinkNavigation(html);
+
+  assert.equal(
+    transformed,
+    '<!doctype html><html><body><h1>Sibling</h1><script src="/session-link-navigation.js"></script></body></html>',
+  );
+  assert.equal(injectSessionLinkNavigation(transformed), transformed);
 });

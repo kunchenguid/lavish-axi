@@ -55,7 +55,8 @@ import {
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
-import { injectLavishSdk } from "./html-transform.js";
+import { injectLavishSdk, injectSessionLinkNavigation } from "./html-transform.js";
+import { SESSION_LINK_NAVIGATION_JS } from "./session-link-navigation.js";
 import {
   bindHost,
   extraAllowedHosts,
@@ -1489,6 +1490,10 @@ export async function serve({
     res.redirect(`/artifact/${req.params.key}/index.html`);
   });
 
+  app.get("/session-link-navigation.js", (_req, res) => {
+    res.type("application/javascript").send(SESSION_LINK_NAVIGATION_JS);
+  });
+
   app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
     try {
       if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
@@ -1585,6 +1590,11 @@ export async function serve({
       const file = await resolveArtifactAsset(root, assetPath);
       if (!file) {
         res.status(403).send("Forbidden");
+        return;
+      }
+      if (/\.html?$/i.test(file)) {
+        const html = await readFile(file, "utf8");
+        res.type("html").send(injectSessionLinkNavigation(html));
         return;
       }
       res.sendFile(file, { dotfiles: "allow" });
