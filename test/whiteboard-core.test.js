@@ -771,6 +771,19 @@ test("prepareLibraryIconSkeletons trims bound arrow endpoints to the grown node 
   assert.equal(outgoing.y + outgoing.points.at(-1)[1], 200, "the far end does not move");
 });
 
+test("prepareLibraryIconSkeletons restores a label font the converter shrank", () => {
+  const cylinder = vertexSkeleton("db", { label: { text: "DynamoDB observations", fontSize: 12 } });
+  const icons = [{ nodeId: "db", ref: "aws/AWS Lambda", item: lambdaItem() }];
+  const [grown] = prepareLibraryIconSkeletons([cylinder], icons, { labelFontSize: 16 }).skeletons;
+  assert.equal(grown.label.fontSize, 16);
+  const [larger] = prepareLibraryIconSkeletons([vertexSkeleton("db", { label: { text: "db", fontSize: 20 } })], icons, {
+    labelFontSize: 16,
+  }).skeletons;
+  assert.equal(larger.label.fontSize, 20, "never shrinks a label");
+  const [untouched] = prepareLibraryIconSkeletons([cylinder], icons).skeletons;
+  assert.equal(untouched.label.fontSize, 12);
+});
+
 test("prepareLibraryIconSkeletons extends arrows that ended on a wider original box", () => {
   const skeletons = [
     vertexSkeleton("api", { x: 100, y: 100, width: 300, height: 40 }),

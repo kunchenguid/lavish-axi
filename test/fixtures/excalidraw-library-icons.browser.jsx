@@ -96,7 +96,9 @@ async function convert(source) {
     themeVariables: { fontSize: "16px" },
     ...libraryIconMermaidConfig(icons),
   });
-  const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsed.elements), icons);
+  const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsed.elements), icons, {
+    labelFontSize: 16,
+  });
   if (missing.length > 0) throw new Error(`icons were missing: ${JSON.stringify(missing)}`);
   const materialized = restoreMermaidLabelLineBreaks(convertToExcalidrawElements(skeletons, { regenerateIds: false }));
   const placed = placeLibraryIcons(materialized, (ref) => findLibraryItem(libraries, ref));

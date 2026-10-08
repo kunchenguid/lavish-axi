@@ -336,10 +336,13 @@ function trimArrowSkeleton(arrow, startBox, endBox) {
  * Grow each directive's flowchart vertex to fit a library icon above its
  * label, before Excalidraw materializes the skeletons.
  * @param {any[]} skeletons
+ * The converter shrinks some labels (cylinders) to fit Mermaid's shape width;
+ * an icon node's box is resized anyway, so `labelFontSize` restores them.
  * @param {{ nodeId: string, ref: string, item: { ref?: string, elements: any[] } | null }[]} icons
+ * @param {{ labelFontSize?: number }} [options]
  * @returns {{ skeletons: any[], missing: { nodeId: string, ref: string, reason: "item" | "node" }[] }}
  */
-export function prepareLibraryIconSkeletons(skeletons, icons) {
+export function prepareLibraryIconSkeletons(skeletons, icons, { labelFontSize = 0 } = {}) {
   const list = Array.isArray(skeletons) ? skeletons : [];
   /** @type {{ nodeId: string, ref: string, reason: "item" | "node" }[]} */
   const missing = [];
@@ -356,7 +359,8 @@ export function prepareLibraryIconSkeletons(skeletons, icons) {
     }
     const node = list[index];
     const iconSize = libraryIconSize(icon.item);
-    const label = estimateMultilineLabelBox(node.label.text, node.label.fontSize);
+    const fontSize = Math.max(Number(node.label.fontSize) || 0, labelFontSize) || undefined;
+    const label = estimateMultilineLabelBox(node.label.text, fontSize);
     const width = Number(node.width) || 0;
     const height = Number(node.height) || 0;
     // The box is invisible, so it hugs icon and label; arrows are refitted below.
@@ -379,6 +383,7 @@ export function prepareLibraryIconSkeletons(skeletons, icons) {
         // transparent, so the label keeps the node's original color.
         label: {
           ...node.label,
+          ...(fontSize ? { fontSize } : {}),
           verticalAlign: "bottom",
           strokeColor: node.label.strokeColor || node.strokeColor || "#1e1e1e",
         },

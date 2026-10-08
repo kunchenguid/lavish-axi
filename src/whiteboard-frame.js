@@ -48,6 +48,7 @@ import {
 import { findLibraryItem, parseLibraryIconDirectives, toExcalidrawLibraryItems } from "./whiteboard-libraries.js";
 
 const SAVE_DEBOUNCE_MS = 800;
+const MERMAID_FONT_SIZE = 16;
 
 const state = {
   mode: "overlay",
@@ -444,10 +445,12 @@ async function convertSource(source) {
     item: findLibraryItem(state.libraries, directive.ref),
   }));
   const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
-    themeVariables: { fontSize: "16px" },
+    themeVariables: { fontSize: `${MERMAID_FONT_SIZE}px` },
     ...libraryIconMermaidConfig(icons),
   });
-  const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsedSkeletons), icons);
+  const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsedSkeletons), icons, {
+    labelFontSize: MERMAID_FONT_SIZE,
+  });
   const materialize = (input) => {
     // Preserve Mermaid node/edge identity for edit summaries; regenerate only
     // when upstream emitted colliding ids (parallel edges), where uniqueness
