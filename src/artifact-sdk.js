@@ -2610,12 +2610,27 @@ export function createArtifactSdk(
       return;
     }
     if (!/^https?:$/.test(url.protocol) || !/^\/session\/[0-9a-f]{16}\/?$/i.test(url.pathname)) return;
+    const originalTarget = link.getAttribute("target");
+    const originalRel = link.getAttribute("rel");
     link.setAttribute("target", "_blank");
     const rel = (link.getAttribute("rel") || "")
       .split(/\s+/)
       .filter((token) => token && token.toLowerCase() !== "opener");
     if (!rel.some((token) => token.toLowerCase() === "noopener")) rel.push("noopener");
-    link.setAttribute("rel", rel.join(" "));
+    const navigationRel = rel.join(" ");
+    link.setAttribute("rel", navigationRel);
+    // Native activation consumes these attributes before the next task. Restore
+    // them afterwards, without overwriting changes made by the page's handlers.
+    setTimeout(() => {
+      if (link.getAttribute("target") === "_blank") {
+        if (originalTarget === null) link.removeAttribute("target");
+        else link.setAttribute("target", originalTarget);
+      }
+      if (link.getAttribute("rel") === navigationRel) {
+        if (originalRel === null) link.removeAttribute("rel");
+        else link.setAttribute("rel", originalRel);
+      }
+    }, 0);
   }
 
   document.addEventListener(

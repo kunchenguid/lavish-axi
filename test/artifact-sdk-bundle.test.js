@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 
+import { SESSION_LINK_NAVIGATION_JS } from "../src/session-link-navigation.js";
+
 import { createSdkJs } from "../src/server.js";
 
 // The SDK the browser actually runs is a serialized bundle, not the module: `createSdkJs` has to
@@ -35,6 +37,9 @@ function createElement(tag) {
     },
     setAttribute(name, value) {
       attributes.set(name, String(value));
+    },
+    removeAttribute(name) {
+      attributes.delete(name);
     },
     getAttribute(name) {
       return attributes.has(name) ? attributes.get(name) : null;
@@ -844,3 +849,43 @@ test("download and cancelled session links do not change their targets", () => {
   sdk.click(link);
   assert.equal(link.getAttribute("target"), null);
 });
+
+for (const runtime of ["sdk", "sibling"]) {
+  for (const original of [null, "content"]) {
+    test(`${runtime} restores session-link attributes before reuse (${original})`, () => {
+      const sdk = bootSdk();
+      sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: false });
+      const { link } = buildLink(sdk);
+      const timers = [];
+      const handlers = new Map();
+      if (runtime === "sibling")
+        vm.runInNewContext(SESSION_LINK_NAVIGATION_JS, {
+          URL,
+          setTimeout: (fn) => timers.push(fn),
+          document: {
+            baseURI: "https://review.example/",
+            addEventListener: (type, handler) => handlers.set(type, handler),
+          },
+        });
+      const click = () => (runtime === "sdk" ? sdk.click(link) : handlers.get("click")({ target: link }));
+      link.setAttribute("href", "/session/0123456789abcdef");
+      if (original !== null) {
+        link.setAttribute("target", original);
+        link.setAttribute("rel", "opener external");
+      }
+      click();
+      assert.equal(link.getAttribute("target"), "_blank");
+      assert.ok(link.getAttribute("rel").includes("noopener"));
+      if (runtime === "sdk") sdk.runTimers();
+      else timers.splice(0).forEach((fn) => fn());
+      assert.equal(link.getAttribute("target"), original);
+      assert.equal(link.getAttribute("rel"), original === null ? null : "opener external");
+      link.setAttribute("href", "sibling.html");
+      click();
+      assert.equal(link.getAttribute("target"), original);
+      link.setAttribute("download", "page.html");
+      click();
+      assert.equal(link.getAttribute("target"), original);
+    });
+  }
+}

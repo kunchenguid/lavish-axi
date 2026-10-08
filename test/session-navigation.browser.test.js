@@ -113,10 +113,12 @@ test(
       }
       await writeFile(
         path.join(root, "sibling.html"),
-        `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src http: https:">
+        "\ufeff" +
+          `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src http: https:">
         <base href="https://example.com/pages/">
         <script type="module" src="${base}/session-link-navigation.js"></script></head><body>
-        <h1>Local sibling content</h1><a href="${urls[0]}"><span>Session A from sibling</span></a></body></html>`,
+        <h1>Local sibling content — Café 日本語</h1><a href="${urls[0]}"><span>Session A from sibling</span></a></body></html>`,
+        "utf16le",
       );
       await chrome("open", urls[0]);
       await chrome("wait", "Artifact A");
@@ -145,7 +147,7 @@ test(
       }
       const previousPages = await pageIds();
       await clickLink("Local sibling");
-      await chrome("wait", "Local sibling content");
+      await chrome("wait", "Local sibling content — Café 日本語");
       await captureEvidence("sibling-document");
       assert.deepEqual(await pageIds(), previousPages, "local documents stay in the artifact frame");
       const siblingState = decode(

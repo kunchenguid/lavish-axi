@@ -6843,3 +6843,39 @@ test("sibling navigation uses only validated HTTPS proxy origins with author CSP
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+for (const encoding of ["utf16le", "utf16be", "utf8", "utf8-bom", "latin1"]) {
+  test(`sibling HTML preserves ${encoding} bytes and injects an executable helper`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lavish-sibling-encoding-"));
+    const artifact = path.join(dir, "artifact.html");
+    const source = '<html><head><meta charset="windows-1252"></head><body><p>Café</p></body></html>';
+    const encode = (html) => {
+      if (encoding === "utf8-bom") return Buffer.from("\ufeff" + html, "utf8");
+      if (encoding === "utf16be") return Buffer.from("\ufeff" + html, "utf16le").swap16();
+      if (encoding === "utf16le") return Buffer.from("\ufeff" + html, "utf16le");
+      return Buffer.from(html, encoding === "latin1" ? "latin1" : "utf8");
+    };
+    const original = encode(source);
+    await writeFile(artifact, "<body>Source</body>");
+    await writeFile(path.join(dir, "sibling.html"), original);
+    const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+    const base = `http://127.0.0.1:${server.port}`;
+    try {
+      const { key } = await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      }).then((res) => res.json());
+      const response = await fetch(`${base}/artifact/${key}/sibling.html`);
+      assert.equal(response.status, 200);
+      assert.doesNotMatch(response.headers.get("content-type"), /charset/i);
+      const delivered = Buffer.from(await response.arrayBuffer());
+      const expected = source.replace("</body>", `<script src="${base}/session-link-navigation.js"></script></body>`);
+      assert.deepEqual(delivered, encode(expected));
+      assert.deepEqual(await readFile(path.join(dir, "sibling.html")), original);
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}

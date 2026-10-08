@@ -51,3 +51,26 @@ export function injectSessionLinkNavigation(html, servedOrigin) {
   if (bodyEnd !== undefined) return html.slice(0, bodyEnd) + script + html.slice(bodyEnd);
   return `${html}\n${script}`;
 }
+
+// Use a reversible byte mapping for ASCII-compatible encodings, so charset
+// declarations and non-UTF-8 text survive delivery. UTF-16 BOMs need code-unit
+// decoding so the HTML parser can recognize tags; keep their original byte order.
+export function injectSessionLinkNavigationBytes(bytes, servedOrigin) {
+  const littleEndian = bytes[0] === 0xff && bytes[1] === 0xfe;
+  const bigEndian = bytes[0] === 0xfe && bytes[1] === 0xff;
+  if (!littleEndian && !bigEndian) {
+    const bomLength = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+    return Buffer.concat([
+      bytes.subarray(0, bomLength),
+      Buffer.from(injectSessionLinkNavigation(bytes.subarray(bomLength).toString("latin1"), servedOrigin), "latin1"),
+    ]);
+  }
+  const codeUnits = Buffer.from(bytes.subarray(0, bytes.length - (bytes.length % 2)));
+  if (bigEndian) codeUnits.swap16();
+  const transformed = Buffer.from(
+    "\ufeff" + injectSessionLinkNavigation(codeUnits.toString("utf16le").slice(1), servedOrigin),
+    "utf16le",
+  );
+  if (bigEndian) transformed.swap16();
+  return Buffer.concat([transformed, bytes.subarray(codeUnits.length)]);
+}

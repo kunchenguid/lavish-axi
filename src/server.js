@@ -55,7 +55,7 @@ import {
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
-import { injectLavishSdk, injectSessionLinkNavigation } from "./html-transform.js";
+import { injectLavishSdk, injectSessionLinkNavigationBytes } from "./html-transform.js";
 import { SESSION_LINK_NAVIGATION_JS } from "./session-link-navigation.js";
 import {
   bindHost,
@@ -1593,13 +1593,15 @@ export async function serve({
         return;
       }
       if (/\.html?$/i.test(file)) {
-        const html = await readFile(file, "utf8");
+        const html = await readFile(file);
         const origin = validatedRequestOrigin(req, allowedHostnames, allowAnyHostname);
         if (!origin) {
           res.status(403).send("Forbidden");
           return;
         }
-        res.type("html").send(injectSessionLinkNavigation(html, origin));
+        // Let the browser honor the original BOM or charset declaration.
+        res.setHeader("Content-Type", "text/html");
+        res.send(injectSessionLinkNavigationBytes(html, origin));
         return;
       }
       res.sendFile(file, { dotfiles: "allow" });
