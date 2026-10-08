@@ -79,6 +79,14 @@ test(
     async function pageIds() {
       return [...(await chrome("pages")).matchAll(/^\s+(\d+),/gm)].map((match) => match[1]);
     }
+    async function captureEvidence(name) {
+      if (process.env.LAVISH_AXI_TEST_EVIDENCE_DIR) {
+        await writeFile(
+          path.join(process.env.LAVISH_AXI_TEST_EVIDENCE_DIR, `${name}.txt`),
+          `${await chrome("pages")}\n${await chrome("snapshot")}\n${JSON.stringify(await editorState(), null, 2)}\n`,
+        );
+      }
+    }
 
     try {
       for (let i = 0; i < files.length; i++) {
@@ -104,6 +112,7 @@ test(
       );
       await chrome("open", urls[0]);
       await chrome("wait", "Artifact A");
+      await captureEvidence("source-review");
       // Real user input toggles mode through the production chrome/SDK exchange.
       await chrome("press", "Meta+i");
       await clickLink("Jump to section");
@@ -123,11 +132,13 @@ test(
         assert.match(state.artifact, /\/artifact\/[^/]+\/index\.html\?/);
         assert.equal(state.opener, false);
         assert.doesNotMatch(state.sandbox, /allow-same-origin|allow-top-navigation/);
+        await captureEvidence(`destination-${index}`);
         await chrome("press", "Meta+i");
       }
       const previousPages = await pageIds();
       await clickLink("Local sibling");
       await chrome("wait", "Local sibling content");
+      await captureEvidence("sibling-document");
       assert.deepEqual(await pageIds(), previousPages, "local documents stay in the artifact frame");
       const siblingState = decode(
         await chrome(
@@ -145,6 +156,7 @@ test(
       assert.equal(siblingLinkEditor.url, urls[0]);
       assert.equal(siblingLinkEditor.ready, true);
       assert.equal(siblingLinkEditor.opener, false);
+      await captureEvidence("sibling-destination");
       const pagesAfterOpen = await pageIds();
       assert.ok(previousSiblingPages.every((id) => pagesAfterOpen.includes(id)));
     } finally {
