@@ -2611,11 +2611,8 @@ function hasPresentOriginOrReferer(req) {
   return Boolean(req.get("origin") || req.get("referer"));
 }
 
-// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
-// browser attaches an Origin/Referer that must match this server's own origin. The global
-// mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
-// middleware is lenient (absent headers pass) while per-route callers still reject header-less
-// requests.
+// Share origin validation between CSRF checks and sibling-script delivery so proxy
+// authorities cannot bypass the Host allowlist in either path.
 function validatedRequestOrigin(req, allowedHostnames, allowAnyHostname = false) {
   const host = parseHostAuthority(req.headers.host);
   if (!host || (!allowAnyHostname && !allowedHostnames.has(host.hostname))) return "";
@@ -2645,6 +2642,11 @@ function validatedRequestOrigin(req, allowedHostnames, allowAnyHostname = false)
   return normalizeOrigin(`${protocol}://${authority.authority}`);
 }
 
+// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
+// browser attaches an Origin/Referer that must match this server's own origin. The global
+// mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
+// middleware is lenient (absent headers pass) while per-route callers still reject header-less
+// requests.
 function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
   const expectedOrigin = validatedRequestOrigin(req, allowedHostnames, allowAnyHostname);
   if (!expectedOrigin) return false;
