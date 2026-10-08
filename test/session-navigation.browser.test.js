@@ -97,7 +97,8 @@ test(
       }
       await writeFile(
         path.join(root, "sibling.html"),
-        `<!doctype html><html><head><base href="https://example.com/pages/">
+        `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src http: https:">
+        <base href="https://example.com/pages/">
         <script type="module" src="${base}/session-link-navigation.js"></script></head><body>
         <h1>Local sibling content</h1><a href="${urls[0]}"><span>Session A from sibling</span></a></body></html>`,
       );

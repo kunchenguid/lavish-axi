@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
 import { parse } from "parse5";
 
-import { injectLavishSdk, injectSessionLinkNavigation } from "../src/html-transform.js";
+import { injectLavishSdk, injectSessionLinkNavigation as transformNavigation } from "../src/html-transform.js";
+
+const servedOrigin = "https://review.example:4387";
+const injectSessionLinkNavigation = (html) => transformNavigation(html, servedOrigin);
 
 test("injects the Lavish SDK before the closing body tag", () => {
   const html = "<!doctype html><html><body><h1>Hi</h1></body></html>";
@@ -80,57 +82,43 @@ for (const content of [
     const injected = body.childNodes.at(-1);
     assert.ok(injected && "tagName" in injected);
     assert.equal(injected.tagName, "script");
-    assert.deepEqual(injected.attrs, []);
+    assert.deepEqual(injected.attrs, [{ name: "src", value: `${servedOrigin}/session-link-navigation.js` }]);
     assert.equal(injectSessionLinkNavigation(transformed), transformed);
   });
 }
 
 function navigationLoaderTag() {
-  return injectSessionLinkNavigation("<body></body>").slice("<body>".length, -"</body>".length);
+  return `<script src="${servedOrigin}/session-link-navigation.js"></script>`;
 }
 
 for (const origin of ["http://127.0.0.1:9876", "https://review.example:4387"]) {
   test(`sibling navigation loads from the document origin despite a foreign base: ${origin}`, () => {
     const source =
       '<html><head><base href="https://example.com/pages/"></head><body><a href="next.html">Next</a></body></html>';
-    const output = injectSessionLinkNavigation(source);
-    assert.equal(output.replace(navigationLoaderTag(), ""), source);
+    const output = transformNavigation(source, origin);
+    assert.equal(output.replace(`<script src="${origin}/session-link-navigation.js"></script>`, ""), source);
     const document = parse(output);
     const html = document.childNodes.find((node) => node.nodeName === "html");
     assert.ok(html && "childNodes" in html);
     const body = html.childNodes.find((node) => node.nodeName === "body");
     assert.ok(body && "childNodes" in body);
     const script = body.childNodes.at(-1);
-    assert.ok(script && "childNodes" in script);
-    const code = script.childNodes.map((node) => ("value" in node ? node.value : "")).join("");
-    const loaded = [];
-    const runtimeDocument = {
-      baseURI: "https://example.com/pages/",
-      createElement(tag) {
-        assert.equal(tag, "script");
-        return { src: "" };
-      },
-      head: {
-        appendChild(script) {
-          loaded.push(script);
-        },
-      },
-    };
-    runInNewContext(code, {
-      document: runtimeDocument,
-      location: { href: `${origin}/artifact/key/sibling.html` },
-      URL,
-    });
-    assert.equal(loaded.length, 1);
-    assert.equal(loaded[0].src, `${origin}/session-link-navigation.js`);
-    assert.equal(new URL("next.html", runtimeDocument.baseURI).href, "https://example.com/pages/next.html");
-    assert.equal(injectSessionLinkNavigation(output), output);
+    assert.ok(script && "attrs" in script);
+    assert.deepEqual(script.attrs, [{ name: "src", value: `${origin}/session-link-navigation.js` }]);
+    assert.deepEqual(script.childNodes, []);
+    assert.equal(transformNavigation(output, origin), output);
   });
 }
 
-for (const attributes of ['type="module"', "nomodule", 'type="application/json"', 'src="/elsewhere.js"']) {
+for (const attributes of [
+  'type="module"',
+  "nomodule",
+  'type="application/json"',
+  "crossorigin",
+  'integrity="sha256-invalid"',
+]) {
   test(`a nonfunctional loader lookalike cannot suppress sibling navigation: ${attributes}`, () => {
-    const fake = navigationLoaderTag().replace("<script>", `<script ${attributes}>`);
+    const fake = navigationLoaderTag().replace("<script ", `<script ${attributes} `);
     const html = `<body>${fake}</body>`;
     assert.equal(injectSessionLinkNavigation(html), `<body>${fake}${navigationLoaderTag()}</body>`);
   });

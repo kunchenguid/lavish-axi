@@ -13,13 +13,10 @@ export function injectLavishSdk(html, key, artifactRevision, artifactLoadToken =
   return `${html}\n${script}`;
 }
 
-const SESSION_LINK_LOADER = `(() => {
-  const script = document.createElement("script");
-  script.src = new URL("/session-link-navigation.js", location.href).href;
-  document.head.appendChild(script);
-})();`;
-
-export function injectSessionLinkNavigation(html) {
+export function injectSessionLinkNavigation(html, servedOrigin) {
+  const origin = new URL(servedOrigin);
+  if (!/^https?:$/.test(origin.protocol)) throw new TypeError("Invalid artifact origin");
+  const scriptUrl = new URL("/session-link-navigation.js", origin.origin).href;
   const document = parse(html, { sourceCodeLocationInfo: true });
   const nodes = [...document.childNodes];
   let bodyEnd;
@@ -37,15 +34,20 @@ export function injectSessionLinkNavigation(html) {
           /^(?:application\/(?:x-)?(?:java|ecma)script|text\/(?:(?:x-)?(?:java|ecma)script|javascript1\.[0-5]|jscript|livescript))$/.test(
             type,
           );
-        const content = node.childNodes.map((child) => ("value" in child ? child.value : "")).join("");
-        if (!attrs.has("src") && executable && !attrs.has("nomodule") && content === SESSION_LINK_LOADER) {
+        if (
+          attrs.get("src") === scriptUrl &&
+          executable &&
+          !attrs.has("nomodule") &&
+          !attrs.has("crossorigin") &&
+          !attrs.has("integrity")
+        ) {
           return html;
         }
       }
     }
     if ("childNodes" in node) nodes.push(...node.childNodes);
   }
-  const script = `<script>${SESSION_LINK_LOADER}</script>`;
+  const script = `<script src="${scriptUrl}"></script>`;
   if (bodyEnd !== undefined) return html.slice(0, bodyEnd) + script + html.slice(bodyEnd);
   return `${html}\n${script}`;
 }

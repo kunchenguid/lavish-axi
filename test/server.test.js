@@ -6787,7 +6787,57 @@ test("sibling HTML preserves missing-file statuses and sandbox headers", async (
     const policy = response.headers.get("content-security-policy");
     assert.match(policy, /sandbox/);
     assert.doesNotMatch(policy, /allow-same-origin|allow-top-navigation/);
-    assert.equal(await response.text(), injectSessionLinkNavigation("<body>Sibling</body>"));
+    assert.equal(await response.text(), injectSessionLinkNavigation("<body>Sibling</body>", base));
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("sibling navigation uses only validated HTTPS proxy origins with author CSP intact", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-sibling-csp-"));
+  const artifact = path.join(dir, "artifact.html");
+  const source =
+    '<head><meta http-equiv="Content-Security-Policy" content="script-src https:"><base href="https://example.com/"></head><body>Sibling</body>';
+  await writeFile(artifact, "<body>Source</body>");
+  await writeFile(path.join(dir, "sibling.html"), source);
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    allowedHosts: ["review.example"],
+    version: "9.9.9-test",
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    const url = `/artifact/${key}/sibling.html`;
+    for (const headers of [
+      { "x-forwarded-host": "review.example:4387", "x-forwarded-proto": "https" },
+      { host: "review.example:4387", "x-forwarded-proto": "https" },
+    ]) {
+      const response = await rawRequest(server.port, url, { headers });
+      assert.equal(response.status, 200);
+      assert.equal(
+        response.body,
+        source.replace(
+          "</body>",
+          '<script src="https://review.example:4387/session-link-navigation.js"></script></body>',
+        ),
+      );
+      assert.match(response.headers["content-security-policy"], /sandbox/);
+    }
+    for (const headers of [
+      { host: "evil.example" },
+      { "x-forwarded-host": "evil.example", "x-forwarded-proto": "https" },
+      { "x-forwarded-host": "review.example", "x-forwarded-proto": "javascript" },
+    ]) {
+      const response = await rawRequest(server.port, url, { headers });
+      assert.equal(response.status, 403);
+    }
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

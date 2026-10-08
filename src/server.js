@@ -1594,7 +1594,12 @@ export async function serve({
       }
       if (/\.html?$/i.test(file)) {
         const html = await readFile(file, "utf8");
-        res.type("html").send(injectSessionLinkNavigation(html));
+        const origin = validatedRequestOrigin(req, allowedHostnames, allowAnyHostname);
+        if (!origin) {
+          res.status(403).send("Forbidden");
+          return;
+        }
+        res.type("html").send(injectSessionLinkNavigation(html, origin));
         return;
       }
       res.sendFile(file, { dotfiles: "allow" });
@@ -2611,9 +2616,9 @@ function hasPresentOriginOrReferer(req) {
 // mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
 // middleware is lenient (absent headers pass) while per-route callers still reject header-less
 // requests.
-function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
+function validatedRequestOrigin(req, allowedHostnames, allowAnyHostname = false) {
   const host = parseHostAuthority(req.headers.host);
-  if (!host) return false;
+  if (!host || (!allowAnyHostname && !allowedHostnames.has(host.hostname))) return "";
 
   let protocol = req.protocol || "http";
   let authority = host;
@@ -2628,16 +2633,20 @@ function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
       (!allowAnyHostname &&
         (!allowedHostnames.has(host.hostname) || !allowedHostnames.has(forwardedAuthority.hostname)))
     )
-      return false;
-    protocol = String(req.headers["x-forwarded-proto"] || protocol)
-      .split(",")
-      .pop()
-      .trim()
-      .toLowerCase();
-    if (protocol !== "http" && protocol !== "https") return false;
+      return "";
     authority = forwardedAuthority;
   }
-  const expectedOrigin = normalizeOrigin(`${protocol}://${authority.authority}`);
+  protocol = String(req.headers["x-forwarded-proto"] || protocol)
+    .split(",")
+    .pop()
+    .trim()
+    .toLowerCase();
+  if (protocol !== "http" && protocol !== "https") return "";
+  return normalizeOrigin(`${protocol}://${authority.authority}`);
+}
+
+function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
+  const expectedOrigin = validatedRequestOrigin(req, allowedHostnames, allowAnyHostname);
   if (!expectedOrigin) return false;
   const origin = req.headers.origin;
   if (origin) {
