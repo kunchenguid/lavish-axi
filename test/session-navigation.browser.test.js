@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -80,6 +80,14 @@ test(
       return [...(await chrome("pages")).matchAll(/^\s+(\d+),/gm)].map((match) => match[1]);
     }
     async function captureEvidence(name) {
+      if (process.env.LAVISH_AXI_TEST_SCREENSHOT_DIR) {
+        const screenshot = path.join(process.env.LAVISH_AXI_TEST_SCREENSHOT_DIR, `${name}.png`);
+        const output = await chrome("screenshot", screenshot);
+        const bytes = await readFile(screenshot).catch((error) => {
+          throw new Error(`Screenshot was not written: ${output}`, { cause: error });
+        });
+        assert.deepEqual(bytes.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      }
       if (process.env.LAVISH_AXI_TEST_EVIDENCE_DIR) {
         await writeFile(
           path.join(process.env.LAVISH_AXI_TEST_EVIDENCE_DIR, `${name}.txt`),
