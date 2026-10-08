@@ -1599,6 +1599,10 @@ export async function serve({
       }
       res.sendFile(file, { dotfiles: "allow" });
     } catch (error) {
+      if (["ENOENT", "ENOTDIR", "EISDIR"].includes(error?.code)) {
+        res.status(404).send("Not found");
+        return;
+      }
       next(error);
     }
   });

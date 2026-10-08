@@ -6760,3 +6760,35 @@ test("chat-sync stamps a note seen when a poll takes it, working when the artifa
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("sibling HTML preserves missing-file statuses and sandbox headers", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-sibling-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<body>Source</body>");
+  await writeFile(path.join(dir, "sibling.html"), "<body>Sibling</body>");
+  await mkdir(path.join(dir, "directory.html"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    for (const asset of ["missing.html", "missing.htm", "sibling.html/child.html", "directory.html"]) {
+      const response = await fetch(`${base}/artifact/${key}/${asset}`);
+      assert.equal(response.status, 404, asset);
+      assert.match(response.headers.get("content-security-policy"), /sandbox/);
+      await response.text();
+    }
+    const response = await fetch(`${base}/artifact/${key}/sibling.html`);
+    assert.equal(response.status, 200);
+    const policy = response.headers.get("content-security-policy");
+    assert.match(policy, /sandbox/);
+    assert.doesNotMatch(policy, /allow-same-origin|allow-top-navigation/);
+    assert.equal(await response.text(), '<body>Sibling<script src="/session-link-navigation.js"></script></body>');
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

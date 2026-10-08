@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parse } from "parse5";
 
 import { injectLavishSdk, injectSessionLinkNavigation } from "../src/html-transform.js";
 
@@ -52,3 +53,43 @@ test("injects sibling-document navigation support once before the closing body t
   );
   assert.equal(injectSessionLinkNavigation(transformed), transformed);
 });
+
+for (const content of [
+  "<!-- </body> -->",
+  '<script>const closingTag = "</body>";</script>',
+  "<textarea></body></textarea>",
+  '<!-- <script src="/session-link-navigation.js"></script> -->',
+  "<script>const markup = '<script src=\"/session-link-navigation.js\">';</script>",
+  '<template><script src="/session-link-navigation.js"></script></template>',
+  '<script type="application/json" src="/session-link-navigation.js"></script>',
+  '<script data-src="/session-link-navigation.js"></script>',
+]) {
+  test(`sibling navigation ignores inert markup: ${content}`, () => {
+    const prefix = `<!doctype html><html><body>${content}<p>Sibling</p>`;
+    const suffix = "</BODY ></html>";
+    const script = '<script src="/session-link-navigation.js"></script>';
+    const transformed = injectSessionLinkNavigation(prefix + suffix);
+    assert.equal(transformed, prefix + script + suffix);
+    const document = parse(transformed);
+    const html = document.childNodes.find((node) => node.nodeName === "html");
+    assert.ok(html && "childNodes" in html);
+    const body = html.childNodes.find((node) => node.nodeName === "body");
+    assert.ok(body && "childNodes" in body);
+    const injected = body.childNodes.at(-1);
+    assert.ok(injected && "tagName" in injected);
+    assert.equal(injected.tagName, "script");
+    assert.deepEqual(injected.attrs, [{ name: "src", value: "/session-link-navigation.js" }]);
+    assert.equal(injectSessionLinkNavigation(transformed), transformed);
+  });
+}
+
+for (const script of [
+  "<SCRIPT SRC=/session-link-navigation.js></SCRIPT>",
+  '<script type="text/javascript" src="&#47;session-link-navigation.js"></script>',
+  '<script type="module" src="/session-link-navigation.js"></script>',
+]) {
+  test(`sibling navigation recognizes existing executable markup: ${script}`, () => {
+    const html = `<body>${script}</body>`;
+    assert.equal(injectSessionLinkNavigation(html), html);
+  });
+}
