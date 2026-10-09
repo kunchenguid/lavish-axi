@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
@@ -122,9 +122,42 @@ function closeRaw(server) {
   return new Promise((resolve) => server.close(() => resolve(undefined)));
 }
 
+// These tests replace listeners at the same address. Use a fresh socket per request:
+// pooled fetch connections can throw setTypeOfService EINVAL on macOS during replacement.
+async function requestServer(url, { method = "GET", body = undefined } = {}) {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      url,
+      {
+        method,
+        agent: false,
+        signal: AbortSignal.timeout(3000),
+        headers: body === undefined ? {} : { "content-type": "application/json" },
+      },
+      (response) => {
+        let text = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          text += chunk;
+        });
+        response.on("error", (error) => {
+          request.destroy();
+          reject(error);
+        });
+        response.on("end", () => {
+          request.destroy();
+          resolve({ status: response.statusCode, body: text });
+        });
+      },
+    );
+    request.on("error", reject);
+    request.end(body);
+  });
+}
+
 async function health(host, port, query = "") {
-  const response = await fetch(`http://${host}:${port}/health${query}`, { signal: AbortSignal.timeout(3000) });
-  return response.json();
+  const response = await requestServer(`http://${host}:${port}/health${query}`);
+  return JSON.parse(response.body);
 }
 
 async function reachable(host, port) {
@@ -155,8 +188,7 @@ async function ipv6LoopbackAvailable() {
 }
 
 async function getStatus(url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
-  await response.arrayBuffer();
+  const response = await requestServer(url);
   return response.status;
 }
 
@@ -171,16 +203,15 @@ async function stateSessions(dir) {
 }
 
 async function openSession(host, port, file) {
-  const response = await fetch(`http://${host}:${port}/api/sessions`, {
+  const response = await requestServer(`http://${host}:${port}/api/sessions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
     body: JSON.stringify({ file }),
   });
-  return response.json();
+  return JSON.parse(response.body);
 }
 
 async function shutdownAt(host, port) {
-  await fetch(`http://${host}:${port}/shutdown`, { method: "POST" }).catch(() => {});
+  await requestServer(`http://${host}:${port}/shutdown`, { method: "POST" }).catch(() => {});
   await waitFor(async () => !(await reachable(host, port)));
 }
 
@@ -435,7 +466,9 @@ test("a symlinked state directory adopts the daemon started at its target", asyn
         await runCli(["open", artifact, "--no-open"]);
       });
       assert.equal(await isResolved(owner.done), false, "the original daemon was replaced");
-      const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+      const health = await requestServer(`http://127.0.0.1:${port}/health`).then((response) =>
+        JSON.parse(response.body),
+      );
       assert.equal(health.state_id, stateId(path.join(alias, "state.json")));
       assert.equal(health.version, VERSION);
     } finally {
