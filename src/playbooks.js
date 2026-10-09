@@ -201,6 +201,7 @@ export const PLAYBOOKS = [
       "Show selected state separately from queued state so the user trusts what will be sent back.",
     ],
     design_rules: [
+      'Set data-lavish-annotate="off" on <html> or <body> for decision, choice, and form-shaped pages; leave annotation on (the default, or "on") when reviewing a frontend or layout. A body declaration takes precedence; unknown values default to on. The toolbar can override the page default and keeps the reviewer\'s choice across artifact reloads.',
       "Native controls - radios, checkboxes, text inputs, selects, textareas, buttons, options, labels, disclosure summaries, and contenteditable regions - and custom widgets with an interactive ARIA role (button, checkbox, combobox, menuitem, option, radio, switch, tab, treeitem, and the menuitem variants) are interactive automatically: clicks toggle, focus, and type instead of annotating, so they do not need data-lavish-action. An <a href> stays annotatable when it carries one of these roles or sits inside such a widget. Build choice and option UIs from these whenever you can.",
       "For reversible choices, do not call window.lavish.queuePrompt() from radio change handlers or option click handlers. Those handlers should only update local selected state.",
       "Use a per-question form submit or explicit Queue answer button to read the current values and call window.lavish.queuePrompt() exactly once for the final answer.",

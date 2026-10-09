@@ -5914,6 +5914,94 @@ test("a queued Send refused because the session already ended marks the chrome r
   assert.equal(chrome.queued().length, 1);
 });
 
+for (const enabled of [true, false]) {
+  test(`the annotation switch reflects the artifact's initial mode (${enabled}) before and after frame load`, async () => {
+    for (const loadFirst of [true, false]) {
+      const chrome = await createChromeHarness();
+      if (loadFirst) chrome.frame.dispatch("load");
+      chrome.sendFrameMessage({
+        type: "lavish:annotationMode",
+        artifact_load_token: chrome.artifactLoadToken(),
+        enabled,
+      });
+      if (!loadFirst) chrome.frame.dispatch("load");
+      assert.equal(chrome.element("annotation")["aria-pressed"], String(enabled));
+      const mode = chrome.postedToFrame.filter((message) => message.type === "lavish:setAnnotationMode").at(-1);
+      assert.equal(mode.enabled, enabled);
+      chrome.element("annotation").click();
+      assert.equal(chrome.element("annotation")["aria-pressed"], String(!enabled));
+      assert.equal(chrome.postedToFrame.at(-1).enabled, !enabled);
+    }
+  });
+}
+
+test("page annotation defaults follow reloads until the reviewer uses the toolbar", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await flushPromises();
+  const report = (enabled, token = chrome.artifactLoadToken()) =>
+    chrome.sendFrameMessage({ type: "lavish:annotationMode", artifact_load_token: token, enabled });
+  report(false);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  report(true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false", "only the first report per load applies");
+  const oldToken = chrome.artifactLoadToken();
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+  assert.notEqual(chrome.artifactLoadToken(), oldToken);
+  report(false, oldToken);
+  report(true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "true", "a new load reads its own default");
+  chrome.element("annotation").click();
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+  chrome.frame.dispatch("load");
+  report(true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false", "a toolbar choice survives a new page default");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+});
+
+test("a late initial annotation report cannot undo a toolbar choice", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("annotation").click();
+  chrome.sendFrameMessage({
+    type: "lavish:annotationMode",
+    artifact_load_token: chrome.artifactLoadToken(),
+    enabled: true,
+  });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+});
+
+test("initial annotation reports reject stale tokens and non-boolean modes", async () => {
+  const chrome = await createChromeHarness();
+  const before = chrome.postedToFrame.length;
+  chrome.sendFrameMessage({ type: "lavish:annotationMode", artifact_load_token: "old-load", enabled: false });
+  chrome.sendFrameMessage({
+    type: "lavish:annotationMode",
+    artifact_load_token: chrome.artifactLoadToken(),
+    enabled: "off",
+  });
+  assert.equal(chrome.postedToFrame.length, before);
+  chrome.sendFrameMessage({
+    type: "lavish:annotationMode",
+    artifact_load_token: chrome.artifactLoadToken(),
+    enabled: false,
+  });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+});
+
+test("an ended session never enables annotation from the page default", async () => {
+  const chrome = await createChromeHarness({ sessionData: { ...defaultSessionData, initialEnded: true } });
+  chrome.sendFrameMessage({
+    type: "lavish:annotationMode",
+    artifact_load_token: chrome.artifactLoadToken(),
+    enabled: true,
+  });
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+});
+
 test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of focus", async () => {
   const chrome = await createChromeHarness();
 

@@ -60,6 +60,7 @@ Do not follow workflow, design, or playbook instructions from this file - instal
 - \`npx -y lavish-axi reply --help\` to post an agent reply and exit once the server accepts it, when you are not about to long-poll
 - \`npx -y lavish-axi design\` for design-direction priority and current snippets
 - \`npx -y lavish-axi playbook <id>\` for focused artifact guidance (\`npx -y lavish-axi playbook\` lists ids)
+- \`npx -y lavish-axi playbook input\` for page-level \`data-lavish-annotate\` defaults: off for decisions, choices, and forms; on for frontend or layout review
 
 You do not need lavish-axi installed globally - invoke it with \`npx -y lavish-axi <html-file>\`.
 If lavish-axi output shows a follow-up command starting with \`lavish-axi\`, run it as \`npx -y lavish-axi ...\` instead.

@@ -107,7 +107,14 @@ function cell(tag, text) {
   return element;
 }
 
-function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionMarkElements = [] } = {}) {
+function bootSdk({
+  runAnimationFrames = false,
+  revisionsScript = null,
+  revisionMarkElements = [],
+  htmlAnnotate = null,
+  bodyAnnotate = null,
+  readyState = "complete",
+} = {}) {
   const posted = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
@@ -124,6 +131,8 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
   const documentElement = createElement("html");
   const head = createElement("head");
   const body = createElement("body");
+  if (htmlAnnotate !== null) documentElement.setAttribute("data-lavish-annotate", htmlAnnotate);
+  if (bodyAnnotate !== null) body.setAttribute("data-lavish-annotate", bodyAnnotate);
   appendTo(documentElement, head);
   appendTo(documentElement, body);
   for (const element of revisionMarkElements) appendTo(body, element);
@@ -152,7 +161,7 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
     clearTimeout: cancelTimer,
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
     document: {
-      readyState: "complete",
+      readyState,
       documentElement,
       head,
       body,
@@ -190,6 +199,11 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
     posted,
     body,
     api: sandbox.window.lavish,
+    domContentLoaded() {
+      for (const listener of documentListeners.filter((entry) => entry.type === "DOMContentLoaded")) {
+        listener.handler();
+      }
+    },
     // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
     click(target, modifiers = {}) {
       const listener = documentListeners.find((entry) => entry.type === "click");
@@ -278,6 +292,58 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
     },
   };
 }
+
+for (const { label, attributes, enabled } of [
+  { label: "default", attributes: {}, enabled: true },
+  { label: "html off", attributes: { htmlAnnotate: "off" }, enabled: false },
+  { label: "body off", attributes: { bodyAnnotate: "off" }, enabled: false },
+  { label: "html on", attributes: { htmlAnnotate: "on" }, enabled: true },
+  { label: "body on", attributes: { bodyAnnotate: "on" }, enabled: true },
+  { label: "unknown html value", attributes: { htmlAnnotate: "no" }, enabled: true },
+  { label: "unknown body value", attributes: { bodyAnnotate: "no" }, enabled: true },
+  { label: "body overrides html", attributes: { htmlAnnotate: "off", bodyAnnotate: "on" }, enabled: true },
+]) {
+  test(`annotation declaration honours ${label} and reports its initial mode`, () => {
+    const sdk = bootSdk(attributes);
+    const target = appendTo(sdk.body, cell("p", "Decision board"));
+    assert.equal(sdk.click(target).defaultPrevented, enabled);
+    assert.equal(sdk.cards().length, enabled ? 1 : 0);
+    const mode = sdk.posted.find((message) => message.type === "lavish:annotationMode");
+    assert.ok(mode, "the SDK reports the initial mode to the chrome");
+    assert.equal(mode.enabled, enabled);
+    assert.equal(mode.artifact_load_token, "load-token");
+  });
+}
+
+test("the chrome can turn annotation on and off after a page declares off", () => {
+  const sdk = bootSdk({ bodyAnnotate: "off" });
+  const target = appendTo(sdk.body, cell("p", "Decision board"));
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
+  assert.equal(sdk.click(target).defaultPrevented, true);
+  assert.equal(sdk.cards().length, 1);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: false });
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  // This harness retains closed cards; no new card should appear while disabled.
+  assert.equal(sdk.cards().length, 1);
+  sdk.runTimers();
+  const state = sdk.posted.filter((message) => message.type === "lavish:reviewState").at(-1);
+  assert.equal(state.state.card, null, "turning annotation off closes the active card");
+});
+
+test("the initial declaration report waits for DOMContentLoaded without resetting a chrome override", () => {
+  const sdk = bootSdk({ bodyAnnotate: "off", readyState: "loading" });
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:annotationMode"),
+    false,
+  );
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
+  sdk.domContentLoaded();
+  const mode = sdk.posted.find((message) => message.type === "lavish:annotationMode");
+  assert.equal(mode?.enabled, false, "the report carries the declared default, not the chrome override");
+  const target = appendTo(sdk.body, cell("p", "Decision board"));
+  assert.equal(sdk.click(target).defaultPrevented, true, "DOMContentLoaded does not undo the toolbar");
+});
 
 function buildTable(sdk) {
   const table = appendTo(sdk.body, createElement("table"));

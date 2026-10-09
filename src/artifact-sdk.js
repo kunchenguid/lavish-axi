@@ -472,7 +472,12 @@ export function createArtifactSdk(
   function postArtifactMessage(type, payload = {}) {
     parent.postMessage({ type, ...payload, artifact_load_token: String(artifactLoadToken || "") }, "*");
   }
-  let annotationMode = true;
+  // The SDK is injected at the end of the body. A body declaration overrides html;
+  // only the explicit "off" value opts out, so absent or unknown values stay annotatable.
+  const initialAnnotationMode =
+    (document.body?.getAttribute("data-lavish-annotate") ??
+      document.documentElement.getAttribute("data-lavish-annotate")) !== "off";
+  let annotationMode = initialAnnotationMode;
   let hovered = null;
   let selected = null;
   let ignoreNextClick = false;
@@ -2635,6 +2640,16 @@ export function createArtifactSdk(
   );
 
   setAnnotationMode(annotationMode);
+  // Report the page default once; subsequent mode changes belong to the chrome.
+  // Sending at DOMContentLoaded also covers SDK execution while the page is parsing.
+  function reportInitialAnnotationMode() {
+    postArtifactMessage("lavish:annotationMode", { enabled: initialAnnotationMode });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", reportInitialAnnotationMode, { once: true });
+  } else {
+    reportInitialAnnotationMode();
+  }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });
   } else {

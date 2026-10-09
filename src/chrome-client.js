@@ -193,6 +193,9 @@ const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-arti
 
 const queued = loadQueuedPrompts();
 let annotation = true;
+// Page defaults follow artifact loads until the reviewer explicitly chooses a mode.
+let annotationOverridden = false;
+let annotationDefaultReceived = false;
 let ended = false;
 let agentPresence = "waiting";
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
@@ -3501,6 +3504,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   artifactLoadRevision = revision;
   artifactLoadToken = token;
   artifactSpokeToken = "";
+  annotationDefaultReceived = false;
   inlineWhiteboardChannels.clear();
   setHandoffSuperseded(false);
   startLayoutGateCycle();
@@ -4242,6 +4246,13 @@ window.addEventListener("message", (event) => {
     return;
   }
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
+  if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean" && !annotationDefaultReceived) {
+    annotationDefaultReceived = true;
+    if (!annotationOverridden && !ended && !terminalSubmission) annotation = msg.enabled;
+    annotationSwitch.setAttribute("aria-pressed", String(annotation && !ended));
+    // Reconcile even if frame load replayed the old mode before this report arrived.
+    postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
+  }
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
     // Queued from inside the artifact, where the closed dock is the only sign it landed.
@@ -4405,6 +4416,7 @@ loadFrame();
 
 function toggleAnnotationMode() {
   if (ended || terminalSubmission) return;
+  annotationOverridden = true;
   annotation = !annotation;
   annotationSwitch.setAttribute("aria-pressed", String(annotation));
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
