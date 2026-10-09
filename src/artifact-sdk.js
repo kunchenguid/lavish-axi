@@ -2639,15 +2639,7 @@ export function createArtifactSdk(
 
   setAnnotationMode(annotationMode);
   // Report the page default once; subsequent mode changes belong to the chrome.
-  // Sending at DOMContentLoaded also covers SDK execution while the page is parsing.
-  function reportInitialAnnotationMode() {
-    postArtifactMessage("lavish:annotationMode", { enabled: initialAnnotationMode });
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", reportInitialAnnotationMode, { once: true });
-  } else {
-    reportInitialAnnotationMode();
-  }
+  postArtifactMessage("lavish:annotationMode", { enabled: initialAnnotationMode });
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });
   } else {

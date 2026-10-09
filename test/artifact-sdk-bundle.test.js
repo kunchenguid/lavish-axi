@@ -112,7 +112,6 @@ function bootSdk({
   revisionsScript = null,
   revisionMarkElements = [],
   htmlAnnotate = null,
-  readyState = "complete",
 } = {}) {
   const posted = [];
   const documentListeners = [];
@@ -159,7 +158,7 @@ function bootSdk({
     clearTimeout: cancelTimer,
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
     document: {
-      readyState,
+      readyState: "complete",
       documentElement,
       head,
       body,
@@ -197,11 +196,6 @@ function bootSdk({
     posted,
     body,
     api: sandbox.window.lavish,
-    domContentLoaded() {
-      for (const listener of documentListeners.filter((entry) => entry.type === "DOMContentLoaded")) {
-        listener.handler();
-      }
-    },
     // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
     click(target, modifiers = {}) {
       const listener = documentListeners.find((entry) => entry.type === "click");
@@ -324,20 +318,6 @@ test("the chrome can turn annotation on and off after a page declares off", () =
   sdk.runTimers();
   const state = sdk.posted.filter((message) => message.type === "lavish:reviewState").at(-1);
   assert.equal(state.state.card, null, "turning annotation off closes the active card");
-});
-
-test("the initial declaration report waits for DOMContentLoaded without resetting a chrome override", () => {
-  const sdk = bootSdk({ htmlAnnotate: "off", readyState: "loading" });
-  assert.equal(
-    sdk.posted.some((message) => message.type === "lavish:annotationMode"),
-    false,
-  );
-  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
-  sdk.domContentLoaded();
-  const mode = sdk.posted.find((message) => message.type === "lavish:annotationMode");
-  assert.equal(mode?.enabled, false, "the report carries the declared default, not the chrome override");
-  const target = appendTo(sdk.body, cell("p", "Decision board"));
-  assert.equal(sdk.click(target).defaultPrevented, true, "DOMContentLoaded does not undo the toolbar");
 });
 
 function buildTable(sdk) {
