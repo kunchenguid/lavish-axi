@@ -44,7 +44,6 @@ import {
   sceneIsImageFallback,
   summarizeSceneEdits,
   WHITEBOARD_TEXT_METRICS_VERSION,
-  whiteboardSaveIsHeld,
 } from "./whiteboard-core.js";
 import { findLibraryItem, parseLibraryIconDirectives, toExcalidrawLibraryItems } from "./whiteboard-libraries.js";
 
@@ -65,8 +64,9 @@ const state = {
   files: {},
   // User-supplied Excalidraw libraries, passed in by the chrome.
   libraries: [],
-  // The chrome could not fetch the libraries: a conversion is persisted only
-  // once it carries user edits, so the next open re-converts with them.
+  // The chrome could not fetch the libraries, or they did not match the
+  // source hash: saves record an unverified hash (see
+  // createWhiteboardPersistencePayload) so the next open re-converts.
   librariesUnavailable: false,
   imageFallback: false,
   textMetricsVersion: WHITEBOARD_TEXT_METRICS_VERSION,
@@ -235,7 +235,6 @@ function currentScene() {
 function postSave(flushId = "") {
   const scene = currentScene();
   if (!scene) return false;
-  if (whiteboardSaveIsHeld(state, scene)) return false;
   post({
     type: "lavish-whiteboard:save",
     diagramIndex: state.diagramIndex,

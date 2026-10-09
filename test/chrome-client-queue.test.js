@@ -8820,3 +8820,50 @@ test("a transcript entry from before receipts renders no receipt and ignores pre
   assert.equal(bubbles[0].innerHTML, '<small>You</small><div class="bubble-text">Old note</div>');
   assert.equal(receiptNote(bubbles[1].innerHTML), "Agent is busy; delivered on its next poll");
 });
+
+async function whiteboardInitWithLibraries({ librariesResponse, sourcesVersion }) {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).includes("/whiteboard-libraries")) return librariesResponse();
+      if (String(url).includes("/mermaid-sources")) {
+        return {
+          ok: true,
+          json: async () => ({
+            sources: [{ index: 0, source: "flowchart TD\n%% lavish-icon A sys/Queue\nA-->B", hash: "hash" }],
+            ...(sourcesVersion ? { libraries_version: sourcesVersion } : {}),
+          }),
+        };
+      }
+      return whiteboardFetch(String(url));
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  const init = inline.posted.find((message) => message.type === "lavish-whiteboard:init");
+  assert.ok(init, "the whiteboard frame was initialized");
+  return init;
+}
+
+test("whiteboard init flags libraries that changed between the libraries and sources reads", async () => {
+  const libraries = [{ id: "sys", items: [] }];
+  const matching = await whiteboardInitWithLibraries({
+    librariesResponse: () => ({ ok: true, json: async () => ({ libraries, version: "v1" }) }),
+    sourcesVersion: "v1",
+  });
+  assert.equal(matching.librariesUnavailable, false);
+  assert.equal(JSON.stringify(matching.libraries), JSON.stringify(libraries));
+
+  // A library file was added or replaced after the libraries read but before
+  // the sources read: the frame would draw old items under the new hash.
+  const raced = await whiteboardInitWithLibraries({
+    librariesResponse: () => ({ ok: true, json: async () => ({ libraries, version: "v1" }) }),
+    sourcesVersion: "v2",
+  });
+  assert.equal(raced.librariesUnavailable, true);
+
+  const failed = await whiteboardInitWithLibraries({
+    librariesResponse: () => ({ ok: false, json: async () => ({}) }),
+    sourcesVersion: "v1",
+  });
+  assert.equal(failed.librariesUnavailable, true);
+  assert.equal(JSON.stringify(failed.libraries), "[]");
+});

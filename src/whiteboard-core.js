@@ -607,20 +607,19 @@ export function repairSavedSceneTextMetrics(elements, { measure }) {
   return { elements: repairedElements, repaired };
 }
 
-// A conversion drawn while the libraries were unavailable is missing its
-// icons, yet its source hash assumes them. Hold its view-only autosave so the
-// next open re-converts; once the reviewer edits it, it saves as usual.
-// Queued feedback is never held: it always carries the full scene.
-export function whiteboardSaveIsHeld(state, scene) {
-  if (!state?.librariesUnavailable) return false;
-  const baselineElements = Array.isArray(state?.baselineElements) ? state.baselineElements : [];
-  return !savedSceneHasPreservableEdits({ scene, baseline: { elements: baselineElements } });
-}
+// A scene drawn while the libraries were unavailable, or did not match the
+// snapshot the source hash was computed from, may show missing or wrong icons
+// although its hash assumes the right ones. Every save of such a scene,
+// autosave and queued feedback alike, keeps the full scene but records a hash
+// that can never match, so a later open re-converts it with the right
+// libraries (or offers the keep-or-re-convert choice when it was edited).
+export const UNVERIFIED_LIBRARIES_HASH_SUFFIX = ":libraries-unverified";
 
 export function createWhiteboardPersistencePayload(state, scene) {
   const baselineElements = Array.isArray(state?.baselineElements) ? state.baselineElements : [];
+  const sourceHash = String(state?.sceneSourceHash || "");
   return {
-    sourceHash: String(state?.sceneSourceHash || ""),
+    sourceHash: state?.librariesUnavailable ? `${sourceHash}${UNVERIFIED_LIBRARIES_HASH_SUFFIX}` : sourceHash,
     textMetricsVersion: Math.max(0, Math.floor(Number(state?.textMetricsVersion) || 0)),
     scene: scene ?? null,
     baseline: { elements: baselineElements },
@@ -892,7 +891,12 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
         parts.push(movedFar ? `resized it by (${dw}, ${dh})` : `Resized library item ${ref} by (${dw}, ${dh})`);
       lines.push(clampLine(`${parts.join(" and ")}${where}`));
     }
-    if (before.some((element, index) => libraryContentDiffers(element, after[index]))) {
+    if (
+      before.some(
+        (element, index) =>
+          libraryContentDiffers(element, after[index]) || libraryPartMoved(element, after[index], was, now),
+      )
+    ) {
       stats.relabeled += 1;
       lines.push(clampLine(`Edited library item ${ref}${where}`));
     }
@@ -921,6 +925,27 @@ function libraryContentDiffers(before, after) {
     if (valuesDiffer(before[key], after[key], key, true)) return true;
   }
   return false;
+}
+
+// Whether one part of a library item moved, resized, or was reshaped beyond
+// what the item's overall move and scale explain - an edit inside the item
+// that its outline alone would not show.
+function libraryPartMoved(before, after, was, now) {
+  const sx = was.width > 0 ? now.width / was.width : 1;
+  const sy = was.height > 0 ? now.height / was.height : 1;
+  const off = (actual, expected) => Math.abs((Number(actual) || 0) - expected) > SUMMARY_MOVE_EPSILON_PX;
+  if (off(after.x, now.minX + ((Number(before.x) || 0) - was.minX) * sx)) return true;
+  if (off(after.y, now.minY + ((Number(before.y) || 0) - was.minY) * sy)) return true;
+  if (off(after.width, (Number(before.width) || 0) * sx)) return true;
+  if (off(after.height, (Number(before.height) || 0) * sy)) return true;
+  const pointsBefore = Array.isArray(before.points) ? before.points : [];
+  const pointsAfter = Array.isArray(after.points) ? after.points : [];
+  if (pointsBefore.length !== pointsAfter.length) return true;
+  return pointsBefore.some(
+    (point, index) =>
+      off(pointsAfter[index]?.[0], (Number(point?.[0]) || 0) * sx) ||
+      off(pointsAfter[index]?.[1], (Number(point?.[1]) || 0) * sy),
+  );
 }
 
 function libraryRefOf(el) {

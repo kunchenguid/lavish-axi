@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   createWhiteboardPersistencePayload,
-  whiteboardSaveIsHeld,
   findDuplicateElementIds,
   LIBRARY_ICON_GROWN_SPACING,
   LIBRARY_ICON_HEIGHT,
@@ -123,20 +122,27 @@ test("whiteboard persistence payload keeps migration and baseline fields togethe
   );
 });
 
-test("an unedited conversion made without libraries is held from autosave but keeps its payload", () => {
+test("a scene drawn with unverified libraries is never restored as matching its diagram", () => {
   const baselineElements = [rect("A")];
   const state = { sceneSourceHash: "hash-1", textMetricsVersion: 1, baselineElements, librariesUnavailable: true };
   const unedited = { elements: [rect("A")] };
-  assert.equal(whiteboardSaveIsHeld(state, unedited), true);
-  // Queued feedback still carries the full scene, baseline and hash.
-  assert.deepEqual(createWhiteboardPersistencePayload(state, unedited), {
-    sourceHash: "hash-1",
-    textMetricsVersion: 1,
-    scene: unedited,
+  const edited = { elements: [rect("A"), rect("added")] };
+  // Autosave and queued feedback share this payload: it keeps the full scene,
+  // but its hash never matches, so a later open re-converts with the right
+  // libraries (or offers the choice when the reviewer had edited it).
+  const payload = createWhiteboardPersistencePayload(state, unedited);
+  assert.deepEqual(payload.scene, unedited);
+  assert.deepEqual(payload.baseline, { elements: baselineElements });
+  assert.notEqual(payload.sourceHash, "hash-1");
+  const saved = (scene) => ({
+    source_hash: createWhiteboardPersistencePayload(state, scene).sourceHash,
+    scene,
     baseline: { elements: baselineElements },
   });
-  assert.equal(whiteboardSaveIsHeld(state, { elements: [rect("A"), rect("added")] }), false);
-  assert.equal(whiteboardSaveIsHeld({ ...state, librariesUnavailable: false }, unedited), false);
+  assert.equal(resolveWhiteboardInitAction(saved(unedited), "hash-1"), "convert");
+  assert.equal(resolveWhiteboardInitAction(saved(edited), "hash-1"), "prompt");
+  const verified = { ...state, librariesUnavailable: false };
+  assert.equal(createWhiteboardPersistencePayload(verified, unedited).sourceHash, "hash-1");
 });
 
 // ---------------------------------------------------------------------------
@@ -949,8 +955,10 @@ test("summarizeSceneEdits reports a moved part of a multi-element library item",
   ];
   const edited = [baseline[0], { ...baseline[1], y: 90 }];
   const summary = summarizeSceneEdits(baseline, edited);
-  assert.deepEqual(summary.lines, ["Resized library item sys/Queue by (0, 40)"]);
+  // The outline grew, and one part moved on its own inside it.
+  assert.deepEqual(summary.lines, ["Resized library item sys/Queue by (0, 40)", "Edited library item sys/Queue"]);
   assert.equal(summary.stats.moved, 1);
+  assert.equal(summary.stats.relabeled, 1);
 });
 
 test("summarizeSceneEdits reports text edited inside an icon node's icon", () => {
@@ -991,4 +999,60 @@ test("summarizeSceneEdits reports an icon resized within its node, relative to t
   assert.deepEqual(summarizeSceneEdits(baseline, movedTogether).lines, [
     'Moved by (100, 0): rectangle "Orders API" (api)',
   ]);
+});
+
+test("summarizeSceneEdits reports a part moved or resized inside an unchanged library item outline", () => {
+  const ref = { lavishLibraryRef: "sys/Server" };
+  const frame = rect("s1", { width: 200, height: 200, groupIds: ["g"], customData: ref });
+  const part = rect("s2", { x: 20, y: 20, width: 40, height: 40, groupIds: ["g"], customData: ref });
+  const baseline = [frame, part];
+  assert.deepEqual(summarizeSceneEdits(baseline, [frame, { ...part, x: 60 }]).lines, [
+    "Edited library item sys/Server",
+  ]);
+  assert.deepEqual(summarizeSceneEdits(baseline, [frame, { ...part, width: 80, height: 80 }]).lines, [
+    "Edited library item sys/Server",
+  ]);
+  const reshaped = {
+    id: "s3",
+    type: "line",
+    x: 10,
+    y: 10,
+    width: 50,
+    height: 50,
+    points: [
+      [0, 0],
+      [50, 50],
+    ],
+    groupIds: ["g"],
+    customData: ref,
+  };
+  assert.deepEqual(
+    summarizeSceneEdits(
+      [frame, reshaped],
+      [
+        frame,
+        {
+          ...reshaped,
+          points: [
+            [0, 50],
+            [50, 0],
+          ],
+        },
+      ],
+    ).lines,
+    ["Edited library item sys/Server"],
+  );
+});
+
+test("summarizeSceneEdits reports a uniformly scaled library item as resized only", () => {
+  const ref = { lavishLibraryRef: "sys/Server" };
+  const baseline = [
+    rect("s1", { width: 200, height: 200, groupIds: ["g"], customData: ref }),
+    rect("s2", { x: 20, y: 20, width: 40, height: 40, groupIds: ["g"], customData: ref }),
+  ];
+  const scaled = [
+    { ...baseline[0], width: 300, height: 300 },
+    { ...baseline[1], x: 30, y: 30, width: 60, height: 60 },
+  ];
+  assert.deepEqual(summarizeSceneEdits(baseline, scaled).lines, ["Resized library item sys/Server by (100, 100)"]);
 });
