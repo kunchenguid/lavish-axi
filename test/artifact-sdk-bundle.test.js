@@ -112,7 +112,6 @@ function bootSdk({
   revisionsScript = null,
   revisionMarkElements = [],
   htmlAnnotate = null,
-  bodyAnnotate = null,
   readyState = "complete",
 } = {}) {
   const posted = [];
@@ -132,7 +131,6 @@ function bootSdk({
   const head = createElement("head");
   const body = createElement("body");
   if (htmlAnnotate !== null) documentElement.setAttribute("data-lavish-annotate", htmlAnnotate);
-  if (bodyAnnotate !== null) body.setAttribute("data-lavish-annotate", bodyAnnotate);
   appendTo(documentElement, head);
   appendTo(documentElement, body);
   for (const element of revisionMarkElements) appendTo(body, element);
@@ -296,12 +294,9 @@ function bootSdk({
 for (const { label, attributes, enabled } of [
   { label: "default", attributes: {}, enabled: true },
   { label: "html off", attributes: { htmlAnnotate: "off" }, enabled: false },
-  { label: "body off", attributes: { bodyAnnotate: "off" }, enabled: false },
   { label: "html on", attributes: { htmlAnnotate: "on" }, enabled: true },
-  { label: "body on", attributes: { bodyAnnotate: "on" }, enabled: true },
   { label: "unknown html value", attributes: { htmlAnnotate: "no" }, enabled: true },
-  { label: "unknown body value", attributes: { bodyAnnotate: "no" }, enabled: true },
-  { label: "body overrides html", attributes: { htmlAnnotate: "off", bodyAnnotate: "on" }, enabled: true },
+  { label: "empty html value", attributes: { htmlAnnotate: "" }, enabled: true },
 ]) {
   test(`annotation declaration honours ${label} and reports its initial mode`, () => {
     const sdk = bootSdk(attributes);
@@ -316,7 +311,7 @@ for (const { label, attributes, enabled } of [
 }
 
 test("the chrome can turn annotation on and off after a page declares off", () => {
-  const sdk = bootSdk({ bodyAnnotate: "off" });
+  const sdk = bootSdk({ htmlAnnotate: "off" });
   const target = appendTo(sdk.body, cell("p", "Decision board"));
   assert.equal(sdk.click(target).defaultPrevented, false);
   sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
@@ -332,7 +327,7 @@ test("the chrome can turn annotation on and off after a page declares off", () =
 });
 
 test("the initial declaration report waits for DOMContentLoaded without resetting a chrome override", () => {
-  const sdk = bootSdk({ bodyAnnotate: "off", readyState: "loading" });
+  const sdk = bootSdk({ htmlAnnotate: "off", readyState: "loading" });
   assert.equal(
     sdk.posted.some((message) => message.type === "lavish:annotationMode"),
     false,

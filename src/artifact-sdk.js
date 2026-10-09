@@ -472,11 +472,9 @@ export function createArtifactSdk(
   function postArtifactMessage(type, payload = {}) {
     parent.postMessage({ type, ...payload, artifact_load_token: String(artifactLoadToken || "") }, "*");
   }
-  // The SDK is injected at the end of the body. A body declaration overrides html;
-  // only the explicit "off" value opts out, so absent or unknown values stay annotatable.
-  const initialAnnotationMode =
-    (document.body?.getAttribute("data-lavish-annotate") ??
-      document.documentElement.getAttribute("data-lavish-annotate")) !== "off";
+  // Only an explicit "off" declaration on the root opts out; absent or unknown
+  // values keep the artifact annotatable by default.
+  const initialAnnotationMode = document.documentElement.getAttribute("data-lavish-annotate") !== "off";
   let annotationMode = initialAnnotationMode;
   let hovered = null;
   let selected = null;
