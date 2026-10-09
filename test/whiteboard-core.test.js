@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  conversionUsesUnverifiedLibraries,
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
   LIBRARY_ICON_GROWN_SPACING,
@@ -124,7 +125,13 @@ test("whiteboard persistence payload keeps migration and baseline fields togethe
 
 test("a scene drawn with unverified libraries is never restored as matching its diagram", () => {
   const baselineElements = [rect("A")];
-  const state = { sceneSourceHash: "hash-1", textMetricsVersion: 1, baselineElements, librariesUnavailable: true };
+  const iconSource = "flowchart TD\n%% lavish-icon a aws/Lambda\na-->b";
+  const state = {
+    sceneSourceHash: "hash-1",
+    textMetricsVersion: 1,
+    baselineElements,
+    drawnWithUnverifiedLibraries: conversionUsesUnverifiedLibraries(iconSource, true),
+  };
   const unedited = { elements: [rect("A")] };
   const edited = { elements: [rect("A"), rect("added")] };
   // Autosave and queued feedback share this payload: it keeps the full scene,
@@ -141,8 +148,44 @@ test("a scene drawn with unverified libraries is never restored as matching its 
   });
   assert.equal(resolveWhiteboardInitAction(saved(unedited), "hash-1"), "convert");
   assert.equal(resolveWhiteboardInitAction(saved(edited), "hash-1"), "prompt");
-  const verified = { ...state, librariesUnavailable: false };
+  const verified = { ...state, drawnWithUnverifiedLibraries: conversionUsesUnverifiedLibraries(iconSource, false) };
   assert.equal(createWhiteboardPersistencePayload(verified, unedited).sourceHash, "hash-1");
+});
+
+test("a plain diagram converted while libraries are unavailable keeps a matching hash", () => {
+  const baselineElements = [rect("A")];
+  const state = {
+    sceneSourceHash: "hash-1",
+    textMetricsVersion: 1,
+    baselineElements,
+    drawnWithUnverifiedLibraries: conversionUsesUnverifiedLibraries("flowchart TD\na-->b", true),
+  };
+  const edited = { elements: [rect("A"), rect("added")] };
+  const saved = {
+    source_hash: createWhiteboardPersistencePayload(state, edited).sourceHash,
+    scene: edited,
+    baseline: { elements: baselineElements },
+  };
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-1"), "restore");
+});
+
+test("a restored scene keeps its saved hash when this open's libraries are unavailable", () => {
+  const baselineElements = [rect("A")];
+  const edited = { elements: [rect("A"), rect("added")] };
+  // startFromSavedScene restores under the saved hash and never marks the
+  // scene, whatever the libraries fetch of this open reported.
+  const restoredState = {
+    sceneSourceHash: "hash-1",
+    textMetricsVersion: 1,
+    baselineElements,
+    drawnWithUnverifiedLibraries: false,
+  };
+  const saved = {
+    source_hash: createWhiteboardPersistencePayload(restoredState, edited).sourceHash,
+    scene: edited,
+    baseline: { elements: baselineElements },
+  };
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-1"), "restore");
 });
 
 // ---------------------------------------------------------------------------

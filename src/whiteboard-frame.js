@@ -31,6 +31,7 @@ import "./whiteboard-frame.css";
 
 import {
   convertExcalidrawSkeletonsAfterFontsLoad,
+  conversionUsesUnverifiedLibraries,
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
   libraryIconMermaidConfig,
@@ -64,10 +65,11 @@ const state = {
   files: {},
   // User-supplied Excalidraw libraries, passed in by the chrome.
   libraries: [],
-  // The chrome could not fetch the libraries, or they did not match the
-  // source hash: saves record an unverified hash (see
-  // createWhiteboardPersistencePayload) so the next open re-converts.
-  librariesUnavailable: false,
+  // This scene was converted from icon directives while the chrome could not
+  // fetch the libraries, or they did not match the source hash: saves record
+  // an unverified hash (see createWhiteboardPersistencePayload) so the next
+  // open re-converts.
+  drawnWithUnverifiedLibraries: false,
   imageFallback: false,
   textMetricsVersion: WHITEBOARD_TEXT_METRICS_VERSION,
   channelId: "",
@@ -524,6 +526,7 @@ async function startFromConversion(init) {
   state.files = files;
   state.imageFallback = sceneIsImageFallback(elements);
   state.sceneSourceHash = init.sourceHash;
+  state.drawnWithUnverifiedLibraries = conversionUsesUnverifiedLibraries(init.source, init.librariesUnavailable);
   state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
   if (state.imageFallback) {
     setBanner(
@@ -565,6 +568,7 @@ async function startFromSavedScene(init) {
   state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
   state.imageFallback = sceneIsImageFallback(elements);
   state.sceneSourceHash = saved.source_hash || init.sourceHash;
+  state.drawnWithUnverifiedLibraries = false;
   if (state.imageFallback) {
     setBanner(
       "wbFallbackBanner",
@@ -665,7 +669,6 @@ async function handleInit(init) {
   state.currentSource = String(init.source || "");
   state.currentSourceHash = String(init.sourceHash || "");
   state.libraries = Array.isArray(init.libraries) ? init.libraries : [];
-  state.librariesUnavailable = init.librariesUnavailable === true;
   const theme = init.theme === "dark" ? "dark" : "light";
   document.getElementById("wbTitle").textContent = `Whiteboard · diagram ${state.diagramIndex + 1}`;
 

@@ -4,7 +4,7 @@
 // normal module imports in the bundled whiteboard frame (unlike mermaid-node.js
 // helpers, these are never serialized with `.toString()`).
 
-import { LIBRARY_REF_CUSTOM_DATA_KEY } from "./whiteboard-libraries.js";
+import { LIBRARY_REF_CUSTOM_DATA_KEY, parseLibraryIconDirectives } from "./whiteboard-libraries.js";
 
 export const WHITEBOARD_PROMPT_TAG = "whiteboard";
 export const EXCALIDRAW_SCENE_TARGET_TYPE = "excalidraw-scene";
@@ -607,19 +607,25 @@ export function repairSavedSceneTextMetrics(elements, { measure }) {
   return { elements: repairedElements, repaired };
 }
 
-// A scene drawn while the libraries were unavailable, or did not match the
-// snapshot the source hash was computed from, may show missing or wrong icons
-// although its hash assumes the right ones. Every save of such a scene,
-// autosave and queued feedback alike, keeps the full scene but records a hash
-// that can never match, so a later open re-converts it with the right
-// libraries (or offers the keep-or-re-convert choice when it was edited).
+// A scene converted from icon directives while the libraries were unavailable,
+// or did not match the snapshot the source hash was computed from, may show
+// missing or wrong icons although its hash assumes the right ones. Every save
+// of such a scene, autosave and queued feedback alike, keeps the full scene but
+// records a hash that can never match, so a later open re-converts it with the
+// right libraries (or offers the keep-or-re-convert choice when it was edited).
+// A restored scene keeps its saved hash, and a diagram without directives is
+// never affected by libraries.
 export const UNVERIFIED_LIBRARIES_HASH_SUFFIX = ":libraries-unverified";
+
+export function conversionUsesUnverifiedLibraries(source, librariesUnavailable) {
+  return librariesUnavailable === true && parseLibraryIconDirectives(source).length > 0;
+}
 
 export function createWhiteboardPersistencePayload(state, scene) {
   const baselineElements = Array.isArray(state?.baselineElements) ? state.baselineElements : [];
   const sourceHash = String(state?.sceneSourceHash || "");
   return {
-    sourceHash: state?.librariesUnavailable ? `${sourceHash}${UNVERIFIED_LIBRARIES_HASH_SUFFIX}` : sourceHash,
+    sourceHash: state?.drawnWithUnverifiedLibraries ? `${sourceHash}${UNVERIFIED_LIBRARIES_HASH_SUFFIX}` : sourceHash,
     textMetricsVersion: Math.max(0, Math.floor(Number(state?.textMetricsVersion) || 0)),
     scene: scene ?? null,
     baseline: { elements: baselineElements },
