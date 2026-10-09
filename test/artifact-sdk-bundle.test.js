@@ -304,6 +304,27 @@ for (const { label, attributes, enabled } of [
   });
 }
 
+// Applying the page's "off" default closes no card, so it must not report one gone: the chrome
+// saves every `card: null` report over the stored draft, and the frame's load event that replays
+// that draft can arrive after a slow image, later than the report.
+test("a page that declares off reports no review state at boot", () => {
+  const sdk = bootSdk({ htmlAnnotate: "off" });
+  sdk.runTimers();
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:reviewState"),
+    false,
+    "nothing was open, so there is no card state to retire",
+  );
+  const target = appendTo(sdk.body, cell("h1", "Headline"));
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: { card: { selector: "h1", text: "needs a shorter headline" }, fields: [] },
+  });
+  sdk.setDocumentQuery((selector) => (selector === "h1" ? target : null));
+  sdk.runTimers();
+  assert.equal(sdk.card().querySelector("textarea").value, "needs a shorter headline");
+});
+
 test("the chrome can turn annotation on and off after a page declares off", () => {
   const sdk = bootSdk({ htmlAnnotate: "off" });
   const target = appendTo(sdk.body, cell("p", "Decision board"));

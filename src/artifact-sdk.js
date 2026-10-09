@@ -2237,6 +2237,7 @@ export function createArtifactSdk(
   }
 
   function closeCard() {
+    const hadCard = activeCardContext !== null;
     activeCardContext = null;
     if (activeAttachments) {
       activeAttachments.destroy();
@@ -2250,7 +2251,10 @@ export function createArtifactSdk(
     hovered = null;
     clearTextHighlight();
     selected = null;
-    scheduleReviewStateReport();
+    // Only a card that was open has state to retire. Reporting `card: null` with nothing open
+    // (a page declaring data-lavish-annotate="off" closes at boot) would overwrite a stored
+    // draft the chrome has not replayed yet, because that replay waits for the frame's load event.
+    if (hadCard) scheduleReviewStateReport();
   }
 
   function showAnnotationCard(target, options = {}) {
