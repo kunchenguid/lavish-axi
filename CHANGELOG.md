@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.85](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.84...lavish-axi-v0.1.85) (2026-10-09)
+
+
+### Features
+
+* **whiteboard:** load user Excalidraw libraries and render library icon nodes ([#410](https://github.com/kunchenguid/lavish-axi/issues/410)) ([57d9a2b](https://github.com/kunchenguid/lavish-axi/commit/57d9a2bc8cdfcfda0f21bde5a5b615965999dbd5))
+
 ## [0.1.84](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.83...lavish-axi-v0.1.84) (2026-10-07)
 
 
