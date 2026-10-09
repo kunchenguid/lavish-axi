@@ -104,7 +104,13 @@ export function findLibraryItem(libraries, ref) {
   return null;
 }
 
-function isFlowchartSource(lines) {
+/**
+ * The diagram header line of a Mermaid source, past any leading YAML
+ * frontmatter and `%%` comment lines, or "" when there is none.
+ * @param {string} source
+ */
+export function mermaidHeaderLine(source) {
+  const lines = String(source || "").split(/\r?\n/);
   let inFrontmatter = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index].trim();
@@ -117,9 +123,9 @@ function isFlowchartSource(lines) {
       continue;
     }
     if (!line || line.startsWith("%%")) continue;
-    return FLOWCHART_HEADER_RE.test(line);
+    return line;
   }
-  return false;
+  return "";
 }
 
 /**
@@ -130,10 +136,9 @@ function isFlowchartSource(lines) {
  * @returns {{ nodeId: string, ref: string }[]}
  */
 export function parseLibraryIconDirectives(source) {
-  const lines = String(source || "").split(/\r?\n/);
-  if (!isFlowchartSource(lines)) return [];
+  if (!FLOWCHART_HEADER_RE.test(mermaidHeaderLine(source))) return [];
   const directives = [];
-  for (const line of lines) {
+  for (const line of String(source || "").split(/\r?\n/)) {
     const match = ICON_DIRECTIVE_RE.exec(line);
     if (match && match[2].includes("/")) directives.push({ nodeId: match[1], ref: collapseWhitespace(match[2]) });
   }

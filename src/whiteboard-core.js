@@ -4,7 +4,7 @@
 // normal module imports in the bundled whiteboard frame (unlike mermaid-node.js
 // helpers, these are never serialized with `.toString()`).
 
-import { LIBRARY_REF_CUSTOM_DATA_KEY, parseLibraryIconDirectives } from "./whiteboard-libraries.js";
+import { LIBRARY_REF_CUSTOM_DATA_KEY, mermaidHeaderLine, parseLibraryIconDirectives } from "./whiteboard-libraries.js";
 
 export const WHITEBOARD_PROMPT_TAG = "whiteboard";
 export const EXCALIDRAW_SCENE_TARGET_TYPE = "excalidraw-scene";
@@ -267,11 +267,7 @@ function commonBounds(elements) {
  */
 export function libraryIconMermaidConfig(icons, source) {
   if (!(Array.isArray(icons) && icons.some((icon) => icon.item))) return {};
-  const header = String(source || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => /^(flowchart|graph)\b/i.test(line));
-  const leftRight = /^(?:flowchart|graph)\s+(LR|RL)\b/i.test(header || "");
+  const leftRight = /^(?:flowchart|graph)\s+(LR|RL)\b/i.test(mermaidHeaderLine(source));
   return {
     flowchart: {
       curve: "linear",
@@ -816,7 +812,8 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     if (editedMap.has(el.id)) continue;
     if (libraryRefOf(el)) {
       const key = libraryGroupKey(el);
-      if (!removedItems.has(key)) removedItems.set(key, { ref: libraryRefOf(el), group: libraryGroupOf(el) });
+      if (!removedItems.has(key)) removedItems.set(key, { ref: libraryRefOf(el), group: libraryGroupOf(el), parts: 0 });
+      removedItems.get(key).parts += 1;
       continue;
     }
     if (el.type === "text" && el.containerId && baselineMap.has(el.containerId)) {
@@ -827,7 +824,11 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     lines.push(clampLine(`Removed ${describeElement(el, baselineText)}`));
   }
 
-  for (const { ref, group } of removedItems.values()) {
+  const survivingItems = new Set(
+    edited.filter((el) => baselineMap.has(el.id) && libraryRefOf(el)).map((el) => libraryGroupKey(el)),
+  );
+  for (const [key, { ref, group }] of removedItems) {
+    if (survivingItems.has(key)) continue;
     const node = iconNodeFor(baseline, group);
     if (node && !editedMap.has(node.id)) continue;
     stats.removed += 1;
@@ -873,7 +874,7 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     }
   }
 
-  for (const { ref, group, before, after } of movedItems.values()) {
+  for (const [key, { ref, group, before, after }] of movedItems) {
     // Geometry is compared for the item as a whole. An icon node's icon is
     // measured relative to its node, which reports its own moves.
     const node = iconNodeFor(edited, group);
@@ -897,14 +898,17 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
         parts.push(movedFar ? `resized it by (${dw}, ${dh})` : `Resized library item ${ref} by (${dw}, ${dh})`);
       lines.push(clampLine(`${parts.join(" and ")}${where}`));
     }
+    const removedParts = removedItems.get(key)?.parts ?? 0;
     if (
+      removedParts > 0 ||
       before.some(
         (element, index) =>
           libraryContentDiffers(element, after[index]) || libraryPartMoved(element, after[index], was, now),
       )
     ) {
       stats.relabeled += 1;
-      lines.push(clampLine(`Edited library item ${ref}${where}`));
+      const removal = removedParts > 0 ? `: removed ${removedParts} of ${removedParts + before.length} parts` : "";
+      lines.push(clampLine(`Edited library item ${ref}${removal}${where}`));
     }
   }
 

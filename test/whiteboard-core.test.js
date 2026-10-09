@@ -763,6 +763,8 @@ test("libraryIconMermaidConfig adds spacing only on the axis icon nodes grow alo
   });
   assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart RL"), libraryIconMermaidConfig(icon, "flowchart LR"));
   assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart"), libraryIconMermaidConfig(icon, "flowchart TB"));
+  const frontmatter = "---\nconfig:\n  flowchart:\n    curve: basis\n---\nflowchart LR\n  a --> b";
+  assert.deepEqual(libraryIconMermaidConfig(icon, frontmatter), libraryIconMermaidConfig(icon, "flowchart LR"));
 });
 
 test("libraryIconSize scales every item to one icon height within a width cap", () => {
@@ -979,6 +981,22 @@ test("summarizeSceneEdits folds an icon node's icon into the node", () => {
     'Removed library item aws/AWS Lambda from rectangle "Orders API" (api)',
   ]);
   assert.deepEqual(summarizeSceneEdits(baseline, []).lines, ['Removed rectangle "Orders API" (api)']);
+});
+
+test("summarizeSceneEdits reports a part deleted from an icon as an edit, not a removal", () => {
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const baseline = [
+    rect("api", { groupIds: ["api:icon"] }),
+    boundLabel("api-label", "api", "Orders API"),
+    rect("api:icon:0", { groupIds: ["api:icon"], customData: ref }),
+    rect("api:icon:1", { groupIds: ["api:icon"], customData: ref }),
+    rect("api:icon:2", { groupIds: ["api:icon"], customData: ref }),
+  ];
+  const summary = summarizeSceneEdits(baseline, baseline.slice(0, 4));
+  assert.deepEqual(summary.lines, [
+    'Edited library item aws/AWS Lambda: removed 1 of 3 parts in rectangle "Orders API" (api)',
+  ]);
+  assert.deepEqual(summary.stats, { added: 0, removed: 0, moved: 0, relabeled: 1, drawn: 0 });
 });
 
 test("summarizeSceneEdits reports a moved reviewer-dropped item once", () => {
