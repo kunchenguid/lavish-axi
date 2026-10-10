@@ -2940,6 +2940,12 @@ test("shouldRestartServer adopts a server that is newer than the CLI", () => {
   assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "1.0.0" }), false);
 });
 
+test("shouldRestartServer replaces a server whose version is not plain x.y.z", () => {
+  assert.equal(shouldRestartServer("0.1.87", { ok: true, app: "lavish-axi", version: "0.1.87-beta.1" }), true);
+  assert.equal(shouldRestartServer("0.1.87", { ok: true, app: "lavish-axi", version: "v0.1.88" }), true);
+  assert.equal(shouldRestartServer("0.1.87-beta.1", { ok: true, app: "lavish-axi", version: "0.1.88" }), true);
+});
+
 test("shouldRestartServer compares versions numerically, not as strings", () => {
   assert.equal(shouldRestartServer("0.1.10", { ok: true, app: "lavish-axi", version: "0.1.9" }), true);
   assert.equal(shouldRestartServer("0.1.9", { ok: true, app: "lavish-axi", version: "0.1.10" }), false);

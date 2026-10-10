@@ -1974,7 +1974,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     existing.network_stale === true &&
     !forceRestart &&
     typeof existing.version === "string" &&
-    existing.version === VERSION;
+    !isServerOlderThanCli(VERSION, existing.version);
   let networkRestarted = replacedForNetwork;
   let raceRestarted = false;
   let deadline = Date.now() + 5000;
@@ -2067,7 +2067,7 @@ function isServerOlderThanCli(currentVersion, runningVersion) {
 }
 
 function parseReleaseVersion(version) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(version));
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version));
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
