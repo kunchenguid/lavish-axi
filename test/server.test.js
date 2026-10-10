@@ -5141,9 +5141,16 @@ test("bare polls have a visible agent listener identity and none is reserved", a
     const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }).catch(
       (error) => error,
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const health = await fetch(`${base}/health`).then((response) => response.json());
-    assert.equal(health.listeners.find((listener) => listener.key === key).label, "agent-listener");
+    let health;
+    let listener;
+    const deadline = Date.now() + 2000;
+    do {
+      health = await fetch(`${base}/health`).then((response) => response.json());
+      listener = health.listeners.find((candidate) => candidate.key === key);
+      if (listener) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } while (Date.now() < deadline);
+    assert.equal(listener?.label, "agent-listener");
     const conflict = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
     assert.equal((await conflict.json()).holder.label, "agent-listener");
     const reserved = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=none&timeoutMs=0`);

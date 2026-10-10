@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 
 // Builds a portable copy of a Lavish artifact by inlining only its LOCAL assets - files on disk
 // the artifact references by relative path, fetchable file:// URL, or a trusted root-absolute
-// resolver - as inline <style>/<script> blocks and data URIs. Remote references (http(s) CDN/font URLs,
+// resolver - as inline <style>/<script> blocks and data URIs. Local iframe `src` documents are
+// recursively transformed and inlined as escaped `srcdoc` attributes, under the same byte caps and
+// depth guard. Remote references (http(s) CDN/font URLs,
 // protocol-relative URLs, CSS url() pointing at the network) are deliberately LEFT AS-IS: the
 // browser loads them at render time, so the export and the hosted share render correctly wherever
 // there is network access. Because nothing remote is ever fetched, the transform makes no outbound
@@ -120,7 +122,7 @@ const UNRESOLVED_LOCAL_ASSET_WARNING_KINDS = new Set([
  * @param {string} [options.confineDir] Reject local refs that resolve (lexically or via symlink) outside this directory.
  * @param {number} [options.maxAssetBytes] Per-asset inline cap; larger local files are left as references with a warning.
  * @param {number} [options.maxBundleBytes] Per-bundle inline cap across all inlined local assets.
- * @param {number} [options.maxDepth] Local stylesheet-import recursion guard.
+ * @param {number} [options.maxDepth] Local stylesheet-import and iframe-document recursion guard.
  * @returns {Promise<{ html: string, warnings: Array<{ kind: string, ref: string, reason?: string }> }>}
  */
 export async function buildSelfContainedHtml(html, options = {}) {
@@ -144,6 +146,8 @@ export async function buildSelfContainedHtml(html, options = {}) {
       DEFAULT_MAX_BUNDLE_BYTES,
     ),
     maxDepth: Number.isFinite(options.maxDepth) ? options.maxDepth : DEFAULT_MAX_DEPTH,
+    frameDepth: 0,
+    srcdocBaseDir: options.baseDir || process.cwd(),
     inlinedBytes: 0,
     warnings: /** @type {Array<{ kind: string, ref: string, reason?: string }>} */ ([]),
   };
@@ -605,11 +609,14 @@ async function inlineRenderResourceAttrs(tagName, attrs, baseDir, ctx) {
     if (getDecisionAttr(attrs, "type").trim().toLowerCase() !== "image") return attrs;
     return inlineRenderAttr(attrs, "src", baseDir, ctx);
   }
-  if (tagName === "iframe")
-    return scrubFrameSrcdoc(warnFrameSrc(attrs, baseDir, ctx), baseDir, ctx, {
+  if (tagName === "iframe") {
+    const frame = await inlineFrameSrc(attrs, baseDir, ctx);
+    if (frame.inlined) return frame.attrs;
+    return scrubFrameSrcdoc(frame.attrs, baseDir, ctx, {
       localWarningKind: "srcdoc-resource",
       localWarningReason: SRCDOC_RESOURCE_REASON,
     });
+  }
   return attrs;
 }
 
@@ -2233,13 +2240,45 @@ function findTemplateClose(html, index) {
 
 // --- resolution + loading ---------------------------------------------------
 
-function resolveDocumentRefBase(html, ctx) {
+function resolveDocumentRefBase(html, ctx, documentDir = ctx.baseDir) {
   const href = findFirstDocumentBaseHref(html);
-  if (!href) return localRefBase(ctx.baseDir);
-  return refBaseFromHref(href, ctx.baseDir);
+  if (!href) return localRefBase(documentDir);
+  return refBaseFromHref(href, documentDir);
+}
+
+// A srcdoc document inherits its enclosing frame's base URL (which, for a nested frame, is itself
+// an already-rewritten path rather than the export root), so a child <base href> that resolves
+// locally no longer points where it did on disk. Rewrite it to the path from that inherited base
+// to the child's resolved base directory so relative references left in the child (links, failed
+// inline leftovers) resolve correctly in the export. Remote and file: bases are left for the
+// existing scrub/redaction paths.
+// Returns the (possibly rewritten) html plus the base directory a grandchild frame's own srcdoc
+// rewrite must treat as inherited: the child's resolved base directory when a rewrite happened
+// (that's what the rewritten href now resolves to), otherwise the unchanged inheritedBaseDir.
+function rewriteChildBaseForSrcdoc(html, childDocumentBase, inheritedBaseDir) {
+  const found = findFirstDocumentBaseTag(html);
+  if (!found || childDocumentBase.kind !== "local") return { html, effectiveBaseDir: inheritedBaseDir };
+  if (refBaseFromHref(found.href, childDocumentBase.dir).kind !== "local") {
+    return { html, effectiveBaseDir: inheritedBaseDir };
+  }
+  const attr = findHtmlAttr(found.token.attrs, "href");
+  if (!attr || !attr.hasValue) return { html, effectiveBaseDir: inheritedBaseDir };
+  const rel = path.relative(inheritedBaseDir, childDocumentBase.dir);
+  const hrefValue = rel === "" ? "./" : `${encodeRelativeRef(rel.split(path.sep).join("/"))}/`;
+  const replaced = replaceAttrTokenValue(found.token.attrs, attr, hrefValue);
+  const rewritten =
+    html.slice(0, found.index) + found.token.raw.replace(found.token.attrs, replaced) + html.slice(found.token.end);
+  return { html: rewritten, effectiveBaseDir: childDocumentBase.dir };
 }
 
 function findFirstDocumentBaseHref(html) {
+  return findFirstDocumentBaseTag(html)?.href ?? null;
+}
+
+// Locates the same "active" <base href> that findFirstDocumentBaseHref resolves to, so a rewrite
+// targets that tag rather than an earlier <base> nested inside a <template> or script/raw-text
+// element (which never takes effect in the rendered document).
+function findFirstDocumentBaseTag(html) {
   let index = 0;
   const openStack = [];
   while (index < html.length) {
@@ -2261,7 +2300,7 @@ function findFirstDocumentBaseHref(html) {
       const effectiveSelfClosing = isEffectiveSelfClosingTag(tag, token.selfClosing, openStack, elementNamespace);
       if (elementNamespace === "html" && tag === "base") {
         const href = getAttr(token.attrs, "href");
-        if (href) return href;
+        if (href) return { index: lt, token, href };
       }
       if (elementNamespace === "html" && tag === PLAINTEXT_TAG && !effectiveSelfClosing) break;
       if (elementNamespace === "html" && INERT_CONTENT_TAGS.has(tag) && !effectiveSelfClosing) {
@@ -2564,6 +2603,82 @@ function scrubUnsupportedStyleElementBody(css, baseDir, ctx) {
     localWarningKind: "unsupported-style-type",
     localWarningReason: "non-CSS style elements are left unchanged",
   });
+}
+
+// Inline a local iframe `src` document as an escaped `srcdoc`: the child HTML is recursively
+// transformed against its own directory (so its stylesheets, scripts, and media bundle too), then
+// attribute-escaped so it round-trips through decodeHtmlCharacterReferences. Declines - keeping the
+// warn path - for remote refs, file: URLs, refs carrying a query or fragment suffix (srcdoc cannot
+// preserve them), non-HTML documents, iframes that already carry srcdoc (srcdoc wins over src at
+// render time), nested frames past the depth guard, and reads that fail or exceed the byte caps;
+// any budget the child read consumed is rolled back on the way out. A child <base href> resolves
+// relative to the srcdoc document (which inherits the exported parent's base), so a local child
+// base is rewritten to the export-relative path before inlining.
+async function inlineFrameSrc(attrs, baseDir, ctx) {
+  const attr = findHtmlAttr(attrs, "src");
+  if (!attr || !attr.hasValue) return { attrs, inlined: false };
+  const ref = attr.value;
+  if (hasAttr(attrs, "srcdoc") || isFileSchemeRef(ref, HTML_REF_OPTIONS)) {
+    return { attrs: warnFrameSrc(attrs, baseDir, ctx), inlined: false };
+  }
+  const descriptor = resolveRef(ref, baseDir, ctx, HTML_REF_OPTIONS);
+  if (descriptor.kind !== "file") return { attrs: warnFrameSrc(attrs, baseDir, ctx), inlined: false };
+  if (splitRefSuffix(ref).suffix) {
+    ctx.warnings.push({
+      kind: "unsupported-frame",
+      ref,
+      reason: "iframes with a query or fragment suffix are left as references because srcdoc cannot carry the suffix",
+    });
+    return { attrs: replaceUnresolvedAttrRef(attrs, "src", ref), inlined: false };
+  }
+  if (!/\.(html?|xhtml)$/i.test(descriptor.path)) {
+    ctx.warnings.push({
+      kind: "unsupported-frame",
+      ref,
+      reason: "only HTML documents are inlined; other iframe documents are left as references",
+    });
+    return { attrs: replaceUnresolvedAttrRef(attrs, "src", ref), inlined: false };
+  }
+  if (ctx.frameDepth >= ctx.maxDepth) {
+    ctx.warnings.push({
+      kind: "unsupported-frame",
+      ref,
+      reason: "iframe nesting exceeds the maximum inline depth",
+    });
+    return { attrs: replaceUnresolvedAttrRef(attrs, "src", ref), inlined: false };
+  }
+  const startBytes = ctx.inlinedBytes;
+  const loaded = await loadTextFromDescriptor(descriptor, ref, ctx);
+  if (!loaded) {
+    ctx.inlinedBytes = startBytes;
+    return { attrs: warnFrameSrc(attrs, baseDir, ctx), inlined: false };
+  }
+  ctx.frameDepth += 1;
+  const parentSrcdocBaseDir = ctx.srcdocBaseDir;
+  let childHtml;
+  try {
+    const childDocumentBase = resolveDocumentRefBase(loaded.text, ctx, loaded.baseDir);
+    const { html: rewritten, effectiveBaseDir } = rewriteChildBaseForSrcdoc(
+      loaded.text,
+      childDocumentBase,
+      parentSrcdocBaseDir,
+    );
+    ctx.srcdocBaseDir = effectiveBaseDir;
+    childHtml = await transformMarkup(rewritten, childDocumentBase, ctx);
+  } catch (error) {
+    ctx.inlinedBytes = startBytes;
+    ctx.warnings.push({
+      kind: "load-failed",
+      ref,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return { attrs: warnFrameSrc(attrs, baseDir, ctx), inlined: false };
+  } finally {
+    ctx.frameDepth -= 1;
+    ctx.srcdocBaseDir = parentSrcdocBaseDir;
+  }
+  const cleaned = removeAttrs(attrs, ["src", "srcdoc"]);
+  return { attrs: `${cleaned} srcdoc="${escapeSrcdocAttr(childHtml)}"`, inlined: true };
 }
 
 function warnFrameSrc(attrs, baseDir, ctx) {
@@ -3626,6 +3741,13 @@ function replaceAttrTokenValue(source, attr, value, options = {}) {
 
 function escapeAttr(value) {
   return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+// Escape an inlined iframe child document for a double-quoted srcdoc attribute; `&`, `<`, and `"`
+// all have named references in HTML_ENTITY_MAP, so the value round-trips through
+// decodeHtmlCharacterReferences.
+function escapeSrcdocAttr(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 }
 
 function quoteAttrValuePreservingEntities(value, preferredQuote) {
