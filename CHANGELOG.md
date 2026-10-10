@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.86](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.85...lavish-axi-v0.1.86) (2026-10-10)
+
+
+### Features
+
+* **sdk:** let artifacts declare their initial annotation mode ([#413](https://github.com/kunchenguid/lavish-axi/issues/413)) ([fac7c00](https://github.com/kunchenguid/lavish-axi/commit/fac7c000c4dd1cb7316fcb89dc23ed7cc1d73907))
+
 ## [0.1.85](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.84...lavish-axi-v0.1.85) (2026-10-09)
 
 
