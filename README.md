@@ -161,6 +161,7 @@ pnpm link
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
 - **Portable artifacts** - The artifact runs in a sandboxed iframe while Lavish injects a small SDK for annotations, snapshots, feedback controls, and render-time layout checks.
   Author-defined links and popups can open in top-level tabs, while artifact documents remain sandboxed without same-origin access.
+  Following an HTTP(S) link to a Lavish session (`/session/<16-hex-character key>`) opens a new tab with no opener, including from locally served sibling HTML pages, relative links, and links using another server hostname. This keeps review indexes from nesting the editor inside an artifact and preserves the source review. Plain clicks in annotate mode still annotate links; fragment links, sibling-page links, ordinary external links, and downloads retain their author-defined behavior.
   Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser.
   Run `lavish-axi design` for the single source of agent-facing design guidance, including optional CDN snippets and the whiteboard (Mermaid) opt-in snippet.
 - **Self-paint warning** - `lavish-axi <html-file>`, `export`, and `share` run a render-free check for artifacts missing an explicit page background and return a one-line `self_paint_warning`.
