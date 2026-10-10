@@ -2934,6 +2934,34 @@ test("shouldRestartServer restarts when the running server reports a different v
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.3" }), true);
 });
 
+test("shouldRestartServer adopts a server that is newer than the CLI", () => {
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), false);
+  assert.equal(shouldRestartServer("0.1.85", { ok: true, app: "lavish-axi", version: "0.1.86" }), false);
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "1.0.0" }), false);
+});
+
+test("shouldRestartServer replaces a server whose version is not plain x.y.z", () => {
+  assert.equal(shouldRestartServer("0.1.87", { ok: true, app: "lavish-axi", version: "0.1.87-beta.1" }), true);
+  assert.equal(shouldRestartServer("0.1.87", { ok: true, app: "lavish-axi", version: "v0.1.88" }), true);
+  assert.equal(shouldRestartServer("0.1.87-beta.1", { ok: true, app: "lavish-axi", version: "0.1.88" }), true);
+});
+
+test("shouldRestartServer compares versions numerically, not as strings", () => {
+  assert.equal(shouldRestartServer("0.1.10", { ok: true, app: "lavish-axi", version: "0.1.9" }), true);
+  assert.equal(shouldRestartServer("0.1.9", { ok: true, app: "lavish-axi", version: "0.1.10" }), false);
+  assert.equal(shouldRestartServer("1.0.0", { ok: true, app: "lavish-axi", version: "0.9.99" }), true);
+});
+
+test("shouldRestartServer still replaces a newer server when forced or network-stale", () => {
+  const newer = { ok: true, app: "lavish-axi", version: "0.1.5" };
+  assert.equal(shouldRestartServer("0.1.4", newer, true), true);
+  assert.equal(shouldRestartServer("0.1.4", { ...newer, network_stale: true }), true);
+});
+
+test("shouldRestartServer falls back to replacing a server whose version does not parse", () => {
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "nightly" }), true);
+});
+
 test("shouldRestartServer restarts when the running server predates the version handshake", () => {
   // Pre-handshake servers (any release older than this change) return `{ ok: true }` with
   // no version field. Treat that as "older than me" and restart so users actually get the
@@ -2961,6 +2989,14 @@ test("serverReplacementReason names a local-build force apart from a real versio
   assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }, true), "upgrade");
 });
 
+test("serverReplacementReason names nothing for a server newer than the CLI", () => {
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), "");
+  assert.equal(
+    serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }, true),
+    "local-build",
+  );
+});
+
 test("serverReplacementReason names nothing when no replacement is warranted", () => {
   assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), "");
   assert.equal(serverReplacementReason("0.1.4", null), "");
@@ -2977,6 +3013,11 @@ test("shouldKillProcessOnPort kills pre-handshake Lavish servers after shutdown 
 test("shouldKillProcessOnPort only kills Lavish servers with a mismatched version", () => {
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }), true);
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), false);
+});
+
+test("shouldKillProcessOnPort leaves a Lavish server that is newer than the CLI", () => {
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), false);
+  assert.equal(shouldKillProcessOnPort("0.1.10", { ok: true, app: "lavish-axi", version: "0.1.9" }), true);
 });
 
 test("shutdownServerOnPort kills pre-handshake Lavish servers when shutdown does not free the port", async () => {
