@@ -856,6 +856,11 @@ test("chrome top bar follows the design mock wordmark and overflow menu treatmen
   assert.match(css, /letter-spacing:\.18em/);
   assert.match(html, /class="more-button" id="moreButton"/);
   assert.match(html, /class="menu more-menu" id="moreMenu" hidden/);
+  // The desktop sidebar toggle sits right after the overflow menu and discloses the panel.
+  assert.match(
+    html,
+    /<\/div><\/div><button class="sidebar-button" id="sidebarToggle" type="button" title="Hide sidebar" aria-label="Hide sidebar" aria-expanded="true" aria-controls="panel"><svg /,
+  );
   assert.doesNotMatch(html, /class="file-input"/);
   assert.doesNotMatch(html, /class="divider"/);
   assert.doesNotMatch(html, /class="file-icon"/);

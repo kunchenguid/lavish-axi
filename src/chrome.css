@@ -508,6 +508,62 @@ body.lavish {
   cursor: not-allowed;
   opacity: 0.55;
 }
+.sidebar-button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--fg-dim);
+  border-radius: 9px;
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+}
+.sidebar-button:hover {
+  border-color: var(--border-strong);
+  background: var(--steel-700);
+  color: var(--fg);
+}
+/* The icon's right pane is filled while the sidebar shows and outlined once it is hidden. */
+.sidebar-icon-pane {
+  fill: currentColor;
+  fill-opacity: 0.35;
+}
+.sidebar-button[aria-expanded="false"] .sidebar-icon-pane {
+  fill-opacity: 0;
+}
+/* While the sidebar is hidden, the toggle lights up and a dot on its corner marks queued notes or
+   an agent reply the user has not seen. The ring in the bar color keeps the dot legible. */
+.sidebar-button.is-accent,
+.sidebar-button.is-unread {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.sidebar-button.is-accent::after,
+.sidebar-button.is-unread::after {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-bar);
+}
+/* The collapse is a wide-layout affordance only: the phone layout already docks the panel as a
+   sheet, so there the toggle is gone and a stored choice has no effect. */
+@media not all and (max-width: 860px) {
+  body.sidebar-hidden .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  body.sidebar-hidden .panel {
+    display: none;
+  }
+}
 .menu {
   position: absolute;
   background: var(--bg-bar);
@@ -1703,6 +1759,9 @@ body.layout-gate-active iframe#artifact {
     padding-top: env(safe-area-inset-top, 0px);
     padding-right: calc(var(--bar-pad) + env(safe-area-inset-right, 0px));
     padding-left: calc(var(--bar-pad) + env(safe-area-inset-left, 0px));
+  }
+  .sidebar-button {
+    display: none;
   }
   .layout {
     height: calc(100vh - var(--bar-h));
