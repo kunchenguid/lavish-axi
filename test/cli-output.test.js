@@ -2928,10 +2928,11 @@ test("shouldRestartServer restarts same-version Lavish servers when forced", () 
   assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "other", version: "0.1.4" }, true), false);
 });
 
-test("shouldRestartServer restarts when the running server reports a different version", () => {
-  // Catches the upgrade scenario: client got bumped to 0.1.4 but a 0.1.3 server is still
-  // holding the port from a previous invocation.
+test("shouldRestartServer restarts when the running server reports an older version, but reuses a newer server", () => {
+  // Catches the upgrade scenario: client got bumped to 0.1.4 but a 0.1.3 server is still running -> restart.
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.3" }), true);
+  // An older CLI (0.1.4) does NOT restart a newer running server (0.1.5), preventing ping-pong replacement loops.
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.5" }), false);
 });
 
 test("shouldRestartServer restarts when the running server predates the version handshake", () => {

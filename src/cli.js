@@ -2044,12 +2044,28 @@ function missingHostsError(port, missingHosts) {
 // Returns true when the running server is a different (or pre-handshake) version than
 // what this CLI was built with - i.e. the user just upgraded and the stale server needs
 // to step aside.
+// An older CLI uses a newer running server instead of replacing it, avoiding ping-pong
+// restarts between versions.
 export function shouldRestartServer(currentVersion, healthBody, forceRestart = false) {
   if (!healthBody || typeof healthBody !== "object") return false;
   if (forceRestart && healthBody.app === "lavish-axi") return true;
   if (healthBody.network_stale === true && healthBody.app === "lavish-axi") return true;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
-  return healthBody.version !== currentVersion;
+  return compareVersions(currentVersion, healthBody.version) > 0;
+}
+
+// Simple semver comparison helper for major.minor.patch[-prerelease] strings.
+export function compareVersions(v1, v2) {
+  if (v1 === v2) return 0;
+  const parts1 = String(v1).split("-")[0].split(".").map(Number);
+  const parts2 = String(v2).split("-")[0].split(".").map(Number);
+  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+    const n1 = parts1[i] || 0;
+    const n2 = parts2[i] || 0;
+    if (n1 > n2) return 1;
+    if (n1 < n2) return -1;
+  }
+  return 0;
 }
 
 // Which branch of `shouldRestartServer` actually fired, because that is what the other open
