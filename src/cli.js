@@ -2054,16 +2054,46 @@ export function shouldRestartServer(currentVersion, healthBody, forceRestart = f
   return compareVersions(currentVersion, healthBody.version) > 0;
 }
 
-// Simple semver comparison helper for major.minor.patch[-prerelease] strings.
+// Semver precedence for `major.minor.patch[-prerelease]` strings (build metadata after
+// `+` is ignored). A prerelease sorts below its release (`0.1.5-rc.1` < `0.1.5`), and
+// prerelease identifiers follow semver: numeric identifiers numerically, then
+// alphanumeric lexically, with a numeric identifier below an alphanumeric one.
 export function compareVersions(v1, v2) {
-  if (v1 === v2) return 0;
-  const parts1 = String(v1).split("-")[0].split(".").map(Number);
-  const parts2 = String(v2).split("-")[0].split(".").map(Number);
-  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-    const n1 = parts1[i] || 0;
-    const n2 = parts2[i] || 0;
+  const parse = (value) => {
+    const [release, prerelease = ""] = String(value).split("+")[0].split("-", 2);
+    return { parts: release.split(".").map((part) => Number(part) || 0), prerelease };
+  };
+  const a = parse(v1);
+  const b = parse(v2);
+  const length = Math.max(a.parts.length, b.parts.length);
+  for (let i = 0; i < length; i++) {
+    const n1 = a.parts[i] || 0;
+    const n2 = b.parts[i] || 0;
     if (n1 > n2) return 1;
     if (n1 < n2) return -1;
+  }
+  if (a.prerelease === b.prerelease) return 0;
+  if (a.prerelease === "") return 1;
+  if (b.prerelease === "") return -1;
+  return comparePrereleaseIdentifiers(a.prerelease, b.prerelease);
+}
+
+function comparePrereleaseIdentifiers(a, b) {
+  const ids1 = a.split(".");
+  const ids2 = b.split(".");
+  const length = Math.max(ids1.length, ids2.length);
+  for (let i = 0; i < length; i++) {
+    const id1 = ids1[i];
+    const id2 = ids2[i];
+    if (id1 === undefined) return -1;
+    if (id2 === undefined) return 1;
+    if (id1 === id2) continue;
+    const numeric1 = /^\d+$/.test(id1);
+    const numeric2 = /^\d+$/.test(id2);
+    if (numeric1 && numeric2) return Number(id1) > Number(id2) ? 1 : -1;
+    if (numeric1) return -1;
+    if (numeric2) return 1;
+    return id1 > id2 ? 1 : -1;
   }
   return 0;
 }

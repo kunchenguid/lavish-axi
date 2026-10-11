@@ -17,6 +17,7 @@ process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
 import {
   collapseHomeDirectory,
+  compareVersions,
   computeCopilotCliHookUpdate,
   createCopilotCliAmbientContextScript,
   createCopilotCliSessionStartHook,
@@ -2913,6 +2914,33 @@ test("local built CLI opens force a server restart while source and installed ru
   assert.equal(shouldForceRestartForLocalBuild("/usr/local/lib/node_modules/lavish-axi/dist/cli.mjs", false), false);
 });
 
+test("compareVersions orders numeric segments, not lexically", () => {
+  assert.equal(compareVersions("0.1.4", "0.1.4"), 0);
+  assert.equal(compareVersions("0.1.10", "0.1.9"), 1);
+  assert.equal(compareVersions("0.1.9", "0.1.10"), -1);
+  assert.equal(compareVersions("0.2.0", "0.1.99"), 1);
+  assert.equal(compareVersions("0.1.99", "0.2.0"), -1);
+  assert.equal(compareVersions("1.0.0", "0.9.9"), 1);
+  assert.equal(compareVersions("0.9.9", "1.0.0"), -1);
+});
+
+test("compareVersions treats a prerelease as older than its release", () => {
+  assert.equal(compareVersions("0.1.5-rc.1", "0.1.5"), -1);
+  assert.equal(compareVersions("0.1.5", "0.1.5-rc.1"), 1);
+  assert.equal(compareVersions("0.1.5-rc.1", "0.1.5-rc.1"), 0);
+  assert.equal(compareVersions("0.1.5-rc.1", "0.1.5-rc.2"), -1);
+  // Numeric identifiers compare numerically: rc.2 < rc.10.
+  assert.equal(compareVersions("0.1.5-rc.2", "0.1.5-rc.10"), -1);
+  assert.equal(compareVersions("0.1.5-rc.10", "0.1.5-rc.2"), 1);
+  assert.equal(compareVersions("0.1.5-alpha", "0.1.5-beta"), -1);
+  // A shorter set of identifiers is lower when all shared ones match.
+  assert.equal(compareVersions("0.1.5-rc", "0.1.5-rc.1"), -1);
+  // Numeric identifiers have lower precedence than alphanumeric ones.
+  assert.equal(compareVersions("0.1.5-1", "0.1.5-alpha"), -1);
+  // Build metadata does not affect precedence.
+  assert.equal(compareVersions("0.1.5+build.1", "0.1.5"), 0);
+});
+
 test("shouldRestartServer reuses a server running the same version", () => {
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.4" }), false);
 });
@@ -2933,6 +2961,25 @@ test("shouldRestartServer restarts when the running server reports an older vers
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.3" }), true);
   // An older CLI (0.1.4) does NOT restart a newer running server (0.1.5), preventing ping-pong replacement loops.
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.5" }), false);
+});
+
+test("shouldRestartServer compares versions numerically for major, minor and patch bumps", () => {
+  // Patch: 0.1.10 is newer than 0.1.9 - a plain string compare would order these backwards.
+  assert.equal(shouldRestartServer("0.1.10", { ok: true, version: "0.1.9" }), true);
+  assert.equal(shouldRestartServer("0.1.9", { ok: true, version: "0.1.10" }), false);
+  // Minor: 0.2.x is newer than 0.1.x.
+  assert.equal(shouldRestartServer("0.2.0", { ok: true, version: "0.1.99" }), true);
+  assert.equal(shouldRestartServer("0.1.99", { ok: true, version: "0.2.0" }), false);
+  // Major: 1.x is newer than 0.x.
+  assert.equal(shouldRestartServer("1.0.0", { ok: true, version: "0.9.9" }), true);
+  assert.equal(shouldRestartServer("0.9.9", { ok: true, version: "1.0.0" }), false);
+});
+
+test("shouldRestartServer restarts a prerelease server behind a stable CLI, and reuses a stable server", () => {
+  // A stable CLI replacing its own older prerelease must restart it...
+  assert.equal(shouldRestartServer("0.1.5", { ok: true, version: "0.1.5-rc.1" }), true);
+  // ...but an older prerelease CLI must not replace the newer stable server.
+  assert.equal(shouldRestartServer("0.1.5-rc.1", { ok: true, version: "0.1.5" }), false);
 });
 
 test("shouldRestartServer restarts when the running server predates the version handshake", () => {
