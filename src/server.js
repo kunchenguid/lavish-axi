@@ -57,7 +57,8 @@ import {
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
-import { injectLavishSdk } from "./html-transform.js";
+import { injectLavishSdk, injectSessionLinkNavigationBytes, siblingHtmlContentType } from "./html-transform.js";
+import { SESSION_LINK_NAVIGATION_JS } from "./session-link-navigation.js";
 import {
   bindHost,
   extraAllowedHosts,
@@ -1493,6 +1494,10 @@ export async function serve({
     res.redirect(`/artifact/${req.params.key}/index.html`);
   });
 
+  app.get("/session-link-navigation.js", (_req, res) => {
+    res.type("application/javascript").send(SESSION_LINK_NAVIGATION_JS);
+  });
+
   app.post("/api/:key/chrome-loads/begin", async (req, res, next) => {
     try {
       if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
@@ -1591,8 +1596,24 @@ export async function serve({
         res.status(403).send("Forbidden");
         return;
       }
+      if (/\.html?$/i.test(file)) {
+        const html = await readFile(file);
+        const origin = validatedRequestOrigin(req, allowedHostnames, allowAnyHostname);
+        if (!origin) {
+          res.status(403).send("Forbidden");
+          return;
+        }
+        // Honor declared encodings while retaining UTF-8 for undeclared pages.
+        res.setHeader("Content-Type", siblingHtmlContentType(html));
+        res.send(injectSessionLinkNavigationBytes(html, origin));
+        return;
+      }
       res.sendFile(file, { dotfiles: "allow" });
     } catch (error) {
+      if (["ENOENT", "ENOTDIR", "EISDIR"].includes(error?.code)) {
+        res.status(404).send("Not found");
+        return;
+      }
       next(error);
     }
   });
@@ -2619,14 +2640,11 @@ function hasPresentOriginOrReferer(req) {
   return Boolean(req.get("origin") || req.get("referer"));
 }
 
-// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
-// browser attaches an Origin/Referer that must match this server's own origin. The global
-// mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
-// middleware is lenient (absent headers pass) while per-route callers still reject header-less
-// requests.
-function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
+// Share origin validation between CSRF checks and sibling-script delivery so proxy
+// authorities cannot bypass the Host allowlist in either path.
+function validatedRequestOrigin(req, allowedHostnames, allowAnyHostname = false) {
   const host = parseHostAuthority(req.headers.host);
-  if (!host) return false;
+  if (!host || (!allowAnyHostname && !allowedHostnames.has(host.hostname))) return "";
 
   let protocol = req.protocol || "http";
   let authority = host;
@@ -2641,16 +2659,25 @@ function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
       (!allowAnyHostname &&
         (!allowedHostnames.has(host.hostname) || !allowedHostnames.has(forwardedAuthority.hostname)))
     )
-      return false;
-    protocol = String(req.headers["x-forwarded-proto"] || protocol)
-      .split(",")
-      .pop()
-      .trim()
-      .toLowerCase();
-    if (protocol !== "http" && protocol !== "https") return false;
+      return "";
     authority = forwardedAuthority;
   }
-  const expectedOrigin = normalizeOrigin(`${protocol}://${authority.authority}`);
+  protocol = String(req.headers["x-forwarded-proto"] || protocol)
+    .split(",")
+    .pop()
+    .trim()
+    .toLowerCase();
+  if (protocol !== "http" && protocol !== "https") return "";
+  return normalizeOrigin(`${protocol}://${authority.authority}`);
+}
+
+// Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
+// browser attaches an Origin/Referer that must match this server's own origin. The global
+// mutating-route middleware reuses this helper so forwarded Host/Proto stay in lockstep; that
+// middleware is lenient (absent headers pass) while per-route callers still reject header-less
+// requests.
+function isSameOriginRequest(req, allowedHostnames, allowAnyHostname = false) {
+  const expectedOrigin = validatedRequestOrigin(req, allowedHostnames, allowAnyHostname);
   if (!expectedOrigin) return false;
   const origin = req.headers.origin;
   if (origin) {

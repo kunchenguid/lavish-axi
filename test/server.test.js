@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import WebSocket from "ws";
+import { injectSessionLinkNavigation } from "../src/html-transform.js";
 
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
@@ -6760,3 +6761,143 @@ test("chat-sync stamps a note seen when a poll takes it, working when the artifa
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("sibling HTML preserves missing-file statuses and sandbox headers", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-sibling-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<body>Source</body>");
+  await writeFile(path.join(dir, "sibling.html"), "<body>Sibling</body>");
+  await mkdir(path.join(dir, "directory.html"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    for (const asset of ["missing.html", "missing.htm", "sibling.html/child.html", "directory.html"]) {
+      const response = await fetch(`${base}/artifact/${key}/${asset}`);
+      assert.equal(response.status, 404, asset);
+      assert.match(response.headers.get("content-security-policy"), /sandbox/);
+      await response.text();
+    }
+    const response = await fetch(`${base}/artifact/${key}/sibling.html`);
+    assert.equal(response.status, 200);
+    const policy = response.headers.get("content-security-policy");
+    assert.match(policy, /sandbox/);
+    assert.doesNotMatch(policy, /allow-same-origin|allow-top-navigation/);
+    assert.equal(await response.text(), injectSessionLinkNavigation("<body>Sibling</body>", base));
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("sibling navigation uses only validated HTTPS proxy origins with author CSP intact", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-sibling-csp-"));
+  const artifact = path.join(dir, "artifact.html");
+  const source =
+    '<head><meta http-equiv="Content-Security-Policy" content="script-src https:"><base href="https://example.com/"></head><body>Sibling</body>';
+  await writeFile(artifact, "<body>Source</body>");
+  await writeFile(path.join(dir, "sibling.html"), source);
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    allowedHosts: ["review.example"],
+    version: "9.9.9-test",
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    const url = `/artifact/${key}/sibling.html`;
+    for (const headers of [
+      { "x-forwarded-host": "review.example:4387", "x-forwarded-proto": "https" },
+      { host: "review.example:4387", "x-forwarded-proto": "https" },
+    ]) {
+      const response = await rawRequest(server.port, url, { headers });
+      assert.equal(response.status, 200);
+      assert.equal(
+        response.body,
+        source.replace(
+          "</body>",
+          '<script src="https://review.example:4387/session-link-navigation.js"></script></body>',
+        ),
+      );
+      assert.match(response.headers["content-security-policy"], /sandbox/);
+    }
+    for (const headers of [
+      { host: "evil.example" },
+      { "x-forwarded-host": "evil.example", "x-forwarded-proto": "https" },
+      { "x-forwarded-host": "review.example", "x-forwarded-proto": "javascript" },
+    ]) {
+      const response = await rawRequest(server.port, url, { headers });
+      assert.equal(response.status, 403);
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+for (const encoding of [
+  "utf16le",
+  "utf16be",
+  "utf8",
+  "utf8-bom",
+  "latin1",
+  "utf8-undeclared",
+  "utf8-comment",
+  "utf8-invalid",
+  "latin1-http-equiv",
+]) {
+  test(`sibling HTML preserves ${encoding} bytes and injects an executable helper`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lavish-sibling-encoding-"));
+    const artifact = path.join(dir, "artifact.html");
+    const declarations = {
+      "utf8-undeclared": "",
+      "utf8-comment": '<!-- <meta charset="windows-1252"> -->',
+      "utf8-invalid": '<meta charset="invalid-encoding">',
+      "latin1-http-equiv": '<meta content="text/html; charset=windows-1252" http-equiv="Content-Type">',
+    };
+    const fallback = encoding.startsWith("utf8-") && encoding !== "utf8-bom";
+    const declaration = declarations[encoding] ?? '<meta charset="windows-1252">';
+    const source = `<html><head>${declaration}</head><body><p>Café</p></body></html>`;
+    const encode = (html) => {
+      if (encoding === "utf8-bom") return Buffer.from("\ufeff" + html, "utf8");
+      if (encoding === "utf16be") return Buffer.from("\ufeff" + html, "utf16le").swap16();
+      if (encoding === "utf16le") return Buffer.from("\ufeff" + html, "utf16le");
+      return Buffer.from(html, encoding.startsWith("latin1") ? "latin1" : "utf8");
+    };
+    const original = encode(source);
+    await writeFile(artifact, "<body>Source</body>");
+    await writeFile(path.join(dir, "sibling.html"), original);
+    const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+    const base = `http://127.0.0.1:${server.port}`;
+    try {
+      const { key } = await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      }).then((res) => res.json());
+      const response = await fetch(`${base}/artifact/${key}/sibling.html`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), fallback ? "text/html; charset=utf-8" : "text/html");
+      const delivered = Buffer.from(await response.arrayBuffer());
+      if (fallback) {
+        const charset = response.headers.get("content-type").split("charset=")[1];
+        assert.ok(new TextDecoder(charset).decode(delivered).includes("<p>Café</p>"));
+      }
+      const expected = source.replace("</body>", `<script src="${base}/session-link-navigation.js"></script></body>`);
+      assert.deepEqual(delivered, encode(expected));
+      assert.deepEqual(await readFile(path.join(dir, "sibling.html")), original);
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
