@@ -789,6 +789,14 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("window.lavish.queuePrompt")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("onsubmit")));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("unclear")));
+  // Focus: the page leads with what needs the reviewer and says what each option will do.
+  assert.ok(output.playbook.structure.some((item) => /open decisions first/i.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /side effect/i.test(item) && /No side effects/.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /radio/i.test(item) && /select/i.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /recommend/i.test(item) && /exactly one/i.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /<mark>/.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /1 of 3 decided/.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /accent/i.test(item) && /marks nothing/i.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("radio change")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
 });
