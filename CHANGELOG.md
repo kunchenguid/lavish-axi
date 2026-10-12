@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.87](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.86...lavish-axi-v0.1.87) (2026-10-12)
+
+
+### Bug Fixes
+
+* **cli:** adopt a running server that is newer than the CLI ([#416](https://github.com/kunchenguid/lavish-axi/issues/416)) ([da556d8](https://github.com/kunchenguid/lavish-axi/commit/da556d8ef2f4a0e37650f5a7763bcd8f2278a7ce))
+
 ## [0.1.86](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.85...lavish-axi-v0.1.86) (2026-10-10)
 
 
