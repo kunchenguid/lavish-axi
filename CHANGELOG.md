@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.88](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.87...lavish-axi-v0.1.88) (2026-10-13)
+
+
+### Bug Fixes
+
+* **sdk:** follow links on Cmd-click only on macOS, Ctrl-click elsewhere ([#422](https://github.com/kunchenguid/lavish-axi/issues/422)) ([7cc7a4d](https://github.com/kunchenguid/lavish-axi/commit/7cc7a4d91f0ac160a6ab42db90f2120c977afd01))
+
 ## [0.1.87](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.86...lavish-axi-v0.1.87) (2026-10-12)
 
 
