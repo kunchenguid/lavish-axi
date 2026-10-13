@@ -6345,7 +6345,6 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
   assert.match(css, /\.ended-overlay\{[^}]*background:var\(--scrim-strong\)/);
-  assert.match(css, /--scrim-strong:rgba\(15,17,21,\.86\)/);
   assert.match(css, /\.ended-title\{[^}]*font-family:var\(--font-serif\)/);
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);

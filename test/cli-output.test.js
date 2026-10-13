@@ -435,6 +435,7 @@ test("design output spends one accent on what needs the reviewer and keeps every
   const output = createDesignOutput();
 
   assert.ok(output.theme_usage.some((item) => /Spend `primary` only/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /links kept underlined \(DaisyUI `link`\)/.test(item)));
   assert.ok(output.theme_usage.some((item) => /text-base-content\/70/.test(item) && /4\.5:1/.test(item)));
 });
 
@@ -797,6 +798,7 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.design_rules.some((item) => /<mark>/.test(item)));
   assert.ok(output.playbook.design_rules.some((item) => /1 of 3 decided/.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => /accent/i.test(item) && /marks nothing/i.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /Keep links underlined \(DaisyUI `link`\)/.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("radio change")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
 });

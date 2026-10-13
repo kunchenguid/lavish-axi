@@ -223,7 +223,7 @@ export const PLAYBOOKS = [
       "Do not queue one prompt per radio change, checkbox toggle, dropdown change, or choice-button click when the user can still change their mind.",
       "Do not create controls whose queued prompt is unclear or too vague to execute.",
       "Do not hide the difference between selected locally and queued for the agent.",
-      "Do not color headings, links, labels, and numbers with the accent that marks open decisions; an accent that marks everything marks nothing.",
+      "Do not color headings, links, labels, and numbers with the accent that marks open decisions; an accent that marks everything marks nothing. Keep links underlined (DaisyUI `link`) so they still read as links.",
       "Do not require interaction for content the user only needs to read.",
     ],
     lavish_notes: [
