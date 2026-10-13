@@ -431,11 +431,11 @@ test("design output defaults to themes with neutral body text and warns against 
   assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
 });
 
-test("design output spends one accent on what needs the reviewer and builds text hierarchy from real colors", () => {
+test("design output spends one accent on what needs the reviewer and keeps every text level at 4.5:1", () => {
   const output = createDesignOutput();
 
-  assert.ok(output.theme_usage.some((item) => /`primary`/.test(item) && /only/i.test(item) && /reviewer/i.test(item)));
-  assert.ok(output.theme_usage.some((item) => /opacity/i.test(item) && /4\.5:1/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /Spend `primary` only/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /text-base-content\/70/.test(item) && /4\.5:1/.test(item)));
 });
 
 test("playbook index output lists known playbooks with concise descriptions", () => {
@@ -792,7 +792,7 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   // Focus: the page leads with what needs the reviewer and says what each option will do.
   assert.ok(output.playbook.structure.some((item) => /open decisions first/i.test(item)));
   assert.ok(output.playbook.design_rules.some((item) => /side effect/i.test(item) && /No side effects/.test(item)));
-  assert.ok(output.playbook.design_rules.some((item) => /radio/i.test(item) && /select/i.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /reserve a select for long lists/i.test(item)));
   assert.ok(output.playbook.design_rules.some((item) => /recommend/i.test(item) && /exactly one/i.test(item)));
   assert.ok(output.playbook.design_rules.some((item) => /<mark>/.test(item)));
   assert.ok(output.playbook.design_rules.some((item) => /1 of 3 decided/.test(item)));
