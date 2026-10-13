@@ -415,12 +415,33 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
 });
 
-test("design output recommends luxury as the default theme and warns against @apply on DaisyUI classes", () => {
+test("design output defaults to corporate/dim following the OS and warns against @apply on DaisyUI classes", () => {
   const output = createDesignOutput();
 
-  assert.ok(output.theme_usage.some((item) => /default.*luxury|luxury.*default/i.test(item)));
+  const [defaultTheme] = output.theme_usage;
+  assert.match(defaultTheme, /Default to `<html data-theme="corporate">`/);
+  assert.match(defaultTheme, /dim/);
+  assert.match(defaultTheme, /prefers-color-scheme/);
+  assert.equal(
+    output.theme_usage.some((item) => /default.*luxury|luxury.*default/i.test(item)),
+    false,
+  );
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
   assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
+});
+
+test("design output ships a follow-system theme snippet with no storage or control", () => {
+  const { theme_follow_system_snippet: snippet, theme_follow_system_note: note } = createDesignOutput().design;
+
+  assert.match(snippet, /^<script>/);
+  assert.match(snippet, /matchMedia\("\(prefers-color-scheme: dark\)"\)/);
+  assert.match(snippet, /documentElement\.dataset\.theme = query\.matches \? "dim" : "corporate"/);
+  assert.match(snippet, /addEventListener\("change"/);
+  assert.doesNotMatch(
+    snippet,
+    /localStorage|sessionStorage|cookie|<button|<input|<label|fetch\(|XMLHttpRequest|https?:/,
+  );
+  assert.match(note, /never auto-injects/);
 });
 
 test("playbook index output lists known playbooks with concise descriptions", () => {
