@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import vm from "node:vm";
 import WebSocket from "ws";
 
 import { AxiError } from "axi-sdk-js";
@@ -57,7 +58,7 @@ import {
   telemetryCommandName,
   VERSION,
 } from "../src/cli.js";
-import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
+import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT, THEME_FOLLOW_SYSTEM_SNIPPET } from "../src/design-reference.js";
 import { resolveVsCodeSettingsFile } from "../src/plugin.js";
 import { createSkillMarkdown } from "../src/skill.js";
 import { SELF_PAINT_WARNING } from "../src/self-paint.js";
@@ -442,6 +443,41 @@ test("design output ships a follow-system theme snippet with no storage or contr
     /localStorage|sessionStorage|cookie|<button|<input|<label|fetch\(|XMLHttpRequest|https?:/,
   );
   assert.match(note, /never auto-injects/);
+});
+
+function runThemeSnippet(prefersDark) {
+  const script = THEME_FOLLOW_SYSTEM_SNIPPET.replace(/^<script>/, "").replace(/<\/script>$/, "");
+  const listeners = [];
+  const query = {
+    matches: prefersDark,
+    addEventListener: (type, listener) => listeners.push({ type, listener }),
+  };
+  const root = { dataset: { theme: "corporate" } };
+  vm.runInNewContext(script, {
+    window: { matchMedia: (media) => (media === "(prefers-color-scheme: dark)" ? query : { matches: false }) },
+    document: { documentElement: root },
+  });
+  return { query, root, listeners };
+}
+
+test("follow-system snippet applies the OS theme at load and on change", () => {
+  const dark = runThemeSnippet(true);
+  assert.equal(dark.root.dataset.theme, "dim");
+
+  const light = runThemeSnippet(false);
+  assert.equal(light.root.dataset.theme, "corporate");
+  assert.deepEqual(
+    light.listeners.map((entry) => entry.type),
+    ["change"],
+  );
+
+  light.query.matches = true;
+  light.listeners[0].listener();
+  assert.equal(light.root.dataset.theme, "dim");
+
+  light.query.matches = false;
+  light.listeners[0].listener();
+  assert.equal(light.root.dataset.theme, "corporate");
 });
 
 test("playbook index output lists known playbooks with concise descriptions", () => {
