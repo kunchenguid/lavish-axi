@@ -8537,6 +8537,23 @@ test("clicking a queued note opens it for editing and reveals its element", asyn
   );
 });
 
+test("the Enter that confirms an IME conversion in WebKit does not send the chat composer", async () => {
+  const chrome = await createChromeHarness();
+  const event = {
+    key: "Enter",
+    shiftKey: false,
+    isComposing: false,
+    keyCode: 229,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  chrome.element("chatInput").dispatch("keydown", event);
+
+  assert.equal(event.defaultPrevented, false);
+});
+
 test("saving an edited queued note rewrites it in place and keeps its identity", async () => {
   const chrome = await createChromeHarness();
   queueHeadingNote(chrome);

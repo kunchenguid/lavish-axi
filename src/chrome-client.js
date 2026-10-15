@@ -1596,11 +1596,11 @@ queuedLog.addEventListener("keydown", (event) => {
   const target = /** @type {Element | null} */ (event.target);
   if (!target || typeof target.closest !== "function" || !target.closest(".queued-edit-input")) return;
   // The annotation card's keys: Enter keeps the words, Shift+Enter breaks the line.
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     event.stopPropagation();
     saveQueuedEdit();
-  } else if (event.key === "Escape" && !event.isComposing) {
+  } else if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     event.stopPropagation();
     cancelQueuedEdit();
@@ -4521,7 +4521,7 @@ chatAttachments.addEventListener("click", (event) => {
   if (retry) chatAttachmentController.retry(String(retry.dataset.chatAttachmentRetry || ""));
 });
 chatInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     sendQueued(false);
   }

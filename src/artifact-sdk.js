@@ -2435,13 +2435,14 @@ export function createArtifactSdk(
       tryQueue();
     };
     textarea.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      // WebKit fires compositionend before the IME-confirming keydown, leaving only keyCode 229 to mark it.
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         const sendNow = (event.ctrlKey || event.metaKey) && (!!textarea.value.trim() || attachments.hasReady());
         const queued = tryQueue();
         // postMessage delivery is ordered, so the queued prompt lands before the send.
         if (queued && sendNow) sendQueuedPrompts();
-      } else if (event.key === "Escape" && !event.isComposing) {
+      } else if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
         // Close only when there is nothing to lose; excludes isComposing since mid-IME text isn't in textarea.value yet.
         if (textarea.value.trim() || attachments.hasPending() || attachments.hasErrors() || attachments.hasReady())
           return;

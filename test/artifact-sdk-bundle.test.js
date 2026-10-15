@@ -516,6 +516,22 @@ test("Escape during IME composition leaves an empty annotation card open", () =>
   assert.notEqual(paragraph.style.outline, "", "a composing Escape belongs to the IME, not the card");
 });
 
+test("the Enter that confirms an IME conversion in WebKit leaves the annotation card open", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.click(paragraph);
+  const textarea = sdk.card().querySelector("textarea");
+  textarea.value = "漢字";
+  const listener = textarea.listeners.find((entry) => entry.type === "keydown");
+  let prevented = false;
+  // WebKit fires compositionend before this keydown, so only keyCode 229 marks it as the IME's.
+  listener.handler({ key: "Enter", isComposing: false, keyCode: 229, preventDefault: () => (prevented = true) });
+
+  assert.equal(prevented, false, "the IME keeps its Enter");
+  assert.notEqual(paragraph.style.outline, "", "the card stays open");
+});
+
 test("Escape leaves an annotation card with typed text open and untouched", () => {
   const sdk = bootSdk();
   const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
