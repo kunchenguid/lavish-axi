@@ -7071,6 +7071,121 @@ test("phone chrome boots with the conversation docked and raises it on tap", asy
   assert.equal(sheetState(chrome).open, false);
 });
 
+// ---- Desktop sidebar toggle ----
+
+function sidebarState(chrome) {
+  const toggle = chrome.element("sidebarToggle");
+  return {
+    hidden: chrome.element("body").classList.contains("sidebar-hidden"),
+    expanded: toggle["aria-expanded"],
+    label: toggle["aria-label"],
+    title: toggle.title,
+    stored: chrome.storage.get("lavish-axi:sidebar-hidden:abc") || null,
+  };
+}
+
+test("desktop chrome hides and shows the conversation sidebar from the top bar", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.deepEqual(sidebarState(chrome), {
+    hidden: false,
+    expanded: "true",
+    label: "Hide sidebar",
+    title: "Hide sidebar",
+    stored: null,
+  });
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.deepEqual(sidebarState(chrome), {
+    hidden: true,
+    expanded: "false",
+    label: "Show sidebar",
+    title: "Show sidebar",
+    stored: "1",
+  });
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.deepEqual(sidebarState(chrome), {
+    hidden: false,
+    expanded: "true",
+    label: "Hide sidebar",
+    title: "Hide sidebar",
+    stored: null,
+  });
+});
+
+test("desktop chrome restores a hidden sidebar across a chrome reload", async () => {
+  const storage = new Map([["lavish-axi:sidebar-hidden:abc", "1"]]);
+  const chrome = await createChromeHarness({ storage });
+
+  const state = sidebarState(chrome);
+  assert.equal(state.hidden, true);
+  assert.equal(state.expanded, "false");
+  assert.equal(state.label, "Show sidebar");
+});
+
+test("a hidden desktop sidebar marks its toggle for queued notes and unseen replies", async () => {
+  const chrome = await createChromeHarness({ fetchImpl: async () => ({ ok: true, json: async () => ({}) }) });
+  const toggleClass = () => String(chrome.element("sidebarToggle").classList);
+
+  // A reply that lands while the sidebar shows was seen, so hiding it afterwards marks nothing.
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Seen already." }) });
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.doesNotMatch(toggleClass(), /is-unread|is-accent/);
+  assert.equal(sidebarState(chrome).label, "Show sidebar");
+
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Renamed the payment step." }) });
+  assert.match(toggleClass(), /is-unread/);
+  assert.equal(sidebarState(chrome).label, "Show sidebar (new reply)");
+  assert.equal(sidebarState(chrome).title, "Show sidebar (new reply)");
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  assert.match(toggleClass(), /is-accent/);
+  assert.equal(sidebarState(chrome).label, "Show sidebar (1 queued)");
+
+  // Showing the sidebar shows the reply and the queue, so the toggle owes nothing more, and hiding
+  // it again only reports the queue that is still waiting.
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.doesNotMatch(toggleClass(), /is-unread|is-accent/);
+  assert.equal(sidebarState(chrome).label, "Hide sidebar");
+  assert.equal(sidebarState(chrome).title, "Hide sidebar");
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.match(toggleClass(), /is-accent/);
+  assert.doesNotMatch(toggleClass(), /is-unread/);
+  assert.equal(sidebarState(chrome).label, "Show sidebar (1 queued)");
+});
+
+test("opening a queued note from the artifact shows a hidden desktop sidebar", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Tighten this heading");
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).hidden, true);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  assert.equal(sidebarState(chrome).hidden, false);
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Tighten this heading</);
+});
+
+test("reopening the note already in edit shows a hidden desktop sidebar and keeps the draft", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Tighten this heading");
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+  typeIntoQueuedEdit(chrome, "Tighten this heading a lot");
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).hidden, true);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  assert.equal(sidebarState(chrome).hidden, false);
+  queuedLogKey(chrome, "Enter");
+  assert.match(chrome.element("queuedLog").innerHTML, /Tighten this heading a lot/);
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+});
+
 test("phone chrome restores an open sheet across a chrome reload", async () => {
   const storage = new Map([["lavish-axi:sheet-open:abc", "1"]]);
   const chrome = await createChromeHarness({ mobile: true, storage });

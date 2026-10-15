@@ -118,6 +118,7 @@ const panel = /** @type {HTMLElement} */ (document.getElementById("panel"));
 const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelHead"));
 const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
+const sidebarToggle = /** @type {HTMLButtonElement} */ (document.getElementById("sidebarToggle"));
 const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
@@ -1297,6 +1298,9 @@ let sheetOpen = readSheetOpen();
 // The latest agent reply that landed while the sheet was closed: the dock previews it until the
 // user opens the sheet, so a reply never arrives silently behind the artifact.
 let unreadAgentReply = "";
+// The desktop counterpart of a closed dock: the top-bar toggle collapses the panel on wide layouts.
+const sidebarStorageKey = "lavish-axi:sidebar-hidden:" + key;
+let sidebarHidden = readSidebarHidden();
 /** @type {{ pointerId: any, startY: number, moved: boolean } | null} */
 let sheetDrag = null;
 let suppressSheetClick = false;
@@ -1311,6 +1315,10 @@ function readSheetOpen() {
 
 function isMobileSheet() {
   return Boolean(sheetMedia && sheetMedia.matches);
+}
+
+function conversationCollapsed() {
+  return isMobileSheet() ? !sheetOpen : sidebarHidden;
 }
 
 function setSheetOpen(open) {
@@ -1367,6 +1375,14 @@ function renderSheetSummary() {
   panelSummary.textContent = summary.text;
   panelSummary.classList.toggle("is-accent", summary.accent);
   panelSummary.classList.toggle("is-unread", summary.unread);
+  sidebarToggle.classList.toggle("is-accent", sidebarHidden && summary.accent);
+  sidebarToggle.classList.toggle("is-unread", sidebarHidden && summary.unread);
+  let label = "Hide sidebar";
+  if (sidebarHidden && summary.unread) label = "Show sidebar (new reply)";
+  else if (sidebarHidden && summary.accent) label = "Show sidebar (" + summary.text + ")";
+  else if (sidebarHidden) label = "Show sidebar";
+  sidebarToggle.setAttribute("aria-label", label);
+  sidebarToggle.title = label;
 }
 
 // A brief pulse on the dock when something the user should notice lands while the sheet is
@@ -1380,7 +1396,7 @@ function pulseSheetDock() {
 }
 
 function noteAgentReply(text) {
-  if (!isMobileSheet() || sheetOpen) return;
+  if (!conversationCollapsed()) return;
   unreadAgentReply = String(text || "");
   renderSheetSummary();
   pulseSheetDock();
@@ -1474,6 +1490,39 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 window.addEventListener("resize", syncVisualViewport);
 syncVisualViewport();
 
+// ---- Desktop sidebar toggle ----
+// Wide layouts have no dock to lower, so the top bar carries a toggle that collapses the
+// conversation panel and gives the artifact the full width. chrome.css applies the collapse only
+// above the phone breakpoint and hides the toggle below it, leaving the sheet untouched there.
+function readSidebarHidden() {
+  try {
+    return sessionStorage.getItem(sidebarStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setSidebarHidden(hidden) {
+  sidebarHidden = Boolean(hidden);
+  try {
+    if (sidebarHidden) sessionStorage.setItem(sidebarStorageKey, "1");
+    else sessionStorage.removeItem(sidebarStorageKey);
+  } catch {
+    // Storage refused only stops the choice surviving a reload.
+  }
+  if (!sidebarHidden) unreadAgentReply = "";
+  applySidebarState();
+}
+
+function applySidebarState() {
+  document.body.classList.toggle("sidebar-hidden", sidebarHidden);
+  sidebarToggle.setAttribute("aria-expanded", sidebarHidden ? "false" : "true");
+  renderSheetSummary();
+}
+
+sidebarToggle.addEventListener("click", () => setSidebarHidden(!sidebarHidden));
+applySidebarState();
+
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
@@ -1486,13 +1535,16 @@ function editQueuedPrompt(index, { reveal = true } = {}) {
   const prompt = queued[index];
   if (ended || !isPromptEditable(prompt)) return;
   const id = promptIdentity(prompt);
-  if (!id || id === editingPromptId) return;
+  if (!id) return;
+  // Reopening the note already in edit still shows the panel the user collapsed meanwhile.
+  if (isMobileSheet()) setSheetOpen(true);
+  else if (sidebarHidden) setSidebarHidden(false);
+  if (id === editingPromptId) return;
   // Moving to another note keeps what was typed into the first, the way leaving a field does.
   commitQueuedEdit();
   editingPromptId = id;
   editingDraft = String(prompt.prompt || "");
   editFocusPending = true;
-  if (isMobileSheet()) setSheetOpen(true);
   render();
   if (reveal && prompt.selector) postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector) });
 }
