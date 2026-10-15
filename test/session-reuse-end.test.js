@@ -249,6 +249,26 @@ test("parseEndTarget treats an existing file named like a key as a path", async 
   }
 });
 
+test("parseEndTarget keeps the file argument exactly as typed", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-end-target-"));
+  const previous = process.cwd();
+  try {
+    // Both files exist, so trimming would target the wrong review.
+    await writeFile(path.join(dir, " report.html"), "spaced", "utf8");
+    await writeFile(path.join(dir, "report.html"), "plain", "utf8");
+    process.chdir(dir);
+    assert.deepEqual(await parseEndTarget(" report.html"), { file: " report.html" });
+    // Whitespace is tolerated only to recognize a key, never to re-target a path: the exact
+    // argument still names the existing key-like file, the padded one does not.
+    await writeFile(path.join(dir, "0123456789abcdef"), "x", "utf8");
+    assert.deepEqual(await parseEndTarget("0123456789abcdef"), { file: "0123456789abcdef" });
+    assert.deepEqual(await parseEndTarget(" 0123456789abcdef"), { key: "0123456789abcdef" });
+  } finally {
+    process.chdir(previous);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("lavish-axi end accepts a session key or URL after the HTML file was deleted", async () => {
   for (const asUrl of [false, true]) {
     await withServer(async ({ absolute, artifact, base, env, key, stateFile }) => {

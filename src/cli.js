@@ -689,14 +689,16 @@ const SESSION_KEY_RE = /^[0-9a-f]{16}$/;
 
 // `lavish-axi end` target: a session URL (`.../session/<key>`) or a bare session key names a
 // session directly, so one whose HTML file was deleted can still be ended. Anything else is an
-// artifact path. An existing file always wins, so a file that happens to be named like a key is
-// still treated as a path.
+// artifact path, kept exactly as typed: trimming only helps recognize a URL or key, and a path is
+// never silently re-targeted by stripping its surrounding whitespace. An existing file always
+// wins, so a file that happens to be named like a key is still treated as a path.
 export async function parseEndTarget(arg) {
-  const value = String(arg).trim();
+  const original = String(arg);
+  const value = original.trim();
   const fromUrl = value.match(/^https?:\/\/[^/?#]+\/session\/([0-9a-f]{16})(?:[/?#]|$)/i);
   if (fromUrl) return { key: fromUrl[1].toLowerCase() };
-  if (SESSION_KEY_RE.test(value) && !(await pathExists(value))) return { key: value };
-  return { file: value };
+  if (SESSION_KEY_RE.test(value) && !(await pathExists(original))) return { key: value };
+  return { file: original };
 }
 
 async function pathExists(file) {
