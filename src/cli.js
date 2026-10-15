@@ -718,23 +718,17 @@ async function endCommand(args) {
   const parsed = await parseEndTarget(target);
   if (parsed.key) {
     const baseUrl = await ensureServer();
-    let raw;
+    let response;
     try {
-      raw = await fetch(`${baseUrl}/api/end`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ key: parsed.key }),
-      });
-    } catch {
-      throw serverConnectionError();
+      response = await postJson(`${baseUrl}/api/end`, { key: parsed.key });
+    } catch (error) {
+      if (error instanceof AxiError && /** @type {any} */ (error).status === 404) {
+        throw new AxiError(`No Lavish Editor session with key ${parsed.key}`, "NOT_FOUND", [
+          "Run `lavish-axi` to list current sessions",
+        ]);
+      }
+      throw error;
     }
-    if (raw.status === 404) {
-      throw new AxiError(`No Lavish Editor session with key ${parsed.key}`, "NOT_FOUND", [
-        "Run `lavish-axi` to list current sessions",
-      ]);
-    }
-    if (!raw.ok) throw new AxiError(`Lavish Editor request failed: ${raw.status}`, "SERVER_ERROR");
-    const response = await raw.json();
     return {
       session: {
         ...(response.file ? { file: response.file } : {}),
@@ -2405,7 +2399,9 @@ async function postJson(url, body) {
     throw serverConnectionError();
   }
   if (!response.ok) {
-    throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
+    throw Object.assign(new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR"), {
+      status: response.status,
+    });
   }
   return response.json();
 }
