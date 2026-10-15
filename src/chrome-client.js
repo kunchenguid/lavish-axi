@@ -19,6 +19,9 @@ const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
 /** @type {any[]} */
 const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
+// Chrome-owned marker on a queued prompt the server refused as a stale layout chip. It stays on
+// the stored prompt so a reload keeps the chip flagged, and it is stripped before every POST.
+const staleLayoutPromptField = "_lavishStaleLayout";
 const promptIdentityField = "prompt_id";
 const PROMPT_IDENTITY_MAX = 128;
 const PROMPT_IDENTITY_RE = /^[A-Za-z0-9_-]+$/;
@@ -605,11 +608,12 @@ function queuedBubbleHtml(prompt, index) {
   if (!sending && editingPromptId && promptIdentity(prompt) === editingPromptId) {
     return queuedEditorHtml(prompt, index);
   }
+  const stateLabel = sending ? "Sending\u2026" : prompt[staleLayoutPromptField] ? "Stale" : "Queued";
   return (
     '<div class="bubble user queued" data-index="' +
     index +
     '"><small>' +
-    (sending ? "Sending\u2026" : "Queued") +
+    stateLabel +
     ' <button class="queued-edit" type="button" aria-label="Edit queued prompt" data-index="' +
     index +
     '">' +
@@ -1620,6 +1624,8 @@ function afterQueuedPromptRemoved() {
   if (!queued.length) {
     clearSendAcknowledgementWarning();
     if (sendFailureOwner?.kind !== "preparation") clearPersistentSendFailure();
+  } else if (sendFailureOwner?.kind === "submission" && failedSubmissionResolved(sendFailureOwner.operation)) {
+    clearPersistentSendFailure();
   }
 }
 
@@ -1678,6 +1684,7 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
+  delete clean[staleLayoutPromptField];
   return clean;
 }
 
@@ -2090,6 +2097,17 @@ async function submitQueued(submission) {
   }
 }
 
+// Whether a queued prompt is a layout chip the server refused on this send: it points at one of
+// the warning ids the response reported as stale.
+function promptRejectedForWarnings(prompt, rejectedWarningIds) {
+  const targetWarnings = prompt?.target?.warnings;
+  return (
+    prompt?.tag === "layout-warnings" &&
+    Array.isArray(targetWarnings) &&
+    targetWarnings.some((warning) => rejectedWarningIds.has(String(warning?.id || "")))
+  );
+}
+
 async function submitQueuedOnce(submission, preserveFailureState = false) {
   settleQueuedFromTranscript(displayedChat);
   const prompts = submission.prompts.filter(
@@ -2192,6 +2210,17 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
   }
   const accepted = typeof response.json === "function" ? await response.json().catch(() => null) : null;
   rememberChatAckIds(accepted?.ack_ids);
+  // A layout chip can go stale between queueing and Send. The server then accepts the rest of
+  // the batch and answers with the stale warning ids, so those chips stay queued - marked Stale
+  // for the reviewer to remove or re-queue - instead of blocking the batch or vanishing.
+  const rejectedWarningIds = new Set(
+    (Array.isArray(accepted?.rejected_warning_ids) ? accepted.rejected_warning_ids : []).map((id) => String(id)),
+  );
+  const rejectedPrompts = rejectedWarningIds.size
+    ? prompts.filter((prompt) => promptRejectedForWarnings(prompt, rejectedWarningIds))
+    : [];
+  for (const prompt of rejectedPrompts) prompt[staleLayoutPromptField] = true;
+  if (rejectedPrompts.length && Array.isArray(accepted?.warnings)) setLayoutWarnings(accepted.warnings);
   const acceptedChat = Array.isArray(accepted?.chat) ? accepted.chat : null;
   if (acceptedChat) settleQueuedFromTranscript(acceptedChat);
   const acceptedRevision = parseChatRevision(accepted?.chat_revision);
@@ -2202,6 +2231,7 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
     : null;
   if (!acceptedChat || reconciledChat) {
     for (const prompt of prompts) {
+      if (rejectedPrompts.includes(prompt)) continue;
       deliveredPrompts.add(prompt);
       const index = queued.indexOf(prompt);
       if (index !== -1) queued.splice(index, 1);
@@ -2209,12 +2239,33 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
     persistQueuedPrompts();
     if (reconciledChat) syncChat(reconciledChat, acceptedRevision);
   }
+  if (rejectedPrompts.length) {
+    showQueuedSendFailure(
+      shouldEndSession
+        ? "The layout issue selection changed, so the stale items stayed queued below and the session was not ended. Remove them, or review the current issues and queue the fixes again. Everything else was sent."
+        : "The layout issue selection changed, so the stale items stayed queued below. Remove them, or review the current issues and queue the fixes again. Everything else was sent.",
+      { kind: "submission", operation: { prompts: rejectedPrompts, order: submission.order } },
+    );
+    if (submission.terminal) releaseTerminalSubmission(submission.terminal);
+  }
   render();
   settleAcknowledgementGuidance(submission, preserveFailureState);
-  if (shouldEndSession) {
+  // The server leaves the session open while stale chips remain queued, so a
+  // send-and-end is honored only once the whole batch delivered.
+  if (shouldEndSession && rejectedPrompts.length === 0) {
     markSessionEnded();
     return;
   }
+}
+
+// A failed batch stops owning the send-failure surface once every prompt in it either delivered
+// or was removed from the queue by hand - the reviewer deleting the offending note is a
+// resolution too, not only a successful retry.
+function failedSubmissionResolved(failedSubmission) {
+  return (
+    Array.isArray(failedSubmission?.prompts) &&
+    failedSubmission.prompts.every((prompt) => deliveredPrompts.has(prompt) || !queued.includes(prompt))
+  );
 }
 
 function submissionResolvesSendFailure(submission) {
@@ -2222,11 +2273,7 @@ function submissionResolvesSendFailure(submission) {
   if (sendFailureOwner.kind === "preparation") return false;
   if (sendFailureOwner.kind === "terminal") return sendFailureOwner.operation === submission.terminal;
   const failedSubmission = sendFailureOwner.operation;
-  return (
-    failedSubmission === submission ||
-    (Array.isArray(failedSubmission.prompts) &&
-      failedSubmission.prompts.every((prompt) => deliveredPrompts.has(prompt)))
-  );
+  return failedSubmission === submission || failedSubmissionResolved(failedSubmission);
 }
 
 function settleAcknowledgementGuidance(submission, preserveFailureState) {
