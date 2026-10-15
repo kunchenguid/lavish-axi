@@ -280,7 +280,9 @@ test("lavish-axi end accepts a session key or URL after the HTML file was delete
       assert.equal(ended.status, 0, ended.stderr || ended.stdout);
       assert.match(ended.stdout, /status: ended/);
       assert.ok(ended.stdout.includes(key));
-      assert.ok(ended.stdout.includes(absolute));
+      // The CLI emits TOON, whose string values escape backslashes JSON-style, so a Windows
+      // path appears escaped in stdout - compare the escaped form of the same path.
+      assert.ok(ended.stdout.includes(JSON.stringify(absolute).slice(1, -1)));
       const session = JSON.parse(await readFile(stateFile, "utf8")).sessions[key];
       assert.equal(session.status, "ended");
       assert.equal(session.ended_by, "agent");
