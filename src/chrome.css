@@ -1056,6 +1056,7 @@ body.lavish {
   overflow: hidden;
 }
 .panel {
+  position: relative;
   width: var(--panel-w);
   border-left: var(--hairline-subtle);
   background: var(--bg-panel);
@@ -1063,6 +1064,97 @@ body.lavish {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 9px;
+  cursor: col-resize;
+  z-index: 10;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.panel-resizer:focus-visible {
+  outline: none;
+}
+.panel-resizer::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  background: var(--fg-faint);
+  opacity: 0.5;
+  transition:
+    opacity var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease);
+}
+.panel-resizer:hover::before,
+.panel-resizer:focus-visible::before,
+body.is-resizing-panel .panel-resizer::before {
+  opacity: 1;
+  background: var(--accent);
+}
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after,
+body.is-resizing-panel .panel-resizer::after {
+  background: var(--accent);
+}
+body.is-resizing-panel {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.is-resizing-panel iframe {
+  pointer-events: none;
+}
+@media (min-width: 861px) {
+  body.panel-collapsed {
+    --panel-w: 0px !important;
+  }
+  body.panel-collapsed .panel {
+    width: 0;
+    border-left: none;
+  }
+  body.panel-collapsed .panel > :not(.panel-resizer) {
+    display: none !important;
+  }
+  body.panel-collapsed .panel-resizer {
+    left: auto;
+    right: 0;
+    width: 14px;
+    cursor: pointer;
+    background: var(--bg-panel);
+    border-left: var(--hairline-subtle);
+  }
+  body.panel-collapsed .panel-resizer::after {
+    left: auto;
+    right: 0;
+    width: 2px;
+  }
+  body.panel-collapsed .panel-resizer::before {
+    left: 50%;
+  }
+  body.panel-collapsed .panel-resizer:hover,
+  body.panel-collapsed .panel-resizer:focus-visible {
+    border-left-color: var(--accent);
+  }
 }
 /* Desktop keeps the panel's original flex children: the head wrappers exist only so the phone
    layout can turn the heading into a dock, and they are transparent to layout everywhere else. */
@@ -1744,6 +1836,12 @@ body.layout-gate-active iframe#artifact {
   .panel.is-dragging {
     transition: none;
   }
+  .panel-resizer {
+    display: none !important;
+  }
+  body.panel-collapsed .panel {
+    width: auto;
+  }
   .panel-head {
     display: flex;
     flex: 0 0 auto;
@@ -1911,6 +2009,11 @@ body.layout-gate-active iframe#artifact {
   }
   .panel-head.is-fresh .panel-toggle {
     animation: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel-resizer::after {
+    transition: none;
   }
 }
 @keyframes dock-pulse {

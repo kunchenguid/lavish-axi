@@ -115,6 +115,7 @@ const chatAttachButton = /** @type {HTMLButtonElement} */ (document.getElementBy
 const chatAttachInput = /** @type {HTMLInputElement} */ (document.getElementById("chatAttachInput"));
 const chatAttachmentNotice = /** @type {HTMLSpanElement} */ (document.getElementById("chatAttachmentNotice"));
 const panel = /** @type {HTMLElement} */ (document.getElementById("panel"));
+const panelResizer = /** @type {HTMLDivElement} */ (document.getElementById("panelResizer"));
 const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelHead"));
 const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
@@ -1473,6 +1474,234 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 }
 window.addEventListener("resize", syncVisualViewport);
 syncVisualViewport();
+
+// ---- Resizable conversation panel ----
+// On desktop the panel is a side column the user can resize by dragging its inner edge.
+// We persist their preferred width to localStorage and keep the rendered width clamped
+// so smaller desktop viewports preserve space for the artifact.
+const PANEL_WIDTH_STORAGE_KEY = "lavish-axi:panel-width";
+const DEFAULT_PANEL_WIDTH = 360;
+const MIN_PANEL_WIDTH = 280;
+const MAX_PANEL_WIDTH = 1200;
+const MIN_FRAME_WIDTH = 280;
+const FALLBACK_VIEWPORT_WIDTH = 1200;
+
+function computeMaxPanelWidth(
+  viewportWidth = typeof window !== "undefined" && window.innerWidth > 0 ? window.innerWidth : FALLBACK_VIEWPORT_WIDTH,
+) {
+  const width = Number(viewportWidth) || FALLBACK_VIEWPORT_WIDTH;
+  return Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, width - MIN_FRAME_WIDTH));
+}
+
+function clampPanelWidth(
+  width,
+  viewportWidth = typeof window !== "undefined" && window.innerWidth > 0 ? window.innerWidth : FALLBACK_VIEWPORT_WIDTH,
+) {
+  const max = computeMaxPanelWidth(viewportWidth);
+  const num = Number(width);
+  const valid = Number.isFinite(num) ? num : DEFAULT_PANEL_WIDTH;
+  return Math.min(Math.max(MIN_PANEL_WIDTH, Math.round(valid)), max);
+}
+
+function readStoredPanelWidth() {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return DEFAULT_PANEL_WIDTH;
+    const raw = window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY);
+    if (!raw) return DEFAULT_PANEL_WIDTH;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : DEFAULT_PANEL_WIDTH;
+  } catch {
+    return DEFAULT_PANEL_WIDTH;
+  }
+}
+
+function persistPanelWidth(width) {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(width));
+    }
+  } catch {
+    // Storage refusal only prevents persistence.
+  }
+}
+
+let preferredPanelWidth = readStoredPanelWidth();
+let currentPanelWidth = clampPanelWidth(preferredPanelWidth);
+let isPanelCollapsed = false;
+
+function setPanelCollapsed(collapsed) {
+  if (isMobileSheet()) return;
+  isPanelCollapsed = Boolean(collapsed);
+  document.body.classList.toggle("panel-collapsed", isPanelCollapsed);
+  if (isPanelCollapsed) {
+    const root = document.documentElement;
+    if (root && root.style && typeof root.style.setProperty === "function") {
+      root.style.setProperty("--panel-w", "0px");
+    }
+  } else {
+    applyPanelWidth(preferredPanelWidth, { persist: false });
+  }
+  if (panelScroll) panelScroll.inert = ended || isPanelCollapsed;
+  if (chatComposer) chatComposer.inert = ended || isPanelCollapsed;
+  if (panelResizer) {
+    panelResizer.setAttribute("aria-expanded", isPanelCollapsed ? "false" : "true");
+    panelResizer.setAttribute("aria-label", isPanelCollapsed ? "Show conversation" : "Hide conversation");
+    panelResizer.title = isPanelCollapsed
+      ? "Click to show conversation, drag to resize"
+      : "Click to hide conversation, drag to resize";
+  }
+}
+
+function togglePanelCollapsed() {
+  setPanelCollapsed(!isPanelCollapsed);
+}
+
+function applyPanelWidth(width, { persist = false } = {}) {
+  const maxPanelWidth = computeMaxPanelWidth();
+  const requested = Number(width);
+  const renderable = Number.isFinite(requested) && requested >= MIN_PANEL_WIDTH && requested <= maxPanelWidth;
+  currentPanelWidth = clampPanelWidth(width);
+  if (persist && renderable) {
+    preferredPanelWidth = currentPanelWidth;
+    persistPanelWidth(preferredPanelWidth);
+  }
+  const root = document.documentElement;
+  if (!isPanelCollapsed && root && root.style && typeof root.style.setProperty === "function") {
+    root.style.setProperty("--panel-w", currentPanelWidth + "px");
+  }
+  if (panelResizer) {
+    panelResizer.setAttribute("aria-valuenow", String(currentPanelWidth));
+    panelResizer.setAttribute("aria-valuemin", String(MIN_PANEL_WIDTH));
+    panelResizer.setAttribute("aria-valuemax", String(computeMaxPanelWidth()));
+    if (!isPanelCollapsed) {
+      panelResizer.setAttribute("aria-expanded", "true");
+      panelResizer.setAttribute("aria-label", "Hide conversation");
+      panelResizer.title = "Click to hide conversation, drag to resize";
+    }
+  }
+}
+
+const RESIZE_DRAG_THRESHOLD_PX = 4;
+
+/** @type {{ pointerId: any, startX: number, startWidth: number, hasDragged: boolean } | null} */
+let panelDrag = null;
+
+function clearPanelDrag() {
+  panelDrag = null;
+  document.body.classList.remove("is-resizing-panel");
+}
+
+function finishPanelDrag(event) {
+  if (!panelDrag) return;
+  if (event && event.pointerId !== undefined && event.pointerId !== panelDrag.pointerId) return;
+  const hasDragged = panelDrag.hasDragged;
+  const pointerId = panelDrag.pointerId;
+  clearPanelDrag();
+  if (panelResizer && typeof panelResizer.releasePointerCapture === "function") {
+    try {
+      panelResizer.releasePointerCapture(pointerId);
+    } catch {
+      // Ignore releasePointerCapture failure
+    }
+  }
+  if (hasDragged) {
+    preferredPanelWidth = currentPanelWidth;
+    persistPanelWidth(preferredPanelWidth);
+  } else {
+    togglePanelCollapsed();
+  }
+}
+
+if (panelResizer) {
+  panelResizer.setAttribute("aria-expanded", "true");
+  panelResizer.setAttribute("aria-label", "Hide conversation");
+  panelResizer.title = "Click to hide conversation, drag to resize";
+
+  panelResizer.addEventListener("pointerdown", (event) => {
+    if (isMobileSheet() || event.button) return;
+    event.preventDefault();
+    panelResizer.focus();
+    panelDrag = {
+      pointerId: event.pointerId,
+      startX: Number(event.clientX),
+      startWidth: isPanelCollapsed ? 0 : currentPanelWidth,
+      hasDragged: false,
+    };
+    if (typeof panelResizer.setPointerCapture === "function") {
+      try {
+        panelResizer.setPointerCapture(event.pointerId);
+      } catch {
+        // Ignore setPointerCapture failure
+      }
+    }
+  });
+
+  panelResizer.addEventListener("pointermove", (event) => {
+    if (!panelDrag || event.pointerId !== panelDrag.pointerId) return;
+    const deltaX = Number(event.clientX) - panelDrag.startX;
+    if (!panelDrag.hasDragged && Math.abs(deltaX) >= RESIZE_DRAG_THRESHOLD_PX) {
+      panelDrag.hasDragged = true;
+      document.body.classList.add("is-resizing-panel");
+      if (isPanelCollapsed) {
+        setPanelCollapsed(false);
+      }
+    }
+    if (panelDrag.hasDragged) {
+      // The panel sits on the right, so dragging left (negative deltaX) makes it wider.
+      const nextWidth = panelDrag.startWidth
+        ? panelDrag.startWidth - deltaX
+        : Math.round(window.innerWidth - Number(event.clientX));
+      applyPanelWidth(nextWidth, { persist: false });
+    }
+  });
+
+  panelResizer.addEventListener("pointerup", finishPanelDrag);
+  panelResizer.addEventListener("pointercancel", clearPanelDrag);
+  panelResizer.addEventListener("lostpointercapture", clearPanelDrag);
+  window.addEventListener("pointerup", finishPanelDrag);
+  window.addEventListener("pointercancel", clearPanelDrag);
+
+  panelResizer.addEventListener("keydown", (event) => {
+    if (isMobileSheet()) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      togglePanelCollapsed();
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (isPanelCollapsed) {
+        setPanelCollapsed(false);
+      } else {
+        applyPanelWidth(currentPanelWidth + 16, { persist: true });
+      }
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      if (!isPanelCollapsed) {
+        if (currentPanelWidth <= MIN_PANEL_WIDTH) {
+          setPanelCollapsed(true);
+        } else {
+          applyPanelWidth(currentPanelWidth - 16, { persist: true });
+        }
+      }
+    }
+  });
+}
+
+function syncPanelWidthOnResize() {
+  if (!isMobileSheet()) {
+    if (isPanelCollapsed) {
+      const root = document.documentElement;
+      if (root && root.style && typeof root.style.setProperty === "function") {
+        root.style.setProperty("--panel-w", "0px");
+      }
+    } else {
+      applyPanelWidth(preferredPanelWidth, { persist: false });
+    }
+  }
+}
+
+window.addEventListener("resize", syncPanelWidthOnResize);
+
+applyPanelWidth(preferredPanelWidth, { persist: false });
 
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
