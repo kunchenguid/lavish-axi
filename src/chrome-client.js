@@ -189,6 +189,8 @@ const whiteboardOverlay = /** @type {HTMLDivElement} */ (document.getElementById
 const whiteboardFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("whiteboardFrame"));
 const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("whiteboardClose"));
 const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
+const sketchFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("sketchFrame"));
+const sketchSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("sketchSwitch"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
@@ -553,6 +555,13 @@ function promptAnchor(prompt) {
       excerpt: boundAnchorText(target.label || prompt.text, ANCHOR_EXCERPT_MAX),
     });
   }
+  if (type === "sketch") {
+    return withSelector({
+      kind: "sketch",
+      label: "sketch",
+      excerpt: boundAnchorText(target.label || prompt.text, ANCHOR_EXCERPT_MAX),
+    });
+  }
   const elementTag = tag.trim();
   if (!elementTag) return null;
   return withSelector({
@@ -716,9 +725,11 @@ function updateSendState() {
   // artifact without disabling annotation mode. Disabling annotation mode closes the
   // SDK card and destroys an unsent draft before delivery has actually succeeded.
   frame.inert = ended || terminalReserved;
+  sketchFrame.inert = ended || terminalReserved;
   sendButton.disabled = ended || terminalReserved;
   sendAndEndButton.disabled = ended || Boolean(terminalSubmission?.inFlight);
   annotationSwitch.disabled = ended || terminalReserved;
+  sketchSwitch.disabled = ended || terminalReserved;
   chatInput.disabled = ended || terminalReserved;
   chatAttachButton.disabled = ended || terminalReserved;
   endButton.disabled = ended || terminalReserved;
@@ -1199,7 +1210,7 @@ function setReviewState(state) {
 }
 
 function hasUnsentDraft() {
-  if (editingPromptId) return true;
+  if (editingPromptId || sketchDraft) return true;
   return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
 }
 
@@ -3081,6 +3092,8 @@ function markSessionEnded() {
   renderRevisionLegend();
   closeWhiteboard();
   annotationSwitch.disabled = true;
+  setSketchActive(false);
+  sketchSwitch.disabled = true;
   moreButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
@@ -4054,10 +4067,247 @@ function handleOverlayWhiteboardMessage(event, message) {
   handleAuthenticatedWhiteboardMessage(index, message, "overlay");
 }
 
+// ---------------------------------------------------------------------------
+// Sketch layer. One Excalidraw frame (the whiteboard frame page with `?sketch=1`) covers the
+// artifact iframe and outlives artifact reloads. Its scene is in artifact document coordinates:
+// the chrome relays the SDK's scroll reports to it and its wheel and pan back to the SDK. A comment
+// on a selected sketch is queued like an annotation: the sketch's PNG is uploaded as an
+// attachment, and the SDK names the artifact element under the point the sketch marks.
+// ---------------------------------------------------------------------------
+
+const SKETCH_HIT_TEST_TIMEOUT_MS = 1500;
+let sketchActive = false;
+let sketchChannelId = "";
+let sketchReady = false;
+let sketchDraft = false;
+const SKETCH_MAX_PREPARATIONS = 8;
+/** @type {Map<string, FeedbackPreparation>} */
+const sketchPreparations = new Map();
+let nextSketchHitTestId = 0;
+const sketchHitTests = new Map();
+
+function postToSketch(message) {
+  if (sketchReady && sketchFrame.contentWindow) {
+    sketchFrame.contentWindow.postMessage({ ...message, channelId: sketchChannelId }, "*");
+  }
+}
+
+// A load that has not reported ready within this time counts as stalled or failed, and turning the switch on
+// starts it again. The bundle is several megabytes, so a load still in flight is left alone.
+const SKETCH_LOAD_RETRY_MS = 8000;
+let sketchLoadStartedAt = 0;
+
+function loadSketchLayer() {
+  if (!sketchFrame.hidden && (sketchChannelId || Date.now() - sketchLoadStartedAt < SKETCH_LOAD_RETRY_MS)) return;
+  sketchLoadStartedAt = Date.now();
+  sketchFrame.hidden = false;
+  sketchFrame.src = "/whiteboard-frame?sketch=1&key=" + encodeURIComponent(key);
+}
+
+function setSketchActive(active) {
+  sketchActive = Boolean(active) && !ended;
+  sketchSwitch.setAttribute("aria-pressed", String(sketchActive));
+  document.body.classList.toggle("sketch-active", sketchActive);
+  if (sketchActive) loadSketchLayer();
+  postToSketch({ type: "lavish-sketch:setActive", active: sketchActive });
+}
+
+function resetSketchLayer() {
+  for (const attemptId of [...sketchPreparations.keys()]) releaseSketchPreparation(attemptId);
+  sketchChannelId = "";
+  sketchReady = false;
+  sketchFrame.classList.remove("sketch-ready");
+  sketchDraft = false;
+  sketchFrame.hidden = true;
+  sketchFrame.src = "about:blank";
+  setSketchActive(false);
+}
+
+async function initSketchLayer(token) {
+  if (!(await authenticateWhiteboardChannel(token))) throw new Error("sketch channel refused");
+  if (sketchChannelId !== token) return;
+  const response = await fetch("/api/" + key + "/whiteboard/sketch");
+  if (!response.ok) throw new Error("could not load sketches");
+  const saved = (await response.json()).whiteboard;
+  if (sketchChannelId !== token || !sketchFrame.contentWindow) return;
+  sketchFrame.contentWindow.postMessage(
+    {
+      type: "lavish-sketch:init",
+      channelId: token,
+      scene: saved?.scene || null,
+      active: sketchActive,
+      scroll: lastScroll,
+    },
+    "*",
+  );
+  sketchReady = true;
+  sketchFrame.classList.add("sketch-ready");
+}
+
+// Which artifact element the sketch marks, asked of the SDK. A slow or silent artifact only
+// costs the comment its element name.
+function sketchHitTest(point) {
+  const requestId = "sketch-" + ++nextSketchHitTestId;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      sketchHitTests.delete(requestId);
+      resolve(null);
+    }, SKETCH_HIT_TEST_TIMEOUT_MS);
+    sketchHitTests.set(requestId, (target) => {
+      clearTimeout(timer);
+      sketchHitTests.delete(requestId);
+      resolve(target);
+    });
+    postToFrame({ type: "lavish:sketchHitTest", request_id: requestId, x: point.x, y: point.y });
+  });
+}
+
+// The same upload path, caps, and page-wide budget as an annotation card's image.
+function uploadSketchPng(bytes) {
+  return new Promise((resolve, reject) => {
+    uploadAttachment({ localId: "sketch", bytes, mime: "image/png" }, (result) => {
+      if (result.ok && result.id) resolve(String(result.id));
+      else reject(new Error(String(result.error || "Upload failed")));
+    });
+  });
+}
+
+function sketchPromptText(comment, label, hit, bounds) {
+  const where = hit
+    ? "marking <" +
+      hit.tag +
+      ">" +
+      (hit.text ? ' "' + hit.text + '"' : "") +
+      (hit.selector ? " (" + hit.selector + ")" : "")
+    : "at page position (" + bounds.x + ", " + bounds.y + ")";
+  return comment + "\n\nSketch: " + label + ", " + where + ". The attached PNG shows the sketch.";
+}
+
+// The frame reserves a feedback preparation per queue attempt before it exports the PNG, so a
+// Send & End during the export waits for the comment instead of leaving it behind. The comment, or
+// a release when the export fails, settles it. The attempt id is untrusted frame input.
+function sketchAttemptId(message) {
+  return String(message.attemptId || "").slice(0, 64);
+}
+
+function releaseSketchPreparation(attemptId) {
+  sketchPreparations.get(attemptId)?.finish(false);
+  sketchPreparations.delete(attemptId);
+}
+
+async function queueSketchComment(message) {
+  const attemptId = sketchAttemptId(message);
+  const reply = (ok, error = "") => postToSketch({ type: "lavish-sketch:commentResult", attemptId, ok, error });
+  const comment = String(message.comment || "")
+    .trim()
+    .slice(0, 4000);
+  const preparation = sketchPreparations.get(attemptId);
+  sketchPreparations.delete(attemptId);
+  if (!preparation || !comment) {
+    preparation?.finish(false);
+    reply(false, comment ? "Feedback delivery is already ending this review." : "Write a comment first.");
+    return;
+  }
+  let succeeded = false;
+  try {
+    const point = message.point && typeof message.point === "object" ? message.point : {};
+    const bounds = message.bounds && typeof message.bounds === "object" ? message.bounds : {};
+    const [attachmentId, target] = await Promise.all([
+      uploadSketchPng(message.png),
+      sketchHitTest({ x: Number(point.x) || 0, y: Number(point.y) || 0 }),
+    ]);
+    const hit =
+      target && typeof target === "object"
+        ? {
+            uid: String(target.uid || "").slice(0, 120),
+            selector: String(target.selector || "").slice(0, 500),
+            tag: String(target.tag || "").slice(0, 40),
+            text: String(target.text || "").slice(0, 120),
+          }
+        : null;
+    const label = String(message.label || "sketch").slice(0, 120);
+    const sketchBounds = {
+      x: Number(bounds.x) || 0,
+      y: Number(bounds.y) || 0,
+      width: Number(bounds.width) || 0,
+      height: Number(bounds.height) || 0,
+    };
+    if (
+      !enqueuePrompt(
+        {
+          uid: hit?.uid || "",
+          prompt: sketchPromptText(comment, label, hit, sketchBounds),
+          selector: hit?.selector || "",
+          tag: "sketch",
+          text: label,
+          target: {
+            type: "sketch",
+            sketchIds: Array.isArray(message.ids) ? message.ids : [],
+            label,
+            bounds: sketchBounds,
+          },
+          attachments: [{ id: attachmentId, name: "sketch.png" }],
+        },
+        preparation,
+      )
+    )
+      throw new Error("failed to retain the sketch comment");
+    pulseSheetDock();
+    reply(true);
+    succeeded = true;
+  } catch (error) {
+    reply(false, error instanceof Error ? error.message : String(error));
+  } finally {
+    preparation.finish(succeeded);
+  }
+}
+
+function handleSketchMessage(message) {
+  if (message.type === "lavish-sketch:ready") {
+    const token = String(message.channelToken || "");
+    if (ended || !token || sketchChannelId) return;
+    sketchChannelId = token;
+    initSketchLayer(token).catch(() => {
+      if (sketchChannelId === token) resetSketchLayer();
+    });
+    return;
+  }
+  if (!sketchReady || message.channelId !== sketchChannelId) return;
+  if (message.type === "lavish-sketch:save") {
+    saveWhiteboardScene("sketch", { scene: message.scene || null }).then(
+      () => postToSketch({ type: "lavish-sketch:saveResult", ok: true }),
+      () => postToSketch({ type: "lavish-sketch:saveResult", ok: false }),
+    );
+  }
+  if (message.type === "lavish-sketch:draft") sketchDraft = Boolean(message.draft);
+  if (ended) return;
+  if (message.type === "lavish-sketch:scrollBy") {
+    postToFrame({ type: "lavish:scrollBy", x: Number(message.x) || 0, y: Number(message.y) || 0 });
+  }
+  if (message.type === "lavish-sketch:prepare") {
+    const attemptId = sketchAttemptId(message);
+    if (!attemptId) return;
+    releaseSketchPreparation(attemptId);
+    if (sketchPreparations.size >= SKETCH_MAX_PREPARATIONS) return;
+    const preparation = beginFeedbackPreparation();
+    if (preparation) sketchPreparations.set(attemptId, preparation);
+  }
+  if (message.type === "lavish-sketch:release") releaseSketchPreparation(sketchAttemptId(message));
+  if (message.type === "lavish-sketch:comment") queueSketchComment(message);
+  if (message.type === "lavish-sketch:toggleAnnotationMode") toggleAnnotationMode();
+}
+
+sketchSwitch.onclick = () => {
+  if (!ended && !terminalSubmission) setSketchActive(!sketchActive);
+};
+if (sessionData.initialHasSketch && !sessionData.initialEnded) loadSketchLayer();
+
 window.addEventListener("message", (event) => {
   const message = event.data || {};
   if (event.source === whiteboardFrame.contentWindow) {
     handleOverlayWhiteboardMessage(event, message);
+  } else if (sketchFrame.contentWindow && event.source === sketchFrame.contentWindow) {
+    handleSketchMessage(message);
   } else if (event.source !== frame.contentWindow) {
     handleInlineWhiteboardMessage(event, message);
   }
@@ -4263,6 +4513,12 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:scroll") {
     lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
+    postToSketch({ type: "lavish-sketch:scroll", x: lastScroll.x, y: lastScroll.y });
+  }
+  if (msg.type === "lavish:sketchHitTestResult") {
+    sketchHitTests.get(String(msg.request_id || ""))?.(
+      msg.target && typeof msg.target === "object" ? msg.target : null,
+    );
   }
   if (msg.type === "lavish:reviewState") {
     setReviewState(msg.state && typeof msg.state === "object" ? msg.state : null);
@@ -4417,7 +4673,8 @@ loadFrame();
 function toggleAnnotationMode() {
   if (ended || terminalSubmission) return;
   annotationOverridden = true;
-  annotation = !annotation;
+  annotation = sketchActive || !annotation;
+  if (sketchActive) setSketchActive(false);
   annotationSwitch.setAttribute("aria-pressed", String(annotation));
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
 }

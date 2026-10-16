@@ -209,3 +209,35 @@ test("library icon nodes keep their arrows attached and panel inserts stay named
   assert.equal(result.dropped, 2);
   assert.match(result.summary, /^Added library item fixture\/Gear near \(/);
 });
+
+test("the sketch layer turns a selected sketch into a page-anchored comment", { timeout: 90_000 }, async (t) => {
+  const result = await runBrowserFixture(t, "sketch-layer");
+  if (!result) return;
+  // The layer is see-through: the artifact under it stays visible.
+  assert.equal(result.canvasBackground, "rgba(0, 0, 0, 0)");
+  // Scene coordinates are page coordinates: scrolling the artifact moves the sketch with it.
+  assert.equal(result.buttonTop, 300 + 60 - 200 + 18);
+  assert.equal(result.scrolledTop, 300 + 60 - 250 + 18);
+  // A wheel over the canvas scrolls the page instead of zooming the canvas; a wheel over the
+  // comment card scrolls the card.
+  assert.equal(result.wheelDeltaY, 120);
+  assert.equal(result.textareaWheelRelayed, false);
+  // A comment being written, and a scene whose save failed, both hold back a restart reload.
+  assert.deepEqual(result.drafts, { draftWhileTyping: true, draftAfterQueue: false, draftWhileUnsaved: true });
+  assert.equal(result.deletedSaved, true);
+  // The annotate hotkey reaches the chrome, not Excalidraw's `I` eyedropper.
+  assert.deepEqual(result.hotkey, { toggled: 1, editorSawHotkey: 0 });
+  assert.deepEqual(result.comment, {
+    text: "Make this primary",
+    ids: ["box"],
+    label: "rectangle",
+    bounds: { x: 120, y: 300, width: 200, height: 60 },
+    point: { x: 220, y: 330 },
+  });
+  assert.equal(result.pngSignature, "137,80,78,71");
+  assert.equal(result.cardClosed, true);
+  // A late success from a cancelled attempt leaves the newer card and its unsent text alone.
+  assert.equal(result.newerCardText, "second note");
+  // Text typed while Queue runs is never captured, so the field refuses it.
+  assert.equal(result.textareaReadOnlyWhileBusy, true);
+});

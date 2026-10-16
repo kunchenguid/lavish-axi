@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   conversionUsesUnverifiedLibraries,
   createWhiteboardPersistencePayload,
+  describeSketchSelection,
   findDuplicateElementIds,
   LIBRARY_ICON_GROWN_SPACING,
   LIBRARY_ICON_HEIGHT,
@@ -11,6 +12,7 @@ import {
   libraryIconMermaidConfig,
   libraryIconSize,
   normalizeExcalidrawSceneTarget,
+  normalizeSketchTarget,
   placeLibraryIcons,
   prepareLibraryIconSkeletons,
   repairSavedSceneTextMetrics,
@@ -1116,4 +1118,146 @@ test("summarizeSceneEdits reports a uniformly scaled library item as resized onl
     { ...baseline[1], x: 30, y: 30, width: 60, height: 60 },
   ];
   assert.deepEqual(summarizeSceneEdits(baseline, scaled).lines, ["Resized library item sys/Server by (100, 100)"]);
+});
+
+// ---------------------------------------------------------------------------
+// Sketch layer
+// ---------------------------------------------------------------------------
+
+test("describeSketchSelection names one sketch, its page bounds, and the point an arrow marks", () => {
+  const elements = [
+    {
+      id: "pen",
+      type: "freedraw",
+      x: 10,
+      y: 20,
+      width: 0,
+      height: 0,
+      points: [
+        [0, 0],
+        [40, 5],
+        [80, -5],
+      ],
+    },
+    {
+      id: "arrow",
+      type: "arrow",
+      x: 300,
+      y: 400,
+      width: 0,
+      height: 0,
+      points: [
+        [0, 0],
+        [-60, -80],
+      ],
+    },
+    rect("box", { x: 100, y: 200, width: 120, height: 40 }),
+    boundLabel("box-label", "box", "Most popular"),
+    rect("gone", { isDeleted: true }),
+  ];
+
+  assert.deepEqual(describeSketchSelection(elements, ["arrow"]), {
+    ids: ["arrow"],
+    label: "arrow",
+    bounds: { x: 240, y: 320, width: 60, height: 80 },
+    point: { x: 240, y: 320 },
+  });
+  assert.deepEqual(describeSketchSelection(elements, ["pen"]), {
+    ids: ["pen"],
+    label: "freehand line",
+    bounds: { x: 10, y: 15, width: 80, height: 10 },
+    point: { x: 50, y: 20 },
+  });
+  // Selecting a labelled shape selects its bound text too; the label folds into the shape.
+  assert.equal(describeSketchSelection(elements, ["box", "box-label"]).label, 'rectangle "Most popular"');
+  assert.deepEqual(describeSketchSelection(elements, ["box", "box-label"]).ids, ["box"]);
+});
+
+test("describeSketchSelection marks the tip of a rotated arrow where it is drawn", () => {
+  // Excalidraw turns a linear element about the centre of its points' box: this arrow's tip
+  // starts 100px right of its tail and ends 100px below the centre after a quarter turn.
+  const arrow = {
+    id: "arrow",
+    type: "arrow",
+    x: 300,
+    y: 400,
+    width: 100,
+    height: 0,
+    angle: Math.PI / 2,
+    points: [
+      [0, 0],
+      [100, 0],
+    ],
+  };
+  const sketch = describeSketchSelection([arrow], ["arrow"]);
+  assert.deepEqual(sketch.point, { x: 350, y: 450 });
+  assert.deepEqual(sketch.bounds, { x: 350, y: 350, width: 0, height: 100 });
+});
+
+test("describeSketchSelection lists every selected shape so the image covers what the target describes", () => {
+  const elements = Array.from({ length: 60 }, (_, i) => rect(`r${i}`, { x: i * 10, y: 0, width: 5, height: 5 }));
+  const sketch = describeSketchSelection(
+    elements,
+    elements.map((el) => el.id),
+  );
+  assert.equal(sketch.label.startsWith("60 shapes"), true);
+  assert.equal(sketch.ids.length, 60);
+  assert.deepEqual(sketch.bounds, { x: 0, y: 0, width: 595, height: 5 });
+});
+
+test("describeSketchSelection and normalizeSketchTarget agree on a selection above the id cap", () => {
+  const elements = Array.from({ length: 1200 }, (_, i) => rect(`r${i}`, { x: i * 10, y: 0, width: 5, height: 5 }));
+  const sketch = describeSketchSelection(
+    elements,
+    elements.map((el) => el.id),
+  );
+  assert.equal(sketch.ids.length, 1000);
+  assert.equal(sketch.label.startsWith("1000 shapes"), true);
+  assert.deepEqual(sketch.bounds, { x: 0, y: 0, width: 9995, height: 5 });
+  const target = normalizeSketchTarget({ sketchIds: sketch.ids, bounds: sketch.bounds });
+  assert.deepEqual(target.sketchIds, sketch.ids);
+});
+
+test("describeSketchSelection summarizes a multi-selection and ignores deleted or unknown ids", () => {
+  const elements = [
+    rect("a", { x: 0, y: 0, width: 10, height: 10 }),
+    { id: "b", type: "ellipse", x: 50, y: 50, width: 10, height: 10 },
+    rect("gone", { isDeleted: true }),
+  ];
+  const sketch = describeSketchSelection(elements, ["a", "b", "gone", "missing"]);
+  assert.equal(sketch.label, "2 shapes (rectangle, ellipse)");
+  assert.deepEqual(sketch.ids, ["a", "b"]);
+  assert.deepEqual(sketch.bounds, { x: 0, y: 0, width: 60, height: 60 });
+  assert.equal(describeSketchSelection(elements, ["gone"]), null);
+  assert.equal(describeSketchSelection(elements, []), null);
+});
+
+test("normalizeSketchTarget strips a browser-supplied sketch target to its fixed, bounded shape", () => {
+  assert.deepEqual(
+    normalizeSketchTarget({
+      type: "sketch",
+      sketchIds: ["r1", 7, "", "x".repeat(100)],
+      label: "  rectangle\n\n  ",
+      bounds: { x: -5, y: "430", width: 1e12, height: 65.4, extra: 1 },
+      injected: { nested: true },
+    }),
+    {
+      type: "sketch",
+      sketchIds: ["r1", "7", "x".repeat(64)],
+      label: "rectangle",
+      bounds: { x: -5, y: 430, width: 1_000_000, height: 65 },
+    },
+  );
+  assert.equal(
+    normalizeSketchTarget({ sketchIds: Array.from({ length: 1200 }, (_, i) => `id${i}`) }).sketchIds.length,
+    1000,
+  );
+  assert.equal(normalizeSketchTarget({ label: "y".repeat(500) }).label.length, 120);
+  // A sketch partly past the page's top-left edge keeps its real origin, within the coordinate bound.
+  assert.deepEqual(normalizeSketchTarget({ bounds: { x: -40.4, y: -1e12, width: 10, height: 10 } }).bounds, {
+    x: -40,
+    y: -1_000_000,
+    width: 10,
+    height: 10,
+  });
 });

@@ -74,6 +74,9 @@ async function startWhiteboardServer({ html = ARTIFACT_HTML } = {}) {
 test("isWhiteboardWriteApiPath matches only whiteboard write routes", () => {
   assert.equal(isWhiteboardWriteApiPath("/api/0123456789abcdef/whiteboard/0"), true);
   assert.equal(isWhiteboardWriteApiPath("/api/0123456789abcdef/whiteboard/12/feedback-files"), true);
+  assert.equal(isWhiteboardWriteApiPath("/api/0123456789abcdef/whiteboard/sketch"), true);
+  assert.equal(isWhiteboardWriteApiPath("/api/0123456789abcdef/whiteboard/sketch/feedback-files"), false);
+  assert.equal(isWhiteboardWriteApiPath("/api/0123456789abcdef/whiteboard/sketches"), false);
   assert.equal(isWhiteboardWriteApiPath("/api/0123456789abcdef/prompts"), false);
   assert.equal(isWhiteboardWriteApiPath("/api/0123456789abcdef/whiteboard/9999"), false);
   assert.equal(isWhiteboardWriteApiPath("/api/BAD/whiteboard/0"), false);
@@ -417,6 +420,49 @@ test("mermaid-sources hashes follow referenced library items only for icon diagr
     const [changedSourcesVersion, changedLibrariesVersion] = await versions();
     assert.equal(changedSourcesVersion, changedLibrariesVersion);
     assert.notEqual(changedLibrariesVersion, librariesVersion);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("the sketch layer saves same-origin only and comes back when the session reopens", async () => {
+  const ctx = await startWhiteboardServer();
+  try {
+    const chromeSession = async () => {
+      const html = await fetch(`${ctx.base}/session/${ctx.key}`).then((res) => res.text());
+      return JSON.parse(html.match(/<script id="lavish-session" type="application\/json">([^<]*)<\/script>/)[1]);
+    };
+    assert.equal((await chromeSession()).initialHasSketch, false);
+
+    const scene = { elements: [{ id: "pen", type: "freedraw", x: 10, y: 20, points: [[0, 0]] }], files: {} };
+    const crossOrigin = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard/sketch`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: "http://evil.test" },
+      body: JSON.stringify({ scene }),
+    });
+    assert.equal(crossOrigin.status, 403);
+    assert.equal(
+      (await fetch(`${ctx.base}/api/${ctx.key}/whiteboard/sketch`).then((res) => res.json())).whiteboard,
+      null,
+    );
+
+    const put = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard/sketch`, {
+      method: "PUT",
+      headers: ctx.sameOrigin,
+      body: JSON.stringify({ scene }),
+    });
+    assert.equal(put.status, 200);
+    const loaded = await fetch(`${ctx.base}/api/${ctx.key}/whiteboard/sketch`).then((res) => res.json());
+    assert.deepEqual(loaded.whiteboard.scene, scene);
+    assert.equal((await chromeSession()).initialHasSketch, true);
+
+    // An erased sketch layer has nothing to show on the next open.
+    await fetch(`${ctx.base}/api/${ctx.key}/whiteboard/sketch`, {
+      method: "PUT",
+      headers: ctx.sameOrigin,
+      body: JSON.stringify({ scene: { elements: [{ ...scene.elements[0], isDeleted: true }], files: {} } }),
+    });
+    assert.equal((await chromeSession()).initialHasSketch, false);
   } finally {
     await ctx.close();
   }

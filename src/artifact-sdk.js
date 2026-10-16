@@ -2498,6 +2498,20 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
+      postArtifactMessage("lavish:scroll", { x: window.scrollX, y: window.scrollY });
+    }
+    // The chrome's sketch layer sits over this frame and keeps its scene in document coordinates:
+    // it forwards wheel scrolling here and asks which element a sketch marks.
+    if (msg.type === "lavish:scrollBy") window.scrollBy(Number(msg.x) || 0, Number(msg.y) || 0);
+    if (msg.type === "lavish:sketchHitTest") {
+      const el = document.elementFromPoint(
+        (Number(msg.x) || 0) - window.scrollX,
+        (Number(msg.y) || 0) - window.scrollY,
+      );
+      postArtifactMessage("lavish:sketchHitTestResult", {
+        request_id: String(msg.request_id || ""),
+        target: el && el !== document.body && el !== document.documentElement && !isLavishUi(el) ? context(el) : null,
+      });
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
