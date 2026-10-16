@@ -59,6 +59,15 @@ import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-me
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
+  FLAGS,
+  OPCODES,
+  WireSessionManager,
+  decodeFrame,
+  encodeFrame,
+  formatParams,
+  parseParams,
+} from "./wire-transport.js";
+import {
   bindHost,
   extraAllowedHosts,
   hostForUrl,
@@ -340,6 +349,8 @@ export async function serve({
   // being reopened and leave every other open review page on screen. Current chromes use a
   // WebSocket, while the legacy SSE route remains available during rolling local upgrades.
   const liveEventClients = new Map();
+  const wireSessions = new WireSessionManager();
+  const activeWireSockets = new Map();
   const browserDisconnectTimers = new Map();
   const browserDisconnectPending = new Set();
   const whiteboardChannelSecret = crypto.randomBytes(32);
@@ -388,7 +399,11 @@ export async function serve({
   events.on("agent-reply", (key, entry) => broadcastLiveEvent("agent-reply", key, entry));
   events.on("chat-sync", (key, session) => broadcastLiveEvent("chat-sync", key, serializeChatSync(session)));
   events.on("agent-presence", (key, state) =>
-    broadcastLiveEvent("agent-presence", key, presenceEventData(key, state, activePolls, deliveredFeedback)),
+    broadcastLiveEvent(
+      "agent-presence",
+      key,
+      presenceEventData(key, state, activePolls, deliveredFeedback, activeWireSockets),
+    ),
   );
   events.on("layout-warnings", (key, warnings) => broadcastLiveEvent("layout-warnings", key, { warnings }));
   events.on("ended", (key, endedBy) => broadcastLiveEvent("ended", key, { ended_by: endedBy || null }));
@@ -445,8 +460,11 @@ export async function serve({
       return;
     }
     client.sendEvent("chat-sync", serializeChatSync(session));
-    const presence = computePresence(key, activePolls, deliveredFeedback);
-    client.sendEvent("agent-presence", presenceEventData(key, presence, activePolls, deliveredFeedback));
+    const presence = computePresence(key, activePolls, deliveredFeedback, activeWireSockets);
+    client.sendEvent(
+      "agent-presence",
+      presenceEventData(key, presence, activePolls, deliveredFeedback, activeWireSockets),
+    );
     // A connection that attaches after the live end event still needs the terminal snapshot.
     if (session?.status === "ended") client.sendEvent("ended", { ended_by: session.ended_by || null });
   }
@@ -2041,6 +2059,301 @@ export async function serve({
     });
   }
 
+  const wireWebSocketServer = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+
+  function attachWireClient(webSocket, key, { initialLastSeenSeq = 0 } = {}) {
+    let sockets = activeWireSockets.get(key);
+    if (!sockets) {
+      sockets = new Set();
+      activeWireSockets.set(key, sockets);
+    }
+    sockets.add(webSocket);
+    events.emit("agent-presence", key, computePresence(key, activePolls, deliveredFeedback, activeWireSockets));
+
+    const channel = wireSessions.getOrCreateChannel(key);
+    channel.subscribe(webSocket);
+
+    webSocket.on("error", () => {});
+
+    let heartbeat = null;
+    if (liveEventHeartbeatMs != null && liveEventHeartbeatMs > 0) {
+      let awaitingPong = false;
+      heartbeat = setInterval(() => {
+        if (awaitingPong) {
+          logEvent?.(`wire WebSocket heartbeat missed session=${key}, terminating`);
+          webSocket.terminate();
+          return;
+        }
+        awaitingPong = true;
+        try {
+          webSocket.ping();
+        } catch {
+          webSocket.terminate();
+        }
+      }, liveEventHeartbeatMs);
+      heartbeat.unref?.();
+      webSocket.on("pong", () => {
+        awaitingPong = false;
+      });
+    }
+
+    const pushWireFrame = (frameStr) => {
+      if (webSocket.readyState === WebSocket.OPEN) {
+        webSocket.send(frameStr);
+      }
+    };
+
+    if (initialLastSeenSeq > 0 && initialLastSeenSeq < channel.lastSeq) {
+      const missed = channel.replaySince(initialLastSeenSeq);
+      for (const msg of missed) {
+        pushWireFrame(
+          encodeFrame({
+            type: OPCODES.PUSH,
+            seqId: msg.seqId,
+            seq: msg.seqId,
+            channel: "feedback",
+            flags: msg.rawFlags,
+            payload: msg.payload,
+          }),
+        );
+      }
+    }
+
+    // Deliver any feedback already pending in store
+    store
+      .takeFeedback(key)
+      .then((pending) => {
+        if (pending && pending.status === "feedback" && webSocket.readyState === WebSocket.OPEN) {
+          const published = channel.publish({
+            payload: JSON.stringify(agentFacingFeedback(pending)),
+            flags: FLAGS.REQUIRES_ACK,
+            sender: "human",
+          });
+          finishFeedbackDelivery(key, pending);
+          pushWireFrame(
+            encodeFrame({
+              type: OPCODES.PUSH,
+              seqId: published.seqId,
+              seq: published.seqId,
+              channel: "feedback",
+              flags: published.rawFlags,
+              payload: published.payload,
+            }),
+          );
+        }
+      })
+      .catch(() => {});
+
+    // Notify if session was already ended
+    store
+      .findByKey(key)
+      .then((session) => {
+        if (session && session.status === "ended" && webSocket.readyState === WebSocket.OPEN) {
+          pushWireFrame(
+            encodeFrame({
+              type: OPCODES.END,
+              seqId: channel.lastSeq,
+              seq: channel.lastSeq,
+              channel: "session",
+              flags: FLAGS.END_SESSION,
+              payload: JSON.stringify({ status: "ended", ended_by: session.ended_by || "user" }),
+            }),
+          );
+        }
+      })
+      .catch(() => {});
+
+    const onFeedback = async (changedKey) => {
+      if (changedKey !== key || webSocket.readyState !== WebSocket.OPEN) return;
+      try {
+        const result = await store.takeFeedback(key);
+        if (result && result.status === "feedback") {
+          const published = channel.publish({
+            payload: JSON.stringify(agentFacingFeedback(result)),
+            flags: FLAGS.REQUIRES_ACK,
+            sender: "human",
+          });
+          finishFeedbackDelivery(key, result);
+          pushWireFrame(
+            encodeFrame({
+              type: OPCODES.PUSH,
+              seqId: published.seqId,
+              seq: published.seqId,
+              channel: "feedback",
+              flags: published.rawFlags,
+              payload: published.payload,
+            }),
+          );
+        }
+      } catch (err) {
+        writeLog(`[lavish] wire transport feedback push error: ${err?.message || err}`);
+      }
+    };
+
+    const onEnded = (changedKey, endedBy) => {
+      if (changedKey !== key || webSocket.readyState !== WebSocket.OPEN) return;
+      const published = channel.publish({
+        payload: JSON.stringify({ status: "ended", ended_by: endedBy || "user" }),
+        flags: FLAGS.END_SESSION,
+        sender: "server",
+      });
+      pushWireFrame(
+        encodeFrame({
+          type: OPCODES.END,
+          seqId: published.seqId,
+          seq: published.seqId,
+          channel: "session",
+          flags: FLAGS.END_SESSION,
+          payload: published.payload,
+        }),
+      );
+    };
+
+    events.on("feedback", onFeedback);
+    events.on("ended", onEnded);
+
+    webSocket.on("message", async (data) => {
+      const line = typeof data === "string" ? data : data.toString("utf8");
+      let frame;
+      try {
+        frame = decodeFrame(line);
+      } catch {
+        return;
+      }
+      if (frame.type === OPCODES.OPEN) {
+        const params = parseParams(frame.payload);
+        const lastSeenSeq = parseInt(params.last_seen_seq, 10) || 0;
+        const openResp = encodeFrame({
+          type: OPCODES.OPEN,
+          seqId: channel.lastSeq,
+          channel: key,
+          flags: "-",
+          payload: formatParams({
+            session: key,
+            last_seq: channel.lastSeq,
+            heartbeat: liveEventHeartbeatMs || 5000,
+          }),
+        });
+        pushWireFrame(openResp);
+
+        if (lastSeenSeq < channel.lastSeq) {
+          const missed = channel.replaySince(lastSeenSeq);
+          for (const msg of missed) {
+            pushWireFrame(
+              encodeFrame({
+                type: OPCODES.PUSH,
+                seqId: msg.seqId,
+                seq: msg.seqId,
+                channel: "feedback",
+                flags: msg.rawFlags,
+                payload: msg.payload,
+              }),
+            );
+          }
+        }
+      } else if (frame.type === OPCODES.ACK) {
+        channel.acknowledge(frame.seqId);
+      } else if (frame.type === OPCODES.MESSAGE || frame.type === OPCODES.PUSH) {
+        let replyText = frame.payload;
+        try {
+          const parsed = JSON.parse(frame.payload);
+          if (parsed && typeof parsed.text === "string") {
+            replyText = parsed.text;
+          }
+        } catch {
+          // use raw text
+        }
+        if (replyText) {
+          await publishAgentReply(key, replyText);
+        }
+        pushWireFrame(
+          encodeFrame({
+            type: OPCODES.ACK,
+            seqId: frame.seqId,
+            channel: frame.channel || key,
+            flags: FLAGS.NONE,
+          }),
+        );
+      } else if (frame.type === OPCODES.CLOSE || frame.type === OPCODES.END) {
+        webSocket.close();
+      }
+    });
+
+    webSocket.once("close", () => {
+      if (heartbeat) clearInterval(heartbeat);
+      events.off("feedback", onFeedback);
+      events.off("ended", onEnded);
+      channel.unsubscribe(webSocket);
+      const currentSockets = activeWireSockets.get(key);
+      if (currentSockets) {
+        currentSockets.delete(webSocket);
+        if (currentSockets.size === 0) activeWireSockets.delete(key);
+      }
+      events.emit("agent-presence", key, computePresence(key, activePolls, deliveredFeedback, activeWireSockets));
+      refreshIdleTimer();
+    });
+  }
+
+  function handleWireUpgrade(req, socket, head, pathname) {
+    if (process.env.LAVISH_AXI_DISABLE_WIRE === "1") {
+      rejectEventUpgrade(socket, 404, "Not Found");
+      return;
+    }
+    const match = pathname.match(/^\/wire\/([^/]+)$/);
+    if (!match) {
+      rejectEventUpgrade(socket, 404, "Not Found");
+      return;
+    }
+    const hostAllowed = allowAnyHostname
+      ? parseHostAuthority(req.headers.host) !== null
+      : isAllowedRequestHost(
+          { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] },
+          allowedHostnames,
+        );
+    if (
+      !hostAllowed ||
+      (hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname))
+    ) {
+      rejectEventUpgrade(socket, 403, "Forbidden");
+      return;
+    }
+    let key;
+    try {
+      key = decodeURIComponent(match[1]);
+    } catch {
+      rejectEventUpgrade(socket, 400, "Bad Request");
+      return;
+    }
+    let initialLastSeenSeq = 0;
+    try {
+      const parsedUrl = new URL(String(req.url || ""), "http://lavish.local");
+      const param = parsedUrl.searchParams.get("last_seen_seq");
+      if (param) initialLastSeenSeq = parseInt(param, 10) || 0;
+    } catch {
+      // ignore
+    }
+    wireWebSocketServer.handleUpgrade(req, socket, head, (webSocket) => {
+      attachWireClient(webSocket, key, { initialLastSeenSeq });
+    });
+  }
+
+  function handleUpgrade(req, socket, head) {
+    let pathname;
+    try {
+      pathname = new URL(String(req.url || ""), "http://lavish.local").pathname;
+    } catch {
+      rejectEventUpgrade(socket, 400, "Bad Request");
+      return;
+    }
+    if (pathname.startsWith("/events/")) {
+      handleEventUpgrade(req, socket, head);
+    } else if (pathname.startsWith("/wire/")) {
+      handleWireUpgrade(req, socket, head, pathname);
+    } else {
+      rejectEventUpgrade(socket, 404, "Not Found");
+    }
+  }
+
   const httpServers = [];
   const boundHosts = [];
   let boundPort = port;
@@ -2067,7 +2380,7 @@ export async function serve({
       httpServer.close();
       throw new Error("Lavish server is shutting down");
     }
-    httpServer.on("upgrade", handleEventUpgrade);
+    httpServer.on("upgrade", handleUpgrade);
     if (boundPort === 0) boundPort = httpServer.address().port;
     if (!publicPort) publicPort = boundPort;
     httpServers.push(httpServer);
@@ -2268,6 +2581,16 @@ export async function serve({
         // best effort
       }
     }
+    for (const sockets of activeWireSockets.values()) {
+      for (const ws of sockets) {
+        try {
+          ws.close(1001, "Lavish server shutdown");
+        } catch {
+          // ignore
+        }
+      }
+    }
+    activeWireSockets.clear();
     liveEventClients.clear();
     for (const timer of browserDisconnectTimers.values()) clearTimeout(timer);
     browserDisconnectTimers.clear();
@@ -2297,10 +2620,10 @@ export async function serve({
       idleTimer = null;
     }
     if (shuttingDown || idleTimeoutMs == null) return;
-    if (liveEventClients.size > 0 || activePolls.size > 0) return;
+    if (liveEventClients.size > 0 || activePolls.size > 0 || activeWireSockets.size > 0) return;
     idleTimer = setTimeout(() => {
       idleTimer = null;
-      if (!shuttingDown && liveEventClients.size === 0 && activePolls.size === 0) {
+      if (!shuttingDown && liveEventClients.size === 0 && activePolls.size === 0 && activeWireSockets.size === 0) {
         shutdown("", "", `idle-timeout after ${idleTimeoutMs}ms with no connections`);
       }
     }, idleTimeoutMs);
@@ -2313,7 +2636,7 @@ export async function serve({
   // idle timer reap it once those connections drop. Best-effort: never let a read failure
   // block the end response.
   async function shutdownIfNoLiveSessions() {
-    if (liveEventClients.size > 0 || activePolls.size > 0) return;
+    if (liveEventClients.size > 0 || activePolls.size > 0 || activeWireSockets.size > 0) return;
     try {
       const sessions = await store.listSessions();
       if (sessions.every((session) => session.status === "ended")) {
@@ -2616,7 +2939,9 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
 }
 
 function hasPresentOriginOrReferer(req) {
-  return Boolean(req.get("origin") || req.get("referer"));
+  const origin = typeof req.get === "function" ? req.get("origin") : req.headers?.origin;
+  const referer = typeof req.get === "function" ? req.get("referer") : req.headers?.referer;
+  return Boolean(origin || referer);
 }
 
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a
@@ -2813,28 +3138,33 @@ function clearFeedbackDelivery(key, activePolls, deliveredFeedback, events) {
   }
 }
 
-export function computePresence(key, activePolls, deliveredFeedback) {
-  if (deliveredFeedback.has(key)) return "working";
-  return activePolls.has(key) ? "listening" : "waiting";
+export function computePresence(key, activePolls, deliveredFeedback, activeWireSockets = null) {
+  if (deliveredFeedback?.has(key)) return "working";
+  if (activePolls?.has(key) || activeWireSockets?.has(key)) return "listening";
+  return "waiting";
 }
 
-function presenceSignature(key, activePolls, deliveredFeedback) {
-  return `${computePresence(key, activePolls, deliveredFeedback)}:${presenceMode(key, activePolls, deliveredFeedback)}`;
+function presenceSignature(key, activePolls, deliveredFeedback, activeWireSockets = null) {
+  return `${computePresence(key, activePolls, deliveredFeedback, activeWireSockets)}:${presenceMode(key, activePolls, deliveredFeedback, activeWireSockets)}`;
 }
 
-export function presenceMode(key, activePolls, deliveredFeedback) {
-  if (deliveredFeedback.has(key)) return "agent-busy";
-  const holder = activePolls.get(key);
-  if (!holder) return "waiting-on-captain";
-  // --owner is used by a supervisor process listening on behalf of a worker. A bare poll is the
-  // agent's own waiting round; an identified holder must not make the composer invite captain
-  // input while the owning worker is busy elsewhere.
-  return holder.owner ? "external-listener" : "agent-listener";
+export function presenceMode(key, activePolls, deliveredFeedback, activeWireSockets = null) {
+  if (deliveredFeedback?.has(key)) return "agent-busy";
+  const holder = activePolls?.get(key);
+  if (holder) {
+    return holder.owner ? "external-listener" : "agent-listener";
+  }
+  if (activeWireSockets?.has(key)) return "agent-listener";
+  return "waiting-on-captain";
 }
 
-function presenceEventData(key, state, activePolls, deliveredFeedback) {
-  const mode = presenceMode(key, activePolls, deliveredFeedback);
-  return mode === "waiting-on-captain" ? { state } : { state, mode };
+function presenceEventData(key, state, activePolls, deliveredFeedback, activeWireSockets = null) {
+  const mode = presenceMode(key, activePolls, deliveredFeedback, activeWireSockets);
+  const data = mode === "waiting-on-captain" ? { state } : { state, mode };
+  if (activeWireSockets?.has(key)) {
+    data.wire = true;
+  }
+  return data;
 }
 
 function chromeIcon(paths, size = 16, strokeWidth = 1.7) {
