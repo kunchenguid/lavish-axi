@@ -22,6 +22,29 @@ await esbuild.build({
 });
 
 await chmod("dist/cli.mjs", 0o755);
+
+await esbuild.build({
+  entryPoints: ["bin/lavish-axi-server.js"],
+  outfile: "dist/server.mjs",
+  bundle: true,
+  packages: "external",
+  platform: "node",
+  format: "esm",
+  target: "node22",
+  plugins: [
+    {
+      name: "external-cli",
+      setup(build) {
+        build.onResolve({ filter: /^\.\/lavish-axi\.js$/ }, () => ({
+          path: "./cli.mjs",
+          external: true,
+        }));
+      },
+    },
+  ],
+});
+await chmod("dist/server.mjs", 0o755);
+
 await copyFile("src/chrome-client.js", "dist/chrome-client.js");
 await copyFile("src/chrome.css", "dist/chrome.css");
 await mkdir("dist/design", { recursive: true });

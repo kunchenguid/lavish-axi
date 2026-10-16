@@ -44,8 +44,11 @@ function createElement(tag) {
         .split(",")
         .some((part) => {
           const selector = part.trim();
-          if (selector.startsWith("[")) return attributes.has(selector.slice(1, selector.indexOf("]")).split("=")[0]);
-          return selector === element.tagName.toLowerCase();
+          // `tag`, `[attr]`, or `tag[attr]` (e.g. `a[href]`): enough selector for what the SDK asks.
+          const bracket = selector.indexOf("[");
+          const tag = bracket >= 0 ? selector.slice(0, bracket) : selector;
+          if (tag && tag !== element.tagName.toLowerCase()) return false;
+          return bracket < 0 || attributes.has(selector.slice(bracket + 1, selector.indexOf("]")).split("=")[0]);
         });
     },
     closest(selectorList) {
@@ -104,7 +107,13 @@ function cell(tag, text) {
   return element;
 }
 
-function bootSdk({ runAnimationFrames = false } = {}) {
+function bootSdk({
+  runAnimationFrames = false,
+  revisionsScript = null,
+  revisionMarkElements = [],
+  htmlAnnotate = null,
+  platform = "Linux",
+} = {}) {
   const posted = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
@@ -116,15 +125,19 @@ function bootSdk({ runAnimationFrames = false } = {}) {
   };
   /** @type {(selector: string) => any} */
   let documentQuery = () => null;
+  /** @type {any} */
+  let selection = null;
   const documentElement = createElement("html");
   const head = createElement("head");
   const body = createElement("body");
+  if (htmlAnnotate !== null) documentElement.setAttribute("data-lavish-annotate", htmlAnnotate);
   appendTo(documentElement, head);
   appendTo(documentElement, body);
+  for (const element of revisionMarkElements) appendTo(body, element);
 
   const sandbox = {
     parent: { postMessage: (message) => posted.push(message) },
-    navigator: { platform: "Linux" },
+    navigator: { platform },
     CSS: { escape: (value) => String(value) },
     Element: class Element {},
     MutationObserver: class MutationObserver {
@@ -156,9 +169,10 @@ function bootSdk({ runAnimationFrames = false } = {}) {
       removeEventListener() {},
       createElement,
       getElementById: () => null,
-      querySelector: (selector) => documentQuery(selector),
-      querySelectorAll: () => [],
-      getSelection: () => null,
+      querySelector: (selector) =>
+        selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
+      querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
+      getSelection: () => selection,
     },
   };
   const windowListeners = [];
@@ -183,10 +197,44 @@ function bootSdk({ runAnimationFrames = false } = {}) {
     posted,
     body,
     api: sandbox.window.lavish,
-    click(target) {
+    // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
+    click(target, modifiers = {}) {
       const listener = documentListeners.find((entry) => entry.type === "click");
       assert.ok(listener, "the SDK registers a document click listener");
-      listener.handler({ target, preventDefault() {}, stopPropagation() {} });
+      const event = {
+        target,
+        ctrlKey: false,
+        metaKey: false,
+        ...modifiers,
+        defaultPrevented: false,
+        preventDefault() {
+          event.defaultPrevented = true;
+        },
+        stopPropagation() {},
+      };
+      listener.handler(event);
+      return event;
+    },
+    // Releases the mouse over `target` with `text` selected inside it, as a drag-select would.
+    selectText(target, text) {
+      const textNode = { nodeType: 3, parentElement: target, parentNode: { childNodes: [] } };
+      textNode.parentNode.childNodes.push(textNode);
+      const range = {
+        collapsed: false,
+        commonAncestorContainer: textNode,
+        startContainer: textNode,
+        startOffset: 0,
+        endContainer: textNode,
+        endOffset: text.length,
+        cloneRange: () => range,
+        getClientRects: () => [],
+        getBoundingClientRect: () => target.getBoundingClientRect(),
+      };
+      selection = { rangeCount: 1, getRangeAt: () => range, toString: () => text };
+      const listener = documentListeners.find((entry) => entry.type === "mouseup");
+      assert.ok(listener, "the SDK registers a document mouseup listener");
+      listener.handler({ target });
+      selection = null;
     },
     setDocumentQuery(query) {
       documentQuery = query;
@@ -238,6 +286,62 @@ function bootSdk({ runAnimationFrames = false } = {}) {
   };
 }
 
+for (const { label, attributes, enabled } of [
+  { label: "default", attributes: {}, enabled: true },
+  { label: "html off", attributes: { htmlAnnotate: "off" }, enabled: false },
+  { label: "html on", attributes: { htmlAnnotate: "on" }, enabled: true },
+  { label: "unknown html value", attributes: { htmlAnnotate: "no" }, enabled: true },
+  { label: "empty html value", attributes: { htmlAnnotate: "" }, enabled: true },
+]) {
+  test(`annotation declaration honours ${label} and reports its initial mode`, () => {
+    const sdk = bootSdk(attributes);
+    const target = appendTo(sdk.body, cell("p", "Decision board"));
+    assert.equal(sdk.click(target).defaultPrevented, enabled);
+    assert.equal(sdk.cards().length, enabled ? 1 : 0);
+    const mode = sdk.posted.find((message) => message.type === "lavish:annotationMode");
+    assert.ok(mode, "the SDK reports the initial mode to the chrome");
+    assert.equal(mode.enabled, enabled);
+    assert.equal(mode.artifact_load_token, "load-token");
+  });
+}
+
+// Applying the page's "off" default closes no card, so it must not report one gone: the chrome
+// saves every `card: null` report over the stored draft, and the frame's load event that replays
+// that draft can arrive after a slow image, later than the report.
+test("a page that declares off reports no review state at boot", () => {
+  const sdk = bootSdk({ htmlAnnotate: "off" });
+  sdk.runTimers();
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:reviewState"),
+    false,
+    "nothing was open, so there is no card state to retire",
+  );
+  const target = appendTo(sdk.body, cell("h1", "Headline"));
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: { card: { selector: "h1", text: "needs a shorter headline" }, fields: [] },
+  });
+  sdk.setDocumentQuery((selector) => (selector === "h1" ? target : null));
+  sdk.runTimers();
+  assert.equal(sdk.card().querySelector("textarea").value, "needs a shorter headline");
+});
+
+test("the chrome can turn annotation on and off after a page declares off", () => {
+  const sdk = bootSdk({ htmlAnnotate: "off" });
+  const target = appendTo(sdk.body, cell("p", "Decision board"));
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
+  assert.equal(sdk.click(target).defaultPrevented, true);
+  assert.equal(sdk.cards().length, 1);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: false });
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  // This harness retains closed cards; no new card should appear while disabled.
+  assert.equal(sdk.cards().length, 1);
+  sdk.runTimers();
+  const state = sdk.posted.filter((message) => message.type === "lavish:reviewState").at(-1);
+  assert.equal(state.state.card, null, "turning annotation off closes the active card");
+});
+
 function buildTable(sdk) {
   const table = appendTo(sdk.body, createElement("table"));
   const thead = appendTo(table, createElement("thead"));
@@ -278,6 +382,32 @@ test("the served SDK echoes the snapshot request id", () => {
   assert.equal(response.type, "lavish:snapshot");
   assert.equal(response.snapshot_request_id, "snapshot-17");
   assert.equal(response.artifact_load_token, "load-token");
+});
+
+// readArtifactRevisions calls parseRevisionRegistry and collectRevisionMarks, which in turn call
+// the rest of the revision helper chain; a helper left out of the bundle only ReferenceErrors on
+// this real read, which a source-grep over the bundle text cannot catch.
+test("the served SDK bundle reports the artifact's own revision registry and marks", () => {
+  const revisionsScript = createElement("script");
+  revisionsScript.textContent = JSON.stringify([
+    { id: "r1", label: "Tightened header copy", summary: "Shortened the hero headline" },
+  ]);
+  const marked = createElement("h1");
+  marked.setAttribute("data-lavish-revision", "r1");
+  marked.textContent = "Ship faster";
+
+  const sdk = bootSdk({ revisionsScript, revisionMarkElements: [marked] });
+
+  const message = sdk.posted.find((entry) => entry.type === "lavish:revisions");
+  assert.ok(message, "the SDK reports the revision registry on load");
+  assert.equal(message.revisions.length, 1);
+  assert.equal(message.revisions[0].id, "r1");
+  assert.equal(message.revisions[0].label, "Tightened header copy");
+  assert.equal(message.revisions[0].mark_count, 1);
+  assert.equal(message.marks.length, 1);
+  assert.equal(message.marks[0].revision_id, "r1");
+  assert.equal(message.marks[0].selector, "html > body > h1");
+  assert.equal(message.marks[0].excerpt, "Ship faster");
 });
 
 test("the served SDK bundle queues a table-cell annotation without a missing-helper ReferenceError", () => {
@@ -384,6 +514,22 @@ test("Escape during IME composition leaves an empty annotation card open", () =>
   listener.handler({ key: "Escape", isComposing: true, preventDefault() {} });
 
   assert.notEqual(paragraph.style.outline, "", "a composing Escape belongs to the IME, not the card");
+});
+
+test("the Enter that confirms an IME conversion in WebKit leaves the annotation card open", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.click(paragraph);
+  const textarea = sdk.card().querySelector("textarea");
+  textarea.value = "漢字";
+  const listener = textarea.listeners.find((entry) => entry.type === "keydown");
+  let prevented = false;
+  // WebKit fires compositionend before this keydown, so only keyCode 229 marks it as the IME's.
+  listener.handler({ key: "Enter", isComposing: false, keyCode: 229, preventDefault: () => (prevented = true) });
+
+  assert.equal(prevented, false, "the IME keeps its Enter");
+  assert.notEqual(paragraph.style.outline, "", "the card stays open");
 });
 
 test("Escape leaves an annotation card with typed text open and untouched", () => {
@@ -534,4 +680,198 @@ test("the served SDK bundle drops a late restore once the user has opened a card
     sdk.posted.some((message) => message.type === "lavish:reviewDraftUnrestorable"),
     false,
   );
+});
+
+test("clicking an element with a queued note asks the chrome to edit it instead of opening a card", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  // The stub shadow root keeps closed cards, so a new card shows as a higher count.
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(paragraph);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+  assert.equal(message.artifact_load_token, "load-token");
+});
+
+test("an element whose queued note left the queue opens a fresh card again", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(paragraph);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+test("the chrome can hand an element click back for a fresh card", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.setDocumentQuery((selector) => (selector === "body > p" ? paragraph : null));
+
+  sdk.sendChromeMessage({ type: "lavish:annotateElement", selector: "body > p" });
+
+  assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// A Mermaid node as the SDK sees one: a `<g class="node">` inside an SVG Mermaid rendered.
+function buildMermaidNode(sdk) {
+  const svg = appendTo(sdk.body, createElement("svg"));
+  svg.id = "mermaid-1";
+  const node = appendTo(svg, createElement("g"));
+  node.id = "flowchart-A-0";
+  const matchesTag = node.matches;
+  node.matches = (selectorList) =>
+    String(selectorList)
+      .split(",")
+      .some((part) => part.trim() === "g.node") || matchesTag(selectorList);
+  const label = appendTo(node, cell("span", "Start"));
+  const shape = appendTo(node, createElement("rect"));
+  return { label, shape };
+}
+
+test("a note queued from a diagram node's label opens again from the node's shape", () => {
+  const sdk = bootSdk();
+  const { label, shape } = buildMermaidNode(sdk);
+  sdk.click(label);
+  const queued = sdk.queue("Rename this step");
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [queued.prompt.selector, queued.prompt.target.selector],
+  });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(shape);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.target.selector);
+});
+
+test("a click inside a table cell opens only the note on the exact element clicked", () => {
+  const sdk = bootSdk();
+  const { evidence } = buildTable(sdk);
+  const strong = appendTo(evidence, cell("strong", "Drive"));
+  const em = appendTo(evidence, cell("em", "Cursor"));
+  sdk.click(evidence);
+  const cellNote = sdk.queue("Explain this cell");
+  sdk.click(strong);
+  const strongNote = sdk.queue("Explain this app");
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [cellNote.prompt.selector, strongNote.prompt.selector],
+  });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(em);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+});
+
+// In annotate mode a plain click on a link annotates it, so Ctrl-click (Cmd-click on macOS) is the
+// way to follow the link without leaving annotate mode: the SDK steps aside and the browser opens it.
+function buildLink(sdk) {
+  const link = appendTo(sdk.body, cell("a", "Read the spec"));
+  link.setAttribute("href", "https://example.com/spec");
+  const inner = appendTo(link, cell("span", "spec"));
+  return { link, inner };
+}
+
+// The follow modifier is the platform's own: Cmd on macOS, Ctrl elsewhere. Meta on Linux/Windows
+// is the Super/Windows key, which is not a link-follow gesture there, so it annotates like a plain click.
+for (const [platform, modifier] of [
+  ["MacIntel", "metaKey"],
+  ["Linux x86_64", "ctrlKey"],
+  ["Win32", "ctrlKey"],
+]) {
+  test(`${modifier}-click on a link on ${platform} follows the link instead of annotating`, () => {
+    const sdk = bootSdk({ platform });
+    const { link, inner } = buildLink(sdk);
+
+    for (const target of [link, inner]) {
+      const event = sdk.click(target, { [modifier]: true });
+      assert.equal(event.defaultPrevented, false, "the browser's own link handling runs");
+    }
+    assert.equal(sdk.cards().length, 0);
+  });
+}
+
+for (const [platform, modifier] of [
+  ["Linux x86_64", "metaKey"],
+  ["Win32", "metaKey"],
+  ["MacIntel", "ctrlKey"],
+]) {
+  test(`${modifier}-click on a link on ${platform} annotates like a plain click`, () => {
+    const sdk = bootSdk({ platform });
+    const { link } = buildLink(sdk);
+
+    const event = sdk.click(link, { [modifier]: true });
+
+    assert.equal(event.defaultPrevented, true, "the SDK keeps the frame from navigating");
+    assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
+  });
+}
+
+test("a plain click on a link in annotate mode still opens an annotation card", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, true);
+  assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
+});
+
+test("a modified click on something that is not a link still annotates", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  const event = sdk.click(paragraph, { ctrlKey: true });
+
+  assert.equal(event.defaultPrevented, true);
+  assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+test("Ctrl-click follows a link even when the link already has a queued note", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  sdk.click(link);
+  const queued = sdk.queue("Is this the right spec?");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const postedBefore = sdk.posted.length;
+
+  const event = sdk.click(link, { ctrlKey: true });
+
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(
+    sdk.posted.slice(postedBefore).some((message) => message.type === "lavish:editQueuedAnchor"),
+    false,
+  );
+});
+
+test("Ctrl-click on a link after a text selection does not eat the next plain click", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.selectText(paragraph, "prose");
+  assert.match(sdk.card().innerHTML, /Annotate text/, "the selection opens a text annotation card");
+
+  const followed = sdk.click(link, { ctrlKey: true });
+  assert.equal(followed.defaultPrevented, false);
+
+  sdk.click(paragraph);
+
+  assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
 });

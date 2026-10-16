@@ -3315,3 +3315,15 @@ test("exportFileName derives a portable .export.html name", () => {
   assert.equal(exportFileName("/a/b/plan.htm"), "plan.export.html");
   assert.equal(exportFileName("/a/b/index.html"), "index.export.html");
 });
+
+test("keeps Mermaid library icon comments so exports render the plain node", async () => {
+  const diagram = "flowchart LR\n  %% lavish-icon api aws-architecture-icons/AWS Lambda\n  user --&gt; api[Orders API]";
+  const html = `<!doctype html><html><body><pre class="mermaid">${diagram}</pre></body></html>`;
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.ok(out.includes(`<pre class="mermaid">${diagram}</pre>`));
+  assert.equal(warnings.length, 0);
+});

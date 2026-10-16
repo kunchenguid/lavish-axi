@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -22,6 +23,7 @@ import {
   createDesignOutput,
   createExportOutput,
   createHomeOutput,
+  createLibrariesOutput,
   createOpenOutput,
   createPollOutput,
   createPlaybookOutput,
@@ -33,14 +35,15 @@ import {
   detectInvokingAgent,
   fetchJson,
   getCommandHelp,
+  herdrPollChimeEnabled,
   normalizeArgv,
+  notifyHerdrPollReady,
   resolveShareRequest,
   pollInterruptedText,
   pollWaitBannerText,
   pollWaitTickText,
   resolveCopilotHookDir,
   resolveHookHomeDir,
-  resolveServerEntry,
   serverReplacementReason,
   shareCommand,
   shutdownServerOnPort,
@@ -189,9 +192,10 @@ test("design output is the sole emitted concise explicit-background guidance", (
     JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
     getCommandHelp("design"),
     createSkillMarkdown(),
-    ...["table", "comparison", "plan", "code", "input", "slides"].map((id) =>
-      JSON.stringify(createPlaybookOutput([id])),
-    ),
+    ...createPlaybookOutput([])
+      .playbooks.map((playbook) => playbook.id)
+      .filter((id) => id !== "diagram")
+      .map((id) => JSON.stringify(createPlaybookOutput([id]))),
   ];
   for (const surface of otherAgentSurfaces) {
     assert.ok(!surface.includes(instruction));
@@ -331,7 +335,7 @@ test("top-level help renders static home output without dynamic sessions", async
     );
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /playbooks\[7\]/);
+    assert.match(result.stdout, /playbooks\[8\]/);
     assert.match(result.stdout, /lavish-axi playbook <playbook_id>/);
     assert.match(result.stdout, /reference other filesystem assets/);
     assert.match(result.stdout, /same directory as the HTML file/);
@@ -353,7 +357,7 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   const output = createDesignOutput();
 
   assert.match(output.playbook_router.instruction, /MUST open each matching playbook before writing HTML/);
-  assert.equal(output.playbook_router.playbooks.length, 7);
+  assert.equal(output.playbook_router.playbooks.length, 8);
   assert.equal(
     output.playbook_router.playbooks.find((playbook) => playbook.id === "diagram")?.use_when,
     "Explain relationships, flows, state, architecture, and concepts with illustrations",
@@ -422,10 +426,10 @@ test("design output recommends luxury as the default theme and warns against @ap
 test("playbook index output lists known playbooks with concise descriptions", () => {
   const output = createPlaybookOutput([]);
 
-  assert.equal(output.playbooks.length, 7);
+  assert.equal(output.playbooks.length, 8);
   assert.deepEqual(
     output.playbooks.map((playbook) => playbook.id),
-    ["diagram", "table", "comparison", "plan", "code", "input", "slides"],
+    ["diagram", "table", "comparison", "plan", "code", "input", "explanation", "slides"],
   );
   assert.equal(
     output.playbooks.find((playbook) => playbook.id === "plan")?.use_when,
@@ -439,6 +443,24 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   assert.ok(output.help.some((item) => item.includes("lavish-axi playbook <playbook_id>")));
   assert.ok(output.help.some((item) => item.includes("combines several playbooks")));
   assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
+});
+
+test("explanation playbook routes understanding of existing things and separates itself from plan and comparison", () => {
+  const output = createPlaybookOutput(["explanation"]);
+
+  assert.match(output.playbook.use_when, /Explain an existing system, PR, incident, or decision/i);
+  assert.match(output.playbook.use_when, /not choosing a direction or inspecting a plan/);
+  assert.ok(
+    output.playbook.choose.some((item) => /plan playbook when the reader must inspect and approve/i.test(item)),
+  );
+  assert.ok(output.playbook.structure.some((item) => /one-sentence answer/i.test(item)));
+  assert.ok(output.playbook.structure.some((item) => /what was deliberately left out/i.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /restate the PR body, diff, or ticket file-by-file/i.test(item)));
+  assert.ok(
+    output.playbook.design_rules.some((item) => /diagram playbook's assume-nothing rule/i.test(item)),
+    "reader starting point is owned by the diagram playbook and only pointed at here",
+  );
+  assert.ok(output.playbook.pitfalls.some((item) => /inferred reasoning as verified fact/i.test(item)));
 });
 
 test("diagram playbook defaults to hand-authored SVG and names the anti-patterns", () => {
@@ -462,14 +484,17 @@ test("diagram playbook owns assume-nothing and one-concept-per-diagram guidance"
     "the diagram playbook must prefer one concept per diagram",
   );
 
+  const playbookIds = createPlaybookOutput([]).playbooks.map((playbook) => playbook.id);
   const otherSurfaces = [
     JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
     JSON.stringify(createDesignOutput()),
     createSkillMarkdown(),
+    ...playbookIds.filter((id) => id !== "diagram").map((id) => JSON.stringify(createPlaybookOutput([id]).playbook)),
   ];
   for (const surface of otherSurfaces) {
     assert.doesNotMatch(surface, /one concept per diagram/i);
     assert.doesNotMatch(surface, /knows nothing/i);
+    assert.doesNotMatch(surface, /presume/i);
   }
 
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-playbook-diagram-`);
@@ -849,6 +874,9 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-axi poll \/tmp\/artifact\.html/);
+  assert.match(output.next_step, /keep waiting for more feedback/);
+  assert.match(output.next_step, /lavish-axi reply \/tmp\/artifact\.html --agent-reply/);
+  assert.match(output.next_step, /without starting another long-poll/);
   assert.match(output.next_step, /Layout issues inbox/);
   assert.doesNotMatch(output.next_step, /layout_warnings/);
   assert.match(output.next_step, /never kill it/);
@@ -1788,7 +1816,7 @@ test("feedback next step keeps the next poll completion observable", () => {
   assertObservablePollWakePath(output.next_step);
   assert.doesNotMatch(output.next_step, /Codex/);
   assert.match(output.next_step, /feedback remains queued until delivery/);
-  assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
+  assert.match(output.next_step, /Do not respond to the user just yet\. If you are continuing to wait for feedback/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
 });
 
@@ -1885,6 +1913,10 @@ test("detected layout warnings never appear in poll output", () => {
   assert.equal("layout_warnings" in output, false);
   assert.equal("artifact_failures" in output, false);
   assert.match(output.next_step, /Apply the requested changes/);
+  assert.match(output.next_step, /lavish-axi poll \/tmp\/report\.html --agent-reply/);
+  assert.match(output.next_step, /continuing to wait for feedback/);
+  assert.match(output.next_step, /lavish-axi reply \/tmp\/report\.html --agent-reply/);
+  assert.match(output.next_step, /without starting another long-poll/);
 });
 
 test("a queued layout-warnings batch reads as ordinary feedback with lifecycle guidance", () => {
@@ -2149,6 +2181,122 @@ test("poll wait messages tell watching agents the silence is normal", () => {
   assert.match(interrupted, /user may still be reviewing/);
   assert.match(interrupted, /lavish-axi poll \/tmp\/report\.html/);
   assert.match(interrupted, /feedback remains queued until delivery/);
+});
+
+test("Herdr poll chime is disabled unless both Lavish and Herdr opt in", () => {
+  assert.equal(herdrPollChimeEnabled({}), false);
+  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1" }), false);
+  assert.equal(herdrPollChimeEnabled({ LAVISH_AXI_HERDR_CHIME: "1" }), false);
+  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "0" }), false);
+  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" }), true);
+});
+
+test("Herdr poll chime requests attention without making notification failure fatal", async () => {
+  const calls = [];
+  /** @type {import("node:child_process").ChildProcess | undefined} */
+  let child;
+  const notified = notifyHerdrPollReady({
+    env: { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" },
+    runner(command, args, options) {
+      calls.push({ command, args, options });
+      child = spawn(process.execPath, ["-e", "process.exit(0)"], options);
+      return child;
+    },
+  });
+
+  assert.equal(notified, true);
+  assert.ok(child);
+  child.ref();
+  await once(child, "close");
+  assert.deepEqual(calls, [
+    {
+      command: "herdr",
+      args: [
+        "notification",
+        "show",
+        "Lavish review ready",
+        "--body",
+        "The artifact is open and Lavish is polling for your feedback.",
+        "--sound",
+        "request",
+      ],
+      options: { stdio: "ignore" },
+    },
+  ]);
+
+  assert.equal(
+    notifyHerdrPollReady({
+      env: { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" },
+      runner() {
+        throw new Error("Herdr unavailable");
+      },
+    }),
+    false,
+  );
+});
+
+test("Herdr failures and a stalled notification do not delay poll feedback", { timeout: 10_000 }, async (t) => {
+  const server = createServer((_req, res) => {
+    res.setHeader("Lavish-Poll-State", "listening");
+    res.end(JSON.stringify({ status: "feedback", prompts: [{ text: "Review this" }] }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const env = { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" };
+
+  for (const behavior of ["missing", "rejected", "stalled"]) {
+    await t.test(behavior, async () => {
+      const exitListeners = process.listenerCount("exit");
+      /** @type {import("node:child_process").ChildProcess | undefined} */
+      let child;
+      /** @type {Promise<{ code: number | null, signal: NodeJS.Signals | null }> | undefined} */
+      let closed;
+      const response = await fetchJson(`http://127.0.0.1:${address.port}`, {
+        onResponse() {
+          notifyHerdrPollReady({
+            env,
+            runner(_command, _args, options) {
+              child =
+                behavior === "missing"
+                  ? spawn(path.join(process.cwd(), "missing-herdr-executable"), [], options)
+                  : spawn(
+                      process.execPath,
+                      [
+                        "-e",
+                        behavior === "rejected"
+                          ? "process.exit(1)"
+                          : "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
+                      ],
+                      options,
+                    );
+              closed = new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+              return child;
+            },
+          });
+        },
+      });
+      try {
+        assert.ok(child);
+        assert.ok(closed);
+        assert.deepEqual(response, { status: "feedback", prompts: [{ text: "Review this" }] });
+        if (behavior === "stalled") {
+          assert.equal(child.exitCode, null);
+          assert.equal(child.signalCode, null);
+          const result = await closed;
+          if (process.platform !== "win32") assert.equal(result.signal, "SIGKILL");
+          assert.ok(child.killed);
+        } else {
+          await closed;
+        }
+        assert.equal(process.listenerCount("exit"), exitListeners);
+      } finally {
+        child?.kill("SIGKILL");
+      }
+    });
+  }
 });
 
 test("poll wait reporter writes a banner immediately and heartbeats on an interval", async () => {
@@ -2761,15 +2909,11 @@ test("server spawn options can persist detached server output to a log fd", () =
   assert.deepEqual(options.stdio, ["ignore", 17, 17]);
 });
 
-test("server entry resolves to a node-executable script that actually invokes run()", () => {
-  // Running from source, the entry must be `bin/lavish-axi.js` (the only file in the
-  // source tree that calls run() on import). In the published bundle only `dist/cli.mjs`
-  // ships - it embeds the bin wrapper so it self-invokes. Either way, spawning the entry
-  // with `node <entry> server` must boot the server, not silently load the module and exit.
-  const entry = resolveServerEntry();
-  assert.ok(existsSync(entry), `server entry must exist on disk, got: ${entry}`);
-  // From source: bin/lavish-axi.js is present and preferred.
-  assert.equal(entry, fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)));
+test("detached server entry dispatches the CLI", () => {
+  const entry = fileURLToPath(new URL("../bin/lavish-axi-server.js", import.meta.url));
+  const result = spawnSync(process.execPath, [entry, "--version"], { encoding: "utf8" });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /\d+\.\d+\.\d+/);
 });
 
 test("local built CLI opens force a server restart while source and installed runs do not", () => {
@@ -2801,6 +2945,34 @@ test("shouldRestartServer restarts when the running server reports a different v
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.3" }), true);
 });
 
+test("shouldRestartServer adopts a server that is newer than the CLI", () => {
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), false);
+  assert.equal(shouldRestartServer("0.1.85", { ok: true, app: "lavish-axi", version: "0.1.86" }), false);
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "1.0.0" }), false);
+});
+
+test("shouldRestartServer replaces a server whose version is not plain x.y.z", () => {
+  assert.equal(shouldRestartServer("0.1.87", { ok: true, app: "lavish-axi", version: "0.1.87-beta.1" }), true);
+  assert.equal(shouldRestartServer("0.1.87", { ok: true, app: "lavish-axi", version: "v0.1.88" }), true);
+  assert.equal(shouldRestartServer("0.1.87-beta.1", { ok: true, app: "lavish-axi", version: "0.1.88" }), true);
+});
+
+test("shouldRestartServer compares versions numerically, not as strings", () => {
+  assert.equal(shouldRestartServer("0.1.10", { ok: true, app: "lavish-axi", version: "0.1.9" }), true);
+  assert.equal(shouldRestartServer("0.1.9", { ok: true, app: "lavish-axi", version: "0.1.10" }), false);
+  assert.equal(shouldRestartServer("1.0.0", { ok: true, app: "lavish-axi", version: "0.9.99" }), true);
+});
+
+test("shouldRestartServer still replaces a newer server when forced or network-stale", () => {
+  const newer = { ok: true, app: "lavish-axi", version: "0.1.5" };
+  assert.equal(shouldRestartServer("0.1.4", newer, true), true);
+  assert.equal(shouldRestartServer("0.1.4", { ...newer, network_stale: true }), true);
+});
+
+test("shouldRestartServer falls back to replacing a server whose version does not parse", () => {
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "nightly" }), true);
+});
+
 test("shouldRestartServer restarts when the running server predates the version handshake", () => {
   // Pre-handshake servers (any release older than this change) return `{ ok: true }` with
   // no version field. Treat that as "older than me" and restart so users actually get the
@@ -2828,6 +3000,14 @@ test("serverReplacementReason names a local-build force apart from a real versio
   assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }, true), "upgrade");
 });
 
+test("serverReplacementReason names nothing for a server newer than the CLI", () => {
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), "");
+  assert.equal(
+    serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }, true),
+    "local-build",
+  );
+});
+
 test("serverReplacementReason names nothing when no replacement is warranted", () => {
   assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), "");
   assert.equal(serverReplacementReason("0.1.4", null), "");
@@ -2846,6 +3026,11 @@ test("shouldKillProcessOnPort only kills Lavish servers with a mismatched versio
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), false);
 });
 
+test("shouldKillProcessOnPort leaves a Lavish server that is newer than the CLI", () => {
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), false);
+  assert.equal(shouldKillProcessOnPort("0.1.10", { ok: true, app: "lavish-axi", version: "0.1.9" }), true);
+});
+
 test("shutdownServerOnPort kills pre-handshake Lavish servers when shutdown does not free the port", async () => {
   let shutdowns = 0;
   let kills = 0;
@@ -2859,8 +3044,9 @@ test("shutdownServerOnPort kills pre-handshake Lavish servers when shutdown does
       shutdowns += 1;
     },
     waitForPortFree: async () => portFreeResults.shift() ?? false,
-    killProcessOnPort: () => {
+    killServerProcess: () => {
       kills += 1;
+      return true;
     },
     processMatchesLavish: () => true,
   });
@@ -2882,8 +3068,9 @@ test("shutdownServerOnPort ignores unidentified health responders", async () => 
       shutdowns += 1;
     },
     waitForPortFree: async () => false,
-    killProcessOnPort: () => {
+    killServerProcess: () => {
       kills += 1;
+      return true;
     },
     processMatchesLavish: () => false,
   });
@@ -3001,12 +3188,16 @@ test("fetchJson reports interrupted response body failures without retrying", as
 test("stop command shuts down the running server on the configured port", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-stop-test-`);
   const server = await serve({ port: 0, stateFile: `${dir}/state.json`, version: "9.9.9-test" });
+  const previousStateDir = process.env.LAVISH_AXI_STATE_DIR;
+  process.env.LAVISH_AXI_STATE_DIR = dir;
   try {
     const output = await stopCommand(["--port", String(server.port)]);
     assert.deepEqual(output, { server: { status: "stopped", port: server.port } });
     await server.done;
     await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
   } finally {
+    if (previousStateDir === undefined) delete process.env.LAVISH_AXI_STATE_DIR;
+    else process.env.LAVISH_AXI_STATE_DIR = previousStateDir;
     await server.close();
     await rm(dir, { force: true, recursive: true });
   }
@@ -3409,4 +3600,96 @@ test("createShareUnpublishOutput separates the immediate content swap from the l
   assert.match(output.next_step, /cach/i, "the lagging lock must still be disclosed");
   assert.match(output.next_step, /readable without the password/i);
   assert.doesNotMatch(output.next_step, /no visitor can read the old content/i);
+});
+
+function fixtureLibraries() {
+  const item = (library, name) => ({ ref: `${library}/${name}`, name, elements: [] });
+  return [
+    { id: "aws", items: [item("aws", "AWS Lambda"), item("aws", "Lambda Function"), item("aws", "Amazon S3")] },
+    { id: "system-design", items: [item("system-design", "Queue")] },
+  ];
+}
+
+test("libraries output tells the user where to put files when none are installed", () => {
+  const output = createLibrariesOutput({
+    dir: "/home/me/.lavish-axi/excalidraw-libraries",
+    libraries: [],
+    skipped: [],
+  });
+  assert.equal(output.dir, "/home/me/.lavish-axi/excalidraw-libraries");
+  assert.deepEqual(output.libraries, []);
+  assert.match(output.help.join("\n"), /\.excalidrawlib/);
+  assert.equal(output.items, undefined);
+});
+
+test("libraries output lists counts, skips, and points at item search", () => {
+  const output = createLibrariesOutput({
+    dir: "/x",
+    libraries: fixtureLibraries(),
+    skipped: [{ file: "/x/broken.excalidrawlib", reason: "not valid JSON" }],
+  });
+  assert.deepEqual(output.libraries, [
+    { id: "aws", items: 3 },
+    { id: "system-design", items: 1 },
+  ]);
+  assert.deepEqual(output.skipped, [{ file: "broken.excalidrawlib", reason: "not valid JSON" }]);
+  assert.equal(output.items, undefined);
+  const help = output.help.join("\n");
+  assert.match(help, /lavish-axi libraries --search <text>/);
+  assert.match(help, /lavish-axi design/);
+});
+
+test("libraries output filters item refs by search terms and library", () => {
+  const searched = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "lambda" });
+  assert.deepEqual(searched.items, [{ ref: "aws/AWS Lambda" }, { ref: "aws/Lambda Function" }]);
+  const both = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "aws lambda" });
+  assert.deepEqual(both.items, [{ ref: "aws/AWS Lambda" }, { ref: "aws/Lambda Function" }]);
+  const library = createLibrariesOutput({
+    dir: "/x",
+    libraries: fixtureLibraries(),
+    skipped: [],
+    library: "system-design",
+  });
+  assert.deepEqual(library.items, [{ ref: "system-design/Queue" }]);
+  const none = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "kafka" });
+  assert.deepEqual(none.items, []);
+});
+
+test("libraries output bounds long item listings", () => {
+  const many = Array.from({ length: 120 }, (_, index) => ({
+    ref: `big/Icon ${index}`,
+    name: `Icon ${index}`,
+    elements: [],
+  }));
+  const output = createLibrariesOutput({
+    dir: "/x",
+    libraries: [{ id: "big", items: many }],
+    skipped: [],
+    library: "big",
+  });
+  assert.equal(output.items.length, 50);
+  assert.equal(output.more_items, 70);
+  assert.match(output.help.join("\n"), /--search/);
+});
+
+test("libraries help documents the command and the directory", () => {
+  const help = getCommandHelp("libraries");
+  assert.match(help, /lavish-axi libraries \[--search <text>\] \[--library <id>\]/);
+  assert.match(help, /excalidraw-libraries/);
+  assert.equal(normalizeArgv(["libraries"])[0], "libraries");
+});
+
+test("design output owns the library icon directive and the diagram playbook points at it", () => {
+  const icons = createDesignOutput().whiteboard_tooling.library_icons;
+  assert.match(icons.use_when, /lavish-axi libraries/);
+  assert.equal(icons.syntax, "%% lavish-icon <node-id> <library-id>/<item name>");
+  assert.match(icons.example, /^flowchart /);
+  assert.match(icons.example, /%% lavish-icon api /);
+  assert.match(icons.notes, /plain node/);
+  assert.match(icons.notes, /Added library item/);
+
+  const diagram = JSON.stringify(createPlaybookOutput(["diagram"]));
+  assert.match(diagram, /whiteboard_tooling\.library_icons/);
+  assert.doesNotMatch(diagram, /%% lavish-icon/, "the syntax has one owner surface");
+  assert.doesNotMatch(JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })), /lavish-icon|libraries/);
 });

@@ -178,6 +178,12 @@ const warningsSelectAll = /** @type {HTMLInputElement} */ (document.getElementBy
 const warningsSelected = /** @type {HTMLSpanElement} */ (document.getElementById("warningsSelected"));
 const warningsList = /** @type {HTMLDivElement} */ (document.getElementById("warningsList"));
 const warningsQueueButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsQueueButton"));
+const revisionsWrap = /** @type {HTMLDivElement} */ (document.getElementById("revisionsWrap"));
+const revisionsButton = /** @type {HTMLButtonElement} */ (document.getElementById("revisionsButton"));
+const revisionsCount = /** @type {HTMLSpanElement} */ (document.getElementById("revisionsCount"));
+const revisionsDrawer = /** @type {HTMLDivElement} */ (document.getElementById("revisionsDrawer"));
+const revisionsSummary = /** @type {HTMLParagraphElement} */ (document.getElementById("revisionsSummary"));
+const revisionsList = /** @type {HTMLDivElement} */ (document.getElementById("revisionsList"));
 const sendHint = /** @type {HTMLDivElement} */ (document.getElementById("sendHint"));
 const whiteboardOverlay = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardOverlay"));
 const whiteboardFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("whiteboardFrame"));
@@ -187,6 +193,9 @@ const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-arti
 
 const queued = loadQueuedPrompts();
 let annotation = true;
+// Page defaults follow artifact loads until the reviewer explicitly chooses a mode.
+let annotationOverridden = false;
+let annotationDefaultReceived = false;
 let ended = false;
 let agentPresence = "waiting";
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
@@ -198,6 +207,16 @@ const layoutGateMaxHoldMs =
 let chromeOutdatedReason = "";
 let chromeOutdatedGeneration = 0;
 let outdatedReloadInFlight = false;
+// The live-event socket reconnects forever on a 5s cap. Silence there is indistinguishable from a
+// healthy idle stream, so a page whose server has gone away keeps rendering its last state and
+// tells the user nothing until they reload into a connection error. Past this many consecutive
+// failures the banner says so, with the health-probed reload the banner already offers.
+const LIVE_EVENT_UNREACHABLE_FAILURES = 5;
+let liveEventFailures = 0;
+// Only a banner this path raised may be hidden by this path: a `chrome-outdated` event means the
+// server was replaced, which a reconnect does not disprove.
+let unreachableBannerOwned = false;
+let unreachableDismissed = false;
 /** @type {{ selector: string, revision: number } | null} */
 let unrestorableDraftMiss = null;
 let retiredDrafts = loadRetiredDrafts();
@@ -245,6 +264,12 @@ let terminalSubmission =
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendAcknowledgementTimer;
 let lastScroll = { x: 0, y: 0 };
+// The queued note open for editing in the panel, by prompt identity, and its unsaved words.
+let editingPromptId = "";
+let editingDraft = "";
+let editFocusPending = false;
+// The selector list last told to the artifact, so a render that changes nothing stays quiet.
+let postedQueuedAnchors = "[]";
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
 // it as it changes and the chrome replays it once the new document is up. It is persisted per
@@ -470,6 +495,8 @@ function persistTerminalReservation(reserved) {
 
 const REMOVE_ICON_SVG =
   '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const EDIT_ICON_SVG =
+  '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M6.5 1.5L8.5 3.5L3.5 8.5H1.5V6.5L6.5 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
 const ANCHOR_EXCERPT_MAX = 120;
 const ANCHOR_SELECTOR_MAX = 512;
 const ANCHOR_LABEL_MAX = 40;
@@ -571,20 +598,48 @@ function userBubbleTextHtml(entry, text) {
 }
 
 // A queued note is the user bubble in its not-yet-sent state: dashed, labelled Queued (Sending
-// while its batch is in flight), and removable until then. It settles in place as a sent bubble
-// once the server's transcript carries it, so nothing moves between regions.
+// while its batch is in flight), and editable and removable until then. It settles in place as a
+// sent bubble once the server's transcript carries it, so nothing moves between regions.
 function queuedBubbleHtml(prompt, index) {
   const sending = isPromptSending(prompt);
+  if (!sending && editingPromptId && promptIdentity(prompt) === editingPromptId) {
+    return queuedEditorHtml(prompt, index);
+  }
   return (
-    '<div class="bubble user queued"><small>' +
+    '<div class="bubble user queued" data-index="' +
+    index +
+    '"><small>' +
     (sending ? "Sending\u2026" : "Queued") +
-    ' <button class="queued-remove" type="button" aria-label="Remove queued prompt" data-index="' +
+    ' <button class="queued-edit" type="button" aria-label="Edit queued prompt" data-index="' +
+    index +
+    '">' +
+    EDIT_ICON_SVG +
+    '</button><button class="queued-remove" type="button" aria-label="Remove queued prompt" data-index="' +
     index +
     '">' +
     REMOVE_ICON_SVG +
     "</button></small>" +
     anchorHtml(promptAnchor(prompt)) +
     userBubbleTextHtml(prompt, prompt.prompt) +
+    bubbleAttachmentsHtml(prompt) +
+    "</div>"
+  );
+}
+
+// The same bubble while its words are being revised. The anchor and images stay as they were:
+// an edit changes what the note says, not what it points at.
+function queuedEditorHtml(prompt, index) {
+  return (
+    '<div class="bubble user queued editing" data-index="' +
+    index +
+    '"><small>Editing</small>' +
+    anchorHtml(promptAnchor(prompt)) +
+    '<textarea class="queued-edit-input" aria-label="Edit queued prompt" data-index="' +
+    index +
+    '">' +
+    escapeHtml(editingDraft) +
+    '</textarea><div class="queued-edit-actions"><button class="queued-edit-cancel" type="button">Cancel</button>' +
+    '<button class="queued-edit-save" type="button">Save</button></div>' +
     bubbleAttachmentsHtml(prompt) +
     "</div>"
   );
@@ -608,6 +663,23 @@ function isPromptSending(prompt) {
 }
 
 function render() {
+  const editing = editingPromptId ? queued.find((prompt) => promptIdentity(prompt) === editingPromptId) : null;
+  // A note that left the queue or started sending takes its editor with it.
+  if (editingPromptId && (!editing || !isPromptEditable(editing))) endQueuedEdit();
+  const keepEditFocus = editFocusPending || queuedLog.contains(document.activeElement);
+  // A re-render while the reviewer is typing keeps their caret and scroll; only a freshly opened
+  // edit starts at the end of its words.
+  const previousInput = /** @type {HTMLTextAreaElement | null} */ (queuedLog.querySelector(".queued-edit-input"));
+  const caret =
+    !editFocusPending && previousInput && previousInput === document.activeElement
+      ? {
+          start: previousInput.selectionStart,
+          end: previousInput.selectionEnd,
+          direction: previousInput.selectionDirection,
+          scrollTop: previousInput.scrollTop,
+        }
+      : null;
+  editFocusPending = false;
   queuedLog.innerHTML = queued.map((prompt, index) => queuedBubbleHtml(prompt, index)).join("");
 
   for (const button of queuedLog.querySelectorAll(".queued-remove")) {
@@ -616,6 +688,23 @@ function render() {
     removeButton.disabled = terminalSubmission !== null || isPromptSending(prompt);
     removeButton.addEventListener("click", (event) => removeQueuedPrompt(Number(removeButton.dataset.index), event));
   }
+  for (const button of queuedLog.querySelectorAll(".queued-edit")) {
+    const editButton = /** @type {HTMLButtonElement} */ (button);
+    editButton.disabled = !isPromptEditable(queued[Number(editButton.dataset.index)]);
+  }
+  if (editingPromptId && keepEditFocus) {
+    const input = /** @type {HTMLTextAreaElement | null} */ (queuedLog.querySelector(".queued-edit-input"));
+    if (input) {
+      input.focus();
+      if (caret) {
+        input.setSelectionRange?.(caret.start, caret.end, caret.direction);
+        input.scrollTop = caret.scrollTop;
+      } else {
+        input.setSelectionRange?.(input.value.length, input.value.length);
+      }
+    }
+  }
+  postQueuedAnchors();
   updateSendState();
   scrollPanelToBottom();
   renderSheetSummary();
@@ -826,8 +915,73 @@ function chatBubbleHtml(entry) {
     "<small>You</small>" +
     anchorHtml(entry.anchor) +
     userBubbleTextHtml(entry, entry.text) +
-    bubbleAttachmentsHtml(entry)
+    bubbleAttachmentsHtml(entry) +
+    receiptHtml(entry)
   );
+}
+
+// Delivery receipt (docs/delivery-acks.md): the per-note view of what the server observed. Seen,
+// Working, and Done are stamps on the entry, so the row is derived from it on every render and
+// never tracked here. Before Seen, the row says why, from the presence the live stream reports.
+// The three steps are the emoji of the Telegram ack protocol the receipt mirrors (seen, working,
+// done); a step that has not happened is the same glyph dimmed, and every step carries its label
+// and time as `title` and `aria-label`, so hover and screen readers both say the word.
+const RECEIPT_EMOJI = { Seen: "\u{1F440}", Working: "\u{1F6E0}️", Done: "✅" };
+
+function receiptTime(at) {
+  const date = new Date(String(at));
+  return Number.isNaN(date.getTime())
+    ? String(at)
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function receiptStepHtml(label, at) {
+  const ticked = Boolean(at);
+  const text = ticked ? label + " " + receiptTime(at) : label + ": not yet";
+  return (
+    '<span class="receipt-step' +
+    (ticked ? " is-done" : "") +
+    '" role="img" aria-label="' +
+    escapeHtml(text) +
+    '" title="' +
+    escapeHtml(text) +
+    '">' +
+    RECEIPT_EMOJI[label] +
+    "</span>"
+  );
+}
+
+// Every branch must be true where it is shown: `waiting` is no poll at all, `listening` is a poll
+// that will take the note within milliseconds, and `working` or an external listener is an agent
+// whose next poll will take it.
+function receiptNoteText() {
+  if (agentPresence === "waiting") return "No agent is listening";
+  if (agentPresence === "listening") return "Delivering";
+  return "Agent is busy; delivered on its next poll";
+}
+
+// A transcript entry from before receipts existed (`receipt: "none"`, marked by the server once at
+// load) gets no row: nothing was ever observed about it, and an empty row would read as "never seen".
+function hasReceipt(entry) {
+  return Boolean(entry) && entry.receipt !== "none";
+}
+
+function receiptHtml(entry) {
+  if (!hasReceipt(entry)) return "";
+  return (
+    '<div class="receipt">' +
+    receiptStepHtml("Seen", entry.delivered_at) +
+    receiptStepHtml("Working", entry.working_at) +
+    receiptStepHtml("Done", entry.done_at) +
+    (entry.delivered_at ? "" : '<span class="receipt-note">' + escapeHtml(receiptNoteText()) + "</span>") +
+    "</div>"
+  );
+}
+
+// Only the pre-Seen line names the live presence, so a presence change rewrites that line alone.
+// Rebuilding the bubble would also rebuild its thumbnails and undo an "Image expired" placeholder.
+function refreshUnseenReceipts() {
+  for (const note of chatLog.querySelectorAll(".receipt-note")) note.textContent = receiptNoteText();
 }
 
 function addChat(entry, shouldScroll = true) {
@@ -978,12 +1132,15 @@ function syncChat(chat, revision) {
 }
 
 function setAgentPresence(state) {
-  agentPresence = state === "listening" || state === "working" ? state : "waiting";
+  agentPresence = state === "listening" || state === "external" || state === "working" ? state : "waiting";
   updateSendState();
   renderSheetSummary();
+  refreshUnseenReceipts();
   if (presenceBanner) presenceBanner.hidden = ended || agentPresence !== "waiting";
 
-  if (agentPresence !== "working") {
+  // A supervisor-owned process-only listener is busy on the agent's behalf. It must not make the
+  // composer look like an idle captain turn while the owning agent is offline.
+  if (agentPresence !== "working" && agentPresence !== "external") {
     if (workingBubble) workingBubble.remove();
     workingBubble = null;
     return;
@@ -1042,6 +1199,7 @@ function setReviewState(state) {
 }
 
 function hasUnsentDraft() {
+  if (editingPromptId) return true;
   return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
 }
 
@@ -1090,7 +1248,7 @@ function renderRetiredDraft(text, stored = true) {
   const el = document.createElement("div");
   el.className = "bubble note";
   el.innerHTML =
-    "<small>Unsent annotation</small><div>The element this note was attached to is no longer in the artifact, so Lavish could not reopen the card. Your text is kept here:</div>" +
+    "<small>Unsent annotation</small><div>The artifact removed or replaced what this note was attached to, so Lavish could not keep it open. Your text is kept here:</div>" +
     '<div class="note-draft">' +
     escapeHtml(text) +
     "</div>" +
@@ -1199,6 +1357,7 @@ function sheetSummary() {
   }
   if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true };
   if (agentPresence === "working") return { text: "Agent is working…", accent: false, unread: false };
+  if (agentPresence === "external") return { text: "External listener active", accent: false, unread: false };
   if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false };
   return { text: "Agent not listening", accent: false, unread: false };
 }
@@ -1319,16 +1478,149 @@ function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+function isPromptEditable(prompt) {
+  return Boolean(prompt) && !terminalSubmission && !isPromptSending(prompt);
+}
+
+function editQueuedPrompt(index, { reveal = true } = {}) {
+  const prompt = queued[index];
+  if (ended || !isPromptEditable(prompt)) return;
+  const id = promptIdentity(prompt);
+  if (!id || id === editingPromptId) return;
+  // Moving to another note keeps what was typed into the first, the way leaving a field does.
+  commitQueuedEdit();
+  editingPromptId = id;
+  editingDraft = String(prompt.prompt || "");
+  editFocusPending = true;
+  if (isMobileSheet()) setSheetOpen(true);
+  render();
+  if (reveal && prompt.selector) postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector) });
+}
+
+function endQueuedEdit() {
+  editingPromptId = "";
+  editingDraft = "";
+}
+
+// Writes the open edit into its note without rendering. Returns whether the queue changed. A note
+// cleared of words and images is removed, as if its remove control had been used.
+function commitQueuedEdit() {
+  if (!editingPromptId) return false;
+  const index = queued.findIndex((prompt) => promptIdentity(prompt) === editingPromptId);
+  const text = editingDraft.trim();
+  endQueuedEdit();
+  const prompt = queued[index];
+  if (!isPromptEditable(prompt)) return false;
+  if (!text && !attachmentCount(prompt)) {
+    queued.splice(index, 1);
+    afterQueuedPromptRemoved();
+  } else {
+    // In place, not replaced: the send bookkeeping tracks notes by object identity.
+    prompt.prompt = text;
+    persistQueuedPrompts();
+  }
+  return true;
+}
+
+function saveQueuedEdit() {
+  commitQueuedEdit();
+  render();
+}
+
+function cancelQueuedEdit() {
+  endQueuedEdit();
+  render();
+}
+
+// A click on an element the artifact knows carries a queued note. The artifact names only the
+// selector, so the most a forged message can do is open one of the user's own notes for editing.
+function editQueuedAnchor(selector) {
+  if (!selector) return;
+  for (let index = queued.length - 1; index >= 0; index--) {
+    if (isElementAnchoredPrompt(queued[index]) && queuedAnchorSelectorsOf(queued[index]).includes(selector)) {
+      if (isPromptEditable(queued[index])) {
+        editQueuedPrompt(index, { reveal: false });
+        return;
+      }
+      break;
+    }
+  }
+  // The note is already on its way, or gone: the click still deserves the card it would have had.
+  postToFrame({ type: "lavish:annotateElement", selector });
+}
+
+// Notes that point at a whole element, cell, or diagram node, which a later click on that same
+// target can find again. A text selection's note is about the words, not the element around them.
+function isElementAnchoredPrompt(prompt) {
+  const kind = promptAnchor(prompt)?.kind;
+  return Boolean(prompt.selector) && (kind === "element" || kind === "cell" || kind === "node");
+}
+
+// A diagram node is one target however deep the click lands, so its note answers to the node's
+// own selector as well as the clicked element's. Other notes name only the exact element.
+function queuedAnchorSelectorsOf(prompt) {
+  const target = prompt.target && typeof prompt.target === "object" ? prompt.target : null;
+  const whole = target?.type === "mermaid-node" ? String(target.selector || "") : "";
+  return whole ? [String(prompt.selector), whole] : [String(prompt.selector)];
+}
+
+// Tells the artifact which element selectors carry a queued note. Only selectors cross into the
+// frame: the artifact is agent-authored, and the note text stays in the chrome.
+function postQueuedAnchors(force = false) {
+  const selectors = [
+    ...new Set(queued.filter((prompt) => isElementAnchoredPrompt(prompt)).flatMap(queuedAnchorSelectorsOf)),
+  ];
+  const signature = JSON.stringify(selectors);
+  if (!force && signature === postedQueuedAnchors) return;
+  postedQueuedAnchors = signature;
+  postToFrame({ type: "lavish:queuedAnchors", selectors });
+}
+
+queuedLog.addEventListener("click", (event) => {
+  const target = /** @type {Element | null} */ (event.target);
+  if (!target || typeof target.closest !== "function") return;
+  // The remove control owns its own click, and an editor's textarea is for typing.
+  if (target.closest(".queued-remove") || target.closest(".queued-edit-input")) return;
+  if (target.closest(".queued-edit-save")) return saveQueuedEdit();
+  if (target.closest(".queued-edit-cancel")) return cancelQueuedEdit();
+  const bubble = /** @type {HTMLElement | null} */ (target.closest(".queued-edit") || target.closest(".bubble.queued"));
+  if (bubble) editQueuedPrompt(Number(bubble.dataset.index));
+});
+queuedLog.addEventListener("input", (event) => {
+  const target = /** @type {HTMLTextAreaElement | null} */ (event.target);
+  if (target && typeof target.closest === "function" && target.closest(".queued-edit-input")) {
+    editingDraft = String(target.value || "");
+  }
+});
+queuedLog.addEventListener("keydown", (event) => {
+  const target = /** @type {Element | null} */ (event.target);
+  if (!target || typeof target.closest !== "function" || !target.closest(".queued-edit-input")) return;
+  // The annotation card's keys: Enter keeps the words, Shift+Enter breaks the line.
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault();
+    event.stopPropagation();
+    saveQueuedEdit();
+  } else if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelQueuedEdit();
+  }
+});
+
 function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
   if (terminalSubmission || isPromptSending(queued[index])) return;
   queued.splice(index, 1);
+  afterQueuedPromptRemoved();
+  render();
+}
+
+function afterQueuedPromptRemoved() {
   persistQueuedPrompts();
   if (!queued.length) {
     clearSendAcknowledgementWarning();
     if (sendFailureOwner?.kind !== "preparation") clearPersistentSendFailure();
   }
-  render();
 }
 
 function promptQueueKey(prompt) {
@@ -1363,6 +1655,13 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
   if (queueKey) {
     const index = queued.findIndex((item) => promptQueueKey(item) === queueKey);
     if (index !== -1) {
+      // The replacement is the artifact's newer answer. Words typed against the old answer never
+      // move onto it; they are handed back to the reviewer instead.
+      if (editingPromptId && promptIdentity(queued[index]) === editingPromptId) {
+        const draft = editingDraft.trim();
+        endQueuedEdit();
+        if (draft !== String(queued[index].prompt || "").trim()) keepRetiredDraft(draft);
+      }
       queued[index] = prompt;
     } else {
       queued.push(prompt);
@@ -1641,6 +1940,8 @@ function sendQueued(endAfter) {
     return;
   }
   closeMenus();
+  // Send delivers what the panel shows, so an open edit is kept rather than sent stale.
+  if (commitQueuedEdit()) render();
 
   // A pending or failed chip holds back only the COMPOSER message (and an
   // explicit end, which would strand the chips) - queued annotation prompts
@@ -2418,6 +2719,265 @@ function revealWarning(warning) {
   postToFrame({ type: "lavish:revealElement", selector: warning.selector });
 }
 
+// ---------------------------------------------------------------------------
+// Revision legend
+//
+// The agent declares what it changed in the artifact HTML itself (a
+// `data-lavish-revisions` registry plus `data-lavish-revision` marks); the SDK
+// reads it and posts it here. The legend lives entirely in the chrome, so the
+// served artifact still matches the file on disk - Lavish never paints the
+// change indicator into the page. Reveal borrows the same transient marker the
+// layout-issues drawer uses, and only when the reader asks for it.
+
+// The payload crosses postMessage from a sandboxed frame rendering author
+// content, so it is untrusted here whatever built it. These bound what is
+// examined, not what is accepted: capping accepted rows alone would let a
+// registry of ten thousand records walk the whole array on the chrome's main
+// thread before yielding its handful of rows.
+// Server-owned, injected into the session JSON from src/artifact-revisions.js.
+// The swatch is presentation the chrome owes the reader, not something the
+// artifact gets a say in, so nothing about it is read from the message.
+const REVISION_PALETTE = (Array.isArray(sessionData.revisionPalette) ? sessionData.revisionPalette : []).filter(
+  (entry) => entry && /^#[0-9a-fA-F]{6}$/.test(String(entry.hex)),
+);
+const REVISION_LIMITS = {
+  // Derived from the server-injected palette (src/artifact-revisions.js) rather than a
+  // second hardcoded number, so the two can never drift; falls back to 6 only if the
+  // palette itself came through empty.
+  entries: REVISION_PALETTE.length > 0 ? REVISION_PALETTE.length : 6,
+  rawEntries: 256,
+  marks: 200,
+  rawMarks: 2000,
+  id: 60,
+  label: 80,
+  summary: 400,
+  timestamp: 40,
+  excerpt: 120,
+  selector: 400,
+};
+const REVISION_BORDER_STYLES = ["solid", "dashed", "dotted", "double"];
+
+/** @type {any[]} */
+let revisionEntries = [];
+/** @type {any[]} */
+let revisionMarks = [];
+/** @type {Map<string, number>} */
+const revisionRevealCursor = new Map();
+let revisionsDrawerOpen = false;
+
+// Display-only fields. Anything the legend merely shows can be shortened.
+function revisionText(value, max) {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  const text = String(value).trim();
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+// Identity fields, mirroring `exactRevisionText` in src/artifact-revisions.js.
+// The message is untrusted here, so shortening an id or a selector is worse
+// than dropping it: two distinct overlong ids collapse into one legend row, and
+// the first 400 characters of a long selector are a different valid selector
+// that Reveal would resolve to some other block.
+function revisionExact(value, max) {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  const text = String(value).trim();
+  return text.length > 0 && text.length <= max ? text : "";
+}
+
+function revisionPatternFill(pattern) {
+  if (pattern === "diagonal") return "repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 5px)";
+  if (pattern === "dots") return "radial-gradient(currentColor 1px, transparent 1px)";
+  return "";
+}
+
+// The swatch for a revision's position in the registry. Position is the only
+// thing the artifact influences, and it cannot repeat one: ids are deduplicated
+// before this runs, so each accepted revision gets a distinct index and
+// therefore a distinct swatch.
+function revisionPresentation(index) {
+  const entry = REVISION_PALETTE.length > 0 ? REVISION_PALETTE[index % REVISION_PALETTE.length] : null;
+  return {
+    color: entry ? String(entry.hex) : "#0072b2",
+    borderStyle: REVISION_BORDER_STYLES.includes(String(entry && entry.borderStyle))
+      ? String(entry.borderStyle)
+      : "solid",
+    pattern: revisionPatternFill(entry && entry.pattern),
+  };
+}
+
+// Only text crosses from the artifact into the legend, and it crosses as
+// textContent. Nothing the message carries reaches a style property.
+function normalizeRevisionMessage(msg) {
+  const rawRevisions = Array.isArray(msg && msg.revisions) ? msg.revisions : [];
+  const revisions = [];
+  const byId = new Map();
+  let examined = 0;
+  for (const raw of rawRevisions) {
+    if (examined >= REVISION_LIMITS.rawEntries || revisions.length >= REVISION_LIMITS.entries) break;
+    examined += 1;
+    if (!raw || typeof raw !== "object") continue;
+    const id = revisionExact(raw.id, REVISION_LIMITS.id);
+    if (!id || /\s/.test(id) || byId.has(id)) continue;
+    const entry = {
+      id,
+      label: revisionText(raw.label, REVISION_LIMITS.label) || id,
+      timestamp: revisionText(raw.timestamp, REVISION_LIMITS.timestamp),
+      summary: revisionText(raw.summary, REVISION_LIMITS.summary),
+      ...revisionPresentation(revisions.length),
+      marks: [],
+    };
+    byId.set(id, entry);
+    revisions.push(entry);
+  }
+
+  const rawMarks = Array.isArray(msg && msg.marks) ? msg.marks : [];
+  const marks = [];
+  examined = 0;
+  for (const raw of rawMarks) {
+    if (examined >= REVISION_LIMITS.rawMarks || marks.length >= REVISION_LIMITS.marks) break;
+    examined += 1;
+    if (!raw || typeof raw !== "object") continue;
+    const revisionId = revisionExact(raw.revision_id, REVISION_LIMITS.id);
+    const selector = revisionExact(raw.selector, REVISION_LIMITS.selector);
+    const owner = byId.get(revisionId);
+    if (!owner || !selector) continue;
+    const mark = {
+      revisionId,
+      selector,
+      tag: revisionText(raw.tag, 40).toLowerCase(),
+      excerpt: revisionText(raw.excerpt, REVISION_LIMITS.excerpt),
+    };
+    owner.marks.push(mark);
+    marks.push(mark);
+  }
+
+  return { revisions, marks };
+}
+
+function resetRevisionLegend() {
+  revisionEntries = [];
+  revisionMarks = [];
+  revisionRevealCursor.clear();
+  renderRevisionLegend();
+}
+
+function applyRevisionMessage(msg) {
+  const normalized = normalizeRevisionMessage(msg);
+  revisionEntries = normalized.revisions;
+  revisionMarks = normalized.marks;
+  for (const id of [...revisionRevealCursor.keys()]) {
+    if (!revisionEntries.some((entry) => entry.id === id)) revisionRevealCursor.delete(id);
+  }
+  renderRevisionLegend();
+}
+
+function revisionMarkSummary(entry) {
+  if (entry.marks.length === 0) return "no marked blocks";
+  return entry.marks.length === 1 ? "1 marked block" : entry.marks.length + " marked blocks";
+}
+
+function buildRevisionRow(entry) {
+  const row = document.createElement("div");
+  row.className = "revision-row";
+
+  const swatch = document.createElement("span");
+  swatch.className = "revision-swatch";
+  swatch.setAttribute("aria-hidden", "true");
+  swatch.style.color = entry.color;
+  swatch.style.borderColor = entry.color;
+  swatch.style.borderStyle = entry.borderStyle;
+  if (entry.pattern) swatch.style.backgroundImage = entry.pattern;
+  row.appendChild(swatch);
+
+  const body = document.createElement("div");
+  body.className = "revision-body";
+
+  const head = document.createElement("div");
+  head.className = "revision-head";
+  const label = document.createElement("span");
+  label.className = "revision-label";
+  label.textContent = entry.label;
+  head.appendChild(label);
+  if (entry.timestamp) {
+    const time = document.createElement("span");
+    time.className = "revision-time";
+    time.textContent = entry.timestamp;
+    head.appendChild(time);
+  }
+  body.appendChild(head);
+
+  if (entry.summary) {
+    const summary = document.createElement("p");
+    summary.className = "revision-summary";
+    summary.textContent = entry.summary;
+    body.appendChild(summary);
+  }
+
+  const foot = document.createElement("div");
+  foot.className = "revision-foot";
+  const count = document.createElement("span");
+  count.className = "revision-marks";
+  count.textContent = revisionMarkSummary(entry);
+  foot.appendChild(count);
+  if (entry.marks.length > 0) {
+    const reveal = document.createElement("button");
+    reveal.type = "button";
+    reveal.className = "revision-reveal";
+    const position = (revisionRevealCursor.get(entry.id) || 0) % entry.marks.length;
+    reveal.textContent = entry.marks.length === 1 ? "Reveal" : "Reveal " + (position + 1) + "/" + entry.marks.length;
+    reveal.setAttribute("aria-label", "Reveal the next block changed in " + entry.label);
+    // Bound per row rather than delegated from the list: the rows are rebuilt
+    // on every render anyway, so there is no listener to accumulate, and the
+    // button carries the revision it belongs to without a data attribute round
+    // trip through the DOM.
+    reveal.onclick = () => revealNextRevisionMark(entry.id);
+    foot.appendChild(reveal);
+  }
+  body.appendChild(foot);
+
+  row.appendChild(body);
+  return row;
+}
+
+function renderRevisionLegend() {
+  if (!revisionsWrap) return;
+  const count = revisionEntries.length;
+  revisionsWrap.hidden = count === 0 || ended;
+  if (revisionsWrap.hidden && revisionsDrawerOpen) setRevisionsDrawerOpen(false);
+  revisionsCount.textContent = String(count);
+  revisionsButton.setAttribute("aria-label", count === 1 ? "1 revision" : count + " revisions");
+  revisionsSummary.textContent =
+    (count === 1 ? "1 revision" : count + " revisions") +
+    " · " +
+    (revisionMarks.length === 1 ? "1 marked block" : revisionMarks.length + " marked blocks");
+
+  revisionsList.replaceChildren(...revisionEntries.map(buildRevisionRow));
+}
+
+function setRevisionsDrawerOpen(open) {
+  revisionsDrawerOpen = open && !ended;
+  revisionsDrawer.hidden = !revisionsDrawerOpen;
+  revisionsButton.setAttribute("aria-expanded", String(revisionsDrawerOpen));
+  if (revisionsDrawerOpen) closeMenus();
+}
+
+function closeRevisionsDrawer({ restoreFocus = false } = {}) {
+  if (!revisionsDrawerOpen) return;
+  setRevisionsDrawerOpen(false);
+  if (restoreFocus) revisionsButton.focus();
+}
+
+// Step through a revision's marked blocks one at a time. The existing reveal
+// path flashes one element and clears the previous marker, so a revision that
+// touched several blocks is walked rather than lit up all at once.
+function revealNextRevisionMark(id) {
+  const entry = revisionEntries.find((candidate) => candidate.id === id);
+  if (!entry || entry.marks.length === 0) return;
+  const position = (revisionRevealCursor.get(id) || 0) % entry.marks.length;
+  postToFrame({ type: "lavish:revealElement", selector: entry.marks[position].selector });
+  revisionRevealCursor.set(id, (position + 1) % entry.marks.length);
+  renderRevisionLegend();
+}
+
 async function dismissWarning(id) {
   try {
     const response = await fetch("/api/" + key + "/layout-warnings/dismiss", {
@@ -2517,6 +3077,8 @@ function markSessionEnded() {
   closeShareDialog();
   closeWarningsDrawer();
   renderWarnings();
+  closeRevisionsDrawer();
+  renderRevisionLegend();
   closeWhiteboard();
   annotationSwitch.disabled = true;
   moreButton.disabled = true;
@@ -2824,6 +3386,11 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   clearTimeout(artifactSilenceTimer);
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
+    // The next document reports its own registry once it loads; until then the
+    // previous revision's legend would point at blocks that may no longer exist.
+    // Only clear it here, right before the frame is actually replaced - a preserved
+    // load (superseded/out-of-order/exhausted retries below) must leave it intact.
+    resetRevisionLegend();
     startLayoutGateCycle();
     const currentSrc = frame.src || "about:blank";
     frame.src = currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now();
@@ -2844,9 +3411,9 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
     return false;
   };
   // Keep whatever is on screen, then try again later. A begin-load can fail for reasons that
-  // clear on their own - the shared server is mid-restart, or its handoff map was reset by that
-  // restart and this chrome's one re-handshake landed in the same outage window. Giving up here
-  // is what leaves the review permanently unloaded.
+  // clear on their own - the shared server is mid-restart, or a handoff no begin-load had yet
+  // persisted was lost with that restart and this chrome's one re-handshake landed in the same
+  // outage window. Giving up here is what leaves the review permanently unloaded.
   const recoverLater = () => {
     preservePreviousLoad();
     if (requestSequence !== artifactLoadRequestSequence || ended) return false;
@@ -2937,9 +3504,13 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   artifactLoadRevision = revision;
   artifactLoadToken = token;
   artifactSpokeToken = "";
+  annotationDefaultReceived = false;
   inlineWhiteboardChannels.clear();
   setHandoffSuperseded(false);
   startLayoutGateCycle();
+  // The next document reports its own registry once it loads; until then the
+  // previous revision's legend would point at blocks that may no longer exist.
+  resetRevisionLegend();
   frame.src = artifactFrameSrcForLoad({ revision, token });
   return true;
 }
@@ -3007,11 +3578,32 @@ function postToWhiteboard(index, placement, message) {
   else postToInlineWhiteboard(index, message);
 }
 
-async function fetchMermaidSources() {
+async function fetchMermaidSourcesData() {
   const response = await fetch("/api/" + key + "/mermaid-sources");
   if (!response.ok) throw new Error("could not read the artifact's Mermaid sources");
   const data = await response.json();
-  return Array.isArray(data.sources) ? data.sources : [];
+  return {
+    sources: Array.isArray(data.sources) ? data.sources : [],
+    librariesVersion: typeof data.libraries_version === "string" ? data.libraries_version : "",
+  };
+}
+
+async function fetchMermaidSources() {
+  return (await fetchMermaidSourcesData()).sources;
+}
+
+// Fetched per init so a frame converts with the libraries its source hash was
+// computed from; a failed fetch resolves null and the frame converts without
+// libraries.
+function fetchWhiteboardLibraries() {
+  return fetch("/api/whiteboard-libraries")
+    .then((response) => (response.ok ? response.json() : null))
+    .then((data) =>
+      Array.isArray(data?.libraries)
+        ? { libraries: data.libraries, version: typeof data.version === "string" ? data.version : "" }
+        : null,
+    )
+    .catch(() => null);
 }
 
 async function authenticateWhiteboardChannel(token) {
@@ -3040,11 +3632,17 @@ function whiteboardRecord(index) {
 
 async function handleWhiteboardReady(index, mode, isCurrent) {
   try {
-    const sources = await fetchMermaidSources();
+    const librariesRequest = fetchWhiteboardLibraries();
+    const { sources, librariesVersion } = await fetchMermaidSourcesData();
     const source = sources.find((item) => item.index === index);
     if (!source) throw new Error("this diagram's Mermaid source was not found in the artifact file");
     const savedResponse = await fetch("/api/" + key + "/whiteboard/" + index);
     const saved = savedResponse.ok ? (await savedResponse.json()).whiteboard : null;
+    const librariesData = await librariesRequest;
+    // A library file that changed between the two requests leaves the frame
+    // with libraries that do not match this source hash: treat that like a
+    // failed fetch, so the conversion's autosave is held.
+    const librariesMatch = Boolean(librariesData) && (!librariesVersion || librariesData.version === librariesVersion);
     const record = whiteboardRecord(index);
     record.source = String(source.source || "");
     record.sourceHash = String(source.hash || "");
@@ -3057,6 +3655,8 @@ async function handleWhiteboardReady(index, mode, isCurrent) {
       source: record.source,
       sourceHash: record.sourceHash,
       saved,
+      libraries: librariesData ? librariesData.libraries : [],
+      librariesUnavailable: !librariesMatch,
       theme: whiteboardTheme(),
     });
     return true;
@@ -3646,6 +4246,13 @@ window.addEventListener("message", (event) => {
     return;
   }
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
+  if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean" && !annotationDefaultReceived) {
+    annotationDefaultReceived = true;
+    if (!annotationOverridden && !ended && !terminalSubmission) annotation = msg.enabled;
+    annotationSwitch.setAttribute("aria-pressed", String(annotation && !ended));
+    // Reconcile even if frame load replayed the old mode before this report arrived.
+    postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
+  }
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
     // Queued from inside the artifact, where the closed dock is the only sign it landed.
@@ -3675,7 +4282,9 @@ window.addEventListener("message", (event) => {
   // chrome cannot see every live reference, so reclamation is the sweeper's job.
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
+  if (msg.type === "lavish:revisions") applyRevisionMessage(msg);
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
+  if (msg.type === "lavish:editQueuedAnchor") editQueuedAnchor(String(msg.selector || ""));
 });
 
 // The sandboxed artifact iframe can't reach the loopback server (opaque origin),
@@ -3807,6 +4416,7 @@ loadFrame();
 
 function toggleAnnotationMode() {
   if (ended || terminalSubmission) return;
+  annotationOverridden = true;
   annotation = !annotation;
   annotationSwitch.setAttribute("aria-pressed", String(annotation));
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
@@ -3818,9 +4428,14 @@ sendButton.onclick = () => sendQueued(false);
 sendAndEndButton.onclick = () => sendQueued(true);
 moreButton.onclick = () => {
   closeWarningsDrawer();
+  closeRevisionsDrawer();
   toggleMenu(moreButton, moreMenu);
 };
 warningsButton.onclick = toggleWarningsDrawer;
+revisionsButton.onclick = () => {
+  closeWarningsDrawer();
+  setRevisionsDrawerOpen(revisionsDrawer.hidden);
+};
 warningsSelectAll.onchange = toggleSelectAllWarnings;
 warningsQueueButton.onclick = queueSelectedWarningFixes;
 chatAttachButton.onclick = () => chatAttachInput.click();
@@ -3906,7 +4521,7 @@ chatAttachments.addEventListener("click", (event) => {
   if (retry) chatAttachmentController.retry(String(retry.dataset.chatAttachmentRetry || ""));
 });
 chatInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     sendQueued(false);
   }
@@ -3935,17 +4550,32 @@ endButton.onclick = () => {
 };
 handoffTakeoverButton.onclick = () => location.reload();
 if (outdatedReloadButton) outdatedReloadButton.onclick = () => reloadChromeForOutdatedBanner();
-if (outdatedDismissButton) outdatedDismissButton.onclick = () => setChromeOutdated(false);
+if (outdatedDismissButton) {
+  outdatedDismissButton.onclick = () => {
+    // A dismissed unreachable banner stays dismissed until the stream actually recovers; without
+    // this the next failed reconnect puts it straight back on screen.
+    if (unreachableBannerOwned) {
+      unreachableBannerOwned = false;
+      unreachableDismissed = true;
+    }
+    setChromeOutdated(false);
+  };
+}
 document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
   if (warningsDrawerOpen && !warningsWrap.contains(target)) closeWarningsDrawer();
+  if (revisionsDrawerOpen && !revisionsWrap.contains(target)) closeRevisionsDrawer();
 });
 // A non-modal popover closes when focus leaves it, so keyboard users are never stranded inside a
 // panel they cannot see the end of.
 warningsWrap.addEventListener("focusout", (event) => {
   const next = /** @type {Node | null} */ (event.relatedTarget);
   if (warningsDrawerOpen && next && !warningsWrap.contains(next)) closeWarningsDrawer();
+});
+revisionsWrap.addEventListener("focusout", (event) => {
+  const next = /** @type {Node | null} */ (event.relatedTarget);
+  if (revisionsDrawerOpen && next && !revisionsWrap.contains(next)) closeRevisionsDrawer();
 });
 whiteboardCloseButton.onclick = closeWhiteboard;
 document.addEventListener("keydown", (event) => {
@@ -3954,6 +4584,8 @@ document.addEventListener("keydown", (event) => {
       closeWhiteboard();
     } else if (!shareDialog.hidden) {
       closeShareDialog();
+    } else if (revisionsDrawerOpen) {
+      closeRevisionsDrawer({ restoreFocus: true });
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
     } else if (!moreMenu.hidden) {
@@ -3982,6 +4614,7 @@ frame.addEventListener("load", () => {
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });
+  postQueuedAnchors(true);
   if (overlayIndex !== null) {
     inlineWhiteboardChannels.delete(overlayIndex);
     postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: overlayIndex });
@@ -3998,6 +4631,12 @@ function connectLiveEvents() {
   const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
   socket.addEventListener("open", () => {
     eventReconnectDelayMs = 500;
+    liveEventFailures = 0;
+    unreachableDismissed = false;
+    if (unreachableBannerOwned) {
+      unreachableBannerOwned = false;
+      setChromeOutdated(false);
+    }
     refreshLayoutWarnings();
   });
   socket.addEventListener("message", (message) => {
@@ -4009,9 +4648,21 @@ function connectLiveEvents() {
     }
   });
   socket.addEventListener("close", () => {
+    liveEventFailures += 1;
+    noteLiveEventsUnreachable();
     setTimeout(connectLiveEvents, eventReconnectDelayMs);
     eventReconnectDelayMs = Math.min(eventReconnectDelayMs * 2, 5000);
   });
+}
+
+// Raise the existing banner once the stream has been down long enough to mean it, and never
+// against an ended session or a banner someone else owns. Reconnecting retires it.
+function noteLiveEventsUnreachable() {
+  if (liveEventFailures < LIVE_EVENT_UNREACHABLE_FAILURES) return;
+  if (ended || unreachableDismissed || unreachableBannerOwned) return;
+  if (outdatedBanner && !outdatedBanner.hidden) return;
+  unreachableBannerOwned = true;
+  setChromeOutdated(true, "");
 }
 
 events.set("reload", () => {
@@ -4037,7 +4688,7 @@ events.set("chat-sync", (data) => {
   rememberChatAckIds(data.ack_ids);
   syncChat(data.chat || [], data.chat_revision);
 });
-events.set("agent-presence", (data) => setAgentPresence(data.state));
+events.set("agent-presence", (data) => setAgentPresence(data.mode === "external-listener" ? "external" : data.state));
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());
 connectLiveEvents();

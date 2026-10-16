@@ -1,5 +1,6 @@
 /* global CSS, Element, MutationObserver, ResizeObserver, document, getComputedStyle, parent, window */
 
+import { readArtifactRevisions } from "./artifact-revisions.js";
 import * as mermaidHelpers from "./mermaid-node.js";
 import { tableCellTarget } from "./table-cell.js";
 
@@ -114,13 +115,21 @@ export function deriveLavishQueueKey(element, options = {}) {
 }
 
 export function isNativeInteractiveControl(el) {
-  return !!(
-    el &&
-    el.closest &&
+  if (!el || !el.closest) return false;
+  if (
     el.closest(
       "button,input,select,textarea,option,optgroup,label,summary,[contenteditable]:not([contenteditable='false'])",
     )
+  ) {
+    return true;
+  }
+  const widget = el.closest(
+    "[role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox']," +
+      "[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']",
   );
+  if (!widget) return false;
+  const link = el.closest("a[href]");
+  return !(link && widget.contains(link));
 }
 
 // A severe text failure needs rendered-fragment proof. Scroll dimensions include harmless font
@@ -463,10 +472,16 @@ export function createArtifactSdk(
   function postArtifactMessage(type, payload = {}) {
     parent.postMessage({ type, ...payload, artifact_load_token: String(artifactLoadToken || "") }, "*");
   }
-  let annotationMode = true;
+  // Only an explicit "off" declaration on the root opts out; absent or unknown
+  // values keep the artifact annotatable by default.
+  const initialAnnotationMode = document.documentElement.getAttribute("data-lavish-annotate") !== "off";
+  let annotationMode = initialAnnotationMode;
   let hovered = null;
   let selected = null;
   let ignoreNextClick = false;
+  // Selectors the chrome reports as carrying a queued note. A click on one opens that note in the
+  // chrome's panel instead of a fresh card; the note's words never enter this document.
+  let queuedAnchorSelectors = new Set();
   let shadow = null;
   let counter = 0;
   const ids = new WeakMap();
@@ -1145,9 +1160,9 @@ export function createArtifactSdk(
   }
 
   // Native interactive controls (radios, checkboxes, inputs, selects, buttons,
-  // labels, disclosure summaries, editable regions) should toggle/focus/type
-  // natively instead of triggering annotation, just like elements marked with
-  // data-lavish-action.
+  // labels, disclosure summaries, editable regions, interactive ARIA widgets)
+  // should toggle/focus/type natively instead of triggering annotation, just
+  // like elements marked with data-lavish-action.
   function isInteractiveControl(el) {
     return isNativeInteractive(el);
   }
@@ -1189,7 +1204,7 @@ export function createArtifactSdk(
       style = document.createElement("style");
       style.id = "lavish-cursor-style";
       style.textContent =
-        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
+        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']):not(a[href])),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']):not(a[href])) *{cursor:pointer!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']) a[href]),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']) a[href]) *{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
       document.head.appendChild(style);
     }
     if (!annotationMode && style) style.remove();
@@ -2222,6 +2237,7 @@ export function createArtifactSdk(
   }
 
   function closeCard() {
+    const hadCard = activeCardContext !== null;
     activeCardContext = null;
     if (activeAttachments) {
       activeAttachments.destroy();
@@ -2235,7 +2251,15 @@ export function createArtifactSdk(
     hovered = null;
     clearTextHighlight();
     selected = null;
-    scheduleReviewStateReport();
+    // Only a card that was open has state to retire. Reporting `card: null` with nothing open
+    // (a page declaring data-lavish-annotate="off" closes at boot) would overwrite a stored
+    // draft the chrome has not replayed yet, because that replay waits for the frame's load event.
+    if (hadCard) scheduleReviewStateReport();
+  }
+
+  // Apple platforms use Cmd where others use Ctrl, both for shortcut hints and link-follow clicks.
+  function isApplePlatform() {
+    return /Mac|iP(hone|ad|od)/.test(navigator.platform);
   }
 
   function showAnnotationCard(target, options = {}) {
@@ -2283,7 +2307,7 @@ export function createArtifactSdk(
           : c.tag === "mermaid-node"
             ? "Tell the agent what to change about this diagram node..."
             : "Tell the agent what to change about this element...";
-    const sendNowHint = /Mac|iP(hone|ad|od)/.test(navigator.platform) ? "⌘" : "Ctrl";
+    const sendNowHint = isApplePlatform() ? "⌘" : "Ctrl";
     card.innerHTML =
       '<div class="lavish-heading">' +
       heading +
@@ -2411,13 +2435,14 @@ export function createArtifactSdk(
       tryQueue();
     };
     textarea.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      // WebKit fires compositionend before the IME-confirming keydown, leaving only keyCode 229 to mark it.
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         const sendNow = (event.ctrlKey || event.metaKey) && (!!textarea.value.trim() || attachments.hasReady());
         const queued = tryQueue();
         // postMessage delivery is ordered, so the queued prompt lands before the send.
         if (queued && sendNow) sendQueuedPrompts();
-      } else if (event.key === "Escape" && !event.isComposing) {
+      } else if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
         // Close only when there is nothing to lose; excludes isComposing since mid-IME text isn't in textarea.value yet.
         if (textarea.value.trim() || attachments.hasPending() || attachments.hasErrors() || attachments.hasReady())
           return;
@@ -2476,6 +2501,13 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
+    if (msg.type === "lavish:queuedAnchors") {
+      queuedAnchorSelectors = new Set(Array.isArray(msg.selectors) ? msg.selectors.map(String) : []);
+    }
+    if (msg.type === "lavish:annotateElement" && annotationMode) {
+      const target = safeQuerySelector(msg.selector);
+      if (target) showAnnotationCard(target);
+    }
   });
 
   // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
@@ -2586,10 +2618,30 @@ export function createArtifactSdk(
         isInteractiveControl(event.target)
       )
         return;
+      // Cmd-click (macOS) or Ctrl-click (elsewhere) on a link follows it (the browser opens a new
+      // tab) instead of annotating, so links stay usable without leaving annotate mode. Meta off
+      // macOS is the Super/Windows key, not a follow gesture, so it annotates like a plain click.
+      // Checked before the queued-note branch so the modifier always wins, and it clears a pending
+      // text-selection swallow so the next plain click is not eaten.
+      const followModifier = isApplePlatform() ? event.metaKey : event.ctrlKey;
+      if (followModifier && /** @type {Element} */ (event.target)?.closest?.("a[href]")) {
+        ignoreNextClick = false;
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       if (ignoreNextClick) {
         ignoreNextClick = false;
+        return;
+      }
+      // The clicked element's own selector, plus its diagram node's, so any click inside a node
+      // finds the node's note again. A table cell's note stays on the exact element clicked.
+      const clicked = queuedAnchorSelectors.size ? context(event.target) : null;
+      const node = clicked?.target?.type === "mermaid-node" ? clicked.target.selector : "";
+      const selector = [clicked?.selector, node].find((candidate) => candidate && queuedAnchorSelectors.has(candidate));
+      if (selector) {
+        closeCard();
+        postArtifactMessage("lavish:editQueuedAnchor", { selector });
         return;
       }
       showAnnotationCard(event.target);
@@ -2598,6 +2650,8 @@ export function createArtifactSdk(
   );
 
   setAnnotationMode(annotationMode);
+  // Report the page default once; subsequent mode changes belong to the chrome.
+  postArtifactMessage("lavish:annotationMode", { enabled: initialAnnotationMode });
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });
   } else {
@@ -2612,4 +2666,24 @@ export function createArtifactSdk(
   }
   const mermaidObserver = new MutationObserver(() => scheduleMermaidEnhance());
   mermaidObserver.observe(document.documentElement, { childList: true, subtree: true });
+
+  // Report the agent-declared revision registry so the chrome can offer its
+  // legend. Read-only: the SDK never marks up the page for it, because a
+  // highlight painted here would make the served artifact differ from the file
+  // opened without Lavish. The message is sent even when the artifact declares
+  // nothing, so a reload that removed the registry clears a stale legend.
+  function reportArtifactRevisions() {
+    let payload = { revisions: [], marks: [] };
+    try {
+      payload = readArtifactRevisions(document);
+    } catch {
+      // A malformed registry costs the reader a legend, never the review.
+    }
+    postArtifactMessage("lavish:revisions", payload);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", reportArtifactRevisions, { once: true });
+  } else {
+    reportArtifactRevisions();
+  }
 }

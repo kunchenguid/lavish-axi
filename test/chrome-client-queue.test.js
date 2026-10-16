@@ -17,7 +17,7 @@ const servedChromeIds = new Set(
   ),
 );
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
@@ -45,6 +45,12 @@ function publicPostedBody(body) {
 
 function assertPromptIdentity(id) {
   assert.match(String(id || ""), PROMPT_ID_RE);
+}
+
+// A sent user bubble ends with its delivery receipt (docs/delivery-acks.md). Tests about the
+// bubble's words, anchor, and thumbnails compare everything before it; the receipt has its own tests.
+function withoutReceipt(html) {
+  return String(html).replace(/<div class="receipt">[\s\S]*<\/div>$/, "");
 }
 
 function identicalProjectionNote(offset) {
@@ -140,7 +146,15 @@ async function createChromeHarness({
       type: "",
       className: "",
       value: "",
-      innerHTML: "",
+      html: "",
+      // Assigning innerHTML replaces the element's subtree, as the real DOM does.
+      get innerHTML() {
+        return this.html;
+      },
+      set innerHTML(value) {
+        this.html = String(value);
+        this.children = [];
+      },
       textContent: "",
       scrollTop: 0,
       scrollHeight: 0,
@@ -188,9 +202,31 @@ async function createChromeHarness({
             return close;
           });
         }
+        if (id === "queuedLog" && selector === ".queued-edit-input") {
+          // One textarea stands in for the editor across renders, mounted only while the log
+          // renders it, so a test can place the caret and watch whether a render moves it.
+          const editor = element("queued-edit-input");
+          const match = this.innerHTML.match(/class="queued-edit-input"[^>]*>([^<]*)</);
+          editor.parentElement = match ? this : null;
+          if (!match) return [];
+          editor.value = match[1];
+          return [editor];
+        }
         const matches = [];
         const walk = (node) => {
           for (const child of node.children || []) {
+            // The receipt line lives in the bubble's markup, not in `children`: hand back a node
+            // whose text edits that span in place, leaving the rest of the bubble untouched.
+            if (selector === ".receipt-note" && /<span class="receipt-note">[^<]*<\/span>/.test(child.html)) {
+              matches.push({
+                set textContent(value) {
+                  child.html = child.html.replace(
+                    /<span class="receipt-note">[^<]*<\/span>/,
+                    '<span class="receipt-note">' + String(value) + "</span>",
+                  );
+                },
+              });
+            }
             const childClasses = String(child.className || "").split(/\s+/);
             if (selector === ".bubble.user,.bubble.agent:not(.agent-working)") {
               if (
@@ -265,6 +301,11 @@ async function createChromeHarness({
         focusLog.push(this.id);
       },
       select() {},
+      setSelectionRange(start, end, direction = "none") {
+        this.selectionStart = start;
+        this.selectionEnd = end;
+        this.selectionDirection = direction;
+      },
       scrollIntoView(options) {
         this.scrolledIntoView = options;
       },
@@ -303,6 +344,7 @@ async function createChromeHarness({
   element("shareDialog").hidden = true;
   element("moreMenu").hidden = true;
   element("warningsDrawer").hidden = true;
+  element("revisionsDrawer").hidden = true;
   const whiteboardFrame = element("whiteboardFrame");
   whiteboardFrame.contentWindow = {
     postMessage(message) {
@@ -5899,6 +5941,94 @@ test("a queued Send refused because the session already ended marks the chrome r
   assert.equal(chrome.queued().length, 1);
 });
 
+for (const enabled of [true, false]) {
+  test(`the annotation switch reflects the artifact's initial mode (${enabled}) before and after frame load`, async () => {
+    for (const loadFirst of [true, false]) {
+      const chrome = await createChromeHarness();
+      if (loadFirst) chrome.frame.dispatch("load");
+      chrome.sendFrameMessage({
+        type: "lavish:annotationMode",
+        artifact_load_token: chrome.artifactLoadToken(),
+        enabled,
+      });
+      if (!loadFirst) chrome.frame.dispatch("load");
+      assert.equal(chrome.element("annotation")["aria-pressed"], String(enabled));
+      const mode = chrome.postedToFrame.filter((message) => message.type === "lavish:setAnnotationMode").at(-1);
+      assert.equal(mode.enabled, enabled);
+      chrome.element("annotation").click();
+      assert.equal(chrome.element("annotation")["aria-pressed"], String(!enabled));
+      assert.equal(chrome.postedToFrame.at(-1).enabled, !enabled);
+    }
+  });
+}
+
+test("page annotation defaults follow reloads until the reviewer uses the toolbar", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await flushPromises();
+  const report = (enabled, token = chrome.artifactLoadToken()) =>
+    chrome.sendFrameMessage({ type: "lavish:annotationMode", artifact_load_token: token, enabled });
+  report(false);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  report(true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false", "only the first report per load applies");
+  const oldToken = chrome.artifactLoadToken();
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+  assert.notEqual(chrome.artifactLoadToken(), oldToken);
+  report(false, oldToken);
+  report(true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "true", "a new load reads its own default");
+  chrome.element("annotation").click();
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+  chrome.frame.dispatch("load");
+  report(true);
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false", "a toolbar choice survives a new page default");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+});
+
+test("a late initial annotation report cannot undo a toolbar choice", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("annotation").click();
+  chrome.sendFrameMessage({
+    type: "lavish:annotationMode",
+    artifact_load_token: chrome.artifactLoadToken(),
+    enabled: true,
+  });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+});
+
+test("initial annotation reports reject stale tokens and non-boolean modes", async () => {
+  const chrome = await createChromeHarness();
+  const before = chrome.postedToFrame.length;
+  chrome.sendFrameMessage({ type: "lavish:annotationMode", artifact_load_token: "old-load", enabled: false });
+  chrome.sendFrameMessage({
+    type: "lavish:annotationMode",
+    artifact_load_token: chrome.artifactLoadToken(),
+    enabled: "off",
+  });
+  assert.equal(chrome.postedToFrame.length, before);
+  chrome.sendFrameMessage({
+    type: "lavish:annotationMode",
+    artifact_load_token: chrome.artifactLoadToken(),
+    enabled: false,
+  });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+});
+
+test("an ended session never enables annotation from the page default", async () => {
+  const chrome = await createChromeHarness({ sessionData: { ...defaultSessionData, initialEnded: true } });
+  chrome.sendFrameMessage({
+    type: "lavish:annotationMode",
+    artifact_load_token: chrome.artifactLoadToken(),
+    enabled: true,
+  });
+  assert.equal(chrome.postedToFrame.at(-1).enabled, false);
+});
+
 test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of focus", async () => {
   const chrome = await createChromeHarness();
 
@@ -7116,7 +7246,7 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
 // server's transcript carries it. Before this, queued notes were pills in a separate region and
 // sent notes vanished from the panel entirely, so the conversation read as one-sided.
 
-test("a queued note is a dashed bubble at the end of the conversation with its anchor and a remove control", async () => {
+test("a queued note is a dashed bubble at the end of the conversation with its anchor and edit and remove controls", async () => {
   const chrome = await createChromeHarness();
   chrome.sendFrameMessage({
     type: "lavish:queuePrompt",
@@ -7124,7 +7254,11 @@ test("a queued note is a dashed bubble at the end of the conversation with its a
   });
 
   const html = chrome.element("queuedLog").innerHTML;
-  assert.match(html, /^<div class="bubble user queued"><small>Queued <button class="queued-remove"[^>]*data-index="0"/);
+  assert.match(
+    html,
+    /^<div class="bubble user queued" data-index="0"><small>Queued <button class="queued-edit"[^>]*data-index="0"/,
+  );
+  assert.match(html, /<button class="queued-remove"[^>]*data-index="0"/);
   assert.match(
     html,
     /<span class="anchor-kind">&lt;h2&gt;<\/span><span class="anchor-excerpt">“Phase 1: Inventory”<\/span>/,
@@ -7294,7 +7428,7 @@ test("a sent batch settles in place: notes read Sending until the server's trans
     /^<small>You<\/small><div class="anchor" [^>]*><span class="anchor-kind">&lt;h2&gt;<\/span>/,
   );
   assert.match(bubbles[0].innerHTML, /<div class="bubble-text">Rename this<\/div>/);
-  assert.equal(bubbles[1].innerHTML, '<small>You</small><div class="bubble-text">Keep the table</div>');
+  assert.equal(withoutReceipt(bubbles[1].innerHTML), '<small>You</small><div class="bubble-text">Keep the table</div>');
 });
 
 test("an accepted note merges before live entries that arrived before its response", async () => {
@@ -7331,7 +7465,11 @@ test("an accepted note merges before live entries that arrived before its respon
 
     const bubbles = chrome.element("chatLog").children;
     assert.equal(bubbles.length, 2, eventName);
-    assert.equal(bubbles[0].innerHTML, '<small>You</small><div class="bubble-text">Sent note</div>', eventName);
+    assert.equal(
+      withoutReceipt(bubbles[0].innerHTML),
+      '<small>You</small><div class="bubble-text">Sent note</div>',
+      eventName,
+    );
     assert.equal(bubbles[1].innerHTML, '<small>Agent</small><div class="chat-md"><p>Newer reply</p></div>', eventName);
     assert.equal(chrome.element("queuedLog").innerHTML, "", eventName);
   }
@@ -7834,7 +7972,7 @@ test("an older live sync does not hide the transcript accepted by the prompts re
   assert.equal(chrome.element("queuedLog").innerHTML, "");
   assert.equal(chrome.element("chatLog").children.length, 1);
   assert.equal(
-    chrome.element("chatLog").children[0].innerHTML,
+    withoutReceipt(chrome.element("chatLog").children[0].innerHTML),
     '<small>You</small><div class="bubble-text">Sent note</div>',
   );
 });
@@ -8034,7 +8172,10 @@ test("a synced transcript renders sent notes with anchors and thumbnails and nev
     }),
   });
   const [message, note, reply] = chrome.element("chatLog").children;
-  assert.equal(message.innerHTML, '<small>You</small><div class="bubble-text">&lt;b&gt;bold&lt;/b&gt;</div>');
+  assert.equal(
+    withoutReceipt(message.innerHTML),
+    '<small>You</small><div class="bubble-text">&lt;b&gt;bold&lt;/b&gt;</div>',
+  );
   assert.match(
     note.innerHTML,
     /<span class="anchor-kind">text<\/span><span class="anchor-excerpt text">“&lt;i&gt;sel&lt;\/i&gt;”<\/span>/,
@@ -8155,4 +8296,717 @@ test("a newer bounded sync replaces the transcript without overlap and rejects s
     data: JSON.stringify({ chat: [], ack_ids: [], chat_revision: 3 }),
   });
   assert.equal(chrome.element("chatLog").children.length, 0);
+});
+
+// The live-event socket reconnects forever on a 5s cap, and a dead server is indistinguishable
+// from a quiet one: the page kept rendering its last state and told the user nothing until they
+// reloaded into a browser connection error.
+const LIVE_EVENT_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 5000];
+
+function dropLiveStream(chrome, delayMs) {
+  chrome.webSocketAt(chrome.webSocketCount() - 1).protocolListeners.get("close")();
+  chrome.runTimers(delayMs);
+}
+
+function recoverLiveStream(chrome) {
+  chrome.webSocketAt(chrome.webSocketCount() - 1).protocolListeners.get("open")();
+}
+
+test("a live stream that stays down says so, and reconnecting retires the notice", async () => {
+  const chrome = await createChromeHarness();
+  const banner = chrome.element("outdatedBanner");
+  assert.equal(banner.hidden, true);
+
+  // A few dropped reconnects is a flaky moment, not a server that went away.
+  for (const delay of LIVE_EVENT_RECONNECT_DELAYS_MS.slice(0, 4)) dropLiveStream(chrome, delay);
+  assert.equal(banner.hidden, true);
+
+  dropLiveStream(chrome, LIVE_EVENT_RECONNECT_DELAYS_MS[4]);
+  assert.equal(banner.hidden, false);
+  assert.match(chrome.element("outdatedText").textContent, /no longer running/);
+
+  // Recovery retires it on its own - the user never had to reload to find out.
+  recoverLiveStream(chrome);
+  assert.equal(banner.hidden, true);
+});
+
+test("a dismissed server-unreachable notice stays dismissed until the stream actually recovers", async () => {
+  const chrome = await createChromeHarness();
+  const banner = chrome.element("outdatedBanner");
+  for (const delay of LIVE_EVENT_RECONNECT_DELAYS_MS) dropLiveStream(chrome, delay);
+  assert.equal(banner.hidden, false);
+
+  chrome.element("outdatedDismiss").onclick();
+  assert.equal(banner.hidden, true);
+
+  // Every later reconnect also fails, and re-raising the banner they just dismissed would make it
+  // unclosable while the server stays down.
+  dropLiveStream(chrome, 5000);
+  dropLiveStream(chrome, 5000);
+  assert.equal(banner.hidden, true);
+
+  // A recovery followed by a fresh outage is a new event, so it may speak again.
+  recoverLiveStream(chrome);
+  for (const delay of LIVE_EVENT_RECONNECT_DELAYS_MS) dropLiveStream(chrome, delay);
+  assert.equal(banner.hidden, false);
+});
+
+test("a reconnect does not retire the banner a server replacement raised", async () => {
+  const chrome = await createChromeHarness();
+  const banner = chrome.element("outdatedBanner");
+  chrome.webSocket().listeners.get("chrome-outdated")({ data: JSON.stringify({ reason: "upgrade" }) });
+  assert.equal(banner.hidden, false);
+  assert.match(chrome.element("outdatedText").textContent, /Lavish was updated/);
+
+  // The server really was replaced; reconnecting to its successor does not make that untrue, and
+  // the page is still running the previous chrome.
+  dropLiveStream(chrome, LIVE_EVENT_RECONNECT_DELAYS_MS[0]);
+  recoverLiveStream(chrome);
+  assert.equal(banner.hidden, false);
+  assert.match(chrome.element("outdatedText").textContent, /Lavish was updated/);
+});
+
+// ---------------------------------------------------------------------------
+// Revision legend
+//
+// The payload arrives over postMessage from a sandboxed frame rendering author
+// content, so the chrome re-validates it even though its own SDK built it.
+// These drive that revalidation through the real client.
+
+const REVISION_PALETTE_FIXTURE = [
+  { hex: "#0072b2", borderStyle: "solid", pattern: "none" },
+  { hex: "#d55e00", borderStyle: "dashed", pattern: "diagonal" },
+];
+
+async function revisionHarness() {
+  return createChromeHarness({
+    sessionData: { ...defaultSessionData, revisionPalette: REVISION_PALETTE_FIXTURE },
+  });
+}
+
+function sendRevisions(chrome, payload) {
+  chrome.sendFrameMessage({
+    type: "lavish:revisions",
+    artifact_load_token: chrome.artifactLoadToken(),
+    ...payload,
+  });
+}
+
+function revisionRows(chrome) {
+  return chrome.element("revisionsList").querySelectorAll(".revision-row");
+}
+
+test("an artifact that declares revisions gets a legend; one that declares none gets no button", async () => {
+  const chrome = await revisionHarness();
+
+  sendRevisions(chrome, { revisions: [], marks: [] });
+  assert.equal(chrome.element("revisionsWrap").hidden, true);
+
+  sendRevisions(chrome, {
+    revisions: [{ id: "r1", label: "Round 1", summary: "Tightened the pricing copy" }],
+    marks: [{ revision_id: "r1", selector: "#pricing", tag: "section", excerpt: "Pricing" }],
+  });
+
+  assert.equal(chrome.element("revisionsWrap").hidden, false);
+  assert.equal(chrome.element("revisionsCount").textContent, "1");
+  assert.equal(chrome.element("revisionsSummary").textContent, "1 revision · 1 marked block");
+  assert.equal(revisionRows(chrome).length, 1);
+});
+
+test("a reload that removed the registry clears the legend instead of leaving it standing", async () => {
+  const chrome = await revisionHarness();
+
+  sendRevisions(chrome, { revisions: [{ id: "r1", label: "Round 1" }], marks: [] });
+  assert.equal(chrome.element("revisionsWrap").hidden, false);
+
+  sendRevisions(chrome, { revisions: [], marks: [] });
+  assert.equal(chrome.element("revisionsWrap").hidden, true);
+  assert.equal(revisionRows(chrome).length, 0);
+});
+
+// Regression: the chrome rendered `raw.color` and `raw.border_style` after
+// checking only their shape, so an artifact could give every round the same
+// swatch and erase the one signal that separates them.
+test("swatches come from the server palette, not from what the artifact sent", async () => {
+  const chrome = await revisionHarness();
+
+  sendRevisions(chrome, {
+    revisions: [
+      { id: "r1", label: "Round 1", color: "#ff0000", border_style: "dotted", pattern: "dots" },
+      { id: "r2", label: "Round 2", color: "#ff0000", border_style: "dotted", pattern: "dots" },
+    ],
+    marks: [],
+  });
+
+  const swatches = revisionRows(chrome).map((row) => row.querySelectorAll(".revision-swatch")[0].style);
+  assert.deepEqual(
+    swatches.map((style) => [style.color, style.borderStyle]),
+    [
+      ["#0072b2", "solid"],
+      ["#d55e00", "dashed"],
+    ],
+  );
+});
+
+// Regression: identity fields were truncated to their budget before being
+// compared, so two distinct overlong ids collapsed into one legend row and an
+// overlong selector became a different valid selector pointing elsewhere.
+test("overlong ids and selectors are refused rather than shortened into the wrong thing", async () => {
+  const chrome = await revisionHarness();
+  const prefix = "r".repeat(60);
+
+  sendRevisions(chrome, {
+    revisions: [
+      { id: `${prefix}1`, label: "one" },
+      { id: `${prefix}2`, label: "two" },
+      { id: "ok", label: "kept" },
+    ],
+    marks: [
+      { revision_id: "ok", selector: `#${"a".repeat(400)}`, tag: "p", excerpt: "too long" },
+      { revision_id: "ok", selector: "#kept", tag: "p", excerpt: "fine" },
+    ],
+  });
+
+  assert.deepEqual(
+    revisionRows(chrome).map((row) => row.querySelectorAll(".revision-label")[0].textContent),
+    ["kept"],
+  );
+  assert.equal(chrome.element("revisionsSummary").textContent, "1 revision · 1 marked block");
+});
+
+test("Reveal walks the marked blocks one at a time through the existing reveal path", async () => {
+  const chrome = await revisionHarness();
+
+  sendRevisions(chrome, {
+    revisions: [{ id: "r1", label: "Round 1" }],
+    marks: [
+      { revision_id: "r1", selector: "#first", tag: "p", excerpt: "one" },
+      { revision_id: "r1", selector: "#second", tag: "p", excerpt: "two" },
+    ],
+  });
+
+  const revealed = () => chrome.postedToFrame.filter((message) => message.type === "lavish:revealElement");
+  const button = () => revisionRows(chrome)[0].querySelectorAll(".revision-reveal")[0];
+
+  assert.equal(button().textContent, "Reveal 1/2");
+  button().click();
+  assert.deepEqual(revealed().at(-1).selector, "#first");
+  assert.equal(button().textContent, "Reveal 2/2");
+  button().click();
+  assert.deepEqual(revealed().at(-1).selector, "#second");
+  assert.equal(button().textContent, "Reveal 1/2");
+});
+
+test("a mark naming an undeclared revision never reaches the legend", async () => {
+  const chrome = await revisionHarness();
+
+  sendRevisions(chrome, {
+    revisions: [{ id: "r1", label: "Round 1" }],
+    marks: [{ revision_id: "ghost", selector: "#somewhere", tag: "p", excerpt: "orphan" }],
+  });
+
+  assert.equal(chrome.element("revisionsSummary").textContent, "1 revision · 0 marked blocks");
+});
+
+// A node inside the queued log, as the log's delegated listeners see it: `closest` answers for
+// the classes of the bubble part the test names, carrying that bubble's index.
+function queuedLogNode(classes, index, props = {}) {
+  return {
+    ...props,
+    closest(selector) {
+      const wanted = String(selector).split(".").filter(Boolean);
+      return wanted.every((name) => classes.includes(name)) ? { dataset: { index: String(index) } } : null;
+    },
+  };
+}
+
+function queuedLogKey(chrome, key, index = 0) {
+  const event = {
+    key,
+    shiftKey: false,
+    isComposing: false,
+    target: queuedLogNode(["queued-edit-input"], index),
+    defaultPrevented: false,
+    propagationStopped: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+    stopPropagation() {
+      this.propagationStopped = true;
+    },
+  };
+  chrome.element("queuedLog").dispatch("keydown", event);
+  // The log's listener runs first and the key bubbles on to the document unless it stops there.
+  if (!event.propagationStopped) chrome.dispatchDocumentKeydown({ key, target: event.target });
+  return event;
+}
+
+function typeIntoQueuedEdit(chrome, value, index = 0) {
+  chrome.element("queuedLog").dispatch("input", { target: queuedLogNode(["queued-edit-input"], index, { value }) });
+}
+
+function queueHeadingNote(chrome, prompt = "Make this heading bigger", selector = "main > h2") {
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt, selector, tag: "h2", text: "Pricing" } });
+}
+
+test("clicking a queued note opens it for editing and reveals its element", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome);
+
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Make this heading bigger</);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(chrome.postedToFrame.filter((message) => message.type === "lavish:revealElement").at(-1)),
+    ),
+    { type: "lavish:revealElement", selector: "main > h2" },
+  );
+});
+
+test("the Enter that confirms an IME conversion in WebKit does not send the chat composer", async () => {
+  const calls = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("chatInput").value = "henkan";
+  const event = {
+    key: "Enter",
+    shiftKey: false,
+    isComposing: false,
+    keyCode: 229,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  chrome.element("chatInput").dispatch("keydown", event);
+  await flushPromises();
+
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(chrome.element("chatInput").value, "henkan");
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(calls.filter((url) => String(url).endsWith("/prompts")).length, 0);
+});
+
+test("saving an edited queued note rewrites it in place and keeps its identity", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome);
+  queueHeadingNote(chrome, "Tighten this copy", "main > p");
+  const [before] = chrome.queued();
+
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["queued-edit"], 0) });
+  typeIntoQueuedEdit(chrome, "Make this heading smaller");
+  const event = queuedLogKey(chrome, "Enter");
+
+  assert.equal(event.defaultPrevented, true);
+  const after = chrome.queued();
+  assert.deepEqual(
+    after.map((prompt) => prompt.prompt),
+    ["Make this heading smaller", "Tighten this copy"],
+  );
+  assert.equal(after[0].prompt_id, before.prompt_id);
+  assert.equal(after[0].selector, "main > h2");
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+});
+
+test("cancelling an edit leaves the queued note untouched", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome);
+
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Something else");
+  queuedLogKey(chrome, "Escape");
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Make this heading bigger"],
+  );
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+});
+
+test("saving a queued note with its words cleared removes it", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome);
+
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "   ");
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["queued-edit-save"], 0) });
+
+  assert.deepEqual(chrome.queued(), []);
+});
+
+test("the artifact learns which elements carry a queued note, never the note itself", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome);
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Punchier",
+      selector: "main > p",
+      tag: "text",
+      text: "marketing site",
+      target: { type: "text-range", text: "marketing site", selector: "main > p" },
+    },
+  });
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors)), { type: "lavish:queuedAnchors", selectors: ["main > h2"] });
+});
+
+test("clicking an annotated element in the artifact opens its queued note", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "First thought");
+  queueHeadingNote(chrome, "Tighten this copy", "main > p");
+  queueHeadingNote(chrome, "Second thought");
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  // The most recent note on the element is the one the reviewer is most likely revising.
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Second thought</);
+  assert.equal(chrome.element("queuedLog").innerHTML.match(/queued-edit-input/g)?.length, 1);
+});
+
+test("Send delivers an open edit instead of the stale words", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true };
+    },
+  });
+  queueHeadingNote(chrome);
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Make this heading smaller");
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  assert.deepEqual(
+    posts[0].body.prompts.map((prompt) => prompt.prompt),
+    ["Make this heading smaller"],
+  );
+});
+
+test("a note that is already sending cannot be opened for editing", async () => {
+  const chrome = await createChromeHarness({ fetchImpl: () => new Promise(() => {}) });
+  queueHeadingNote(chrome);
+  chrome.element("send").click();
+
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+  // The element click falls back to the fresh card it would have opened without a queued note.
+  assert.deepEqual(JSON.parse(JSON.stringify(chrome.postedToFrame.at(-1))), {
+    type: "lavish:annotateElement",
+    selector: "main > h2",
+  });
+});
+
+test("Escape in the queued-note editor cancels the edit and leaves the phone sheet open", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  chrome.element("panelHead").dispatch("click", {});
+  queueHeadingNote(chrome);
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+
+  queuedLogKey(chrome, "Escape");
+
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+  assert.equal(sheetState(chrome).open, true);
+});
+
+test("a diagram node's note is found from any part of the node", async () => {
+  const chrome = await createChromeHarness();
+  const node = { type: "mermaid-node", diagramId: "mermaid-1", nodeId: "flowchart-A-0", label: "Start" };
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Rename this step",
+      selector: "g#flowchart-A-0 > span",
+      tag: "mermaid-node",
+      text: "Start",
+      target: { ...node, selector: "g#flowchart-A-0" },
+    },
+  });
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors.selectors)), ["g#flowchart-A-0 > span", "g#flowchart-A-0"]);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "g#flowchart-A-0" });
+
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Rename this step</);
+});
+
+test("a table cell's note tells the artifact only the exact element it was queued on", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Explain this app",
+      selector: "td:nth-of-type(3) > strong",
+      tag: "strong",
+      text: "Drive",
+      target: {
+        type: "table-cell",
+        selector: "td:nth-of-type(3)",
+        rowLabel: "Media",
+        columnLabel: "Evidence",
+      },
+    },
+  });
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors.selectors)), ["td:nth-of-type(3) > strong"]);
+});
+
+test("a re-render while editing a queued note keeps the reviewer's caret and scroll", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome);
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  const editor = chrome.element("queued-edit-input");
+  // Opening an edit starts at the end of its words.
+  assert.deepEqual([editor.selectionStart, editor.selectionEnd], [24, 24]);
+
+  typeIntoQueuedEdit(chrome, "Make this heading smaller");
+  editor.setSelectionRange(5, 9, "backward");
+  editor.scrollTop = 12;
+  queueHeadingNote(chrome, "Tighten this copy", "main > p");
+
+  assert.equal(chrome.focusLog.at(-1), "queued-edit-input");
+  assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [5, 9, "backward"]);
+  assert.equal(editor.scrollTop, 12);
+});
+
+test("a keyed replacement closes the open edit and hands its typed words back as unsent", async () => {
+  const chrome = await createChromeHarness();
+  const choice = (prompt, selector, text) => ({
+    type: "lavish:queuePrompt",
+    prompt: { prompt, selector, tag: "choice", text, _lavishQueueKey: "plan" },
+  });
+  chrome.sendFrameMessage(choice("Use plan A", "input#plan-a", "Plan A"));
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Use plan A, but cheaper");
+
+  chrome.sendFrameMessage(choice("Use plan B", "input#plan-b", "Plan B"));
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => [prompt.prompt, prompt.selector]),
+    [["Use plan B", "input#plan-b"]],
+  );
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+  const notes = retiredDraftNotes(chrome);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].innerHTML, /Unsent annotation/);
+  assert.match(notes[0].innerHTML, /Use plan A, but cheaper/);
+});
+
+test("a keyed replacement of an untouched open edit leaves no unsent note", async () => {
+  const chrome = await createChromeHarness();
+  const choice = (prompt, selector, text) => ({
+    type: "lavish:queuePrompt",
+    prompt: { prompt, selector, tag: "choice", text, _lavishQueueKey: "plan" },
+  });
+  chrome.sendFrameMessage(choice("Use plan A", "input#plan-a", "Plan A"));
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+
+  chrome.sendFrameMessage(choice("Use plan B", "input#plan-b", "Plan B"));
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Use plan B"],
+  );
+  assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+  assert.equal(retiredDraftNotes(chrome).length, 0);
+});
+
+// Delivery acks (docs/delivery-acks.md): each sent bubble carries a receipt row derived from the
+// entry's stamps and, before Seen, from the live presence the chrome already holds.
+
+function receiptSteps(html) {
+  return [...String(html).matchAll(/class="receipt-step( is-done)?"/g)].map((match) => Boolean(match[1]));
+}
+
+function receiptNote(html) {
+  const match = String(html).match(/<span class="receipt-note">([^<]*)<\/span>/);
+  return match ? match[1] : "";
+}
+
+test("a sent bubble's receipt follows the entry's seen, working, and done stamps", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [
+        { role: "user", kind: "message", text: "Sent only" },
+        {
+          role: "user",
+          kind: "message",
+          text: "Seen and working",
+          delivered_at: "2026-10-04T10:00:00.000Z",
+          delivered_seq: 1,
+          working_at: "2026-10-04T10:00:05.000Z",
+        },
+        {
+          role: "user",
+          kind: "message",
+          text: "Answered without an edit",
+          delivered_at: "2026-10-04T10:00:00.000Z",
+          delivered_seq: 1,
+          done_at: "2026-10-04T10:01:00.000Z",
+        },
+        { role: "agent", text: "Reply", html: "<p>Reply</p>" },
+      ],
+    },
+  });
+  const bubbles = chrome.element("chatLog").children;
+  assert.equal(bubbles.length, 4);
+  assert.deepEqual(receiptSteps(bubbles[0].innerHTML), [false, false, false]);
+  assert.equal(receiptNote(bubbles[0].innerHTML), "No agent is listening");
+  assert.deepEqual(receiptSteps(bubbles[1].innerHTML), [true, true, false]);
+  assert.equal(receiptNote(bubbles[1].innerHTML), "");
+  assert.deepEqual(receiptSteps(bubbles[2].innerHTML), [true, false, true]);
+  assert.equal(receiptNote(bubbles[2].innerHTML), "");
+  assert.deepEqual(receiptSteps(bubbles[3].innerHTML), [], "agent bubbles carry no receipt");
+  const seenAt = new Date("2026-10-04T10:00:00.000Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  assert.ok(bubbles[1].innerHTML.includes(`title="Seen ${seenAt}"`), "a lit step names its time");
+  assert.ok(bubbles[1].innerHTML.includes(`aria-label="Seen ${seenAt}"`), "and says it to screen readers");
+  assert.ok(bubbles[1].innerHTML.includes('aria-label="Done: not yet"'), "an unlit step still names itself");
+  // The glyphs are the Telegram ack protocol's: eyes, tools, check.
+  assert.match(bubbles[1].innerHTML, /<span class="receipt-step is-done"[^>]*>👀<\/span>/);
+  assert.match(bubbles[1].innerHTML, /<span class="receipt-step is-done"[^>]*>🛠️<\/span>/);
+  assert.match(bubbles[1].innerHTML, /<span class="receipt-step"[^>]*>✅<\/span>/);
+});
+
+test("an unseen bubble's receipt names the live presence and re-renders when it changes", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [
+        { role: "user", kind: "message", text: "Waiting" },
+        { role: "user", kind: "message", text: "Seen", delivered_at: "2026-10-04T10:00:00.000Z", delivered_seq: 1 },
+      ],
+    },
+  });
+  const bubbles = chrome.element("chatLog").children;
+  const seenHtml = bubbles[1].innerHTML;
+  const presence = (data) => chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify(data) });
+
+  presence({ state: "working", mode: "agent-busy" });
+  assert.equal(receiptNote(bubbles[0].innerHTML), "Agent is busy; delivered on its next poll");
+  presence({ state: "listening", mode: "external-listener" });
+  assert.equal(receiptNote(bubbles[0].innerHTML), "Agent is busy; delivered on its next poll");
+  presence({ state: "listening", mode: "agent-listener" });
+  assert.equal(receiptNote(bubbles[0].innerHTML), "Delivering");
+  presence({ state: "waiting" });
+  assert.equal(receiptNote(bubbles[0].innerHTML), "No agent is listening");
+  assert.equal(bubbles[1].innerHTML, seenHtml, "a seen bubble does not depend on presence");
+});
+
+test("a presence change leaves an unseen bubble's expired image placeholder in place", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [{ role: "user", kind: "message", text: "See image", attachments: [{ id: "a1", name: "ref.png" }] }],
+    },
+  });
+  const chatLog = chrome.element("chatLog");
+  const [bubble] = chatLog.children;
+  const image = chrome.element("unseen-bubble-image");
+  image.tagName = "IMG";
+  image.className = "bubble-attachment";
+  image.alt = "ref.png";
+  bubble.appendChild(image);
+  chatLog.dispatch("error", { target: image });
+  assert.equal(bubble.children[0].textContent, "Image expired");
+
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
+  assert.equal(receiptNote(bubble.innerHTML), "Agent is busy; delivered on its next poll");
+  assert.equal(bubble.children[0]?.textContent, "Image expired", "the placeholder is not rebuilt into an image");
+});
+
+test("a chat-sync that stamps a note re-renders its receipt", async () => {
+  const entry = { role: "user", kind: "message", text: "Make it blue", prompt_id: "p-1" };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [entry], initialChatRevision: 1 },
+  });
+  assert.deepEqual(receiptSteps(chrome.element("chatLog").children[0].innerHTML), [false, false, false]);
+
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [{ ...entry, delivered_at: "2026-10-04T10:00:00.000Z", delivered_seq: 1 }],
+      chat_revision: 2,
+    }),
+  });
+  const seen = chrome.element("chatLog").children[0].innerHTML;
+  assert.deepEqual(receiptSteps(seen), [true, false, false]);
+  assert.equal(receiptNote(seen), "");
+});
+
+test("a transcript entry from before receipts renders no receipt and ignores presence", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [
+        { role: "user", kind: "message", text: "Old note", receipt: "none" },
+        { role: "user", kind: "message", text: "New note" },
+      ],
+    },
+  });
+  const bubbles = chrome.element("chatLog").children;
+  assert.equal(bubbles[0].innerHTML, '<small>You</small><div class="bubble-text">Old note</div>');
+  assert.deepEqual(receiptSteps(bubbles[1].innerHTML), [false, false, false]);
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
+  assert.equal(bubbles[0].innerHTML, '<small>You</small><div class="bubble-text">Old note</div>');
+  assert.equal(receiptNote(bubbles[1].innerHTML), "Agent is busy; delivered on its next poll");
+});
+
+async function whiteboardInitWithLibraries({ librariesResponse, sourcesVersion }) {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).includes("/whiteboard-libraries")) return librariesResponse();
+      if (String(url).includes("/mermaid-sources")) {
+        return {
+          ok: true,
+          json: async () => ({
+            sources: [{ index: 0, source: "flowchart TD\n%% lavish-icon A sys/Queue\nA-->B", hash: "hash" }],
+            ...(sourcesVersion ? { libraries_version: sourcesVersion } : {}),
+          }),
+        };
+      }
+      return whiteboardFetch(String(url));
+    },
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  const init = inline.posted.find((message) => message.type === "lavish-whiteboard:init");
+  assert.ok(init, "the whiteboard frame was initialized");
+  return init;
+}
+
+test("whiteboard init flags libraries that changed between the libraries and sources reads", async () => {
+  const libraries = [{ id: "sys", items: [] }];
+  const matching = await whiteboardInitWithLibraries({
+    librariesResponse: () => ({ ok: true, json: async () => ({ libraries, version: "v1" }) }),
+    sourcesVersion: "v1",
+  });
+  assert.equal(matching.librariesUnavailable, false);
+  assert.equal(JSON.stringify(matching.libraries), JSON.stringify(libraries));
+
+  // A library file was added or replaced after the libraries read but before
+  // the sources read: the frame would draw old items under the new hash.
+  const raced = await whiteboardInitWithLibraries({
+    librariesResponse: () => ({ ok: true, json: async () => ({ libraries, version: "v1" }) }),
+    sourcesVersion: "v2",
+  });
+  assert.equal(raced.librariesUnavailable, true);
+
+  const failed = await whiteboardInitWithLibraries({
+    librariesResponse: () => ({ ok: false, json: async () => ({}) }),
+    sourcesVersion: "v1",
+  });
+  assert.equal(failed.librariesUnavailable, true);
+  assert.equal(JSON.stringify(failed.libraries), "[]");
 });

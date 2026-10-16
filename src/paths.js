@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
+import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -31,21 +33,25 @@ export function bindHost(env = process.env) {
 
 /**
  * Concrete listen addresses. Never includes 0.0.0.0 / ::.
- * When LAVISH_AXI_HOST is unset, bind loopback plus a caller-supplied Tailscale IPv4.
- * The server supplies Tailscale state only when LAVISH_AXI_TAILSCALE=1.
- * An explicit LAVISH_AXI_HOST stays that single safe concrete address.
- * @param {{ host?: string, env?: NodeJS.ProcessEnv, tailscale?: { ipv4?: string } | null }} [options]
+ * The first entry is the primary (requested) host. Loopback is always included: it is the one
+ * address every CLI probes whatever its own LAVISH_AXI_HOST says, so a server pinned to a
+ * Tailscale or LAN address is still found by a client configured without one instead of that
+ * client spawning a second daemon on the same port. When LAVISH_AXI_HOST is unset, the Tailscale
+ * IPv4 is added when present. The server supplies Tailscale state only when LAVISH_AXI_TAILSCALE=1.
+ * An explicit LAVISH_AXI_HOST stays that single safe concrete address plus loopback.
+ * @param {{ host?: string, env?: NodeJS.ProcessEnv, tailscale?: { ipv4?: string } | null, extraHosts?: string[] }} [options]
  * @returns {string[]}
  */
-export function resolveListenHosts({ host, env = process.env, tailscale = null } = {}) {
+export function resolveListenHosts({ host, env = process.env, tailscale = null, extraHosts = [] } = {}) {
   const envHost = env.LAVISH_AXI_HOST?.trim() || "";
   const autoTailscale = !envHost;
   const requested = host || bindHost(env);
   const primary = isWildcardHost(requested) ? LOOPBACK_HOST : requested || LOOPBACK_HOST;
-  const hosts = [primary];
+  const hosts = [primary, LOOPBACK_HOST];
   if (autoTailscale && tailscale?.ipv4 && tailscale.ipv4 !== primary && !isWildcardHost(tailscale.ipv4)) {
     hosts.push(tailscale.ipv4);
   }
+  hosts.push(...extraHosts);
   return sanitizeListenHosts(hosts);
 }
 
@@ -64,16 +70,24 @@ export function sanitizeListenHosts(hosts) {
 }
 
 /**
+ * With `keepUnresolved`, a name that does not resolve right now is kept as the name, so it is bound
+ * and retried like any other unavailable address and reported, instead of failing or vanishing. A
+ * name that resolves to an all-interfaces address is always refused.
  * @param {string[]} hosts
- * @param {{ lookup?: typeof dnsLookup }} [options]
+ * @param {{ lookup?: typeof dnsLookup, keepUnresolved?: boolean }} [options]
  * @returns {Promise<string[]>}
  */
-export async function resolveConcreteListenHosts(hosts, { lookup = dnsLookup } = {}) {
+export async function resolveConcreteListenHosts(hosts, { lookup = dnsLookup, keepUnresolved = false } = {}) {
   const resolved = [];
   for (const host of hosts) {
-    const addresses = await lookup(host, { all: true, verbatim: true });
+    const addresses = await lookup(host, { all: true, verbatim: true }).catch((error) => {
+      if (keepUnresolved) return [];
+      throw error;
+    });
     if (!Array.isArray(addresses) || addresses.length === 0) {
-      throw new Error(`Listen host did not resolve: ${host}`);
+      if (!keepUnresolved) throw new Error(`Listen host did not resolve: ${host}`);
+      if (!resolved.includes(host)) resolved.push(host);
+      continue;
     }
     if (addresses.some(({ address }) => isWildcardHost(address))) {
       throw new Error(`Listen host resolves to an all-interfaces address: ${host}`);
@@ -130,6 +144,25 @@ export function stateDir() {
 
 export function stateFile() {
   return path.join(stateDir(), "state.json");
+}
+
+// Which Lavish installation a server belongs to, reported by /health. A CLI only ever stops a
+// duplicate daemon that shares its own state file, so another user's (or another test's) server on
+// the same port at a different address is never touched. Resolve the directory, not the state file:
+// state.json may not exist yet when the server first reports its identity.
+export function stateId(file = stateFile()) {
+  const directory = path.dirname(path.resolve(file));
+  let canonicalDirectory;
+  try {
+    canonicalDirectory = realpathSync(directory);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    canonicalDirectory = directory;
+  }
+  return createHash("sha256")
+    .update(path.join(canonicalDirectory, path.basename(file)))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 export function serverLogFile() {

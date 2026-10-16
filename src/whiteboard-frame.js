@@ -31,8 +31,12 @@ import "./whiteboard-frame.css";
 
 import {
   convertExcalidrawSkeletonsAfterFontsLoad,
+  conversionUsesUnverifiedLibraries,
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
+  libraryIconMermaidConfig,
+  placeLibraryIcons,
+  prepareLibraryIconSkeletons,
   repairSavedSceneTextMetrics,
   resolveWhiteboardInitAction,
   restoreMermaidLabelLineBreaks,
@@ -42,8 +46,10 @@ import {
   summarizeSceneEdits,
   WHITEBOARD_TEXT_METRICS_VERSION,
 } from "./whiteboard-core.js";
+import { findLibraryItem, parseLibraryIconDirectives, toExcalidrawLibraryItems } from "./whiteboard-libraries.js";
 
 const SAVE_DEBOUNCE_MS = 800;
+const MERMAID_FONT_SIZE = 16;
 
 const state = {
   mode: "overlay",
@@ -57,6 +63,13 @@ const state = {
   currentSourceHash: "",
   baselineElements: [],
   files: {},
+  // User-supplied Excalidraw libraries, passed in by the chrome.
+  libraries: [],
+  // This scene was converted from icon directives while the chrome could not
+  // fetch the libraries, or they did not match the source hash: saves record
+  // an unverified hash (see createWhiteboardPersistencePayload) so the next
+  // open re-converts.
+  drawnWithUnverifiedLibraries: false,
   imageFallback: false,
   textMetricsVersion: WHITEBOARD_TEXT_METRICS_VERSION,
   channelId: "",
@@ -162,7 +175,7 @@ function buildShell(theme, mode) {
 
   queueButton.onclick = () => queueFeedback().catch((error) => showStatus(`Queue failed: ${describeError(error)}`));
   note.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.isComposing) {
+    if (event.key === "Enter" && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       queueButton.click();
     }
@@ -328,7 +341,13 @@ function EditorApp({ elements, appState, files, theme, startLocked }) {
     "div",
     { style: { position: "relative", width: "100%", height: "100%" } },
     React.createElement(Excalidraw, {
-      initialData: { elements, appState, files: files || undefined, scrollToContent: true },
+      initialData: {
+        elements,
+        appState,
+        files: files || undefined,
+        libraryItems: toExcalidrawLibraryItems(state.libraries),
+        scrollToContent: true,
+      },
       theme,
       viewModeEnabled: locked,
       onChange: scheduleSave,
@@ -427,10 +446,17 @@ async function loadSceneFonts(elements, files) {
 }
 
 async function convertSource(source) {
+  const icons = parseLibraryIconDirectives(source).map((directive) => ({
+    ...directive,
+    item: findLibraryItem(state.libraries, directive.ref),
+  }));
   const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
-    themeVariables: { fontSize: "16px" },
+    themeVariables: { fontSize: `${MERMAID_FONT_SIZE}px` },
+    ...libraryIconMermaidConfig(icons, source),
   });
-  const skeletons = restoreMermaidLabelLineBreaks(parsedSkeletons);
+  const { skeletons, missing } = prepareLibraryIconSkeletons(restoreMermaidLabelLineBreaks(parsedSkeletons), icons, {
+    labelFontSize: MERMAID_FONT_SIZE,
+  });
   const materialize = (input) => {
     // Preserve Mermaid node/edge identity for edit summaries; regenerate only
     // when upstream emitted colliding ids (parallel edges), where uniqueness
@@ -441,16 +467,19 @@ async function convertSource(source) {
     }
     return elements;
   };
-  const elements = restoreMermaidLabelLineBreaks(
-    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-      convert: materialize,
-      loadFonts: async (fallbackElements) => {
-        await loadSceneFonts(fallbackElements, files);
-      },
-    }),
-    { measure: measureSceneText },
+  const elements = placeLibraryIcons(
+    restoreMermaidLabelLineBreaks(
+      await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+        convert: materialize,
+        loadFonts: async (fallbackElements) => {
+          await loadSceneFonts(fallbackElements, files);
+        },
+      }),
+      { measure: measureSceneText },
+    ),
+    (ref) => findLibraryItem(state.libraries, ref),
   );
-  return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements) };
+  return { elements, files: files || {}, imageFallback: sceneIsImageFallback(elements), missingIcons: missing };
 }
 
 // Theme is passed only through the <Excalidraw theme> prop - putting it in
@@ -497,6 +526,7 @@ async function startFromConversion(init) {
   state.files = files;
   state.imageFallback = sceneIsImageFallback(elements);
   state.sceneSourceHash = init.sourceHash;
+  state.drawnWithUnverifiedLibraries = conversionUsesUnverifiedLibraries(init.source, init.librariesUnavailable);
   state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
   if (state.imageFallback) {
     setBanner(
@@ -505,6 +535,11 @@ async function startFromConversion(init) {
     );
   }
   mountEditor({ elements, appState: defaultAppState(), files, theme: init.theme });
+  if (converted.missingIcons.length > 0) {
+    const refs = [...new Set(converted.missingIcons.map((icon) => icon.ref))].join(", ");
+    const count = converted.missingIcons.length;
+    showStatus(`${count} library icon${count === 1 ? "" : "s"} not shown: ${refs}`);
+  }
   // View-only conversion still autosaves so a same-hash reopen can restore.
   // Hash mismatch does not treat that sidecar as user edits; see
   // resolveWhiteboardInitAction.
@@ -533,6 +568,7 @@ async function startFromSavedScene(init) {
   state.textMetricsVersion = WHITEBOARD_TEXT_METRICS_VERSION;
   state.imageFallback = sceneIsImageFallback(elements);
   state.sceneSourceHash = saved.source_hash || init.sourceHash;
+  state.drawnWithUnverifiedLibraries = false;
   if (state.imageFallback) {
     setBanner(
       "wbFallbackBanner",
@@ -632,6 +668,7 @@ async function handleInit(init) {
   state.diagramId = String(init.diagramId || "");
   state.currentSource = String(init.source || "");
   state.currentSourceHash = String(init.sourceHash || "");
+  state.libraries = Array.isArray(init.libraries) ? init.libraries : [];
   const theme = init.theme === "dark" ? "dark" : "light";
   document.getElementById("wbTitle").textContent = `Whiteboard · diagram ${state.diagramIndex + 1}`;
 

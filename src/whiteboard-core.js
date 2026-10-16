@@ -4,6 +4,8 @@
 // normal module imports in the bundled whiteboard frame (unlike mermaid-node.js
 // helpers, these are never serialized with `.toString()`).
 
+import { LIBRARY_REF_CUSTOM_DATA_KEY, mermaidHeaderLine, parseLibraryIconDirectives } from "./whiteboard-libraries.js";
+
 export const WHITEBOARD_PROMPT_TAG = "whiteboard";
 export const EXCALIDRAW_SCENE_TARGET_TYPE = "excalidraw-scene";
 export const WHITEBOARD_TEXT_METRICS_VERSION = 1;
@@ -182,6 +184,347 @@ export function restoreMermaidLabelLineBreaks(elements, { measure } = {}) {
   return fitContainersToBoundText(sized);
 }
 
+// Library icon nodes. A `%% lavish-icon` directive turns a flowchart vertex
+// into a library icon above its label. The vertex keeps its Mermaid id,
+// bindings, and label so edit summaries still speak in Mermaid node ids; it
+// only grows to fit the icon and turns transparent.
+// Every icon is scaled to one height so a diagram's icons read as a set;
+// very wide items are capped by width instead.
+export const LIBRARY_ICON_HEIGHT = 64;
+export const LIBRARY_ICON_MAX_WIDTH = 120;
+// Icon nodes are about 50px taller than the boxes Mermaid lays out, so the
+// gap along that axis needs Mermaid's default 50px plus that growth, or
+// neighbours overlap. The other axis keeps Mermaid's default.
+export const LIBRARY_ICON_GROWN_SPACING = 100;
+const MERMAID_DEFAULT_SPACING = 50;
+const LIBRARY_ICON_PADDING = 8;
+const LIBRARY_ICON_LABEL_GAP = 6;
+const LIBRARY_ICON_ARROW_GAP = 4;
+const LIBRARY_ICON_LABEL_BOTTOM_PADDING = 5;
+const ICON_NODE_CUSTOM_DATA_KEY = "lavishIconNode";
+
+// Axis-aligned bounds as drawn. Excalidraw rotates an element about the
+// centre of its unrotated box (for linear elements, the box of its points).
+function elementBounds(element) {
+  const x = Number(element.x) || 0;
+  const y = Number(element.y) || 0;
+  const corners =
+    Array.isArray(element.points) && element.points.length > 0
+      ? element.points.map((point) => [x + (Number(point?.[0]) || 0), y + (Number(point?.[1]) || 0)])
+      : [
+          [x, y],
+          [x + (Number(element.width) || 0), y + (Number(element.height) || 0)],
+        ];
+  const box = [
+    Math.min(...corners.map((c) => c[0])),
+    Math.min(...corners.map((c) => c[1])),
+    Math.max(...corners.map((c) => c[0])),
+    Math.max(...corners.map((c) => c[1])),
+  ];
+  const angle = Number(element.angle) || 0;
+  if (angle === 0) return box;
+  const cx = (box[0] + box[2]) / 2;
+  const cy = (box[1] + box[3]) / 2;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const outline =
+    corners.length > 2
+      ? corners
+      : [
+          [box[0], box[1]],
+          [box[2], box[1]],
+          [box[2], box[3]],
+          [box[0], box[3]],
+        ];
+  const turned = outline.map(([px, py]) => [
+    cx + (px - cx) * cos - (py - cy) * sin,
+    cy + (px - cx) * sin + (py - cy) * cos,
+  ]);
+  return [
+    Math.min(...turned.map((c) => c[0])),
+    Math.min(...turned.map((c) => c[1])),
+    Math.max(...turned.map((c) => c[0])),
+    Math.max(...turned.map((c) => c[1])),
+  ];
+}
+
+function commonBounds(elements) {
+  const bounds = elements.map(elementBounds);
+  const minX = Math.min(...bounds.map((b) => b[0]));
+  const minY = Math.min(...bounds.map((b) => b[1]));
+  const maxX = Math.max(...bounds.map((b) => b[2]));
+  const maxY = Math.max(...bounds.map((b) => b[3]));
+  return { minX, minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Extra Mermaid config for a diagram that places at least one icon. The
+ * converter merges `flowchart` shallowly over its own, so its linear curve is
+ * restated here.
+ * @param {{ item: unknown }[]} icons
+ * @param {string} source
+ * @returns {{ flowchart?: { curve: "linear", nodeSpacing: number, rankSpacing: number } }}
+ */
+export function libraryIconMermaidConfig(icons, source) {
+  if (!(Array.isArray(icons) && icons.some((icon) => icon.item))) return {};
+  const leftRight = /^(?:flowchart|graph)\s+(LR|RL)\b/i.test(mermaidHeaderLine(source));
+  return {
+    flowchart: {
+      curve: "linear",
+      nodeSpacing: leftRight ? LIBRARY_ICON_GROWN_SPACING : MERMAID_DEFAULT_SPACING,
+      rankSpacing: leftRight ? MERMAID_DEFAULT_SPACING : LIBRARY_ICON_GROWN_SPACING,
+    },
+  };
+}
+
+export function libraryIconSize(item) {
+  const bounds = commonBounds(item.elements);
+  const width = Math.max(bounds.width, 1);
+  const height = Math.max(bounds.height, 1);
+  const scale = Math.min(LIBRARY_ICON_HEIGHT / height, LIBRARY_ICON_MAX_WIDTH / width);
+  return { scale, width: width * scale, height: height * scale };
+}
+
+function isFlowchartVertexSkeleton(skeleton, nodeId) {
+  return (
+    skeleton?.id === nodeId &&
+    isNodeLabelContainer(skeleton) &&
+    skeleton.label &&
+    !(Array.isArray(skeleton.groupIds) && skeleton.groupIds.includes(`subgraph_group_${nodeId}`))
+  );
+}
+
+// Liang-Barsky: where the segment from `outside` to `inside` first enters the box.
+function segmentEntryPoint(outside, inside, box) {
+  const [x0, y0] = outside;
+  const dx = inside[0] - x0;
+  const dy = inside[1] - y0;
+  let entry = 0;
+  let exit = 1;
+  const edges = [
+    [-dx, x0 - box.minX],
+    [dx, box.maxX - x0],
+    [-dy, y0 - box.minY],
+    [dy, box.maxY - y0],
+  ];
+  for (const [p, q] of edges) {
+    if (p === 0) {
+      if (q < 0) return null;
+      continue;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > exit) return null;
+      entry = Math.max(entry, r);
+    } else {
+      if (r < entry) return null;
+      exit = Math.min(exit, r);
+    }
+  }
+  return [x0 + entry * dx, y0 + entry * dy];
+}
+
+function insideBox(point, box) {
+  return point[0] > box.minX && point[0] < box.maxX && point[1] > box.minY && point[1] < box.maxY;
+}
+
+// Excalidraw binds skeleton arrows without rerouting them, so an arrow that
+// ended on the node's old edge would stop short of, or end inside, the
+// resized node. Extend the last segment to the new edge, or walk back to the
+// first point outside and cut the path where it enters.
+function fitPathEnd(points, box) {
+  if (points.length < 2) return points;
+  if (!insideBox(points.at(-1), box)) {
+    const end = points.at(-1);
+    const previous = points.at(-2);
+    const length = Math.hypot(end[0] - previous[0], end[1] - previous[1]);
+    if (length === 0) return points;
+    const reach = (box.maxX - box.minX + box.maxY - box.minY) * 4;
+    const far = [
+      end[0] + ((end[0] - previous[0]) / length) * reach,
+      end[1] + ((end[1] - previous[1]) / length) * reach,
+    ];
+    const entry = segmentEntryPoint(end, far, box);
+    return entry ? [...points.slice(0, -1), entry] : points;
+  }
+  let outside = points.length - 2;
+  while (outside >= 0 && insideBox(points[outside], box)) outside -= 1;
+  if (outside < 0) return points;
+  const entry = segmentEntryPoint(points[outside], points[outside + 1], box);
+  return entry ? [...points.slice(0, outside + 1), entry] : points;
+}
+
+function trimArrowSkeleton(arrow, startBox, endBox) {
+  const x = Number(arrow.x) || 0;
+  const y = Number(arrow.y) || 0;
+  let points = arrow.points.map((point) => [x + (Number(point?.[0]) || 0), y + (Number(point?.[1]) || 0)]);
+  if (endBox) points = fitPathEnd(points, endBox);
+  if (startBox) points = fitPathEnd(points.slice().reverse(), startBox).reverse();
+  const [originX, originY] = points[0];
+  return { ...arrow, x: originX, y: originY, points: points.map(([px, py]) => [px - originX, py - originY]) };
+}
+
+/**
+ * Grow each directive's flowchart vertex to fit a library icon above its
+ * label, before Excalidraw materializes the skeletons.
+ * @param {any[]} skeletons
+ * The converter shrinks some labels (cylinders) to fit Mermaid's shape width;
+ * an icon node's box is resized anyway, so `labelFontSize` restores them.
+ * @param {{ nodeId: string, ref: string, item: { ref?: string, elements: any[] } | null }[]} icons
+ * @param {{ labelFontSize?: number }} [options]
+ * @returns {{ skeletons: any[], missing: { nodeId: string, ref: string, reason: "item" | "node" }[] }}
+ */
+export function prepareLibraryIconSkeletons(skeletons, icons, { labelFontSize = 0 } = {}) {
+  const list = Array.isArray(skeletons) ? skeletons : [];
+  /** @type {{ nodeId: string, ref: string, reason: "item" | "node" }[]} */
+  const missing = [];
+  const grown = new Map();
+  for (const icon of Array.isArray(icons) ? icons : []) {
+    if (!icon.item || !Array.isArray(icon.item.elements) || icon.item.elements.length === 0) {
+      missing.push({ nodeId: icon.nodeId, ref: icon.ref, reason: "item" });
+      continue;
+    }
+    const index = list.findIndex((skeleton) => isFlowchartVertexSkeleton(skeleton, icon.nodeId));
+    if (index < 0 || grown.has(icon.nodeId)) {
+      missing.push({ nodeId: icon.nodeId, ref: icon.ref, reason: "node" });
+      continue;
+    }
+    const node = list[index];
+    const iconSize = libraryIconSize(icon.item);
+    const fontSize = Math.max(Number(node.label.fontSize) || 0, labelFontSize) || undefined;
+    const label = estimateMultilineLabelBox(node.label.text, fontSize);
+    const width = Number(node.width) || 0;
+    const height = Number(node.height) || 0;
+    // The box is invisible, so it hugs icon and label; arrows are refitted below.
+    const nextWidth = Math.max(iconSize.width, label.width) + 2 * LIBRARY_ICON_PADDING;
+    const nextHeight =
+      LIBRARY_ICON_PADDING + iconSize.height + LIBRARY_ICON_LABEL_GAP + label.height + LIBRARY_ICON_PADDING;
+    const x = (Number(node.x) || 0) - (nextWidth - width) / 2;
+    const y = (Number(node.y) || 0) - (nextHeight - height) / 2;
+    grown.set(icon.nodeId, {
+      index,
+      node: {
+        ...node,
+        x,
+        y,
+        width: nextWidth,
+        height: nextHeight,
+        strokeColor: "transparent",
+        backgroundColor: "transparent",
+        // Bound text inherits the container's stroke color, which is now
+        // transparent, so the label keeps the node's original color.
+        label: {
+          ...node.label,
+          ...(fontSize ? { fontSize } : {}),
+          verticalAlign: "bottom",
+          strokeColor: node.label.strokeColor || node.strokeColor || "#1e1e1e",
+        },
+        customData: { ...node.customData, [ICON_NODE_CUSTOM_DATA_KEY]: icon.item.ref || icon.ref },
+      },
+      box: {
+        minX: x - LIBRARY_ICON_ARROW_GAP,
+        minY: y - LIBRARY_ICON_ARROW_GAP,
+        maxX: x + nextWidth + LIBRARY_ICON_ARROW_GAP,
+        maxY: y + nextHeight + LIBRARY_ICON_ARROW_GAP,
+      },
+    });
+  }
+  if (grown.size === 0) return { skeletons: list, missing };
+  const prepared = list.map((skeleton, index) => {
+    for (const entry of grown.values()) if (entry.index === index) return entry.node;
+    if (skeleton?.type !== "arrow" || !Array.isArray(skeleton.points)) return skeleton;
+    const startBox = grown.get(skeleton.start?.id)?.box;
+    const endBox = grown.get(skeleton.end?.id)?.box;
+    return startBox || endBox ? trimArrowSkeleton(skeleton, startBox, endBox) : skeleton;
+  });
+  return { skeletons: prepared, missing };
+}
+
+function cloneIconElements(item, { idPrefix, ref, left, top, outerGroupIds }) {
+  const { minX, minY } = commonBounds(item.elements);
+  const { scale } = libraryIconSize(item);
+  const ids = new Map(item.elements.map((element, index) => [element.id, `${idPrefix}:${index}`]));
+  const mapId = (id) => (ids.has(id) ? ids.get(id) : null);
+  const mapBinding = (binding) =>
+    binding && mapId(binding.elementId) ? { ...binding, elementId: mapId(binding.elementId) } : null;
+  return item.elements.map((element) => {
+    const clone = {
+      ...element,
+      id: mapId(element.id),
+      x: left + ((Number(element.x) || 0) - minX) * scale,
+      y: top + ((Number(element.y) || 0) - minY) * scale,
+      width: (Number(element.width) || 0) * scale,
+      height: (Number(element.height) || 0) * scale,
+      groupIds: [
+        ...(Array.isArray(element.groupIds) ? element.groupIds : []).map((groupId) => `${idPrefix}:${groupId}`),
+        ...outerGroupIds,
+      ],
+      frameId: null,
+      customData: { ...element.customData, [LIBRARY_REF_CUSTOM_DATA_KEY]: ref },
+    };
+    delete clone.index;
+    if (Array.isArray(element.points)) {
+      clone.points = element.points.map((point) => [
+        (Number(point?.[0]) || 0) * scale,
+        (Number(point?.[1]) || 0) * scale,
+      ]);
+    }
+    if (typeof element.fontSize === "number") clone.fontSize = element.fontSize * scale;
+    if ("containerId" in element) clone.containerId = element.containerId ? mapId(element.containerId) : null;
+    if (Array.isArray(element.boundElements)) {
+      clone.boundElements = element.boundElements
+        .filter((bound) => mapId(bound?.id))
+        .map((bound) => ({ ...bound, id: mapId(bound.id) }));
+    }
+    if ("startBinding" in element) clone.startBinding = mapBinding(element.startBinding);
+    if ("endBinding" in element) clone.endBinding = mapBinding(element.endBinding);
+    return clone;
+  });
+}
+
+/**
+ * Add the library icon to every vertex `prepareLibraryIconSkeletons` grew.
+ * Icon element ids derive from the vertex id, so re-conversions are stable.
+ * @param {any[]} elements
+ * @param {(ref: string) => { ref?: string, elements: any[] } | null} resolveItem
+ */
+export function placeLibraryIcons(elements, resolveItem) {
+  const list = Array.isArray(elements) ? elements : [];
+  const nodes = list.filter(
+    (element) => isNodeLabelContainer(element) && typeof element.customData?.[ICON_NODE_CUSTOM_DATA_KEY] === "string",
+  );
+  if (nodes.length === 0) return list;
+  const updates = new Map();
+  const icons = new Map();
+  for (const node of nodes) {
+    const ref = node.customData[ICON_NODE_CUSTOM_DATA_KEY];
+    const item = resolveItem(ref);
+    if (!item || !Array.isArray(item.elements) || item.elements.length === 0) continue;
+    const iconGroup = `${node.id}:icon`;
+    const outerGroupIds = [iconGroup, ...(Array.isArray(node.groupIds) ? node.groupIds : [])];
+    const left = (Number(node.x) || 0) + ((Number(node.width) || 0) - libraryIconSize(item).width) / 2;
+    const top = (Number(node.y) || 0) + LIBRARY_ICON_PADDING;
+    updates.set(node.id, { ...node, groupIds: outerGroupIds });
+    const label = list.find((element) => element?.type === "text" && element.containerId === node.id);
+    if (label) {
+      const height = Number(label.height) || 0;
+      updates.set(label.id, {
+        ...label,
+        groupIds: outerGroupIds,
+        y: (Number(node.y) || 0) + (Number(node.height) || 0) - height - LIBRARY_ICON_LABEL_BOTTOM_PADDING,
+      });
+    }
+    icons.set(
+      label ? label.id : node.id,
+      cloneIconElements(item, { idPrefix: iconGroup, ref: item.ref || ref, left, top, outerGroupIds }),
+    );
+  }
+  return list.flatMap((element) => {
+    const updated = updates.get(element?.id) ?? element;
+    return icons.has(element?.id) ? [updated, ...icons.get(element.id)] : [updated];
+  });
+}
+
 // Only plain web/mail links may leave the whiteboard. Everything else -
 // javascript:, data:, file:, vbscript:, chrome:, about:, or relative noise
 // coming from untrusted Mermaid `click` directives - is dropped.
@@ -260,12 +603,28 @@ export function repairSavedSceneTextMetrics(elements, { measure }) {
   return { elements: repairedElements, repaired };
 }
 
+// A scene converted from icon directives while the libraries were unavailable,
+// or did not match the snapshot the source hash was computed from, may show
+// missing or wrong icons although its hash assumes the right ones. Every save
+// of such a scene, autosave and queued feedback alike, keeps the full scene but
+// records a hash that can never match, so a later open re-converts it with the
+// right libraries (or offers the keep-or-re-convert choice when it was edited).
+// A restored scene keeps its saved hash, and a diagram without directives is
+// never affected by libraries.
+export const UNVERIFIED_LIBRARIES_HASH_SUFFIX = ":libraries-unverified";
+
+export function conversionUsesUnverifiedLibraries(source, librariesUnavailable) {
+  return librariesUnavailable === true && parseLibraryIconDirectives(source).length > 0;
+}
+
 export function createWhiteboardPersistencePayload(state, scene) {
+  const baselineElements = Array.isArray(state?.baselineElements) ? state.baselineElements : [];
+  const sourceHash = String(state?.sceneSourceHash || "");
   return {
-    sourceHash: String(state?.sceneSourceHash || ""),
+    sourceHash: state?.drawnWithUnverifiedLibraries ? `${sourceHash}${UNVERIFIED_LIBRARIES_HASH_SUFFIX}` : sourceHash,
     textMetricsVersion: Math.max(0, Math.floor(Number(state?.textMetricsVersion) || 0)),
     scene: scene ?? null,
-    baseline: { elements: Array.isArray(state?.baselineElements) ? state.baselineElements : [] },
+    baseline: { elements: baselineElements },
   };
 }
 
@@ -413,9 +772,23 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
 
   const stats = { added: 0, removed: 0, moved: 0, relabeled: 0, drawn: 0 };
   const lines = [];
+  const addedItems = new Map();
+  const removedItems = new Map();
+  const movedItems = new Map();
 
   for (const el of edited) {
     if (baselineMap.has(el.id)) continue;
+    if (libraryRefOf(el)) {
+      const [minX, minY] = elementBounds(el);
+      const entry = addedItems.get(libraryGroupKey(el));
+      if (entry) {
+        entry.x = Math.min(entry.x, minX);
+        entry.y = Math.min(entry.y, minY);
+      } else {
+        addedItems.set(libraryGroupKey(el), { ref: libraryRefOf(el), x: minX, y: minY });
+      }
+      continue;
+    }
     if (el.type === "text" && el.containerId && !baselineText.has(el.containerId) && editedMap.has(el.containerId)) {
       // Label of a newly added container - reported with the container itself.
       continue;
@@ -430,8 +803,19 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     lines.push(clampLine(`Added ${describeElement(el, editedText)}${endpoints}`));
   }
 
+  for (const { ref, x, y } of addedItems.values()) {
+    stats.added += 1;
+    lines.push(clampLine(`Added library item ${ref} near (${Math.round(x)}, ${Math.round(y)})`));
+  }
+
   for (const el of baseline) {
     if (editedMap.has(el.id)) continue;
+    if (libraryRefOf(el)) {
+      const key = libraryGroupKey(el);
+      if (!removedItems.has(key)) removedItems.set(key, { ref: libraryRefOf(el), group: libraryGroupOf(el), parts: 0 });
+      removedItems.get(key).parts += 1;
+      continue;
+    }
     if (el.type === "text" && el.containerId && baselineMap.has(el.containerId)) {
       // Bound label removal surfaces through its container's relabel/remove.
       continue;
@@ -440,9 +824,29 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     lines.push(clampLine(`Removed ${describeElement(el, baselineText)}`));
   }
 
+  const survivingItems = new Set(
+    edited.filter((el) => baselineMap.has(el.id) && libraryRefOf(el)).map((el) => libraryGroupKey(el)),
+  );
+  for (const [key, { ref, group }] of removedItems) {
+    if (survivingItems.has(key)) continue;
+    const node = iconNodeFor(baseline, group);
+    if (node && !editedMap.has(node.id)) continue;
+    stats.removed += 1;
+    lines.push(clampLine(`Removed library item ${ref}${node ? ` from ${describeElement(node, baselineText)}` : ""}`));
+  }
+
   for (const el of edited) {
     const before = baselineMap.get(el.id);
     if (!before) continue;
+    if (libraryRefOf(el)) {
+      const key = libraryGroupKey(el);
+      if (!movedItems.has(key)) {
+        movedItems.set(key, { ref: libraryRefOf(el), group: libraryGroupOf(el), before: [], after: [] });
+      }
+      movedItems.get(key).before.push(before);
+      movedItems.get(key).after.push(el);
+      continue;
+    }
 
     const beforeLabel = elementLabel(before, baselineText);
     const afterLabel = elementLabel(el, editedText);
@@ -470,6 +874,44 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     }
   }
 
+  for (const [key, { ref, group, before, after }] of movedItems) {
+    // Geometry is compared for the item as a whole. An icon node's icon is
+    // measured relative to its node, which reports its own moves.
+    const node = iconNodeFor(edited, group);
+    const nodeBefore = node ? baselineMap.get(node.id) : null;
+    const shiftX = node && nodeBefore ? (node.x ?? 0) - (nodeBefore.x ?? 0) : 0;
+    const shiftY = node && nodeBefore ? (node.y ?? 0) - (nodeBefore.y ?? 0) : 0;
+    const was = commonBounds(before);
+    const now = commonBounds(after);
+    const dx = Math.round(now.minX - was.minX - shiftX);
+    const dy = Math.round(now.minY - was.minY - shiftY);
+    const dw = Math.round(now.width - was.width);
+    const dh = Math.round(now.height - was.height);
+    const where = node ? ` in ${describeElement(node, editedText)}` : "";
+    const movedFar = Math.abs(dx) > SUMMARY_MOVE_EPSILON_PX || Math.abs(dy) > SUMMARY_MOVE_EPSILON_PX;
+    const resized = Math.abs(dw) > SUMMARY_MOVE_EPSILON_PX || Math.abs(dh) > SUMMARY_MOVE_EPSILON_PX;
+    if (movedFar || resized) {
+      stats.moved += 1;
+      const parts = [];
+      if (movedFar) parts.push(`Moved library item ${ref} by (${dx}, ${dy})`);
+      if (resized)
+        parts.push(movedFar ? `resized it by (${dw}, ${dh})` : `Resized library item ${ref} by (${dw}, ${dh})`);
+      lines.push(clampLine(`${parts.join(" and ")}${where}`));
+    }
+    const removedParts = removedItems.get(key)?.parts ?? 0;
+    if (
+      removedParts > 0 ||
+      before.some(
+        (element, index) =>
+          libraryContentDiffers(element, after[index]) || libraryPartMoved(element, after[index], was, now),
+      )
+    ) {
+      stats.relabeled += 1;
+      const removal = removedParts > 0 ? `: removed ${removedParts} of ${removedParts + before.length} parts` : "";
+      lines.push(clampLine(`Edited library item ${ref}${removal}${where}`));
+    }
+  }
+
   const total = STAT_KEYS.reduce((sum, key) => sum + stats[key], 0);
   const bounded = lines.slice(0, maxLines);
   if (lines.length > bounded.length) {
@@ -479,6 +921,68 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
   }
   if (total === 0) bounded.push("No element changes detected (view-only or style-only edits).");
   return { lines: bounded, stats, totalChanges: total };
+}
+
+const LIBRARY_GEOMETRY_KEYS = new Set(["x", "y", "width", "height", "points", "lastCommittedPoint"]);
+
+// A change inside a library item other than where it sits or how big it is:
+// edited text, a reshaped or restyled-in-substance part. Style-only keys stay
+// benign, as for every other element.
+function libraryContentDiffers(before, after) {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (key === "isDeleted" || LIBRARY_GEOMETRY_KEYS.has(key)) continue;
+    if (valuesDiffer(before[key], after[key], key, true)) return true;
+  }
+  return false;
+}
+
+// Whether one part of a library item moved, resized, or was reshaped beyond
+// what the item's overall move and scale explain - an edit inside the item
+// that its outline alone would not show.
+function libraryPartMoved(before, after, was, now) {
+  const sx = was.width > 0 ? now.width / was.width : 1;
+  const sy = was.height > 0 ? now.height / was.height : 1;
+  const off = (actual, expected) => Math.abs((Number(actual) || 0) - expected) > SUMMARY_MOVE_EPSILON_PX;
+  if (off(after.x, now.minX + ((Number(before.x) || 0) - was.minX) * sx)) return true;
+  if (off(after.y, now.minY + ((Number(before.y) || 0) - was.minY) * sy)) return true;
+  if (off(after.width, (Number(before.width) || 0) * sx)) return true;
+  if (off(after.height, (Number(before.height) || 0) * sy)) return true;
+  const pointsBefore = Array.isArray(before.points) ? before.points : [];
+  const pointsAfter = Array.isArray(after.points) ? after.points : [];
+  if (pointsBefore.length !== pointsAfter.length) return true;
+  return pointsBefore.some(
+    (point, index) =>
+      off(pointsAfter[index]?.[0], (Number(point?.[0]) || 0) * sx) ||
+      off(pointsAfter[index]?.[1], (Number(point?.[1]) || 0) * sy),
+  );
+}
+
+function libraryRefOf(el) {
+  const ref = el?.customData?.[LIBRARY_REF_CUSTOM_DATA_KEY];
+  return typeof ref === "string" ? ref : "";
+}
+
+// The outermost non-subgraph group is the one instance of a library item: an
+// icon node's `<id>:icon` group, or the group a dropped item came with.
+function libraryGroupOf(el) {
+  const groups = (Array.isArray(el.groupIds) ? el.groupIds : []).filter(
+    (groupId) => !String(groupId).startsWith("subgraph_group_"),
+  );
+  return groups.length > 0 ? String(groups.at(-1)) : "";
+}
+
+function libraryGroupKey(el) {
+  return `${libraryRefOf(el)}\u0000${libraryGroupOf(el) || el.id}`;
+}
+
+function iconNodeFor(elements, group) {
+  if (!group) return null;
+  return (
+    elements.find(
+      (el) => !libraryRefOf(el) && el.type !== "text" && Array.isArray(el.groupIds) && el.groupIds.includes(group),
+    ) || null
+  );
 }
 
 function capitalize(text) {

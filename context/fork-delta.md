@@ -1,15 +1,20 @@
 # Fork delta
 
-This fork was reviewed against `upstream/main` at `4413dcc` on 2026-09-17.
+This fork was reviewed against `upstream/main` at `18cb923` on 2026-10-16.
 The upstream sync retains four intentional policies and four compatibility
 fixes. Other historical fork commits no longer change the effective tree.
 
-The reviewed delta from `ca4c59d` through `4413dcc` (v0.1.68–v0.1.71) includes
-the snapshot-stall feedback fix, structured conversation history, durable
-prompt-identity settlement, bounded 5 MiB transcripts, and the
-`--agent-reply-file` CLI input. Upstream release commits through v0.1.71 were
-reviewed but their version changes were not imported because this fork keeps
-its own release line.
+The reviewed delta from `4413dcc` through `18cb923` (v0.1.72–v0.1.89) includes
+the HTML-artifact-tree constraint for sessions and assets, server bind
+durability and discovery rework, exclusive poll-listener ownership, the
+`reply` command with server acceptance receipt, queued-annotation editing,
+per-note delivery receipts, revision legend, whiteboard Excalidraw libraries
+and library-icon nodes, artifact-declared annotation mode, ARIA widget
+pass-through, Ctrl/Cmd-click link following, IME Enter handling, newer-CLI
+version adoption, explanation playbook, Herdr chime, agent-guidance trim into
+`docs/invariants.md`, and telemetry wording fixes. Upstream release commits
+through v0.1.89 were reviewed but their version changes were not imported
+because this fork keeps its own release line.
 
 ## Retained policies
 
@@ -22,8 +27,10 @@ instead of downloading whichever package version resolves at invocation time.
 
 Keep this policy while the fork is distributed through a reviewed wrapper or
 pinned installation. Its owner is `src/skill.js`; `skills/lavish/SKILL.md` is
-generated from it. `README.md`, `AGENTS.md`, and `test/skill.test.js` describe
-and verify the policy.
+generated from it via `pnpm run build:skill`. `README.md`, `AGENTS.md`, and
+`test/skill.test.js` describe and verify the policy. This sync takes upstream's
+`(HTML files)` description tweak, `as an HTML file` slash-command wording, and
+the new `reply --help` stub line, adapted to the `lavish-axi` PATH form.
 
 The original commit also removed nested Hermes metadata because that shape did
 not satisfy the Agent Skills frontmatter contract. Upstream now uses flat,
@@ -40,7 +47,8 @@ and creates a public page by default unless the user supplies a password.
 Keep this policy unless the publication boundary changes. Its owner is the
 runtime guidance in `src/cli.js`; `test/cli-output.test.js` verifies both home
 and command-help output. The generated skill points at that live CLI guidance
-instead of copying it.
+instead of copying it. `AGENTS.md` and `docs/invariants.md` record the boundary
+for future share modes.
 
 ### Require an explicit opt-in for Tailscale access
 
@@ -52,9 +60,13 @@ and teardown implementation but enables it only when
 
 The default stays loopback-only because the review server is unauthenticated
 and can read and serve local artifact files. Its owner is the activation gate
-in `src/server.js`; `test/server.test.js` verifies both the disabled default and
-the opted-in server behavior. `src/cli.js`, `README.md`, and `AGENTS.md` own the
-matching runtime, user, and architecture guidance.
+in `src/server.js` (`autoTailscale` requires `LAVISH_AXI_TAILSCALE=1`);
+`test/server.test.js` verifies both the disabled default and
+the opted-in server behavior. `src/cli.js`, `src/paths.js`, `README.md`,
+`AGENTS.md`, and `docs/invariants.md` own the matching runtime, user, and
+architecture guidance. This sync keeps the gate through upstream's bind-retry,
+discovery, `--also-listen`, and reconciliation rework; the server help text
+takes upstream's durability details while retaining the opt-in.
 
 ### Keep release metadata on the fork's release line
 
