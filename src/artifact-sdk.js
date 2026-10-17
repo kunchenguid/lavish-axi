@@ -1514,9 +1514,11 @@ export function createArtifactSdk(
     return isDiagramLayoutElement(el) || hasVisualMaskAncestor(el) || hasStandardVisuallyHiddenAncestor(el);
   }
 
+  // Diagram interiors are filtered before the cap, not after: every audit skips them anyway, and an
+  // inline figure's hundreds of nodes would otherwise crowd the page's real content out of the 800.
   function collectLayoutAuditElements() {
     return [...(document.body?.querySelectorAll("*") || [])]
-      .filter((el) => el instanceof Element && !isLavishUi(el))
+      .filter((el) => el instanceof Element && !isLavishUi(el) && !isDiagramLayoutElement(el))
       .slice(0, 800);
   }
 
@@ -1894,8 +1896,10 @@ export function createArtifactSdk(
 
       if (typeof ResizeObserver !== "undefined") {
         observer = new ResizeObserver(scheduleFinish);
+        // An <svg>'s own box is page geometry; the shapes inside it are not, and the audit never
+        // inspects them. Observing them only fills the cap and adds resize callbacks (#370).
         const observed = [document.documentElement, document.body, ...[...(document.body?.querySelectorAll("*") || [])]]
-          .filter(Boolean)
+          .filter((el) => el && !el.parentElement?.closest?.("svg"))
           .slice(0, 800);
         for (const el of observed) observer.observe(el);
       }
@@ -2044,7 +2048,20 @@ export function createArtifactSdk(
     }, 50);
   }
 
+  // The chrome masks the artifact until this fires, so it waits only for what a reveal would
+  // visibly change - fonts and one painted frame. The layout audit's geometry, animation, and
+  // hydration waits run after the reveal: their findings only feed the passive inbox (#370).
+  let revealReadySignalled = false;
+  async function signalRevealReady() {
+    if (revealReadySignalled) return;
+    revealReadySignalled = true;
+    await waitForDocumentFontsReady();
+    await waitForAnimationFrames(1);
+    postArtifactMessage("lavish:revealReady", { artifact_revision: artifactRevision });
+  }
+
   function startLayoutAudit() {
+    signalRevealReady();
     scheduleLayoutAudit();
     window.addEventListener("load", () => scheduleLayoutAudit(), { once: true });
     window.addEventListener("resize", () => scheduleLayoutAudit(), { passive: true });

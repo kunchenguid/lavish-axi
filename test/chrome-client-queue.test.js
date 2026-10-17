@@ -3953,6 +3953,69 @@ test("the layout gate reveals after a completed pass with no findings", async ()
   assert.deepEqual(posts[0].body.findings, []);
 });
 
+// #370: the audit only feeds the passive inbox, so the gate releases as soon as the artifact has
+// painted and the audit's quiescence waits run behind an already-visible page.
+test("the layout gate reveals on reveal-ready, before any diagnostic pass, and the inbox still fills", async () => {
+  const { posts, fetchImpl } = diagnosticsHarness([[warningPayload()]]);
+  const chrome = await createChromeHarness({ fetchImpl });
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+
+  chrome.sendFrameMessage({ type: "lavish:revealReady", artifact_revision: 1 });
+  await flushPromises();
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true, "the user sees the artifact");
+  assert.equal(chrome.element("body").classList.contains("layout-gate-active"), false);
+  assert.equal(posts.length, 0, "the reveal waits on no diagnostic round-trip");
+
+  chrome.sendFrameMessage({
+    type: "lavish:layoutDiagnostics",
+    complete: true,
+    viewport_width: 720,
+    findings: [{ selector: "html", kind: "page-horizontal-overflow", overflowPx: 18, severity: "error" }],
+  });
+  await flushPromises();
+
+  assert.equal(posts[0].url, "/api/abc/layout-diagnostics");
+  assert.equal(chrome.element("warningsWrap").hidden, false, "the later audit still lands in the inbox");
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+});
+
+test("an incomplete diagnostic pass cannot hold a page that already signalled reveal-ready", async () => {
+  const { fetchImpl } = diagnosticsHarness([[]]);
+  const chrome = await createChromeHarness({ fetchImpl });
+
+  chrome.sendFrameMessage({ type: "lavish:revealReady", artifact_revision: 1 });
+  chrome.sendFrameMessage({ type: "lavish:layoutDiagnostics", complete: false, viewport_width: 720, findings: [] });
+  await flushPromises();
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+});
+
+test("a stale prior-document reveal-ready cannot reveal the new gate", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { key: "abc", file: "/tmp/artifact.html", layoutGateMaxHoldMs: 25 },
+    artifactSrc: "/artifact/abc/index.html",
+  });
+
+  const oldToken = chrome.artifactLoadToken();
+  chrome.runTimers(25);
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+
+  chrome.sendFrameMessage({ artifact_load_token: oldToken, type: "lavish:revealReady", artifact_revision: 1 });
+  await flushPromises();
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:revealReady",
+    artifact_revision: 2,
+  });
+  await flushPromises();
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+});
+
 // The gate used to hold the artifact hostage until an agent repaired the finding. Triage is the
 // user's now, so a completed pass always reveals and hands the result to the inbox.
 test("the layout gate reveals on severe findings and points at the inbox instead of holding", async () => {

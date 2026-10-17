@@ -2265,7 +2265,7 @@ function setLayoutGateCard(state) {
   }
 
   layoutGateTitle.innerHTML = "Checking layout.<br>One moment.";
-  layoutGateCopy.textContent = "Lavish is waiting for fonts and final geometry before revealing this artifact.";
+  layoutGateCopy.textContent = "Lavish is waiting for this artifact's fonts and first paint.";
 }
 
 function setLayoutGateActive(active) {
@@ -2403,9 +2403,11 @@ function startLayoutGateCycle() {
   armLayoutGateTimer();
 }
 
-// The gate only waits for fonts and final geometry now. It never holds the artifact hostage
-// pending an agent repair: findings are the user's to triage, so a completed pass always reveals
-// and hands the result to the passive inbox.
+// The gate only waits for the artifact's fonts and first painted frame (`lavish:revealReady`).
+// The layout audit runs after the reveal and only feeds the passive inbox, so its geometry and
+// hydration waits never hold the reviewer (#370). A completed pass still reveals, as a fallback
+// for a reveal-ready signal that lost a token race, and never holds the artifact hostage pending
+// an agent repair: findings are the user's to triage.
 function handleLayoutGatePass() {
   if (ended || !layoutGateVisible) return;
   revealLayoutGate();
@@ -4243,6 +4245,10 @@ window.addEventListener("message", (event) => {
           handleLayoutGatePass();
         }
       });
+    return;
+  }
+  if (msg.type === "lavish:revealReady") {
+    handleLayoutGatePass();
     return;
   }
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
