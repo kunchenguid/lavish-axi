@@ -7087,13 +7087,13 @@ test("the dock summarizes what the user should know while the sheet is down", as
     fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
   });
 
-  assert.equal(sheetState(chrome).summary, "Agent not listening");
+  assert.equal(sheetState(chrome).summary, "Checking agent connection…");
 
   chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
   assert.equal(sheetState(chrome).summary, "Agent listening");
 
   chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
-  assert.equal(sheetState(chrome).summary, "Agent is working…");
+  assert.equal(sheetState(chrome).summary, "Feedback delivered");
 
   // A reply that lands behind the artifact is previewed on the dock until the sheet comes up.
   chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Renamed the payment step." }) });
@@ -7127,13 +7127,13 @@ test("the dock summarizes what the user should know while the sheet is down", as
   await flushPromises();
   await flushPromises();
   assert.equal(chrome.queued().length, 0);
-  assert.equal(sheetState(chrome).summary, "Agent is working…");
+  assert.equal(sheetState(chrome).summary, "Feedback delivered");
   assert.doesNotMatch(sheetState(chrome).summaryClass, /is-unread/);
 
   // A reply that arrives while the sheet is up was seen, so lowering it previews nothing.
   chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Done." }) });
   chrome.element("panelHead").dispatch("click", {});
-  assert.equal(sheetState(chrome).summary, "Agent is working…");
+  assert.equal(sheetState(chrome).summary, "Feedback delivered");
 });
 
 test("the dock reports an ended session", async () => {
@@ -8982,4 +8982,41 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   });
   assert.equal(failed.librariesUnavailable, true);
   assert.equal(JSON.stringify(failed.libraries), "[]");
+});
+
+test("listener status is visible before annotating and does not claim delivered feedback is live work", async () => {
+  const chrome = await createChromeHarness();
+  const status = chrome.element("listenerStatus");
+  assert.equal(status.textContent, "Checking agent connection…");
+  const presence = (data) => chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify(data) });
+  presence({ state: "waiting" });
+  assert.equal(status.textContent, "No agent listening");
+  presence({ state: "listening" });
+  assert.equal(status.textContent, "Agent listening");
+  presence({ state: "working" });
+  assert.equal(status.textContent, "Feedback delivered · no active listener");
+  const bubble = chrome.element("chatLog").children.find((child) => String(child.className).includes("agent-working"));
+  assert.match(bubble.innerHTML, /Feedback delivered/);
+  assert.doesNotMatch(bubble.innerHTML, /spinner|Working/);
+  presence({ state: "working", mode: "external-listener" });
+  assert.equal(status.textContent, "External listener active");
+  chrome.eventSource().listeners.get("ended")({ data: "{}" });
+  assert.equal(status.textContent, "Session ended");
+});
+
+test("listener status stops claiming presence on disconnect until a fresh presence event", async () => {
+  const chrome = await createChromeHarness();
+  const socket = chrome.webSocket();
+  socket.listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  socket.listeners.get("close")();
+  assert.equal(chrome.element("listenerStatus").textContent, "Connection lost · status unknown");
+  assert.equal(chrome.element("presenceBanner").hidden, true);
+  chrome.runTimers(500);
+  const replacement = chrome.webSocketAt(1);
+  replacement.listeners.get("open")();
+  assert.equal(chrome.element("listenerStatus").textContent, "Checking agent connection…");
+  replacement.listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
+  assert.equal(chrome.element("listenerStatus").textContent, "No agent listening");
+  socket.listeners.get("close")();
+  assert.equal(chrome.element("listenerStatus").textContent, "No agent listening");
 });

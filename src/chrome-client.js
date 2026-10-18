@@ -1131,8 +1131,32 @@ function syncChat(chat, revision) {
   return true;
 }
 
+const listenerStatus = /** @type {HTMLDivElement} */ (document.getElementById("listenerStatus"));
+let listenerConnection = "checking";
+
+function renderListenerStatus() {
+  let state = listenerConnection;
+  let text = "Checking agent connection…";
+  if (ended) {
+    state = "ended";
+    text = "Session ended";
+  } else if (listenerConnection === "disconnected") {
+    text = "Connection lost · status unknown";
+  } else if (listenerConnection === "connected") {
+    state = agentPresence;
+    if (agentPresence === "listening") text = "Agent listening";
+    else if (agentPresence === "external") text = "External listener active";
+    else if (agentPresence === "working") text = "Feedback delivered · no active listener";
+    else text = "No agent listening";
+  }
+  listenerStatus.textContent = text;
+  listenerStatus.dataset.state = state;
+  listenerStatus.title = state === "waiting" ? "Ask your agent to poll for updates from Lavish." : text;
+}
+
 function setAgentPresence(state) {
   agentPresence = state === "listening" || state === "external" || state === "working" ? state : "waiting";
+  renderListenerStatus();
   updateSendState();
   renderSheetSummary();
   refreshUnseenReceipts();
@@ -1149,9 +1173,10 @@ function setAgentPresence(state) {
   if (!workingBubble) {
     workingBubble = document.createElement("div");
     workingBubble.className = "bubble agent agent-working";
-    workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
     chatLog.appendChild(workingBubble);
   }
+  workingBubble.innerHTML =
+    agentPresence === "external" ? "<span>External listener active</span>" : "<span>Feedback delivered</span>";
   scrollElementIntoView(workingBubble);
 }
 
@@ -1356,7 +1381,10 @@ function sheetSummary() {
     return { text: queued.length === 1 ? "1 queued" : queued.length + " queued", accent: true, unread: false };
   }
   if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true };
-  if (agentPresence === "working") return { text: "Agent is working…", accent: false, unread: false };
+  if (listenerConnection === "disconnected")
+    return { text: "Connection lost · status unknown", accent: false, unread: false };
+  if (listenerConnection === "checking") return { text: "Checking agent connection…", accent: false, unread: false };
+  if (agentPresence === "working") return { text: "Feedback delivered", accent: false, unread: false };
   if (agentPresence === "external") return { text: "External listener active", accent: false, unread: false };
   if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false };
   return { text: "Agent not listening", accent: false, unread: false };
@@ -3085,6 +3113,7 @@ function markSessionEnded() {
   chatInput.disabled = true;
   updateSendState();
   applySheetState();
+  renderListenerStatus();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
   if (outdatedBanner) outdatedBanner.hidden = true;
@@ -4626,10 +4655,17 @@ initializeLayoutGate();
 // WebSockets leave the browser's HTTP connection pool free for sends and artifact loads.
 const events = new Map();
 let eventReconnectDelayMs = 500;
+/** @type {WebSocket | null} */
+let activeEventSocket = null;
 function connectLiveEvents() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
+  activeEventSocket = socket;
   socket.addEventListener("open", () => {
+    if (socket !== activeEventSocket) return;
+    listenerConnection = "checking";
+    renderListenerStatus();
+    renderSheetSummary();
     eventReconnectDelayMs = 500;
     liveEventFailures = 0;
     unreachableDismissed = false;
@@ -4640,6 +4676,7 @@ function connectLiveEvents() {
     refreshLayoutWarnings();
   });
   socket.addEventListener("message", (message) => {
+    if (socket !== activeEventSocket) return;
     try {
       const { type, data } = JSON.parse(message.data);
       return events.get(type)?.(data || {});
@@ -4648,6 +4685,12 @@ function connectLiveEvents() {
     }
   });
   socket.addEventListener("close", () => {
+    if (socket !== activeEventSocket) return;
+    activeEventSocket = null;
+    listenerConnection = "disconnected";
+    renderListenerStatus();
+    renderSheetSummary();
+    if (presenceBanner) presenceBanner.hidden = true;
     liveEventFailures += 1;
     noteLiveEventsUnreachable();
     setTimeout(connectLiveEvents, eventReconnectDelayMs);
@@ -4688,7 +4731,10 @@ events.set("chat-sync", (data) => {
   rememberChatAckIds(data.ack_ids);
   syncChat(data.chat || [], data.chat_revision);
 });
-events.set("agent-presence", (data) => setAgentPresence(data.mode === "external-listener" ? "external" : data.state));
+events.set("agent-presence", (data) => {
+  listenerConnection = "connected";
+  setAgentPresence(data.mode === "external-listener" ? "external" : data.state);
+});
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());
 connectLiveEvents();
