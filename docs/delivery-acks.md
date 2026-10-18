@@ -7,7 +7,7 @@ the user-facing wording once this ships; [invariants.md](invariants.md) owns the
 
 A reviewer sends a note and cannot tell whether anything picked it up. Today the panel has one
 session-wide signal - the `agent-presence` stream (`waiting` / `listening` / `working`) and the
-"Working..." bubble - and a sent note looks identical whether it is sitting undelivered in
+presence bubble - and a sent note looks identical whether it is sitting undelivered in
 `state.json`, has been handed to a poll, or was answered an hour ago.
 
 ## What Lavish can already observe
