@@ -7089,6 +7089,9 @@ test("the dock summarizes what the user should know while the sheet is down", as
 
   assert.equal(sheetState(chrome).summary, "Checking agent connection…");
 
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
+  assert.equal(sheetState(chrome).summary, "Agent not listening");
+
   chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
   assert.equal(sheetState(chrome).summary, "Agent listening");
 
@@ -8875,7 +8878,7 @@ test("an unseen bubble's receipt names the live presence and re-renders when it 
   presence({ state: "listening", mode: "agent-listener" });
   assert.equal(receiptNote(bubbles[0].innerHTML), "Delivering");
   presence({ state: "waiting" });
-  assert.equal(receiptNote(bubbles[0].innerHTML), "Your agent is not listening.");
+  assert.equal(receiptNote(bubbles[0].innerHTML), "No agent is listening");
   assert.equal(bubbles[1].innerHTML, seenHtml, "a seen bubble does not depend on presence");
 });
 
@@ -9068,7 +9071,7 @@ test("initial and reconnected unknown presence never shows a no-listener banner 
   assert.equal(receiptNote(bubble.innerHTML), "Checking agent connection…");
   replacement.listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
   assert.equal(chrome.element("presenceBanner").hidden, false);
-  assert.equal(receiptNote(bubble.innerHTML), "Your agent is not listening.");
+  assert.equal(receiptNote(bubble.innerHTML), "No agent is listening");
   const status = chrome.postedToFrame.filter((message) => message.type === "lavish:listenerStatus").at(-1);
   assert.equal(status.text, "Your agent is not listening.");
 });

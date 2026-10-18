@@ -958,7 +958,7 @@ function receiptStepHtml(label, at) {
 function receiptNoteText() {
   if (listenerConnection === "disconnected") return "Connection lost; delivery status unknown";
   if (listenerConnection !== "connected") return "Checking agent connection…";
-  if (agentPresence === "waiting") return listenerStatusMessage().text;
+  if (agentPresence === "waiting") return "No agent is listening";
   if (agentPresence === "listening") return "Delivering";
   return "Agent is busy; delivered on its next poll";
 }
@@ -1388,7 +1388,8 @@ function sheetSummary() {
     return { text: queued.length === 1 ? "1 queued" : queued.length + " queued", accent: true, unread: false };
   }
   if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true };
-  return { text: listenerStatusMessage().text, accent: false, unread: false };
+  const status = listenerStatusMessage();
+  return { text: status.state === "waiting" ? "Agent not listening" : status.text, accent: false, unread: false };
 }
 
 function renderSheetSummary() {
