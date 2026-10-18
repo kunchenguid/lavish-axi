@@ -494,7 +494,7 @@ export function createArtifactSdk(
     const labels = {
       checking: "Checking agent connection…",
       listening: "Agent listening",
-      waiting: "No agent listening — your note can still be queued",
+      waiting: "Your agent is not listening.",
       working: "Feedback delivered — no active listener",
       external: "External listener active",
       disconnected: "Connection lost — listener status unknown",
