@@ -1758,7 +1758,7 @@ body.layout-gate-active iframe#artifact {
 @media (max-width: 860px) {
   :root {
     --bar-h: calc(56px + env(safe-area-inset-top, 0px));
-    --dock-h: 60px;
+    --dock-h: 80px;
     --sheet-peek: 16px;
     --composer-reserve: calc(1px + var(--space-4) + 34px + var(--space-6) + env(safe-area-inset-bottom, 0px));
     --sheet-top: max(var(--bar-h) + var(--sheet-peek) - var(--vv-top, 0px), var(--sheet-peek));
@@ -2055,4 +2055,28 @@ body.layout-gate-active iframe#artifact {
 }
 .whiteboard-error[hidden] {
   display: none;
+}
+
+/* Presence stays above the transcript, including in the collapsed phone dock. */
+.listener-status {
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0 16px 8px;
+  color: var(--fg-label);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  overflow-wrap: anywhere;
+}
+.listener-status[data-state="listening"] {
+  color: var(--sage-300);
+}
+.listener-status[data-state="waiting"],
+.listener-status[data-state="working"] {
+  color: var(--accent);
+}
+
+@media (max-width: 860px) {
+  .listener-status {
+    margin: 0 0 8px;
+  }
 }
