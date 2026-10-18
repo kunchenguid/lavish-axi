@@ -5814,7 +5814,7 @@ test("chrome send and end with an empty composer nudges instead of ending", asyn
   await flushPromises();
 
   assert.equal(posts.length, 0);
-  assert.equal(chrome.postedToFrame.length, 0);
+  assert.equal(chrome.postedToFrame.filter((message) => message.type !== "lavish:listenerStatus").length, 0);
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.match(chrome.element("sendHint").textContent, /End session/);
   assert.equal(chrome.element("chatInput").focused, true);
@@ -5915,7 +5915,7 @@ test("chrome send with an empty composer shows a visible hint", async () => {
   assert.equal(chrome.element("sendHint").textContent, "Write a message or annotate an element first.");
   assert.doesNotMatch(chrome.element("sendHint").textContent, /End session/);
   assert.equal(chrome.element("chatInput").focused, true);
-  assert.equal(chrome.postedToFrame.length, 0);
+  assert.equal(chrome.postedToFrame.filter((message) => message.type !== "lavish:listenerStatus").length, 0);
 });
 
 test("chrome send and end during an in-flight submit still ends after the submit drains the queue", async () => {
@@ -6308,7 +6308,7 @@ test("artifact relays cannot invoke whiteboard persistence", async () => {
   await flushPromises();
 
   assert.equal(calls.length, 0);
-  assert.equal(chrome.postedToFrame.length, 0);
+  assert.equal(chrome.postedToFrame.filter((message) => message.type !== "lavish:listenerStatus").length, 0);
 });
 
 test("unverified whiteboard frames cannot invoke whiteboard persistence", async () => {
@@ -9406,4 +9406,15 @@ test("a disconnect clears the delivered-feedback bubble until a fresh presence e
   assert.equal(workingBubbles().length, 0);
   replacement.listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
   assert.equal(workingBubbles().length, 1);
+});
+
+test("chrome relays current listener status to the popup on presence changes and artifact readiness", async () => {
+  const chrome = await createChromeHarness();
+  const status = () => chrome.postedToFrame.filter((message) => message.type === "lavish:listenerStatus").at(-1);
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  assert.equal(status().state, "listening");
+  chrome.sendFrameMessage({ type: "lavish:annotationMode", enabled: true });
+  assert.equal(status().state, "listening");
+  chrome.webSocket().listeners.get("close")();
+  assert.equal(status().state, "disconnected");
 });

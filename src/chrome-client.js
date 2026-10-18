@@ -1155,6 +1155,7 @@ function renderListenerStatus() {
   }
   listenerStatus.textContent = text;
   listenerStatus.dataset.state = state;
+  postToFrame({ type: "lavish:listenerStatus", state });
   listenerStatus.title = state === "waiting" ? "Ask your agent to poll for updates from Lavish." : text;
 }
 
@@ -4407,6 +4408,7 @@ window.addEventListener("message", (event) => {
       });
     return;
   }
+  if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean") renderListenerStatus();
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
   if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean" && !annotationDefaultReceived) {
     annotationDefaultReceived = true;
@@ -4774,6 +4776,7 @@ document.addEventListener(
 frame.addEventListener("load", () => {
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
+  renderListenerStatus();
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });

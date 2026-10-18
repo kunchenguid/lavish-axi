@@ -902,3 +902,35 @@ test("setDocumentMeta forwards null to restore, omits unset fields and drops non
     [{ title: null }, {}, {}],
   );
 });
+
+test("annotation popup shows listener availability before typing and updates without losing the draft", () => {
+  const sdk = bootSdk();
+  sdk.click(appendTo(sdk.body, cell("h1", "Review this heading")));
+  const card = sdk.card();
+  const status = card.querySelector(".lavish-listener-status");
+  assert.equal(status.textContent, "Checking agent connection…");
+  card.querySelector("textarea").value = "Keep my annotation";
+  for (const [state, text] of [
+    ["waiting", "No agent listening — your note can still be queued"],
+    ["listening", "Agent listening"],
+    ["working", "Feedback delivered — no active listener"],
+    ["external", "External listener active"],
+    ["disconnected", "Connection lost — listener status unknown"],
+  ]) {
+    sdk.sendChromeMessage({ type: "lavish:listenerStatus", state });
+    assert.equal(status.textContent, text);
+    assert.equal(card.querySelector("textarea").value, "Keep my annotation");
+    assert.equal(card.querySelector(".lavish-send").disabled, undefined);
+  }
+  sdk.sendChromeMessage({ type: "lavish:listenerStatus", state: "<script>untrusted</script>" });
+  assert.equal(status.textContent, "Checking agent connection…");
+  const queued = sdk.queue("Keep my annotation");
+  assert.equal(queued.type, "lavish:queuePrompt");
+});
+
+test("a newly opened popup uses the latest listener status", () => {
+  const sdk = bootSdk();
+  sdk.sendChromeMessage({ type: "lavish:listenerStatus", state: "listening" });
+  sdk.click(appendTo(sdk.body, cell("p", "Review this paragraph")));
+  assert.equal(sdk.card().querySelector(".lavish-listener-status").textContent, "Agent listening");
+});
