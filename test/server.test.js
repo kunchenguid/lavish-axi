@@ -1060,12 +1060,12 @@ test("chrome client renders persisted chat history", async () => {
   assert.match(js, /initialChat\.forEach/);
 });
 
-test("chrome describes delivered feedback without claiming ongoing agent work", async () => {
+test("chrome retains the existing working bubble", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /agent-presence/);
-  assert.match(js, /<span>Feedback delivered<\/span>/);
-  assert.doesNotMatch(js, /<span>Working\.\.\.<\/span>/);
+  assert.match(js, /Working\.\.\./);
+  assert.match(js, /spinner/);
 });
 
 test("composer offers two always-visible top-level send actions", async () => {
@@ -1100,7 +1100,7 @@ test("chrome shows a waiting banner when no agent has attached", async () => {
 
   assert.match(html, /id="presenceBanner"/);
   assert.match(html, /Your agent is not listening/);
-  assert.match(js, /presenceBanner\.hidden = ended \|\| agentPresence !== "waiting"/);
+  assert.match(js, /presenceBanner\.hidden = state !== "waiting"/);
   assert.match(css, /\.presence-banner\{/);
 });
 

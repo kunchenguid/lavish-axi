@@ -158,7 +158,7 @@ pnpm link
 └────────────────────────┘
 ```
 
-- **Listener status** - The annotation popup shows listener availability beneath its heading, before you type, and updates while you write without clearing your draft or blocking Queue. The Conversation header also always shows whether an agent is listening, before you start annotating and even when the phone conversation sheet is collapsed. A disconnected live stream shows status unknown until a fresh presence event arrives. “Feedback delivered” confirms delivery, not that the agent is still running. An external listener is labelled separately.
+- **Listener status** - The annotation popup shows “Your agent is not listening.” only after the server confirms no listener is attached. It stays hidden while checking, disconnected, listening, or busy, and updates without clearing your draft or blocking Queue. The desktop Conversation header shows current status; the phone uses its existing dock summary. On initial load and reconnect, the banner stays hidden and undelivered receipts stay neutral until a fresh presence event arrives. Connection problems use the existing connection UI.
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
 - **Portable artifacts** - The artifact runs in a sandboxed iframe while Lavish injects a small SDK for annotations, snapshots, feedback controls, and render-time layout checks.
   Author-defined links and popups can open in top-level tabs, while artifact documents remain sandboxed without same-origin access.

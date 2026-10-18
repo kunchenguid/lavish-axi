@@ -903,34 +903,30 @@ test("setDocumentMeta forwards null to restore, omits unset fields and drops non
   );
 });
 
-test("annotation popup shows listener availability before typing and updates without losing the draft", () => {
+test("popup warns only for confirmed absence and preserves its draft through unknown states", () => {
   const sdk = bootSdk();
   sdk.click(appendTo(sdk.body, cell("h1", "Review this heading")));
   const card = sdk.card();
   const status = card.querySelector(".lavish-listener-status");
-  assert.equal(status.textContent, "Checking agent connection…");
+  assert.equal(status.hidden, true);
   card.querySelector("textarea").value = "Keep my annotation";
-  for (const [state, text] of [
-    ["waiting", "Your agent is not listening."],
-    ["listening", "Agent listening"],
-    ["working", "Feedback delivered — no active listener"],
-    ["external", "External listener active"],
-    ["disconnected", "Connection lost — listener status unknown"],
-  ]) {
-    sdk.sendChromeMessage({ type: "lavish:listenerStatus", state });
-    assert.equal(status.textContent, text);
+  sdk.sendChromeMessage({ type: "lavish:listenerStatus", state: "waiting", text: "Your agent is not listening." });
+  assert.equal(status.hidden, false);
+  assert.equal(status.textContent, "Your agent is not listening.");
+  for (const state of ["checking", "listening", "working", "external", "disconnected", "ended", "invalid"]) {
+    sdk.sendChromeMessage({ type: "lavish:listenerStatus", state, text: "Your agent is not listening." });
+    assert.equal(status.hidden, true, state + " must not show an absence warning");
     assert.equal(card.querySelector("textarea").value, "Keep my annotation");
-    assert.equal(card.querySelector(".lavish-send").disabled, undefined);
   }
-  sdk.sendChromeMessage({ type: "lavish:listenerStatus", state: "<script>untrusted</script>" });
-  assert.equal(status.textContent, "Checking agent connection…");
   const queued = sdk.queue("Keep my annotation");
   assert.equal(queued.type, "lavish:queuePrompt");
 });
 
-test("a newly opened popup uses the latest listener status", () => {
+test("new popup uses chrome-owned warning text as plain text", () => {
   const sdk = bootSdk();
-  sdk.sendChromeMessage({ type: "lavish:listenerStatus", state: "listening" });
+  sdk.sendChromeMessage({ type: "lavish:listenerStatus", state: "waiting", text: "<b>Trusted parent wording</b>" });
   sdk.click(appendTo(sdk.body, cell("p", "Review this paragraph")));
-  assert.equal(sdk.card().querySelector(".lavish-listener-status").textContent, "Agent listening");
+  const status = sdk.card().querySelector(".lavish-listener-status");
+  assert.equal(status.hidden, false);
+  assert.equal(status.textContent, "<b>Trusted parent wording</b>");
 });

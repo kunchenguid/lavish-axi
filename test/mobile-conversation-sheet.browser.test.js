@@ -244,7 +244,7 @@ test(
       open(url);
       let g = geometry();
       assertDocked(g);
-      assert.equal(g.summary, "Agent not listening");
+      assert.equal(g.summary, "Your agent is not listening.");
 
       evaluate('() => { document.getElementById("panelHead").click(); return "ok"; }');
       wait(500);

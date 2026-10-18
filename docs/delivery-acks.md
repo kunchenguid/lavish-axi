@@ -7,7 +7,7 @@ the user-facing wording once this ships; [invariants.md](invariants.md) owns the
 
 A reviewer sends a note and cannot tell whether anything picked it up. Today the panel has one
 session-wide signal - the `agent-presence` stream (`waiting` / `listening` / `working`) and the
-presence bubble - and a sent note looks identical whether it is sitting undelivered in
+"Working..." bubble - and a sent note looks identical whether it is sitting undelivered in
 `state.json`, has been handed to a poll, or was answered an hour ago.
 
 ## What Lavish can already observe
@@ -36,10 +36,10 @@ queued ──send──> sent ──poll takes it──> seen ──artifact cha
 
 - **queued**: in the tab only (dashed bubble). Unchanged.
 - **sent**: a `role: "user"` chat entry with no `delivered_at`. The bubble says why it has not been
-  seen, from the live presence the chrome already holds: "No agent is listening" (`waiting`),
+  seen, from the live presence the chrome already holds: "Your agent is not listening." (confirmed `waiting`),
   "Agent is busy; delivered on its next poll" (`working` / external listener), "Delivering"
   while a poll is attached, which lasts milliseconds, or "Connection lost; delivery status unknown"
-  while the live-event stream is disconnected.
+  while the live-event stream is disconnected. Before a fresh presence event on initial load or reconnect, the row says "Checking agent connection…".
 - **seen**: `delivered_at` set by `takeFeedback`.
 - **working**: `working_at` set by the first artifact `reload` after delivery. Optional evidence.
 - **done**: `done_at` set by the next agent reply.
@@ -85,8 +85,7 @@ protocol this mirrors, 👀 Seen, 🛠️ Working, ✅ Done, each lighting up on
 shown greyed and dimmed until then, so the row always shows what is still to come. Every step
 carries its label and time (or "not yet") as both `title` and `aria-label`, so hover and screen
 readers say the word, not the glyph. Before 👀 lights, the row carries the honest reason from the
-presence stream. The session-wide presence bubble, listener status, and
-presence banner are unchanged; the receipt is the per-request view of the same facts.
+presence stream. The session-wide "Working..." bubble remains unchanged; the receipt is the per-request view of the same facts.
 
 A presence change rewrites only the undelivered line, the one part of the row that depends on it.
 The rest of the bubble is left alone, so a thumbnail already replaced by "Image expired" stays so.
