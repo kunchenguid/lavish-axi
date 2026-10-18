@@ -884,7 +884,7 @@ test("annotation popup shows listener availability before typing and updates wit
   assert.equal(status.textContent, "Checking agent connection…");
   card.querySelector("textarea").value = "Keep my annotation";
   for (const [state, text] of [
-    ["waiting", "No agent listening — your note can still be queued"],
+    ["waiting", "Your agent is not listening."],
     ["listening", "Agent listening"],
     ["working", "Feedback delivered — no active listener"],
     ["external", "External listener active"],
