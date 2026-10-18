@@ -200,6 +200,7 @@ let annotationOverridden = false;
 let annotationDefaultReceived = false;
 let ended = false;
 let agentPresence = "waiting";
+let listenerConnection = "checking";
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
 const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
 const layoutGateMaxHoldMs =
@@ -958,6 +959,7 @@ function receiptStepHtml(label, at) {
 // that will take the note within milliseconds, and `working` or an external listener is an agent
 // whose next poll will take it.
 function receiptNoteText() {
+  if (listenerConnection === "disconnected") return "Connection lost; delivery status unknown";
   if (agentPresence === "waiting") return "No agent is listening";
   if (agentPresence === "listening") return "Delivering";
   return "Agent is busy; delivered on its next poll";
@@ -1135,7 +1137,6 @@ function syncChat(chat, revision) {
 }
 
 const listenerStatus = /** @type {HTMLDivElement} */ (document.getElementById("listenerStatus"));
-let listenerConnection = "checking";
 
 function renderListenerStatus() {
   let state = listenerConnection;
@@ -1164,10 +1165,13 @@ function setAgentPresence(state) {
   renderSheetSummary();
   refreshUnseenReceipts();
   if (presenceBanner) presenceBanner.hidden = ended || agentPresence !== "waiting";
+  syncWorkingBubble();
+}
 
+function syncWorkingBubble() {
   // A supervisor-owned process-only listener is busy on the agent's behalf. It must not make the
   // composer look like an idle captain turn while the owning agent is offline.
-  if (agentPresence !== "working" && agentPresence !== "external") {
+  if (listenerConnection !== "connected" || (agentPresence !== "working" && agentPresence !== "external")) {
     if (workingBubble) workingBubble.remove();
     workingBubble = null;
     return;
@@ -4820,6 +4824,8 @@ function connectLiveEvents() {
     listenerConnection = "disconnected";
     renderListenerStatus();
     renderSheetSummary();
+    refreshUnseenReceipts();
+    syncWorkingBubble();
     if (presenceBanner) presenceBanner.hidden = true;
     liveEventFailures += 1;
     noteLiveEventsUnreachable();

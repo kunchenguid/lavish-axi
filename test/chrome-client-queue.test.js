@@ -9390,3 +9390,20 @@ test("listener status stops claiming presence on disconnect until a fresh presen
   socket.listeners.get("close")();
   assert.equal(chrome.element("listenerStatus").textContent, "No agent listening");
 });
+
+test("a disconnect clears the delivered-feedback bubble until a fresh presence event", async () => {
+  const chrome = await createChromeHarness();
+  const socket = chrome.webSocket();
+  const workingBubbles = () =>
+    chrome.element("chatLog").children.filter((child) => String(child.className).includes("agent-working"));
+  socket.listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
+  assert.equal(workingBubbles().length, 1);
+  socket.listeners.get("close")();
+  assert.equal(workingBubbles().length, 0);
+  chrome.runTimers(500);
+  const replacement = chrome.webSocketAt(1);
+  replacement.listeners.get("open")();
+  assert.equal(workingBubbles().length, 0);
+  replacement.listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
+  assert.equal(workingBubbles().length, 1);
+});
