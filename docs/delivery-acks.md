@@ -36,7 +36,7 @@ queued ──send──> sent ──poll takes it──> seen ──artifact cha
 
 - **queued**: in the tab only (dashed bubble). Unchanged.
 - **sent**: a `role: "user"` chat entry with no `delivered_at`. The bubble says why it has not been
-  seen, from the live presence the chrome already holds: "Your agent is not listening." (confirmed `waiting`),
+  seen, from the live presence the chrome already holds: "No agent is listening" (confirmed `waiting`),
   "Agent is busy; delivered on its next poll" (`working` / external listener), "Delivering"
   while a poll is attached, which lasts milliseconds, or "Connection lost; delivery status unknown"
   while the live-event stream is disconnected. Before a fresh presence event on initial load or reconnect, the row says "Checking agent connection…".
