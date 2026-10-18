@@ -7093,7 +7093,7 @@ test("the dock summarizes what the user should know while the sheet is down", as
   assert.equal(sheetState(chrome).summary, "Agent listening");
 
   chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "working" }) });
-  assert.equal(sheetState(chrome).summary, "Feedback delivered");
+  assert.equal(sheetState(chrome).summary, "Agent is working…");
 
   // A reply that lands behind the artifact is previewed on the dock until the sheet comes up.
   chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Renamed the payment step." }) });
@@ -7127,13 +7127,13 @@ test("the dock summarizes what the user should know while the sheet is down", as
   await flushPromises();
   await flushPromises();
   assert.equal(chrome.queued().length, 0);
-  assert.equal(sheetState(chrome).summary, "Feedback delivered");
+  assert.equal(sheetState(chrome).summary, "Agent is working…");
   assert.doesNotMatch(sheetState(chrome).summaryClass, /is-unread/);
 
   // A reply that arrives while the sheet is up was seen, so lowering it previews nothing.
   chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Done." }) });
   chrome.element("panelHead").dispatch("click", {});
-  assert.equal(sheetState(chrome).summary, "Feedback delivered");
+  assert.equal(sheetState(chrome).summary, "Agent is working…");
 });
 
 test("the dock reports an ended session", async () => {
@@ -8838,7 +8838,7 @@ test("a sent bubble's receipt follows the entry's seen, working, and done stamps
   const bubbles = chrome.element("chatLog").children;
   assert.equal(bubbles.length, 4);
   assert.deepEqual(receiptSteps(bubbles[0].innerHTML), [false, false, false]);
-  assert.equal(receiptNote(bubbles[0].innerHTML), "No agent is listening");
+  assert.equal(receiptNote(bubbles[0].innerHTML), "Checking agent connection…");
   assert.deepEqual(receiptSteps(bubbles[1].innerHTML), [true, true, false]);
   assert.equal(receiptNote(bubbles[1].innerHTML), "");
   assert.deepEqual(receiptSteps(bubbles[2].innerHTML), [true, false, true]);
@@ -8875,7 +8875,7 @@ test("an unseen bubble's receipt names the live presence and re-renders when it 
   presence({ state: "listening", mode: "agent-listener" });
   assert.equal(receiptNote(bubbles[0].innerHTML), "Delivering");
   presence({ state: "waiting" });
-  assert.equal(receiptNote(bubbles[0].innerHTML), "No agent is listening");
+  assert.equal(receiptNote(bubbles[0].innerHTML), "Your agent is not listening.");
   assert.equal(bubbles[1].innerHTML, seenHtml, "a seen bubble does not depend on presence");
 });
 
@@ -8984,20 +8984,20 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   assert.equal(JSON.stringify(failed.libraries), "[]");
 });
 
-test("listener status is visible before annotating and does not claim delivered feedback is live work", async () => {
+test("listener status reflects presence without changing the existing working bubble", async () => {
   const chrome = await createChromeHarness();
   const status = chrome.element("listenerStatus");
   assert.equal(status.textContent, "Checking agent connection…");
   const presence = (data) => chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify(data) });
   presence({ state: "waiting" });
-  assert.equal(status.textContent, "No agent listening");
+  assert.equal(status.textContent, "Your agent is not listening.");
   presence({ state: "listening" });
   assert.equal(status.textContent, "Agent listening");
   presence({ state: "working" });
-  assert.equal(status.textContent, "Feedback delivered · no active listener");
+  assert.equal(status.textContent, "Agent is working…");
   const bubble = chrome.element("chatLog").children.find((child) => String(child.className).includes("agent-working"));
-  assert.match(bubble.innerHTML, /Feedback delivered/);
-  assert.doesNotMatch(bubble.innerHTML, /spinner|Working/);
+  assert.match(bubble.innerHTML, /Working/);
+  assert.match(bubble.innerHTML, /spinner/);
   presence({ state: "working", mode: "external-listener" });
   assert.equal(status.textContent, "External listener active");
   chrome.eventSource().listeners.get("ended")({ data: "{}" });
@@ -9016,12 +9016,12 @@ test("listener status stops claiming presence on disconnect until a fresh presen
   replacement.listeners.get("open")();
   assert.equal(chrome.element("listenerStatus").textContent, "Checking agent connection…");
   replacement.listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
-  assert.equal(chrome.element("listenerStatus").textContent, "No agent listening");
+  assert.equal(chrome.element("listenerStatus").textContent, "Your agent is not listening.");
   socket.listeners.get("close")();
-  assert.equal(chrome.element("listenerStatus").textContent, "No agent listening");
+  assert.equal(chrome.element("listenerStatus").textContent, "Your agent is not listening.");
 });
 
-test("a disconnect clears the delivered-feedback bubble until a fresh presence event", async () => {
+test("a disconnect clears the working bubble until a fresh presence event", async () => {
   const chrome = await createChromeHarness();
   const socket = chrome.webSocket();
   const workingBubbles = () =>
@@ -9047,4 +9047,36 @@ test("chrome relays current listener status to the popup on presence changes and
   assert.equal(status().state, "listening");
   chrome.webSocket().listeners.get("close")();
   assert.equal(status().state, "disconnected");
+});
+
+test("initial and reconnected unknown presence never shows a no-listener banner or stale delivery receipt", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialChat: [{ role: "user", kind: "message", text: "Queued note" }] },
+  });
+  const bubble = chrome.element("chatLog").children[0];
+  assert.equal(chrome.element("presenceBanner").hidden, true);
+  assert.equal(receiptNote(bubble.innerHTML), "Checking agent connection…");
+  const socket = chrome.webSocket();
+  socket.listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  assert.equal(receiptNote(bubble.innerHTML), "Delivering");
+  socket.listeners.get("close")();
+  assert.equal(chrome.element("presenceBanner").hidden, true);
+  chrome.runTimers(500);
+  const replacement = chrome.webSocketAt(1);
+  replacement.listeners.get("open")();
+  assert.equal(chrome.element("presenceBanner").hidden, true);
+  assert.equal(receiptNote(bubble.innerHTML), "Checking agent connection…");
+  replacement.listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
+  assert.equal(chrome.element("presenceBanner").hidden, false);
+  assert.equal(receiptNote(bubble.innerHTML), "Your agent is not listening.");
+  const status = chrome.postedToFrame.filter((message) => message.type === "lavish:listenerStatus").at(-1);
+  assert.equal(status.text, "Your agent is not listening.");
+});
+
+test("unrecognized server presence cannot turn unknown status into a no-listener warning", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "unknown" }) });
+  assert.equal(chrome.element("presenceBanner").hidden, true);
+  const status = chrome.postedToFrame.filter((message) => message.type === "lavish:listenerStatus").at(-1);
+  assert.equal(status.state, "checking");
 });

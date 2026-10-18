@@ -957,7 +957,8 @@ function receiptStepHtml(label, at) {
 // whose next poll will take it.
 function receiptNoteText() {
   if (listenerConnection === "disconnected") return "Connection lost; delivery status unknown";
-  if (agentPresence === "waiting") return "No agent is listening";
+  if (listenerConnection !== "connected") return "Checking agent connection…";
+  if (agentPresence === "waiting") return listenerStatusMessage().text;
   if (agentPresence === "listening") return "Delivering";
   return "Agent is busy; delivered on its next poll";
 }
@@ -1135,25 +1136,28 @@ function syncChat(chat, revision) {
 
 const listenerStatus = /** @type {HTMLDivElement} */ (document.getElementById("listenerStatus"));
 
+// The chrome owns status wording; the sandboxed SDK receives plain text and only decides visibility.
+function listenerStatusMessage() {
+  if (ended) return { state: "ended", text: "Session ended" };
+  if (listenerConnection === "disconnected") return { state: "disconnected", text: "Connection lost · status unknown" };
+  if (listenerConnection !== "connected") return { state: "checking", text: "Checking agent connection…" };
+  if (agentPresence === "waiting") return { state: "waiting", text: "Your agent is not listening." };
+  if (agentPresence === "listening") return { state: "listening", text: "Agent listening" };
+  if (agentPresence === "external") return { state: "external", text: "External listener active" };
+  return { state: "working", text: "Agent is working…" };
+}
+
+function postListenerStatus() {
+  postToFrame({ type: "lavish:listenerStatus", ...listenerStatusMessage() });
+}
+
 function renderListenerStatus() {
-  let state = listenerConnection;
-  let text = "Checking agent connection…";
-  if (ended) {
-    state = "ended";
-    text = "Session ended";
-  } else if (listenerConnection === "disconnected") {
-    text = "Connection lost · status unknown";
-  } else if (listenerConnection === "connected") {
-    state = agentPresence;
-    if (agentPresence === "listening") text = "Agent listening";
-    else if (agentPresence === "external") text = "External listener active";
-    else if (agentPresence === "working") text = "Feedback delivered · no active listener";
-    else text = "No agent listening";
-  }
+  const { state, text } = listenerStatusMessage();
   listenerStatus.textContent = text;
   listenerStatus.dataset.state = state;
-  postToFrame({ type: "lavish:listenerStatus", state });
-  listenerStatus.title = state === "waiting" ? "Ask your agent to poll for updates from Lavish." : text;
+  listenerStatus.title = text;
+  if (presenceBanner) presenceBanner.hidden = state !== "waiting";
+  postListenerStatus();
 }
 
 function setAgentPresence(state) {
@@ -1162,7 +1166,6 @@ function setAgentPresence(state) {
   updateSendState();
   renderSheetSummary();
   refreshUnseenReceipts();
-  if (presenceBanner) presenceBanner.hidden = ended || agentPresence !== "waiting";
   syncWorkingBubble();
 }
 
@@ -1180,8 +1183,7 @@ function syncWorkingBubble() {
     workingBubble.className = "bubble agent agent-working";
     chatLog.appendChild(workingBubble);
   }
-  workingBubble.innerHTML =
-    agentPresence === "external" ? "<span>External listener active</span>" : "<span>Feedback delivered</span>";
+  workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
   scrollElementIntoView(workingBubble);
 }
 
@@ -1386,13 +1388,7 @@ function sheetSummary() {
     return { text: queued.length === 1 ? "1 queued" : queued.length + " queued", accent: true, unread: false };
   }
   if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true };
-  if (listenerConnection === "disconnected")
-    return { text: "Connection lost · status unknown", accent: false, unread: false };
-  if (listenerConnection === "checking") return { text: "Checking agent connection…", accent: false, unread: false };
-  if (agentPresence === "working") return { text: "Feedback delivered", accent: false, unread: false };
-  if (agentPresence === "external") return { text: "External listener active", accent: false, unread: false };
-  if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false };
-  return { text: "Agent not listening", accent: false, unread: false };
+  return { text: listenerStatusMessage().text, accent: false, unread: false };
 }
 
 function renderSheetSummary() {
@@ -4279,7 +4275,7 @@ window.addEventListener("message", (event) => {
       });
     return;
   }
-  if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean") renderListenerStatus();
+  if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean") postListenerStatus();
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
   if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean" && !annotationDefaultReceived) {
     annotationDefaultReceived = true;
@@ -4673,6 +4669,8 @@ function connectLiveEvents() {
     listenerConnection = "checking";
     renderListenerStatus();
     renderSheetSummary();
+    refreshUnseenReceipts();
+    syncWorkingBubble();
     eventReconnectDelayMs = 500;
     liveEventFailures = 0;
     unreachableDismissed = false;
@@ -4741,7 +4739,7 @@ events.set("chat-sync", (data) => {
   syncChat(data.chat || [], data.chat_revision);
 });
 events.set("agent-presence", (data) => {
-  listenerConnection = "connected";
+  listenerConnection = ["waiting", "listening", "working"].includes(data.state) ? "connected" : "checking";
   setAgentPresence(data.mode === "external-listener" ? "external" : data.state);
 });
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
