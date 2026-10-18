@@ -1060,12 +1060,12 @@ test("chrome client renders persisted chat history", async () => {
   assert.match(js, /initialChat\.forEach/);
 });
 
-test("chrome shows agent working state when a previous poll has released", async () => {
+test("chrome describes delivered feedback without claiming ongoing agent work", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /agent-presence/);
-  assert.match(js, /Working\.\.\./);
-  assert.match(js, /spinner/);
+  assert.match(js, /<span>Feedback delivered<\/span>/);
+  assert.doesNotMatch(js, /<span>Working\.\.\.<\/span>/);
 });
 
 test("composer offers two always-visible top-level send actions", async () => {
