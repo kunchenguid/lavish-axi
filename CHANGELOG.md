@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.90](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.89...lavish-axi-v0.1.90) (2026-10-18)
+
+
+### Features
+
+* **server:** make the browser-disconnect grace configurable ([#433](https://github.com/kunchenguid/lavish-axi/issues/433)) ([1ea519f](https://github.com/kunchenguid/lavish-axi/commit/1ea519f41b2b6c039f9b2410216503f9e64038f5))
+
 ## [0.1.89](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.88...lavish-axi-v0.1.89) (2026-10-15)
 
 
