@@ -309,6 +309,16 @@ async function createChromeHarness({
       scrollIntoView(options) {
         this.scrolledIntoView = options;
       },
+      setPointerCapture(pointerId) {
+        this.capturedPointerId = pointerId;
+      },
+      // Releasing capture, explicitly or as the browser does after pointerup and pointercancel,
+      // fires lostpointercapture only when the element held the pointer.
+      releasePointerCapture(pointerId) {
+        if (this.capturedPointerId !== pointerId) return;
+        this.capturedPointerId = undefined;
+        this.dispatch("lostpointercapture", { pointerId });
+      },
       listeners,
     };
     elements.set(id, el);
@@ -376,6 +386,26 @@ async function createChromeHarness({
     return fetchImpl(url, init);
   };
 
+  const rootProperties = new Map();
+  const rootElement = element("html");
+  rootElement.style = {
+    setProperty(name, value) {
+      rootProperties.set(name, String(value));
+    },
+    removeProperty(name) {
+      rootProperties.delete(name);
+    },
+    getPropertyValue(name) {
+      return rootProperties.get(name) || "";
+    },
+  };
+  const panelRect = { right: 1440, width: 360 };
+  element("panel").getBoundingClientRect = () => ({
+    left: panelRect.right - panelRect.width,
+    right: panelRect.right,
+    width: panelRect.width,
+  });
+
   let clockNow = Date.now();
   const context = {
     AbortController,
@@ -435,6 +465,7 @@ async function createChromeHarness({
     },
     document: {
       body: element("body"),
+      documentElement: rootElement,
       get activeElement() {
         return activeElement;
       },
@@ -650,6 +681,41 @@ async function createChromeHarness({
       head.dispatch("pointerup", { pointerId, clientY: toY });
       // A completed pointer sequence is followed by a click on the same target.
       head.dispatch("click", {});
+    },
+    rootStyle(name) {
+      return rootProperties.get(name) || "";
+    },
+    pressPanelEdge(x, { pointerId = 1, button = 0, isPrimary = true } = {}) {
+      const resizer = element("panelResizer");
+      let lastX = x;
+      const end = (type, renderedWidth) => {
+        if (renderedWidth !== undefined) panelRect.width = renderedWidth;
+        resizer.dispatch(type, { pointerId, clientX: lastX, preventDefault() {} });
+        resizer.releasePointerCapture(pointerId);
+      };
+      resizer.dispatch("pointerdown", { pointerId, button, isPrimary, clientX: x });
+      return {
+        move(toX) {
+          lastX = toX;
+          resizer.dispatch("pointermove", { pointerId, clientX: toX });
+        },
+        release({ renderedWidth = undefined } = {}) {
+          end("pointerup", renderedWidth);
+          resizer.dispatch("click", { detail: 1 });
+        },
+        cancel({ renderedWidth = undefined } = {}) {
+          end("pointercancel", renderedWidth);
+        },
+        loseCapture({ renderedWidth = undefined } = {}) {
+          if (renderedWidth !== undefined) panelRect.width = renderedWidth;
+          resizer.releasePointerCapture(pointerId);
+        },
+      };
+    },
+    doubleClickPanelEdge(x) {
+      this.pressPanelEdge(x).release();
+      this.pressPanelEdge(x).release();
+      element("panelResizer").dispatch("dblclick", { detail: 2 });
     },
     cancelDock(fromY, moveY, cancelY, { pointerId = 1 } = {}) {
       const head = element("panelHead");
@@ -7211,6 +7277,126 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
   assert.equal(state.scrollInert, true);
   assert.equal(chrome.focusLog.at(-1), "panelToggle");
   assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
+});
+
+// ---- Desktop conversation panel width ----
+
+const PANEL_WIDTH_KEY = "lavish-axi:panel-width:abc";
+
+function panelResizing(chrome) {
+  return chrome.element("body").classList.contains("panel-resizing");
+}
+
+test("dragging the conversation panel's edge resizes it, and the width survives a reload", async () => {
+  const chrome = await createChromeHarness();
+  assert.equal(chrome.rootStyle("--panel-w"), "", "a fresh review uses the stylesheet default");
+
+  chrome.pressPanelEdge(1080, { button: 2 }).release();
+  chrome.pressPanelEdge(1080, { isPrimary: false }).release();
+  assert.equal(panelResizing(chrome), false, "only a primary-button press grabs the edge");
+
+  const drag = chrome.pressPanelEdge(1080);
+  assert.equal(panelResizing(chrome), true, "the artifact gives up pointer input while the edge is held");
+  drag.move(840);
+  assert.equal(chrome.rootStyle("--panel-w"), "600px", "the edge follows the pointer");
+  drag.release({ renderedWidth: 600 });
+  assert.equal(panelResizing(chrome), false);
+  assert.equal(chrome.rootStyle("--panel-w"), "600px");
+
+  const reloaded = await createChromeHarness({ storage: chrome.storage });
+  assert.equal(reloaded.rootStyle("--panel-w"), "600px", "the width survives a reload of the tab");
+});
+
+test("a resize remembers the width the panel rendered, not where the pointer went", async () => {
+  const chrome = await createChromeHarness();
+
+  const drag = chrome.pressPanelEdge(1080);
+  drag.move(40);
+  // The grid keeps 320px for the artifact, so a 1440px window renders the panel at 1120px.
+  drag.release({ renderedWidth: 1120 });
+
+  assert.equal(chrome.rootStyle("--panel-w"), "1120px");
+  const reloaded = await createChromeHarness({ storage: chrome.storage });
+  assert.equal(reloaded.rootStyle("--panel-w"), "1120px");
+});
+
+test("a click on the panel's edge without movement keeps the width and stores nothing", async () => {
+  const chrome = await createChromeHarness();
+  chrome.pressPanelEdge(1080).release();
+  assert.equal(chrome.rootStyle("--panel-w"), "");
+  assert.equal(chrome.storage.has(PANEL_WIDTH_KEY), false);
+
+  const resized = await createChromeHarness({ storage: new Map([[PANEL_WIDTH_KEY, "600"]]) });
+  resized.pressPanelEdge(840).release({ renderedWidth: 600 });
+  assert.equal(resized.rootStyle("--panel-w"), "600px");
+  assert.equal(resized.storage.get(PANEL_WIDTH_KEY), "600");
+});
+
+test("double-clicking the panel's edge restores the default width, and the reload agrees", async () => {
+  const chrome = await createChromeHarness({ storage: new Map([[PANEL_WIDTH_KEY, "600"]]) });
+  assert.equal(chrome.rootStyle("--panel-w"), "600px");
+
+  chrome.doubleClickPanelEdge(840);
+
+  assert.equal(chrome.rootStyle("--panel-w"), "", "the stylesheet default is back");
+  const reloaded = await createChromeHarness({ storage: chrome.storage });
+  assert.equal(reloaded.rootStyle("--panel-w"), "", "the reset survives a reload");
+});
+
+test("a cancelled or lost resize keeps the width on screen and gives the artifact its pointer back", async () => {
+  const cancelled = await createChromeHarness();
+  const cancelledDrag = cancelled.pressPanelEdge(1080);
+  cancelledDrag.move(940);
+  cancelledDrag.cancel({ renderedWidth: 500 });
+  assert.equal(panelResizing(cancelled), false);
+  assert.equal(cancelled.rootStyle("--panel-w"), "500px");
+  assert.equal((await createChromeHarness({ storage: cancelled.storage })).rootStyle("--panel-w"), "500px");
+
+  const lost = await createChromeHarness();
+  const lostDrag = lost.pressPanelEdge(1080);
+  lostDrag.move(1000);
+  lostDrag.loseCapture({ renderedWidth: 440 });
+  assert.equal(panelResizing(lost), false);
+  lostDrag.move(700);
+  assert.equal(lost.rootStyle("--panel-w"), "440px", "a pointer the edge no longer holds moves nothing");
+  assert.equal((await createChromeHarness({ storage: lost.storage })).rootStyle("--panel-w"), "440px");
+});
+
+test("an unusable stored panel width falls back to the stylesheet default", async () => {
+  for (const stored of ["{", '"wide"', "-40", "0", "null", "[600]", "1e400"]) {
+    const chrome = await createChromeHarness({ storage: new Map([[PANEL_WIDTH_KEY, stored]]) });
+    assert.equal(chrome.rootStyle("--panel-w"), "", `stored ${stored} is ignored`);
+  }
+
+  const refusing = new (class extends Map {
+    has(storageKey) {
+      if (String(storageKey) === PANEL_WIDTH_KEY) throw new Error("SecurityError");
+      return super.has(storageKey);
+    }
+    set(storageKey, value) {
+      if (String(storageKey) === PANEL_WIDTH_KEY) throw new Error("quota exceeded");
+      return super.set(storageKey, value);
+    }
+  })();
+  const chrome = await createChromeHarness({ storage: refusing });
+  assert.equal(chrome.webSocketCount(), 1, "the chrome boots when storage refuses the panel width");
+  assert.equal(chrome.rootStyle("--panel-w"), "");
+  const drag = chrome.pressPanelEdge(1080);
+  drag.move(840);
+  drag.release({ renderedWidth: 600 });
+  assert.equal(chrome.rootStyle("--panel-w"), "600px", "the resize still works in memory");
+});
+
+test("crossing the phone breakpoint leaves the reviewer's panel width alone", async () => {
+  const chrome = await createChromeHarness({ mobile: true, storage: new Map([[PANEL_WIDTH_KEY, "600"]]) });
+  assert.equal(chrome.element("panel").style.width, undefined, "the sheet's own width is never overridden");
+
+  chrome.setMobile(false);
+  chrome.setMobile(true);
+  chrome.dragDock(800, 300);
+
+  assert.equal(chrome.element("panel").style.width, undefined);
+  assert.equal(chrome.storage.get(PANEL_WIDTH_KEY), "600", "the desktop width waits for a desktop window");
 });
 
 // ---- Queued and sent notes are one conversation ----

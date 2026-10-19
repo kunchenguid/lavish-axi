@@ -1056,6 +1056,7 @@ body.lavish {
   overflow: hidden;
 }
 .panel {
+  position: relative;
   border-left: var(--hairline-subtle);
   background: var(--bg-panel);
   display: flex;
@@ -1074,6 +1075,30 @@ body.lavish {
 .panel-toggle,
 .panel-scrim {
   display: none;
+}
+/* On the panel's side of its border, so the artifact keeps every pixel of its own edge. */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -1px;
+  width: 6px;
+  /* Above the sticky composer (4), below menus and overlays. */
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* The artifact is a cross-origin frame that would swallow the pointer and show its own cursor
+   whenever a drag crosses it. */
+body.panel-resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.panel-resizing #artifact {
+  pointer-events: none;
 }
 .panel h2 {
   font-size: 15px;
@@ -1735,6 +1760,9 @@ body.layout-gate-active iframe#artifact {
     transform: translateY(calc(100% - var(--dock-h) - env(safe-area-inset-bottom, 0px)));
     transition: transform var(--dur-slow) var(--ease);
     will-change: transform;
+  }
+  .panel-resizer {
+    display: none;
   }
   body.sheet-open .panel {
     transform: none;

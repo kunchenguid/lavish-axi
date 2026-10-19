@@ -847,6 +847,19 @@ test("chrome page ships the phone conversation dock and the viewport contract it
   assert.match(html, /<span class="panel-summary" id="panelSummary" role="status" aria-live="polite"><\/span>/);
 });
 
+test("chrome page gives the desktop conversation panel a resize edge the phone layout hides", async () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const css = await chromeCssSource();
+
+  // First in the aside and absolutely positioned, so the heading stays the panel's first flex child.
+  assert.match(
+    html,
+    /<aside class="panel" id="panel"><div class="panel-resizer" id="panelResizer" title="Drag to resize\. Double-click to reset\." aria-hidden="true"><\/div><div class="panel-head"/,
+  );
+  assert.match(css, /\.panel-resizer\{position:absolute;[^}]*cursor:col-resize;/);
+  assert.match(css, /@media \(max-width:860px\)\{[^@]*\.panel-resizer\{display:none;\}/);
+});
+
 test("chrome top bar follows the design mock wordmark and overflow menu treatment", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();

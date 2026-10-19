@@ -119,6 +119,7 @@ const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelH
 const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
 const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
+const panelResizer = /** @type {HTMLDivElement} */ (document.getElementById("panelResizer"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
@@ -1473,6 +1474,66 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 }
 window.addEventListener("resize", syncVisualViewport);
 syncVisualViewport();
+
+// ---- Desktop conversation panel width ----
+const panelWidthStorageKey = "lavish-axi:panel-width:" + key;
+/** @type {{ pointerId: number, startX: number, right: number, moved: boolean } | null} */
+let panelResize = null;
+
+/**
+ * @param {unknown} stored
+ * @returns {number | null}
+ */
+function parsePanelWidth(stored) {
+  return typeof stored === "number" && Number.isFinite(stored) && stored > 0 ? Math.round(stored) : null;
+}
+
+/** @param {number | null} width */
+function applyPanelWidth(width) {
+  const style = document.documentElement.style;
+  if (width === null) style.removeProperty("--panel-w");
+  else style.setProperty("--panel-w", width + "px");
+}
+
+/** @param {number | null} width */
+function keepPanelWidth(width) {
+  applyPanelWidth(width);
+  saveJsonState(panelWidthStorageKey, width);
+}
+
+function finishPanelResize(event) {
+  if (!panelResize || event.pointerId !== panelResize.pointerId) return;
+  const { moved } = panelResize;
+  panelResize = null;
+  document.body.classList.remove("panel-resizing");
+  // The grid track may have cut the request back; store what it rendered.
+  if (moved) keepPanelWidth(Math.round(panel.getBoundingClientRect().width));
+}
+
+panelResizer.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || !event.isPrimary) return;
+  panelResize = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    right: panel.getBoundingClientRect().right,
+    moved: false,
+  };
+  if (typeof panelResizer.setPointerCapture === "function") panelResizer.setPointerCapture(event.pointerId);
+  document.body.classList.add("panel-resizing");
+});
+panelResizer.addEventListener("pointermove", (event) => {
+  if (!panelResize || event.pointerId !== panelResize.pointerId) return;
+  if (event.clientX !== panelResize.startX) panelResize.moved = true;
+  if (!panelResize.moved) return;
+  // A negative length would invalidate the whole grid track.
+  applyPanelWidth(Math.max(0, Math.round(panelResize.right - event.clientX)));
+});
+panelResizer.addEventListener("pointerup", finishPanelResize);
+panelResizer.addEventListener("pointercancel", finishPanelResize);
+panelResizer.addEventListener("lostpointercapture", finishPanelResize);
+panelResizer.addEventListener("dblclick", () => keepPanelWidth(null));
+// Before loadFrame assigns the frame's src, so the artifact's first layout already has its width.
+applyPanelWidth(parsePanelWidth(loadJsonState(panelWidthStorageKey, null)));
 
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
