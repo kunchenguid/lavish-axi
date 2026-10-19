@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 // left the chat log a 72px sliver, and on a short phone the chat log had no height at all while
 // the Send row ran past the viewport. The sheet replaces that split, and these assertions are the
 // geometry an end user would notice: nothing clipped, every control inside the viewport, the
-// artifact never under the dock, and the desktop layout untouched.
+// artifact never under the dock, and the desktop side panel at its default width until the
+// reviewer drags its edge.
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -64,6 +65,7 @@ const GEOMETRY = `() => {
   const rect = (el) => { const r = el.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) }; };
   const scroll = document.getElementById("panelScroll");
   const panel = document.getElementById("panel");
+  const edgeX = panel.getBoundingClientRect().left;
   return JSON.stringify({
     viewport: { width: innerWidth, height: innerHeight },
     open: document.body.classList.contains("sheet-open"),
@@ -89,12 +91,17 @@ const GEOMETRY = `() => {
     summary: document.getElementById("panelSummary").textContent,
     toggleLabel: document.getElementById("panelToggle").getAttribute("aria-label"),
     documentScrollable: document.documentElement.scrollHeight > innerHeight || document.documentElement.scrollWidth > innerWidth,
+    resizerDisplay: getComputedStyle(document.getElementById("panelResizer")).display,
+    hitInsideEdge: document.elementFromPoint(edgeX + 2, innerHeight / 2)?.id || "",
+    hitOutsideEdge: document.elementFromPoint(edgeX - 2, innerHeight / 2)?.id || "",
+    resizing: document.body.classList.contains("panel-resizing"),
+    storedWidth: sessionStorage.getItem("lavish-axi:panel-width:" + JSON.parse(document.getElementById("lavish-session").textContent).key),
   });
 }`;
 
 test(
-  "the conversation is a dock and bottom sheet on a phone, and unchanged on desktop",
-  { skip: !runBrowserE2e, timeout: 300_000 },
+  "the conversation is a dock and bottom sheet on a phone, and a side panel on desktop that real drags resize and a dispatched dblclick resets",
+  { skip: !runBrowserE2e, timeout: 600_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-mobile-sheet-"));
     const port = await freePort();
@@ -141,6 +148,40 @@ test(
 
     function geometry() {
       return evaluate(GEOMETRY);
+    }
+
+    // The CLI drags only elements in the accessibility tree, where the decorative edge is hidden,
+    // so the edge is exposed to it first. The drag itself is real pointer input.
+    function dragPanelEdgeOnto(targetPattern) {
+      evaluate(`() => {
+        document.getElementById("panelResizer").removeAttribute("aria-hidden");
+        window.__resizerClicks = 0;
+        document.getElementById("panelResizer").addEventListener("click", () => { window.__resizerClicks += 1; });
+        return "ok";
+      }`);
+      const snapshot = run("chrome-devtools-axi", ["snapshot"], chromeEnv);
+      const ref = (pattern) => {
+        const uid = snapshot
+          .split("\n")
+          .find((line) => pattern.test(line))
+          ?.match(/uid=(\S+)/)?.[1];
+        assert.ok(uid, `${pattern} in snapshot:\n${snapshot}`);
+        return `@${uid}`;
+      };
+      run(
+        "chrome-devtools-axi",
+        ["drag", ref(/description="Drag to resize\. Double-click to reset\."/), ref(targetPattern)],
+        chromeEnv,
+      );
+      wait(300);
+      return evaluate("() => window.__resizerClicks");
+    }
+
+    function assertSideBySide(g, panelWidth, message) {
+      assert.equal(g.panel.right - g.panel.left, panelWidth, message);
+      assert.equal(g.frame.right, g.panel.left, "artifact and panel sit side by side");
+      assert.equal(g.panel.right, g.viewport.width);
+      assert.equal(g.resizing, false, "the artifact has its pointer back");
     }
 
     // Everything the user can reach in the sheet sits inside the viewport, and the log scrolls
@@ -320,6 +361,68 @@ test(
       assert.equal(g.panel.right - g.panel.left, 360, "desktop panel keeps its width");
       assert.equal(g.chat.inert, false);
       assert.equal(g.frame.right, g.panel.left, "artifact and panel sit side by side");
+      assert.equal(g.hitInsideEdge, "panelResizer", "the edge is grabbable above the conversation");
+      assert.equal(g.hitOutsideEdge, "artifact", "the edge never covers the artifact");
+      assert.equal(g.storedWidth, null);
+
+      const clicks = dragPanelEdgeOnto(/StaticText "Lavish"/);
+      g = geometry();
+      assertSideBySide(g, 1120, "the panel takes everything but the artifact's floor");
+      assert.equal(g.frame.right - g.frame.left, 320);
+      assert.equal(g.storedWidth, "1120", "the stored width is the rendered one, not the pointer's overshoot");
+      assert.ok(clicks >= 1, "the browser still delivers the click a double-click is built from");
+
+      open(url, 3000);
+      assertSideBySide(geometry(), 1120, "the width survives a reload of the tab");
+
+      emulate("1000x800x1");
+      wait(300);
+      g = geometry();
+      assertSideBySide(g, 680, "a narrower window re-fits the panel through the grid");
+      assert.equal(g.frame.right - g.frame.left, 320);
+      emulate("1440x1000x1");
+      wait(300);
+      g = geometry();
+      assertSideBySide(g, 1120, "the reviewer's width comes back with the window");
+      assert.equal(g.storedWidth, "1120", "a window resize never rewrites the stored width");
+
+      const annotate = evaluate(
+        '() => { const r = document.getElementById("annotation").getBoundingClientRect(); return r.left + r.width / 2; }',
+      );
+      assert.ok(annotate > g.viewport.width - 320, `the Annotate switch lies inside the panel's floor: ${annotate}`);
+      dragPanelEdgeOnto(/button "Annotate"/);
+      g = geometry();
+      assertSideBySide(g, 320, "the panel never narrows past its floor");
+      assert.equal(g.storedWidth, "320");
+      for (const [name, r] of [
+        ["send", g.send],
+        ["sendAndEnd", g.sendAndEnd],
+      ]) {
+        assert.ok(r.left >= g.panel.left && r.right <= g.panel.right, `${name} fits the narrowest panel`);
+      }
+
+      evaluate(
+        '() => { document.getElementById("panelResizer").dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 })); return "ok"; }',
+      );
+      wait(300);
+      g = geometry();
+      assertSideBySide(g, 360, "a double-click restores the default width");
+      assert.equal(g.storedWidth, "null");
+      open(url, 3000);
+      assertSideBySide(geometry(), 360, "the reset survives a reload");
+
+      evaluate(`() => {
+        const key = JSON.parse(document.getElementById("lavish-session").textContent).key;
+        sessionStorage.setItem("lavish-axi:panel-width:" + key, "720");
+        return "ok";
+      }`);
+      emulate("390x844x3,mobile,touch");
+      open(url);
+      g = geometry();
+      assertDocked(g);
+      assert.equal(g.panel.left, 0, "a stored desktop width leaves the phone sheet's geometry alone");
+      assert.equal(g.panel.right, 390);
+      assert.equal(g.resizerDisplay, "none", "the phone sheet has no resize edge");
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       run("chrome-devtools-axi", ["stop"], chromeEnv);
