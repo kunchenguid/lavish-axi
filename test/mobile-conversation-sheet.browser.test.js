@@ -240,6 +240,8 @@ test(
       }
 
       // ---- Portrait phone ----
+      // chrome-devtools-axi emulates the selected page, and a fresh browser has none selected.
+      run("chrome-devtools-axi", ["open", "about:blank"], chromeEnv);
       emulate("390x844x3,mobile,touch");
       open(url);
       let g = geometry();
