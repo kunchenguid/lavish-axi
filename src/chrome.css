@@ -1047,7 +1047,7 @@ body.lavish {
   height: calc(100vh - var(--bar-h));
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--panel-w);
+  grid-template-columns: minmax(320px, 1fr) minmax(320px, var(--panel-w));
 }
 .frame {
   min-width: 0;
@@ -1056,7 +1056,6 @@ body.lavish {
   overflow: hidden;
 }
 .panel {
-  width: var(--panel-w);
   border-left: var(--hairline-subtle);
   background: var(--bg-panel);
   display: flex;
@@ -1722,7 +1721,6 @@ body.layout-gate-active iframe#artifact {
     top: calc(var(--vv-top, 0px) + var(--sheet-top));
     right: 0;
     left: 0;
-    width: auto;
     height: calc(var(--vv-height, 100dvh) - var(--sheet-top));
     padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
     border-left: 0;

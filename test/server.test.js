@@ -3572,7 +3572,7 @@ test("/chrome.css serves the extracted chrome stylesheet", async () => {
     assert.match(normalizeCssForAssertions(body), /--ink-900:#0f1115/);
     assert.match(
       normalizeCssForAssertions(body),
-      /\.layout\{[^}]*grid-template-columns:minmax\(0,1fr\) ?var\(--panel-w\)/,
+      /\.layout\{[^}]*grid-template-columns:minmax\(320px,1fr\) ?minmax\(320px,var\(--panel-w\)\)/,
     );
   } finally {
     await server.close();
