@@ -7320,6 +7320,18 @@ test("a resize remembers the width the panel rendered, not where the pointer wen
   assert.equal(reloaded.rootStyle("--panel-w"), "1120px");
 });
 
+test("a press inside the panel's edge moves the panel by the pointer's travel, without a jump", async () => {
+  const chrome = await createChromeHarness();
+
+  const drag = chrome.pressPanelEdge(1084);
+  drag.move(1083);
+  assert.equal(chrome.rootStyle("--panel-w"), "361px");
+  drag.move(844);
+  assert.equal(chrome.rootStyle("--panel-w"), "600px");
+  drag.release({ renderedWidth: 600 });
+  assert.equal(chrome.storage.get(PANEL_WIDTH_KEY), "600");
+});
+
 test("a click on the panel's edge without movement keeps the width and stores nothing", async () => {
   const chrome = await createChromeHarness();
   chrome.pressPanelEdge(1080).release();

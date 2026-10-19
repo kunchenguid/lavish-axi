@@ -1477,7 +1477,7 @@ syncVisualViewport();
 
 // ---- Desktop conversation panel width ----
 const panelWidthStorageKey = "lavish-axi:panel-width:" + key;
-/** @type {{ pointerId: number, startX: number, right: number, moved: boolean } | null} */
+/** @type {{ pointerId: number, startX: number, startWidth: number, moved: boolean } | null} */
 let panelResize = null;
 
 /**
@@ -1515,7 +1515,7 @@ panelResizer.addEventListener("pointerdown", (event) => {
   panelResize = {
     pointerId: event.pointerId,
     startX: event.clientX,
-    right: panel.getBoundingClientRect().right,
+    startWidth: panel.getBoundingClientRect().width,
     moved: false,
   };
   if (typeof panelResizer.setPointerCapture === "function") panelResizer.setPointerCapture(event.pointerId);
@@ -1526,7 +1526,7 @@ panelResizer.addEventListener("pointermove", (event) => {
   if (event.clientX !== panelResize.startX) panelResize.moved = true;
   if (!panelResize.moved) return;
   // A negative length would invalidate the whole grid track.
-  applyPanelWidth(Math.max(0, Math.round(panelResize.right - event.clientX)));
+  applyPanelWidth(Math.max(0, Math.round(panelResize.startWidth + panelResize.startX - event.clientX)));
 });
 panelResizer.addEventListener("pointerup", finishPanelResize);
 panelResizer.addEventListener("pointercancel", finishPanelResize);
