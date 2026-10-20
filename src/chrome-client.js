@@ -792,7 +792,7 @@ function replaceExpiredThumbnail(event) {
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
-const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the ⋯ menu.";
+const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
   sendHint.textContent = message;
