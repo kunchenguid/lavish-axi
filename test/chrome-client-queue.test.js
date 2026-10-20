@@ -5731,8 +5731,45 @@ test("chrome send and end with an empty composer nudges instead of ending", asyn
   assert.equal(posts.length, 0);
   assert.equal(chrome.postedToFrame.length, 0);
   assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /End session/);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.element("chatInput").disabled, false);
+});
+
+test("chrome send and end nudges toward End session when preparation leaves the queue empty", async () => {
+  const posts = [];
+  let finishPreparation = () => {};
+  const preparation = new Promise((resolve) => {
+    finishPreparation = () => resolve({ ok: true, json: async () => ({ warnings: [] }) });
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (String(url).endsWith("/layout-warnings/queue")) return preparation;
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.eventSource().listeners.get("layout-warnings")({
+    data: JSON.stringify({ warnings: [warningPayload()] }),
+  });
+  const [row] = chrome.warningRows();
+  row.children[0].checked = true;
+  row.children[0].dispatch("change");
+  chrome.element("sendHint").hidden = true;
+
+  chrome.element("warningsQueueButton").click();
+  chrome.element("sendAndEnd").click();
+  finishPreparation();
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(
+    posts.some((post) => String(post.url).endsWith("/prompts")),
+    false,
+  );
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /End session/);
+  assert.equal(chrome.element("sendAndEnd").disabled, false);
 });
 
 test("an oversized terminal snapshot retries once without optional DOM context", async () => {
@@ -5791,6 +5828,7 @@ test("chrome send with an empty composer shows a visible hint", async () => {
 
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.equal(chrome.element("sendHint").textContent, "Write a message or annotate an element first.");
+  assert.doesNotMatch(chrome.element("sendHint").textContent, /End session/);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.postedToFrame.length, 0);
 });

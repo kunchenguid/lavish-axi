@@ -792,6 +792,7 @@ function replaceExpiredThumbnail(event) {
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
+const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the ⋯ menu.";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
   sendHint.textContent = message;
@@ -1971,7 +1972,7 @@ function sendQueued(endAfter) {
   const shouldEnd = Boolean(endAfter && !chipsBlocked);
   const preparations = shouldEnd ? [...feedbackPreparations] : [];
   if (!queued.length && preparations.length === 0) {
-    if (!chipsBlocked && !sendFailureOwner) showSendHint();
+    if (!chipsBlocked && !sendFailureOwner) showSendHint(endAfter ? EMPTY_END_HINT : DEFAULT_SEND_HINT);
     return;
   }
   if (!sendFailureOwner) hideSendHint(true);
@@ -2021,7 +2022,7 @@ function completeTerminalPreparation(terminal, results) {
   clearPreparationFailure("terminal");
   if (!terminal.prompts.length) {
     releaseTerminalSubmission(terminal);
-    if (!sendFailureOwner) showSendHint();
+    if (!sendFailureOwner) showSendHint(EMPTY_END_HINT);
     return;
   }
   // Only make the reservation durable once every preparation has joined the exact
