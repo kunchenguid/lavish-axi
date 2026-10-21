@@ -600,6 +600,9 @@ async function createChromeHarness({
       for (const { handler } of handlers) handler(event);
       return event;
     },
+    dispatchWindowEvent(type, event = {}) {
+      for (const handler of windowListeners.get(type) || []) handler(event);
+    },
     dispatchDocumentEvent(type, eventProps = {}) {
       const event = {
         defaultPrevented: false,
@@ -6020,7 +6023,8 @@ test("Cmd/Ctrl+I toggles annotation mode from the chrome document, regardless of
 
 test("plain 'i' and other modifier combos do not toggle annotation mode", async () => {
   const chrome = await createChromeHarness();
-  const framePostCount = () => chrome.postedToFrame.length;
+  const framePostCount = () =>
+    chrome.postedToFrame.filter((message) => message.type === "lavish:setAnnotationMode").length;
   const before = framePostCount();
 
   const bareEvent = chrome.dispatchDocumentKeydown({ key: "i" });
@@ -8982,4 +8986,44 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   });
   assert.equal(failed.librariesUnavailable, true);
   assert.equal(JSON.stringify(failed.libraries), "[]");
+});
+
+test("Alt bypass is temporary across documents and never changes the selected mode", async () => {
+  const chrome = await createChromeHarness();
+  assert.equal(chrome.dispatchDocumentKeydown({ key: "Alt", altKey: true }).defaultPrevented, false);
+  assert.equal(chrome.element("annotationLabel").textContent, "Annotate (paused)");
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:setAnnotationBypass");
+  assert.equal(chrome.postedToFrame.at(-1).held, true);
+  chrome.sendFrameMessage({ type: "lavish:annotationBypass", held: false });
+  assert.equal(chrome.element("annotationLabel").textContent, "Annotate");
+  chrome.element("annotation").click();
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  chrome.dispatchDocumentKeydown({ key: "Alt", altKey: true });
+  chrome.dispatchDocumentEvent("keyup", { key: "Alt", altKey: false });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false");
+  assert.equal(chrome.element("annotationLabel").textContent, "Annotate");
+});
+
+test("bypass messages retain the source, load-token and boolean guards", async () => {
+  const chrome = await createChromeHarness();
+  const before = chrome.postedToFrame.length;
+  chrome.sendFrameMessage({ type: "lavish:annotationBypass", held: true, artifact_load_token: "stale" });
+  chrome.sendFrameMessage({ type: "lavish:annotationBypass", held: "yes" });
+  chrome.sendWhiteboardMessage({ type: "lavish:annotationBypass", held: true });
+  assert.equal(chrome.postedToFrame.length, before);
+  chrome.sendFrameMessage({ type: "lavish:annotationBypass", held: true });
+  assert.equal(chrome.element("annotationLabel").textContent, "Annotate (paused)");
+});
+
+test("blur and frame load retire the temporary hold without changing the selected preference", async () => {
+  const chrome = await createChromeHarness();
+  chrome.dispatchDocumentKeydown({ key: "Alt", altKey: true });
+  chrome.dispatchWindowEvent("blur");
+  assert.equal(chrome.element("annotationLabel").textContent, "Annotate");
+  assert.equal(chrome.postedToFrame.at(-1).held, false);
+  chrome.dispatchDocumentKeydown({ key: "Alt", altKey: true });
+  chrome.frame.dispatch("load");
+  assert.equal(chrome.element("annotationLabel").textContent, "Annotate");
+  chrome.sendFrameMessage({ type: "lavish:annotationMode", enabled: false });
+  assert.equal(chrome.element("annotation")["aria-pressed"], "false", "holding never overrides a new page default");
 });
