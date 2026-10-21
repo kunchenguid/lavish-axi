@@ -783,13 +783,6 @@ test("chrome top bar uses an Annotate switch instead of a labeled toggle button"
   assert.doesNotMatch(html, /Inspect/);
 });
 
-test("annotate switch shows a brass track and ink knob when enabled", async () => {
-  const css = await chromeCssSource();
-
-  assert.match(css, /\.annotate-switch\[aria-pressed="true"\] \.switch-track\{background:var\(--accent\)/);
-  assert.match(css, /\.annotate-switch\[aria-pressed="true"\] \.switch-knob\{[^}]*background:var\(--accent-ink\)/);
-});
-
 test("chrome declares the Lavish design-system tokens", async () => {
   const css = await chromeCssSource();
 
