@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.91](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.90...lavish-axi-v0.1.91) (2026-10-21)
+
+
+### Bug Fixes
+
+* **chrome:** name End session in the empty Send & End hint ([#441](https://github.com/kunchenguid/lavish-axi/issues/441)) ([c3f42c6](https://github.com/kunchenguid/lavish-axi/commit/c3f42c62dab7ae8b4d0c9a8c74c89cdff2c5f489))
+* **cli:** name LAVISH_AXI_ALLOWED_HOSTS in the home help ([#438](https://github.com/kunchenguid/lavish-axi/issues/438)) ([a20e8dd](https://github.com/kunchenguid/lavish-axi/commit/a20e8dd3aa3f07153c59a5c4f320a595e94172d8))
+
 ## [0.1.90](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.89...lavish-axi-v0.1.90) (2026-10-18)
 
 
