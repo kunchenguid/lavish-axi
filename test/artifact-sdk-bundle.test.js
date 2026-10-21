@@ -196,6 +196,19 @@ function bootSdk({
   return {
     posted,
     body,
+    dispatch(type, props = {}, windowEvent = false) {
+      const event = {
+        defaultPrevented: false,
+        ...props,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      for (const entry of (windowEvent ? windowListeners : documentListeners).filter((entry) => entry.type === type)) {
+        entry.handler(event);
+      }
+      return event;
+    },
     api: sandbox.window.lavish,
     // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
     click(target, modifiers = {}) {
@@ -901,4 +914,46 @@ test("setDocumentMeta forwards null to restore, omits unset fields and drops non
     messages.map((entry) => JSON.parse(JSON.stringify({ title: entry.title, icon: entry.icon }))),
     [{ title: null }, {}, {}],
   );
+});
+
+test("holding Alt bypasses actual annotation interception and release restores it", () => {
+  const sdk = bootSdk();
+  const target = appendTo(sdk.body, cell("p", "Explore this section"));
+  assert.equal(sdk.click(target).defaultPrevented, true);
+  sdk.card().querySelector("textarea").value = "Keep this draft";
+  const held = sdk.dispatch("keydown", { key: "Alt", altKey: true });
+  sdk.dispatch("keydown", { key: "Alt", altKey: true, repeat: true });
+  assert.equal(held.defaultPrevented, false);
+  assert.equal(sdk.click(target, { altKey: true }).defaultPrevented, false);
+  sdk.selectText(target, "Explore");
+  assert.equal(sdk.cards().length, 1, "holding does not open a text card or discard the draft");
+  assert.equal(sdk.card().querySelector("textarea").value, "Keep this draft");
+  sdk.dispatch("keyup", { key: "Alt", altKey: false });
+  assert.equal(sdk.click(target).defaultPrevented, true);
+});
+
+test("Alt never enables annotation selected off, and blur recovers a lost release", () => {
+  const sdk = bootSdk({ htmlAnnotate: "off" });
+  const target = appendTo(sdk.body, cell("p", "Section"));
+  sdk.dispatch("keydown", { key: "Alt", altKey: true });
+  sdk.dispatch("keyup", { key: "Alt", altKey: false });
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
+  sdk.dispatch("keydown", { key: "Alt", altKey: true });
+  assert.equal(sdk.click(target, { altKey: true }).defaultPrevented, false);
+  sdk.dispatch("blur", {}, true);
+  assert.equal(sdk.click(target).defaultPrevented, true);
+});
+
+test("pointer modifier observations recover a press or release in another document", () => {
+  const sdk = bootSdk();
+  const target = appendTo(sdk.body, cell("p", "Section"));
+  assert.equal(sdk.click(target, { altKey: true }).defaultPrevented, false);
+  assert.equal(sdk.click(target, { altKey: false }).defaultPrevented, true);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationBypass", held: true });
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationBypass", held: false });
+  assert.equal(sdk.click(target).defaultPrevented, true);
+  const message = sdk.posted.find((message) => message.type === "lavish:annotationBypass");
+  assert.equal(message.artifact_load_token, "load-token");
 });

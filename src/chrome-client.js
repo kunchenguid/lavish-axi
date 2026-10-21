@@ -195,6 +195,7 @@ const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-arti
 
 const queued = loadQueuedPrompts();
 let annotation = true;
+let annotationBypass = false;
 // Page defaults follow artifact loads until the reviewer explicitly chooses a mode.
 let annotationOverridden = false;
 let annotationDefaultReceived = false;
@@ -3593,6 +3594,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   artifactLoadToken = token;
   artifactSpokeToken = "";
   annotationDefaultReceived = false;
+  setAnnotationBypass(false);
   inlineWhiteboardChannels.clear();
   setHandoffSuperseded(false);
   startLayoutGateCycle();
@@ -4378,10 +4380,11 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean" && !annotationDefaultReceived) {
     annotationDefaultReceived = true;
     if (!annotationOverridden && !ended && !terminalSubmission) annotation = msg.enabled;
-    annotationSwitch.setAttribute("aria-pressed", String(annotation && !ended));
+    renderAnnotationSwitch();
     // Reconcile even if frame load replayed the old mode before this report arrived.
     postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   }
+  if (msg.type === "lavish:annotationBypass" && typeof msg.held === "boolean") setAnnotationBypass(msg.held, false);
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
     // Queued from inside the artifact, where the closed dock is the only sign it landed.
@@ -4548,8 +4551,25 @@ function toggleAnnotationMode() {
   if (ended || terminalSubmission) return;
   annotationOverridden = true;
   annotation = !annotation;
-  annotationSwitch.setAttribute("aria-pressed", String(annotation));
+  renderAnnotationSwitch();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
+}
+
+function renderAnnotationSwitch() {
+  annotationSwitch.setAttribute("aria-pressed", String(annotation && !ended));
+  document.getElementById("annotationLabel").textContent =
+    annotation && annotationBypass && !ended ? "Annotate (paused)" : "Annotate";
+}
+
+function setAnnotationBypass(held, notifyFrame = true) {
+  if (annotationBypass === held) return;
+  annotationBypass = held;
+  renderAnnotationSwitch();
+  if (notifyFrame) postToFrame({ type: "lavish:setAnnotationBypass", held });
+}
+
+function observeAnnotationModifier(event) {
+  if (typeof event.altKey === "boolean") setAnnotationBypass(event.altKey);
 }
 
 annotationSwitch.onclick = toggleAnnotationMode;
@@ -4738,7 +4758,16 @@ document.addEventListener(
   },
   true,
 );
+for (const type of ["keydown", "keyup", "mousedown", "mousemove"]) {
+  document.addEventListener(type, observeAnnotationModifier, true);
+}
+window.addEventListener("blur", () => setAnnotationBypass(false));
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) setAnnotationBypass(false);
+});
 frame.addEventListener("load", () => {
+  // Never replay a held key into a new document after navigation or reload.
+  setAnnotationBypass(false);
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.

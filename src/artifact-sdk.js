@@ -476,6 +476,7 @@ export function createArtifactSdk(
   // values keep the artifact annotatable by default.
   const initialAnnotationMode = document.documentElement.getAttribute("data-lavish-annotate") !== "off";
   let annotationMode = initialAnnotationMode;
+  let annotationBypass = false;
   let hovered = null;
   let selected = null;
   let ignoreNextClick = false;
@@ -1069,7 +1070,7 @@ export function createArtifactSdk(
       if (mermaidViewports.has(svg)) continue;
       const viewport = createViewport(svg);
       if (viewport) {
-        viewport.setFrozen(annotationMode);
+        viewport.setFrozen(annotationMode && !annotationBypass);
         mermaidViewports.set(svg, viewport);
       }
     }
@@ -1199,20 +1200,40 @@ export function createArtifactSdk(
 
   function setAnnotationMode(enabled) {
     annotationMode = !!enabled;
+    if (!annotationMode) closeCard();
+    renderAnnotationMode();
+  }
+
+  // Temporary exploration must not close a card or change the selected preference.
+  function setAnnotationBypass(held, report = false) {
+    if (annotationBypass === held) return;
+    annotationBypass = held;
+    ignoreNextClick = false;
+    if (hovered && hovered !== selected) clearHighlight(hovered);
+    hovered = null;
+    renderAnnotationMode();
+    if (report) postArtifactMessage("lavish:annotationBypass", { held });
+  }
+
+  function observeAnnotationModifier(event) {
+    if (typeof event.altKey === "boolean") setAnnotationBypass(event.altKey, true);
+  }
+
+  function renderAnnotationMode() {
+    const active = annotationMode && !annotationBypass;
     let style = document.getElementById("lavish-cursor-style");
-    if (annotationMode && !style) {
+    if (active && !style) {
       style = document.createElement("style");
       style.id = "lavish-cursor-style";
       style.textContent =
         ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']):not(a[href])),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']):not(a[href])) *{cursor:pointer!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']) a[href]),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']) a[href]) *{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
       document.head.appendChild(style);
     }
-    if (!annotationMode && style) style.remove();
-    if (!annotationMode) closeCard();
+    if (!active && style) style.remove();
 
     // Freeze Mermaid pan/zoom while annotating so nodes sit at stable screen
     // positions and a click resolves cleanly to one node instead of panning.
-    setMermaidFrozen(annotationMode);
+    setMermaidFrozen(active);
   }
 
   function queuePrompt(prompt, options = {}) {
@@ -2505,6 +2526,7 @@ export function createArtifactSdk(
     if (event.source !== parent) return;
     const msg = event.data || {};
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
+    if (msg.type === "lavish:setAnnotationBypass" && typeof msg.held === "boolean") setAnnotationBypass(msg.held);
     if (msg.type === "lavish:attachmentResult") {
       if (!isTrustedAttachmentResult(event, { parentWindow: parent, nonce: ATTACHMENT_NONCE })) return;
       activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);
@@ -2523,7 +2545,7 @@ export function createArtifactSdk(
     if (msg.type === "lavish:queuedAnchors") {
       queuedAnchorSelectors = new Set(Array.isArray(msg.selectors) ? msg.selectors.map(String) : []);
     }
-    if (msg.type === "lavish:annotateElement" && annotationMode) {
+    if (msg.type === "lavish:annotateElement" && annotationMode && !annotationBypass) {
       const target = safeQuerySelector(msg.selector);
       if (target) showAnnotationCard(target);
     }
@@ -2562,6 +2584,16 @@ export function createArtifactSdk(
     true,
   );
 
+  // Observe in both documents: a press and release can land on opposite sides of the sandbox.
+  // Pointer modifiers also recover a key transition missed while focus was elsewhere.
+  for (const type of ["keydown", "keyup", "mousedown", "mousemove"]) {
+    document.addEventListener(type, observeAnnotationModifier, true);
+  }
+  window.addEventListener("blur", () => setAnnotationBypass(false, true));
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) setAnnotationBypass(false, true);
+  });
+
   // Report scroll position to the chrome so it can be restored across hot reloads.
   // The iframe is sandboxed without same-origin, so the chrome can't read scrollY directly.
   let scrollFrame = 0;
@@ -2580,8 +2612,10 @@ export function createArtifactSdk(
   document.addEventListener(
     "mouseover",
     (event) => {
+      observeAnnotationModifier(event);
       if (
         !annotationMode ||
+        annotationBypass ||
         isLavishUi(event.target) ||
         isLavishAction(event.target) ||
         isInteractiveControl(event.target)
@@ -2610,8 +2644,10 @@ export function createArtifactSdk(
   document.addEventListener(
     "mouseup",
     (event) => {
+      observeAnnotationModifier(event);
       if (
         !annotationMode ||
+        annotationBypass ||
         isLavishUi(event.target) ||
         isLavishAction(event.target) ||
         isInteractiveControl(event.target)
@@ -2630,8 +2666,10 @@ export function createArtifactSdk(
   document.addEventListener(
     "click",
     (event) => {
+      observeAnnotationModifier(event);
       if (
         !annotationMode ||
+        annotationBypass ||
         isLavishUi(event.target) ||
         isLavishAction(event.target) ||
         isInteractiveControl(event.target)
