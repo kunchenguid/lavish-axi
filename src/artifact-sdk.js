@@ -477,6 +477,7 @@ export function createArtifactSdk(
   const initialAnnotationMode = document.documentElement.getAttribute("data-lavish-annotate") !== "off";
   let annotationMode = initialAnnotationMode;
   let annotationBypass = false;
+  let annotationModifierObservedAt = 0;
   let hovered = null;
   let selected = null;
   let ignoreNextClick = false;
@@ -1205,14 +1206,20 @@ export function createArtifactSdk(
   }
 
   // Temporary exploration must not close a card or change the selected preference.
-  function setAnnotationBypass(held, report = false) {
-    if (annotationBypass === held) return;
-    annotationBypass = held;
-    ignoreNextClick = false;
-    if (hovered && hovered !== selected) clearHighlight(hovered);
-    hovered = null;
-    renderAnnotationMode();
-    if (report) postArtifactMessage("lavish:annotationBypass", { held });
+  function setAnnotationBypass(held, report = false, observedAt = performance.timeOrigin + performance.now()) {
+    if (!Number.isFinite(observedAt) || observedAt < annotationModifierObservedAt) return;
+    // At reduced clock precision, prefer release over a queued hold in the same tick.
+    if (!report && observedAt === annotationModifierObservedAt && held && !annotationBypass) return;
+    annotationModifierObservedAt = observedAt;
+    if (annotationBypass !== held) {
+      annotationBypass = held;
+      ignoreNextClick = false;
+      if (hovered && hovered !== selected) clearHighlight(hovered);
+      hovered = null;
+      renderAnnotationMode();
+    }
+    // An unchanged release still supersedes a hold queued by the other document.
+    if (report) postArtifactMessage("lavish:annotationBypass", { held, observedAt });
   }
 
   function observeAnnotationModifier(event) {
@@ -2507,7 +2514,8 @@ export function createArtifactSdk(
     if (event.source !== parent) return;
     const msg = event.data || {};
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
-    if (msg.type === "lavish:setAnnotationBypass" && typeof msg.held === "boolean") setAnnotationBypass(msg.held);
+    if (msg.type === "lavish:setAnnotationBypass" && typeof msg.held === "boolean" && Number.isFinite(msg.observedAt))
+      setAnnotationBypass(msg.held, false, msg.observedAt);
     if (msg.type === "lavish:attachmentResult") {
       if (!isTrustedAttachmentResult(event, { parentWindow: parent, nonce: ATTACHMENT_NONCE })) return;
       activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);
@@ -2567,7 +2575,7 @@ export function createArtifactSdk(
 
   // Observe in both documents: a press and release can land on opposite sides of the sandbox.
   // Pointer modifiers also recover a key transition missed while focus was elsewhere.
-  for (const type of ["keydown", "keyup", "mousedown", "mousemove"]) {
+  for (const type of ["keydown", "keyup", "pointerdown", "pointermove", "mousedown", "mousemove", "wheel"]) {
     document.addEventListener(type, observeAnnotationModifier, true);
   }
   window.addEventListener("blur", () => setAnnotationBypass(false, true));

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,12 +11,26 @@ const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
 // A test-only driver lives inside the opaque-origin artifact. Its DOM events exercise the real
 // SDK and browser defaults; trusted clicks and keyboard presses also enter via the browser CLI.
 const artifact = `<!doctype html><html><head><meta charset="utf-8"><title>Annotation bypass fixture</title>
-<style>body{font:18px system-ui;padding:32px}#target{cursor:pointer;padding:24px;background:#eee}input{margin:16px}</style>
-</head><body><h1>Annotation bypass fixture</h1><div id="target" tabindex="0">Explore this section</div>
+<style>body{font:18px system-ui;padding:32px}#target{cursor:pointer;padding:24px;background:#eee}input{margin:16px}#diagram svg{display:block;height:160px;width:600px;max-width:100%}</style>
+</head><body><h1>Annotation bypass fixture</h1><div id="diagram"></div><div id="target" tabindex="0">Explore this section</div>
 <p id="text">Select these sample words.</p><label><input id="check" type="checkbox">Enable sample</label>
 <input id="input" aria-label="Sample input"><div id="edit" contenteditable="true">Editable sample</div>
 <a href="#destination">Sample link</a><p id="destination">Destination</p>
+<script src="mermaid.min.js"></script>
 <script>
+mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+mermaid.render('mermaid-bypass', 'flowchart LR; A[Start] --> B[Finish]').then(({svg}) => {
+  document.getElementById('diagram').innerHTML = svg;
+});
+let queuedHold = null;
+let delayHold = false;
+window.addEventListener('message', event => {
+  if (delayHold && event.source === parent && event.data?.type === 'lavish:setAnnotationBypass' && event.data.held) {
+    event.stopImmediatePropagation(); queuedHold = event.data; delayHold = false;
+  }
+}, true);
+const errors = [];
+window.addEventListener('error', event => errors.push(event.message));
 let clicks = 0;
 const keys = [];
 document.getElementById('target').addEventListener('click', () => clicks++);
@@ -31,6 +45,26 @@ window.addEventListener('message', event => {
   const d = event.data;
   const target = document.querySelector(d.selector || '#target');
   let prevented = null;
+  if (d.action === 'delay') delayHold = true;
+  if (d.action === 'deliver') {
+    target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt', altKey: false, bubbles: true }));
+    window.dispatchEvent(new MessageEvent('message', { source: parent, data: queuedHold }));
+  }
+  const svg = document.querySelector('#diagram svg');
+  const before = svg?.getAttribute('viewBox');
+  if (d.action === 'drag' || d.action === 'wheel') {
+    const r = svg.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (d.action === 'wheel') svg.dispatchEvent(new WheelEvent('wheel', {
+      clientX: x, clientY: y, deltaY: -100, altKey: !!d.held, bubbles: true, cancelable: true
+    }));
+    else {
+      for (const [type, offset] of [['pointerdown', 0], ['pointermove', 12], ['pointerup', 12]]) {
+        svg.dispatchEvent(new PointerEvent(type, { clientX: x + offset, clientY: y + offset,
+          button: 0, pointerId: 1, altKey: !!d.held, bubbles: true }));
+      }
+    }
+  }
   if (d.action === 'key') target.dispatchEvent(new KeyboardEvent(d.event || 'keydown', {
     key: d.key || 'Alt', altKey: d.held, bubbles: true, cancelable: true, repeat: !!d.repeat
   }));
@@ -52,7 +86,7 @@ window.addEventListener('message', event => {
   if (d.action === 'draft') cards()[0].querySelector('textarea').value = 'Keep this sample draft';
   if (d.action === 'cancel') cards()[0]?.querySelector('.lavish-cancel').click();
   parent.postMessage({ type: 'bypass-test-result', result: {
-    prevented, clicks, cards: cards().length, draft: cards()[0]?.querySelector('textarea').value,
+    errors, before, viewBox: svg?.getAttribute('viewBox'), queued: !!queuedHold, prevented, clicks, cards: cards().length, draft: cards()[0]?.querySelector('textarea').value,
     cursor: !!document.getElementById('lavish-cursor-style'), checked: document.getElementById('check').checked,
     input: document.getElementById('input').value, edit: document.getElementById('edit').textContent,
     selection: document.getSelection().toString(), keys
@@ -122,6 +156,12 @@ test(
       frame.contentWindow.postMessage({ type: 'bypass-test', ...${JSON.stringify(data)} }, '*');
     })`);
     }
+    async function evidence(name) {
+      const dir = process.env.LAVISH_AXI_BROWSER_EVIDENCE_DIR;
+      if (!dir) return;
+      await mkdir(dir, { recursive: true });
+      browser("screenshot", path.join(dir, name + ".png"));
+    }
     function chromeKey(held, type = "keydown") {
       evaluate(`() => { document.dispatchEvent(new KeyboardEvent('${type}', {
       key: 'Alt', altKey: ${held}, bubbles: true, cancelable: true
@@ -142,6 +182,7 @@ test(
     try {
       const file = path.join(temp, "artifact.html");
       await writeFile(file, artifact);
+      await copyFile("node_modules/mermaid/dist/mermaid.min.js", path.join(temp, "mermaid.min.js"));
       const opened = run(process.execPath, ["bin/lavish-axi.js", file, "--no-open"], lavishEnv);
       const url = opened.match(/url:\s*"([^"]+)"/)?.[1];
       assert.ok(url, opened);
@@ -149,6 +190,60 @@ test(
       browser("wait", "3000");
       assert.match(label().hint, /Hold Alt\/Option/);
       assertEnabledSwitchColors();
+
+      // Hold is queued by chrome, but the artifact observes release while still locally false.
+      probe({ action: "delay" });
+      chromeKey(true);
+      assert.equal(probe().queued, true);
+      probe({ action: "deliver" });
+      assert.equal(probe().cursor, true);
+      assert.equal(label().label, "Annotate");
+      await evidence("release-after-delayed-hold");
+
+      // Symmetric race: an artifact hold is queued while chrome observes release.
+      evaluate(`() => {
+        window.delayedArtifactHold = null;
+        const delay = event => {
+          if (event.source !== document.getElementById('artifact').contentWindow ||
+              event.data?.type !== 'lavish:annotationBypass' || !event.data.held) return;
+          event.stopImmediatePropagation();
+          window.delayedArtifactHold = event.data;
+          window.removeEventListener('message', delay, true);
+        };
+        window.addEventListener('message', delay, true);
+        return 'ok';
+      }`);
+      probe({ action: "key", held: true });
+      chromeKey(false, "keyup");
+      evaluate(`() => {
+        if (!window.delayedArtifactHold) throw new Error('missing queued artifact hold');
+        window.dispatchEvent(new MessageEvent('message', {
+          source: document.getElementById('artifact').contentWindow, data: window.delayedArtifactHold
+        }));
+        return 'ok';
+      }`);
+      assert.equal(label().label, "Annotate");
+      assert.equal(probe().cursor, true);
+
+      // Real Mermaid-rendered SVG: assert effective movement, not just modifier state.
+      for (const action of ["drag", "wheel"]) {
+        let gesture = probe({ action });
+        assert.ok(gesture.viewBox, "Mermaid has rendered");
+        assert.equal(gesture.viewBox, gesture.before, `${action} frozen before holding`);
+        gesture = probe({ action, held: true });
+        assert.notEqual(gesture.viewBox, gesture.before, `${action} observes Alt before handling the gesture`);
+        console.log(`${action} while held: ${gesture.before} -> ${gesture.viewBox}`);
+        gesture = probe({ action });
+        assert.equal(gesture.viewBox, gesture.before, `${action} freezes immediately on release`);
+        chromeKey(true);
+        gesture = probe({ action, held: true });
+        assert.notEqual(gesture.viewBox, gesture.before, `${action} after entry from chrome`);
+        chromeKey(false, "keyup");
+        gesture = probe({ action });
+        assert.equal(gesture.viewBox, gesture.before, `${action} after cross-document release`);
+      }
+
+      assert.deepEqual(probe().errors, [], "diagram gestures run without browser errors");
 
       // A trusted unmodified click really intercepts and opens the card.
       const snapshot = browser("snapshot");
@@ -169,6 +264,17 @@ test(
       assert.equal(state.selection, "Select these sample words.");
       assert.equal(state.cards, 1, "selection during bypass does not replace the draft");
       assert.equal(probe({ action: "click", selector: "#check", held: true }).checked, true);
+
+      for (const action of ["drag", "wheel"]) {
+        let gesture = probe({ action, held: true });
+        assert.notEqual(gesture.viewBox, gesture.before);
+        probe({ action: "key", event: "keyup", held: false });
+        gesture = probe({ action });
+        assert.equal(gesture.viewBox, gesture.before);
+        assert.equal(gesture.draft, "Keep this sample draft");
+      }
+
+      await evidence("released-diagram-with-draft");
 
       // Release in the other document, then reverse the direction.
       chromeKey(false, "keyup");
