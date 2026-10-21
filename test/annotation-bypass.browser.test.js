@@ -131,6 +131,14 @@ test(
       return evaluate(`JSON.stringify({ pressed: document.getElementById('annotation').getAttribute('aria-pressed'),
       label: document.getElementById('annotationLabel').textContent, hint: document.getElementById('annotation').title })`);
     }
+    function assertEnabledSwitchColors() {
+      const colors = evaluate(`JSON.stringify({
+        pressed: document.getElementById('annotation').getAttribute('aria-pressed'),
+        track: getComputedStyle(document.querySelector('#annotation .switch-track')).backgroundColor,
+        knob: getComputedStyle(document.querySelector('#annotation .switch-knob')).backgroundColor
+      })`);
+      assert.deepEqual(colors, { pressed: "true", track: "rgb(244, 201, 93)", knob: "rgb(23, 19, 10)" });
+    }
     try {
       const file = path.join(temp, "artifact.html");
       await writeFile(file, artifact);
@@ -140,6 +148,7 @@ test(
       browser("open", url);
       browser("wait", "3000");
       assert.match(label().hint, /Hold Alt\/Option/);
+      assertEnabledSwitchColors();
 
       // A trusted unmodified click really intercepts and opens the card.
       const snapshot = browser("snapshot");
@@ -203,6 +212,7 @@ test(
       browser("wait", "3000");
       assert.equal(label().label, "Annotate");
       assert.equal(probe({ action: "click" }).prevented, true, "reload restores interception");
+      assertEnabledSwitchColors();
       console.log(
         "Verified hold/release, repeats, cross-document release, blur/visibility, reload, drafts, controls, selection, trusted keys and click interception.",
       );
