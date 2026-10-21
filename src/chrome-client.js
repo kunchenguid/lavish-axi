@@ -196,6 +196,7 @@ const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-arti
 const queued = loadQueuedPrompts();
 let annotation = true;
 let annotationBypass = false;
+let annotationModifierObservedAt = 0;
 // Page defaults follow artifact loads until the reviewer explicitly chooses a mode.
 let annotationOverridden = false;
 let annotationDefaultReceived = false;
@@ -4384,7 +4385,8 @@ window.addEventListener("message", (event) => {
     // Reconcile even if frame load replayed the old mode before this report arrived.
     postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   }
-  if (msg.type === "lavish:annotationBypass" && typeof msg.held === "boolean") setAnnotationBypass(msg.held, false);
+  if (msg.type === "lavish:annotationBypass" && typeof msg.held === "boolean" && Number.isFinite(msg.observedAt))
+    setAnnotationBypass(msg.held, false, msg.observedAt);
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
     // Queued from inside the artifact, where the closed dock is the only sign it landed.
@@ -4561,11 +4563,16 @@ function renderAnnotationSwitch() {
     annotation && annotationBypass && !ended ? "Annotate (paused)" : "Annotate";
 }
 
-function setAnnotationBypass(held, notifyFrame = true) {
-  if (annotationBypass === held) return;
-  annotationBypass = held;
-  renderAnnotationSwitch();
-  if (notifyFrame) postToFrame({ type: "lavish:setAnnotationBypass", held });
+function setAnnotationBypass(held, notifyFrame = true, observedAt = performance.timeOrigin + performance.now()) {
+  if (!Number.isFinite(observedAt) || observedAt < annotationModifierObservedAt) return;
+  // At reduced clock precision, prefer release over a queued hold in the same tick.
+  if (!notifyFrame && observedAt === annotationModifierObservedAt && held && !annotationBypass) return;
+  annotationModifierObservedAt = observedAt;
+  if (annotationBypass !== held) {
+    annotationBypass = held;
+    renderAnnotationSwitch();
+  }
+  if (notifyFrame) postToFrame({ type: "lavish:setAnnotationBypass", held, observedAt });
 }
 
 function observeAnnotationModifier(event) {
@@ -4758,7 +4765,7 @@ document.addEventListener(
   },
   true,
 );
-for (const type of ["keydown", "keyup", "mousedown", "mousemove"]) {
+for (const type of ["keydown", "keyup", "pointerdown", "pointermove", "mousedown", "mousemove", "wheel"]) {
   document.addEventListener(type, observeAnnotationModifier, true);
 }
 window.addEventListener("blur", () => setAnnotationBypass(false));
