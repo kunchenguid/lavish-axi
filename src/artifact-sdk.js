@@ -482,6 +482,9 @@ export function createArtifactSdk(
   // Selectors the chrome reports as carrying a queued note. A click on one opens that note in the
   // chrome's panel instead of a fresh card; the note's words never enter this document.
   let queuedAnchorSelectors = new Set();
+  // The element each note was queued from, by its selector. A selector is unique only for the
+  // page it was made on, so while that element is still in the page, identity decides the match.
+  const queuedAnchorElements = new Map();
   let shadow = null;
   let counter = 0;
   const ids = new WeakMap();
@@ -828,8 +831,21 @@ export function createArtifactSdk(
     return parts.join(" > ");
   }
 
-  function queuedAnchorFor(el) {
+  function rememberQueuedAnchor(selectorText, el) {
+    if (selectorText && el && typeof WeakRef === "function") queuedAnchorElements.set(selectorText, new WeakRef(el));
+  }
+
+  // Which queued note a click on `el` reopens. A note whose element is still in the page matches
+  // only that element; one whose element is gone (reload, re-render) falls back to its selector:
+  // an identical string, or a selector whose first match in the page is `el`.
+  function queuedAnchorFor(el, candidates) {
     for (const candidate of queuedAnchorSelectors) {
+      const recorded = queuedAnchorElements.get(candidate)?.deref();
+      if (recorded && recorded.isConnected !== false) {
+        if (recorded === el) return candidate;
+        continue;
+      }
+      if (candidates.includes(candidate)) return candidate;
       try {
         if (document.querySelectorAll(candidate)[0] === el) return candidate;
       } catch {
@@ -1272,6 +1288,7 @@ export function createArtifactSdk(
       if (attachments.length) item.attachments = attachments;
     }
 
+    if (options.element) rememberQueuedAnchor(item.selector, options.element);
     postArtifactMessage("lavish:queuePrompt", { prompt: item });
   }
 
@@ -2453,6 +2470,7 @@ export function createArtifactSdk(
       // refers to), but never queue an empty card.
       if (prompt || readyAttachments.length) {
         queuePrompt(prompt, { ...c, queueKey: "", attachments: readyAttachments });
+        rememberQueuedAnchor(c.selector, target);
       }
       closeCard();
       return true;
@@ -2666,12 +2684,8 @@ export function createArtifactSdk(
       // finds the node's note again. A table cell's note stays on the exact element clicked.
       const clicked = queuedAnchorSelectors.size ? context(event.target) : null;
       const node = clicked?.target?.type === "mermaid-node" ? clicked.target.selector : "";
-      // A selector is only unique for the page it was made on: once a structurally identical
-      // branch appears, the clicked element's fresh selector grows longer than its queued one.
-      // So also accept a queued selector whose first match is still this exact element.
-      const selector =
-        [clicked?.selector, node].find((candidate) => candidate && queuedAnchorSelectors.has(candidate)) ||
-        (clicked ? queuedAnchorFor(event.target) : "");
+      // A note matches the element it was queued from while that element is in the page (#448).
+      const selector = clicked ? queuedAnchorFor(event.target, [clicked.selector, node].filter(Boolean)) : "";
       if (selector) {
         closeCard();
         postArtifactMessage("lavish:editQueuedAnchor", { selector });

@@ -1040,3 +1040,52 @@ test("snapshot does not query the document for selector uniqueness", () => {
   assert.match(response.snapshot, /section/);
   assert.deepEqual(queries, []);
 });
+
+// #448 review: an identical branch inserted *before* the annotated one makes the queued selector's
+// first match the new copy. The note must still follow the element it was queued from.
+test("a queued note follows its element when an identical branch is inserted before it", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const build = () => {
+    const section = appendTo(sdk.body, createElement("section"));
+    let node = section;
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    return { section, img: appendTo(node, createElement("img")) };
+  };
+  const original = build().img;
+  sdk.click(original);
+  const queued = sdk.queue("Swap this photo");
+  const copy = build();
+  sdk.body.children.splice(sdk.body.children.indexOf(copy.section), 1);
+  sdk.body.children.unshift(copy.section);
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(copy.img);
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+
+  sdk.click(original);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+});
+
+// Once the queued element is gone (a reload or re-render replaced it), the note falls back to its
+// selector, so the element now standing in its place reopens it.
+test("a queued note falls back to its selector once its element is replaced", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  paragraph.isConnected = false;
+  sdk.body.children.splice(sdk.body.children.indexOf(paragraph), 1);
+  const replacement = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(replacement);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+});
