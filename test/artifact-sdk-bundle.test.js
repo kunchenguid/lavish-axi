@@ -988,6 +988,34 @@ test("a selector matching no element keeps climbing", () => {
   assert.notEqual(second.prompt.selector, first.prompt.selector);
 });
 
+// #448 review: a queued note made before a structurally identical branch appeared must still
+// reopen when its element is clicked, though that element's fresh selector is now longer.
+test("a queued note reopens after an identical branch is added beside it", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const build = () => {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    return appendTo(node, createElement("img"));
+  };
+  const original = build();
+  sdk.click(original);
+  const queued = sdk.queue("Swap this photo");
+  const twin = build();
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(original);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+
+  // The new twin is not the element the note resolves to, so it opens a fresh card.
+  sdk.click(twin);
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
 // #448 review: snapshot() reads only uid/tag/text, so it must not build selectors, whose
 // uniqueness checks query the whole document once per element.
 test("snapshot does not query the document for selector uniqueness", () => {

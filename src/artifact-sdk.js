@@ -828,6 +828,17 @@ export function createArtifactSdk(
     return parts.join(" > ");
   }
 
+  function queuedAnchorFor(el) {
+    for (const candidate of queuedAnchorSelectors) {
+      try {
+        if (document.querySelectorAll(candidate)[0] === el) return candidate;
+      } catch {
+        // A stored selector the browser cannot parse simply matches nothing.
+      }
+    }
+    return "";
+  }
+
   function selectsOnly(parts) {
     try {
       return document.querySelectorAll(parts.join(" > ")).length === 1;
@@ -2655,7 +2666,12 @@ export function createArtifactSdk(
       // finds the node's note again. A table cell's note stays on the exact element clicked.
       const clicked = queuedAnchorSelectors.size ? context(event.target) : null;
       const node = clicked?.target?.type === "mermaid-node" ? clicked.target.selector : "";
-      const selector = [clicked?.selector, node].find((candidate) => candidate && queuedAnchorSelectors.has(candidate));
+      // A selector is only unique for the page it was made on: once a structurally identical
+      // branch appears, the clicked element's fresh selector grows longer than its queued one.
+      // So also accept a queued selector whose first match is still this exact element.
+      const selector =
+        [clicked?.selector, node].find((candidate) => candidate && queuedAnchorSelectors.has(candidate)) ||
+        (clicked ? queuedAnchorFor(event.target) : "");
       if (selector) {
         closeCard();
         postArtifactMessage("lavish:editQueuedAnchor", { selector });
