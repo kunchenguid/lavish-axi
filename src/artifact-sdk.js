@@ -807,9 +807,13 @@ export function createArtifactSdk(
     while (node && node.nodeType === 1 && (parts.length < 5 || !selectsOnly(parts))) {
       let part = node.tagName.toLowerCase();
       if (node.id) {
-        part += "#" + CSS.escape(node.id);
-        parts.unshift(part);
-        break;
+        const idPart = part + "#" + CSS.escape(node.id);
+        // Generated pages repeat ids; only an id that names this one element ends the climb.
+        if (selectsOnly([idPart, ...parts])) {
+          parts.unshift(idPart);
+          break;
+        }
+        part = idPart;
       }
 
       const parent = node.parentElement;
@@ -826,7 +830,7 @@ export function createArtifactSdk(
 
   function selectsOnly(parts) {
     try {
-      return document.querySelectorAll(parts.join(" > ")).length <= 1;
+      return document.querySelectorAll(parts.join(" > ")).length === 1;
     } catch {
       return true;
     }

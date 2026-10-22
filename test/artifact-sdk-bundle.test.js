@@ -455,7 +455,7 @@ test("the served SDK bundle reports the artifact's own revision registry and mar
 });
 
 test("the served SDK bundle queues a table-cell annotation without a missing-helper ReferenceError", () => {
-  const sdk = bootSdk();
+  const sdk = bootSdk({ structuralQueries: true });
   const { evidence } = buildTable(sdk);
 
   sdk.click(evidence);
@@ -476,7 +476,7 @@ test("the served SDK bundle queues a table-cell annotation without a missing-hel
 });
 
 test("the served SDK bundle keeps the clicked element's own identity inside a table cell", () => {
-  const sdk = bootSdk();
+  const sdk = bootSdk({ structuralQueries: true });
   const { badge } = buildTable(sdk);
 
   sdk.click(badge);
@@ -944,4 +944,44 @@ test("structurally identical deep elements get distinct selectors and their own 
   assert.notEqual(second.prompt.selector, first.prompt.selector);
   assert.deepEqual(queryChildChain(sdk.body.parentElement, first.prompt.selector), [images[0]]);
   assert.deepEqual(queryChildChain(sdk.body.parentElement, second.prompt.selector), [images[1]]);
+});
+
+// An id only stops the climb when it names one element: generated pages repeat ids.
+test("a repeated id does not stop the selector climb", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    const section = appendTo(sdk.body, createElement("section"));
+    const card = appendTo(section, createElement("div"));
+    card.id = "card";
+    images.push(appendTo(card, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.click(images[1]);
+  const second = sdk.queue("Crop this one");
+
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, first.prompt.selector), [images[0]]);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, second.prompt.selector), [images[1]]);
+});
+
+// A chain that matches nothing in the document (here a detached subtree) is not unique either.
+test("a selector matching no element keeps climbing", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const detached = createElement("main");
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(detached, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.click(images[1]);
+  const second = sdk.queue("Crop this one");
+
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
 });
