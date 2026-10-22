@@ -838,10 +838,12 @@ export function createArtifactSdk(
 
   // `table` is opt-in because resolving a cell's row and column walks the whole table, while
   // `snapshot()` calls this for every element in the document and reads only uid/tag/text.
-  function context(el, { table = false } = {}) {
+  // `selector` is opt-out because generating one can query the whole document to prove it is
+  // unique, and `snapshot()` reads only uid/tag/text for every element.
+  function context(el, { table = false, withSelector = true } = {}) {
     const base = {
       uid: uid(el),
-      selector: selector(el),
+      selector: withSelector ? selector(el) : "",
       tag: (el.tagName || "").toLowerCase(),
       text: (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
     };
@@ -1276,7 +1278,7 @@ export function createArtifactSdk(
     function walk(el, depth) {
       if (!(el instanceof Element) || depth > 6 || isLavishUi(el)) return;
 
-      const c = context(el);
+      const c = context(el, { withSelector: false });
       const name = c.text ? ' "' + c.text.slice(0, 80).replace(/"/g, "'") + '"' : "";
       lines.push("  ".repeat(depth) + "uid=" + c.uid + " " + c.tag + name);
       for (const child of el.children) walk(child, depth + 1);

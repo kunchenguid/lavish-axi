@@ -238,6 +238,8 @@ function bootSdk({
   vm.runInNewContext(createSdkJs("abc", 3, "load-token"), sandbox);
 
   return {
+    document: sandbox.document,
+    Element: sandbox.Element,
     posted,
     body,
     api: sandbox.window.lavish,
@@ -984,4 +986,29 @@ test("a selector matching no element keeps climbing", () => {
   const second = sdk.queue("Crop this one");
 
   assert.notEqual(second.prompt.selector, first.prompt.selector);
+});
+
+// #448 review: snapshot() reads only uid/tag/text, so it must not build selectors, whose
+// uniqueness checks query the whole document once per element.
+test("snapshot does not query the document for selector uniqueness", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  for (let index = 0; index < 3; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+  }
+  // The stub Element class matches nothing; let snapshot()'s walk see the stub elements.
+  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
+  const queries = [];
+  const realQuery = sdk.document.querySelectorAll;
+  sdk.document.querySelectorAll = (selector) => {
+    queries.push(selector);
+    return realQuery(selector);
+  };
+
+  sdk.sendChromeMessage({ type: "lavish:requestSnapshot", snapshot_request_id: "s-1" });
+
+  const response = sdk.posted.at(-1);
+  assert.equal(response.type, "lavish:snapshot");
+  assert.match(response.snapshot, /section/);
+  assert.deepEqual(queries, []);
 });
