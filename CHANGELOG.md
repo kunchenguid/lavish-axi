@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.92](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.91...lavish-axi-v0.1.92) (2026-10-22)
+
+
+### Bug Fixes
+
+* **design-reference:** correct claim that Lavish serves files unmodified ([#449](https://github.com/kunchenguid/lavish-axi/issues/449)) ([8f71a85](https://github.com/kunchenguid/lavish-axi/commit/8f71a854a50a570d076c0b1321708e307bb9aeab))
+
 ## [0.1.91](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.90...lavish-axi-v0.1.91) (2026-10-21)
 
 
