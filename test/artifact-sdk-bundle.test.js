@@ -107,12 +107,51 @@ function cell(tag, text) {
   return element;
 }
 
+// Resolves the `tag#id:nth-of-type(n) > ...` chains `selector()` emits against the stub tree, so a
+// test can ask the SDK how many elements its own selector matches.
+function queryChildChain(root, selectorText) {
+  const parts = String(selectorText)
+    .split(">")
+    .map((part) => part.trim());
+  const parsed = parts.map((part) => {
+    const match = /^([a-z0-9-]+)(?:#([^:]+))?(?::nth-of-type\((\d+)\))?$/i.exec(part);
+    return match ? { tag: match[1].toUpperCase(), id: match[2], nth: match[3] ? Number(match[3]) : null } : null;
+  });
+  if (parsed.some((part) => !part)) return [];
+  const matchesPart = (node, part) => {
+    if (!node || node.tagName !== part.tag) return false;
+    if (part.id !== undefined && node.id !== part.id) return false;
+    if (part.nth !== null) {
+      const same = (node.parentElement?.children || []).filter((x) => x.tagName === node.tagName);
+      if (same.indexOf(node) + 1 !== part.nth) return false;
+    }
+    return true;
+  };
+  const results = [];
+  const visit = (node) => {
+    let current = node;
+    let ok = true;
+    for (let index = parsed.length - 1; index >= 0; index -= 1) {
+      if (!matchesPart(current, parsed[index])) {
+        ok = false;
+        break;
+      }
+      current = current.parentElement;
+    }
+    if (ok) results.push(node);
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return results;
+}
+
 function bootSdk({
   runAnimationFrames = false,
   revisionsScript = null,
   revisionMarkElements = [],
   htmlAnnotate = null,
   platform = "Linux",
+  structuralQueries = false,
 } = {}) {
   const posted = [];
   const documentListeners = [];
@@ -171,7 +210,12 @@ function bootSdk({
       getElementById: () => null,
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
-      querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
+      querySelectorAll: (selector) =>
+        selector === "[data-lavish-revision]"
+          ? revisionMarkElements
+          : structuralQueries
+            ? queryChildChain(documentElement, selector)
+            : [],
       getSelection: () => selection,
     },
   };
@@ -874,4 +918,30 @@ test("Ctrl-click on a link after a text selection does not eat the next plain cl
   sdk.click(paragraph);
 
   assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// #445: two structurally identical elements deeper than five levels used to share one selector,
+// so clicking the second reopened the first one's queued note.
+test("structurally identical deep elements get distinct selectors and their own notes", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [first.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(images[1]);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1, "the second image opens a fresh card");
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+  const second = sdk.queue("Crop this one");
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, first.prompt.selector), [images[0]]);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, second.prompt.selector), [images[1]]);
 });

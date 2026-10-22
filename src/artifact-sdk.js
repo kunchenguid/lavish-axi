@@ -799,9 +799,12 @@ export function createArtifactSdk(
   function selector(el) {
     if (!el || !el.tagName) return "";
 
+    // Five levels is the short common case; past it, keep climbing until the chain names only
+    // this element, or an id or the root stops it. Two structurally identical elements would
+    // otherwise share a selector, and a click on one would reopen the other's queued note (#445).
     const parts = [];
     let node = el;
-    while (node && node.nodeType === 1 && parts.length < 5) {
+    while (node && node.nodeType === 1 && (parts.length < 5 || !selectsOnly(parts))) {
       let part = node.tagName.toLowerCase();
       if (node.id) {
         part += "#" + CSS.escape(node.id);
@@ -819,6 +822,14 @@ export function createArtifactSdk(
     }
 
     return parts.join(" > ");
+  }
+
+  function selectsOnly(parts) {
+    try {
+      return document.querySelectorAll(parts.join(" > ")).length <= 1;
+    } catch {
+      return true;
+    }
   }
 
   // `table` is opt-in because resolving a cell's row and column walks the whole table, while
