@@ -1089,3 +1089,25 @@ test("a queued note falls back to its selector once its element is replaced", ()
   assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
   assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
 });
+
+// #448: deep repeated structure can climb past 300 chars. The queued prompt keeps the whole
+// selector, it still names only the clicked element, and a click on it reopens the note.
+test("a selector longer than 300 chars is queued whole and still reopens its note", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 60; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+  sdk.click(images[1]);
+  const queued = sdk.queue("Swap this photo");
+
+  assert.ok(queued.prompt.selector.length > 300, `selector is ${queued.prompt.selector.length} chars`);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, queued.prompt.selector), [images[1]]);
+
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  sdk.click(images[1]);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+});
