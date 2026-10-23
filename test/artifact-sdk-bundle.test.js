@@ -1111,3 +1111,25 @@ test("a selector longer than 300 chars is queued whole and still reopens its not
   assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
   assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
 });
+
+// #448 review: a Mermaid node's target carries its own selector, so snapshot() must not build
+// that one either; tag and text still come from the node.
+test("snapshot does not query the document for a diagram node's selector", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  buildMermaidNode(sdk);
+  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
+  const queries = [];
+  const realQuery = sdk.document.querySelectorAll;
+  sdk.document.querySelectorAll = (selector) => {
+    queries.push(selector);
+    return realQuery(selector);
+  };
+
+  sdk.sendChromeMessage({ type: "lavish:requestSnapshot", snapshot_request_id: "s-1" });
+
+  const response = sdk.posted.at(-1);
+  assert.equal(response.type, "lavish:snapshot");
+  assert.match(response.snapshot, /mermaid-node/);
+  assert.match(response.snapshot, /Start/);
+  assert.deepEqual(queries, []);
+});

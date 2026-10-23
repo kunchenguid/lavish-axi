@@ -881,7 +881,7 @@ export function createArtifactSdk(
     const tableTarget = table ? tableCellTarget(el, selector) : null;
     if (tableTarget) base.target = tableTarget;
 
-    const mermaidNode = mermaidNodeFrom(el, selector);
+    const mermaidNode = mermaidNodeFrom(el, withSelector ? selector : null);
     if (mermaidNode) {
       base.tag = "mermaid-node";
       base.text = mermaidNode.label || base.text;
