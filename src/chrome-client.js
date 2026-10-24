@@ -119,6 +119,8 @@ const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelH
 const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
 const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
+const sidebarToggle = /** @type {HTMLButtonElement} */ (document.getElementById("sidebarToggle"));
+const sidebarToggleCount = /** @type {HTMLSpanElement} */ (document.getElementById("sidebarToggleCount"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
@@ -1368,6 +1370,7 @@ function renderSheetSummary() {
   panelSummary.textContent = summary.text;
   panelSummary.classList.toggle("is-accent", summary.accent);
   panelSummary.classList.toggle("is-unread", summary.unread);
+  renderSidebarToggle();
 }
 
 // A brief pulse on the dock when something the user should notice lands while the sheet is
@@ -1381,7 +1384,7 @@ function pulseSheetDock() {
 }
 
 function noteAgentReply(text) {
-  if (!isMobileSheet() || sheetOpen) return;
+  if (!isConversationHidden()) return;
   unreadAgentReply = String(text || "");
   renderSheetSummary();
   pulseSheetDock();
@@ -1465,7 +1468,11 @@ if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
         // Storage refusal only prevents persistence; the in-memory state is already reset.
       }
     }
+    // A reply previewed while one layout hid the conversation is no longer owed once the other
+    // layout shows it.
+    if (!isConversationHidden()) unreadAgentReply = "";
     applySheetState();
+    applyPanelCollapsed();
   });
 }
 if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
@@ -1474,6 +1481,74 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 }
 window.addEventListener("resize", syncVisualViewport);
 syncVisualViewport();
+
+// ---- Desktop conversation panel collapse ----
+// Above the phone breakpoint the conversation is a fixed side column; the bar's sidebar toggle
+// hides it so the artifact gets the full width. The choice is a per-viewer preference rather than
+// per-review state, so it lives in localStorage under one key for every session. chrome.css only
+// honours `panel-collapsed` outside the phone breakpoint, and this controller never sets it there,
+// so a stored preference cannot hide the phone dock.
+const panelCollapsedStorageKey = "lavish-axi:panel-collapsed";
+let panelCollapsed = readPanelCollapsed();
+
+function readPanelCollapsed() {
+  try {
+    return localStorage.getItem(panelCollapsedStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+// Whether the conversation is out of sight right now, in whichever layout is active.
+function isConversationHidden() {
+  return isMobileSheet() ? !sheetOpen : panelCollapsed;
+}
+
+function revealConversation() {
+  if (isMobileSheet()) setSheetOpen(true);
+  else if (panelCollapsed) setPanelCollapsed(false);
+}
+
+function setPanelCollapsed(collapsed) {
+  panelCollapsed = Boolean(collapsed);
+  try {
+    if (panelCollapsed) localStorage.setItem(panelCollapsedStorageKey, "1");
+    else localStorage.removeItem(panelCollapsedStorageKey);
+  } catch {
+    // Storage refused only means the preference does not survive a reload.
+  }
+  if (!panelCollapsed) unreadAgentReply = "";
+  applyPanelCollapsed();
+  if (!panelCollapsed && !isMobileSheet()) scrollPanelToBottom();
+}
+
+function applyPanelCollapsed() {
+  const collapsed = panelCollapsed && !isMobileSheet();
+  document.body.classList.toggle("panel-collapsed", collapsed);
+  // Focus inside a panel that just went display:none would be lost to the document body.
+  const activeElement = document.activeElement;
+  if (collapsed && activeElement && panel.contains(activeElement)) sidebarToggle.focus();
+  sidebarToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  renderSidebarToggle();
+}
+
+// While collapsed the toggle stands in for the panel: it counts queued notes (the thing still to
+// send) or, failing that, marks an agent reply that arrived out of sight.
+function renderSidebarToggle() {
+  const collapsed = panelCollapsed && !isMobileSheet();
+  const count = collapsed ? queued.length : 0;
+  const unread = collapsed && count === 0 && Boolean(unreadAgentReply);
+  sidebarToggleCount.textContent = count > 0 ? String(count) : "";
+  sidebarToggleCount.hidden = count === 0;
+  sidebarToggle.classList.toggle("is-unread", unread);
+  let label = collapsed ? "Show conversation" : "Hide conversation";
+  if (count > 0) label += count === 1 ? " (1 queued)" : " (" + count + " queued)";
+  else if (unread) label += " (new reply)";
+  sidebarToggle.setAttribute("aria-label", label);
+  sidebarToggle.title = label;
+}
+
+sidebarToggle.addEventListener("click", () => setPanelCollapsed(!panelCollapsed));
 
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -1487,13 +1562,22 @@ function editQueuedPrompt(index, { reveal = true } = {}) {
   const prompt = queued[index];
   if (ended || !isPromptEditable(prompt)) return;
   const id = promptIdentity(prompt);
-  if (!id || id === editingPromptId) return;
+  if (!id) return;
+  if (id === editingPromptId) {
+    // Collapsing keeps the open edit, so asking for it again brings it back into view.
+    if (isConversationHidden()) {
+      editFocusPending = true;
+      revealConversation();
+      render();
+    }
+    return;
+  }
   // Moving to another note keeps what was typed into the first, the way leaving a field does.
   commitQueuedEdit();
   editingPromptId = id;
   editingDraft = String(prompt.prompt || "");
   editFocusPending = true;
-  if (isMobileSheet()) setSheetOpen(true);
+  revealConversation();
   render();
   if (reveal && prompt.selector) postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector) });
 }
@@ -4695,6 +4779,7 @@ events.set("ended", () => markSessionEnded());
 connectLiveEvents();
 
 applySheetState();
+applyPanelCollapsed();
 settleQueuedFromTranscript(initialChat, false);
 render();
 setChromeOutdated(false);

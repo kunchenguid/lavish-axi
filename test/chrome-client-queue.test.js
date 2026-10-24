@@ -77,6 +77,10 @@ async function createChromeHarness({
   sessionData = defaultSessionData,
   artifactSrc = "",
   storage = new Map(),
+  // The viewer-wide localStorage, kept apart from the per-tab sessionStorage above. `localStorageThrows`
+  // models a browser that refuses storage access outright (private mode, blocked site data).
+  localStore = new Map(),
+  localStorageThrows = false,
   beginLoadResponses = [],
   handoffResponses = [],
   storedQueue = null,
@@ -468,6 +472,20 @@ async function createChromeHarness({
         storage.delete(key);
       },
     },
+    localStorage: {
+      getItem(key) {
+        if (localStorageThrows) throw new Error("SecurityError: storage disabled");
+        return localStore.has(key) ? localStore.get(key) : null;
+      },
+      setItem(key, value) {
+        if (localStorageThrows) throw new Error("SecurityError: storage disabled");
+        localStore.set(key, String(value));
+      },
+      removeItem(key) {
+        if (localStorageThrows) throw new Error("SecurityError: storage disabled");
+        localStore.delete(key);
+      },
+    },
     window: {
       clearTimeout: fakeClearTimeout,
       setTimeout: fakeSetTimeout,
@@ -619,6 +637,7 @@ async function createChromeHarness({
     },
     focusLog,
     storage,
+    localStore,
     warningRows() {
       return element("warningsList").children.filter((child) => String(child.className).startsWith("warning-row"));
     },
@@ -9059,4 +9078,170 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   });
   assert.equal(failed.librariesUnavailable, true);
   assert.equal(JSON.stringify(failed.libraries), "[]");
+});
+
+// ---- Desktop conversation panel collapse ----
+
+function sidebarState(chrome) {
+  const toggle = chrome.element("sidebarToggle");
+  const count = chrome.element("sidebarToggleCount");
+  return {
+    collapsed: chrome.element("body").classList.contains("panel-collapsed"),
+    expanded: toggle["aria-expanded"],
+    label: toggle["aria-label"],
+    title: toggle.title,
+    unread: toggle.classList.contains("is-unread"),
+    count: count.hidden ? null : count.textContent,
+    stored: chrome.localStore.get("lavish-axi:panel-collapsed") || null,
+  };
+}
+
+test("desktop sidebar toggle hides and restores the conversation panel", async () => {
+  const chrome = await createChromeHarness();
+
+  const open = sidebarState(chrome);
+  assert.equal(open.collapsed, false);
+  assert.equal(open.expanded, "true");
+  assert.equal(open.label, "Hide conversation");
+  assert.equal(open.title, "Hide conversation");
+  assert.equal(open.count, null);
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  const collapsed = sidebarState(chrome);
+  assert.equal(collapsed.collapsed, true);
+  assert.equal(collapsed.expanded, "false");
+  assert.equal(collapsed.label, "Show conversation");
+  // The preference is the viewer's, not the review's: one key shared by every session.
+  assert.equal(collapsed.stored, "1");
+  assert.equal(chrome.storage.has("lavish-axi:panel-collapsed"), false, "never per-tab sessionStorage");
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  const reopened = sidebarState(chrome);
+  assert.equal(reopened.collapsed, false);
+  assert.equal(reopened.expanded, "true");
+  assert.equal(reopened.stored, null);
+});
+
+test("a collapsed panel stays collapsed across a chrome reload and across sessions", async () => {
+  const localStore = new Map([["lavish-axi:panel-collapsed", "1"]]);
+  const chrome = await createChromeHarness({
+    localStore,
+    sessionData: { ...defaultSessionData, key: "another-review" },
+  });
+
+  const state = sidebarState(chrome);
+  assert.equal(state.collapsed, true);
+  assert.equal(state.expanded, "false");
+  assert.equal(state.label, "Show conversation");
+});
+
+test("the sidebar toggle still works when the browser refuses localStorage", async () => {
+  const chrome = await createChromeHarness({ localStorageThrows: true });
+
+  assert.equal(sidebarState(chrome).collapsed, false);
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, true);
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, false);
+});
+
+test("collapsing the panel moves focus out of it to the toggle", async () => {
+  const chrome = await createChromeHarness();
+  const input = chrome.element("chatInput");
+  input.parentElement = chrome.element("panel");
+  input.focus();
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(chrome.focusLog.at(-1), "sidebarToggle");
+});
+
+test("a collapsed toggle reports queued notes and unseen agent replies", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("sidebarToggle").dispatch("click", {});
+
+  // A reply that lands while the panel is hidden marks the toggle until the panel opens.
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Renamed the payment step." }) });
+  let state = sidebarState(chrome);
+  assert.equal(state.unread, true);
+  assert.equal(state.label, "Show conversation (new reply)");
+
+  // Queued work outranks the unread marker: it is what the user still has to send.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  state = sidebarState(chrome);
+  assert.equal(state.count, "1");
+  assert.equal(state.unread, false);
+  assert.equal(state.label, "Show conversation (1 queued)");
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Drop the map preview", selector: "p", tag: "element", text: "Autofill" },
+  });
+  assert.equal(sidebarState(chrome).count, "2");
+
+  // Opening the panel shows both, so neither marker is owed any more.
+  chrome.element("sidebarToggle").dispatch("click", {});
+  state = sidebarState(chrome);
+  assert.equal(state.count, null);
+  assert.equal(state.unread, false);
+  assert.equal(state.label, "Hide conversation");
+
+  // And collapsing again does not resurrect the reply that was already seen.
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).unread, false);
+});
+
+test("clicking an annotated element while the panel is collapsed reopens it to edit the note", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Shorter heading");
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, true);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  const state = sidebarState(chrome);
+  assert.equal(state.collapsed, false);
+  assert.equal(state.expanded, "true");
+  assert.equal(state.stored, null);
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Shorter heading</);
+});
+
+test("clicking the element of a note already being edited reopens the collapsed panel to that edit", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Shorter heading");
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Much shorter heading");
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, true);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  assert.equal(sidebarState(chrome).collapsed, false);
+  assert.equal(chrome.focusLog.at(-1), "queued-edit-input");
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Much shorter heading</);
+});
+
+test("an expanded desktop panel never marks a reply as unread", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Done." }) });
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).unread, false);
+});
+
+test("the stored desktop collapse never hides the phone sheet", async () => {
+  const localStore = new Map([["lavish-axi:panel-collapsed", "1"]]);
+  const chrome = await createChromeHarness({ mobile: true, localStore });
+
+  assert.equal(sidebarState(chrome).collapsed, false, "phone width keeps its own dock");
+  assert.equal(chrome.element("body").classList.contains("sheet-open"), false);
+
+  // Widening the window past the breakpoint restores the viewer's desktop preference...
+  chrome.setMobile(false);
+  assert.equal(sidebarState(chrome).collapsed, true);
+  // ...and narrowing it again hands the conversation back to the sheet.
+  chrome.setMobile(true);
+  assert.equal(sidebarState(chrome).collapsed, false);
+  assert.equal(sidebarState(chrome).stored, "1", "crossing the breakpoint does not rewrite the preference");
 });
