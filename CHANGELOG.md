@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.93](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.92...lavish-axi-v0.1.93) (2026-10-24)
+
+
+### Bug Fixes
+
+* **artifact-sdk:** stop artifact key handlers from cancelling annotation typing ([#452](https://github.com/kunchenguid/lavish-axi/issues/452)) ([83ec776](https://github.com/kunchenguid/lavish-axi/commit/83ec77686f2eeb94ed29554bd0c02bd042d648b5))
+* **chrome:** navigate the artifact frame only from replaceArtifactFrame ([#453](https://github.com/kunchenguid/lavish-axi/issues/453)) ([8908c07](https://github.com/kunchenguid/lavish-axi/commit/8908c0772af62051c5c74ef75d347fea8ae5aea1)), closes [#451](https://github.com/kunchenguid/lavish-axi/issues/451)
+
 ## [0.1.92](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.91...lavish-axi-v0.1.92) (2026-10-22)
 
 
