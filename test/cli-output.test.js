@@ -3089,6 +3089,12 @@ test("open can resume a session without opening another browser window", () => {
   assert.equal(shouldOpenBrowser(["--no-gate", "artifact.html"], {}), true);
   assert.equal(shouldOpenBrowser(["artifact.html"], { LAVISH_AXI_NO_OPEN: "1" }), false);
   assert.equal(shouldOpenBrowser(["artifact.html"], {}), true);
+  // #373: an already-open session with a connected review browser reuses its tab.
+  assert.equal(shouldOpenBrowser(["artifact.html"], {}, { browser_connected: true }), false);
+  assert.equal(shouldOpenBrowser(["artifact.html"], {}, { browser_connected: false }), true);
+  assert.equal(shouldOpenBrowser(["artifact.html"], {}, { status: "opened" }), true);
+  assert.equal(shouldOpenBrowser(["--no-open", "artifact.html"], {}, { browser_connected: false }), false);
+  assert.equal(shouldOpenBrowser(["artifact.html"], { LAVISH_AXI_NO_OPEN: "1" }, { browser_connected: false }), false);
   assert.match(getCommandHelp("open"), /--no-open/);
   assert.match(getCommandHelp("open"), /--no-gate/);
   assert.match(getCommandHelp("open"), /--reopen/);

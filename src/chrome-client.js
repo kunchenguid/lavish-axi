@@ -3095,6 +3095,8 @@ function markSessionEnded() {
   layoutGateEscape?.end?.();
   postToFrame({ type: "lavish:setAnnotationMode", enabled: false });
   endedOverlay.hidden = false;
+  liveEventsSocket?.close();
+  liveEventsSocket = null;
 }
 
 function copyFilePath() {
@@ -4627,9 +4629,12 @@ initializeLayoutGate();
 // WebSockets leave the browser's HTTP connection pool free for sends and artifact loads.
 const events = new Map();
 let eventReconnectDelayMs = 500;
+let liveEventsSocket = null;
 function connectLiveEvents() {
+  if (ended) return;
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
+  liveEventsSocket = socket;
   socket.addEventListener("open", () => {
     eventReconnectDelayMs = 500;
     liveEventFailures = 0;
@@ -4649,6 +4654,8 @@ function connectLiveEvents() {
     }
   });
   socket.addEventListener("close", () => {
+    if (liveEventsSocket === socket) liveEventsSocket = null;
+    if (ended) return;
     liveEventFailures += 1;
     noteLiveEventsUnreachable();
     setTimeout(connectLiveEvents, eventReconnectDelayMs);
