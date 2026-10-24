@@ -3937,6 +3937,45 @@ test("chrome client registers message listener before loading the artifact ifram
   assert.equal(chrome.srcLoads[0].hadMessageListener, true);
 });
 
+// The embedded load token in a freshly served chrome page may already be retired: the previous tab's
+// begin-load is what issued it. Navigating to it first commits the 409 "no longer current" page, and
+// Chrome can then drop the begin-load's navigation, leaving the review stuck on that page (#451).
+test("a fresh open navigates the artifact frame only to the begin-load's token", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 4, initialArtifactLoadToken: "retired-load" },
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.artifactBeginRequests.length, 1);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=1&artifact_load_token=harness-load-1"],
+  );
+});
+
+test("a superseded first load still shows the embedded artifact", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: {
+      ...defaultSessionData,
+      chromeLoadToken: "old-handoff",
+      initialArtifactRevision: 4,
+      initialArtifactLoadToken: "live-load",
+    },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=4&artifact_load_token=live-load"],
+  );
+  assert.equal(chrome.element("handoffBanner").hidden, false);
+});
+
 test("the layout gate reveals after a completed pass with no findings", async () => {
   const { posts, fetchImpl } = diagnosticsHarness([[]]);
   const chrome = await createChromeHarness({ fetchImpl });
