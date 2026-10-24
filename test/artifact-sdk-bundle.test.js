@@ -9,6 +9,10 @@ import { createSdkJs } from "../src/server.js";
 // ReferenceErrors on the first click, so these tests boot the served bundle and drive the real
 // annotation path through a DOM stub instead of inspecting the module directly.
 
+// The artifact the fixture boots against, so a link's resolved URL matches what a browser
+// would resolve a relative href to.
+const FIXTURE_BASE_URL = "http://127.0.0.1/artifact/abc/index.html";
+
 function createElement(tag) {
   const attributes = new Map();
   const queried = new Map();
@@ -38,6 +42,17 @@ function createElement(tag) {
     },
     getAttribute(name) {
       return attributes.has(name) ? attributes.get(name) : null;
+    },
+    hasAttribute(name) {
+      return attributes.has(name);
+    },
+    removeAttribute(name) {
+      attributes.delete(name);
+    },
+    // A real HTML anchor exposes the resolved absolute URL, not the raw attribute.
+    get href() {
+      const raw = attributes.get("href");
+      return raw === undefined ? "" : new URL(String(raw), FIXTURE_BASE_URL).href;
     },
     matches(selectorList) {
       return String(selectorList)
@@ -113,6 +128,8 @@ function bootSdk({
   revisionMarkElements = [],
   htmlAnnotate = null,
   platform = "Linux",
+  baseURI = FIXTURE_BASE_URL,
+  documentUrl = FIXTURE_BASE_URL,
 } = {}) {
   const posted = [];
   const documentListeners = [];
@@ -148,12 +165,17 @@ function bootSdk({
       observe() {}
       disconnect() {}
     },
-    URL: {
-      createObjectURL() {
-        return "blob:lavish-test";
+    URL: Object.assign(
+      function sandboxUrl(raw, base) {
+        return new URL(raw, base);
       },
-      revokeObjectURL() {},
-    },
+      {
+        createObjectURL() {
+          return "blob:lavish-test";
+        },
+        revokeObjectURL() {},
+      },
+    ),
     getComputedStyle: () => ({}),
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
@@ -164,7 +186,8 @@ function bootSdk({
       head,
       body,
       activeElement: body,
-      baseURI: "http://127.0.0.1/artifact/abc/index.html",
+      baseURI,
+      URL: documentUrl,
       addEventListener: (type, handler) => documentListeners.push({ type, handler }),
       removeEventListener() {},
       createElement,
@@ -205,15 +228,25 @@ function bootSdk({
         target,
         ctrlKey: false,
         metaKey: false,
+        altKey: false,
         ...modifiers,
         defaultPrevented: false,
+        propagationStopped: false,
         preventDefault() {
           event.defaultPrevented = true;
         },
-        stopPropagation() {},
+        stopPropagation() {
+          event.propagationStopped = true;
+        },
       };
       listener.handler(event);
       return event;
+    },
+    // Moves the mouse over `target`, as the SDK's hover affordance sees it.
+    hover(target) {
+      const listener = documentListeners.find((entry) => entry.type === "mouseover");
+      assert.ok(listener, "the SDK registers a document mouseover listener");
+      listener.handler({ target });
     },
     // Releases the mouse over `target` with `text` selected inside it, as a drag-select would.
     selectText(target, text) {
@@ -737,8 +770,20 @@ function buildMermaidNode(sdk) {
       .some((part) => part.trim() === "g.node") || matchesTag(selectorList);
   const label = appendTo(node, cell("span", "Start"));
   const shape = appendTo(node, createElement("rect"));
-  return { label, shape };
+  return { label, shape, node };
 }
+
+test("annotation hover and click resolve to the same Mermaid node element", () => {
+  const sdk = bootSdk();
+  const { shape, node } = buildMermaidNode(sdk);
+
+  sdk.hover(shape);
+  assert.notEqual(node.style.outline, undefined, "the node is outlined on hover");
+  assert.equal(shape.style.outline, undefined, "the shape inside it is not what is outlined");
+
+  sdk.click(shape);
+  assert.match(sdk.card().innerHTML, /Annotate node/, "the click annotates the same node");
+});
 
 test("a note queued from a diagram node's label opens again from the node's shape", () => {
   const sdk = bootSdk();
@@ -780,58 +825,345 @@ test("a click inside a table cell opens only the note on the exact element click
   assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
 });
 
-// In annotate mode a plain click on a link annotates it, so Ctrl-click (Cmd-click on macOS) is the
-// way to follow the link without leaving annotate mode: the SDK steps aside and the browser opens it.
-function buildLink(sdk) {
+// In annotate mode a plain click on a link follows it, so a link does what a link does.
+// Alt+click (Option+click on macOS) is the deliberate "annotate this link" gesture.
+function buildLink(sdk, href = "https://example.com/spec") {
   const link = appendTo(sdk.body, cell("a", "Read the spec"));
-  link.setAttribute("href", "https://example.com/spec");
+  link.setAttribute("href", href);
   const inner = appendTo(link, cell("span", "spec"));
   return { link, inner };
 }
 
-// The follow modifier is the platform's own: Cmd on macOS, Ctrl elsewhere. Meta on Linux/Windows
-// is the Super/Windows key, which is not a link-follow gesture there, so it annotates like a plain click.
+test("a plain click on a link follows it in a new tab instead of annotating", () => {
+  const sdk = bootSdk();
+  const { link, inner } = buildLink(sdk);
+
+  for (const target of [link, inner]) {
+    const event = sdk.click(target);
+
+    assert.equal(event.defaultPrevented, false, "the artifact's own click handlers still run");
+    assert.equal(
+      event.propagationStopped,
+      false,
+      "the click is not swallowed, so the artifact's own click handlers still run",
+    );
+    assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+
+    // The swap is undone before the next click, so every click starts from the author's markup.
+    sdk.runTimers();
+    assert.equal(link.getAttribute("target"), null);
+  }
+  assert.equal(sdk.cards().length, 0);
+});
+
+// An SVG anchor exposes an animated string instead of a URL, so a link that reads the property
+// never learns where it points - and the click's default action would navigate the artifact
+// frame away, losing the review.
+test("a plain click on an SVG link opens it beside the review instead of navigating the frame", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  Object.defineProperty(link, "href", { value: { baseVal: "https://example.com/spec" } });
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false, "the artifact's own click handlers still run");
+  assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+  assert.equal(sdk.cards().length, 0);
+});
+
+// A relative href points at another document, so it has to open beside the review like an
+// absolute one - which only works if the link is resolved against the artifact's own URL.
+test("a plain click on a relative link opens it beside the review", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk, "other.html");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+  assert.equal(sdk.cards().length, 0);
+});
+
+test("the link's own target is restored once the click has been handled", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+
+  sdk.click(link);
+  assert.equal(link.getAttribute("target"), "_blank");
+
+  sdk.runTimers();
+  assert.equal(link.getAttribute("target"), null, "the artifact's markup is left as it was");
+});
+
+test("a plain click on a same-document anchor scrolls the artifact instead of annotating", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk, "#explain-3");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false, "the browser scrolls the artifact to the anchor");
+  assert.equal(link.getAttribute("target"), null, "the anchor stays in the review frame");
+  assert.equal(sdk.cards().length, 0);
+});
+
+// A link whose address is the artifact's own URL is a reload, not a scroll, and the reload
+// replaces the artifact frame and takes the review's scroll position with it.
+test("a link to the artifact's own URL opens beside the review instead of reloading the frame", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk, "");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false, "the browser's own handling still runs");
+  assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+  assert.equal(sdk.cards().length, 0);
+});
+
+test("Alt+click on a link annotates it instead of following it", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+
+  const event = sdk.click(link, { altKey: true });
+
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(link.getAttribute("target"), null);
+  assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
+});
+
+// The hover rule treats every element inside a link as part of the link, so an Alt+click
+// annotates the link itself rather than the element that happened to be clicked.
+test("an Alt+click on a span inside a link annotates the link", () => {
+  const sdk = bootSdk();
+  const { inner } = buildLink(sdk);
+
+  const event = sdk.click(inner, { altKey: true });
+
+  assert.equal(event.defaultPrevented, true);
+  assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
+  assert.doesNotMatch(sdk.card().innerHTML, /Annotate &lt;span&gt;/);
+});
+
+test("a note queued from inside a link is anchored on the link and re-opens from it", () => {
+  const onLink = bootSdk();
+  const { link } = buildLink(onLink);
+  onLink.click(link, { altKey: true });
+  const onTheLink = onLink.queue("Is this the right spec?");
+
+  const onSpan = bootSdk();
+  const { inner } = buildLink(onSpan);
+  onSpan.click(inner, { altKey: true });
+  const fromTheSpan = onSpan.queue("Is this the right spec?");
+
+  assert.equal(fromTheSpan.prompt.selector, onTheLink.prompt.selector, "the note lands on the link");
+
+  onSpan.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [fromTheSpan.prompt.selector] });
+  const postedBefore = onSpan.posted.length;
+
+  onSpan.click(inner, { altKey: true });
+
+  assert.equal(
+    onSpan.posted.slice(postedBefore).some((message) => message.type === "lavish:editQueuedAnchor"),
+    true,
+    "the note on the link is re-opened",
+  );
+});
+
+// Cmd-click (macOS) and Ctrl-click (elsewhere) are the browser's own "open in a new tab"
+// gestures, so Lavish leaves them to the browser.
 for (const [platform, modifier] of [
   ["MacIntel", "metaKey"],
   ["Linux x86_64", "ctrlKey"],
   ["Win32", "ctrlKey"],
 ]) {
-  test(`${modifier}-click on a link on ${platform} follows the link instead of annotating`, () => {
-    const sdk = bootSdk({ platform });
-    const { link, inner } = buildLink(sdk);
-
-    for (const target of [link, inner]) {
-      const event = sdk.click(target, { [modifier]: true });
-      assert.equal(event.defaultPrevented, false, "the browser's own link handling runs");
-    }
-    assert.equal(sdk.cards().length, 0);
-  });
-}
-
-for (const [platform, modifier] of [
-  ["Linux x86_64", "metaKey"],
-  ["Win32", "metaKey"],
-  ["MacIntel", "ctrlKey"],
-]) {
-  test(`${modifier}-click on a link on ${platform} annotates like a plain click`, () => {
+  test(`${modifier}-click on a link on ${platform} leaves the link to the browser`, () => {
     const sdk = bootSdk({ platform });
     const { link } = buildLink(sdk);
 
     const event = sdk.click(link, { [modifier]: true });
 
-    assert.equal(event.defaultPrevented, true, "the SDK keeps the frame from navigating");
-    assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
+    assert.equal(event.defaultPrevented, false, "the browser's own link handling runs");
+    assert.equal(link.getAttribute("target"), null, "Lavish does not touch the link");
+    assert.equal(sdk.cards().length, 0);
   });
 }
 
-test("a plain click on a link in annotate mode still opens an annotation card", () => {
+// The modifier that is not the platform's follow gesture no longer annotates: every click on a
+// link follows it unless the reviewer holds Alt.
+for (const [platform, modifier] of [
+  ["Linux x86_64", "metaKey"],
+  ["Win32", "metaKey"],
+  ["MacIntel", "ctrlKey"],
+]) {
+  test(`${modifier}-click on a link on ${platform} follows the link like a plain click`, () => {
+    const sdk = bootSdk({ platform });
+    const { link } = buildLink(sdk);
+
+    const event = sdk.click(link, { [modifier]: true });
+
+    assert.equal(event.defaultPrevented, false);
+    assert.equal(link.getAttribute("target"), "_blank");
+    assert.equal(sdk.cards().length, 0);
+  });
+}
+
+test("a link the author marked for a new tab keeps the browser's own handling", () => {
   const sdk = bootSdk();
   const { link } = buildLink(sdk);
+  link.setAttribute("target", "_blank");
 
   const event = sdk.click(link);
 
-  assert.equal(event.defaultPrevented, true);
-  assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(link.getAttribute("target"), "_blank", "the author's target is left alone");
+  assert.equal(sdk.cards().length, 0);
+});
+
+test("a link the author marked for a named window keeps the browser's own handling", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  link.setAttribute("target", "spec-window");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(link.getAttribute("target"), "spec-window", "the author's target is left alone");
+  assert.equal(sdk.cards().length, 0);
+});
+
+// A target that would navigate the artifact frame, or the review page, away is treated as no
+// target at all: the link opens beside the review and the review survives.
+for (const target of ["_self", "_parent", "_top", ""]) {
+  test(`a link marked target="${target}" opens beside the review instead of navigating away`, () => {
+    const sdk = bootSdk();
+    const { link } = buildLink(sdk);
+    link.setAttribute("target", target);
+
+    const event = sdk.click(link);
+
+    assert.equal(event.defaultPrevented, false, "the browser's own link handling runs");
+    assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+    assert.equal(sdk.cards().length, 0);
+
+    sdk.runTimers();
+    assert.equal(link.getAttribute("target"), target, "the author's target is restored");
+  });
+}
+
+// The artifact frame is the review, so a link inside a control the SDK leaves to the browser
+// must not navigate that frame away either - while the control still gets its own click.
+test("a link inside a native control opens beside the review instead of navigating the frame", () => {
+  const sdk = bootSdk();
+  const label = appendTo(sdk.body, cell("label", "See "));
+  const link = appendTo(label, cell("a", "the spec"));
+  link.setAttribute("href", "https://example.com/spec");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false, "the control still gets its click");
+  assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+  assert.equal(sdk.cards().length, 0, "a native control is not annotated");
+});
+
+test("a link inside a Lavish action opens beside the review instead of navigating the frame", () => {
+  const sdk = bootSdk();
+  const action = appendTo(sdk.body, cell("div", "Choose"));
+  action.setAttribute("data-lavish-action", "choose");
+  const link = appendTo(action, cell("a", "the spec"));
+  link.setAttribute("href", "https://example.com/spec");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false, "the Lavish action still gets its click");
+  assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+  assert.equal(sdk.cards().length, 0, "a Lavish action is not annotated");
+});
+
+test("an Alt+click on a link inside a native control keeps the review from navigating away", () => {
+  const sdk = bootSdk();
+  const label = appendTo(sdk.body, cell("label", "See "));
+  const link = appendTo(label, cell("a", "the spec"));
+  link.setAttribute("href", "https://example.com/spec");
+
+  const event = sdk.click(link, { altKey: true });
+
+  assert.equal(event.defaultPrevented, false, "the control still gets its click");
+  assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+  assert.equal(sdk.cards().length, 0, "a native control is not annotated");
+});
+
+test("an Alt+click on a link inside a Lavish action keeps the review from navigating away", () => {
+  const sdk = bootSdk();
+  const action = appendTo(sdk.body, cell("div", "Choose"));
+  action.setAttribute("data-lavish-action", "choose");
+  const link = appendTo(action, cell("a", "the spec"));
+  link.setAttribute("href", "https://example.com/spec");
+
+  const event = sdk.click(link, { altKey: true });
+
+  assert.equal(event.defaultPrevented, false, "the Lavish action still gets its click");
+  assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+  assert.equal(sdk.cards().length, 0, "a Lavish action is not annotated");
+});
+
+test("a link the browser hands to another app keeps the browser's own handling", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk, "mailto:agent@example.com");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false, "the browser's own handling still runs");
+  assert.equal(link.getAttribute("target"), null, "Lavish does not touch the link");
+  assert.equal(sdk.cards().length, 0);
+});
+
+test("a download link still gets the swap so it cannot navigate the frame away", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  link.setAttribute("download", "");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(link.getAttribute("target"), "_blank");
+  assert.equal(link.hasAttribute("download"), true, "the download attribute is left alone");
+  assert.equal(sdk.cards().length, 0);
+});
+
+test("a data: link opens beside the review instead of navigating the frame", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk, "data:text/plain,hello");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false, "the browser's own handling still runs");
+  assert.equal(link.getAttribute("target"), "_blank", "the link cannot navigate the frame away");
+  assert.equal(sdk.cards().length, 0);
+});
+
+// The browser decides "same document" against the document's own URL, so a fragment href in
+// an artifact that declares a base URI leaves the document and has to open beside the review.
+test("a fragment link in an artifact with a base URI opens beside the review", () => {
+  const sdk = bootSdk({ baseURI: "https://cdn.example.com/" });
+  const { link } = buildLink(sdk, "#section");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, false, "the browser's own handling still runs");
+  assert.equal(link.getAttribute("target"), "_blank", "the link opens beside the review");
+  assert.equal(sdk.cards().length, 0);
+});
+
+test("hovering a link does not mark it as an annotation target", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.hover(paragraph);
+  assert.notEqual(paragraph.style.outline, undefined, "a plain element still gets the outline");
+
+  sdk.hover(link);
+  assert.equal(link.style.outline, undefined, "a link is not an annotation target");
+  assert.equal(paragraph.style.outline, "", "the outline it had is cleared");
 });
 
 test("a modified click on something that is not a link still annotates", () => {
@@ -844,34 +1176,98 @@ test("a modified click on something that is not a link still annotates", () => {
   assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
 });
 
-test("Ctrl-click follows a link even when the link already has a queued note", () => {
+test("a plain click on a link with a queued note follows the link instead of re-opening the note", () => {
   const sdk = bootSdk();
   const { link } = buildLink(sdk);
-  sdk.click(link);
+  sdk.click(link, { altKey: true });
   const queued = sdk.queue("Is this the right spec?");
   sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
   const postedBefore = sdk.posted.length;
 
-  const event = sdk.click(link, { ctrlKey: true });
+  const event = sdk.click(link);
 
   assert.equal(event.defaultPrevented, false);
+  assert.equal(link.getAttribute("target"), "_blank");
   assert.equal(
     sdk.posted.slice(postedBefore).some((message) => message.type === "lavish:editQueuedAnchor"),
     false,
   );
 });
 
-test("Ctrl-click on a link after a text selection does not eat the next plain click", () => {
+test("Alt+click on a link with a queued note re-opens that note", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  sdk.click(link, { altKey: true });
+  const queued = sdk.queue("Is this the right spec?");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const postedBefore = sdk.posted.length;
+
+  const event = sdk.click(link, { altKey: true });
+
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(link.getAttribute("target"), null);
+  assert.equal(
+    sdk.posted.slice(postedBefore).some((message) => message.type === "lavish:editQueuedAnchor"),
+    true,
+  );
+});
+
+test("a click that ends a text selection on a link annotates the text instead of following it", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+
+  sdk.selectText(link, "Read the spec");
+  assert.match(sdk.card().innerHTML, /Annotate text/, "the selection opens a text annotation card");
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, true, "the click belongs to the selection, not to the link");
+  assert.equal(sdk.cards().length, 1, "the selection annotates the text");
+
+  sdk.runTimers();
+  assert.equal(link.getAttribute("target"), null, "the artifact's markup is left as it was");
+});
+
+test("a plain click on a link after a text selection does not eat the next plain click", () => {
   const sdk = bootSdk();
   const { link } = buildLink(sdk);
   const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
   sdk.selectText(paragraph, "prose");
   assert.match(sdk.card().innerHTML, /Annotate text/, "the selection opens a text annotation card");
 
-  const followed = sdk.click(link, { ctrlKey: true });
-  assert.equal(followed.defaultPrevented, false);
+  const swallowed = sdk.click(link);
+  assert.equal(swallowed.defaultPrevented, true, "the click belongs to the selection");
 
   sdk.click(paragraph);
 
   assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// The platform's follow gesture belongs to the browser, so a pending text-selection swallow
+// never eats it.
+test("a Ctrl-click on a link after a text selection is not swallowed", () => {
+  const sdk = bootSdk({ platform: "Linux x86_64" });
+  const { link } = buildLink(sdk);
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.selectText(paragraph, "prose");
+
+  const event = sdk.click(link, { ctrlKey: true });
+
+  assert.equal(event.defaultPrevented, false, "the browser's own link handling runs");
+  assert.equal(event.propagationStopped, false, "the click is not swallowed");
+  assert.equal(link.getAttribute("target"), null, "Lavish does not touch the link");
+
+  // The gesture clears the pending swallow, so the next plain click is not eaten either.
+  sdk.click(paragraph);
+  assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// A form control keeps its native cursor in annotation mode, and that rule keeps the plain
+// `input,textarea,[contenteditable]` shape the SDK contract names. Inside a link the rule
+// narrows, so a checkbox or a button in a link still shows the pointer.
+test("the annotation cursor rule keeps the plain form-control shape and narrows it inside a link", () => {
+  const js = createSdkJs("abc");
+
+  assert.match(js, /input,textarea,\[contenteditable\][^{]*\{cursor:text!important\}/);
+  assert.match(js, /a\[href\] input:not\([^)]*\[type='checkbox'\][^)]*\)/);
 });
