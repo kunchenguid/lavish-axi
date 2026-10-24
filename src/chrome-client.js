@@ -1934,6 +1934,26 @@ function createChatAttachmentsController() {
 
 const chatAttachmentController = createChatAttachmentsController();
 
+function hasElementAnchor(prompts) {
+  return prompts.some((p) => Boolean(p.selector || p.uid || (p.tag && p.tag !== "message")));
+}
+
+function submitWithoutSnapshot({ prompts, endAfter, order, terminal = null }) {
+  const acknowledgement = {};
+  pendingAcknowledgements.add(acknowledgement);
+  armSendAcknowledgementWarning();
+  submitQueued({
+    prompts,
+    chatAtRequest: displayedChat.slice(),
+    domSnapshot: "",
+    endAfter,
+    acknowledgement,
+    order,
+    terminal,
+  }).catch(() => {});
+  render();
+}
+
 function sendQueued(endAfter) {
   if (ended) return;
   if (terminalSubmission) {
@@ -1987,6 +2007,14 @@ function sendQueued(endAfter) {
     finishTerminalPreparation(terminal, preparations);
     return;
   }
+  if (!hasElementAnchor(queued)) {
+    submitWithoutSnapshot({
+      prompts: queued.slice(),
+      endAfter: false,
+      order: ++nextSendOperationOrder,
+    });
+    return;
+  }
   requestSnapshot("submit", queued.slice(), false, null);
   render();
 }
@@ -2029,6 +2057,15 @@ function completeTerminalPreparation(terminal, results) {
   // batch. A reload before this point must restore an ordinary editable queue, not
   // an incomplete terminal submission.
   persistTerminalReservation(true);
+  if (!hasElementAnchor(terminal.prompts)) {
+    submitWithoutSnapshot({
+      prompts: terminal.prompts,
+      endAfter: true,
+      order: terminal.order,
+      terminal,
+    });
+    return;
+  }
   requestSnapshot("submit", terminal.prompts, true, terminal);
   render();
 }
@@ -2037,6 +2074,15 @@ function retryTerminalSubmission() {
   if (!terminalSubmission || terminalSubmission.inFlight || ended) return;
   terminalSubmission.inFlight = true;
   updateSendState();
+  if (!hasElementAnchor(terminalSubmission.prompts)) {
+    submitWithoutSnapshot({
+      prompts: terminalSubmission.prompts,
+      endAfter: true,
+      order: terminalSubmission.order,
+      terminal: terminalSubmission,
+    });
+    return;
+  }
   requestSnapshot("submit", terminalSubmission.prompts, true, terminalSubmission);
   render();
 }

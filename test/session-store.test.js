@@ -2846,3 +2846,19 @@ test("a transcript older than receipts is marked at load and never stamped", asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("queuePrompts preserves existing dom_snapshot when subsequent prompt sends empty snapshot", async () => {
+  await withStore(async ({ store, session }) => {
+    const first = { uid: "A", prompt: "First element pin", selector: "h1", tag: "annotation", text: "Heading" };
+    const second = { uid: "B", prompt: "Second pure chat", selector: "", tag: "message", text: "Chat message" };
+    await store.queuePrompts(session.key, { domSnapshot: "<html>visual</html>", prompts: [first] });
+    await store.queuePrompts(session.key, { domSnapshot: "", prompts: [second] });
+
+    const feedback = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(feedback.dom_snapshot, "<html>visual</html>");
+    assert.deepEqual(
+      feedback.prompts.map((p) => p.uid),
+      ["A", "B"],
+    );
+  });
+});

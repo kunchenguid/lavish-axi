@@ -572,6 +572,13 @@ async function createChromeHarness({
         });
       }
     },
+    assertNoSnapshotRequested() {
+      assert.equal(
+        [...postedToFrame].some((message) => message.type === "lavish:requestSnapshot"),
+        false,
+        "the chrome must not request a frame snapshot for this batch",
+      );
+    },
     sendWhiteboardMessage(data) {
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
@@ -731,7 +738,7 @@ test("a reconnect cannot settle an identical note this tab never submitted", asy
 
   assert.equal(chrome.queued().length, 1);
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   assert.equal(postedBodies.length, 1);
@@ -756,7 +763,7 @@ test("a queued send stalled at POST becomes visibly recoverable", async () => {
     ["Do not lose this"],
   );
 
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   chrome.runTimers(10_000);
 
@@ -780,7 +787,16 @@ test("a queued send falls back without a snapshot and ignores a late snapshot", 
       return { ok: true };
     },
   });
-  chrome.element("chatInput").value = "Deliver even if the artifact navigated away";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      uid: "",
+      prompt: "Deliver even if the artifact navigated away",
+      selector: "h1",
+      tag: "annotation",
+      text: "Heading",
+    },
+  });
 
   chrome.element("send").click();
   const snapshotRequest = chrome.postedToFrame.at(-1);
@@ -807,9 +823,9 @@ test("a queued send falls back without a snapshot and ignores a late snapshot", 
             {
               uid: "",
               prompt: "Deliver even if the artifact navigated away",
-              selector: "",
-              tag: "message",
-              text: "Freeform message",
+              selector: "h1",
+              tag: "annotation",
+              text: "Heading",
             },
           ],
           domSnapshot: "",
@@ -846,7 +862,15 @@ test("Copy snapshot stays independent while a Send snapshot is pending", async (
       return { ok: true };
     },
   });
-  chrome.element("chatInput").value = "Wait for this snapshot";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Wait for this snapshot",
+      selector: "h1",
+      tag: "annotation",
+      text: "Heading",
+    },
+  });
 
   chrome.element("send").click();
   const submitRequest = chrome.postedToFrame.at(-1);
@@ -883,7 +907,10 @@ test("a Send only submits prompts present when that action started", async () =>
       return { ok: true };
     },
   });
-  chrome.element("chatInput").value = "First batch";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "First batch", selector: "h1", tag: "annotation", text: "First" },
+  });
 
   chrome.element("send").click();
   const firstRequest = chrome.postedToFrame.at(-1);
@@ -917,10 +944,16 @@ test("an older out-of-order snapshot cannot submit work queued after a newer Sen
     },
   });
 
-  chrome.element("chatInput").value = "First batch";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "First batch", selector: "h1", tag: "annotation", text: "First" },
+  });
   chrome.element("send").click();
   const firstRequest = chrome.postedToFrame.at(-1);
-  chrome.element("chatInput").value = "Second batch";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Second batch", selector: "h2", tag: "annotation", text: "Second" },
+  });
   chrome.element("send").click();
   const secondRequest = chrome.postedToFrame.at(-1);
 
@@ -968,9 +1001,15 @@ test("a Send started after another snapshot wins remains live while that POST is
     },
   });
 
-  chrome.element("chatInput").value = "First";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "First", selector: "h1", tag: "annotation", text: "1" },
+  });
   chrome.element("send").click();
-  chrome.element("chatInput").value = "Second";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Second", selector: "h2", tag: "annotation", text: "2" },
+  });
   chrome.element("send").click();
   const winningRequest = chrome.postedToFrame.at(-1);
   chrome.sendFrameMessage({
@@ -981,7 +1020,10 @@ test("a Send started after another snapshot wins remains live while that POST is
   await flushPromises();
   assert.equal(posts.length, 1);
 
-  chrome.element("chatInput").value = "Third";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Third", selector: "h3", tag: "annotation", text: "3" },
+  });
   chrome.element("send").click();
   const laterRequest = chrome.postedToFrame.at(-1);
   releaseFirstPost();
@@ -1025,12 +1067,12 @@ test("an older success preserves stall guidance for a later pending send", async
 
   chrome.element("chatInput").value = "First batch";
   chrome.element("send").click();
-  chrome.sendSnapshot("first snapshot");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.element("chatInput").value = "Second batch";
   chrome.element("send").click();
-  chrome.sendSnapshot("second snapshot");
+  chrome.assertNoSnapshotRequested();
   chrome.runTimers(10_000);
 
   assert.equal(chrome.element("sendHint").hidden, false);
@@ -1068,11 +1110,11 @@ test("a redundant zero-prompt send clears obsolete stall guidance", async () => 
 
   chrome.element("chatInput").value = "Shared batch";
   chrome.element("send").click();
-  chrome.sendSnapshot("first snapshot");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.element("send").click();
-  chrome.sendSnapshot("redundant snapshot");
+  chrome.assertNoSnapshotRequested();
   chrome.runTimers(10_000);
   assert.match(chrome.element("sendHint").textContent, /still trying to send/i);
 
@@ -1103,11 +1145,11 @@ test("a failed terminal-only end shows retry guidance", async () => {
 
   chrome.element("chatInput").value = "Shared terminal batch";
   chrome.element("send").click();
-  chrome.sendSnapshot("first snapshot");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.element("sendAndEnd").click();
-  chrome.sendSnapshot("terminal snapshot");
+  chrome.assertNoSnapshotRequested();
   releasePromptPost();
   await flushPromises();
   await flushPromises();
@@ -1120,6 +1162,29 @@ test("a failed terminal-only end shows retry guidance", async () => {
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
   assert.match(chrome.element("sendHint").textContent, /click Send & End to retry the same batch/i);
+});
+
+test("a retried pure-chat terminal batch keeps the stall guidance", async () => {
+  const storage = new Map();
+  storage.set("lavish-axi:terminal:abc", "true");
+  const chrome = await createChromeHarness({
+    storage,
+    storedQueue: [{ uid: "", prompt: "Retry me", selector: "", tag: "message", text: "Freeform message" }],
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) return new Promise(() => {});
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  chrome.element("sendAndEnd").click();
+  chrome.assertNoSnapshotRequested();
+  await flushPromises();
+
+  chrome.runTimers(10_000);
+  await flushPromises();
+
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /still trying to send/i);
 });
 
 test("a failed in-flight POST preserves and runs a completed later Send & End", async () => {
@@ -1136,13 +1201,19 @@ test("a failed in-flight POST preserves and runs a completed later Send & End", 
     },
   });
 
-  chrome.element("chatInput").value = "First batch";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "First batch", selector: "h1", tag: "annotation", text: "First" },
+  });
   chrome.element("send").click();
   chrome.sendSnapshot("uid=1 first");
   await flushPromises();
   assert.equal(posts.length, 1);
 
-  chrome.element("chatInput").value = "Final batch";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Final batch", selector: "h1", tag: "annotation", text: "Final" },
+  });
   chrome.element("sendAndEnd").click();
   const finalRequest = chrome.postedToFrame.at(-1);
   chrome.sendFrameMessage({
@@ -1195,12 +1266,12 @@ test("a later successful batch clears an earlier failure after delivering everyt
 
   chrome.element("chatInput").value = "First batch";
   chrome.element("send").click();
-  chrome.sendSnapshot("first snapshot");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.element("chatInput").value = "Second batch";
   chrome.element("send").click();
-  chrome.sendSnapshot("second snapshot");
+  chrome.assertNoSnapshotRequested();
   rejectFirstPost();
   await flushPromises();
   await flushPromises();
@@ -1230,7 +1301,7 @@ test("an older successful send preserves a newer terminal preparation failure", 
 
   chrome.element("chatInput").value = "Already sending";
   chrome.element("send").click();
-  chrome.sendSnapshot("first snapshot");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.eventSource().listeners.get("layout-warnings")({
@@ -1263,15 +1334,24 @@ test("Send & End falls back without a snapshot and preserves the atomic end inte
       return { ok: true };
     },
   });
-  chrome.element("chatInput").value = "Final answer";
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Final answer", selector: "h1", tag: "annotation", text: "Heading" },
+  });
 
   chrome.element("sendAndEnd").click();
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:requestSnapshot"),
+    true,
+    "an element-anchored terminal batch asks the frame for a snapshot",
+  );
   chrome.runTimers(5000);
   await flushPromises();
   await flushPromises();
 
   assert.equal(posts.length, 1);
   assert.equal(posts[0].url, "/api/abc/prompts");
+  assert.equal(posts[0].body.prompts[0].prompt, "Final answer");
   assert.equal(posts[0].body.domSnapshot, "");
   assert.equal(posts[0].body.endSession, true);
   assert.equal(chrome.element("sendAndEnd").disabled, true);
@@ -1290,8 +1370,10 @@ test("Send & End reserves its terminal batch and only retries that batch after f
       return { ok: true };
     },
   });
-  chrome.element("chatInput").value = "Terminal batch";
-
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Terminal batch", selector: "h1", tag: "annotation", text: "Terminal" },
+  });
   chrome.element("sendAndEnd").click();
   const firstRequest = chrome.postedToFrame.at(-1);
   assert.equal(chrome.element("send").disabled, true);
@@ -1486,7 +1568,7 @@ test("reload restores a completed terminal reservation after its prompt was deli
   assert.equal(reloaded.element("sendAndEnd").disabled, false);
 
   reloaded.element("sendAndEnd").click();
-  reloaded.sendSnapshot("retry snapshot");
+  reloaded.assertNoSnapshotRequested();
   await flushPromises();
   await flushPromises();
 
@@ -1554,7 +1636,7 @@ test("an actionable terminal attachment rejection restores editable review contr
   });
 
   chrome.element("sendAndEnd").click();
-  chrome.sendSnapshot("");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   await flushPromises();
 
@@ -1577,7 +1659,7 @@ test("a transient terminal failure names Send & End as the retry action", async 
   });
 
   chrome.element("sendAndEnd").click();
-  chrome.sendSnapshot("");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   await flushPromises();
 
@@ -1601,7 +1683,7 @@ test("an older successful send preserves newer terminal retry guidance", async (
       if (promptPostCount === 1) {
         chrome.element("chatInput").value = "Terminal batch";
         chrome.element("sendAndEnd").click();
-        chrome.sendSnapshot("terminal snapshot");
+        chrome.assertNoSnapshotRequested();
         return firstPost;
       }
       throw new Error("terminal network unavailable");
@@ -1610,7 +1692,7 @@ test("an older successful send preserves newer terminal retry guidance", async (
 
   chrome.element("chatInput").value = "Ordinary batch";
   chrome.element("send").click();
-  chrome.sendSnapshot("ordinary snapshot");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   await flushPromises();
 
@@ -1620,6 +1702,11 @@ test("an older successful send preserves newer terminal retry guidance", async (
   await flushPromises();
   await flushPromises();
 
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Terminal batch"],
+    "the older send succeeded, so only the failed terminal batch is still queued",
+  );
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
   assert.match(chrome.element("sendHint").textContent, /click Send & End to retry the same batch/i);
@@ -1669,7 +1756,7 @@ test("an older late Send failure preserves newer terminal retry guidance", async
   assert.doesNotMatch(chrome.element("sendHint").textContent, /click Send to Agent to retry/i);
 });
 
-test("a failed timeout fallback keeps the queue and a timely retry sends it once", async () => {
+test("a failed pure-chat send keeps the queue and a retry sends it once", async () => {
   let promptPostAttempts = 0;
   const chrome = await createChromeHarness({
     storedQueue: [{ uid: "", prompt: "Retry me", selector: "", tag: "message", text: "Freeform message" }],
@@ -1680,7 +1767,7 @@ test("a failed timeout fallback keeps the queue and a timely retry sends it once
   });
 
   chrome.element("send").click();
-  chrome.runTimers(5000);
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   await flushPromises();
 
@@ -1693,13 +1780,11 @@ test("a failed timeout fallback keeps the queue and a timely retry sends it once
   );
 
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=1 retry");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
-  await flushPromises();
-  chrome.runTimers(5000);
   await flushPromises();
 
-  assert.equal(promptPostAttempts, 2, "the timely snapshot cancels its fallback timer");
+  assert.equal(promptPostAttempts, 2, "the retry posts the queued batch again");
   assert.equal(chrome.queued().length, 0);
 });
 
@@ -2076,7 +2161,7 @@ test("attachment rejection copy applies to annotations and Conversation messages
 
   chrome.element("chatInput").value = "Look at these";
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   await flushPromises();
 
@@ -2442,7 +2527,8 @@ test("Conversation retries a failed upload and then permits sending", async () =
   const id = "a".repeat(64) + ".png";
   const chrome = await createChromeHarness({
     sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
-    fetchImpl: async () => {
+    fetchImpl: async (url) => {
+      if (String(url).includes("/prompts")) return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
       attempts += 1;
       if (attempts === 1) return { ok: false, json: async () => ({ error: "storage full" }) };
       return { ok: true, json: async () => ({ attachment: { id } }) };
@@ -7221,7 +7307,7 @@ test("the dock reports an ended session", async () => {
 
   chrome.element("chatInput").value = "Ship it";
   chrome.element("sendAndEnd").click();
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   await flushPromises();
   assert.equal(chrome.element("sendAndEnd").disabled, true, "the session ended");
@@ -7503,7 +7589,7 @@ test("an accepted note merges before live entries that arrived before its respon
     });
     chrome.element("chatInput").value = "Sent note";
     chrome.element("send").click();
-    chrome.sendSnapshot("uid=1 body");
+    chrome.assertNoSnapshotRequested();
     await flushPromises();
 
     const reply = { role: "agent", text: "Newer reply", html: "<p>Newer reply</p>" };
@@ -7557,7 +7643,7 @@ test("an accepted transcript consumes live entries it already contains", async (
     });
     chrome.element("chatInput").value = "Sent note";
     chrome.element("send").click();
-    chrome.sendSnapshot("uid=1 body");
+    chrome.assertNoSnapshotRequested();
     await flushPromises();
     chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify(reply) });
 
@@ -7648,7 +7734,7 @@ test("one transcript entry cannot settle a second identical queued note", async 
   });
   chrome.element("chatInput").value = "Repeat this";
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=1 first");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.sendFrameMessage({
@@ -7665,7 +7751,7 @@ test("one transcript entry cannot settle a second identical queued note", async 
   assert.equal(chrome.queued().length, 1);
 
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=2 second");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   assert.equal(postedBodies.length, 2);
   assert.equal(postedBodies[1].prompts[0].prompt, "Repeat this");
@@ -7702,7 +7788,7 @@ test("a restored duplicate note survives history at boot and settles only on a l
 
   assert.equal(chrome.queued().length, 1);
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   assert.equal(postedBody.prompts.length, 1);
   assert.equal(postedBody.prompts[0].prompt, "Same words");
@@ -7738,7 +7824,7 @@ test("retrying after a lost prompts response does not resend accepted feedback",
   chrome.element("send").click();
   const promptId = chrome.queued()[0].prompt_id;
   assertPromptIdentity(promptId);
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.eventSource().listeners.get("chat-sync")({
@@ -8012,7 +8098,7 @@ test("an older live sync does not hide the transcript accepted by the prompts re
   });
   chrome.element("chatInput").value = "Sent note";
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [] }) });
@@ -8043,7 +8129,7 @@ test("a stale prompts response cannot remove a newer concurrent note", async () 
   });
   chrome.element("chatInput").value = "First note";
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [first, second] }) });
@@ -8124,7 +8210,7 @@ test("a live agent reply remains reconcilable with a later sent-note transcript"
     chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify(eventReply) });
     chrome.element("chatInput").value = "Reviewer note";
     chrome.element("send").click();
-    chrome.sendSnapshot("uid=1 body");
+    chrome.assertNoSnapshotRequested();
     await flushPromises();
 
     resolvePost();
@@ -8146,7 +8232,7 @@ test("a failed send returns its notes to Queued with the remove control back", a
   chrome.element("send").click();
   assert.match(chrome.element("queuedLog").innerHTML, /<small>Sending… /);
 
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
 
   assert.match(chrome.element("queuedLog").innerHTML, /<small>Queued /);
@@ -8288,7 +8374,7 @@ test("a live sync that dropped a prefix still settles from ack_ids", async () =>
   chrome.element("send").click();
   const promptId = chrome.queued()[0].prompt_id;
   assertPromptIdentity(promptId);
-  chrome.sendSnapshot("uid=1 body");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   rejectPost();
   await flushPromises();
@@ -8299,7 +8385,7 @@ test("a live sync that dropped a prefix still settles from ack_ids", async () =>
   });
   assert.deepEqual(chrome.queued(), []);
   chrome.element("send").click();
-  chrome.sendSnapshot("uid=1 retry");
+  chrome.assertNoSnapshotRequested();
   await flushPromises();
   assert.equal(postCount, 1, "settlement from ack_ids must prevent a second POST");
 });
@@ -9059,4 +9145,161 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   });
   assert.equal(failed.librariesUnavailable, true);
   assert.equal(JSON.stringify(failed.libraries), "[]");
+});
+
+test("pure chat submissions skip DOM snapshot and submit empty domSnapshot", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
+    },
+  });
+
+  chrome.element("chatInput").value = "are you listening to me ????";
+  chrome.element("send").click();
+  await flushPromises();
+
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:requestSnapshot"),
+    false,
+    "pure chat submission must not request a frame snapshot",
+  );
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.domSnapshot, "");
+  assert.equal(posts[0].body.prompts.length, 1);
+  assert.equal(posts[0].body.prompts[0].prompt, "are you listening to me ????");
+  assert.equal(posts[0].body.prompts[0].tag, "message");
+  assert.equal(posts[0].body.prompts[0].selector, "");
+});
+
+test("element annotations capture DOM snapshot", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Make this button green",
+      selector: ".btn",
+      tag: "annotation",
+      text: "Submit",
+    },
+  });
+
+  chrome.element("send").click();
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:requestSnapshot"),
+    true,
+    "element annotation must request a DOM snapshot from the frame",
+  );
+
+  chrome.sendSnapshot('uid=1 body\n  uid=2 button.btn "Submit"');
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.domSnapshot, 'uid=1 body\n  uid=2 button.btn "Submit"');
+  assert.equal(posts[0].body.prompts.length, 1);
+  assert.equal(posts[0].body.prompts[0].selector, ".btn");
+  assert.equal(posts[0].body.prompts[0].tag, "annotation");
+});
+
+test("whiteboard submissions bypass the filter and capture DOM snapshot", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Update architecture diagram",
+      selector: "",
+      tag: "whiteboard",
+      text: "Whiteboard: diagram 1",
+      target: { type: "excalidraw-scene", diagramIndex: 0 },
+    },
+  });
+
+  chrome.element("send").click();
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:requestSnapshot"),
+    true,
+    "whiteboard prompt must bypass filter and request DOM snapshot",
+  );
+
+  chrome.sendSnapshot("uid=1 body\n  uid=2 div.diagram");
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.domSnapshot, "uid=1 body\n  uid=2 div.diagram");
+  assert.equal(posts[0].body.prompts[0].tag, "whiteboard");
+});
+
+test("mixed batch with pure message and element annotation still captures DOM snapshot", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({ status: "queued", chat: [] }) };
+    },
+  });
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Annotated header",
+      selector: "h1",
+      tag: "annotation",
+      text: "Header text",
+    },
+  });
+  chrome.element("chatInput").value = "Also a general thought";
+
+  chrome.element("send").click();
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:requestSnapshot"),
+    true,
+    "batch containing an element anchor must request DOM snapshot",
+  );
+
+  chrome.sendSnapshot("uid=1 body\n  uid=2 h1");
+  await flushPromises();
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.domSnapshot, "uid=1 body\n  uid=2 h1");
+  assert.equal(posts[0].body.prompts.length, 2);
+});
+
+test("pure chat Send & End skips DOM snapshot and submits empty domSnapshot with endAfter: true", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, json: async () => ({ status: "ended", chat: [] }) };
+    },
+  });
+
+  chrome.element("chatInput").value = "Looks great, all done!";
+  chrome.element("sendAndEnd").click();
+  await flushPromises();
+
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:requestSnapshot"),
+    false,
+    "pure chat Send & End must not request a frame snapshot",
+  );
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.domSnapshot, "");
+  assert.equal(posts[0].body.endSession, true);
+  assert.equal(posts[0].body.prompts.length, 1);
+  assert.equal(posts[0].body.prompts[0].prompt, "Looks great, all done!");
 });
