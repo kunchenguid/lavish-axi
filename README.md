@@ -165,8 +165,8 @@ pnpm link
   Run `lavish-axi design` for the single source of agent-facing design guidance, including optional CDN snippets and the whiteboard (Mermaid) opt-in snippet.
 - **Self-paint warning** - `lavish-axi <html-file>`, `export`, and `share` run a render-free check for artifacts missing an explicit page background and return a one-line `self_paint_warning`.
   The check fails open - any stylesheet link, `@import`, Tailwind runtime script, `color-scheme`, or `html`/`body`/`:root` background signal suppresses it - and it never blocks the open.
-- **Open-time layout gate** - The browser chrome masks an artifact only while the real in-iframe audit waits for fonts and final geometry.
-  The first completed client-side check reveals the artifact, whatever it found and even if reporting that check to the server fails; the gate never holds the review hostage waiting for a repair or a network round-trip.
+- **Open-time layout gate** - The browser chrome masks an artifact only until its fonts are ready and its first frame has painted.
+  The layout audit runs after the reveal and only feeds the Layout issues inbox, so its geometry and hydration waits never hold the review; a completed check also reveals, whatever it found and even if reporting it to the server fails, and the gate never waits for a repair or a network round-trip.
   The user can click **Show anyway**, and a bounded safety timeout fails open from every gate state.
   If the review cannot load at all - the chrome's own script never runs, or the server does not answer the artifact's load request after several retries - the mask names the problem and offers **Check and reload** without removing the independent **Show anyway** escape.
   A review already loaded in another browser tab is named the same way, with a **Take over here** button that moves it into the current tab, because Lavish loads an artifact in one tab at a time.
