@@ -429,12 +429,28 @@ test("design output prints copy-pasteable CDN URLs so agents can opt in to Daisy
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
 });
 
-test("design output recommends luxury as the default theme and warns against @apply on DaisyUI classes", () => {
+test("design output defaults to themes with neutral body text and warns against @apply on DaisyUI classes", () => {
   const output = createDesignOutput();
 
-  assert.ok(output.theme_usage.some((item) => /default.*luxury|luxury.*default/i.test(item)));
+  // luxury sets base-content to gold and primary to white, so every paragraph is already the
+  // accent and nothing is left to mark what needs the reviewer.
+  assert.ok(
+    output.theme_usage.some(
+      (item) => /default to.*data-theme="night"/i.test(item) && /data-theme="corporate"/.test(item),
+    ),
+  );
+  assert.ok(output.theme_usage.some((item) => /luxury/.test(item) && /gold/i.test(item)));
+  assert.ok(output.themes.includes("luxury"), "luxury stays available when the user asks for it");
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
   assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
+});
+
+test("design output spends one accent on what needs the reviewer and keeps every text level at 4.5:1", () => {
+  const output = createDesignOutput();
+
+  assert.ok(output.theme_usage.some((item) => /Spend `primary` only/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /links kept underlined \(DaisyUI `link`\)/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /text-base-content\/70/.test(item) && /4\.5:1/.test(item)));
 });
 
 test("playbook index output lists known playbooks with concise descriptions", () => {
@@ -788,6 +804,15 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("window.lavish.queuePrompt")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("onsubmit")));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("unclear")));
+  // Focus: the page leads with what needs the reviewer and says what each option will do.
+  assert.ok(output.playbook.structure.some((item) => /open decisions first/i.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /side effect/i.test(item) && /No side effects/.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /reserve a select for long lists/i.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /recommend/i.test(item) && /exactly one/i.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /<mark>/.test(item)));
+  assert.ok(output.playbook.design_rules.some((item) => /1 of 3 decided/.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /accent/i.test(item) && /marks nothing/i.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /Keep links underlined \(DaisyUI `link`\)/.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("radio change")));
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
 });
