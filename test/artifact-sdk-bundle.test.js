@@ -136,6 +136,7 @@ function bootSdk({
   for (const element of revisionMarkElements) appendTo(body, element);
 
   const sandbox = {
+    performance,
     parent: { postMessage: (message) => posted.push(message) },
     navigator: { platform },
     CSS: { escape: (value) => String(value) },
@@ -196,6 +197,19 @@ function bootSdk({
   return {
     posted,
     body,
+    dispatch(type, props = {}, windowEvent = false) {
+      const event = {
+        defaultPrevented: false,
+        ...props,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      for (const entry of (windowEvent ? windowListeners : documentListeners).filter((entry) => entry.type === type)) {
+        entry.handler(event);
+      }
+      return event;
+    },
     api: sandbox.window.lavish,
     // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
     click(target, modifiers = {}) {
@@ -262,10 +276,10 @@ function bootSdk({
       assert.fail("the SDK timer queue did not settle");
     },
     // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
-    sendChromeMessage(data) {
+    sendChromeMessage(data, source = sandbox.parent) {
       const listeners = windowListeners.filter((entry) => entry.type === "message");
       assert.ok(listeners.length > 0, "the SDK registers a window message listener");
-      for (const listener of listeners) listener.handler({ source: sandbox.parent, data });
+      for (const listener of listeners) listener.handler({ source, data });
     },
     cards() {
       return documentElement.children
@@ -874,4 +888,108 @@ test("Ctrl-click on a link after a text selection does not eat the next plain cl
   sdk.click(paragraph);
 
   assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+test("holding Alt bypasses actual annotation interception and release restores it", () => {
+  const sdk = bootSdk();
+  const target = appendTo(sdk.body, cell("p", "Explore this section"));
+  assert.equal(sdk.click(target).defaultPrevented, true);
+  sdk.card().querySelector("textarea").value = "Keep this draft";
+  const held = sdk.dispatch("keydown", { key: "Alt", altKey: true });
+  sdk.dispatch("keydown", { key: "Alt", altKey: true, repeat: true });
+  assert.equal(held.defaultPrevented, false);
+  assert.equal(sdk.click(target, { altKey: true }).defaultPrevented, false);
+  sdk.selectText(target, "Explore");
+  assert.equal(sdk.cards().length, 1, "holding does not open a text card or discard the draft");
+  assert.equal(sdk.card().querySelector("textarea").value, "Keep this draft");
+  sdk.dispatch("keyup", { key: "Alt", altKey: false });
+  assert.equal(sdk.click(target).defaultPrevented, true);
+});
+
+test("Alt never enables annotation selected off, and blur recovers a lost release", () => {
+  const sdk = bootSdk({ htmlAnnotate: "off" });
+  const target = appendTo(sdk.body, cell("p", "Section"));
+  sdk.dispatch("keydown", { key: "Alt", altKey: true });
+  sdk.dispatch("keyup", { key: "Alt", altKey: false });
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
+  sdk.dispatch("keydown", { key: "Alt", altKey: true });
+  assert.equal(sdk.click(target, { altKey: true }).defaultPrevented, false);
+  sdk.dispatch("blur", {}, true);
+  assert.equal(sdk.click(target).defaultPrevented, true);
+});
+
+test("pointer modifier observations recover a press or release in another document", () => {
+  const sdk = bootSdk();
+  const target = appendTo(sdk.body, cell("p", "Section"));
+  assert.equal(sdk.click(target, { altKey: true }).defaultPrevented, false);
+  assert.equal(sdk.click(target, { altKey: false }).defaultPrevented, true);
+  sdk.sendChromeMessage({
+    type: "lavish:setAnnotationBypass",
+    observedAt: performance.timeOrigin + performance.now(),
+    held: true,
+  });
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  sdk.sendChromeMessage({
+    type: "lavish:setAnnotationBypass",
+    observedAt: performance.timeOrigin + performance.now(),
+    held: false,
+  });
+  assert.equal(sdk.click(target).defaultPrevented, true);
+  const message = sdk.posted.find((message) => message.type === "lavish:annotationBypass");
+  assert.equal(message.artifact_load_token, "load-token");
+});
+
+for (const release of ["keyup", "pointerdown", "wheel", "blur"]) {
+  test(`a local ${release} release defeats a queued chrome hold even when already released`, () => {
+    const sdk = bootSdk();
+    const target = appendTo(sdk.body, cell("p", "Section"));
+    const observedAt = performance.timeOrigin + performance.now();
+    sdk.dispatch(release, { key: "Alt", altKey: false }, release === "blur");
+    const report = sdk.posted.filter((message) => message.type === "lavish:annotationBypass").at(-1);
+    assert.equal(report?.held, false, "unchanged local release is still reported");
+    sdk.sendChromeMessage({ type: "lavish:setAnnotationBypass", held: true, observedAt });
+    sdk.sendChromeMessage({ type: "lavish:setAnnotationBypass", held: true, observedAt: report.observedAt });
+    assert.equal(sdk.click(target).defaultPrevented, true, "no pointer recovery is required");
+    sdk.sendChromeMessage({
+      type: "lavish:setAnnotationBypass",
+      held: true,
+      observedAt: performance.timeOrigin + performance.now(),
+    });
+    assert.equal(sdk.click(target).defaultPrevented, false, "a genuinely newer hold still works");
+  });
+}
+
+test("bypass messages require a parent sender, boolean hold and finite observation time", () => {
+  const sdk = bootSdk();
+  const target = appendTo(sdk.body, cell("p", "Section"));
+  for (const observedAt of [undefined, null, "now", NaN, Infinity]) {
+    sdk.sendChromeMessage({ type: "lavish:setAnnotationBypass", held: true, observedAt });
+    assert.equal(sdk.click(target).defaultPrevented, true);
+  }
+  sdk.sendChromeMessage({
+    type: "lavish:setAnnotationBypass",
+    held: "yes",
+    observedAt: performance.timeOrigin + performance.now(),
+  });
+  sdk.sendChromeMessage(
+    { type: "lavish:setAnnotationBypass", held: true, observedAt: performance.timeOrigin + performance.now() },
+    { postMessage: () => 0 },
+  );
+  assert.equal(sdk.click(target).defaultPrevented, true);
+});
+
+test("a delayed chrome release cannot cancel a newer local hold", () => {
+  const sdk = bootSdk();
+  const target = appendTo(sdk.body, cell("p", "Section"));
+  const observedAt = performance.timeOrigin + performance.now();
+  sdk.dispatch("keydown", { key: "Alt", altKey: true });
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationBypass", held: false, observedAt });
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  sdk.sendChromeMessage({
+    type: "lavish:setAnnotationBypass",
+    held: false,
+    observedAt: performance.timeOrigin + performance.now(),
+  });
+  assert.equal(sdk.click(target).defaultPrevented, true);
 });
