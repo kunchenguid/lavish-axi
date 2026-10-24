@@ -837,8 +837,11 @@ test("chrome page ships the phone conversation dock and the viewport contract it
   assert.match(viewport, /\binteractive-widget=resizes-content\b/);
 
   // The dock is a real disclosure control: a labelled button with expanded state over the
-  // panel it reveals, a live summary, and a scrim the sheet rises over.
   assert.match(html, /<aside class="panel" id="panel">/);
+  assert.match(
+    html,
+    /<div class="panel-resizer" id="panelResizer" role="separator" aria-orientation="vertical" aria-label="Resize conversation panel" tabindex="0"><\/div>/,
+  );
   assert.match(html, /<div class="panel-scrim" id="panelScrim"><\/div>/);
   assert.match(
     html,

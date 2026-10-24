@@ -183,7 +183,17 @@ async function createChromeHarness({
           return [...classes].join(" ");
         },
       },
-      style: {},
+      style: {
+        setProperty(name, value) {
+          this[name] = String(value);
+        },
+        getPropertyValue(name) {
+          return this[name] || "";
+        },
+        removeProperty(name) {
+          delete this[name];
+        },
+      },
       setAttribute(name, value) {
         this[name] = String(value);
       },
@@ -434,6 +444,7 @@ async function createChromeHarness({
       }
     },
     document: {
+      documentElement: element("html"),
       body: element("body"),
       get activeElement() {
         return activeElement;
@@ -468,7 +479,31 @@ async function createChromeHarness({
         storage.delete(key);
       },
     },
+    localStorage: {
+      getItem(key) {
+        return storage.has(key) ? storage.get(key) : null;
+      },
+      setItem(key, value) {
+        storage.set(key, String(value));
+      },
+      removeItem(key) {
+        storage.delete(key);
+      },
+    },
     window: {
+      innerWidth: 1200,
+      innerHeight: 800,
+      localStorage: {
+        getItem(key) {
+          return storage.has(key) ? storage.get(key) : null;
+        },
+        setItem(key, value) {
+          storage.set(key, String(value));
+        },
+        removeItem(key) {
+          storage.delete(key);
+        },
+      },
       clearTimeout: fakeClearTimeout,
       setTimeout: fakeSetTimeout,
       addEventListener(type, handler) {
@@ -656,6 +691,11 @@ async function createChromeHarness({
       head.dispatch("pointerdown", { pointerId, clientY: fromY, button: 0 });
       head.dispatch("pointermove", { pointerId, clientY: moveY });
       head.dispatch("pointercancel", { pointerId, clientY: cancelY });
+    },
+    setWindowWidth(width) {
+      context.window.innerWidth = width;
+      const handlers = windowListeners.get("resize") || [];
+      for (const handler of handlers) handler({});
     },
   };
 }
@@ -7288,6 +7328,231 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
   assert.equal(state.scrollInert, true);
   assert.equal(chrome.focusLog.at(-1), "panelToggle");
   assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
+});
+
+// ---- Resizable conversation panel tests ----
+test("desktop chrome initializes the panel width to default 360px and applies it to --panel-w", async () => {
+  const chrome = await createChromeHarness();
+  assert.equal(chrome.element("html").style["--panel-w"], "360px");
+  const resizer = chrome.element("panelResizer");
+  assert.equal(resizer["aria-valuenow"], "360");
+  assert.equal(resizer["aria-valuemin"], "280");
+  assert.equal(resizer["aria-valuemax"], "920");
+});
+
+test("desktop chrome restores the panel width from localStorage across reloads", async () => {
+  const storage = new Map([["lavish-axi:panel-width", "520"]]);
+  const chrome = await createChromeHarness({ storage });
+  assert.equal(chrome.element("html").style["--panel-w"], "520px");
+  assert.equal(chrome.element("panelResizer")["aria-valuenow"], "520");
+});
+
+test("dragging the panel resizer expands and shrinks the panel and persists the chosen width", async () => {
+  const chrome = await createChromeHarness();
+  const body = chrome.element("body");
+  const resizer = chrome.element("panelResizer");
+
+  // Initial width 360px. Resizer sits at x = 1200 - 360 = 840.
+  // Pointerdown records start point but does NOT enter resize mode yet
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 840, button: 0, preventDefault() {} });
+  assert.equal(body.classList.contains("is-resizing-panel"), false);
+
+  // Dragging past threshold enters resize mode and widens the panel
+  resizer.dispatch("pointermove", { pointerId: 1, clientX: 740 });
+  assert.equal(body.classList.contains("is-resizing-panel"), true);
+  assert.equal(chrome.element("html").style["--panel-w"], "460px");
+  assert.equal(resizer["aria-valuenow"], "460");
+  // Not yet persisted until pointerup
+  assert.equal(chrome.storage.has("lavish-axi:panel-width"), false);
+
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: 740 });
+  assert.equal(body.classList.contains("is-resizing-panel"), false);
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "460");
+
+  // Moving cursor after pointerup does NOT trigger resizing
+  resizer.dispatch("pointermove", { pointerId: 1, clientX: 600 });
+  assert.equal(chrome.element("html").style["--panel-w"], "460px");
+  assert.equal(body.classList.contains("is-resizing-panel"), false);
+
+  // Dragging right shrinks the panel
+  resizer.dispatch("pointerdown", { pointerId: 2, clientX: 740, button: 0, preventDefault() {} });
+  resizer.dispatch("pointermove", { pointerId: 2, clientX: 800 });
+  assert.equal(chrome.element("html").style["--panel-w"], "400px");
+  resizer.dispatch("pointerup", { pointerId: 2, clientX: 800 });
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "400");
+});
+
+test("panel resizing is clamped to minimum width and viewport-preserving maximum", async () => {
+  const chrome = await createChromeHarness();
+  const resizer = chrome.element("panelResizer");
+
+  // Drag far to the right: clamped to MIN_PANEL_WIDTH (280px)
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 840, button: 0, preventDefault() {} });
+  resizer.dispatch("pointermove", { pointerId: 1, clientX: 1150 });
+  assert.equal(chrome.element("html").style["--panel-w"], "280px");
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: 1150 });
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "280");
+
+  // Drag far to the left: clamped to MAX (1200 - 280 = 920px)
+  resizer.dispatch("pointerdown", { pointerId: 2, clientX: 920, button: 0, preventDefault() {} });
+  resizer.dispatch("pointermove", { pointerId: 2, clientX: 100 });
+  assert.equal(chrome.element("html").style["--panel-w"], "920px");
+  resizer.dispatch("pointerup", { pointerId: 2, clientX: 100 });
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "920");
+});
+
+test("clicking the panel resizer toggles collapse and expand immediately", async () => {
+  const chrome = await createChromeHarness();
+  const body = chrome.element("body");
+  const resizer = chrome.element("panelResizer");
+
+  assert.equal(chrome.element("html").style["--panel-w"], "360px");
+  assert.equal(body.classList.contains("panel-collapsed"), false);
+  assert.equal(resizer["aria-expanded"], "true");
+  assert.equal(resizer["aria-label"], "Hide conversation");
+
+  // Click without drag collapses the panel immediately
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 840, button: 0, preventDefault() {} });
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: 840 });
+
+  assert.equal(body.classList.contains("panel-collapsed"), true);
+  assert.equal(chrome.element("html").style["--panel-w"], "0px");
+  assert.equal(resizer["aria-expanded"], "false");
+  assert.equal(resizer["aria-label"], "Show conversation");
+
+  // Second click expands the panel back to preferred width (360px) immediately
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 1200, button: 0, preventDefault() {} });
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: 1200 });
+
+  assert.equal(body.classList.contains("panel-collapsed"), false);
+  assert.equal(chrome.element("html").style["--panel-w"], "360px");
+  assert.equal(resizer["aria-expanded"], "true");
+  assert.equal(resizer["aria-label"], "Hide conversation");
+});
+
+test("reopening a collapsed panel after shrinking the window clamps width to the current viewport", async () => {
+  const storage = new Map([["lavish-axi:panel-width", "900"]]);
+  const chrome = await createChromeHarness({ storage });
+  assert.equal(chrome.element("html").style["--panel-w"], "900px");
+
+  // Collapse the panel
+  const resizer = chrome.element("panelResizer");
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 300, button: 0, preventDefault() {} });
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: 300 });
+  assert.equal(chrome.element("html").style["--panel-w"], "0px");
+
+  // Shrink the window to 900px while collapsed. Max allowed width is 900 - 280 = 620px.
+  chrome.setWindowWidth(900);
+  assert.equal(chrome.element("html").style["--panel-w"], "0px");
+
+  // Reopen the panel
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 900, button: 0, preventDefault() {} });
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: 900 });
+
+  // Clamped to 620px so artifact is not squeezed to 0
+  assert.equal(chrome.element("html").style["--panel-w"], "620px");
+  // The user's preference of 900px is still preserved in storage
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "900");
+
+  // Widening back to 1200px restores the user's preferred 900px
+  chrome.setWindowWidth(1200);
+  assert.equal(chrome.element("html").style["--panel-w"], "900px");
+});
+
+test("keyboard navigation on the resizer allows step resizing and toggle", async () => {
+  const chrome = await createChromeHarness();
+  const resizer = chrome.element("panelResizer");
+  const body = chrome.element("body");
+  assert.equal(chrome.element("html").style["--panel-w"], "360px");
+
+  // ArrowLeft expands by 16px
+  resizer.dispatch("keydown", { key: "ArrowLeft", preventDefault() {} });
+  assert.equal(chrome.element("html").style["--panel-w"], "376px");
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "376");
+
+  // ArrowRight shrinks by 16px
+  resizer.dispatch("keydown", { key: "ArrowRight", preventDefault() {} });
+  assert.equal(chrome.element("html").style["--panel-w"], "360px");
+
+  // Enter toggles collapse
+  resizer.dispatch("keydown", { key: "Enter", preventDefault() {} });
+  assert.equal(body.classList.contains("panel-collapsed"), true);
+  assert.equal(chrome.element("html").style["--panel-w"], "0px");
+
+  // ArrowLeft while collapsed uncollapses the panel
+  resizer.dispatch("keydown", { key: "ArrowLeft", preventDefault() {} });
+  assert.equal(body.classList.contains("panel-collapsed"), false);
+  assert.equal(chrome.element("html").style["--panel-w"], "360px");
+
+  // Space toggles uncollapse
+  resizer.dispatch("keydown", { key: " ", preventDefault() {} });
+  assert.equal(body.classList.contains("panel-collapsed"), true);
+  assert.equal(chrome.element("html").style["--panel-w"], "0px");
+
+  // Space again toggles back
+  resizer.dispatch("keydown", { key: " ", preventDefault() {} });
+  assert.equal(body.classList.contains("panel-collapsed"), false);
+  assert.equal(chrome.element("html").style["--panel-w"], "360px");
+});
+
+test("viewport resize clamps active panel width without losing the user's larger preference", async () => {
+  const storage = new Map([["lavish-axi:panel-width", "600"]]);
+  const chrome = await createChromeHarness({ storage });
+  assert.equal(chrome.element("html").style["--panel-w"], "600px");
+
+  // Shrink viewport to 870px. Max panel allowed = 870 - 280 = 590px.
+  chrome.setWindowWidth(870);
+  assert.equal(chrome.element("html").style["--panel-w"], "590px");
+  // Storage retains the user's 600px preference
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "600");
+
+  // Enlarge viewport back to 1200px
+  chrome.setWindowWidth(1200);
+  assert.equal(chrome.element("html").style["--panel-w"], "600px");
+});
+
+test("keyboard stepping at the viewport maximum does not overwrite the stored preference", async () => {
+  const storage = new Map([["lavish-axi:panel-width", "900"]]);
+  const chrome = await createChromeHarness({ storage });
+  const resizer = chrome.element("panelResizer");
+  assert.equal(chrome.element("html").style["--panel-w"], "900px");
+
+  // Shrink viewport to 1000px. Max panel allowed = 1000 - 280 = 720px.
+  chrome.setWindowWidth(1000);
+  assert.equal(chrome.element("html").style["--panel-w"], "720px");
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "900");
+
+  // Stepping wider is clamped to 720px and must not clobber the stored 900px preference.
+  resizer.dispatch("keydown", { key: "ArrowLeft", preventDefault() {} });
+  assert.equal(chrome.element("html").style["--panel-w"], "720px");
+  assert.equal(chrome.storage.get("lavish-axi:panel-width"), "900");
+
+  // Widening the viewport restores the user's preferred 900px.
+  chrome.setWindowWidth(1200);
+  assert.equal(chrome.element("html").style["--panel-w"], "900px");
+});
+
+test("phone chrome ignores resizer gestures and keeps resizer inactive", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  const resizer = chrome.element("panelResizer");
+
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 200, button: 0, preventDefault() {} });
+  resizer.dispatch("pointermove", { pointerId: 1, clientX: 100 });
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: 100 });
+
+  assert.equal(chrome.element("body").classList.contains("is-resizing-panel"), false);
+  assert.equal(chrome.storage.has("lavish-axi:panel-width"), false);
+});
+
+test("mobile conversation sheet ignores desktop panel-collapsed state", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  const body = chrome.element("body");
+  body.classList.add("panel-collapsed");
+
+  // On mobile, panel toggle still opens the sheet
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+  assert.equal(chrome.element("panelScroll").inert, false);
 });
 
 // ---- Queued and sent notes are one conversation ----
