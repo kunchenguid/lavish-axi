@@ -9060,3 +9060,28 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   assert.equal(failed.librariesUnavailable, true);
   assert.equal(JSON.stringify(failed.libraries), "[]");
 });
+
+// #448: a selector past the 240/300-char caps that table-cell.js and layout-warnings.js put on
+// their own target fields still anchors in full: the queued-anchor list and the reopen lookup
+// use `prompt.selector`, which the chrome never shortens.
+test("a queued note with a very long selector is announced and reopened by its full selector", async () => {
+  const chrome = await createChromeHarness();
+  const selector = "html > body > " + Array.from({ length: 120 }, () => "div").join(" > ") + " > td";
+  assert.ok(selector.length > 512);
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Fix this cell",
+      selector,
+      tag: "td",
+      text: "42",
+      target: { type: "table-cell", selector: selector.slice(0, 240), rowLabel: "", columnLabel: "", text: "42" },
+    },
+  });
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors)).selectors, [selector]);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector });
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Fix this cell</);
+});
