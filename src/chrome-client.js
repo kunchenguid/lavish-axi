@@ -198,6 +198,7 @@ let annotationOverridden = false;
 let annotationDefaultReceived = false;
 let ended = false;
 let agentPresence = "waiting";
+let listenerConnection = "checking";
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
 const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
 const layoutGateMaxHoldMs =
@@ -956,6 +957,8 @@ function receiptStepHtml(label, at) {
 // that will take the note within milliseconds, and `working` or an external listener is an agent
 // whose next poll will take it.
 function receiptNoteText() {
+  if (listenerConnection === "disconnected") return "Connection lost; delivery status unknown";
+  if (listenerConnection !== "connected") return "Checking agent connection…";
   if (agentPresence === "waiting") return "No agent is listening";
   if (agentPresence === "listening") return "Delivering";
   return "Agent is busy; delivered on its next poll";
@@ -1132,16 +1135,45 @@ function syncChat(chat, revision) {
   return true;
 }
 
+const listenerStatus = /** @type {HTMLDivElement} */ (document.getElementById("listenerStatus"));
+
+// The chrome owns status wording; the sandboxed SDK receives plain text and only decides visibility.
+function listenerStatusMessage() {
+  if (ended) return { state: "ended", text: "Session ended" };
+  if (listenerConnection === "disconnected") return { state: "disconnected", text: "Connection lost · status unknown" };
+  if (listenerConnection !== "connected") return { state: "checking", text: "Checking agent connection…" };
+  if (agentPresence === "waiting") return { state: "waiting", text: "Your agent is not listening." };
+  if (agentPresence === "listening") return { state: "listening", text: "Agent listening" };
+  if (agentPresence === "external") return { state: "external", text: "External listener active" };
+  return { state: "working", text: "Agent is working…" };
+}
+
+function postListenerStatus() {
+  postToFrame({ type: "lavish:listenerStatus", ...listenerStatusMessage() });
+}
+
+function renderListenerStatus() {
+  const { state, text } = listenerStatusMessage();
+  listenerStatus.textContent = text;
+  listenerStatus.dataset.state = state;
+  listenerStatus.title = text;
+  if (presenceBanner) presenceBanner.hidden = state !== "waiting";
+  postListenerStatus();
+}
+
 function setAgentPresence(state) {
   agentPresence = state === "listening" || state === "external" || state === "working" ? state : "waiting";
+  renderListenerStatus();
   updateSendState();
   renderSheetSummary();
   refreshUnseenReceipts();
-  if (presenceBanner) presenceBanner.hidden = ended || agentPresence !== "waiting";
+  syncWorkingBubble();
+}
 
+function syncWorkingBubble() {
   // A supervisor-owned process-only listener is busy on the agent's behalf. It must not make the
   // composer look like an idle captain turn while the owning agent is offline.
-  if (agentPresence !== "working" && agentPresence !== "external") {
+  if (listenerConnection !== "connected" || (agentPresence !== "working" && agentPresence !== "external")) {
     if (workingBubble) workingBubble.remove();
     workingBubble = null;
     return;
@@ -1150,9 +1182,9 @@ function setAgentPresence(state) {
   if (!workingBubble) {
     workingBubble = document.createElement("div");
     workingBubble.className = "bubble agent agent-working";
-    workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
     chatLog.appendChild(workingBubble);
   }
+  workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
   scrollElementIntoView(workingBubble);
 }
 
@@ -1357,10 +1389,8 @@ function sheetSummary() {
     return { text: queued.length === 1 ? "1 queued" : queued.length + " queued", accent: true, unread: false };
   }
   if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true };
-  if (agentPresence === "working") return { text: "Agent is working…", accent: false, unread: false };
-  if (agentPresence === "external") return { text: "External listener active", accent: false, unread: false };
-  if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false };
-  return { text: "Agent not listening", accent: false, unread: false };
+  const status = listenerStatusMessage();
+  return { text: status.state === "waiting" ? "Agent not listening" : status.text, accent: false, unread: false };
 }
 
 function renderSheetSummary() {
@@ -3086,6 +3116,7 @@ function markSessionEnded() {
   chatInput.disabled = true;
   updateSendState();
   applySheetState();
+  renderListenerStatus();
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
   if (outdatedBanner) outdatedBanner.hidden = true;
@@ -4246,6 +4277,7 @@ window.addEventListener("message", (event) => {
       });
     return;
   }
+  if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean") postListenerStatus();
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
   if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean" && !annotationDefaultReceived) {
     annotationDefaultReceived = true;
@@ -4612,6 +4644,7 @@ document.addEventListener(
 frame.addEventListener("load", () => {
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
+  renderListenerStatus();
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });
@@ -4627,10 +4660,19 @@ initializeLayoutGate();
 // WebSockets leave the browser's HTTP connection pool free for sends and artifact loads.
 const events = new Map();
 let eventReconnectDelayMs = 500;
+/** @type {WebSocket | null} */
+let activeEventSocket = null;
 function connectLiveEvents() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
+  activeEventSocket = socket;
   socket.addEventListener("open", () => {
+    if (socket !== activeEventSocket) return;
+    listenerConnection = "checking";
+    renderListenerStatus();
+    renderSheetSummary();
+    refreshUnseenReceipts();
+    syncWorkingBubble();
     eventReconnectDelayMs = 500;
     liveEventFailures = 0;
     unreachableDismissed = false;
@@ -4641,6 +4683,7 @@ function connectLiveEvents() {
     refreshLayoutWarnings();
   });
   socket.addEventListener("message", (message) => {
+    if (socket !== activeEventSocket) return;
     try {
       const { type, data } = JSON.parse(message.data);
       return events.get(type)?.(data || {});
@@ -4649,6 +4692,14 @@ function connectLiveEvents() {
     }
   });
   socket.addEventListener("close", () => {
+    if (socket !== activeEventSocket) return;
+    activeEventSocket = null;
+    listenerConnection = "disconnected";
+    renderListenerStatus();
+    renderSheetSummary();
+    refreshUnseenReceipts();
+    syncWorkingBubble();
+    if (presenceBanner) presenceBanner.hidden = true;
     liveEventFailures += 1;
     noteLiveEventsUnreachable();
     setTimeout(connectLiveEvents, eventReconnectDelayMs);
@@ -4689,7 +4740,10 @@ events.set("chat-sync", (data) => {
   rememberChatAckIds(data.ack_ids);
   syncChat(data.chat || [], data.chat_revision);
 });
-events.set("agent-presence", (data) => setAgentPresence(data.mode === "external-listener" ? "external" : data.state));
+events.set("agent-presence", (data) => {
+  listenerConnection = ["waiting", "listening", "working"].includes(data.state) ? "connected" : "checking";
+  setAgentPresence(data.mode === "external-listener" ? "external" : data.state);
+});
 events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());
 connectLiveEvents();

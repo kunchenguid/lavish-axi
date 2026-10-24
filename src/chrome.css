@@ -1988,3 +1988,26 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-error[hidden] {
   display: none;
 }
+
+/* Desktop status stays above the transcript; the phone dock already has a summary. */
+.listener-status {
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0 16px 8px;
+  color: var(--fg-label);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  overflow-wrap: anywhere;
+}
+.listener-status[data-state="listening"] {
+  color: var(--sage-300);
+}
+.listener-status[data-state="waiting"] {
+  color: var(--accent);
+}
+
+@media (max-width: 860px) {
+  .listener-status {
+    display: none;
+  }
+}

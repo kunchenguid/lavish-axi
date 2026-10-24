@@ -875,3 +875,31 @@ test("Ctrl-click on a link after a text selection does not eat the next plain cl
 
   assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
 });
+
+test("popup warns only for confirmed absence and preserves its draft through unknown states", () => {
+  const sdk = bootSdk();
+  sdk.click(appendTo(sdk.body, cell("h1", "Review this heading")));
+  const card = sdk.card();
+  const status = card.querySelector(".lavish-listener-status");
+  assert.equal(status.hidden, true);
+  card.querySelector("textarea").value = "Keep my annotation";
+  sdk.sendChromeMessage({ type: "lavish:listenerStatus", state: "waiting", text: "Your agent is not listening." });
+  assert.equal(status.hidden, false);
+  assert.equal(status.textContent, "Your agent is not listening.");
+  for (const state of ["checking", "listening", "working", "external", "disconnected", "ended", "invalid"]) {
+    sdk.sendChromeMessage({ type: "lavish:listenerStatus", state, text: "Your agent is not listening." });
+    assert.equal(status.hidden, true, state + " must not show an absence warning");
+    assert.equal(card.querySelector("textarea").value, "Keep my annotation");
+  }
+  const queued = sdk.queue("Keep my annotation");
+  assert.equal(queued.type, "lavish:queuePrompt");
+});
+
+test("new popup uses chrome-owned warning text as plain text", () => {
+  const sdk = bootSdk();
+  sdk.sendChromeMessage({ type: "lavish:listenerStatus", state: "waiting", text: "<b>Trusted parent wording</b>" });
+  sdk.click(appendTo(sdk.body, cell("p", "Review this paragraph")));
+  const status = sdk.card().querySelector(".lavish-listener-status");
+  assert.equal(status.hidden, false);
+  assert.equal(status.textContent, "<b>Trusted parent wording</b>");
+});

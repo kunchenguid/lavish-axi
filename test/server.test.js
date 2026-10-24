@@ -1060,7 +1060,7 @@ test("chrome client renders persisted chat history", async () => {
   assert.match(js, /initialChat\.forEach/);
 });
 
-test("chrome shows agent working state when a previous poll has released", async () => {
+test("chrome retains the existing working bubble", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /agent-presence/);
@@ -1095,12 +1095,10 @@ test("chrome only marks session ended after the end request succeeds", async () 
 
 test("chrome shows a waiting banner when no agent has attached", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
   const css = await chromeCssSource();
 
   assert.match(html, /id="presenceBanner"/);
   assert.match(html, /Your agent is not listening/);
-  assert.match(js, /presenceBanner\.hidden = ended \|\| agentPresence !== "waiting"/);
   assert.match(css, /\.presence-banner\{/);
 });
 
