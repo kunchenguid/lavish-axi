@@ -26,6 +26,8 @@ const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initial
 const initialChatAckIds = Array.isArray(sessionData.initialChatAckIds) ? sessionData.initialChatAckIds : [];
 const initialChatRevision = parseChatRevision(sessionData.initialChatRevision) || 0;
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
+const SKETCH_TOGGLE_HOTKEY_KEY = String(sessionData.sketchToggleHotkeyKey || "").toLowerCase();
+const SKETCH_COMMENT_MAX_CHARS = Number(sessionData.sketchCommentMaxChars);
 const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
 const attachmentMaxCount = Number(sessionData.attachmentMaxCount) || 4;
 // Threaded from the server's single accepted-image list, which also drives the
@@ -99,9 +101,9 @@ function describeAttachmentRejection(rejected, caps) {
   return "Not sent — " + detail + ". Remove or fix the image, then send again.";
 }
 
-function isModeToggleHotkeyEvent(event) {
+function isModeToggleHotkeyEvent(event, key = MODE_TOGGLE_HOTKEY_KEY) {
   if (event.shiftKey || event.altKey) return false;
-  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
+  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === key;
 }
 
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
@@ -189,6 +191,8 @@ const whiteboardOverlay = /** @type {HTMLDivElement} */ (document.getElementById
 const whiteboardFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("whiteboardFrame"));
 const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("whiteboardClose"));
 const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
+const sketchFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("sketchFrame"));
+const sketchSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("sketchSwitch"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
 const queued = loadQueuedPrompts();
@@ -314,6 +318,9 @@ const TERMINAL_SEND_FAILED_COPY =
 const HEALTH_NO_ANSWER_TITLE = "Lavish did not answer.";
 const HEALTH_NO_ANSWER_COPY =
   "Lavish did not answer the check, so this page cannot tell whether it is running. Try again in a moment.";
+const SKETCH_UNSAVED_TITLE = "Your sketches or sketch comment are not saved yet.";
+const SKETCH_UNSAVED_COPY =
+  "Lavish could not save your sketches, or a sketch comment is not queued yet, so this page stays open. Queue or cancel the comment, then try again.";
 let artifactLoadToken = "";
 let artifactLoadRevision = Number(sessionData.initialArtifactRevision) || 0;
 let artifactLoadRequestSequence = Number(sessionData.initialArtifactLoadSequence) || 0;
@@ -553,6 +560,13 @@ function promptAnchor(prompt) {
       excerpt: boundAnchorText(target.label || prompt.text, ANCHOR_EXCERPT_MAX),
     });
   }
+  if (type === "sketch") {
+    return withSelector({
+      kind: "sketch",
+      label: "sketch",
+      excerpt: boundAnchorText(target.label || prompt.text, ANCHOR_EXCERPT_MAX),
+    });
+  }
   const elementTag = tag.trim();
   if (!elementTag) return null;
   return withSelector({
@@ -716,9 +730,11 @@ function updateSendState() {
   // artifact without disabling annotation mode. Disabling annotation mode closes the
   // SDK card and destroys an unsent draft before delivery has actually succeeded.
   frame.inert = ended || terminalReserved;
+  sketchFrame.inert = ended || terminalReserved;
   sendButton.disabled = ended || terminalReserved;
   sendAndEndButton.disabled = ended || Boolean(terminalSubmission?.inFlight);
   annotationSwitch.disabled = ended || terminalReserved;
+  sketchSwitch.disabled = ended || terminalReserved;
   chatInput.disabled = ended || terminalReserved;
   chatAttachButton.disabled = ended || terminalReserved;
   endButton.disabled = ended || terminalReserved;
@@ -1200,7 +1216,7 @@ function setReviewState(state) {
 }
 
 function hasUnsentDraft() {
-  if (editingPromptId) return true;
+  if (editingPromptId || sketchDraft) return true;
   return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
 }
 
@@ -2329,9 +2345,8 @@ function checkServerThenReload(failureTitle, stillDownCopy) {
     try {
       outcome = await probeChromeHealth();
       if (outcome === "running") {
-        navigating = true;
-        await flushWhiteboardsBeforeChromeReload();
-        location.reload();
+        navigating = await flushWhiteboardsBeforeChromeReload();
+        if (navigating) location.reload();
       }
     } finally {
       // Every path that does not navigate hands the control back, including a probe that timed
@@ -2340,9 +2355,14 @@ function checkServerThenReload(failureTitle, stillDownCopy) {
         checking = false;
         if (layoutGateAction) layoutGateAction.disabled = false;
         if (cycle === layoutGateCycle) {
-          const answered = outcome !== "no-answer";
-          if (layoutGateTitle) layoutGateTitle.textContent = answered ? failureTitle : HEALTH_NO_ANSWER_TITLE;
-          if (layoutGateCopy) layoutGateCopy.textContent = answered ? stillDownCopy : HEALTH_NO_ANSWER_COPY;
+          const [title, copy] =
+            outcome === "running"
+              ? [SKETCH_UNSAVED_TITLE, SKETCH_UNSAVED_COPY]
+              : outcome === "no-answer"
+                ? [HEALTH_NO_ANSWER_TITLE, HEALTH_NO_ANSWER_COPY]
+                : [failureTitle, stillDownCopy];
+          if (layoutGateTitle) layoutGateTitle.textContent = title;
+          if (layoutGateCopy) layoutGateCopy.textContent = copy;
         }
       }
     }
@@ -3082,6 +3102,8 @@ function markSessionEnded() {
   renderRevisionLegend();
   closeWhiteboard();
   annotationSwitch.disabled = true;
+  setSketchActive(false);
+  sketchSwitch.disabled = true;
   moreButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
@@ -3579,6 +3601,7 @@ function postToInlineWhiteboard(index, message) {
 
 function postToWhiteboard(index, placement, message) {
   if (placement === "overlay") postToWhiteboardOverlay(message);
+  else if (placement === "sketch") postToSketch(message);
   else postToInlineWhiteboard(index, message);
 }
 
@@ -3768,21 +3791,30 @@ function finishWhiteboardFlush(index, message, placement) {
   flush.resolve(Boolean(message.ok));
 }
 
+// Resolves false when the sketch layer did not confirm its save, or a sketch comment is still unsent:
+// both live only in its frame, so the caller keeps the page open instead of reloading them away.
 async function flushWhiteboardsBeforeChromeReload() {
   const flushes = [];
   for (const [index, channel] of inlineWhiteboardChannels) {
     if (channel.initialized && index !== overlayIndex) flushes.push(beginWhiteboardFlush(index, "inline"));
   }
   if (overlayIndex !== null && overlayFrameReady) flushes.push(beginWhiteboardFlush(overlayIndex, "overlay"));
-  if (flushes.length === 0) return;
+  if (flushes.length === 0 && !sketchReady) return true;
+  const sketchSaved = sketchReady ? beginWhiteboardFlush(0, "sketch") : true;
   let timeout;
-  await Promise.race([
-    Promise.all(flushes),
-    new Promise((resolve) => {
-      timeout = setTimeout(resolve, 1500);
-    }),
+  const timedOut = new Promise((resolve) => {
+    timeout = setTimeout(() => {
+      // An unanswered sketch flush counts as unsaved; the next reload attempt asks again.
+      whiteboardFlushes.delete(whiteboardFlushKey(0, "sketch"));
+      resolve(false);
+    }, 1500);
+  });
+  const [, saved] = await Promise.all([
+    Promise.race([Promise.all(flushes), timedOut]),
+    Promise.race([sketchSaved, timedOut]),
   ]);
   clearTimeout(timeout);
+  return saved && !sketchCommentDraft;
 }
 
 async function flushInlineWhiteboards() {
@@ -4058,10 +4090,265 @@ function handleOverlayWhiteboardMessage(event, message) {
   handleAuthenticatedWhiteboardMessage(index, message, "overlay");
 }
 
+// ---------------------------------------------------------------------------
+// Sketch layer. One Excalidraw frame (the whiteboard frame page with `?sketch=1`) covers the
+// artifact iframe and outlives artifact reloads. Its scene is in artifact document coordinates:
+// the chrome relays the SDK's scroll reports to it and its wheel and pan back to the SDK. A comment
+// on a selected sketch is queued like an annotation: the sketch's PNG is uploaded as an
+// attachment, and the SDK names the artifact element under the point the sketch marks.
+// ---------------------------------------------------------------------------
+
+const SKETCH_HIT_TEST_TIMEOUT_MS = 1500;
+let sketchActive = false;
+let sketchChannelId = "";
+let sketchReady = false;
+let sketchDraft = false;
+let sketchCommentDraft = false;
+const SKETCH_MAX_PREPARATIONS = 8;
+/** @type {Map<string, FeedbackPreparation>} */
+const sketchPreparations = new Map();
+let nextSketchHitTestId = 0;
+const sketchHitTests = new Map();
+
+function postToSketch(message) {
+  if (sketchReady && sketchFrame.contentWindow) {
+    sketchFrame.contentWindow.postMessage({ ...message, channelId: sketchChannelId }, "*");
+  }
+}
+
+// A load that has not reported ready within this time counts as stalled or failed, and turning the switch on
+// starts it again. The bundle is several megabytes, so a load still in flight is left alone.
+const SKETCH_LOAD_RETRY_MS = 8000;
+let sketchLoadStartedAt = 0;
+
+function loadSketchLayer() {
+  if (!sketchFrame.hidden && (sketchChannelId || Date.now() - sketchLoadStartedAt < SKETCH_LOAD_RETRY_MS)) return;
+  sketchLoadStartedAt = Date.now();
+  sketchFrame.hidden = false;
+  sketchFrame.src = "/whiteboard-frame?sketch=1&key=" + encodeURIComponent(key);
+}
+
+function setSketchActive(active) {
+  sketchActive = Boolean(active) && !ended;
+  sketchSwitch.setAttribute("aria-pressed", String(sketchActive));
+  document.body.classList.toggle("sketch-active", sketchActive);
+  if (sketchActive) loadSketchLayer();
+  postToSketch({ type: "lavish-sketch:setActive", active: sketchActive });
+}
+
+function resetSketchLayer() {
+  for (const attemptId of [...sketchPreparations.keys()]) releaseSketchPreparation(attemptId);
+  sketchChannelId = "";
+  sketchReady = false;
+  sketchFrame.classList.remove("sketch-ready");
+  sketchDraft = false;
+  sketchCommentDraft = false;
+  sketchFrame.hidden = true;
+  sketchFrame.src = "about:blank";
+  setSketchActive(false);
+}
+
+async function initSketchLayer(token) {
+  if (!(await authenticateWhiteboardChannel(token))) throw new Error("sketch channel refused");
+  if (sketchChannelId !== token) return;
+  const response = await fetch("/api/" + key + "/whiteboard/sketch");
+  if (!response.ok) throw new Error("could not load sketches");
+  const saved = (await response.json()).whiteboard;
+  if (sketchChannelId !== token || !sketchFrame.contentWindow) return;
+  sketchFrame.contentWindow.postMessage(
+    {
+      type: "lavish-sketch:init",
+      channelId: token,
+      scene: saved?.scene || null,
+      active: sketchActive,
+      scroll: lastScroll,
+    },
+    "*",
+  );
+  sketchReady = true;
+  sketchFrame.classList.add("sketch-ready");
+}
+
+// Which artifact element the sketch marks, asked of the SDK. A slow or silent artifact only
+// costs the comment its element name.
+function sketchHitTest(point) {
+  const requestId = "sketch-" + ++nextSketchHitTestId;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      sketchHitTests.delete(requestId);
+      resolve(null);
+    }, SKETCH_HIT_TEST_TIMEOUT_MS);
+    sketchHitTests.set(requestId, (target) => {
+      clearTimeout(timer);
+      sketchHitTests.delete(requestId);
+      resolve(target);
+    });
+    postToFrame({ type: "lavish:sketchHitTest", request_id: requestId, x: point.x, y: point.y });
+  });
+}
+
+// The same upload path, caps, and page-wide budget as an annotation card's image.
+function uploadSketchPng(bytes) {
+  return new Promise((resolve, reject) => {
+    uploadAttachment({ localId: "sketch", bytes, mime: "image/png" }, (result) => {
+      if (result.ok && result.id) resolve(String(result.id));
+      else reject(new Error(String(result.error || "Upload failed")));
+    });
+  });
+}
+
+function sketchPromptText(comment, label, hit, bounds) {
+  const where = hit
+    ? "marking <" +
+      hit.tag +
+      ">" +
+      (hit.text ? ' "' + hit.text + '"' : "") +
+      (hit.selector ? " (" + hit.selector + ")" : "")
+    : "at page position (" + bounds.x + ", " + bounds.y + ")";
+  return comment + "\n\nSketch: " + label + ", " + where + ". The attached PNG shows the sketch.";
+}
+
+// The frame reserves a feedback preparation per queue attempt before it exports the PNG, so a
+// Send & End during the export waits for the comment instead of leaving it behind. The comment, or
+// a release when the export fails, settles it. The attempt id is untrusted frame input.
+function sketchAttemptId(message) {
+  return String(message.attemptId || "").slice(0, 64);
+}
+
+function releaseSketchPreparation(attemptId) {
+  sketchPreparations.get(attemptId)?.finish(false);
+  sketchPreparations.delete(attemptId);
+}
+
+async function queueSketchComment(message) {
+  const attemptId = sketchAttemptId(message);
+  const reply = (ok, error = "") => postToSketch({ type: "lavish-sketch:commentResult", attemptId, ok, error });
+  // The sketch layer's field already enforces this limit; the slice only bounds an untrusted frame.
+  const comment = String(message.comment || "")
+    .trim()
+    .slice(0, SKETCH_COMMENT_MAX_CHARS);
+  const preparation = sketchPreparations.get(attemptId);
+  sketchPreparations.delete(attemptId);
+  if (!preparation || !comment) {
+    preparation?.finish(false);
+    reply(false, comment ? "Feedback delivery is already ending this review." : "Write a comment first.");
+    return;
+  }
+  let succeeded = false;
+  try {
+    const point = message.point && typeof message.point === "object" ? message.point : {};
+    const bounds = message.bounds && typeof message.bounds === "object" ? message.bounds : {};
+    const [attachmentId, target] = await Promise.all([
+      uploadSketchPng(message.png),
+      sketchHitTest({ x: Number(point.x) || 0, y: Number(point.y) || 0 }),
+    ]);
+    const hit =
+      target && typeof target === "object"
+        ? {
+            uid: String(target.uid || "").slice(0, 120),
+            selector: String(target.selector || "").slice(0, 500),
+            tag: String(target.tag || "").slice(0, 40),
+            text: String(target.text || "").slice(0, 120),
+          }
+        : null;
+    const label = String(message.label || "sketch").slice(0, 120);
+    const sketchBounds = {
+      x: Number(bounds.x) || 0,
+      y: Number(bounds.y) || 0,
+      width: Number(bounds.width) || 0,
+      height: Number(bounds.height) || 0,
+    };
+    if (
+      !enqueuePrompt(
+        {
+          uid: hit?.uid || "",
+          prompt: sketchPromptText(comment, label, hit, sketchBounds),
+          selector: hit?.selector || "",
+          tag: "sketch",
+          text: label,
+          target: {
+            type: "sketch",
+            sketchIds: Array.isArray(message.ids) ? message.ids : [],
+            label,
+            bounds: sketchBounds,
+          },
+          attachments: [{ id: attachmentId, name: "sketch.png" }],
+        },
+        preparation,
+      )
+    )
+      throw new Error("failed to retain the sketch comment");
+    pulseSheetDock();
+    reply(true);
+    succeeded = true;
+  } catch (error) {
+    reply(false, error instanceof Error ? error.message : String(error));
+  } finally {
+    preparation.finish(succeeded);
+  }
+}
+
+function handleSketchMessage(message) {
+  if (message.type === "lavish-sketch:ready") {
+    const token = String(message.channelToken || "");
+    if (ended || !token || sketchChannelId) return;
+    sketchChannelId = token;
+    initSketchLayer(token).catch(() => {
+      if (sketchChannelId === token) resetSketchLayer();
+    });
+    return;
+  }
+  if (!sketchReady || message.channelId !== sketchChannelId) return;
+  if (message.type === "lavish-sketch:save") {
+    saveWhiteboardScene("sketch", { scene: message.scene || null }).then(
+      () => postToSketch({ type: "lavish-sketch:saveResult", ok: true }),
+      () => postToSketch({ type: "lavish-sketch:saveResult", ok: false }),
+    );
+  }
+  if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(0, message, "sketch");
+  if (message.type === "lavish-sketch:draft") {
+    sketchDraft = Boolean(message.draft);
+    sketchCommentDraft = Boolean(message.commentDraft);
+  }
+  if (ended) return;
+  if (message.type === "lavish-sketch:scrollBy") {
+    postToFrame({ type: "lavish:scrollBy", x: Number(message.x) || 0, y: Number(message.y) || 0 });
+  }
+  if (message.type === "lavish-sketch:prepare") {
+    const attemptId = sketchAttemptId(message);
+    if (!attemptId) return;
+    releaseSketchPreparation(attemptId);
+    if (sketchPreparations.size >= SKETCH_MAX_PREPARATIONS) return;
+    const preparation = beginFeedbackPreparation();
+    if (preparation) sketchPreparations.set(attemptId, preparation);
+  }
+  if (message.type === "lavish-sketch:release") releaseSketchPreparation(sketchAttemptId(message));
+  if (message.type === "lavish-sketch:comment") queueSketchComment(message);
+  if (message.type === "lavish-sketch:toggleAnnotationMode") toggleAnnotationMode();
+  if (message.type === "lavish-sketch:toggleSketchMode") toggleSketchMode();
+}
+
+// Leaving sketch mode unmounts the sketch comment card, so unsent comment text holds the mode.
+function holdForSketchComment() {
+  if (!sketchCommentDraft) return false;
+  sketchFrame.focus();
+  postToSketch({ type: "lavish-sketch:focusComment" });
+  return true;
+}
+
+function toggleSketchMode() {
+  if (!ended && !terminalSubmission && !holdForSketchComment()) setSketchActive(!sketchActive);
+}
+
+sketchSwitch.onclick = toggleSketchMode;
+if (sessionData.initialHasSketch && !sessionData.initialEnded) loadSketchLayer();
+
 window.addEventListener("message", (event) => {
   const message = event.data || {};
   if (event.source === whiteboardFrame.contentWindow) {
     handleOverlayWhiteboardMessage(event, message);
+  } else if (sketchFrame.contentWindow && event.source === sketchFrame.contentWindow) {
+    handleSketchMessage(message);
   } else if (event.source !== frame.contentWindow) {
     handleInlineWhiteboardMessage(event, message);
   }
@@ -4163,7 +4450,11 @@ async function reloadChromeAfterServerRestart(reason = "") {
     return;
   }
 
-  await flushWhiteboardsBeforeChromeReload();
+  if (!(await flushWhiteboardsBeforeChromeReload())) {
+    chromeRestartReloadPromise = null;
+    setChromeOutdated(true, reason);
+    return;
+  }
   location.reload();
 }
 
@@ -4181,9 +4472,8 @@ async function reloadChromeForOutdatedBanner() {
   try {
     outcome = await probeChromeHealth();
     if (outcome === "running") {
-      navigating = true;
-      await flushWhiteboardsBeforeChromeReload();
-      location.reload();
+      navigating = await flushWhiteboardsBeforeChromeReload();
+      if (navigating) location.reload();
     }
   } finally {
     if (!navigating) {
@@ -4191,9 +4481,11 @@ async function reloadChromeForOutdatedBanner() {
       if (outdatedReloadButton) outdatedReloadButton.disabled = false;
       if (outdatedText && generation === chromeOutdatedGeneration) {
         outdatedText.textContent =
-          outcome === "no-answer"
-            ? HEALTH_NO_ANSWER_COPY
-            : "Lavish is still not running. Start it again, then use Check and reload.";
+          outcome === "running"
+            ? SKETCH_UNSAVED_COPY
+            : outcome === "no-answer"
+              ? HEALTH_NO_ANSWER_COPY
+              : "Lavish is still not running. Start it again, then use Check and reload.";
       }
     }
   }
@@ -4264,6 +4556,12 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:scroll") {
     lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
+    postToSketch({ type: "lavish-sketch:scroll", x: lastScroll.x, y: lastScroll.y });
+  }
+  if (msg.type === "lavish:sketchHitTestResult") {
+    sketchHitTests.get(String(msg.request_id || ""))?.(
+      msg.target && typeof msg.target === "object" ? msg.target : null,
+    );
   }
   if (msg.type === "lavish:reviewState") {
     setReviewState(msg.state && typeof msg.state === "object" ? msg.state : null);
@@ -4285,6 +4583,7 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:revisions") applyRevisionMessage(msg);
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
+  if (msg.type === "lavish:toggleSketchMode") toggleSketchMode();
   if (msg.type === "lavish:editQueuedAnchor") editQueuedAnchor(String(msg.selector || ""));
 });
 
@@ -4416,9 +4715,10 @@ async function uploadAttachment(message, reportResult = postToFrame, signal) {
 loadFrame();
 
 function toggleAnnotationMode() {
-  if (ended || terminalSubmission) return;
+  if (ended || terminalSubmission || (sketchActive && holdForSketchComment())) return;
   annotationOverridden = true;
-  annotation = !annotation;
+  annotation = sketchActive || !annotation;
+  if (sketchActive) setSketchActive(false);
   annotationSwitch.setAttribute("aria-pressed", String(annotation));
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
 }
@@ -4606,6 +4906,15 @@ document.addEventListener(
     if (!isModeToggleHotkeyEvent(event)) return;
     event.preventDefault();
     toggleAnnotationMode();
+  },
+  true,
+);
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (!isModeToggleHotkeyEvent(event, SKETCH_TOGGLE_HOTKEY_KEY)) return;
+    event.preventDefault();
+    toggleSketchMode();
   },
   true,
 );

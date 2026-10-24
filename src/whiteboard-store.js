@@ -8,9 +8,11 @@ import { sanitizeWhiteboardScene } from "./whiteboard-core.js";
 // multi-hundred-KB Excalidraw scenes autosaving every second would turn each
 // unrelated store write into a large rewrite. Scenes live as one JSON file per
 // (session key, diagram index) under `<state-dir>/whiteboards/`, next to the
-// published `.excalidraw`/`.png` feedback files the agent reads.
+// published `.excalidraw`/`.png` feedback files the agent reads. The session's
+// sketch layer is one more scene there, under the ref `sketch`.
 
 const KEY_RE = /^[0-9a-f]{16}$/;
+export const SKETCH_WHITEBOARD_REF = "sketch";
 const writeTails = new Map();
 let temporaryFileId = 0;
 
@@ -23,9 +25,18 @@ export function isValidDiagramIndex(index) {
   return Number.isInteger(number) && number >= 0 && number <= 999;
 }
 
+// A scene ref is a diagram index or the session's sketch layer.
+export function isValidWhiteboardRef(ref) {
+  return ref === SKETCH_WHITEBOARD_REF || isValidDiagramIndex(ref);
+}
+
+function refName(ref) {
+  return ref === SKETCH_WHITEBOARD_REF ? ref : String(Number(ref));
+}
+
 function assertValidRef(key, index) {
   if (!isValidWhiteboardKey(key)) throw new Error(`invalid whiteboard session key: ${key}`);
-  if (!isValidDiagramIndex(index)) throw new Error(`invalid whiteboard diagram index: ${index}`);
+  if (!isValidWhiteboardRef(index)) throw new Error(`invalid whiteboard diagram index: ${index}`);
 }
 
 export function whiteboardDir(stateDir, key) {
@@ -33,11 +44,11 @@ export function whiteboardDir(stateDir, key) {
 }
 
 function workingFile(stateDir, key, index) {
-  return path.join(whiteboardDir(stateDir, key), `${Number(index)}.json`);
+  return path.join(whiteboardDir(stateDir, key), `${refName(index)}.json`);
 }
 
 function writeQueueKey(stateDir, key, index) {
-  return `${path.resolve(stateDir)}\u0000${key}\u0000${Number(index)}`;
+  return `${path.resolve(stateDir)}\u0000${key}\u0000${refName(index)}`;
 }
 
 function queueWhiteboardWrite(stateDir, key, index, operation) {
@@ -67,8 +78,8 @@ export function whiteboardFeedbackPaths(stateDir, key, index) {
   assertValidRef(key, index);
   const dir = whiteboardDir(stateDir, key);
   return {
-    scenePath: path.join(dir, `${Number(index)}.excalidraw`),
-    previewPath: path.join(dir, `${Number(index)}.png`),
+    scenePath: path.join(dir, `${refName(index)}.excalidraw`),
+    previewPath: path.join(dir, `${refName(index)}.png`),
   };
 }
 

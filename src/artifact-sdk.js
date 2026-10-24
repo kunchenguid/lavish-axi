@@ -8,9 +8,15 @@ export const LAVISH_INTERNAL_QUEUE_KEY = "_lavishQueueKey";
 
 export const MODE_TOGGLE_HOTKEY_KEY = "i";
 
-export function isModeToggleHotkeyEvent(event) {
+// Cmd/Ctrl+; toggles Sketch. Not bound by Chrome, Safari or Dia on macOS, nor by Excalidraw.
+export const SKETCH_TOGGLE_HOTKEY_KEY = ";";
+
+// A sketch comment never exceeds this; the sketch layer's field enforces it, the chrome bounds it.
+export const SKETCH_COMMENT_MAX_CHARS = 4000;
+
+export function isModeToggleHotkeyEvent(event, key = MODE_TOGGLE_HOTKEY_KEY) {
   if (event.shiftKey || event.altKey) return false;
-  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
+  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === key;
 }
 
 // Derive the browser-only replacement key used to collapse unsent updates for the same input.
@@ -2502,6 +2508,20 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:restoreScroll") {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
+      postArtifactMessage("lavish:scroll", { x: window.scrollX, y: window.scrollY });
+    }
+    // The chrome's sketch layer sits over this frame and keeps its scene in document coordinates:
+    // it forwards wheel scrolling here and asks which element a sketch marks.
+    if (msg.type === "lavish:scrollBy") window.scrollBy(Number(msg.x) || 0, Number(msg.y) || 0);
+    if (msg.type === "lavish:sketchHitTest") {
+      const el = document.elementFromPoint(
+        (Number(msg.x) || 0) - window.scrollX,
+        (Number(msg.y) || 0) - window.scrollY,
+      );
+      postArtifactMessage("lavish:sketchHitTestResult", {
+        request_id: String(msg.request_id || ""),
+        target: el && el !== document.body && el !== document.documentElement && !isLavishUi(el) ? context(el) : null,
+      });
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
@@ -2543,6 +2563,15 @@ export function createArtifactSdk(
       if (!isModeToggleHotkeyEvent(event)) return;
       event.preventDefault();
       postArtifactMessage("lavish:toggleAnnotationMode");
+    },
+    true,
+  );
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!isModeToggleHotkeyEvent(event, SKETCH_TOGGLE_HOTKEY_KEY)) return;
+      event.preventDefault();
+      postArtifactMessage("lavish:toggleSketchMode");
     },
     true,
   );

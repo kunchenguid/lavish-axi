@@ -467,3 +467,24 @@ test("pre-receipt entries are marked once and excluded from every stamp", () => 
   assert.equal(stampDone(chat, at), true);
   assert.deepEqual(chat[0], userEntry("Old", { receipt: RECEIPT_NONE }));
 });
+
+test("a sketch comment anchors to the sketch, not to the element tag it marks", () => {
+  const entry = chatEntryForPrompt(
+    {
+      uid: "1",
+      prompt: "Make this the primary plan",
+      selector: "section#pricing > div > div:nth-of-type(3) > button",
+      tag: "sketch",
+      text: "rectangle",
+      target: { type: "sketch", sketchIds: ["r1"], label: 'rectangle "Most popular"', bounds: {} },
+    },
+    at,
+  );
+  assert.equal(entry.kind, "annotation");
+  assert.deepEqual(entry.anchor, {
+    kind: "sketch",
+    label: "sketch",
+    excerpt: 'rectangle "Most popular"',
+    selector: "section#pricing > div > div:nth-of-type(3) > button",
+  });
+});
