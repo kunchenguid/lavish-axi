@@ -194,7 +194,9 @@ export async function run(argv) {
     process.stdout.write(`${VERSION}\n`);
     return;
   }
-  await ensureStateDir();
+  const isBrief = argv.length === 1 && argv[0] === "--brief";
+  // Brief mode reports initialization failures alongside its sessions block.
+  if (!isBrief) await ensureStateDir();
   const normalizedArgv = normalizeArgv(argv);
   const agent = detectInvokingAgent(process.env);
   const isTopLevelHelp = argv.length === 1 && argv[0] === "--help";
@@ -210,15 +212,17 @@ export async function run(argv) {
     await runAxiCli({
       description: DESCRIPTION,
       version: VERSION,
-      argv: isTopLevelHelp ? [] : normalizedArgv,
+      argv: isTopLevelHelp || isBrief ? [] : normalizedArgv,
       topLevelHelp: createTopLevelHelp({ agent }),
       home: async () =>
-        createHomeOutput({
-          bin: process.argv[1] || "lavish-axi",
-          sessions: isTopLevelHelp ? [] : await visibleSessions(),
-          includeSessions: !isTopLevelHelp,
-          agent,
-        }),
+        isBrief
+          ? createBriefHomeOutput()
+          : createHomeOutput({
+              bin: process.argv[1] || "lavish-axi",
+              sessions: isTopLevelHelp ? [] : await visibleSessions(),
+              includeSessions: !isTopLevelHelp,
+              agent,
+            }),
       commands: {
         open: openCommand,
         poll: pollCommand,
@@ -273,19 +277,46 @@ export function telemetryCommandName(argv) {
   return normalized[0] && !normalized[0].startsWith("-") ? normalized[0] : "home";
 }
 
+async function createBriefHomeOutput() {
+  try {
+    await ensureStateDir();
+    return createBriefOutput(await visibleSessions());
+  } catch (error) {
+    process.exitCode = 1;
+    return {
+      ...createBriefOutput([]),
+      error: {
+        code: "SESSION_LIST_ERROR",
+        message: `Could not list sessions: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    };
+  }
+}
+
+function homeSessionRows(sessions) {
+  return sessions.map((session) => ({
+    file: session.file,
+    status: session.status,
+    url: session.url,
+    pending_prompts: session.pending_prompts || 0,
+    listener: session.listener || "none",
+  }));
+}
+
+function createBriefOutput(sessions) {
+  return {
+    sessions: homeSessionRows(sessions),
+    help: "Run `lavish-axi playbook <id>` and `lavish-axi design` for artifact guidance",
+  };
+}
+
 export function createHomeOutput({ bin, sessions, includeSessions = true, agent = "generic" }) {
   return {
     bin: collapseHomeDirectory(bin, os.homedir()),
     description: DESCRIPTION,
     ...(includeSessions
       ? {
-          sessions: sessions.map((session) => ({
-            file: session.file,
-            status: session.status,
-            url: session.url,
-            pending_prompts: session.pending_prompts || 0,
-            listener: session.listener || "none",
-          })),
+          sessions: homeSessionRows(sessions),
         }
       : {}),
     visual_guidance: [

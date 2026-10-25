@@ -95,6 +95,8 @@ This installs a `SessionStart` hook for **Claude Code**, **Codex**, **OpenCode**
 Unlike the skill, the hook also shows your live open sessions, so a fresh agent session can resume an in-flight review.
 **Restart your agent session after running this** so the new hook takes effect.
 
+For a quieter, manually configured hook, use `lavish-axi --brief`: it keeps the full current sessions block (including an explicit empty list) and one pointer to `lavish-axi playbook <id>` and `lavish-axi design`, without the reference payload. It does not filter by working directory or cap the list. If sessions cannot be listed, it exits nonzero and emits an empty sessions block plus an explicit `SESSION_LIST_ERROR` and the guidance pointer; that error is not a successful empty list. Bare `lavish-axi` and the hooks installed by `setup hooks` keep their existing full output.
+
 ### Agent Plugin
 
 Lavish also ships as an [Agent Plugin](https://agent-plugins.org) - the vendor-neutral packaging standard for skills and MCP servers - so clients that speak that format can load it directly.
