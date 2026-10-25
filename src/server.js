@@ -2510,7 +2510,9 @@ export function createSessionIndexHtml(sessions, { listeners = new Map(), home =
       const when = time ? `${new Date(time).toISOString().slice(0, 16).replace("T", " ")} UTC` : "unknown";
       const { head, tail } = displayPathParts(session.file, home);
       const listener = listeners.get(session.key) || "none";
-      return `<li><a class="row" href="${escapeHtml(session.url || "")}"><time class="when" datetime="${escapeHtml(session.updated_at || "")}">${escapeHtml(when)}</time><span class="file"><span class="dir">${escapeHtml(head)}</span>${escapeHtml(tail)}</span><span class="meta">${escapeHtml(session.status || "open")}</span><span class="meta">${session.pending_prompts || 0} pending</span><span class="meta">listener: ${escapeHtml(listener)}</span></a></li>`;
+      // Relative to this server, so the row keeps working when the stored session.url is stale
+      // (for example a loopback link from before Tailscale bound).
+      return `<li><a class="row" href="${escapeHtml(`/session/${session.key}`)}"><time class="when" datetime="${escapeHtml(session.updated_at || "")}">${escapeHtml(when)}</time><span class="file"><span class="dir">${escapeHtml(head)}</span>${escapeHtml(tail)}</span><span class="meta">${escapeHtml(session.status || "open")}</span><span class="meta">${session.pending_prompts || 0} pending</span><span class="meta">listener: ${escapeHtml(listener)}</span></a></li>`;
     })
     .join("");
   const body = ordered.length

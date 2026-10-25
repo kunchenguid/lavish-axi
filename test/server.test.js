@@ -6877,11 +6877,7 @@ test("session index lists sessions most-recent-first with dates, status and list
   });
 
   const hrefs = [...html.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(hrefs, [
-    "http://127.0.0.1:4387/session/new",
-    "http://127.0.0.1:4387/session/ended",
-    "http://127.0.0.1:4387/session/old",
-  ]);
+  assert.deepEqual(hrefs, ["/session/new", "/session/ended", "/session/old"]);
   assert.match(html, /2026-10-24 17:30 UTC/);
   assert.match(html, /~\/work\//);
   assert.match(html, /&lt;new&gt;\.html/);
