@@ -1204,7 +1204,7 @@ export function createArtifactSdk(
       style = document.createElement("style");
       style.id = "lavish-cursor-style";
       style.textContent =
-        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']):not(a[href])),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']):not(a[href])) *{cursor:pointer!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']) a[href]),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']) a[href]) *{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
+        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}a[href],a[href] *{cursor:pointer!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem'])),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem'])) *{cursor:pointer!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']),a[href] input:not([type='button'],[type='submit'],[type='reset'],[type='checkbox'],[type='radio'],[type='file'],[type='color'],[type='range'],[type='image']),a[href] textarea,a[href][contenteditable]:not([contenteditable='false']),a[href] [contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
       document.head.appendChild(style);
     }
     if (!annotationMode && style) style.remove();
@@ -2266,6 +2266,90 @@ export function createArtifactSdk(
     return /Mac|iP(hone|ad|od)/.test(navigator.platform);
   }
 
+  function stripFragment(url) {
+    const index = url.indexOf("#");
+    return index < 0 ? url : url.slice(0, index);
+  }
+
+  // The resolved absolute URL of a link. The attribute is the one source every anchor has: an
+  // SVG anchor exposes an animated string instead of a URL, and the browser resolves the
+  // attribute against the document's base URI.
+  function linkHref(anchor) {
+    const raw = anchor.getAttribute("href");
+    if (typeof raw !== "string") return "";
+    try {
+      return new URL(raw, document.baseURI).href;
+    } catch {
+      return raw;
+    }
+  }
+
+  // A same-document anchor is a scroll inside the artifact, not a navigation away from it.
+  // The browser decides "same document" against the document's own URL, not against its base
+  // URI: an artifact that declares a <base href> resolves a fragment href against that base,
+  // so the browser leaves the document and the link needs the swap. Only a fragment scrolls:
+  // an address without one that is the document's own URL is a reload, which replaces the
+  // artifact frame and takes the review with it.
+  function isSameDocumentLink(anchor) {
+    const href = linkHref(anchor);
+    const documentUrl = String(document.URL || document.baseURI || "");
+    if (!href || !documentUrl) return false;
+    if (!href.includes("#")) return false;
+    return stripFragment(href) === stripFragment(documentUrl);
+  }
+
+  // The browser resolves a link's target when it performs the click's default action, which
+  // happens after the event finishes dispatching. Swapping the target for the click and putting
+  // it back afterwards therefore keeps the artifact's own click handlers in charge: a handler
+  // that calls preventDefault still wins and no second tab opens, while a link nobody handles
+  // opens in a new tab and the artifact frame keeps the review instead of navigating away.
+  function openLinkInNewTab(anchor) {
+    const previous = anchor.getAttribute("target");
+    anchor.setAttribute("target", "_blank");
+    setTimeout(() => {
+      if (previous === null) anchor.removeAttribute("target");
+      else anchor.setAttribute("target", previous);
+    }, 0);
+  }
+
+  // An author target of _self, _parent or _top - or an empty one - would navigate the artifact
+  // frame, or the review page, away. A named window or _blank is the author's own choice and
+  // keeps the browser's behavior.
+  function hasHonoredTarget(anchor) {
+    const target = anchor.getAttribute("target");
+    if (target === null) return false;
+    const value = target.trim().toLowerCase();
+    return value !== "" && value !== "_self" && value !== "_parent" && value !== "_top";
+  }
+
+  // A scheme the browser hands to an OS app - mailto:, tel: and sms: - is not a
+  // navigation of this frame, so the browser's own behavior stays. Every other scheme -
+  // http(s), data:, blob: - navigates the artifact frame unless the target is swapped.
+  const EXTERNAL_LINK_SCHEMES = new Set(["mailto", "tel", "sms"]);
+
+  function linkScheme(anchor) {
+    const href = linkHref(anchor);
+    if (!href) return "";
+    try {
+      return new URL(href).protocol.replace(/:$/, "").toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  // Follows a link the way a browser does: a same-document anchor scrolls in place, a link to
+  // another document opens beside the review - whatever its scheme, so a data: or blob: link
+  // cannot navigate the artifact frame away either - and a link the author marked for a new tab -
+  // or a scheme the browser hands to another app, such as mailto: - keeps the browser's behavior.
+  // A download link is swapped too: a real download ignores the target, while a link the browser
+  // turns into a navigation opens beside the review.
+  function followLink(anchor) {
+    if (hasHonoredTarget(anchor)) return;
+    if (isSameDocumentLink(anchor)) return;
+    if (EXTERNAL_LINK_SCHEMES.has(linkScheme(anchor))) return;
+    openLinkInNewTab(anchor);
+  }
+
   function showAnnotationCard(target, options = {}) {
     cancelPendingDraftRestore();
     const root = ensureShadow();
@@ -2574,9 +2658,13 @@ export function createArtifactSdk(
         return;
       const target = annotationTargetEl(event.target);
       if (target === selected) return;
+      // The outline is the promise that a click annotates this element. A plain click on a link
+      // follows it instead, so a link must not wear that promise; the pointer cursor already
+      // marks it as a link, and Alt+click is the gesture that annotates it.
+      const isLink = !!target?.closest?.("a[href]");
       if (hovered && hovered !== selected) clearHighlight(hovered);
-      hovered = target;
-      highlightElement(hovered);
+      hovered = isLink ? null : target;
+      if (hovered) highlightElement(hovered);
     },
     true,
   );
@@ -2615,21 +2703,41 @@ export function createArtifactSdk(
   document.addEventListener(
     "click",
     (event) => {
-      if (
-        !annotationMode ||
-        isLavishUi(event.target) ||
-        isLavishAction(event.target) ||
-        isInteractiveControl(event.target)
-      )
-        return;
-      // Cmd-click (macOS) or Ctrl-click (elsewhere) on a link follows it (the browser opens a new
-      // tab) instead of annotating, so links stay usable without leaving annotate mode. Meta off
-      // macOS is the Super/Windows key, not a follow gesture, so it annotates like a plain click.
-      // Checked before the queued-note branch so the modifier always wins, and it clears a pending
-      // text-selection swallow so the next plain click is not eaten.
+      if (!annotationMode) return;
+      // A click on a link is a navigation, not an annotation, in annotate mode too: the reviewer
+      // clicked a link, so the link should do what a link does. Alt+click (Option+click on macOS)
+      // is the deliberate "annotate this link" gesture - the one modifier a browser does not
+      // already spend on a link - and it falls through to the ordinary annotation path below.
+      const link = /** @type {Element} */ (event.target)?.closest?.("a[href]") || null;
+      const linkClick = !!link && !event.altKey;
+      // Cmd-click (macOS) or Ctrl-click (elsewhere) is the browser's own "open in a new tab"
+      // gesture, so it is left alone: it is never swallowed, and it clears a pending
+      // text-selection swallow, so the next plain click is not eaten.
       const followModifier = isApplePlatform() ? event.metaKey : event.ctrlKey;
-      if (followModifier && /** @type {Element} */ (event.target)?.closest?.("a[href]")) {
+      if (link && followModifier) {
         ignoreNextClick = false;
+        return;
+      }
+      // A link inside a native control, an editable region, or a Lavish action is never
+      // annotated, so its click reaches the browser - an Alt+click too, where the browser would
+      // otherwise take the linked file for a download.
+      const browserHandlesTheClick = isLavishAction(event.target) || isInteractiveControl(event.target);
+      // The artifact frame is the review, so a link click may never navigate it away - not even
+      // from inside a control the SDK leaves to the browser, and not even on an Alt+click. The
+      // swap happens before the guards below, so the control or the Lavish action still gets its
+      // click and the link there is not annotated.
+      if (link && (linkClick || browserHandlesTheClick)) followLink(link);
+      if (isLavishUi(event.target) || browserHandlesTheClick) return;
+      // The link branch runs before the queued-note branch, so following a link never re-opens a
+      // note.
+      if (linkClick) {
+        // A click that ends a text selection belongs to the selection, not to the link: the
+        // selection annotates the text and the link is not followed.
+        if (ignoreNextClick) {
+          ignoreNextClick = false;
+          event.preventDefault();
+          event.stopPropagation();
+        }
         return;
       }
       event.preventDefault();
@@ -2640,7 +2748,11 @@ export function createArtifactSdk(
       }
       // The clicked element's own selector, plus its diagram node's, so any click inside a node
       // finds the node's note again. A table cell's note stays on the exact element clicked.
-      const clicked = queuedAnchorSelectors.size ? context(event.target) : null;
+      // An Alt+click on a link annotates the link itself, not the element inside it that
+      // happened to be clicked, because the hover rule already treats every element inside a
+      // link as part of it.
+      const annotated = link || event.target;
+      const clicked = queuedAnchorSelectors.size ? context(annotated) : null;
       const node = clicked?.target?.type === "mermaid-node" ? clicked.target.selector : "";
       const selector = [clicked?.selector, node].find((candidate) => candidate && queuedAnchorSelectors.has(candidate));
       if (selector) {
@@ -2648,7 +2760,7 @@ export function createArtifactSdk(
         postArtifactMessage("lavish:editQueuedAnchor", { selector });
         return;
       }
-      showAnnotationCard(event.target);
+      showAnnotationCard(annotated);
     },
     true,
   );

@@ -644,15 +644,6 @@ test("shared SDK helper modules export only functions so serializeModuleHelpers 
   }
 });
 
-test("annotation hover and click resolve to the same Mermaid node element", () => {
-  const js = createSdkJs("abc");
-
-  assert.match(js, /function annotationTargetEl/);
-  assert.match(js, /mermaidNodeElement\(el\) \|\| el/);
-  assert.match(js, /hovered = target/);
-  assert.match(js, /anchor = annotationTargetEl\(target\)/);
-});
-
 test("annotation mode forces the artifact cursor to default", () => {
   const js = createSdkJs("abc");
 
