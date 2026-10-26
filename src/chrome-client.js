@@ -1387,11 +1387,34 @@ function noteAgentReply(text) {
   pulseSheetDock();
 }
 
+// The artifact is opaque-origin: relay the visible frame intersection rather than
+// asking its visualViewport to report a top-level keyboard it cannot see.
+function syncAnnotationViewport() {
+  const rect = frame.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const top = viewport ? viewport.offsetTop : 0;
+  const mobile = isMobileSheet();
+  // Reserve the dock, including safe-area padding. Its top can still reflect the
+  // previous --vv-height during keyboard resize; its height is independent of that.
+  const dockHeight = mobile ? panelHead.getBoundingClientRect().height : 0;
+  const bottom = top + (viewport ? viewport.height : window.innerHeight) - dockHeight;
+  if (!Number.isFinite(bottom) || !Number.isFinite(rect.height)) return;
+  const visibleTop = Math.max(rect.top, top);
+  postToFrame({
+    type: "lavish:annotationViewport",
+    artifact_load_token: artifactLoadToken,
+    mobile,
+    top: Math.max(0, Math.min(rect.height, visibleTop - rect.top)),
+    height: Math.max(0, Math.min(rect.bottom, bottom) - visibleTop),
+  });
+}
+
 // The phone keyboard shrinks the visual viewport without touching the layout viewport on iOS, so
 // the sheet reads its height and offset from here; chrome.css consumes these only under the phone
 // breakpoint. Android reports the same numbers through the layout viewport thanks to the
 // `interactive-widget=resizes-content` viewport meta, which makes this a no-op there.
 function syncVisualViewport() {
+  syncAnnotationViewport();
   const root = document.documentElement;
   if (!root || !root.style || typeof root.style.setProperty !== "function") return;
   const viewport = window.visualViewport;
@@ -1466,6 +1489,7 @@ if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
       }
     }
     applySheetState();
+    syncAnnotationViewport();
   });
 }
 if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
@@ -1473,6 +1497,10 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
   window.visualViewport.addEventListener("scroll", syncVisualViewport);
 }
 window.addEventListener("resize", syncVisualViewport);
+window.addEventListener("scroll", syncAnnotationViewport);
+// Grid/breakpoint changes can move or resize the frame independently of a
+// visual-viewport event. Observe only the frame, never the opaque document.
+if (typeof window.ResizeObserver === "function") new window.ResizeObserver(syncAnnotationViewport).observe(frame);
 syncVisualViewport();
 
 function scrollElementIntoView(el) {
@@ -4610,6 +4638,7 @@ document.addEventListener(
   true,
 );
 frame.addEventListener("load", () => {
+  syncAnnotationViewport();
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.

@@ -87,6 +87,7 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  visualViewport = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -317,6 +318,8 @@ async function createChromeHarness({
 
   element("lavish-session").textContent = JSON.stringify(sessionData);
   const frame = element("artifact");
+  frame.getBoundingClientRect = () => ({ top: 60, bottom: 800, height: 740 });
+  element("panelHead").getBoundingClientRect = () => ({ top: 740, bottom: 800, height: 60 });
   frame.dataset.artifactSrc = artifactSrc;
   Object.defineProperty(frame, "src", {
     get() {
@@ -434,6 +437,7 @@ async function createChromeHarness({
       }
     },
     document: {
+      documentElement: { style: { setProperty() {} } },
       body: element("body"),
       get activeElement() {
         return activeElement;
@@ -469,6 +473,7 @@ async function createChromeHarness({
       },
     },
     window: {
+      visualViewport,
       clearTimeout: fakeClearTimeout,
       setTimeout: fakeSetTimeout,
       addEventListener(type, handler) {
@@ -507,6 +512,9 @@ async function createChromeHarness({
     frame,
     postedToFrame,
     postedToWhiteboard,
+    dispatchWindow(type) {
+      for (const handler of windowListeners.get(type) || []) handler({});
+    },
     clipboardWrites,
     createInlineWhiteboard() {
       const posted = [];
@@ -659,6 +667,51 @@ async function createChromeHarness({
     },
   };
 }
+
+test("chrome relays the top-level visible frame intersection on keyboard resize and scroll", async () => {
+  const listeners = new Map();
+  const viewport = {
+    height: 760,
+    offsetTop: 0,
+    addEventListener(type, handler) {
+      listeners.set(type, handler);
+    },
+  };
+  const chrome = await createChromeHarness({ mobile: true, visualViewport: viewport });
+  const latest = () => chrome.postedToFrame.filter((msg) => msg.type === "lavish:annotationViewport").at(-1);
+  assert.ok(latest(), "frame load relays geometry before restoring any draft");
+  assert.equal(latest().top, 0);
+  assert.equal(latest().height, 640, "the visible frame ends above the collapsed dock");
+  assert.equal(latest().mobile, true);
+  assert.equal(latest().artifact_load_token, chrome.artifactLoadToken());
+  viewport.height = 300;
+  viewport.offsetTop = 100;
+  listeners.get("resize")();
+  assert.equal(latest().top, 40);
+  assert.equal(latest().height, 240);
+  viewport.offsetTop = 140;
+  listeners.get("scroll")();
+  assert.equal(latest().top, 80);
+  chrome.frame.getBoundingClientRect = () => ({ top: 180, bottom: 800, height: 620 });
+  chrome.dispatchWindow("scroll");
+  assert.equal(latest().top, 0);
+  assert.equal(latest().height, 200);
+
+  // During a keyboard resize the dock's top may still reflect the old CSS vv-height.
+  // Its measured height (including safe-area padding) remains usable immediately.
+  viewport.height = 430;
+  viewport.offsetTop = 0;
+  chrome.frame.getBoundingClientRect = () => ({ top: 56, bottom: 784, height: 728 });
+  chrome.element("panelHead").getBoundingClientRect = () => ({ top: 784, bottom: 844, height: 60 });
+  listeners.get("resize")();
+  assert.equal(latest().height, 314, "keyboard bottom 430 minus dock 60 minus frame top 56");
+  chrome.element("panelHead").getBoundingClientRect = () => ({ top: 764, bottom: 844, height: 80 });
+  listeners.get("resize")();
+  assert.equal(latest().height, 294, "safe-area padding is included in the dock reservation");
+  chrome.setMobile(false);
+  assert.equal(latest().mobile, false, "desktop is not inferred from the artifact frame width");
+  assert.equal(latest().height, 374, "desktop reserves no conversation dock");
+});
 
 test("chrome client carries live events over a WebSocket outside the HTTP connection pool", async () => {
   const chrome = await createChromeHarness();

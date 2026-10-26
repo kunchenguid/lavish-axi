@@ -115,6 +115,7 @@ function bootSdk({
   platform = "Linux",
 } = {}) {
   const posted = [];
+  const resizeObservers = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
   // re-query is a real timer, and asserting on it means running it rather than assuming it.
@@ -145,8 +146,15 @@ function bootSdk({
       disconnect() {}
     },
     ResizeObserver: class ResizeObserver {
+      constructor(callback) {
+        this.callback = callback;
+        this.disconnected = false;
+        resizeObservers.push(this);
+      }
       observe() {}
-      disconnect() {}
+      disconnect() {
+        this.disconnected = true;
+      }
     },
     URL: {
       createObjectURL() {
@@ -178,7 +186,10 @@ function bootSdk({
   const windowListeners = [];
   sandbox.window = {
     addEventListener: (type, handler) => windowListeners.push({ type, handler }),
-    removeEventListener() {},
+    removeEventListener(type, handler) {
+      const index = windowListeners.findIndex((entry) => entry.type === type && entry.handler === handler);
+      if (index >= 0) windowListeners.splice(index, 1);
+    },
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
@@ -196,6 +207,14 @@ function bootSdk({
   return {
     posted,
     body,
+    resizeObservers,
+    window: sandbox.window,
+    dispatchWindow(type) {
+      for (const entry of [...windowListeners]) if (entry.type === type) entry.handler({});
+    },
+    listenerCount(type) {
+      return windowListeners.filter((entry) => entry.type === type).length;
+    },
     api: sandbox.window.lavish,
     // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
     click(target, modifiers = {}) {
@@ -262,10 +281,10 @@ function bootSdk({
       assert.fail("the SDK timer queue did not settle");
     },
     // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
-    sendChromeMessage(data) {
+    sendChromeMessage(data, source = sandbox.parent) {
       const listeners = windowListeners.filter((entry) => entry.type === "message");
       assert.ok(listeners.length > 0, "the SDK registers a window message listener");
-      for (const listener of listeners) listener.handler({ source: sandbox.parent, data });
+      for (const listener of listeners) listener.handler({ source, data });
     },
     cards() {
       return documentElement.children
@@ -285,6 +304,82 @@ function bootSdk({
     },
   };
 }
+
+test("phone annotations stay at the visible top through keyboard resize and pan, and clean up", () => {
+  const sdk = bootSdk();
+  sdk.window.innerWidth = 390;
+  sdk.window.innerHeight = 760;
+  const target = appendTo(sdk.body, cell("p", "Low anchor"));
+  target.getBoundingClientRect = () => ({ left: 30, top: 600, right: 130, bottom: 630, width: 100, height: 30 });
+  const baseline = sdk.listenerCount("resize");
+  const viewport = {
+    type: "lavish:annotationViewport",
+    artifact_load_token: "load-token",
+    mobile: true,
+    top: 0,
+    height: 760,
+  };
+  sdk.sendChromeMessage(viewport);
+  sdk.click(target);
+  const card = sdk.card();
+  assert.equal(card.style.top, "12px", "phone placement ignores the low anchor");
+  assert.equal(card.style.maxHeight, "736px");
+  assert.equal(card.style.overflowY, "auto");
+  card.querySelector("textarea").value = "Keep my draft";
+
+  // The opaque iframe still reports 760px; only the chrome sees the keyboard and pan.
+  sdk.sendChromeMessage({ ...viewport, top: 80, height: 240 });
+  assert.equal(card.style.top, "92px");
+  assert.equal(card.style.maxHeight, "216px", "oversized cards scroll within the visible frame");
+  sdk.sendChromeMessage({ ...viewport, top: 120, height: 200 });
+  assert.equal(card.style.top, "132px");
+  assert.equal(card.style.maxHeight, "176px");
+  sdk.sendChromeMessage({ ...viewport, artifact_load_token: "old-load", top: 0 });
+  sdk.sendChromeMessage({ ...viewport, height: NaN });
+  sdk.sendChromeMessage({ ...viewport, top: 0 }, { postMessage: () => 0 });
+  assert.equal(card.style.top, "132px", "stale and malformed geometry is ignored");
+  assert.equal(card.querySelector("textarea").value, "Keep my draft");
+
+  const cardObserver = sdk.resizeObservers.at(-1);
+  cardObserver.callback();
+  assert.equal(card.style.top, "132px", "card growth retains the visible top");
+  sdk.queue("Queue still works");
+  assert.equal(cardObserver.disconnected, true, "closing disconnects the card size observer");
+  assert.equal(sdk.posted.at(-1).prompt.prompt, "Queue still works");
+  assert.equal(sdk.listenerCount("resize"), baseline, "closing removes card layout listeners");
+  sdk.sendChromeMessage({ ...viewport, top: 0, height: 760 });
+  sdk.dispatchWindow("resize");
+  assert.equal(card.style.top, "132px", "closed cards are no longer positioned");
+});
+
+test("a narrow desktop frame keeps anchor placement until the chrome reports phone mode", () => {
+  const sdk = bootSdk();
+  sdk.window.innerWidth = 390;
+  sdk.window.innerHeight = 220;
+  sdk.click(appendTo(sdk.body, cell("p", "Anchor")));
+  const card = sdk.card();
+  assert.equal(card.style.left, "12px");
+  assert.equal(card.style.top, "48px", "a narrow frame alone is not proof of a phone");
+  assert.equal(card.style.maxHeight, "");
+  assert.equal(card.style.overflowY, "");
+  sdk.dispatchWindow("resize");
+  assert.equal(card.style.top, "48px");
+  const viewport = {
+    type: "lavish:annotationViewport",
+    artifact_load_token: "load-token",
+    mobile: true,
+    top: 100,
+    height: 200,
+  };
+  sdk.sendChromeMessage(viewport);
+  assert.equal(card.style.top, "112px");
+  assert.equal(card.style.maxHeight, "176px");
+  assert.equal(card.style.overflowY, "auto");
+  sdk.sendChromeMessage({ ...viewport, mobile: false });
+  assert.equal(card.style.top, "48px", "chrome desktop mode keeps anchor placement");
+  assert.equal(card.style.maxHeight, "");
+  assert.equal(card.style.overflowY, "");
+});
 
 for (const { label, attributes, enabled } of [
   { label: "default", attributes: {}, enabled: true },

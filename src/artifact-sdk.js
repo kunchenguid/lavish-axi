@@ -519,6 +519,9 @@ export function createArtifactSdk(
   // The controller for the currently open card, so upload results routed from the
   // chrome reach the right chips. Only one card is ever open at a time.
   let activeAttachments = null;
+  let annotationViewport = null;
+  let positionActiveCard = null;
+  let cleanUpCardLayout = null;
 
   // A clean, self-contained close glyph: the SVG path is inlined directly (no
   // <use>/sprite/symbol/CSS-mask reference), so it paints inside the sandboxed
@@ -2243,6 +2246,9 @@ export function createArtifactSdk(
   function closeCard() {
     const hadCard = activeCardContext !== null;
     activeCardContext = null;
+    cleanUpCardLayout?.();
+    cleanUpCardLayout = null;
+    positionActiveCard = null;
     if (activeAttachments) {
       activeAttachments.destroy();
       activeAttachments = null;
@@ -2330,16 +2336,32 @@ export function createArtifactSdk(
       '</div><div class="lavish-row"><button class="lavish-cancel" type="button">Cancel</button><button class="lavish-send" type="button">Queue</button></div>';
     root.appendChild(card);
 
-    // Clamp the card fully inside the viewport. Called again whenever its height
-    // changes (attachment chip rows are added/removed) so a grown card never pushes
-    // its Queue/Cancel buttons off the bottom of the frame (W3). The anchor `rect` is
-    // captured once; only the card's own measured size varies between calls.
+    // The opaque iframe cannot see the top-level keyboard viewport. Chrome relays
+    // its intersection with this frame; cards keep desktop placement until it arrives.
+    // Desktop retains its anchored placement. Phone cards start at the visible top
+    // and scroll internally when attachments or the keyboard leave too little room.
     function positionCard() {
+      const viewport = annotationViewport;
+      const mobile = viewport?.mobile === true;
+      card.style.maxHeight = mobile ? Math.max(0, viewport.height - 24) + "px" : "";
+      card.style.overflowY = mobile ? "auto" : "";
       const left = Math.min(Math.max(12, rect.left), window.innerWidth - card.offsetWidth - 12);
-      const top = Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - card.offsetHeight - 12);
+      const top = mobile
+        ? viewport.top + 12
+        : Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - card.offsetHeight - 12);
       card.style.left = left + "px";
       card.style.top = top + "px";
     }
+    positionActiveCard = positionCard;
+    window.addEventListener("resize", positionCard);
+    window.addEventListener("scroll", positionCard);
+    const cardObserver = new ResizeObserver(positionCard);
+    cardObserver.observe(card);
+    cleanUpCardLayout = () => {
+      window.removeEventListener("resize", positionCard);
+      window.removeEventListener("scroll", positionCard);
+      cardObserver.disconnect();
+    };
     positionCard();
 
     const textarea = /** @type {HTMLTextAreaElement | null} */ (card.querySelector("textarea"));
@@ -2489,6 +2511,19 @@ export function createArtifactSdk(
     // without the source check the artifact could post to itself and drive the SDK.
     if (event.source !== parent) return;
     const msg = event.data || {};
+    if (msg.type === "lavish:annotationViewport") {
+      if (
+        msg.artifact_load_token !== artifactLoadToken ||
+        typeof msg.mobile !== "boolean" ||
+        !Number.isFinite(msg.top) ||
+        msg.top < 0 ||
+        !Number.isFinite(msg.height) ||
+        msg.height < 0
+      )
+        return;
+      annotationViewport = { mobile: msg.mobile, top: msg.top, height: msg.height };
+      positionActiveCard?.();
+    }
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
     if (msg.type === "lavish:attachmentResult") {
       if (!isTrustedAttachmentResult(event, { parentWindow: parent, nonce: ATTACHMENT_NONCE })) return;
