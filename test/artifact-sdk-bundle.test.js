@@ -1070,24 +1070,56 @@ test("a queued note follows its element when an identical branch is inserted bef
   assert.equal(message.selector, queued.prompt.selector);
 });
 
-// Once the queued element is gone (a reload or re-render replaced it), the note falls back to its
-// selector, so the element now standing in its place reopens it.
-test("a queued note falls back to its selector once its element is replaced", () => {
+// After a reload the frame has no record of which element a note came from, so the note falls
+// back to its selector and the element that selector names reopens it.
+test("after a reload a queued note reopens on the element its selector names", () => {
+  const before = bootSdk({ structuralQueries: true });
+  before.click(appendTo(before.body, cell("p", "Just prose")));
+  const queued = before.queue("Reword this");
+  const sdk = bootSdk({ structuralQueries: true });
+  const reloaded = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(reloaded);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+});
+
+// #448 Greptile: once a queued note's element is removed from the page, a different element that
+// now matches its stored selector must not reopen that note; it opens a fresh card instead.
+test("a queued note whose element was removed does not reopen on the element now matching its selector", () => {
   const sdk = bootSdk({ structuralQueries: true });
   const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
   sdk.click(paragraph);
   const queued = sdk.queue("Reword this");
   paragraph.isConnected = false;
   sdk.body.children.splice(sdk.body.children.indexOf(paragraph), 1);
-  const replacement = appendTo(sdk.body, cell("p", "Just prose"));
+  const other = appendTo(sdk.body, cell("p", "Other text"));
   sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
   const cardsBefore = sdk.cards().length;
 
-  sdk.click(replacement);
+  sdk.click(other);
 
-  assert.equal(sdk.cards().length, cardsBefore);
-  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
-  assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor", "another element reopened the note");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+// After a reload the page has no record of which element a note came from, so its selector only
+// reopens it when that selector names exactly one element, the one clicked.
+test("after a reload a queued selector reopens its note only when it names exactly the clicked element", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const first = appendTo(sdk.body, cell("p", "Just prose"));
+  appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: ["body > p"] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(first);
+
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor", "an ambiguous selector reopened the note");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
 });
 
 // #448: deep repeated structure can climb past 300 chars. The queued prompt keeps the whole

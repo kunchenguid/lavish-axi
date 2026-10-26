@@ -835,19 +835,23 @@ export function createArtifactSdk(
     if (selectorText && el && typeof WeakRef === "function") queuedAnchorElements.set(selectorText, new WeakRef(el));
   }
 
-  // Which queued note a click on `el` reopens. A note whose element is still in the page matches
-  // only that element; one whose element is gone (reload, re-render) falls back to its selector:
-  // an identical string, or a selector whose first match in the page is `el`.
+  // Which queued note a click on `el` reopens. A note queued in this page matches only the element
+  // it was queued from, and stops matching anything once that element leaves the page: whatever
+  // now matches its selector is a different element (#448). A note this page never saw queued
+  // (the frame reloaded) falls back to its selector: an identical string, or a selector whose
+  // only match in the page is `el`.
   function queuedAnchorFor(el, candidates) {
     for (const candidate of queuedAnchorSelectors) {
-      const recorded = queuedAnchorElements.get(candidate)?.deref();
-      if (recorded && recorded.isConnected !== false) {
-        if (recorded === el) return candidate;
+      const ref = queuedAnchorElements.get(candidate);
+      if (ref) {
+        const recorded = ref.deref();
+        if (recorded && recorded.isConnected !== false && recorded === el) return candidate;
         continue;
       }
       if (candidates.includes(candidate)) return candidate;
       try {
-        if (document.querySelectorAll(candidate)[0] === el) return candidate;
+        const matches = document.querySelectorAll(candidate);
+        if (matches.length === 1 && matches[0] === el) return candidate;
       } catch {
         // A stored selector the browser cannot parse simply matches nothing.
       }
