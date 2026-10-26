@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.94](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.93...lavish-axi-v0.1.94) (2026-10-26)
+
+
+### Features
+
+* **chrome:** collapsible conversation sidebar on desktop ([#462](https://github.com/kunchenguid/lavish-axi/issues/462), port of [#455](https://github.com/kunchenguid/lavish-axi/issues/455)) ([94b9493](https://github.com/kunchenguid/lavish-axi/commit/94b949350c1a26893834527a370f069f97997be0))
+* **chrome:** let the artifact update the tab title and icon live ([#458](https://github.com/kunchenguid/lavish-axi/issues/458)) ([0e2d3de](https://github.com/kunchenguid/lavish-axi/commit/0e2d3dec750fe3b6d1d8a8f31e996e0dc2b58220))
+
 ## [0.1.93](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.92...lavish-axi-v0.1.93) (2026-10-24)
 
 
