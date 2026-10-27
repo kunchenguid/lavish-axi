@@ -1163,13 +1163,17 @@ function renderListenerStatus() {
   postListenerStatus();
 }
 
-function setAgentPresence(state) {
-  agentPresence = state === "listening" || state === "external" || state === "working" ? state : "waiting";
+function refreshPresenceViews() {
   renderListenerStatus();
-  updateSendState();
   renderSheetSummary();
   refreshUnseenReceipts();
   syncWorkingBubble();
+}
+
+function setAgentPresence(state) {
+  agentPresence = state === "listening" || state === "external" || state === "working" ? state : "waiting";
+  updateSendState();
+  refreshPresenceViews();
 }
 
 function syncWorkingBubble() {
@@ -1184,9 +1188,9 @@ function syncWorkingBubble() {
   if (!workingBubble) {
     workingBubble = document.createElement("div");
     workingBubble.className = "bubble agent agent-working";
+    workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
     chatLog.appendChild(workingBubble);
   }
-  workingBubble.innerHTML = '<span class="spinner"></span><span>Working...</span>';
   scrollElementIntoView(workingBubble);
 }
 
@@ -4798,10 +4802,7 @@ function connectLiveEvents() {
   socket.addEventListener("open", () => {
     if (socket !== activeEventSocket) return;
     listenerConnection = "checking";
-    renderListenerStatus();
-    renderSheetSummary();
-    refreshUnseenReceipts();
-    syncWorkingBubble();
+    refreshPresenceViews();
     eventReconnectDelayMs = 500;
     liveEventFailures = 0;
     unreachableDismissed = false;
@@ -4824,11 +4825,7 @@ function connectLiveEvents() {
     if (socket !== activeEventSocket) return;
     activeEventSocket = null;
     listenerConnection = "disconnected";
-    renderListenerStatus();
-    renderSheetSummary();
-    refreshUnseenReceipts();
-    syncWorkingBubble();
-    if (presenceBanner) presenceBanner.hidden = true;
+    refreshPresenceViews();
     liveEventFailures += 1;
     noteLiveEventsUnreachable();
     setTimeout(connectLiveEvents, eventReconnectDelayMs);
