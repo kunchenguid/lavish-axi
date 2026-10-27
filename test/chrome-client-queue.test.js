@@ -4393,6 +4393,32 @@ test("a superseded first load names itself on the layout gate instead of holding
   assert.equal(chrome.artifactBeginRequests.length, 1);
 });
 
+test("a superseded first load in the tab that holds its own queue says the notes are still here", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({
+    storage,
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, chromeLoadToken: "old-handoff", layoutGateEnabled: true },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+    storedQueue: [{ uid: "", prompt: "Keep my answer", selector: "h1", tag: "element", text: "Heading" }],
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+  assert.match(chrome.element("layoutGateTitle").textContent, /already open in another tab/);
+  assert.match(chrome.element("layoutGateCopy").textContent, /still in this tab/i);
+  assert.match(chrome.element("layoutGateCopy").textContent, /take over here to keep reviewing/i);
+  assert.doesNotMatch(chrome.element("layoutGateCopy").textContent, /switch back there/i);
+  assert.equal(chrome.element("layoutGateAction").textContent, "Take over here");
+  assert.equal(chrome.queued()[0].prompt, "Keep my answer");
+  assert.equal(chrome.reloadCount(), 0);
+  chrome.element("layoutGateAction").click();
+  assert.equal(chrome.reloadCount(), 1);
+  const takenOver = await createChromeHarness({ storage });
+  assert.equal(takenOver.queued()[0].prompt, "Keep my answer", "taking over in the same tab keeps its queue");
+});
+
 test("a superseded reload keeps the artifact already on screen and leaves the gate down", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",

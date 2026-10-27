@@ -3562,7 +3562,9 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
           if (!artifactLoadToken) {
             setLayoutGateFailure(
               "This review is already open in another tab.",
-              "Unsent answers and notes stay in the tab or window where you entered them; taking over does not transfer them. Switch back there to send them first, or take over here.",
+              queued.length
+                ? "Your unsent answers and notes are still in this tab and were not transferred. Take over here to keep reviewing and send them from here."
+                : "Unsent answers and notes stay in the tab or window where you entered them; taking over does not transfer them. Switch back there to send them first, or take over here.",
               "Take over here",
             );
           }
