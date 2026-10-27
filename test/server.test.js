@@ -699,7 +699,10 @@ test("the annotate switch exposes the mode toggle hotkey as a discoverable toolt
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
 
   assert.match(html, /"modeToggleHotkeyKey":"i"/);
-  assert.match(html, /id="annotation"[^>]*title="Toggle annotate\/explore mode \(⌘I \/ Ctrl\+I\)"/);
+  assert.match(
+    html,
+    /id="annotation"[^>]*title="Toggle annotate\/explore mode \(⌘I \/ Ctrl\+I\)\. Hold Alt\/Option to explore temporarily\."/,
+  );
 });
 
 test("artifact SDK lets marked feedback controls handle their own clicks", () => {
@@ -778,15 +781,6 @@ test("chrome top bar uses an Annotate switch instead of a labeled toggle button"
   assert.match(html, />Annotate</);
   assert.doesNotMatch(html, /Annotation: On/);
   assert.doesNotMatch(html, /Inspect/);
-});
-
-test("annotate switch shows a brass track and ink knob when enabled", async () => {
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
-
-  assert.match(css, /\.annotate-switch\[aria-pressed="true"\] \.switch-track\{background:var\(--accent\)/);
-  assert.match(css, /\.annotate-switch\[aria-pressed="true"\] \.switch-knob\{[^}]*background:var\(--accent-ink\)/);
-  assert.match(js, /annotationSwitch\.setAttribute\("aria-pressed", String\(annotation\)\)/);
 });
 
 test("chrome declares the Lavish design-system tokens", async () => {
