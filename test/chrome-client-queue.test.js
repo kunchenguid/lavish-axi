@@ -4301,6 +4301,51 @@ test("a load that asks for the artifact again gets the whole recovery backoff ag
   assert.match(String(chrome.element("layoutGateTitle").innerHTML), /Checking layout/);
 });
 
+test("empty Send names this tab's queue without importing another window's answers", async () => {
+  const firstStorage = new Map();
+  const secondStorage = new Map();
+  const postedBodies = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith("/prompts")) postedBodies.push(JSON.parse(init.body));
+    return { ok: true, json: async () => ({}) };
+  };
+  const first = await createChromeHarness({ storage: firstStorage, fetchImpl });
+  first.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Keep my answer", selector: "#answer", tag: "input", text: "Answer" },
+  });
+  const savedQueue = firstStorage.get("lavish-axi:queued:abc");
+  const second = await createChromeHarness({
+    storage: secondStorage,
+    fetchImpl,
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, chromeLoadToken: "old-handoff" },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+  });
+
+  second.element("send").click();
+  await flushPromises();
+  assert.equal(second.element("sendHint").hidden, false);
+  assert.match(second.element("sendHint").textContent, /nothing queued in this tab/i);
+  assert.match(second.element("sendHint").textContent, /switch back there to send/i);
+  assert.match(second.element("sendHint").textContent, /taking over does not transfer/i);
+  assert.equal(second.queued().length, 0);
+  assert.equal(first.queued().length, 1);
+  assert.equal(firstStorage.get("lavish-axi:queued:abc"), savedQueue);
+  assert.equal(second.reloadCount(), 0, "empty Send never takes over");
+
+  second.element("handoffTakeover").click();
+  assert.equal(second.reloadCount(), 1);
+  // Model the explicit reload in B with B's storage, not A's. The warning is mitigation,
+  // not draft migration; only reloading A with its own storage recovers its queued answer.
+  const takenOver = await createChromeHarness({ storage: secondStorage, fetchImpl });
+  const originalReloaded = await createChromeHarness({ storage: firstStorage, fetchImpl });
+  assert.equal(takenOver.queued().length, 0);
+  assert.equal(originalReloaded.queued()[0].prompt, "Keep my answer");
+  assert.equal(firstStorage.get("lavish-axi:queued:abc"), savedQueue);
+  assert.equal(postedBodies.length, 0, "neither empty Send nor takeover submits another window's answers");
+});
+
 test("a superseded reviewer is not retried in the background", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -4332,7 +4377,11 @@ test("a superseded first load names itself on the layout gate instead of holding
   assert.equal(chrome.element("artifact").src, "");
   assert.equal(chrome.element("layoutGateOverlay").hidden, false);
   assert.match(chrome.element("layoutGateTitle").textContent, /already open in another tab/);
+  assert.match(chrome.element("layoutGateCopy").textContent, /unsent answers and notes stay/i);
+  assert.match(chrome.element("layoutGateCopy").textContent, /taking over does not transfer/i);
+  assert.match(chrome.element("layoutGateCopy").textContent, /switch back there to send them first/i);
   assert.equal(chrome.element("layoutGateAction").textContent, "Take over here");
+  assert.equal(chrome.reloadCount(), 0, "the warning appears before any takeover");
   chrome.element("layoutGateAction").click();
   assert.equal(chrome.reloadCount(), 1);
   // Taking over is the user's action; nothing may retry in the background against the tab that
@@ -5912,7 +5961,7 @@ test("chrome send with an empty composer shows a visible hint", async () => {
   chrome.element("send").click();
 
   assert.equal(chrome.element("sendHint").hidden, false);
-  assert.equal(chrome.element("sendHint").textContent, "Write a message or annotate an element first.");
+  assert.match(chrome.element("sendHint").textContent, /nothing queued in this tab/i);
   assert.doesNotMatch(chrome.element("sendHint").textContent, /End session/);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.postedToFrame.length, 0);

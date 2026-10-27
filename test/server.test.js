@@ -1068,6 +1068,15 @@ test("chrome shows agent working state when a previous poll has released", async
   assert.match(js, /spinner/);
 });
 
+test("takeover banner explains draft ownership before offering takeover", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const banner = html.match(/id="handoffBanner"[^>]*>([\s\S]*?)<\/div>/)?.[1] || "";
+  assert.match(banner, /unsent answers and notes stay/i);
+  assert.match(banner, /taking over does not transfer/i);
+  assert.match(banner, /switch back there to send them first/i);
+  assert.match(banner, /id="handoffTakeover"[^>]*>Take over here/);
+});
+
 test("composer offers two always-visible top-level send actions", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();
@@ -1076,7 +1085,7 @@ test("composer offers two always-visible top-level send actions", async () => {
   assert.match(html, /class="button button-danger" id="sendAndEnd"[^<]*>.*Send &amp; End</);
   assert.match(
     html,
-    /<div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Send to Agent<\/button><\/div>/,
+    /<div class="send-hint" id="sendHint" hidden>Nothing queued in this tab\.[^<]*<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Send to Agent<\/button><\/div>/,
   );
   assert.doesNotMatch(html, /id="sendCaret"/);
   assert.doesNotMatch(html, /id="sendMenu"/);

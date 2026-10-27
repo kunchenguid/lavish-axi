@@ -793,7 +793,8 @@ function replaceExpiredThumbnail(event) {
 
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
-const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
+const DEFAULT_SEND_HINT =
+  "Nothing queued in this tab. Write a message or queue an annotation here. If you answered in another tab or window, switch back there to send. Taking over does not transfer unsent answers or notes.";
 const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
@@ -3562,7 +3563,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
           if (!artifactLoadToken) {
             setLayoutGateFailure(
               "This review is already open in another tab.",
-              "Lavish loads an artifact in one tab at a time. Take over here to move the review into this tab, or switch back to the tab that already has it.",
+              "Unsent answers and notes stay in the tab or window where you entered them; taking over does not transfer them. Switch back there to send them first, or take over here.",
               "Take over here",
             );
           }
