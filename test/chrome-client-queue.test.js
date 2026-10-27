@@ -17,6 +17,8 @@ const servedChromeIds = new Set(
   ),
 );
 
+const SERVED_TAB_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>";
+
 /** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
@@ -77,6 +79,10 @@ async function createChromeHarness({
   sessionData = defaultSessionData,
   artifactSrc = "",
   storage = new Map(),
+  // The viewer-wide localStorage, kept apart from the per-tab sessionStorage above. `localStorageThrows`
+  // models a browser that refuses storage access outright (private mode, blocked site data).
+  localStore = new Map(),
+  localStorageThrows = false,
   beginLoadResponses = [],
   handoffResponses = [],
   storedQueue = null,
@@ -99,6 +105,15 @@ async function createChromeHarness({
   const windowListeners = new Map();
   const documentListeners = new Map();
   const elements = new Map();
+  let tabIcon = {
+    attrs: { rel: "icon", href: SERVED_TAB_ICON },
+    getAttribute(name) {
+      return name in this.attrs ? this.attrs[name] : null;
+    },
+    replaceWith(next) {
+      tabIcon = next;
+    },
+  };
   const timers = new Map();
   const srcLoads = [];
   const beginRequests = [];
@@ -434,7 +449,11 @@ async function createChromeHarness({
       }
     },
     document: {
+      // The tab as the server served it: the artifact's title and its icon link.
+      title: "Plan \u00b7 Lavish",
       body: element("body"),
+      head: { appendChild: (link) => (tabIcon = link) },
+      querySelector: (selector) => (selector === 'link[rel~="icon"]' ? tabIcon : null),
       get activeElement() {
         return activeElement;
       },
@@ -451,6 +470,12 @@ async function createChromeHarness({
       createElement(tag) {
         const el = element(`${tag}-${elements.size}`);
         el.tagName = tag.toUpperCase();
+        el.attrs = {};
+        el.setAttribute = (name, value) => (el.attrs[name] = String(value));
+        el.getAttribute = (name) => (name in el.attrs ? el.attrs[name] : null);
+        el.replaceWith = (next) => {
+          if (tabIcon === el) tabIcon = next;
+        };
         return el;
       },
       execCommand() {
@@ -466,6 +491,20 @@ async function createChromeHarness({
       },
       removeItem(key) {
         storage.delete(key);
+      },
+    },
+    localStorage: {
+      getItem(key) {
+        if (localStorageThrows) throw new Error("SecurityError: storage disabled");
+        return localStore.has(key) ? localStore.get(key) : null;
+      },
+      setItem(key, value) {
+        if (localStorageThrows) throw new Error("SecurityError: storage disabled");
+        localStore.set(key, String(value));
+      },
+      removeItem(key) {
+        if (localStorageThrows) throw new Error("SecurityError: storage disabled");
+        localStore.delete(key);
       },
     },
     window: {
@@ -550,6 +589,12 @@ async function createChromeHarness({
     webSocketCount() {
       return webSockets.length;
     },
+    messageHandlers() {
+      return windowListeners.get("message") || [];
+    },
+    tab() {
+      return { title: context.document.title, icon: tabIcon ? tabIcon.getAttribute("href") : null };
+    },
     sendFrameMessage(data) {
       const handlers = windowListeners.get("message") || [];
       assert.ok(handlers.length > 0, "chrome-client registered a message handler");
@@ -619,6 +664,7 @@ async function createChromeHarness({
     },
     focusLog,
     storage,
+    localStore,
     warningRows() {
       return element("warningsList").children.filter((child) => String(child.className).startsWith("warning-row"));
     },
@@ -3935,6 +3981,45 @@ test("chrome client registers message listener before loading the artifact ifram
   assert.equal(chrome.srcLoads.length, 1);
   assert.match(chrome.srcLoads[0].src, /^\/artifact\/abc\/index\.html\?artifact_revision=\d+&artifact_load_token=/);
   assert.equal(chrome.srcLoads[0].hadMessageListener, true);
+});
+
+// The embedded load token in a freshly served chrome page may already be retired: the previous tab's
+// begin-load is what issued it. Navigating to it first commits the 409 "no longer current" page, and
+// Chrome can then drop the begin-load's navigation, leaving the review stuck on that page (#451).
+test("a fresh open navigates the artifact frame only to the begin-load's token", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 4, initialArtifactLoadToken: "retired-load" },
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.artifactBeginRequests.length, 1);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=1&artifact_load_token=harness-load-1"],
+  );
+});
+
+test("a superseded first load still shows the embedded artifact", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: {
+      ...defaultSessionData,
+      chromeLoadToken: "old-handoff",
+      initialArtifactRevision: 4,
+      initialArtifactLoadToken: "live-load",
+    },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=4&artifact_load_token=live-load"],
+  );
+  assert.equal(chrome.element("handoffBanner").hidden, false);
 });
 
 test("the layout gate reveals after a completed pass with no findings", async () => {
@@ -9045,4 +9130,251 @@ test("a queued note with a very long selector is announced and reopened by its f
 
   chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector });
   assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Fix this cell</);
+});
+
+// ---- Desktop conversation panel collapse ----
+
+function sidebarState(chrome) {
+  const toggle = chrome.element("sidebarToggle");
+  const count = chrome.element("sidebarToggleCount");
+  return {
+    collapsed: chrome.element("body").classList.contains("panel-collapsed"),
+    expanded: toggle["aria-expanded"],
+    label: toggle["aria-label"],
+    title: toggle.title,
+    unread: toggle.classList.contains("is-unread"),
+    count: count.hidden ? null : count.textContent,
+    stored: chrome.localStore.get("lavish-axi:panel-collapsed") || null,
+  };
+}
+
+test("desktop sidebar toggle hides and restores the conversation panel", async () => {
+  const chrome = await createChromeHarness();
+
+  const open = sidebarState(chrome);
+  assert.equal(open.collapsed, false);
+  assert.equal(open.expanded, "true");
+  assert.equal(open.label, "Hide conversation");
+  assert.equal(open.title, "Hide conversation");
+  assert.equal(open.count, null);
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  const collapsed = sidebarState(chrome);
+  assert.equal(collapsed.collapsed, true);
+  assert.equal(collapsed.expanded, "false");
+  assert.equal(collapsed.label, "Show conversation");
+  // The preference is the viewer's, not the review's: one key shared by every session.
+  assert.equal(collapsed.stored, "1");
+  assert.equal(chrome.storage.has("lavish-axi:panel-collapsed"), false, "never per-tab sessionStorage");
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  const reopened = sidebarState(chrome);
+  assert.equal(reopened.collapsed, false);
+  assert.equal(reopened.expanded, "true");
+  assert.equal(reopened.stored, null);
+});
+
+test("a collapsed panel stays collapsed across a chrome reload and across sessions", async () => {
+  const localStore = new Map([["lavish-axi:panel-collapsed", "1"]]);
+  const chrome = await createChromeHarness({
+    localStore,
+    sessionData: { ...defaultSessionData, key: "another-review" },
+  });
+
+  const state = sidebarState(chrome);
+  assert.equal(state.collapsed, true);
+  assert.equal(state.expanded, "false");
+  assert.equal(state.label, "Show conversation");
+});
+
+test("the sidebar toggle still works when the browser refuses localStorage", async () => {
+  const chrome = await createChromeHarness({ localStorageThrows: true });
+
+  assert.equal(sidebarState(chrome).collapsed, false);
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, true);
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, false);
+});
+
+test("collapsing the panel moves focus out of it to the toggle", async () => {
+  const chrome = await createChromeHarness();
+  const input = chrome.element("chatInput");
+  input.parentElement = chrome.element("panel");
+  input.focus();
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(chrome.focusLog.at(-1), "sidebarToggle");
+});
+
+test("a collapsed toggle reports queued notes and unseen agent replies", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("sidebarToggle").dispatch("click", {});
+
+  // A reply that lands while the panel is hidden marks the toggle until the panel opens.
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Renamed the payment step." }) });
+  let state = sidebarState(chrome);
+  assert.equal(state.unread, true);
+  assert.equal(state.label, "Show conversation (new reply)");
+
+  // Queued work outranks the unread marker: it is what the user still has to send.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  state = sidebarState(chrome);
+  assert.equal(state.count, "1");
+  assert.equal(state.unread, false);
+  assert.equal(state.label, "Show conversation (1 queued)");
+
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Drop the map preview", selector: "p", tag: "element", text: "Autofill" },
+  });
+  assert.equal(sidebarState(chrome).count, "2");
+
+  // Opening the panel shows both, so neither marker is owed any more.
+  chrome.element("sidebarToggle").dispatch("click", {});
+  state = sidebarState(chrome);
+  assert.equal(state.count, null);
+  assert.equal(state.unread, false);
+  assert.equal(state.label, "Hide conversation");
+
+  // And collapsing again does not resurrect the reply that was already seen.
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).unread, false);
+});
+
+test("clicking an annotated element while the panel is collapsed reopens it to edit the note", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Shorter heading");
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, true);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  const state = sidebarState(chrome);
+  assert.equal(state.collapsed, false);
+  assert.equal(state.expanded, "true");
+  assert.equal(state.stored, null);
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Shorter heading</);
+});
+
+test("clicking the element of a note already being edited reopens the collapsed panel to that edit", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Shorter heading");
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Much shorter heading");
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, true);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  assert.equal(sidebarState(chrome).collapsed, false);
+  assert.equal(chrome.focusLog.at(-1), "queued-edit-input");
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Much shorter heading</);
+});
+
+test("an expanded desktop panel never marks a reply as unread", async () => {
+  const chrome = await createChromeHarness();
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text: "Done." }) });
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).unread, false);
+});
+
+test("the stored desktop collapse never hides the phone sheet", async () => {
+  const localStore = new Map([["lavish-axi:panel-collapsed", "1"]]);
+  const chrome = await createChromeHarness({ mobile: true, localStore });
+
+  assert.equal(sidebarState(chrome).collapsed, false, "phone width keeps its own dock");
+  assert.equal(chrome.element("body").classList.contains("sheet-open"), false);
+
+  // Widening the window past the breakpoint restores the viewer's desktop preference...
+  chrome.setMobile(false);
+  assert.equal(sidebarState(chrome).collapsed, true);
+  // ...and narrowing it again hands the conversation back to the sheet.
+  chrome.setMobile(true);
+  assert.equal(sidebarState(chrome).collapsed, false);
+  assert.equal(sidebarState(chrome).stored, "1", "crossing the breakpoint does not rewrite the preference");
+});
+
+// ---- Tab title and icon from the artifact (lavish:documentMeta) ----
+
+const PAGE_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>";
+
+async function sendDocumentMeta(chrome, meta, { token = chrome.artifactLoadToken() } = {}) {
+  chrome.sendFrameMessage({ type: "lavish:documentMeta", artifact_load_token: token, ...meta });
+}
+
+test("a page can set the tab title and icon after it loaded", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  assert.deepEqual(chrome.tab(), { title: "Plan \u00b7 Lavish", icon: SERVED_TAB_ICON });
+  await sendDocumentMeta(chrome, { title: "(2) Agent canvas", icon: PAGE_ICON });
+  assert.deepEqual(chrome.tab(), { title: "(2) Agent canvas \u00b7 Lavish", icon: PAGE_ICON });
+});
+
+test("a field the page leaves out stays as it was", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await sendDocumentMeta(chrome, { title: "Only title" });
+  assert.deepEqual(chrome.tab(), { title: "Only title \u00b7 Lavish", icon: SERVED_TAB_ICON });
+  await sendDocumentMeta(chrome, { icon: PAGE_ICON });
+  assert.deepEqual(chrome.tab(), { title: "Only title \u00b7 Lavish", icon: PAGE_ICON });
+});
+
+test("null puts back the title and icon the tab loaded with", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await sendDocumentMeta(chrome, { title: "Changed", icon: PAGE_ICON });
+  await sendDocumentMeta(chrome, { title: null, icon: null });
+  assert.deepEqual(chrome.tab(), { title: "Plan \u00b7 Lavish", icon: SERVED_TAB_ICON });
+});
+
+test("the tab title is flattened, trimmed and capped; a blank one restores the load-time title", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await sendDocumentMeta(chrome, { title: "  two\n\tlines\u0000 here  " });
+  assert.equal(chrome.tab().title, "two lines here \u00b7 Lavish");
+  await sendDocumentMeta(chrome, { title: "x".repeat(500) });
+  assert.equal(chrome.tab().title, "x".repeat(120) + " \u00b7 Lavish");
+  await sendDocumentMeta(chrome, { title: " \n " });
+  assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
+});
+
+for (const [label, icon] of [
+  ["an http URL", "http://example.com/i.svg"],
+  ["an https URL", "https://example.com/i.svg"],
+  ["a png data URL", "data:image/png;base64,AAAA"],
+  ["a javascript URL", "javascript:alert(1)"],
+  ["a non-string", { href: PAGE_ICON }],
+  ["an oversized SVG", "data:image/svg+xml," + "a".repeat(8192)],
+]) {
+  test(`the tab icon refuses ${label}`, async () => {
+    const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+    await sendDocumentMeta(chrome, { icon, title: "still applies" });
+    assert.deepEqual(chrome.tab(), { title: "still applies \u00b7 Lavish", icon: SERVED_TAB_ICON });
+  });
+}
+
+test("the tab icon accepts an SVG data URL at the size cap", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  const icon = "data:image/svg+xml,".padEnd(8192, "a");
+  await sendDocumentMeta(chrome, { icon });
+  assert.equal(chrome.tab().icon, icon);
+});
+
+test("a document-meta message without the current load token is ignored", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await sendDocumentMeta(chrome, { title: "stale", icon: PAGE_ICON }, { token: "an-old-load" });
+  await sendDocumentMeta(chrome, { title: "tokenless" }, { token: "" });
+  assert.deepEqual(chrome.tab(), { title: "Plan \u00b7 Lavish", icon: SERVED_TAB_ICON });
+});
+
+test("a window that is not the artifact frame cannot set the tab", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  const foreign = chrome.createForeignWindow();
+  for (const handler of chrome.messageHandlers()) {
+    handler({
+      source: foreign.source,
+      data: { type: "lavish:documentMeta", artifact_load_token: chrome.artifactLoadToken(), title: "spoof" },
+    });
+  }
+  assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
 });

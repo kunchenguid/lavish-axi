@@ -1165,3 +1165,30 @@ test("snapshot does not query the document for a diagram node's selector", () =>
   assert.match(response.snapshot, /Start/);
   assert.deepEqual(queries, []);
 });
+
+test("setDocumentMeta posts the title and icon the page asked for, stamped with the load token", () => {
+  const sdk = bootSdk();
+  sdk.api.setDocumentMeta({ title: "(1) Board", icon: "data:image/svg+xml,<svg/>" });
+  const message = sdk.posted.find((entry) => entry.type === "lavish:documentMeta");
+  assert.deepEqual(
+    { ...message },
+    {
+      type: "lavish:documentMeta",
+      title: "(1) Board",
+      icon: "data:image/svg+xml,<svg/>",
+      artifact_load_token: "load-token",
+    },
+  );
+});
+
+test("setDocumentMeta forwards null to restore, omits unset fields and drops non-strings", () => {
+  const sdk = bootSdk();
+  sdk.api.setDocumentMeta({ title: null });
+  sdk.api.setDocumentMeta({ icon: 42, title: { toString: () => "x" } });
+  sdk.api.setDocumentMeta();
+  const messages = sdk.posted.filter((entry) => entry.type === "lavish:documentMeta");
+  assert.deepEqual(
+    messages.map((entry) => JSON.parse(JSON.stringify({ title: entry.title, icon: entry.icon }))),
+    [{ title: null }, {}, {}],
+  );
+});
