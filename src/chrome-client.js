@@ -793,8 +793,7 @@ function replaceExpiredThumbnail(event) {
 
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
-const DEFAULT_SEND_HINT =
-  "Nothing queued in this tab. Write a message or queue an annotation here. If you answered in another tab or window, switch back there to send. Taking over does not transfer unsent answers or notes.";
+const DEFAULT_SEND_HINT = "Nothing queued in this tab. Write a message or queue an annotation here.";
 const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {

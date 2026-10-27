@@ -4326,9 +4326,11 @@ test("empty Send names this tab's queue without importing another window's answe
   second.element("send").click();
   await flushPromises();
   assert.equal(second.element("sendHint").hidden, false);
-  assert.match(second.element("sendHint").textContent, /nothing queued in this tab/i);
-  assert.match(second.element("sendHint").textContent, /switch back there to send/i);
-  assert.match(second.element("sendHint").textContent, /taking over does not transfer/i);
+  assert.equal(
+    second.element("sendHint").textContent,
+    "Nothing queued in this tab. Write a message or queue an annotation here.",
+  );
+  assert.match(second.element("layoutGateCopy").textContent, /switch back there to send them first/i);
   assert.equal(second.queued().length, 0);
   assert.equal(first.queued().length, 1);
   assert.equal(firstStorage.get("lavish-axi:queued:abc"), savedQueue);
