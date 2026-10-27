@@ -957,7 +957,8 @@ function receiptStepHtml(label, at) {
 
 // Every branch must be true where it is shown: `waiting` is no poll at all, `listening` is a poll
 // that will take the note within milliseconds, and `working` or an external listener is an agent
-// whose next poll will take it.
+// whose next poll will take it. Until the live stream's first presence event after a connect or
+// reconnect, and while it is disconnected, the chrome knows nothing, so those lines claim nothing.
 function receiptNoteText() {
   if (listenerConnection === "disconnected") return "Connection lost; delivery status unknown";
   if (listenerConnection !== "connected") return "Checking agent connection…";
