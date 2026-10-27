@@ -108,7 +108,7 @@ test("--brief emits every visible session unchanged, without the reference paylo
   assert.doesNotMatch(brief.stdout, /artifact-39\.html/);
   assert.match(brief.stdout, /sessions\[39\]/);
   assertPointer(brief.stdout);
-  for (const field of ["description:", "visual_guidance[", "playbooks["]) {
+  for (const field of ["bin:", "description:", "visual_guidance[", "playbooks["]) {
     assert.ok(full.stdout.includes(field), full.stdout);
     assert.ok(!brief.stdout.includes(field), brief.stdout);
   }

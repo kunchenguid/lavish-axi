@@ -212,18 +212,18 @@ export async function run(argv) {
     await runAxiCli({
       description: DESCRIPTION,
       version: VERSION,
-      argv: isTopLevelHelp || isBrief ? [] : normalizedArgv,
+      // Use command serialization for brief output; the SDK always adds a home header.
+      argv: isBrief ? ["brief"] : isTopLevelHelp ? [] : normalizedArgv,
       topLevelHelp: createTopLevelHelp({ agent }),
       home: async () =>
-        isBrief
-          ? createBriefHomeOutput()
-          : createHomeOutput({
-              bin: process.argv[1] || "lavish-axi",
-              sessions: isTopLevelHelp ? [] : await visibleSessions(),
-              includeSessions: !isTopLevelHelp,
-              agent,
-            }),
+        createHomeOutput({
+          bin: process.argv[1] || "lavish-axi",
+          sessions: isTopLevelHelp ? [] : await visibleSessions(),
+          includeSessions: !isTopLevelHelp,
+          agent,
+        }),
       commands: {
+        ...(isBrief ? { brief: createBriefHomeOutput } : {}),
         open: openCommand,
         poll: pollCommand,
         reply: replyCommand,
