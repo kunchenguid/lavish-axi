@@ -159,7 +159,6 @@ const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHi
 const copyHintText = /** @type {HTMLSpanElement} */ (document.getElementById("copyHintText"));
 const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("presenceBanner"));
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
-const handoffText = /** @type {HTMLSpanElement} */ (document.getElementById("handoffText"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
 const outdatedBanner = /** @type {HTMLDivElement} */ (document.getElementById("outdatedBanner"));
 const outdatedText = /** @type {HTMLSpanElement} */ (document.getElementById("outdatedText"));
@@ -794,7 +793,10 @@ function replaceExpiredThumbnail(event) {
 
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
-const DEFAULT_SEND_HINT = "Nothing queued in this tab. Write a message or queue an annotation here.";
+const UNSENT_OWNERSHIP_COPY =
+  "Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.";
+const DEFAULT_SEND_HINT = "Nothing queued in this tab. " + UNSENT_OWNERSHIP_COPY;
+const EMPTY_SEND_HINT_HOLD_MS = 9000;
 const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
@@ -1159,14 +1161,7 @@ function setAgentPresence(state) {
   scrollElementIntoView(workingBubble);
 }
 
-function handoffCopy() {
-  return queued.length
-    ? "Your unsent answers and notes are still in this tab and were not transferred; Send still delivers them from here. Take over here to keep reviewing them."
-    : "Unsent answers and notes stay in the tab or window where you entered them; taking over does not transfer them. Switch back there to send them first, or take over here.";
-}
-
 function setHandoffSuperseded(visible) {
-  if (visible && handoffText) handoffText.textContent = handoffCopy();
   if (handoffBanner) handoffBanner.hidden = ended || !visible;
 }
 
@@ -2064,7 +2059,10 @@ function sendQueued(endAfter) {
   const shouldEnd = Boolean(endAfter && !chipsBlocked);
   const preparations = shouldEnd ? [...feedbackPreparations] : [];
   if (!queued.length && preparations.length === 0) {
-    if (!chipsBlocked && !sendFailureOwner) showSendHint(endAfter ? EMPTY_END_HINT : DEFAULT_SEND_HINT);
+    if (!chipsBlocked && !sendFailureOwner) {
+      if (endAfter) showSendHint(EMPTY_END_HINT);
+      else showSendHint(DEFAULT_SEND_HINT, EMPTY_SEND_HINT_HOLD_MS);
+    }
     return;
   }
   if (!sendFailureOwner) hideSendHint(true);
@@ -3568,7 +3566,11 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
           // reveal an empty frame, with the only recovery control hidden the whole time. Say it
           // on the overlay instead. Still no background retry: the reload is the user's to make.
           if (!artifactLoadToken) {
-            setLayoutGateFailure("This review is already open in another tab.", handoffCopy(), "Take over here");
+            setLayoutGateFailure(
+              "This review is already open in another tab.",
+              UNSENT_OWNERSHIP_COPY,
+              "Take over here",
+            );
           }
           return preservePreviousLoad();
         }
