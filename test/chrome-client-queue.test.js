@@ -4419,6 +4419,54 @@ test("a superseded first load in the tab that holds its own queue says the notes
   assert.equal(takenOver.queued()[0].prompt, "Keep my answer", "taking over in the same tab keeps its queue");
 });
 
+test("a fresh tab's takeover banner still points at the owning tab once the gate times out", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: {
+      ...defaultSessionData,
+      chromeLoadToken: "old-handoff",
+      layoutGateEnabled: true,
+      layoutGateMaxHoldMs: 25,
+    },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+  });
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.element("layoutGateOverlay").hidden, false);
+
+  chrome.runTimers(25);
+
+  assert.equal(chrome.element("layoutGateOverlay").hidden, true);
+  assert.equal(chrome.element("handoffBanner").hidden, false);
+  assert.equal(chrome.queued().length, 0);
+  assert.match(chrome.element("handoffText").textContent, /switch back there to send them first/i);
+  assert.match(chrome.element("handoffText").textContent, /taking over does not transfer them/i);
+  assert.doesNotMatch(chrome.element("handoffText").textContent, /still in this tab/i);
+});
+
+test("the owning tab's takeover banner says its unsent notes are still here", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: {
+      ...defaultSessionData,
+      chromeLoadToken: "old-handoff",
+      layoutGateEnabled: true,
+      initialArtifactRevision: 4,
+      initialArtifactLoadToken: "live-load",
+    },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+    storedQueue: [{ uid: "", prompt: "Keep my answer", selector: "h1", tag: "element", text: "Heading" }],
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.element("handoffBanner").hidden, false);
+  assert.equal(chrome.queued()[0].prompt, "Keep my answer");
+  assert.match(chrome.element("handoffText").textContent, /still in this tab/i);
+  assert.match(chrome.element("handoffText").textContent, /send still delivers them from here/i);
+  assert.doesNotMatch(chrome.element("handoffText").textContent, /switch back there/i);
+});
+
 test("a superseded reload keeps the artifact already on screen and leaves the gate down", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",

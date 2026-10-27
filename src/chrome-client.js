@@ -159,6 +159,7 @@ const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHi
 const copyHintText = /** @type {HTMLSpanElement} */ (document.getElementById("copyHintText"));
 const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("presenceBanner"));
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
+const handoffText = /** @type {HTMLSpanElement} */ (document.getElementById("handoffText"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
 const outdatedBanner = /** @type {HTMLDivElement} */ (document.getElementById("outdatedBanner"));
 const outdatedText = /** @type {HTMLSpanElement} */ (document.getElementById("outdatedText"));
@@ -1158,7 +1159,14 @@ function setAgentPresence(state) {
   scrollElementIntoView(workingBubble);
 }
 
+function handoffCopy() {
+  return queued.length
+    ? "Your unsent answers and notes are still in this tab and were not transferred; Send still delivers them from here. Take over here to keep reviewing them."
+    : "Unsent answers and notes stay in the tab or window where you entered them; taking over does not transfer them. Switch back there to send them first, or take over here.";
+}
+
 function setHandoffSuperseded(visible) {
+  if (visible && handoffText) handoffText.textContent = handoffCopy();
   if (handoffBanner) handoffBanner.hidden = ended || !visible;
 }
 
@@ -3560,13 +3568,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
           // reveal an empty frame, with the only recovery control hidden the whole time. Say it
           // on the overlay instead. Still no background retry: the reload is the user's to make.
           if (!artifactLoadToken) {
-            setLayoutGateFailure(
-              "This review is already open in another tab.",
-              queued.length
-                ? "Your unsent answers and notes are still in this tab and were not transferred. Take over here to keep reviewing and send them from here."
-                : "Unsent answers and notes stay in the tab or window where you entered them; taking over does not transfer them. Switch back there to send them first, or take over here.",
-              "Take over here",
-            );
+            setLayoutGateFailure("This review is already open in another tab.", handoffCopy(), "Take over here");
           }
           return preservePreviousLoad();
         }

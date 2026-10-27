@@ -1071,10 +1071,13 @@ test("chrome shows agent working state when a previous poll has released", async
 test("takeover banner explains draft ownership before offering takeover", () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const banner = html.match(/id="handoffBanner"[^>]*>([\s\S]*?)<\/div>/)?.[1] || "";
-  assert.match(banner, /unsent answers and notes you entered here are still in this tab/i);
-  assert.match(banner, /send still delivers them from here/i);
-  assert.match(banner, /taking over in another tab does not transfer them/i);
-  assert.doesNotMatch(banner, /switch back there/i);
+  assert.match(
+    banner,
+    /<span id="handoffText">[^<]*unsent answers and notes stay in the tab or window where you entered them/i,
+  );
+  assert.match(banner, /taking over does not transfer them/i);
+  assert.match(banner, /switch back there to send them first/i);
+  assert.doesNotMatch(banner, /still in this tab/i);
   assert.match(banner, /id="handoffTakeover"[^>]*>Take over here/);
 });
 
