@@ -143,6 +143,58 @@ test("Tailscale detection shares one timeout budget across candidates", async ()
   ]);
 });
 
+test("Tailscale detection deducts command resolution time from the probe timeout", async () => {
+  let now = 1000;
+  const attempts = [];
+  const result = await detectTailscale({
+    timeoutMs: 50,
+    commands: ["tailscale"],
+    now: () => now,
+    resolveCommand: async (command) => {
+      now += 30;
+      return command;
+    },
+    execFile: /** @type {any} */ (
+      async (command, _args, options) => {
+        attempts.push({ command, timeout: options.timeout });
+        return {
+          stdout: JSON.stringify({
+            BackendState: "Running",
+            Self: { TailscaleIPs: ["100.64.12.34"], DNSName: "review.tailnet.ts.net." },
+          }),
+        };
+      }
+    ),
+  });
+  assert.deepEqual(attempts, [{ command: "tailscale", timeout: 20 }]);
+  assert.deepEqual(result, { ipv4: "100.64.12.34", magicDnsName: "review.tailnet.ts.net" });
+});
+
+test("Tailscale detection skips execution when command resolution exhausts the probe budget", async () => {
+  let now = 1000;
+  const resolved = [];
+  const attempted = [];
+  const result = await detectTailscale({
+    timeoutMs: 50,
+    commands: ["one", "two"],
+    now: () => now,
+    resolveCommand: async (command) => {
+      resolved.push(command);
+      now += 50;
+      return command;
+    },
+    execFile: /** @type {any} */ (
+      async (command) => {
+        attempted.push(command);
+        return { stdout: "" };
+      }
+    ),
+  });
+  assert.equal(result, null);
+  assert.deepEqual(resolved, ["one"]);
+  assert.deepEqual(attempted, []);
+});
+
 test("parseTailscaleStatus ignores malformed or non-running status", () => {
   assert.equal(parseTailscaleStatus("not json"), null);
   assert.equal(
