@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.95](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.94...lavish-axi-v0.1.95) (2026-10-28)
+
+
+### Bug Fixes
+
+* **chrome:** warn that unsent answers stay in their own tab before takeover and on empty Send ([#464](https://github.com/kunchenguid/lavish-axi/issues/464)) ([741ea83](https://github.com/kunchenguid/lavish-axi/commit/741ea8390fed0e56922ef338c274565659dc526d))
+
 ## [0.1.94](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.93...lavish-axi-v0.1.94) (2026-10-26)
 
 
