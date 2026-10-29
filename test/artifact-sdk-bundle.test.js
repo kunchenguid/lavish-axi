@@ -107,12 +107,51 @@ function cell(tag, text) {
   return element;
 }
 
+// Resolves the `tag#id:nth-of-type(n) > ...` chains `selector()` emits against the stub tree, so a
+// test can ask the SDK how many elements its own selector matches.
+function queryChildChain(root, selectorText) {
+  const parts = String(selectorText)
+    .split(">")
+    .map((part) => part.trim());
+  const parsed = parts.map((part) => {
+    const match = /^([a-z0-9-]+)(?:#([^:]+))?(?::nth-of-type\((\d+)\))?$/i.exec(part);
+    return match ? { tag: match[1].toUpperCase(), id: match[2], nth: match[3] ? Number(match[3]) : null } : null;
+  });
+  if (parsed.some((part) => !part)) return [];
+  const matchesPart = (node, part) => {
+    if (!node || node.tagName !== part.tag) return false;
+    if (part.id !== undefined && node.id !== part.id) return false;
+    if (part.nth !== null) {
+      const same = (node.parentElement?.children || []).filter((x) => x.tagName === node.tagName);
+      if (same.indexOf(node) + 1 !== part.nth) return false;
+    }
+    return true;
+  };
+  const results = [];
+  const visit = (node) => {
+    let current = node;
+    let ok = true;
+    for (let index = parsed.length - 1; index >= 0; index -= 1) {
+      if (!matchesPart(current, parsed[index])) {
+        ok = false;
+        break;
+      }
+      current = current.parentElement;
+    }
+    if (ok) results.push(node);
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return results;
+}
+
 function bootSdk({
   runAnimationFrames = false,
   revisionsScript = null,
   revisionMarkElements = [],
   htmlAnnotate = null,
   platform = "Linux",
+  structuralQueries = false,
 } = {}) {
   const posted = [];
   const documentListeners = [];
@@ -171,7 +210,12 @@ function bootSdk({
       getElementById: () => null,
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
-      querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
+      querySelectorAll: (selector) =>
+        selector === "[data-lavish-revision]"
+          ? revisionMarkElements
+          : structuralQueries
+            ? queryChildChain(documentElement, selector)
+            : [],
       getSelection: () => selection,
     },
   };
@@ -194,6 +238,8 @@ function bootSdk({
   vm.runInNewContext(createSdkJs("abc", 3, "load-token"), sandbox);
 
   return {
+    document: sandbox.document,
+    Element: sandbox.Element,
     posted,
     body,
     api: sandbox.window.lavish,
@@ -411,7 +457,7 @@ test("the served SDK bundle reports the artifact's own revision registry and mar
 });
 
 test("the served SDK bundle queues a table-cell annotation without a missing-helper ReferenceError", () => {
-  const sdk = bootSdk();
+  const sdk = bootSdk({ structuralQueries: true });
   const { evidence } = buildTable(sdk);
 
   sdk.click(evidence);
@@ -432,7 +478,7 @@ test("the served SDK bundle queues a table-cell annotation without a missing-hel
 });
 
 test("the served SDK bundle keeps the clicked element's own identity inside a table cell", () => {
-  const sdk = bootSdk();
+  const sdk = bootSdk({ structuralQueries: true });
   const { badge } = buildTable(sdk);
 
   sdk.click(badge);
@@ -874,6 +920,250 @@ test("Ctrl-click on a link after a text selection does not eat the next plain cl
   sdk.click(paragraph);
 
   assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// #445: two structurally identical elements deeper than five levels used to share one selector,
+// so clicking the second reopened the first one's queued note.
+test("structurally identical deep elements get distinct selectors and their own notes", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [first.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(images[1]);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1, "the second image opens a fresh card");
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+  const second = sdk.queue("Crop this one");
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, first.prompt.selector), [images[0]]);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, second.prompt.selector), [images[1]]);
+});
+
+// An id only stops the climb when it names one element: generated pages repeat ids.
+test("a repeated id does not stop the selector climb", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    const section = appendTo(sdk.body, createElement("section"));
+    const card = appendTo(section, createElement("div"));
+    card.id = "card";
+    images.push(appendTo(card, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.click(images[1]);
+  const second = sdk.queue("Crop this one");
+
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, first.prompt.selector), [images[0]]);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, second.prompt.selector), [images[1]]);
+});
+
+// A chain that matches nothing in the document (here a detached subtree) is not unique either.
+test("a selector matching no element keeps climbing", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const detached = createElement("main");
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(detached, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.click(images[1]);
+  const second = sdk.queue("Crop this one");
+
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
+});
+
+// #448 review: a queued note made before a structurally identical branch appeared must still
+// reopen when its element is clicked, though that element's fresh selector is now longer.
+test("a queued note reopens after an identical branch is added beside it", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const build = () => {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    return appendTo(node, createElement("img"));
+  };
+  const original = build();
+  sdk.click(original);
+  const queued = sdk.queue("Swap this photo");
+  const twin = build();
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(original);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+
+  // The new twin is not the element the note resolves to, so it opens a fresh card.
+  sdk.click(twin);
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+// #448 review: snapshot() reads only uid/tag/text, so it must not build selectors, whose
+// uniqueness checks query the whole document once per element.
+test("snapshot does not query the document for selector uniqueness", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  for (let index = 0; index < 3; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+  }
+  // The stub Element class matches nothing; let snapshot()'s walk see the stub elements.
+  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
+  const queries = [];
+  const realQuery = sdk.document.querySelectorAll;
+  sdk.document.querySelectorAll = (selector) => {
+    queries.push(selector);
+    return realQuery(selector);
+  };
+
+  sdk.sendChromeMessage({ type: "lavish:requestSnapshot", snapshot_request_id: "s-1" });
+
+  const response = sdk.posted.at(-1);
+  assert.equal(response.type, "lavish:snapshot");
+  assert.match(response.snapshot, /section/);
+  assert.deepEqual(queries, []);
+});
+
+// #448 review: an identical branch inserted *before* the annotated one makes the queued selector's
+// first match the new copy. The note must still follow the element it was queued from.
+test("a queued note follows its element when an identical branch is inserted before it", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const build = () => {
+    const section = appendTo(sdk.body, createElement("section"));
+    let node = section;
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    return { section, img: appendTo(node, createElement("img")) };
+  };
+  const original = build().img;
+  sdk.click(original);
+  const queued = sdk.queue("Swap this photo");
+  const copy = build();
+  sdk.body.children.splice(sdk.body.children.indexOf(copy.section), 1);
+  sdk.body.children.unshift(copy.section);
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(copy.img);
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+
+  sdk.click(original);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+});
+
+// After a reload the frame has no record of which element a note came from, so the note falls
+// back to its selector and the element that selector names reopens it.
+test("after a reload a queued note reopens on the element its selector names", () => {
+  const before = bootSdk({ structuralQueries: true });
+  before.click(appendTo(before.body, cell("p", "Just prose")));
+  const queued = before.queue("Reword this");
+  const sdk = bootSdk({ structuralQueries: true });
+  const reloaded = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(reloaded);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+});
+
+// #448 Greptile: once a queued note's element is removed from the page, a different element that
+// now matches its stored selector must not reopen that note; it opens a fresh card instead.
+test("a queued note whose element was removed does not reopen on the element now matching its selector", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  paragraph.isConnected = false;
+  sdk.body.children.splice(sdk.body.children.indexOf(paragraph), 1);
+  const other = appendTo(sdk.body, cell("p", "Other text"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(other);
+
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor", "another element reopened the note");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+// After a reload the page has no record of which element a note came from, so its selector only
+// reopens it when that selector names exactly one element, the one clicked.
+test("after a reload a queued selector reopens its note only when it names exactly the clicked element", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const first = appendTo(sdk.body, cell("p", "Just prose"));
+  appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: ["body > p"] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(first);
+
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor", "an ambiguous selector reopened the note");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+// #448: deep repeated structure can climb past 300 chars. The queued prompt keeps the whole
+// selector, it still names only the clicked element, and a click on it reopens the note.
+test("a selector longer than 300 chars is queued whole and still reopens its note", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 60; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+  sdk.click(images[1]);
+  const queued = sdk.queue("Swap this photo");
+
+  assert.ok(queued.prompt.selector.length > 300, `selector is ${queued.prompt.selector.length} chars`);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, queued.prompt.selector), [images[1]]);
+
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  sdk.click(images[1]);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+});
+
+// #448 review: a Mermaid node's target carries its own selector, so snapshot() must not build
+// that one either; tag and text still come from the node.
+test("snapshot does not query the document for a diagram node's selector", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  buildMermaidNode(sdk);
+  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
+  const queries = [];
+  const realQuery = sdk.document.querySelectorAll;
+  sdk.document.querySelectorAll = (selector) => {
+    queries.push(selector);
+    return realQuery(selector);
+  };
+
+  sdk.sendChromeMessage({ type: "lavish:requestSnapshot", snapshot_request_id: "s-1" });
+
+  const response = sdk.posted.at(-1);
+  assert.equal(response.type, "lavish:snapshot");
+  assert.match(response.snapshot, /mermaid-node/);
+  assert.match(response.snapshot, /Start/);
+  assert.deepEqual(queries, []);
 });
 
 test("setDocumentMeta posts the title and icon the page asked for, stamped with the load token", () => {
