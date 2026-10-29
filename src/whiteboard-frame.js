@@ -47,6 +47,7 @@ import {
   WHITEBOARD_TEXT_METRICS_VERSION,
 } from "./whiteboard-core.js";
 import { findLibraryItem, parseLibraryIconDirectives, toExcalidrawLibraryItems } from "./whiteboard-libraries.js";
+import { startSketchFrame } from "./sketch-frame.js";
 
 const SAVE_DEBOUNCE_MS = 800;
 const MERMAID_FONT_SIZE = 16;
@@ -708,6 +709,11 @@ function handleSourceChanged(message) {
 function main() {
   /** @type {any} */ (window).EXCALIDRAW_ASSET_PATH = `${location.origin}/whiteboard-assets/`;
   const frameUrl = new URL(location.href);
+  // The chrome's sketch layer reuses this page and bundle; it shares no Mermaid state.
+  if (frameUrl.searchParams.get("sketch") === "1") {
+    startSketchFrame();
+    return;
+  }
   const diagramIndex = Number(frameUrl.searchParams.get("diagramIndex"));
   state.diagramIndex = Number.isInteger(diagramIndex) && diagramIndex >= 0 && diagramIndex <= 999 ? diagramIndex : 0;
   state.diagramId = String(frameUrl.searchParams.get("diagramId") || "");

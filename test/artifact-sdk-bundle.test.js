@@ -186,6 +186,8 @@ function bootSdk({
     innerHeight: 800,
     scrollX: 0,
     scrollY: 0,
+    // The harness page is shorter than the viewport, so every scroll clamps to the top.
+    scrollTo() {},
     location: { origin: "http://127.0.0.1" },
     URL: sandbox.URL,
   };
@@ -304,6 +306,16 @@ for (const { label, attributes, enabled } of [
     assert.equal(mode.artifact_load_token, "load-token");
   });
 }
+
+// A restore that clamps fires no scroll event, so the SDK reports where the page really is; the
+// sketch layer would otherwise keep the pre-reload offset.
+test("a restored scroll reports the page's actual offset", () => {
+  const sdk = bootSdk();
+  sdk.sendChromeMessage({ type: "lavish:restoreScroll", x: 0, y: 1000 });
+  const report = sdk.posted.filter((message) => message.type === "lavish:scroll").at(-1);
+  assert.ok(report, "the SDK reports its scroll after a restore");
+  assert.deepEqual({ x: report.x, y: report.y }, { x: 0, y: 0 });
+});
 
 // Applying the page's "off" default closes no card, so it must not report one gone: the chrome
 // saves every `card: null` report over the stored draft, and the frame's load event that replays

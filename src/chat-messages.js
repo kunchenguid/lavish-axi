@@ -394,8 +394,9 @@ function withSelector(anchor, selector) {
 
 // The anchor names what a note was attached to, in the annotation card's own words: the card
 // said "Annotate <h2>", "Annotate text", "Annotate cell: ...", or "Annotate node: ...", so the
-// transcript says `<h2>`, `text`, `cell`, `node`. A cell without a provable row or column label
-// falls back to the element form rather than inventing a name, the rule the card follows too.
+// transcript says `<h2>`, `text`, `cell`, `node`, and a sketch comment names the drawn shape. A
+// cell without a provable row or column label falls back to the element form rather than
+// inventing a name, the rule the card follows too.
 function promptAnchor(prompt, kind) {
   if (kind === "message") return null;
   const target = prompt.target && typeof prompt.target === "object" ? prompt.target : null;
@@ -427,6 +428,12 @@ function promptAnchor(prompt, kind) {
   if (type === "mermaid-node") {
     return withSelector(
       { kind: "node", label: "node", excerpt: bound(target.label || prompt.text, EXCERPT_MAX) },
+      selector,
+    );
+  }
+  if (type === "sketch") {
+    return withSelector(
+      { kind: "sketch", label: "sketch", excerpt: bound(target.label || prompt.text, EXCERPT_MAX) },
       selector,
     );
   }

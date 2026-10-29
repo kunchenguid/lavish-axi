@@ -10,6 +10,7 @@ import {
   isModeToggleHotkeyEvent,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
+  SKETCH_TOGGLE_HOTKEY_KEY,
 } from "../src/artifact-sdk.js";
 
 function node(tag, attrs = {}, children = []) {
@@ -387,4 +388,16 @@ test("isModeToggleHotkeyEvent rejects extra shift or alt modifiers", () => {
 test("isModeToggleHotkeyEvent ignores other keys even with a modifier held", () => {
   assert.equal(isModeToggleHotkeyEvent({ key: "e", metaKey: true }), false);
   assert.equal(isModeToggleHotkeyEvent({ key: "Enter", metaKey: true }), false);
+});
+
+test("the sketch hotkey is Cmd/Ctrl+; and reuses the mode hotkey modifier rules", () => {
+  assert.equal(SKETCH_TOGGLE_HOTKEY_KEY, ";");
+  assert.equal(isModeToggleHotkeyEvent({ key: ";", metaKey: true }, SKETCH_TOGGLE_HOTKEY_KEY), true);
+  assert.equal(isModeToggleHotkeyEvent({ key: ";", ctrlKey: true }, SKETCH_TOGGLE_HOTKEY_KEY), true);
+  assert.equal(isModeToggleHotkeyEvent({ key: ";" }, SKETCH_TOGGLE_HOTKEY_KEY), false);
+  assert.equal(isModeToggleHotkeyEvent({ key: ";", metaKey: true, shiftKey: true }, SKETCH_TOGGLE_HOTKEY_KEY), false);
+  assert.equal(isModeToggleHotkeyEvent({ key: ";", metaKey: true, altKey: true }, SKETCH_TOGGLE_HOTKEY_KEY), false);
+  // The two toggles never fire for each other's key.
+  assert.equal(isModeToggleHotkeyEvent({ key: "i", metaKey: true }, SKETCH_TOGGLE_HOTKEY_KEY), false);
+  assert.equal(isModeToggleHotkeyEvent({ key: ";", metaKey: true }), false);
 });
