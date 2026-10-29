@@ -115,6 +115,7 @@ function bootSdk({
   platform = "Linux",
 } = {}) {
   const posted = [];
+  const resizeObserved = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
   // re-query is a real timer, and asserting on it means running it rather than assuming it.
@@ -145,7 +146,9 @@ function bootSdk({
       disconnect() {}
     },
     ResizeObserver: class ResizeObserver {
-      observe() {}
+      observe(element) {
+        resizeObserved.push(element);
+      }
       disconnect() {}
     },
     URL: {
@@ -195,6 +198,7 @@ function bootSdk({
 
   return {
     posted,
+    resizeObserved,
     body,
     api: sandbox.window.lavish,
     // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
@@ -239,10 +243,24 @@ function bootSdk({
     setDocumentQuery(query) {
       documentQuery = query;
     },
+    // Runs only the timers shorter than `ms` until none are left: animation frames and other
+    // immediate work, but none of the layout audit's settle or quiescence waits.
+    async runTimersBelow(ms) {
+      for (let round = 0; round < 100; round += 1) {
+        await Promise.resolve();
+        await Promise.resolve();
+        const due = timers.filter((timer) => !timer.cancelled && !timer.ran && timer.ms < ms);
+        if (due.length === 0) return;
+        for (const timer of due) {
+          timer.ran = true;
+          timer.fn();
+        }
+      }
+    },
     runTimers() {
       const pending = timers.splice(0, timers.length);
       for (const timer of pending) {
-        if (!timer.cancelled) timer.fn();
+        if (!timer.cancelled && !timer.ran) timer.fn();
       }
     },
     async runAllTimers() {
@@ -256,7 +274,7 @@ function bootSdk({
           continue;
         }
         for (const timer of pending) {
-          if (!timer.cancelled) timer.fn();
+          if (!timer.cancelled && !timer.ran) timer.fn();
         }
       }
       assert.fail("the SDK timer queue did not settle");
@@ -371,6 +389,53 @@ test("a requested layout diagnostic publishes even when the result is unchanged"
   assert.equal(diagnostics.length, 2);
   assert.equal(diagnostics[1].artifact_pass_sequence, diagnostics[0].artifact_pass_sequence + 1);
   assert.deepEqual(diagnostics[1].findings, diagnostics[0].findings);
+});
+
+// #370: the chrome's gate releases on this signal, so it must not wait for the audit's settle,
+// quiescence, or stable-sample timers - those only feed the passive inbox.
+test("the SDK signals reveal-ready after a painted frame, before the layout audit settles", async () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+
+  await sdk.runTimersBelow(50);
+  const ready = sdk.posted.filter((message) => message.type === "lavish:revealReady");
+  assert.equal(ready.length, 1);
+  assert.equal(ready[0].artifact_revision, 3);
+  assert.equal(ready[0].artifact_load_token, "load-token");
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:layoutDiagnostics"),
+    false,
+    "the audit is still waiting for geometry when the artifact is revealed",
+  );
+
+  await sdk.runAllTimers();
+  assert.equal(
+    sdk.posted.filter((message) => message.type === "lavish:layoutDiagnostics").length,
+    1,
+    "the audit still runs after the reveal and publishes its pass",
+  );
+  assert.equal(sdk.posted.filter((message) => message.type === "lavish:revealReady").length, 1);
+});
+
+test("the layout settle wait never observes SVG interiors", async () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const before = appendTo(sdk.body, cell("p", "Before the figure"));
+  const svg = appendTo(sdk.body, createElement("svg"));
+  const group = appendTo(svg, createElement("g"));
+  const rect = appendTo(group, createElement("rect"));
+  const foreign = appendTo(svg, createElement("foreignObject"));
+  const foreignText = appendTo(foreign, cell("p", "inside the figure"));
+  const after = appendTo(sdk.body, cell("p", "After the figure"));
+  const all = [before, svg, group, rect, foreign, foreignText, after];
+  sdk.body.querySelectorAll = (selector) => (selector === "*" ? all : []);
+
+  await sdk.runAllTimers();
+
+  assert.ok(sdk.resizeObserved.includes(before));
+  assert.ok(sdk.resizeObserved.includes(svg), "the figure's own box still counts as geometry");
+  assert.ok(sdk.resizeObserved.includes(after));
+  for (const interior of [group, rect, foreign, foreignText]) {
+    assert.equal(sdk.resizeObserved.includes(interior), false, `${interior.tagName} is inside the svg`);
+  }
 });
 
 test("the served SDK echoes the snapshot request id", () => {
