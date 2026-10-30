@@ -30,7 +30,7 @@ true, not a gap.
 ## States per request
 
 ```
-queued ──send──> sent ──poll delivers──> seen ──artifact changes──> working ──agent reply──> done
+queued ──send──> sent ──takeFeedback──> seen ──artifact changes──> working ──agent reply──> done
  (tab)          (server)                 (poll)                    (agent)                  (agent)
 ```
 

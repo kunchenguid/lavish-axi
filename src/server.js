@@ -542,9 +542,8 @@ export async function serve({
   function finishFeedbackDelivery(key, result) {
     if (result.status !== "feedback") return;
     markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
-    // The take already stamped the batch Seen in state.json (docs/delivery-acks.md); tell the open
-    // tabs only now, on the path that is about to write the response, never from the destructive
-    // take itself, so a tab is not told Seen for a batch a disconnect is about to put back.
+    // Publish the delivery sync only after finish. Receipt visibility before then follows the
+    // stamping rules in docs/invariants.md#request-flow.
     void publishChatSync(key);
   }
 
