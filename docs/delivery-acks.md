@@ -14,13 +14,13 @@ session-wide signal - the `agent-presence` stream (`waiting` / `listening` / `wo
 
 Every state below is a fact the server records anyway. None of them asks the agent to do anything new.
 
-| Signal                   | Where it is observed                                                                   | Means                                            |
-| ------------------------ | -------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `/api/:key/prompts` 200  | `SessionStore.queuePrompts` appends the note to `session.chat`                         | **Sent** - the server holds it for the next poll |
-| no poll in `activePolls` | `computePresence` is `waiting`; the chrome already shows "Your agent is not listening" | nobody is there to receive it                    |
-| `takeFeedback` succeeded | the store drained the batch for a poll; a poll that closed before the write undoes it  | **Seen** - the batch was handed to a poll        |
-| artifact file changed    | chokidar `reload` for the session key after a delivery                                 | **Working** - the agent is editing the artifact  |
-| `addAgentReply`          | `lavish-axi reply` / `poll --agent-reply`, or `/api/:key/agent-reply`                  | **Done** - the agent handed something back       |
+| Signal                   | Where it is observed                                                                     | Means                                            |
+| ------------------------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `/api/:key/prompts` 200  | `SessionStore.queuePrompts` appends the note to `session.chat`                           | **Sent** - the server holds it for the next poll |
+| no poll in `activePolls` | `computePresence` is `waiting`; the chrome already shows "Your agent is not listening"   | nobody is there to receive it                    |
+| poll delivery            | [Request flow](invariants.md#request-flow) owns the delivery boundary and recovery rules | **Seen** - see README's Delivery receipts        |
+| artifact file changed    | chokidar `reload` for the session key after a delivery                                   | **Working** - the agent is editing the artifact  |
+| `addAgentReply`          | `lavish-axi reply` / `poll --agent-reply`, or `/api/:key/agent-reply`                    | **Done** - the agent handed something back       |
 
 Two of Wally's three acks ("I saw it", "I'm done") fall straight out of the existing protocol.
 "I'm working on it" has no explicit message, but the file watcher sees the agent's saves. A request
@@ -30,16 +30,17 @@ true, not a gap.
 ## States per request
 
 ```
-queued ──send──> sent ──poll takes it──> seen ──artifact changes──> working ──agent reply──> done
- (tab)          (server)                 (agent)                    (agent)                  (agent)
+queued ──send──> sent ──poll delivers──> seen ──artifact changes──> working ──agent reply──> done
+ (tab)          (server)                 (poll)                    (agent)                  (agent)
 ```
 
 - **queued**: in the tab only (dashed bubble). Unchanged.
 - **sent**: a `role: "user"` chat entry with no `delivered_at`. The bubble says why it has not been
   seen, from the live presence the chrome already holds: "No agent is listening" (`waiting`),
   "Agent is busy; delivered on its next poll" (`working` / external listener), or "Delivering"
-  while a poll is attached, which lasts milliseconds.
-- **seen**: `delivered_at` set by `takeFeedback`.
+  while a poll is attached.
+- **seen**: see [README's Delivery receipts](../README.md#how-it-works) for the user-facing meaning and
+  [Request flow](invariants.md#request-flow) for provisional stamping and the delivery boundary.
 - **working**: `working_at` set by the first artifact `reload` after delivery. Optional evidence.
 - **done**: `done_at` set by the next agent reply.
 
@@ -54,12 +55,8 @@ the stamps with no new wire shape.
   pending prompt, and `queuePrompts` runs under the same store lock, so inside `takeFeedback` the
   set "user entries with no `delivered_at`" is exactly the batch being delivered. Each take increments
   `session.delivery_seq` and writes it as `delivered_seq` on the entries it stamps.
-- **A disconnected poll un-stamps its own take only.** `restoreClosedFeedback` passes the take's
-  `delivery_seq` back; `queuePrompts` in `restore` mode deletes the stamps on entries carrying that
-  sequence (delete, not null - the restore tests assert `chat` deep-equals its pre-take shape). Notes
-  queued in the window keep no stamp and are delivered, and stamped, by the next take. A restore that
-  is refused (an attachment no longer resolves) cannot put the prompts back, and still takes the
-  stamps off: the note is lost, and a Seen left on it would claim a delivery that never happened.
+- **Failed delivery recovery** follows [Request flow](invariants.md#request-flow), including which
+  stamps a restore removes and what happens when restoration is refused.
 - **Working stamps delivered-and-not-done entries.** `markWorking(key)` runs on the `reload` event. A
   reload with nothing delivered changes nothing and writes nothing.
 - **Done stamps delivered-and-not-done entries.** `addAgentReply` does it in the same write as the
@@ -73,9 +70,8 @@ the stamps with no new wire shape.
   authoritative replacement.
 - `delivery_seq` is a session field, so `#upsertSessionLocked` carries it across a reopen like
   `chat_revision`. Stamps on `chat` entries survive because `chat` is carried verbatim.
-- The server publishes `chat-sync` on the success path of a delivery (`finishFeedbackDelivery`) and
-  after a restore, never on the destructive take itself, so a tab is not told Seen for a batch that
-  is about to be put back.
+- Delivery and restore publication follow the lifecycle in
+  [Request flow](invariants.md#request-flow), guarded by `test/server-poll-flush.test.js`.
 
 ## UI
 
