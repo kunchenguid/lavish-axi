@@ -96,6 +96,8 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  // The review page's own fragment, as in /session/<key>#section.
+  outerHash = "",
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -404,6 +406,7 @@ async function createChromeHarness({
     location: {
       protocol: "http:",
       host: "lavish.test",
+      hash: outerHash,
       reload() {
         reloadCount += 1;
       },
@@ -540,7 +543,7 @@ async function createChromeHarness({
   if (artifactSrc) frame.dispatch("load");
 
   function frameLoadToken() {
-    const match = String(frame.src).match(/[?&]artifact_load_token=([^&]+)/);
+    const match = String(frame.src).match(/[?&]artifact_load_token=([^&#]+)/);
     return match ? decodeURIComponent(match[1]) : "";
   }
 
@@ -5043,9 +5046,153 @@ function retiredDraftNotes(chrome) {
   );
 }
 
+// The load replays disclosure state on its own message first; only a card or answers is a draft.
+function draftRestores(messages) {
+  return messages.filter(
+    (message) => message.type === "lavish:restoreReviewState" && (message.state?.card || message.state?.fields),
+  );
+}
+
+function reportDetails(chrome, details) {
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:reviewState",
+    state: { details },
+  });
+}
+
+function reportArtifactHash(chrome, hash) {
+  chrome.sendFrameMessage({
+    artifact_load_token: chrome.artifactLoadToken(),
+    type: "lavish:reviewState",
+    artifact_hash: hash,
+  });
+}
+
+// The replay messages a load posted, in order, compared by value.
+function replayAfter(chrome, start) {
+  return JSON.parse(
+    JSON.stringify(
+      chrome.postedToFrame
+        .slice(start)
+        .filter((message) => message.type === "lavish:restoreReviewState" || message.type === "lavish:restoreScroll"),
+    ),
+  );
+}
+
+// Reset disclosures change the height above the remembered scroll, so they go back first; the
+// card is positioned against the viewport, so it still comes back after the scroll.
+test("a live reload replays disclosures, then scroll, then the draft and answers", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  reportDetails(chrome, [{ id: "summary", open: true }]);
+  reportDraft(chrome, "#hero", "needs a shorter headline");
+  chrome.sendFrameMessage({ artifact_load_token: chrome.artifactLoadToken(), type: "lavish:scroll", x: 0, y: 900 });
+  await flushPromises();
+
+  const start = chrome.postedToFrame.length;
+  await loadNextArtifactRevision(chrome);
+
+  assert.deepEqual(replayAfter(chrome, start), [
+    { type: "lavish:restoreReviewState", state: { details: [{ id: "summary", open: true }] } },
+    { type: "lavish:restoreScroll", x: 0, y: 900 },
+    {
+      type: "lavish:restoreReviewState",
+      state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+    },
+  ]);
+});
+
+// A toggle reports disclosure state alone. Taking that as the whole state would drop the stored
+// draft, and resetting the recorded miss would let a vanished anchor's draft live forever.
+test("a details report keeps the stored draft and its recorded miss", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+  reportDraft(chrome, "#hero", "needs a shorter headline");
+  reportUnrestorable(chrome, "#hero");
+  reportDetails(chrome, [{ id: "summary", open: false }]);
+  await flushPromises();
+  assert.equal((await restoredDraft(storage)).length, 1);
+
+  await loadNextArtifactRevision(chrome);
+  reportUnrestorable(chrome, "#hero");
+  await flushPromises();
+
+  assert.deepEqual(await restoredDraft(storage), []);
+  // Retiring the draft leaves the reader's disclosures stored for the next page load.
+  const next = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+  assert.deepEqual(replayAfter(next, 0)[0].state, { details: [{ id: "summary", open: false }] });
+});
+
+// A fragment means the reader navigated to a place, and the browser's own anchor navigation of
+// the freshly loaded file wins over a remembered scroll and disclosures.
+test("an anchor in the artifact keeps its fragment and skips the replay", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  reportDetails(chrome, [{ id: "summary", open: true }]);
+  chrome.sendFrameMessage({ artifact_load_token: chrome.artifactLoadToken(), type: "lavish:scroll", x: 0, y: 900 });
+  reportArtifactHash(chrome, "#evidence");
+  await flushPromises();
+
+  let start = chrome.postedToFrame.length;
+  await loadNextArtifactRevision(chrome);
+  assert.match(
+    chrome.srcLoads.at(-1).src,
+    /^\/artifact\/abc\/index\.html\?artifact_revision=\d+&artifact_load_token=[^#]+#evidence$/,
+  );
+  // The one message left is the SDK's replay opportunity, which carries no state to apply.
+  assert.deepEqual(replayAfter(chrome, start), [{ type: "lavish:restoreReviewState", state: null, skipReplay: true }]);
+
+  // A fragment-only report is not review state, so clearing the anchor brings the replay back.
+  reportArtifactHash(chrome, "");
+  await flushPromises();
+  start = chrome.postedToFrame.length;
+  await loadNextArtifactRevision(chrome);
+  assert.doesNotMatch(chrome.srcLoads.at(-1).src, /#/);
+  assert.deepEqual(replayAfter(chrome, start), [
+    { type: "lavish:restoreReviewState", state: { details: [{ id: "summary", open: true }] } },
+    { type: "lavish:restoreScroll", x: 0, y: 900 },
+  ]);
+});
+
+// An anchored load reports only the disclosures the reader toggled, so the rest stay as saved.
+test("a details report keeps saved disclosures it does not mention", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  reportDetails(chrome, [
+    { id: "summary", open: true },
+    { id: "evidence", open: false },
+  ]);
+  reportDetails(chrome, [{ id: "summary", open: false }]);
+  await flushPromises();
+
+  const start = chrome.postedToFrame.length;
+  await loadNextArtifactRevision(chrome);
+  assert.deepEqual(replayAfter(chrome, start)[0].state, {
+    details: [
+      { id: "summary", open: false },
+      { id: "evidence", open: false },
+    ],
+  });
+});
+
+test("an anchor in the review page skips the replay too", async () => {
+  const storage = new Map();
+  const first = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
+  reportDetails(first, [{ id: "summary", open: true }]);
+  reportDraft(first, "#hero", "needs a shorter headline");
+  await flushPromises();
+
+  const anchored = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    storage,
+    outerHash: "#evidence",
+  });
+  assert.deepEqual(replayAfter(anchored, 0), [{ type: "lavish:restoreReviewState", state: null, skipReplay: true }]);
+  // Skipping the replay retires nothing: the draft is still there for an unanchored load.
+  assert.equal((await restoredDraft(storage)).length, 1);
+});
+
 async function restoredDraft(storage) {
   const next = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
-  return next.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState");
+  return draftRestores(next.postedToFrame);
 }
 
 // A draft whose anchor the agent removed can never be replayed, so it must not be retried against
@@ -5277,7 +5424,7 @@ test("an unrestorable report for a different anchor leaves the stored draft alon
   await flushPromises();
 
   const next = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
-  const restored = next.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState");
+  const restored = draftRestores(next.postedToFrame);
   assert.equal(restored.length, 1);
   assert.equal(restored[0].state.card.text, "needs a shorter headline");
 });
@@ -5363,7 +5510,7 @@ test("an unsent annotation draft survives a full page reload", async () => {
 
   // The page is torn down and booted again in the same tab, which is what a reload is.
   const second = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
-  const restored = second.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState");
+  const restored = draftRestores(second.postedToFrame);
   assert.equal(restored.length, 1, "the reloaded chrome replays the draft into the new document");
   assert.equal(restored[0].state.card.text, "needs a shorter headline");
   assert.equal(restored[0].state.card.selector, "#hero");
@@ -5388,10 +5535,7 @@ test("a queued or cancelled card leaves no draft behind for the next page load",
   await flushPromises();
 
   const second = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage });
-  assert.deepEqual(
-    second.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState"),
-    [],
-  );
+  assert.deepEqual(draftRestores(second.postedToFrame), []);
 });
 
 test("a draft never leaks from one artifact into another", async () => {
@@ -5410,10 +5554,7 @@ test("a draft never leaks from one artifact into another", async () => {
     sessionData: { ...defaultSessionData, key: "def" },
     storage,
   });
-  assert.deepEqual(
-    other.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState"),
-    [],
-  );
+  assert.deepEqual(draftRestores(other.postedToFrame), []);
 });
 
 test("a current load token accepts artifact messages before the frame load event", async () => {
@@ -5509,10 +5650,7 @@ test("stale artifact messages are ignored until the current frame load", async (
     false,
   );
   chrome.frame.dispatch("load");
-  assert.equal(
-    chrome.postedToFrame.some((message) => message.type === "lavish:restoreReviewState"),
-    false,
-  );
+  assert.deepEqual(draftRestores(chrome.postedToFrame), []);
   const restoredScroll = chrome.postedToFrame.filter((message) => message.type === "lavish:restoreScroll").at(-1);
   assert.equal(restoredScroll.x, 0);
   assert.equal(restoredScroll.y, 0);

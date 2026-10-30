@@ -4,6 +4,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -509,3 +510,109 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
     await rm(temp, { recursive: true, force: true });
   }
 });
+
+// Identified <details> state survives a live reload, and goes back before the scroll replay: the
+// tall section the reader opened is what makes the remembered scroll reachable at all. Setting
+// `open` fires the browser's own `toggle`, so the fixture observes it instead of the test faking it.
+test(
+  "a live reload restores identified details before the scroll replay",
+  { skip: !runBrowserE2e, timeout: 240_000 },
+  async () => {
+    const temp = await mkdtemp(path.join(tmpdir(), "lavish-details-reload-"));
+    const port = await freePort();
+    const lavishEnv = {
+      LAVISH_AXI_PORT: String(port),
+      LAVISH_AXI_STATE_DIR: path.join(temp, "state"),
+      LAVISH_AXI_NO_OPEN: "1",
+      LAVISH_AXI_TELEMETRY: "0",
+      LAVISH_AXI_HOST: "127.0.0.1",
+      LAVISH_AXI_LINK_HOST: "127.0.0.1",
+    };
+    const chromeEnv = {
+      CHROME_DEVTOOLS_AXI_SESSION: `lavish-details-reload-${process.pid}`,
+      CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
+    };
+    const axi = (...args) => run("chrome-devtools-axi", args, chromeEnv);
+    function click(pattern) {
+      const line = axi("snapshot")
+        .split("\n")
+        .find((candidate) => pattern.test(candidate));
+      assert.ok(line, `no snapshot line matching ${pattern}`);
+      axi("click", `@${line.trim().split(/\s+/)[0].replace(/^uid=/, "")}`);
+    }
+    // The sandboxed artifact cannot be read from the chrome, so the fixture renders its own state.
+    function probe() {
+      const raw = axi("snapshot").match(/PROBE(\{.*?\})(?:"|\\n|$)/m)?.[1];
+      assert.ok(raw, "the fixture renders its probe");
+      return JSON.parse(raw.replace(/\\"/g, '"'));
+    }
+    const artifact = path.join(temp, "details-reload.html");
+    async function save(tag) {
+      await writeFile(artifact, `${await readFile(artifact, "utf8")}\n<!-- ${tag} -->\n`);
+      await sleep(5000);
+    }
+
+    try {
+      await copyFile(path.join(fixtures, "details-reload.html"), artifact);
+      const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
+      const url = output.match(/url:\s*"([^"]+)"/)?.[1];
+      assert.ok(url, output);
+      axi("open", url);
+      axi("emulate", "--viewport", "1440x1000x1");
+      await sleep(5000);
+
+      click(/Long notes/);
+      click(/Open section/);
+      // The inner section is authored open inside a closed outer one; the reader closes it.
+      click(/Outer section/);
+      click(/Inner section/);
+      click(/Outer section/);
+      await sleep(500);
+      click(/button "Jump down"/);
+      await sleep(1200);
+      const before = probe();
+      assert.ok(before.open.notes && !before.open["open-one"] && !before.open.inner, JSON.stringify(before));
+      assert.ok(before.y >= 2500, "the reader scrolled past the collapsed page's maximum");
+
+      for (const round of [1, 2]) {
+        await save(`revision ${round}`);
+        const after = probe();
+        assert.notEqual(after.run, before.run, "the reload is a fresh document whose script ran again");
+        assert.deepEqual(after.open, { notes: true, "open-one": false, "-": false, outer: false, inner: false });
+        assert.ok(Math.abs(after.y - before.y) <= 2, `scroll restored: ${before.y} -> ${after.y}`);
+        const restored = after.toggles.filter(
+          ([id, state]) => (id === "notes" && state === "open") || (id === "open-one" && state === "closed"),
+        );
+        assert.equal(restored.length, 2, JSON.stringify(after.toggles));
+        assert.ok(
+          restored.every(([, , trusted, bubbles]) => trusted && !bubbles),
+          "the browser's own toggle, not a synthetic one",
+        );
+        assert.equal(after.fieldEvents, 0, "no synthetic change/input");
+        before.run = after.run;
+      }
+
+      // A fragment means the reader navigated somewhere: the browser's anchor navigation wins.
+      click(/link "Go to tail"/);
+      await sleep(1200);
+      await save("anchored");
+      const anchored = probe();
+      assert.equal(anchored.hash, "#tail", "the fragment survives the reload");
+      assert.equal(anchored.open.notes, false, "authored disclosure defaults win under an anchor");
+      assert.notEqual(anchored.y, before.y, "the anchor position wins over the remembered scroll");
+
+      click(/button "Clear anchor"/);
+      await sleep(500);
+      click(/Long notes/);
+      await sleep(800);
+      await save("cleared");
+      const cleared = probe();
+      assert.equal(cleared.hash, "");
+      assert.equal(cleared.open.notes, true, "clearing the anchor brings preservation back");
+    } finally {
+      run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
+      axi("stop");
+      await rm(temp, { recursive: true, force: true });
+    }
+  },
+);

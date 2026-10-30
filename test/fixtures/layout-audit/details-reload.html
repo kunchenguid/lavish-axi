@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en" data-lavish-annotate="off">
+  <head>
+    <meta charset="utf-8" />
+    <title>Details reload proof</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+      }
+      #probe {
+        position: fixed;
+        right: 8px;
+        top: 8px;
+        width: 520px;
+        white-space: pre-wrap;
+        font: 11px monospace;
+        background: #fff;
+        border: 1px solid #999;
+        z-index: 9;
+      }
+      .tall {
+        height: 2400px;
+        background: linear-gradient(#eef, #fee);
+      }
+      nav {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: white;
+      }
+      #spacer {
+        height: 1200px;
+      }
+    </style>
+  </head>
+  <body>
+    <pre id="probe">PROBE{}</pre>
+    <nav>
+      <button id="jump" type="button" onclick="window.scrollTo(0, 2600)">Jump down</button>
+      <a href="#tail">Go to tail</a>
+      <button id="clearhash" type="button" onclick="location.hash = ''">Clear anchor</button>
+    </nav>
+    <details id="notes">
+      <summary>Long notes</summary>
+      <div class="tall">tall body</div>
+    </details>
+    <details id="open-one" open>
+      <summary>Open section</summary>
+      <p>authored open</p>
+    </details>
+    <details>
+      <summary>Anonymous section</summary>
+      <p>no id</p>
+    </details>
+    <details id="outer">
+      <summary>Outer section</summary>
+      <details id="inner" open>
+        <summary>Inner section</summary>
+        <p>nested</p>
+      </details>
+    </details>
+    <div id="spacer"></div>
+    <p id="tail">End of page.</p>
+    <script>
+      const run = Math.random().toString(36).slice(2, 8);
+      const toggles = [];
+      let fieldEvents = 0;
+      document.addEventListener(
+        "toggle",
+        (e) => {
+          if (e.target.tagName === "DETAILS") toggles.push([e.target.id || "-", e.newState, e.isTrusted, e.bubbles]);
+          render();
+        },
+        true,
+      );
+      document.addEventListener(
+        "change",
+        () => {
+          fieldEvents += 1;
+          render();
+        },
+        true,
+      );
+      document.addEventListener(
+        "input",
+        () => {
+          fieldEvents += 1;
+          render();
+        },
+        true,
+      );
+      function render() {
+        const open = {};
+        for (const d of document.querySelectorAll("details")) open[d.id || "-"] = d.open;
+        document.getElementById("probe").textContent =
+          "PROBE" + JSON.stringify({ run, y: Math.round(scrollY), hash: location.hash, open, toggles, fieldEvents });
+      }
+      addEventListener("scroll", render, { passive: true });
+      addEventListener("hashchange", render);
+      setInterval(render, 250);
+      render();
+    </script>
+  </body>
+</html>

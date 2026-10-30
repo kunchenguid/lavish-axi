@@ -107,12 +107,33 @@ function cell(tag, text) {
   return element;
 }
 
+function descendants(element) {
+  return element.children.flatMap((child) => [child, ...descendants(child)]);
+}
+
+function details(id, open) {
+  const element = createElement("details");
+  if (id) element.id = id;
+  element.open = open;
+  return element;
+}
+
+// The SDK runs in its own realm, so its objects are compared by value.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+// Reports that carry review state, as opposed to the artifact's current fragment.
+function stateReports(posted) {
+  return posted.filter((message) => message.type === "lavish:reviewState" && "state" in message);
+}
+
 function bootSdk({
   runAnimationFrames = false,
   revisionsScript = null,
   revisionMarkElements = [],
   htmlAnnotate = null,
   platform = "Linux",
+  hash = "",
+  onScrollTo = /** @type {(x: number, y: number) => void} */ (() => {}),
 } = {}) {
   const posted = [];
   const documentListeners = [];
@@ -171,7 +192,14 @@ function bootSdk({
       getElementById: () => null,
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
-      querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
+      querySelectorAll: (selector) => {
+        if (selector === "[data-lavish-revision]") return revisionMarkElements;
+        if (selector === "[id]") return descendants(body).filter((element) => element.id);
+        if (selector === "details[id]") {
+          return descendants(body).filter((element) => element.tagName === "DETAILS" && element.id);
+        }
+        return [];
+      },
       getSelection: () => selection,
     },
   };
@@ -186,8 +214,18 @@ function bootSdk({
     innerHeight: 800,
     scrollX: 0,
     scrollY: 0,
-    location: { origin: "http://127.0.0.1" },
+    location: { origin: "http://127.0.0.1", hash },
+    scrollTo: (x, y) => onScrollTo(x, y),
     URL: sandbox.URL,
+  };
+  // Like the browser, a history entry's URL replaces the fragment and dispatches no `hashchange`.
+  const historyUrl = (url) => {
+    if (url !== undefined)
+      sandbox.window.location.hash = String(url).includes("#") ? `#${String(url).split("#")[1]}` : "";
+  };
+  sandbox.window.history = {
+    pushState: (state, title, url) => historyUrl(url),
+    replaceState: (state, title, url) => historyUrl(url),
   };
   sandbox.globalThis = sandbox;
 
@@ -238,6 +276,21 @@ function bootSdk({
     },
     setDocumentQuery(query) {
       documentQuery = query;
+    },
+    // `toggle` does not bubble, so only a capture-phase document listener sees it.
+    toggle(target) {
+      for (const entry of documentListeners.filter((listener) => listener.type === "toggle")) {
+        entry.handler({ target });
+      }
+    },
+    history: sandbox.window.history,
+    popState(next) {
+      sandbox.window.location.hash = next;
+      for (const entry of windowListeners.filter((listener) => listener.type === "popstate")) entry.handler({});
+    },
+    navigateToHash(next) {
+      sandbox.window.location.hash = next;
+      for (const entry of windowListeners.filter((listener) => listener.type === "hashchange")) entry.handler({});
     },
     runTimers() {
       const pending = timers.splice(0, timers.length);
@@ -311,11 +364,7 @@ for (const { label, attributes, enabled } of [
 test("a page that declares off reports no review state at boot", () => {
   const sdk = bootSdk({ htmlAnnotate: "off" });
   sdk.runTimers();
-  assert.equal(
-    sdk.posted.some((message) => message.type === "lavish:reviewState"),
-    false,
-    "nothing was open, so there is no card state to retire",
-  );
+  assert.deepEqual(stateReports(sdk.posted), [], "nothing was open, so there is no card state to retire");
   const target = appendTo(sdk.body, cell("h1", "Headline"));
   sdk.sendChromeMessage({
     type: "lavish:restoreReviewState",
@@ -621,7 +670,254 @@ test("the served SDK bundle reports nothing when there is no draft to restore", 
   sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: { card: { selector: "#hero", text: "  " } } });
   sdk.runTimers();
 
-  assert.equal(sdk.posted.length, before);
+  // The replay opportunity is answered with the page's disclosure state, and nothing else.
+  assert.deepEqual(plain(sdk.posted.slice(before).map((message) => message.state)), [{ details: [] }]);
+});
+
+// A live reload resets every <details> to the new file's default, which also changes the height
+// above the remembered scroll. Identified sections go back first, so the scroll lands where it was.
+test("identified details are restored by exact id before the scroll replay", () => {
+  const order = [];
+  const sdk = bootSdk({ onScrollTo: (x, y) => order.push(`scroll ${x},${y}`) });
+  const summary = appendTo(sdk.body, details("summary", false));
+  const inner = appendTo(summary, details("inner", false));
+  const evidence = appendTo(sdk.body, details("evidence", true));
+  const anonymous = appendTo(sdk.body, details("", false));
+  const shared = appendTo(sdk.body, details("shared", false));
+  const sharedSpan = appendTo(sdk.body, createElement("span"));
+  sharedSpan.id = "shared";
+  for (const element of [summary, inner, evidence, shared]) {
+    let open = element.open;
+    Object.defineProperty(element, "open", {
+      get: () => open,
+      set: (next) => {
+        order.push(`${element.id} ${next}`);
+        open = next;
+      },
+    });
+  }
+
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: {
+      details: [
+        { id: "evidence", open: false },
+        { id: "summary", open: true },
+        { id: "inner", open: false },
+        { id: "shared", open: true },
+        { id: "removed", open: true },
+        { id: "summary", open: false },
+        { id: 7, open: true },
+        { id: "inner", open: "true" },
+      ],
+    },
+  });
+  sdk.sendChromeMessage({ type: "lavish:restoreScroll", x: 0, y: 900 });
+
+  // Only the sections whose state differs are assigned, an ambiguous id is skipped, a nested
+  // section is restored on its own, and nothing is clicked or coerced.
+  assert.deepEqual(order, ["evidence false", "summary true", "scroll 0,900"]);
+  assert.equal(anonymous.open, false);
+  assert.equal(inner.open, false);
+});
+
+// The parser fires `toggle` for sections authored open. Reporting those before the chrome has
+// replayed would store the new file's defaults over what the reader chose.
+test("disclosure state is reported only after the chrome's replay opportunity", () => {
+  const sdk = bootSdk();
+  const summary = appendTo(sdk.body, details("summary", true));
+  appendTo(sdk.body, details("evidence", false));
+
+  sdk.toggle(summary);
+  sdk.runTimers();
+  assert.deepEqual(stateReports(sdk.posted), []);
+
+  sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: null });
+  sdk.runTimers();
+  summary.open = false;
+  sdk.toggle(summary);
+  sdk.runTimers();
+
+  const reports = stateReports(sdk.posted);
+  assert.deepEqual(plain(reports.at(0).state), {
+    details: [
+      { id: "summary", open: true },
+      { id: "evidence", open: false },
+    ],
+  });
+  assert.deepEqual(plain(reports.at(-1).state), {
+    details: [
+      { id: "summary", open: false },
+      { id: "evidence", open: false },
+    ],
+  });
+  assert.equal(reports.at(-1).artifact_load_token, "load-token");
+});
+
+test("details reports retain absent saved ids and prefer present live state across reloads", () => {
+  const sdk = bootSdk();
+  const summary = appendTo(sdk.body, details("summary", false));
+  const shared = appendTo(sdk.body, details("shared", false));
+  const sharedSpan = appendTo(sdk.body, createElement("span"));
+  sharedSpan.id = shared.id;
+  const replaced = appendTo(sdk.body, createElement("span"));
+  replaced.id = "replaced";
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: {
+      details: [
+        { id: "late-open", open: true },
+        { id: "late-closed", open: false },
+        { id: "summary", open: true },
+        { id: "shared", open: true },
+        { id: "replaced", open: true },
+      ],
+    },
+  });
+  sdk.runTimers();
+  const expected = [
+    { id: "late-open", open: true },
+    { id: "late-closed", open: false },
+    { id: "summary", open: true },
+  ];
+  assert.deepEqual(plain(stateReports(sdk.posted).at(-1).state.details), expected);
+
+  summary.open = false;
+  sdk.toggle(summary);
+  sdk.runTimers();
+  expected[2].open = false;
+  assert.deepEqual(plain(stateReports(sdk.posted).at(-1).state), { details: expected });
+
+  sdk.click(appendTo(sdk.body, cell("p", "Decision board")));
+  sdk.card().querySelector(".lavish-cancel").onclick();
+  sdk.runTimers();
+  const state = plain(stateReports(sdk.posted).at(-1).state);
+  assert.equal(state.card, null);
+  assert.deepEqual(state.details, expected);
+
+  const reloaded = bootSdk();
+  const lateOpen = appendTo(reloaded.body, details("late-open", false));
+  const lateClosed = appendTo(reloaded.body, details("late-closed", true));
+  const live = appendTo(reloaded.body, details("summary", true));
+  reloaded.sendChromeMessage({ type: "lavish:restoreReviewState", state });
+  assert.equal(lateOpen.open, true);
+  assert.equal(lateClosed.open, false);
+  assert.equal(live.open, false);
+});
+
+// A details report that also said `card: null` would retire a draft whose anchor has not rendered
+// yet, so a toggle reports disclosure state alone.
+test("a details toggle never reports over a draft still waiting for its anchor", () => {
+  const sdk = bootSdk();
+  const summary = appendTo(sdk.body, details("summary", false));
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+  });
+  summary.open = true;
+  sdk.toggle(summary);
+  sdk.runTimers();
+
+  assert.ok(stateReports(sdk.posted).length > 0);
+  assert.equal(
+    stateReports(sdk.posted).some((message) => "card" in message.state),
+    false,
+  );
+});
+
+// With a fragment the browser has already navigated to the anchor, and that position wins.
+test("an anchored artifact keeps the browser's own position and disclosures", () => {
+  const scrolls = [];
+  const sdk = bootSdk({ hash: "#evidence", onScrollTo: (x, y) => scrolls.push([x, y]) });
+  const summary = appendTo(sdk.body, details("summary", false));
+
+  const hashReport = sdk.posted.find((message) => "artifact_hash" in message);
+  assert.deepEqual(plain(hashReport), {
+    type: "lavish:reviewState",
+    artifact_hash: "#evidence",
+    artifact_load_token: "load-token",
+  });
+
+  sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: { details: [{ id: "summary", open: true }] } });
+  sdk.sendChromeMessage({ type: "lavish:restoreScroll", x: 0, y: 900 });
+  sdk.runTimers();
+  assert.equal(summary.open, false);
+  assert.deepEqual(scrolls, []);
+  // The authored defaults are not the reader's choice, so they never overwrite the saved state,
+  // not even riding along with a card report.
+  sdk.click(appendTo(sdk.body, cell("p", "Decision board")));
+  sdk.card().querySelector(".lavish-cancel").onclick();
+  sdk.runTimers();
+  assert.equal(
+    stateReports(sdk.posted).some((message) => "details" in message.state),
+    false,
+  );
+
+  summary.open = true;
+  sdk.toggle(summary);
+  sdk.runTimers();
+  assert.deepEqual(plain(stateReports(sdk.posted).at(-1).state), { details: [{ id: "summary", open: true }] });
+
+  sdk.navigateToHash("");
+  assert.equal(sdk.posted.at(-1).artifact_hash, "");
+  assert.equal("state" in sdk.posted.at(-1), false);
+});
+
+test("an outer review fragment skips initial disclosure reports until a user toggle", () => {
+  const sdk = bootSdk();
+  const summary = appendTo(sdk.body, details("summary", false));
+
+  sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: null, skipReplay: true });
+  sdk.runTimers();
+  assert.deepEqual(stateReports(sdk.posted), []);
+  assert.equal(summary.open, false);
+
+  sdk.click(appendTo(sdk.body, cell("p", "Decision board")));
+  sdk.card().querySelector(".lavish-cancel").onclick();
+  sdk.runTimers();
+  assert.ok(stateReports(sdk.posted).length > 0);
+  assert.equal(
+    stateReports(sdk.posted).some((message) => "details" in message.state),
+    false,
+  );
+
+  summary.open = true;
+  sdk.toggle(summary);
+  sdk.runTimers();
+  assert.deepEqual(plain(stateReports(sdk.posted).at(-1).state), { details: [{ id: "summary", open: true }] });
+});
+
+// Nothing was replayed on an anchored load, so the untouched disclosures still hold the new file's
+// defaults; a toggle reports only what the reader changed and the chrome keeps the rest.
+test("an anchored toggle reports only the disclosures the reader changed", () => {
+  const sdk = bootSdk({ hash: "#evidence" });
+  const summary = appendTo(sdk.body, details("summary", false));
+  appendTo(sdk.body, details("evidence", true));
+
+  sdk.sendChromeMessage({ type: "lavish:restoreReviewState", state: null, skipReplay: true });
+  summary.open = true;
+  sdk.toggle(summary);
+  sdk.runTimers();
+  assert.deepEqual(plain(stateReports(sdk.posted).at(-1).state), { details: [{ id: "summary", open: true }] });
+});
+
+// pushState and replaceState change the fragment without `hashchange`, so the next load would
+// otherwise restore an anchor the reader already left.
+test("an artifact fragment changed through history is reported for the next load", () => {
+  const sdk = bootSdk();
+  const hashReports = () => sdk.posted.filter((message) => "artifact_hash" in message).map((m) => m.artifact_hash);
+
+  sdk.history.pushState({}, "", "#evidence");
+  sdk.history.replaceState(null, "", "#summary");
+  sdk.history.replaceState(null, "", "#summary");
+  sdk.popState("#evidence");
+  sdk.history.pushState({}, "", "index.html");
+
+  assert.deepEqual(hashReports(), ["", "#evidence", "#summary", "#evidence", ""]);
+  assert.equal(
+    sdk.posted.some((message) => "artifact_hash" in message && "state" in message),
+    false,
+  );
 });
 
 // `showAnnotationCard` closes whatever card is open before it draws, so a late restore landing on

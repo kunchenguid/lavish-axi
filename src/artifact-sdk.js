@@ -2137,6 +2137,62 @@ export function createArtifactSdk(
     return entries;
   }
 
+  // Only unique ids can identify disclosures across reloads without guessing.
+  let detailsReplayed = false;
+  // Card and field reports carry details only once a details report has been sent.
+  let detailsReported = false;
+  let detailsStateTimer = 0;
+  let savedDetailsState = new Map();
+  // An anchored load replays nothing, so only disclosures toggled since are the reader's choice.
+  let toggledDetailsIds = null;
+
+  function identifiedDetails() {
+    const counts = new Map();
+    for (const el of document.querySelectorAll("[id]")) counts.set(el.id, (counts.get(el.id) || 0) + 1);
+    const byId = new Map();
+    for (const el of document.querySelectorAll("details[id]")) {
+      if (el.id && counts.get(el.id) === 1) byId.set(el.id, el);
+    }
+    return byId;
+  }
+
+  function collectDetailsState() {
+    const presentIds = new Set([...document.querySelectorAll("[id]")].map((el) => el.id));
+    const merged = new Map([...savedDetailsState].filter(([id]) => !presentIds.has(id)));
+    for (const [id, el] of identifiedDetails()) {
+      if (!toggledDetailsIds || toggledDetailsIds.has(id)) merged.set(id, Boolean(el.open));
+    }
+    savedDetailsState = merged;
+    return [...merged].map(([id, open]) => ({ id, open }));
+  }
+
+  // Assigning `open` deliberately queues a native, trusted, non-bubbling `toggle` for artifact listeners.
+  function restoreDetailsState(details) {
+    if (!Array.isArray(details)) return;
+    savedDetailsState = new Map();
+    const byId = identifiedDetails();
+    const seen = new Set();
+    for (const record of details) {
+      if (!record || typeof record.id !== "string" || typeof record.open !== "boolean") continue;
+      if (seen.has(record.id)) continue;
+      seen.add(record.id);
+      if (record.id) savedDetailsState.set(record.id, record.open);
+      const el = byId.get(record.id);
+      if (el && el.open !== record.open) el.open = record.open;
+    }
+  }
+
+  // Wait for replay so parser toggles cannot overwrite saved state; details-only patches preserve drafts.
+  function scheduleDetailsStateReport() {
+    if (!detailsReplayed) return;
+    if (detailsStateTimer) window.clearTimeout(detailsStateTimer);
+    detailsStateTimer = window.setTimeout(() => {
+      detailsStateTimer = 0;
+      detailsReported = true;
+      postArtifactMessage("lavish:reviewState", { state: { details: collectDetailsState() } });
+    }, 120);
+  }
+
   function collectReviewState() {
     const card = shadow ? shadow.querySelector(".lavish-annotation-card") : null;
     const textarea = card ? card.querySelector("textarea") : null;
@@ -2156,6 +2212,7 @@ export function createArtifactSdk(
         value: String(entry.el.value === undefined || entry.el.value === null ? "" : entry.el.value).slice(0, 2000),
         checked: entry.type === "checkbox" || entry.type === "radio" ? Boolean(entry.el.checked) : null,
       })),
+      ...(detailsReported ? { details: collectDetailsState() } : {}),
     };
   }
 
@@ -2169,6 +2226,7 @@ export function createArtifactSdk(
 
   function restoreReviewState(state) {
     if (!state || typeof state !== "object") return;
+    restoreDetailsState(state.details);
     const fields = Array.isArray(state.fields) ? state.fields : [];
     if (fields.length) {
       const entries = lavishQuestionControls();
@@ -2220,6 +2278,16 @@ export function createArtifactSdk(
     const el = event.target;
     if (el instanceof Element && el.closest("[data-lavish-question]")) scheduleReviewStateReport();
   });
+  document.addEventListener(
+    "toggle",
+    (event) => {
+      const el = /** @type {any} */ (event.target);
+      if (el?.tagName !== "DETAILS") return;
+      if (toggledDetailsIds && detailsReplayed && el.id) toggledDetailsIds.add(el.id);
+      scheduleDetailsStateReport();
+    },
+    true,
+  );
 
   function ensureShadow() {
     if (shadow) return shadow;
@@ -2515,10 +2583,19 @@ export function createArtifactSdk(
         snapshot_request_id: typeof msg.snapshot_request_id === "string" ? msg.snapshot_request_id : "",
       });
     }
-    if (msg.type === "lavish:restoreScroll") {
+    // With a fragment the browser has already navigated to the anchor, and that position wins.
+    if (msg.type === "lavish:restoreScroll" && !window.location.hash) {
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
     }
-    if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
+    if (msg.type === "lavish:restoreReviewState") {
+      if (!detailsReplayed) {
+        detailsReplayed = true;
+        // Anchored loads skip the replay, so the authored defaults must not overwrite saved choices.
+        if (!window.location.hash && !msg.skipReplay) scheduleDetailsStateReport();
+        else toggledDetailsIds = new Set();
+      }
+      if (!window.location.hash) restoreReviewState(msg.state);
+    }
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
     if (msg.type === "lavish:queuedAnchors") {
       queuedAnchorSelectors = new Set(Array.isArray(msg.selectors) ? msg.selectors.map(String) : []);
@@ -2561,6 +2638,28 @@ export function createArtifactSdk(
     },
     true,
   );
+
+  // Sandbox navigation hides fragment changes from the chrome, so report them for the next load.
+  let reportedArtifactHash = null;
+  const reportArtifactHash = () => {
+    const hash = String(window.location.hash || "");
+    if (hash === reportedArtifactHash) return;
+    reportedArtifactHash = hash;
+    postArtifactMessage("lavish:reviewState", { artifact_hash: hash });
+  };
+  reportArtifactHash();
+  window.addEventListener("hashchange", reportArtifactHash);
+  // pushState/replaceState change the fragment without `hashchange`; only the report is added.
+  window.addEventListener("popstate", reportArtifactHash);
+  for (const method of ["pushState", "replaceState"]) {
+    const original = window.history?.[method];
+    if (typeof original !== "function") continue;
+    window.history[method] = function (...args) {
+      const result = original.apply(this, args);
+      reportArtifactHash();
+      return result;
+    };
+  }
 
   // Report scroll position to the chrome so it can be restored across hot reloads.
   // The iframe is sandboxed without same-origin, so the chrome can't read scrollY directly.
