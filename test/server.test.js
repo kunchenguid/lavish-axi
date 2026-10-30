@@ -5429,21 +5429,127 @@ test("SSE agent-presence returns to waiting when poll feedback storage fails", a
   }
 });
 
-test("long-poll response cleanup is guarded against storage failures", async () => {
-  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+for (const mode of ["timed feedback", "timed timeout", "heartbeat feedback"]) {
+  test(`pending poll storage failure releases presence and ownership: ${mode}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+    const previousStateDir = process.env.LAVISH_AXI_STATE_DIR;
+    const originalTakeFeedback = SessionStore.prototype.takeFeedback;
+    const controller = new AbortController();
+    const takeStarted = Promise.withResolvers();
+    const releaseTake = Promise.withResolvers();
+    let server;
+    let presence;
 
-  assert.match(source, /try \{\s*const result = await store\.takeFeedback\(key\)/);
-  assert.match(source, /finally \{\s*cleanup\(\);\s*\}/);
-});
+    async function bounded(promise) {
+      let timer;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("timed out waiting for poll failure recovery")), 2000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
 
-test("heartbeat long-poll errors close the stream without Express error handling", async () => {
-  const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
+    const boundedFetch = (url, init = {}) =>
+      fetch(url, { ...init, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) });
 
-  assert.match(source, /function handleRespondError\(error\) \{/);
-  assert.match(source, /if \(streamHeartbeat\) \{/);
-  assert.match(source, /res\.destroy\(error\)/);
-  assert.match(source, /respond\(\)\.catch\(handleRespondError\)/);
-});
+    try {
+      process.env.LAVISH_AXI_STATE_DIR = dir;
+      const artifact = path.join(dir, "artifact.html");
+      await writeFile(artifact, "<!doctype html><html><body></body></html>");
+      server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+      const base = `http://127.0.0.1:${server.port}`;
+      const open = await boundedFetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: artifact }),
+      });
+      assert.equal(open.status, 200);
+      const { key } = await open.json();
+      let takes = 0;
+      SessionStore.prototype.takeFeedback = async function (sessionKey) {
+        if (sessionKey === key && ++takes === 2) {
+          takeStarted.resolve(undefined);
+          await releaseTake.promise;
+          throw new Error("injected pending poll storage failure");
+        }
+        return originalTakeFeedback.call(this, sessionKey);
+      };
+
+      presence = await startPresenceStream(base, key);
+      assert.equal(await presence.next(), "waiting");
+      const heartbeat = mode === "heartbeat feedback";
+      const timeout = mode === "timed timeout";
+      const query = heartbeat ? "" : `&timeoutMs=${timeout ? 1 : 60000}`;
+      const pollHeaders = boundedFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}${query}`);
+      const pollResult = pollHeaders.then(async (response) => ({
+        status: response.status,
+        body: await response.text(),
+      }));
+      void pollResult.catch(() => {});
+      assert.equal(await presence.next(), "listening");
+      if (heartbeat) {
+        const response = await bounded(pollHeaders);
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get("lavish-poll-state"), "listening");
+      }
+
+      const prompts = [
+        { uid: "message-1", prompt: "Keep this feedback for the next poll", selector: "body", tag: "message", text: "" },
+      ];
+      const queueFeedback = () =>
+        boundedFetch(`${base}/api/${key}/prompts`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: base },
+          body: JSON.stringify({ prompts }),
+        });
+      if (!timeout) {
+        const submitted = await queueFeedback();
+        assert.equal(submitted.status, 200);
+        await submitted.json();
+      }
+      await bounded(takeStarted.promise);
+      releaseTake.resolve(undefined);
+      if (heartbeat) {
+        await assert.rejects(bounded(pollResult), /terminated/);
+      } else {
+        assert.equal((await bounded(pollResult)).status, 500);
+      }
+      assert.equal(await presence.next(), "waiting");
+
+      if (timeout) {
+        const submitted = await queueFeedback();
+        assert.equal(submitted.status, 200);
+        await submitted.json();
+      }
+      const next = await boundedFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      assert.equal(next.status, 200);
+      const feedback = await next.json();
+      assert.equal(feedback.status, "feedback");
+      assert.deepEqual(feedback.prompts, prompts);
+      assert.equal(await presence.next(), "working");
+    } finally {
+      releaseTake.resolve(undefined);
+      SessionStore.prototype.takeFeedback = originalTakeFeedback;
+      controller.abort();
+      try {
+        await presence?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          if (previousStateDir === undefined) delete process.env.LAVISH_AXI_STATE_DIR;
+          else process.env.LAVISH_AXI_STATE_DIR = previousStateDir;
+          await rm(dir, { recursive: true, force: true });
+        }
+      }
+    }
+  });
+}
 
 test("a poll dropped before it arms never leaves presence listening", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
