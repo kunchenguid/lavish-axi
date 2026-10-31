@@ -38,7 +38,9 @@ const SETTLE_INTERVAL_MS = 20;
 const CLEANUP_TIMEOUT_MS = 5000;
 const SMALL_BATCH = { count: 2, chars: 64 };
 // Each prompt is its own POST (the JSON parser caps one body at 2 MB).
-const LARGE_BATCH = { count: 6, chars: 1_000_000 };
+const LARGE_BATCH = { count: 32, chars: 1_000_000 };
+// Batch setup rewrites the store per POST; keep its aggregate bound separate from recovery steps.
+const BATCH_SETUP_TIMEOUT_MS = 15000;
 
 function buildBatch({ count, chars }, label = "note") {
   return Array.from({ length: count }, (_, index) => ({
@@ -441,7 +443,7 @@ async function pollUntilEnd(ctx, { deliver, prompts, observer, rawPoll = {} }) {
     try {
       const posting = ctx.background(ctx.postPrompts(prompts));
       await withTimeout(gate.held, "the long-poll's own take");
-      await withTimeout(posting, "the batch to be queued");
+      await withTimeout(posting, "the batch to be queued", BATCH_SETUP_TIMEOUT_MS);
       chatBefore = (await ctx.readSession()).chat;
     } finally {
       gate.release();
