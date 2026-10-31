@@ -5499,7 +5499,13 @@ for (const mode of ["timed feedback", "timed timeout", "heartbeat feedback"]) {
       }
 
       const prompts = [
-        { uid: "message-1", prompt: "Keep this feedback for the next poll", selector: "body", tag: "message", text: "" },
+        {
+          uid: "message-1",
+          prompt: "Keep this feedback for the next poll",
+          selector: "body",
+          tag: "message",
+          text: "",
+        },
       ];
       const queueFeedback = () =>
         boundedFetch(`${base}/api/${key}/prompts`, {
