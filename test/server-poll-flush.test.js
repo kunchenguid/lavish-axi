@@ -257,8 +257,8 @@ async function withPollFixture(run, serveOptions = {}) {
         const socket = netConnect(server.port, "127.0.0.1");
         clients.add(socket);
         socket.on("error", () => {});
-        await withTimeout(once(socket, "connect"), "the raw poll to connect");
         socket.pause();
+        await withTimeout(once(socket, "connect"), "the raw poll to connect");
         const headers = [
           `${method} /api/poll?file=${encodeURIComponent(artifact)}${query} HTTP/1.1`,
           `Host: 127.0.0.1:${server.port}`,
