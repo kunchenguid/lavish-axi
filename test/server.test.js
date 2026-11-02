@@ -1152,11 +1152,14 @@ test("composer textarea is sized within the right panel", async () => {
   assert.match(css, /\.composer textarea\{[^}]*box-sizing:border-box/);
 });
 
-test("hot reload resets iframe src instead of crossing sandbox location", async () => {
+// `Location.replace` is one of the two members a cross-origin parent may use on the sandboxed
+// frame; `reload` is not. Replacing also keeps reloads out of the tab's session history (#426).
+test("hot reload replaces the iframe location and never reloads across the sandbox", async () => {
   const js = await chromeClientSource();
 
   assert.doesNotMatch(js, /contentWindow\.location\.reload/);
-  assert.match(js, /frame\.src\s*=\s*artifactFrameSrcForLoad\(\{ revision, token \}\)/);
+  assert.match(js, /navigateArtifactFrame\(artifactFrameSrcForLoad\(\{ revision, token \}\)\)/);
+  assert.match(js, /frame\.contentWindow\.location\.replace\(url\)/);
   assert.match(js, /artifact-loads\/begin/);
 });
 
