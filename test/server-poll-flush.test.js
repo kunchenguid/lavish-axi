@@ -23,12 +23,16 @@ import { SessionStore } from "../src/session-store.js";
 // tests pin that local recovery. They do not assert a lease/ACK protocol, process-death safety, that
 // an agent application received a batch, or exactly-once delivery.
 //
-// Two kinds of evidence, kept apart on purpose:
+// Three kinds of evidence, kept apart on purpose:
 // - "injected": the poll response fails on the server side just as `end()` is called (its socket is
 //   destroyed, it errors, or the write throws), so the client is certain to get nothing. This proves
 //   the recovery path; it does not prove the window is reachable.
 // - "stalled": a raw loopback client does not read, the batch is large enough to stall the server's
 //   write, and the client then disconnects. Nothing is injected on the server side.
+// - "held": real socket writes run, but their successful completion callbacks wait for release or
+//   socket closure. This tests the unfinished-response lifecycle, not natural kernel backpressure.
+//   Windows accepts the full large response with zero client reads, so its large-batch cases use
+//   this explicit hold. Linux and macOS retain the natural-stall cases; held controls run everywhere.
 
 const STEP_TIMEOUT_MS = 5000;
 // Recovery is asynchronous (a state write, then events), so observations are retried until they
@@ -39,6 +43,8 @@ const CLEANUP_TIMEOUT_MS = 5000;
 const SMALL_BATCH = { count: 2, chars: 64 };
 // Each prompt is its own POST (the JSON parser caps one body at 2 MB).
 const LARGE_BATCH = { count: 32, chars: 1_000_000 };
+const HOLD_LARGE_COMPLETION = process.platform === "win32";
+const LARGE_SOCKET_KIND = HOLD_LARGE_COMPLETION ? "held completion on a real socket" : "stalled real socket";
 // Batch setup rewrites the store per POST; keep its aggregate bound separate from recovery steps.
 const BATCH_SETUP_TIMEOUT_MS = 15000;
 
@@ -301,9 +307,10 @@ async function withPollFixture(run, serveOptions = {}) {
   return outcome;
 }
 
-async function readRawBody(socket) {
+async function readRawBody(socket, record = null) {
   const chunks = [];
   socket.on("data", (chunk) => chunks.push(chunk));
+  record?.release();
   socket.resume();
   await withTimeout(once(socket, "close"), "the raw client to read the whole response");
   const raw = Buffer.concat(chunks).toString("utf8");
@@ -324,14 +331,44 @@ async function readRawBody(socket) {
   return JSON.parse(body.trim());
 }
 
+// Holds the stream completion, not the native write or its bytes. A real disconnect still closes
+// the socket and response; release then drains the saved callbacks without inventing an error.
+function holdSocketCompletion(ctx, socket) {
+  let released = false;
+  const pending = [];
+  const release = () => {
+    released = true;
+    for (const done of pending.splice(0)) done();
+  };
+  for (const name of ["_write", "_writev"]) {
+    ctx.patch(
+      socket,
+      name,
+      (original) =>
+        function (...args) {
+          const done = args.pop();
+          return original.call(this, ...args, (error) => {
+            if (error || released) done(error);
+            else pending.push(() => done());
+          });
+        },
+    );
+  }
+  socket.once("close", release);
+  ctx.onCleanup(() => socket.off("close", release));
+  ctx.onCleanup(release);
+  return release;
+}
+
 // Observes every /api/poll response. `fault` is applied once, to the first response that is ended:
 // "destroy" kills its socket just before `end()` writes, "error" emits a response error and then
 // kills the socket (two failure signals for one delivery), and "throw" makes `end()` throw before
 // writing anything. The record keeps what the response looked like at `close`, because ended is
 // not finished.
-function observePollResponses(ctx, { fault = null } = {}) {
+function observePollResponses(ctx, { fault = null, holdCompletion = false } = {}) {
   const events = new EventEmitter();
   let pendingFault = fault;
+  let pendingHold = holdCompletion;
   ctx.patch(
     ServerResponse.prototype,
     "end",
@@ -341,7 +378,11 @@ function observePollResponses(ctx, { fault = null } = {}) {
         if (!String(this.req?.url).startsWith("/api/poll") || this.lavishPollRecord) {
           return originalEnd.apply(this, args);
         }
-        const record = { res: this, closed: null };
+        const record = { res: this, closed: null, release: () => {} };
+        if (pendingHold) {
+          pendingHold = false;
+          record.release = holdSocketCompletion(ctx, this.socket);
+        }
         record.closed = new Promise((resolve) => {
           this.once("close", () =>
             resolve({ writableEnded: this.writableEnded, writableFinished: this.writableFinished }),
@@ -358,6 +399,10 @@ function observePollResponses(ctx, { fault = null } = {}) {
       },
   );
   return { nextEnd: () => once(events, "end").then(([record]) => record) };
+}
+
+function observeLargePollResponses(ctx) {
+  return observePollResponses(ctx, { holdCompletion: HOLD_LARGE_COMPLETION });
 }
 
 // Counts restores of this session. With `hold`, each restore is held after its state write and
@@ -485,38 +530,42 @@ const failedDeliveryScenarios = [
   { name: "immediate poll, socket killed before the write (injected fault)", deliver: "immediate", fault: "injected" },
   { name: "pending poll, socket killed before the write (injected fault)", deliver: "pending", fault: "injected" },
   {
-    name: "immediate poll, raw loopback client disconnects mid-flush of a large batch (stalled real socket)",
+    name: `immediate poll, raw loopback client disconnects mid-flush of a large batch (${LARGE_SOCKET_KIND})`,
     deliver: "immediate",
     fault: "stalled",
   },
   {
-    name: "pending poll, raw loopback client disconnects mid-flush of a large batch (stalled real socket)",
+    name: `pending poll, raw loopback client disconnects mid-flush of a large batch (${LARGE_SOCKET_KIND})`,
     deliver: "pending",
     fault: "stalled",
   },
+  { name: "immediate poll, held native write completion", deliver: "immediate", fault: "held" },
+  { name: "pending poll, held native write completion", deliver: "pending", fault: "held" },
 ];
 
 for (const { name, deliver, fault } of failedDeliveryScenarios) {
   test(`a poll response that is ended but never finishes puts the batch back: ${name}`, async () => {
     await withPollFixture(async (ctx) => {
       const prompts = buildBatch(fault === "stalled" ? LARGE_BATCH : SMALL_BATCH);
-      const observer = observePollResponses(ctx, { fault: fault === "injected" ? "destroy" : null });
+      const observer = observePollResponses(ctx, {
+        fault: fault === "injected" ? "destroy" : null,
+        holdCompletion: fault === "held" || (fault === "stalled" && HOLD_LARGE_COMPLETION),
+      });
       const restores = watchRestores(ctx);
 
       const { record, socket, chatBefore } = await pollUntilEnd(ctx, { deliver, prompts, observer });
-      if (fault === "stalled") {
-        // One loop turn is enough for a write the kernel accepted to finish. A write stalled on the
-        // client that does not read is still unfinished afterwards: the precondition for this case.
+      if (fault !== "injected") {
+        // Natural backpressure or the explicit completion hold must keep this response unfinished.
         await yieldToEventLoop();
         assert.equal(
           record.res.writableFinished,
           false,
-          "precondition: batch fit the socket buffers; raise LARGE_BATCH",
+          "precondition: response must remain unfinished before the client disconnects",
         );
         assert.ok(record.res.socket.writableLength > 0, "precondition: nothing left buffered in the server socket");
         socket.destroy();
       }
-      // Real or injected, this is the window under test: the response was ended, never finished.
+      // Natural, held or injected, this is the window under test: ended, never finished.
       assert.deepEqual(await withTimeout(record.closed, "the poll response to close"), {
         writableEnded: true,
         writableFinished: false,
@@ -567,13 +616,32 @@ async function assertDeliveredOnce(ctx, { closeState, received, prompts, restore
 test("control: a large batch the slow client reads in full is delivered once and is not restored", async () => {
   await withPollFixture(async (ctx) => {
     const prompts = buildBatch(LARGE_BATCH);
-    const observer = observePollResponses(ctx);
+    const observer = observeLargePollResponses(ctx);
     const restores = watchRestores(ctx);
 
     const { record, socket } = await pollUntilEnd(ctx, { deliver: "immediate", prompts, observer });
     await yieldToEventLoop();
-    assert.equal(record.res.writableFinished, false, "precondition: batch fit the socket buffers; raise LARGE_BATCH");
-    const received = await readRawBody(socket);
+    assert.equal(
+      record.res.writableFinished,
+      false,
+      "precondition: response must remain unfinished at this checkpoint",
+    );
+    const received = await readRawBody(socket, record);
+    const closeState = await withTimeout(record.closed, "the poll response to close");
+    await assertDeliveredOnce(ctx, { closeState, received, prompts, restores });
+  });
+});
+
+test("control: releasing a held native write completion delivers once without a restore", async () => {
+  await withPollFixture(async (ctx) => {
+    const prompts = buildBatch(SMALL_BATCH);
+    const observer = observePollResponses(ctx, { holdCompletion: true });
+    const restores = watchRestores(ctx);
+    const { record, socket } = await pollUntilEnd(ctx, { deliver: "immediate", prompts, observer });
+    await yieldToEventLoop();
+    assert.equal(record.res.writableFinished, false, "precondition: native completion is held");
+    assert.ok(record.res.socket.writableLength > 0, "precondition: held write remains buffered");
+    const received = await readRawBody(socket, record);
     const closeState = await withTimeout(record.closed, "the poll response to close");
     await assertDeliveredOnce(ctx, { closeState, received, prompts, restores });
   });
@@ -650,7 +718,7 @@ test("a slow but healthy pending delivery is not rolled back while heartbeats wo
   await withPollFixture(
     async (ctx) => {
       const prompts = buildBatch(LARGE_BATCH);
-      const observer = observePollResponses(ctx);
+      const observer = observeLargePollResponses(ctx);
       const restores = watchRestores(ctx);
 
       const { record, socket } = await pollUntilEnd(ctx, { deliver: "pending", prompts, observer });
@@ -667,7 +735,7 @@ test("a slow but healthy pending delivery is not rolled back while heartbeats wo
         { status: rival.status, code: (await rival.json()).code },
         { status: 409, code: "LISTENER_ACTIVE" },
       );
-      const received = await readRawBody(socket);
+      const received = await readRawBody(socket, record);
       const closeState = await withTimeout(record.closed, "the poll response to close");
       await assertDeliveredOnce(ctx, { closeState, received, prompts, restores });
     },
@@ -690,12 +758,16 @@ async function successorStateAfter(checkpoint, successor) {
 test("a takeover during an unfinished flush waits until the old batch is fully put back, then gets it", async () => {
   await withPollFixture(async (ctx) => {
     const prompts = buildBatch(LARGE_BATCH);
-    const observer = observePollResponses(ctx);
+    const observer = observeLargePollResponses(ctx);
     const restores = watchRestores(ctx, { hold: true });
 
     const { record, socket } = await pollUntilEnd(ctx, { deliver: "immediate", prompts, observer });
     await yieldToEventLoop();
-    assert.equal(record.res.writableFinished, false, "precondition: batch fit the socket buffers; raise LARGE_BATCH");
+    assert.equal(
+      record.res.writableFinished,
+      false,
+      "precondition: response must remain unfinished at this checkpoint",
+    );
     const successor = ctx.background(ctx.poll("&takeover=1&timeoutMs=0", { method: "POST" }));
     assert.equal(await successorStateAfter(restores.held, successor), "blocked");
     restores.release();
@@ -742,12 +814,16 @@ test("prompts and a snapshot queued during an unfinished flush stay after the pu
   await withPollFixture(async (ctx) => {
     const prompts = buildBatch(LARGE_BATCH);
     const newer = buildBatch(SMALL_BATCH, "newer");
-    const observer = observePollResponses(ctx);
+    const observer = observeLargePollResponses(ctx);
     const restores = watchRestores(ctx);
 
     const { record, socket } = await pollUntilEnd(ctx, { deliver: "immediate", prompts, observer });
     await yieldToEventLoop();
-    assert.equal(record.res.writableFinished, false, "precondition: batch fit the socket buffers; raise LARGE_BATCH");
+    assert.equal(
+      record.res.writableFinished,
+      false,
+      "precondition: response must remain unfinished at this checkpoint",
+    );
     await ctx.postPrompts(newer, { domSnapshot: "uid=2 newer body" });
     const chatWithNewer = (await ctx.readSession()).chat;
     socket.destroy();
@@ -914,16 +990,20 @@ for (const { name, conclude, followUp } of concludedDuringFlush) {
   test(`a delivery that finishes after ${name} does not mark the agent working`, async () => {
     await withPollFixture(async (ctx) => {
       const prompts = buildBatch(LARGE_BATCH);
-      const observer = observePollResponses(ctx);
+      const observer = observeLargePollResponses(ctx);
       const restores = watchRestores(ctx);
       // An open review page keeps the server from stepping down when the session ends.
       await ctx.startPresenceStream();
 
       const { record, socket } = await pollUntilEnd(ctx, { deliver: "immediate", prompts, observer });
       await yieldToEventLoop();
-      assert.equal(record.res.writableFinished, false, "precondition: batch fit the socket buffers; raise LARGE_BATCH");
+      assert.equal(
+        record.res.writableFinished,
+        false,
+        "precondition: response must remain unfinished at this checkpoint",
+      );
       assert.equal((await conclude(ctx)).status, 200);
-      const received = await readRawBody(socket);
+      const received = await readRawBody(socket, record);
       assert.deepEqual(await withTimeout(record.closed, "the poll response to close"), {
         writableEnded: true,
         writableFinished: true,
@@ -1039,7 +1119,7 @@ test("orderly shutdown keeps the port until the put-back of an unfinished respon
   await withPollFixture(async (ctx) => {
     const prompts = buildBatch(LARGE_BATCH, "old");
     const newer = buildBatch({ count: 1, chars: 64 }, "new");
-    const observer = observePollResponses(ctx);
+    const observer = observeLargePollResponses(ctx);
     // Holds the retiring server's put-back just before it writes state.json.
     const restoring = new WeakSet();
     const reached = createGate();
@@ -1070,7 +1150,11 @@ test("orderly shutdown keeps the port until the put-back of an unfinished respon
 
     const { record } = await pollUntilEnd(ctx, { deliver: "immediate", prompts, observer });
     await yieldToEventLoop();
-    assert.equal(record.res.writableFinished, false, "precondition: batch fit the socket buffers; raise LARGE_BATCH");
+    assert.equal(
+      record.res.writableFinished,
+      false,
+      "precondition: response must remain unfinished at this checkpoint",
+    );
     const closing = ctx.background(ctx.server.close());
     await withTimeout(reached.opened, "the put-back to reach its state write");
 
