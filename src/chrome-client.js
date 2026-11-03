@@ -355,12 +355,8 @@ function artifactFrameSrcForLoad(load) {
 // After the first load, replace the frame's location instead; the `src` attribute keeps that URL.
 function navigateArtifactFrame(url) {
   if (frame.src && frame.contentWindow) {
-    try {
-      frame.contentWindow.location.replace(url);
-      return;
-    } catch {
-      // A frame window that refuses navigation still gets the attribute load below.
-    }
+    frame.contentWindow.location.replace(url);
+    return;
   }
   frame.src = url;
 }
