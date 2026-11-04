@@ -3,6 +3,24 @@ import test from "node:test";
 import vm from "node:vm";
 
 import { createSdkJs } from "../src/server.js";
+import { reviewShortcutAction } from "../src/artifact-sdk.js";
+
+test("review shortcuts reject modified keys and editable controls", () => {
+  assert.equal(reviewShortcutAction({ key: "m" }), "mark");
+  assert.equal(reviewShortcutAction({ key: "c" }), "comment");
+  assert.equal(reviewShortcutAction({ key: "d" }), "done");
+  assert.equal(reviewShortcutAction({ key: "D", shiftKey: true }), "done-parent");
+  for (const event of [
+    { key: "M", shiftKey: true },
+    { key: "c", ctrlKey: true },
+    { key: "d", metaKey: true },
+    { key: "m", altKey: true },
+    { key: "d", repeat: true },
+    { key: "m", target: { closest: () => ({}) } },
+  ]) {
+    assert.equal(reviewShortcutAction(event), "");
+  }
+});
 
 // The SDK the browser actually runs is a serialized bundle, not the module: `createSdkJs` has to
 // declare every helper `createArtifactSdk` reaches for. A helper left out compiles fine and only
@@ -38,6 +56,9 @@ function createElement(tag) {
     },
     getAttribute(name) {
       return attributes.has(name) ? attributes.get(name) : null;
+    },
+    removeAttribute(name) {
+      attributes.delete(name);
     },
     className: "",
     matches(selectorList) {
@@ -131,6 +152,7 @@ function bootSdk({
   let documentQuery = () => null;
   /** @type {(selector: string) => any[]} */
   let documentQueryAll = () => [];
+  let selection = null;
   const elementsById = new Map();
   const documentElement = createElement("html");
   const head = createElement("head");
@@ -172,12 +194,13 @@ function bootSdk({
       addEventListener: (type, handler) => documentListeners.push({ type, handler }),
       removeEventListener() {},
       createElement,
+      createRange: () => null,
       getElementById: (id) => elementsById.get(id) || null,
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
       querySelectorAll: (selector) =>
         selector === "[data-lavish-revision]" ? revisionMarkElements : documentQueryAll(selector),
-      getSelection: () => null,
+      getSelection: () => selection,
     },
   };
   // The browser's `instanceof Element` check is meaningful for the contextmenu path. The DOM
@@ -223,6 +246,15 @@ function bootSdk({
     },
     setDocumentQuery(query) {
       documentQuery = query;
+    },
+    setSelection(value) {
+      selection = value;
+    },
+    setCreateRange(factory) {
+      sandbox.document.createRange = factory;
+    },
+    overlayElements() {
+      return documentElement.children.flatMap((child) => child.shadowRoot?.children || []);
     },
     setDocumentQueryAll(query) {
       documentQueryAll = query;
@@ -308,6 +340,261 @@ function buildTable(sdk) {
   const badge = appendTo(evidence, cell("code", "Drive"));
   return { evidence, badge };
 }
+
+function selectText(sdk, element, text) {
+  const node = { nodeType: 3, parentElement: element, parentNode: element, nodeValue: text };
+  element.childNodes = [node];
+  const range = {
+    collapsed: false,
+    commonAncestorContainer: node,
+    startContainer: node,
+    endContainer: node,
+    startOffset: 0,
+    endOffset: text.length,
+    cloneRange() {
+      return this;
+    },
+    getClientRects() {
+      return [];
+    },
+    getBoundingClientRect() {
+      return element.getBoundingClientRect();
+    },
+  };
+  const selection = {
+    rangeCount: 1,
+    getRangeAt: () => range,
+    toString: () => text,
+    removeAllRanges() {
+      this.rangeCount = 0;
+    },
+  };
+  sdk.setSelection(selection);
+  return selection;
+}
+
+test("selection shortcuts preserve mouse selection and mark or comment the selected text", () => {
+  const sdk = bootSdk();
+  const p = appendTo(sdk.body, cell("p", "Selected words"));
+  const selection = selectText(sdk, p, "Selected words");
+  sdk.trigger("mouseup", { target: p });
+  assert.equal(sdk.cards().length, 0);
+  let prevented = false;
+  sdk.trigger("keydown", {
+    key: "m",
+    target: p,
+    preventDefault() {
+      prevented = true;
+    },
+  });
+  const prompt = sdk.posted.find((entry) => entry.type === "lavish:queuePrompt").prompt;
+  assert.equal(prevented, true);
+  assert.equal(selection.rangeCount, 0);
+  assert.equal(prompt.prompt, "");
+  assert.equal(prompt.target.type, "text-range");
+  assert.equal(prompt.target.text, "Selected words");
+
+  selectText(sdk, p, "Selected words");
+  prevented = false;
+  sdk.trigger("keydown", {
+    key: "c",
+    target: p,
+    preventDefault() {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, true);
+  assert.equal(sdk.cards().length, 1);
+});
+
+test("done shortcut toggles a paragraph and excludes a styled heading", () => {
+  const sdk = bootSdk();
+  const section = appendTo(sdk.body, createElement("section"));
+  section.getBoundingClientRect = () => ({ left: 0, top: 0, right: 300, bottom: 100, width: 300, height: 100 });
+  const heading = appendTo(section, cell("h2", "Heading"));
+  const p = appendTo(section, cell("p", "Paragraph"));
+  section.querySelectorAll = (query) =>
+    query === '[data-lavish-done="true"]' && p.getAttribute("data-lavish-done") === "true" ? [p] : [];
+  section.contains = (element) => element === p || element === heading;
+  sdk.setDocumentQueryAll((query) =>
+    query === '[data-lavish-done="true"]'
+      ? [section, p].filter((el) => el.getAttribute("data-lavish-done") === "true")
+      : [],
+  );
+  const key = (key, shiftKey = false) =>
+    sdk.trigger("keydown", { key, shiftKey, target: sdk.body, preventDefault() {} });
+  sdk.trigger("mousemove", { target: p, clientX: 12, clientY: 12 });
+  key("d");
+  assert.equal(p.getAttribute("data-lavish-done"), "true");
+  key("D", true);
+  assert.equal(p.getAttribute("data-lavish-done"), null);
+  assert.equal(section.getAttribute("data-lavish-done"), "true");
+  key("d");
+  sdk.trigger("mousemove", { target: heading, clientX: 12, clientY: 12 });
+  key("d");
+  assert.equal(heading.getAttribute("data-lavish-done"), null);
+  assert.equal(section.getAttribute("data-lavish-done"), "true");
+});
+
+test("done shortcut records the selected range and clears the native selection", () => {
+  const sdk = bootSdk();
+  const p = appendTo(sdk.body, cell("p", "Review this passage"));
+  const selection = selectText(sdk, p, "this passage");
+  let prevented = false;
+  sdk.trigger("keydown", {
+    key: "d",
+    target: p,
+    preventDefault() {
+      prevented = true;
+    },
+  });
+  const message = sdk.posted.find((entry) => entry.type === "lavish:doneBoxes");
+  assert.equal(prevented, true);
+  assert.equal(selection.rangeCount, 0);
+  assert.equal(message.items.length, 1);
+  assert.equal(message.items[0].kind, "text-range");
+  assert.equal(message.items[0].target.text, "this passage");
+  assert.equal(typeof message.items[0].ancestorSignature, "string");
+});
+
+test("done restore rejects a changed paragraph even when its selector still resolves", () => {
+  const sdk = bootSdk();
+  const p = appendTo(sdk.body, cell("p", "Original wording"));
+  sdk.setDocumentQueryAll((query) => {
+    if (query === '[data-lavish-done="true"]') return p.getAttribute("data-lavish-done") === "true" ? [p] : [];
+    return query === "html > body > p" ? [p] : [];
+  });
+  sdk.trigger("mousemove", { target: p, clientX: 12, clientY: 12 });
+  sdk.trigger("keydown", { key: "d", target: p, preventDefault() {} });
+  const item = sdk.posted.find((entry) => entry.type === "lavish:doneBoxes").items[0];
+  assert.ok(item.textSignature);
+  p.textContent = "Changed wording!";
+  sdk.sendChromeMessage({ type: "lavish:restoreDoneBoxes", items: [item] });
+  assert.equal(p.getAttribute("data-lavish-done"), null);
+});
+
+test("done restore rejects identical paragraphs after their parent sections swap", () => {
+  const sdk = bootSdk();
+  const first = appendTo(sdk.body, cell("section", "First section: identical"));
+  const second = appendTo(sdk.body, cell("section", "Second section: identical"));
+  const p1 = appendTo(first, cell("p", "identical"));
+  const p2 = appendTo(second, cell("p", "identical"));
+  sdk.setDocumentQueryAll((query) => {
+    if (query === '[data-lavish-done="true"]')
+      return [p1, p2].filter((p) => p.getAttribute("data-lavish-done") === "true");
+    if (query === "P") return [p1, p2];
+    if (query === "html > body > section:nth-of-type(1) > p") return [sdk.body.children[0].children[0]];
+    return [];
+  });
+  sdk.trigger("mousemove", { target: p1, clientX: 12, clientY: 12 });
+  sdk.trigger("keydown", { key: "d", target: p1, preventDefault() {} });
+  const item = sdk.posted.find((entry) => entry.type === "lavish:doneBoxes").items[0];
+  assert.match(item.selector, /nth-of-type/);
+  sdk.body.children.reverse();
+  sdk.sendChromeMessage({ type: "lavish:restoreDoneBoxes", items: [item] });
+  assert.equal(p1.getAttribute("data-lavish-done"), null);
+  assert.equal(p2.getAttribute("data-lavish-done"), null);
+});
+
+test("persistent marks open comments and take priority over element annotations", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const p = appendTo(sdk.body, cell("p", "Marked text"));
+  const node = { nodeType: 3, parentElement: p, parentNode: p, nodeValue: "Marked text" };
+  p.childNodes = [node];
+  sdk.setDocumentQueryAll((query) => (query === "#paragraph" ? [p] : []));
+  sdk.setCreateRange(() => ({
+    setStart() {},
+    setEnd() {},
+    toString: () => "Marked text",
+    collapsed: false,
+    getClientRects: () => [{ left: 10, top: 10, right: 90, bottom: 30, width: 80, height: 20 }],
+    getBoundingClientRect: () => p.getBoundingClientRect(),
+  }));
+  const target = {
+    type: "text-range",
+    text: "Marked text",
+    selector: "#paragraph",
+    commonAncestorSelector: "#paragraph",
+    start: { selector: "#paragraph", path: [0], offset: 0 },
+    end: { selector: "#paragraph", path: [0], offset: 11 },
+  };
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      { id: "one", selector: "#paragraph", state: "sent", hasComment: false, target },
+      { id: "two", selector: "#paragraph", state: "queued", hasComment: true, badgeNumber: 1, target },
+    ],
+  });
+  sdk.runTimers();
+  assert.ok(sdk.overlayElements().some((el) => el.className.includes("is-marker-only")));
+  assert.ok(sdk.overlayElements().some((el) => el.className.includes("is-commented")));
+  sdk.trigger("click", { target: p, clientX: 20, clientY: 15, preventDefault() {}, stopPropagation() {} });
+  assert.equal(sdk.posted.at(-1).type, "lavish:activateAnnotationMark");
+  assert.equal(sdk.posted.at(-1).id, "two");
+  assert.equal(sdk.posted.at(-1).selectOnly, true);
+  assert.equal(sdk.cards().length, 0);
+  sdk.sendChromeMessage({ type: "lavish:openCommentForMark", id: "one" });
+  assert.equal(sdk.cards().length, 1);
+});
+
+test("clicking a mark or pressing M then C or Delete comments or deletes without stacking duplicates", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const p = appendTo(sdk.body, cell("p", "Marked text"));
+  const node = { nodeType: 3, parentElement: p, parentNode: p, nodeValue: "Marked text" };
+  p.childNodes = [node];
+  sdk.setDocumentQueryAll((query) => (query === "#paragraph" || query === "html > body > p" ? [p] : []));
+  const rangeObj = {
+    startContainer: node,
+    endContainer: node,
+    startOffset: 0,
+    endOffset: 11,
+    setStart() {},
+    setEnd() {},
+    cloneRange() {
+      return this;
+    },
+    compareBoundaryPoints() {
+      return 0;
+    },
+    toString: () => "Marked text",
+    collapsed: false,
+    getClientRects: () => [{ left: 10, top: 10, right: 90, bottom: 30, width: 80, height: 20 }],
+    getBoundingClientRect: () => p.getBoundingClientRect(),
+  };
+  sdk.setCreateRange(() => rangeObj);
+  const target = {
+    type: "text-range",
+    text: "Marked text",
+    selector: "#paragraph",
+    commonAncestorSelector: "#paragraph",
+    start: { selector: "#paragraph", path: [0], offset: 0 },
+    end: { selector: "#paragraph", path: [0], offset: 11 },
+  };
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [{ id: "m1", selector: "#paragraph", state: "queued", hasComment: false, comment: "", target }],
+  });
+  sdk.runTimers();
+
+  // Clicking the mark selects it; pressing C without a blue selection opens the comment card on it.
+  sdk.trigger("click", { target: p, clientX: 20, clientY: 15, preventDefault() {}, stopPropagation() {} });
+  sdk.setSelection({ rangeCount: 0, toString: () => "" });
+  sdk.trigger("keydown", { key: "c", target: p, preventDefault() {} });
+  assert.equal(sdk.cards().length, 1);
+  sdk.cards()[0].querySelector(".lavish-cancel").onclick();
+
+  // Clicking the + comment overlay button also opens the comment card directly on the page.
+  const addCommentBtn = sdk.overlayElements().find((el) => el.className.includes("lavish-mark-add-comment"));
+  assert.ok(addCommentBtn);
+  addCommentBtn.listeners.find((l) => l.type === "click").handler({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(sdk.cards().length, 2);
+  sdk.cards()[1].querySelector(".lavish-cancel").onclick();
+
+  // Pressing Delete removes the selected mark and posts lavish:deleteAnnotationMark.
+  sdk.trigger("keydown", { key: "Delete", target: p, preventDefault() {} });
+  assert.equal(sdk.posted.at(-1).type, "lavish:deleteAnnotationMark");
+  assert.equal(sdk.posted.at(-1).id, "m1");
+});
 
 test("a requested layout diagnostic publishes even when the result is unchanged", async () => {
   const sdk = bootSdk({ runAnimationFrames: true });

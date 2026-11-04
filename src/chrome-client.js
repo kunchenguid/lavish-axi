@@ -125,6 +125,19 @@ function isModeToggleHotkeyEvent(event) {
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
 }
 
+function reviewShortcutAction(event) {
+  if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey)
+    return "";
+  if (event.target?.closest?.("input,textarea,select,[contenteditable]:not([contenteditable='false'])")) return "";
+  const key = String(event.key || "").toLowerCase();
+  if (key === "delete" || key === "backspace") return "delete-mark";
+  if (key === "d") return event.shiftKey ? "done-parent" : "done";
+  if (event.shiftKey) return "";
+  if (key === "m") return "mark";
+  if (key === "c") return "comment";
+  return "";
+}
+
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
 const panelScroll = /** @type {HTMLDivElement} */ (document.getElementById("panelScroll"));
 const queuedLog = /** @type {HTMLDivElement} */ (document.getElementById("queuedLog"));
@@ -240,6 +253,23 @@ const whiteboardCloseButton = /** @type {HTMLButtonElement} */ (document.getElem
 const whiteboardError = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardError"));
 const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-artifact-src") || frame.src || "";
 
+const markTargetsStorageKey = "lavish-axi:mark-targets:" + key;
+const dismissedMarksStorageKey = "lavish-axi:dismissed-marks:" + key;
+const doneBoxesStorageKey = "lavish-axi:done-boxes:" + key;
+const storedMarkTargets = loadJsonState(markTargetsStorageKey, []);
+/** @type {Map<string, any>} */
+const rememberedMarkTargets = new Map(
+  Array.isArray(storedMarkTargets)
+    ? storedMarkTargets.filter((entry) => Array.isArray(entry) && isPromptIdentity(entry[0])).slice(-200)
+    : [],
+);
+const storedDismissedMarks = loadJsonState(dismissedMarksStorageKey, []);
+const dismissedMarkIds = new Set(
+  Array.isArray(storedDismissedMarks) ? storedDismissedMarks.filter((v) => typeof v === "string" && v).slice(-200) : [],
+);
+const storedDoneBoxes = loadJsonState(doneBoxesStorageKey, []);
+let doneBoxItems = Array.isArray(storedDoneBoxes) ? storedDoneBoxes.slice(0, 200) : [];
+let postedAnnotationMarks = "[]";
 const queued = loadQueuedPrompts();
 let annotation = sessionData.initialAnnotate !== undefined ? Boolean(sessionData.initialAnnotate) : false;
 let ended = false;
@@ -564,10 +594,30 @@ function loadQueuedPrompts() {
     // the bad prompt on disk and would otherwise stay wedged after an upgrade.
     // Keep a stored identity so a reload can settle an already-accepted note; mint
     // one only when the restored prompt predates identity.
-    return Array.isArray(parsed) ? parsed.map((item) => adoptQueuedPrompt(item, true)).filter(Boolean) : [];
+    const items = Array.isArray(parsed) ? parsed.map((item) => adoptQueuedPrompt(item, true)).filter(Boolean) : [];
+    rememberMarkTargets(items);
+    return items;
   } catch {
     return [];
   }
+}
+
+function rememberMarkTargets(items) {
+  let changed = false;
+  for (const item of items) {
+    const pid = promptIdentity(item);
+    if (!pid || item.target?.type !== "text-range") continue;
+    if (JSON.stringify(rememberedMarkTargets.get(pid)) === JSON.stringify(item.target)) continue;
+    rememberedMarkTargets.delete(pid);
+    rememberedMarkTargets.set(pid, item.target);
+    changed = true;
+  }
+  while (rememberedMarkTargets.size > 200) {
+    const oldest = rememberedMarkTargets.keys().next().value;
+    if (oldest === undefined) break;
+    rememberedMarkTargets.delete(oldest);
+  }
+  if (changed) saveJsonState(markTargetsStorageKey, [...rememberedMarkTargets]);
 }
 
 function persistQueuedPrompts() {
@@ -761,6 +811,7 @@ function isPromptSending(prompt) {
 }
 
 function render() {
+  rememberMarkTargets(queued);
   const editing = editingPromptId ? queued.find((prompt) => promptIdentity(prompt) === editingPromptId) : null;
   // A note that left the queue or started sending takes its editor with it.
   if (editingPromptId && (!editing || !isPromptEditable(editing))) endQueuedEdit();
@@ -803,6 +854,7 @@ function render() {
     }
   }
   postQueuedAnchors();
+  postAnnotationMarks();
   updateSendState();
   scrollPanelToBottom();
   renderSheetSummary();
@@ -1034,6 +1086,8 @@ function addChat(entry, shouldScroll = true) {
 
   const el = document.createElement("div");
   el.className = "bubble " + role;
+  const pid = promptIdentity(entry);
+  if (pid) el.setAttribute("data-prompt-id", pid);
   el.innerHTML = chatBubbleHtml({ ...entry, role, text });
   chatLog.appendChild(el);
   if (shouldScroll) scrollElementIntoView(el);
@@ -1170,6 +1224,7 @@ function syncChat(chat, revision) {
   for (const note of retiredDraftNodes) chatLog.appendChild(note);
   const anchor = retiredDraftNodes[retiredDraftNodes.length - 1] || workingBubble || lastChatBubble;
   if (anchor) scrollElementIntoView(anchor);
+  postAnnotationMarks();
   return true;
 }
 
@@ -1646,7 +1701,7 @@ function endQueuedEdit() {
 }
 
 // Writes the open edit into its note without rendering. Returns whether the queue changed. A note
-// cleared of words and images is removed, as if its remove control had been used.
+// cleared of words and images is removed, except for a standalone text marker.
 function commitQueuedEdit() {
   if (!editingPromptId) return false;
   const index = queued.findIndex((prompt) => promptIdentity(prompt) === editingPromptId);
@@ -1655,8 +1710,14 @@ function commitQueuedEdit() {
   const prompt = queued[index];
   if (!isPromptEditable(prompt)) return false;
   if (!text && !attachmentCount(prompt)) {
-    const [removed] = queued.splice(index, 1);
-    afterQueuedPromptRemoved(removed);
+    if (prompt.target?.type === "text-range") {
+      prompt.prompt = "";
+      delete prompt.attachments;
+      persistQueuedPrompts();
+    } else {
+      const [removed] = queued.splice(index, 1);
+      afterQueuedPromptRemoved(removed);
+    }
   } else {
     // In place, not replaced: the send bookkeeping tracks notes by object identity.
     prompt.prompt = text;
@@ -1719,6 +1780,79 @@ function postQueuedAnchors(force = false) {
   postToFrame({ type: "lavish:queuedAnchors", selectors });
 }
 
+function collectAnnotationMarks() {
+  const marks = [];
+  let badgeNumber = 0;
+  displayedChat.forEach((entry, chatIdx) => {
+    if (entry?.role !== "user") return;
+    const anchors = Array.isArray(entry.anchors) ? entry.anchors : entry.anchor ? [entry.anchor] : [];
+    anchors.forEach((anchor, anchorIdx) => {
+      if (!anchor?.selector) return;
+      const pid = promptIdentity(entry);
+      const id = pid || "sent:" + chatIdx + ":" + anchorIdx;
+      if (dismissedMarkIds.has(id)) return;
+      const target = pid ? rememberedMarkTargets.get(pid) || null : null;
+      const comment = String(entry.text || "");
+      const hasComment = Boolean(comment.trim()) || attachmentCount(entry) > 0;
+      const kind =
+        target?.type ||
+        (anchor.label === "text"
+          ? "text-range"
+          : anchor.label === "node"
+            ? "mermaid-node"
+            : anchor.label === "cell"
+              ? "table-cell"
+              : "element");
+      if (kind !== "text-range") return;
+      marks.push({
+        id,
+        state: "sent",
+        selector: anchor.selector,
+        text: anchor.excerpt || "",
+        target,
+        kind,
+        hasComment,
+        badgeNumber: hasComment ? ++badgeNumber : 0,
+      });
+    });
+  });
+  queued.forEach((item, index) => {
+    const selector = item?.target?.selector || item?.selector;
+    if (!selector) return;
+    const pid = promptIdentity(item);
+    const id = pid || "q:" + index;
+    if (dismissedMarkIds.has(id)) return;
+    const target = item.target || (pid ? rememberedMarkTargets.get(pid) || null : null);
+    const comment = String(item.prompt || "");
+    const hasComment = Boolean(comment.trim()) || attachmentCount(item) > 0;
+    const kind = target?.type || (item.tag === "text" ? "text-range" : "element");
+    if (kind !== "text-range") return;
+    marks.push({
+      id,
+      state: "queued",
+      selector,
+      text: item.text || "",
+      target,
+      kind,
+      hasComment,
+      badgeNumber: hasComment ? ++badgeNumber : 0,
+    });
+  });
+  return marks;
+}
+
+function postAnnotationMarks(force = false) {
+  const marks = collectAnnotationMarks();
+  const signature = JSON.stringify(marks);
+  if (!force && signature === postedAnnotationMarks) return;
+  postedAnnotationMarks = signature;
+  postToFrame({ type: "lavish:annotationMarks", marks, items: marks });
+}
+
+function postDoneBoxes(force = false) {
+  if (force) postToFrame({ type: "lavish:restoreDoneBoxes", items: doneBoxItems });
+}
+
 queuedLog.addEventListener("click", (event) => {
   const target = /** @type {Element | null} */ (event.target);
   if (!target || typeof target.closest !== "function") return;
@@ -1752,10 +1886,11 @@ queuedLog.addEventListener("keydown", (event) => {
 
 function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
-  if (terminalSubmission || isPromptSending(queued[index])) return;
+  if (terminalSubmission || isPromptSending(queued[index])) return false;
   const [removed] = queued.splice(index, 1);
   afterQueuedPromptRemoved(removed);
   render();
+  return true;
 }
 
 function afterQueuedPromptRemoved(removed) {
@@ -1793,12 +1928,38 @@ function beginFeedbackPreparation() {
 
 function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ preparation = null) {
   if ((preparation && !feedbackPreparations.has(preparation)) || (terminalSubmission && !preparation)) return false;
+  const replaceIds = Array.isArray(rawPrompt?.replace_mark_ids)
+    ? rawPrompt.replace_mark_ids.map(String).filter(Boolean)
+    : [];
   // The sandboxed iframe is untrusted: never accept a caller-supplied settlement identity.
   const prompt = adoptQueuedPrompt(rawPrompt, false);
   if (!prompt) return false;
+  delete prompt.replace_mark_ids;
 
+  const isTextRange = prompt.target?.type === "text-range";
+  const targetSig = isTextRange ? JSON.stringify(prompt.target) : "";
+  const replaceIndexes = [];
+  if (replaceIds.length || isTextRange) {
+    queued.forEach((item, idx) => {
+      if (!isPromptEditable(item)) return;
+      const isMarkerOnly = !String(item.prompt || "").trim() && !attachmentCount(item);
+      if (!isMarkerOnly) return;
+      const pid = promptIdentity(item);
+      const sameTarget = isTextRange && item.target?.type === "text-range" && JSON.stringify(item.target) === targetSig;
+      if ((pid && replaceIds.includes(pid)) || replaceIds.includes("q:" + idx) || sameTarget) {
+        replaceIndexes.push(idx);
+      }
+    });
+  }
   const queueKey = promptQueueKey(prompt);
-  if (queueKey) {
+  if (replaceIndexes.length) {
+    const primaryIndex = replaceIndexes[0];
+    queued[primaryIndex] = prompt;
+    for (let i = replaceIndexes.length - 1; i >= 1; i -= 1) {
+      const [removed] = queued.splice(replaceIndexes[i], 1);
+      afterQueuedPromptRemoved(removed);
+    }
+  } else if (queueKey) {
     const index = queued.findIndex((item) => promptQueueKey(item) === queueKey);
     if (index !== -1) {
       // The replacement is the artifact's newer answer. Words typed against the old answer never
@@ -1815,6 +1976,7 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
   } else {
     queued.push(prompt);
   }
+  rememberMarkTargets([prompt]);
   persistQueuedPrompts();
   render();
   return true;
@@ -1824,6 +1986,7 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
+  delete clean.replace_mark_ids;
   return clean;
 }
 
@@ -4454,6 +4617,82 @@ window.addEventListener("message", (event) => {
   reviewNavigationPending = false;
   artifactSpokeToken = messageToken;
   clearTimeout(artifactSilenceTimer);
+  if (msg.type === "lavish:doneBoxes") {
+    doneBoxItems = Array.isArray(msg.items) ? msg.items.slice(0, 200) : [];
+    saveJsonState(doneBoxesStorageKey, doneBoxItems);
+    return;
+  }
+  if (msg.type === "lavish:deleteAnnotationMark") {
+    const id = String(msg.id || "");
+    if (!id || !collectAnnotationMarks().some((mark) => mark.id === id)) return;
+    const index = queued.findIndex(
+      (item, idx) =>
+        (item.target?.type === "text-range" || item.tag === "text") &&
+        (promptIdentity(item) === id || "q:" + idx === id),
+    );
+    if (index !== -1) {
+      if (!removeQueuedPrompt(index)) return;
+    }
+    dismissedMarkIds.add(id);
+    while (dismissedMarkIds.size > 200) {
+      const oldest = dismissedMarkIds.keys().next().value;
+      if (oldest === undefined) break;
+      dismissedMarkIds.delete(oldest);
+    }
+    saveJsonState(dismissedMarksStorageKey, [...dismissedMarkIds]);
+    if (rememberedMarkTargets.delete(id)) {
+      saveJsonState(markTargetsStorageKey, [...rememberedMarkTargets]);
+    }
+    postAnnotationMarks(true);
+    return;
+  }
+  if (msg.type === "lavish:activateAnnotationMark") {
+    const id = String(msg.id || "");
+    if (!id || !collectAnnotationMarks().some((mark) => mark.id === id)) return;
+    const index =
+      msg.state === "sent"
+        ? -1
+        : queued.findIndex(
+            (item, idx) =>
+              (item.target?.type === "text-range" || item.tag === "text") &&
+              (promptIdentity(item) === id || "q:" + idx === id),
+          );
+    if (msg.selectOnly) {
+      if (index !== -1) {
+        const qBubble = queuedLog.querySelector(`.bubble.queued[data-index="${index}"]`);
+        if (qBubble) {
+          scrollElementIntoView(qBubble);
+          qBubble.classList.add("is-highlighted");
+          setTimeout(() => qBubble.classList.remove("is-highlighted"), 1800);
+        }
+      } else if (id) {
+        const bubble = [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")].find(
+          (el) => el.getAttribute("data-prompt-id") === id,
+        );
+        if (bubble) {
+          scrollElementIntoView(bubble);
+          bubble.classList.add("is-highlighted");
+          setTimeout(() => bubble.classList.remove("is-highlighted"), 1800);
+        }
+      }
+      return;
+    }
+    if (index !== -1) editQueuedPrompt(index, { reveal: false });
+    else {
+      const entry = displayedChat.find((item) => item.role === "user" && promptIdentity(item) === msg.id);
+      if (entry && (Boolean(String(entry.text || "").trim()) || attachmentCount(entry) > 0)) {
+        const bubble = [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")].find(
+          (el) => el.getAttribute("data-prompt-id") === msg.id,
+        );
+        if (bubble) {
+          scrollElementIntoView(bubble);
+          bubble.classList.add("is-highlighted");
+          setTimeout(() => bubble.classList.remove("is-highlighted"), 1800);
+        }
+      } else if (entry) postToFrame({ type: "lavish:openCommentForMark", id: msg.id });
+    }
+    return;
+  }
   if (msg.type === "lavish:layoutDiagnostics") {
     const diagnosticSequence = ++layoutDiagnosticSequence;
     const complete = msg.complete !== false;
@@ -5087,6 +5326,16 @@ document.addEventListener(
   },
   true,
 );
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (ended || terminalSubmission) return;
+    const action = reviewShortcutAction(event);
+    if (!action) return;
+    postToFrame({ type: "lavish:selectionShortcut", action });
+  },
+  true,
+);
 frame.addEventListener("load", () => {
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
@@ -5094,6 +5343,8 @@ frame.addEventListener("load", () => {
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });
   postQueuedAnchors(true);
+  postAnnotationMarks(true);
+  postDoneBoxes(true);
   if (overlayIndex !== null) {
     inlineWhiteboardChannels.delete(overlayIndex);
     postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: overlayIndex });

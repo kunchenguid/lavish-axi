@@ -1126,6 +1126,14 @@ body.lavish {
   background: var(--bg-elevated);
   border-color: var(--border-strong);
 }
+.bubble.is-highlighted {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(244, 201, 93, 0.22);
+  transition:
+    box-shadow 180ms ease,
+    outline-color 180ms ease;
+}
 .bubble.agent {
   align-self: flex-start;
   background: transparent;
