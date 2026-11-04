@@ -209,6 +209,7 @@ test("every pull_request workflow ignores the full release-output set", () => {
     "ci.yml",
     "guard-generated-files.yml",
     "no-mistakes-required.yml",
+    "npmscan.yml",
   ]);
 
   const failures = [];

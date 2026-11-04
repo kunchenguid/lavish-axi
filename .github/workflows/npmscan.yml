@@ -3,7 +3,7 @@ name: NPMscan
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    paths: [package.json, pnpm-lock.yaml, .github/workflows/npmscan.yml]
+    paths: [pnpm-lock.yaml, .github/workflows/npmscan.yml]
 
 permissions: {}
 
