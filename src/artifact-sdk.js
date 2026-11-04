@@ -16,7 +16,9 @@ export function isModeToggleHotkeyEvent(event) {
 export function reviewShortcutAction(event) {
   if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey)
     return "";
-  if (event.target?.closest?.("input,textarea,select,[contenteditable]:not([contenteditable='false'])")) return "";
+  const editable = "input,textarea,select,[contenteditable]:not([contenteditable='false'])";
+  const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
+  if (path.some((node) => node?.matches?.(editable) || node?.closest?.(editable))) return "";
   const key = String(event.key || "").toLowerCase();
   if (key === "delete" || key === "backspace") return "delete-mark";
   if (key === "d") return event.shiftKey ? "done-parent" : "done";
@@ -878,10 +880,11 @@ export function createArtifactSdk(
 
   // `table` is opt-in because resolving a cell's row and column walks the whole table, while
   // `snapshot()` calls this for every element in the document and reads only uid/tag/text.
-  function context(el, { table = false } = {}) {
+  function context(el, { table = false, needSelector = true } = {}) {
+    const computeSelector = needSelector ? selector : () => "";
     const base = {
       uid: uid(el),
-      selector: selector(el),
+      selector: computeSelector(el),
       tag: (el.tagName || "").toLowerCase(),
       text: (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
     };
@@ -889,10 +892,10 @@ export function createArtifactSdk(
     // Semantic table coordinates are extra context, never a replacement identity: the highlight
     // outlines the element the reviewer clicked, so its selector, tag, and text must keep
     // describing that exact element rather than being coarsened up to the enclosing cell.
-    const tableTarget = table ? tableCellTarget(el, selector) : null;
+    const tableTarget = table ? tableCellTarget(el, computeSelector) : null;
     if (tableTarget) base.target = tableTarget;
 
-    const mermaidNode = mermaidNodeFrom(el, selector);
+    const mermaidNode = mermaidNodeFrom(el, computeSelector);
     if (mermaidNode) {
       base.tag = "mermaid-node";
       base.text = mermaidNode.label || base.text;
@@ -1925,12 +1928,8 @@ export function createArtifactSdk(
         }
         const mergedContext = overlaps.length ? mergeRangeWithOverlaps(c.range, overlaps) || c : c;
         const replaceMarkIds = overlaps.map((o) => o.mark.id);
-        const existingComment = overlaps
-          .map((o) => String(o.mark.comment || "").trim())
-          .filter(Boolean)
-          .join("\n\n");
         pendingSelectLatestMark = true;
-        queuePrompt(existingComment, {
+        queuePrompt("", {
           ...mergedContext,
           queueKey: "",
           ...(replaceMarkIds.length ? { replaceMarkIds } : {}),
@@ -1940,15 +1939,10 @@ export function createArtifactSdk(
         pendingSelectLatestMark = true;
         const mergedContext = overlaps.length ? mergeRangeWithOverlaps(c.range, overlaps) || c : c;
         const replaceMarkIds = overlaps.map((o) => o.mark.id);
-        const existingComment = overlaps
-          .map((o) => String(o.mark.comment || "").trim())
-          .filter(Boolean)
-          .join("\n\n");
         selection?.removeAllRanges?.();
         showAnnotationCard(mergedContext.element, {
           context: replaceMarkIds.length ? { ...mergedContext, replaceMarkIds } : mergedContext,
           range: mergedContext.range,
-          ...(existingComment ? { restoreText: existingComment } : {}),
         });
       }
       return true;
@@ -1993,6 +1987,14 @@ export function createArtifactSdk(
 
   function openCommentForMark(mark) {
     if (!mark) return;
+    if (mark.hasComment) {
+      postArtifactMessage("lavish:activateAnnotationMark", {
+        id: mark.id,
+        state: mark.state,
+        selector: mark.selector,
+      });
+      return;
+    }
     const resolved = resolveTextTarget(mark.target || { text: mark.text, selector: mark.selector }, mark.selector);
     const fallbackEl = resolved?.anchor || safeQuerySelector(mark.selector) || document.body;
     const range = resolved?.range || null;
@@ -2003,7 +2005,6 @@ export function createArtifactSdk(
       selector: mark.selector,
       commonAncestorSelector: mark.selector,
     };
-    const existingComment = String(mark.comment || "").trim();
     showAnnotationCard(fallbackEl, {
       context: {
         uid: "",
@@ -2016,7 +2017,6 @@ export function createArtifactSdk(
         replaceMarkIds: [mark.id],
       },
       ...(range ? { range } : markRect ? { point: { x: markRect.left, y: markRect.bottom } } : {}),
-      ...(existingComment ? { restoreText: existingComment } : {}),
     });
   }
 
@@ -2234,7 +2234,7 @@ export function createArtifactSdk(
     function walk(el, depth) {
       if (!(el instanceof Element) || depth > 6 || isLavishUi(el)) return;
 
-      const c = context(el);
+      const c = context(el, { needSelector: false });
       const name = c.text ? ' "' + c.text.slice(0, 80).replace(/"/g, "'") + '"' : "";
       lines.push("  ".repeat(depth) + "uid=" + c.uid + " " + c.tag + name);
       for (const child of el.children) walk(child, depth + 1);

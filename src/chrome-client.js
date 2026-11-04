@@ -1803,12 +1803,12 @@ function collectAnnotationMarks() {
             : anchor.label === "cell"
               ? "table-cell"
               : "element");
+      if (kind !== "text-range") return;
       marks.push({
         id,
         state: "sent",
         selector: anchor.selector,
         text: anchor.excerpt || "",
-        comment,
         target,
         kind,
         hasComment,
@@ -1826,12 +1826,12 @@ function collectAnnotationMarks() {
     const comment = String(item.prompt || "");
     const hasComment = Boolean(comment.trim()) || attachmentCount(item) > 0;
     const kind = target?.type || (item.tag === "text" ? "text-range" : "element");
+    if (kind !== "text-range") return;
     marks.push({
       id,
       state: "queued",
       selector,
       text: item.text || "",
-      comment,
       target,
       kind,
       hasComment,
@@ -1886,10 +1886,11 @@ queuedLog.addEventListener("keydown", (event) => {
 
 function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
-  if (terminalSubmission || isPromptSending(queued[index])) return;
+  if (terminalSubmission || isPromptSending(queued[index])) return false;
   const [removed] = queued.splice(index, 1);
   afterQueuedPromptRemoved(removed);
   render();
+  return true;
 }
 
 function afterQueuedPromptRemoved(removed) {
@@ -1941,6 +1942,8 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
   if (replaceIds.length || isTextRange) {
     queued.forEach((item, idx) => {
       if (!isPromptEditable(item)) return;
+      const isMarkerOnly = !String(item.prompt || "").trim() && !attachmentCount(item);
+      if (!isMarkerOnly) return;
       const pid = promptIdentity(item);
       const sameTarget = isTextRange && item.target?.type === "text-range" && JSON.stringify(item.target) === targetSig;
       if ((pid && replaceIds.includes(pid)) || replaceIds.includes("q:" + idx) || sameTarget) {
@@ -1948,28 +1951,9 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
       }
     });
   }
-  let dismissedChanged = false;
-  for (const rid of replaceIds) {
-    const inQueued = queued.some((item, idx) => promptIdentity(item) === rid || "q:" + idx === rid);
-    if (!inQueued && !dismissedMarkIds.has(rid)) {
-      dismissedMarkIds.add(rid);
-      dismissedChanged = true;
-    }
-  }
-  if (dismissedChanged) saveJsonState(dismissedMarksStorageKey, [...dismissedMarkIds]);
-
   const queueKey = promptQueueKey(prompt);
   if (replaceIndexes.length) {
     const primaryIndex = replaceIndexes[0];
-    const existing = queued[primaryIndex];
-    const existingId = promptIdentity(existing);
-    if (existingId) prompt[promptIdentityField] = existingId;
-    if (!String(prompt.prompt || "").trim() && String(existing.prompt || "").trim()) {
-      prompt.prompt = existing.prompt;
-    }
-    if (!prompt.attachments?.length && existing.attachments?.length) {
-      prompt.attachments = existing.attachments;
-    }
     queued[primaryIndex] = prompt;
     for (let i = replaceIndexes.length - 1; i >= 1; i -= 1) {
       const [removed] = queued.splice(replaceIndexes[i], 1);
@@ -4640,21 +4624,20 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:deleteAnnotationMark") {
     const id = String(msg.id || "");
-    const index = queued.findIndex((item, idx) => Boolean(id) && (promptIdentity(item) === id || "q:" + idx === id));
+    if (!id) return;
+    const index = queued.findIndex((item, idx) => promptIdentity(item) === id || "q:" + idx === id);
     if (index !== -1) {
-      removeQueuedPrompt(index);
+      if (!removeQueuedPrompt(index)) return;
     }
-    if (id) {
-      dismissedMarkIds.add(id);
-      while (dismissedMarkIds.size > 200) {
-        const oldest = dismissedMarkIds.keys().next().value;
-        if (oldest === undefined) break;
-        dismissedMarkIds.delete(oldest);
-      }
-      saveJsonState(dismissedMarksStorageKey, [...dismissedMarkIds]);
-      if (rememberedMarkTargets.delete(id)) {
-        saveJsonState(markTargetsStorageKey, [...rememberedMarkTargets]);
-      }
+    dismissedMarkIds.add(id);
+    while (dismissedMarkIds.size > 200) {
+      const oldest = dismissedMarkIds.keys().next().value;
+      if (oldest === undefined) break;
+      dismissedMarkIds.delete(oldest);
+    }
+    saveJsonState(dismissedMarksStorageKey, [...dismissedMarkIds]);
+    if (rememberedMarkTargets.delete(id)) {
+      saveJsonState(markTargetsStorageKey, [...rememberedMarkTargets]);
     }
     postAnnotationMarks(true);
     return;
