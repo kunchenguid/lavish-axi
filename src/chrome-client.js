@@ -4624,8 +4624,12 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:deleteAnnotationMark") {
     const id = String(msg.id || "");
-    if (!id) return;
-    const index = queued.findIndex((item, idx) => promptIdentity(item) === id || "q:" + idx === id);
+    if (!id || !collectAnnotationMarks().some((mark) => mark.id === id)) return;
+    const index = queued.findIndex(
+      (item, idx) =>
+        (item.target?.type === "text-range" || item.tag === "text") &&
+        (promptIdentity(item) === id || "q:" + idx === id),
+    );
     if (index !== -1) {
       if (!removeQueuedPrompt(index)) return;
     }
@@ -4644,14 +4648,14 @@ window.addEventListener("message", (event) => {
   }
   if (msg.type === "lavish:activateAnnotationMark") {
     const id = String(msg.id || "");
+    if (!id || !collectAnnotationMarks().some((mark) => mark.id === id)) return;
     const index =
       msg.state === "sent"
         ? -1
         : queued.findIndex(
             (item, idx) =>
-              promptIdentity(item) === id ||
-              "q:" + idx === id ||
-              (!id && (item.target?.selector || item.selector) === msg.selector),
+              (item.target?.type === "text-range" || item.tag === "text") &&
+              (promptIdentity(item) === id || "q:" + idx === id),
           );
     if (msg.selectOnly) {
       if (index !== -1) {
@@ -5325,6 +5329,7 @@ document.addEventListener(
 document.addEventListener(
   "keydown",
   (event) => {
+    if (ended || terminalSubmission) return;
     const action = reviewShortcutAction(event);
     if (!action) return;
     postToFrame({ type: "lavish:selectionShortcut", action });

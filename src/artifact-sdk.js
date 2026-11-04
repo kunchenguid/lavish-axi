@@ -1500,6 +1500,7 @@ export function createArtifactSdk(
   let selectedMarkId = "";
   let pendingSelectLatestMark = false;
   let doneRanges = [];
+  let unresolvedDoneItems = [];
   let renderedMarkRects = [];
   let renderedDoneRects = [];
   let lastPointerTarget = null;
@@ -1532,9 +1533,12 @@ export function createArtifactSdk(
 
   function ancestorSignature(el) {
     const chain = [];
-    for (let p = el.parentElement; p; p = p.parentElement) {
+    for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+      if (/^main$/i.test(p.tagName || "")) {
+        chain.push(`${p.tagName.toLowerCase()}#${p.id || ""}`);
+        continue;
+      }
       chain.push(`${p.tagName.toLowerCase()}#${p.id || ""}:${textSignature(p)}`);
-      if (p === document.body) break;
     }
     return chain.join("|");
   }
@@ -1822,13 +1826,13 @@ export function createArtifactSdk(
       revision: artifactRevision,
     }));
     items.push(...doneRanges.map(({ anchor: _anchor, range: _range, ...item }) => item));
+    items.push(...unresolvedDoneItems);
     postArtifactMessage("lavish:doneBoxes", { items });
   }
 
   function validRestoreAnchor(el, item) {
     if (ancestorSignature(el) !== item.ancestorSignature) return false;
     if (!/:nth-(?:of-type|child)\(/.test(item.selector)) return true;
-    if (item.revision !== artifactRevision) return false;
     const sig = textSignature(el),
       ancestors = ancestorSignature(el);
     return (
@@ -1840,23 +1844,35 @@ export function createArtifactSdk(
   function restoreDoneItems(items) {
     for (const el of queryAll('[data-lavish-done="true"]')) el.removeAttribute("data-lavish-done");
     doneRanges = [];
+    unresolvedDoneItems = [];
     for (const item of Array.isArray(items) ? items : []) {
       const matches = queryAll(item.selector);
-      if (matches.length !== 1) continue;
+      if (matches.length !== 1) {
+        unresolvedDoneItems.push(item);
+        continue;
+      }
       const el = matches[0];
-      if (!validRestoreAnchor(el, item)) continue;
+      if (!validRestoreAnchor(el, item)) {
+        unresolvedDoneItems.push(item);
+        continue;
+      }
+      let restored = false;
       if (item.kind === "element" && isDoneCandidate(el) && textSignature(el) === item.textSignature) {
         ensureDoneStyle();
         el.setAttribute("data-lavish-done", "true");
+        restored = true;
       }
       if (item.kind === "text-range") {
         const resolved = resolveTextTarget(item.target, item.selector);
-        if (resolved && resolved.anchor === el) doneRanges.push({ ...item, ...resolved });
+        if (resolved && resolved.anchor === el) {
+          doneRanges.push({ ...item, ...resolved });
+          restored = true;
+        }
       }
+      if (!restored) unresolvedDoneItems.push(item);
     }
     normalizeAllDoneState();
     renderOverlays();
-    reportDoneBoxes();
   }
 
   function applyDoneTextRange(c) {
@@ -1936,7 +1952,6 @@ export function createArtifactSdk(
         });
         selection?.removeAllRanges?.();
       } else {
-        pendingSelectLatestMark = true;
         const mergedContext = overlaps.length ? mergeRangeWithOverlaps(c.range, overlaps) || c : c;
         const replaceMarkIds = overlaps.map((o) => o.mark.id);
         selection?.removeAllRanges?.();
