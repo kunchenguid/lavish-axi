@@ -183,6 +183,10 @@ test(
       const afterShiftD = command("key", "D", true);
       assert.equal(afterShiftD.done, null);
       assert.equal(afterShiftD.boxDone, "true");
+      const afterShiftDToggleOff = command("key", "D", true);
+      assert.equal(afterShiftDToggleOff.boxDone, null);
+      const afterShiftDToggleOn = command("key", "D", true);
+      assert.equal(afterShiftDToggleOn.boxDone, "true");
       await sleep(300);
       const done = evaluate(
         `() => JSON.stringify(Object.fromEntries(Object.entries(sessionStorage).filter(([key]) => key.startsWith('lavish-axi:done-boxes:'))))`,
