@@ -21,6 +21,7 @@ import {
   findStableLayoutFindings,
   isMaterialPageOverflow,
   isModeToggleHotkeyEvent,
+  reviewShortcutAction,
   isNativeInteractiveControl,
   isNearTotalOcclusion,
   isTrustedAttachmentResult,
@@ -3845,6 +3846,7 @@ const deriveQueueKey=${deriveLavishQueueKey.toString()};
 const isNativeInteractiveControl=${isNativeInteractiveControl.toString()};
 const MODE_TOGGLE_HOTKEY_KEY=${JSON.stringify(MODE_TOGGLE_HOTKEY_KEY)};
 const isModeToggleHotkeyEvent=${isModeToggleHotkeyEvent.toString()};
+const reviewShortcutAction=${reviewShortcutAction.toString()};
 const classifySevereTextOverflow=${classifySevereTextOverflow.toString()};
 const classifyMaterialRectEscape=${classifyMaterialRectEscape.toString()};
 const isMaterialPageOverflow=${isMaterialPageOverflow.toString()};

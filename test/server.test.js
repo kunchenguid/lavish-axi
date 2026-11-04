@@ -679,6 +679,15 @@ test("artifact SDK registers a capture-phase document keydown listener for the m
   );
 });
 
+test("served SDK includes the review shortcut dispatcher and its message bridge", () => {
+  const js = createSdkJs("abc");
+  assert.match(js, /function reviewShortcutAction\(event\)/);
+  assert.match(js, /executeReviewShortcut\(action, event\)/);
+  assert.match(js, /executeReviewShortcut\(msg\.action, null\)/);
+  assert.match(js, /lavish:restoreDoneBoxes/);
+  assert.match(js, /lavish:annotationMarks/);
+});
+
 test("chrome client toggles annotation mode via Cmd/Ctrl+I and on request from the artifact SDK", async () => {
   const js = await chromeClientSource();
 

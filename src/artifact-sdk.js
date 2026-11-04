@@ -1,4 +1,4 @@
-/* global CSS, Element, MutationObserver, ResizeObserver, document, getComputedStyle, parent, window */
+/* global CSS, Element, MutationObserver, NodeFilter, Range, ResizeObserver, document, getComputedStyle, parent, window */
 
 import { readArtifactRevisions } from "./artifact-revisions.js";
 import * as mermaidHelpers from "./mermaid-node.js";
@@ -11,6 +11,19 @@ export const MODE_TOGGLE_HOTKEY_KEY = "i";
 export function isModeToggleHotkeyEvent(event) {
   if (event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
+}
+
+export function reviewShortcutAction(event) {
+  if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey)
+    return "";
+  if (event.target?.closest?.("input,textarea,select,[contenteditable]:not([contenteditable='false'])")) return "";
+  const key = String(event.key || "").toLowerCase();
+  if (key === "delete" || key === "backspace") return "delete-mark";
+  if (key === "d") return event.shiftKey ? "done-parent" : "done";
+  if (event.shiftKey) return "";
+  if (key === "m") return "mark";
+  if (key === "c") return "comment";
+  return "";
 }
 
 // Derive the browser-only replacement key used to collapse unsent updates for the same input.
@@ -839,7 +852,7 @@ export function createArtifactSdk(
 
     const parts = [];
     let node = el;
-    while (node && node.nodeType === 1 && parts.length < 5) {
+    while (node && node.nodeType === 1 && parts.length < 24) {
       let part = node.tagName.toLowerCase();
       if (node.id) {
         part += "#" + CSS.escape(node.id);
@@ -854,6 +867,10 @@ export function createArtifactSdk(
       }
       parts.unshift(part);
       node = parent;
+      if (parts.length >= 5) {
+        const candidate = parts.join(" > ");
+        if (candidate.length > 420 || queryAll(candidate).length <= 1) break;
+      }
     }
 
     return parts.join(" > ");
@@ -1158,12 +1175,14 @@ export function createArtifactSdk(
     };
   }
 
-  function textSelectionContext(selection) {
-    if (!selection || selection.rangeCount === 0) return null;
-
-    const range = selection.getRangeAt(0);
-    const text = selection.toString().trim().replace(/\s+/g, " ");
-    if (range.collapsed || !text) return null;
+  function textRangeContextFromRange(range, fallbackText = "") {
+    if (!range || range.collapsed) return null;
+    const rangeText =
+      typeof range.toString === "function" && range.toString !== Object.prototype.toString ? range.toString() : "";
+    const text = String(fallbackText || rangeText)
+      .trim()
+      .replace(/\s+/g, " ");
+    if (!text) return null;
 
     const ancestor = closestElement(range.commonAncestorContainer);
     if (isLavishUi(ancestor) || isLavishAction(ancestor) || isInteractiveControl(ancestor)) return null;
@@ -1187,6 +1206,12 @@ export function createArtifactSdk(
       element: ancestor,
       range: range.cloneRange(),
     };
+  }
+
+  function textSelectionContext(selection) {
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    return textRangeContextFromRange(range, selection.toString());
   }
 
   function isLavishUi(el) {
@@ -1467,9 +1492,688 @@ export function createArtifactSdk(
     setMermaidFrozen(annotationMode);
   }
 
+  // Overlay state stays outside the artifact DOM, so text offsets remain stable.
+  let annotationMarks = [];
+  let selectedMarkId = "";
+  let pendingSelectLatestMark = false;
+  let doneRanges = [];
+  let renderedMarkRects = [];
+  let renderedDoneRects = [];
+  let lastPointerTarget = null;
+  let lastPointerClient = { x: 0, y: 0 };
+  let overlayFrame = 0;
+  let overlayObserver = null;
+  const normalizeWs = (value) =>
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  function queryAll(value) {
+    try {
+      return [...document.querySelectorAll(String(value || ""))];
+    } catch {
+      return [];
+    }
+  }
+
+  function textSignature(el) {
+    const norm = normalizeWs(el.textContent || "");
+    let fnv = 2166136261;
+    let djb = 5381;
+    for (let i = 0; i < norm.length; i++) {
+      fnv = Math.imul(fnv ^ norm.charCodeAt(i), 16777619);
+      djb = (Math.imul(djb, 33) + norm.charCodeAt(i)) | 0;
+    }
+    return `${fnv >>> 0}:${djb >>> 0}:${norm.length}`;
+  }
+
+  function ancestorSignature(el) {
+    const chain = [];
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      chain.push(`${p.tagName.toLowerCase()}#${p.id || ""}:${textSignature(p)}`);
+      if (p === document.body) break;
+    }
+    return chain.join("|");
+  }
+
+  function isExcludedDoneTag(node) {
+    return (
+      !node?.tagName ||
+      /^(html|body|main|nav|header|footer|h[1-6]|summary|legend|caption|script|style|svg)$/i.test(node.tagName) ||
+      node.getAttribute?.("role") === "heading" ||
+      isLavishUi(node)
+    );
+  }
+
+  function isDoneCandidate(node) {
+    if (isExcludedDoneTag(node)) return false;
+    const rect = node.getBoundingClientRect();
+    if (node.matches("p,li,blockquote,pre,dd,dt,figcaption")) return rect.width >= 60 && rect.height >= 16;
+    if (rect.width < 120 || rect.height < 36) return false;
+    const bodyRect = document.body.getBoundingClientRect();
+    if (
+      node.matches(".layout,.content,.page-shell") &&
+      rect.width >= bodyRect.width * 0.92 &&
+      rect.height >= bodyRect.height * 0.92
+    )
+      return false;
+    if (
+      node.matches(
+        "[data-lavish-box],[data-lavish-copy],section,article,aside,details,fieldset,tr,td,th,.card,.metric,.notice,.source,.callout,.panel,.review-card,.report-card,.evidence-card,.src-card,.sec-card,.meta-block,.dp-card,.tr-card,.source-banner,.sub,.island,.box",
+      )
+    )
+      return true;
+    const style = getComputedStyle(node);
+    if (!/^(block|flex|grid|inline-flex|inline-grid|flow-root)$/.test(style.display || "")) return false;
+    const border =
+      [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth].some(
+        (v) => parseFloat(v) > 0,
+      ) && style.borderStyle !== "none";
+    const background = style.backgroundColor && !/^(transparent|rgba\(0,\s*0,\s*0,\s*0\))$/.test(style.backgroundColor);
+    const padded =
+      parseFloat(style.borderRadius) >= 4 ||
+      [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].some((v) => parseFloat(v) >= 8);
+    return Boolean(border || (style.boxShadow && style.boxShadow !== "none") || (background && padded));
+  }
+
+  function resolveDoneCandidates(target) {
+    const candidates = [];
+    for (
+      let node = target;
+      node && node !== document.body && node !== document.documentElement;
+      node = node.parentElement
+    ) {
+      if (/^(main|nav)$/i.test(node.tagName || "")) break;
+      if (!isDoneCandidate(node)) continue;
+      const previous = candidates.at(-1);
+      if (previous) {
+        const a = previous.getBoundingClientRect(),
+          b = node.getBoundingClientRect();
+        if (Math.abs(a.width - b.width) < 6 && Math.abs(a.height - b.height) < 6) {
+          candidates[candidates.length - 1] = node;
+          continue;
+        }
+      }
+      candidates.push(node);
+    }
+    return candidates;
+  }
+
+  function resolveBoundaryRange(target) {
+    if (!target?.start || !target?.end) return null;
+    function walkPath(root, path) {
+      /** @type {Node | null | undefined} */
+      let node = root;
+      for (const index of path || []) {
+        node = node.childNodes?.[index];
+        if (!node) return null;
+      }
+      return node;
+    }
+    const startRoots = queryAll(target.start.selector);
+    const endRoots = target.start.selector === target.end.selector ? startRoots : queryAll(target.end.selector);
+    if (!startRoots.length || !endRoots.length) return null;
+    const pairs = [];
+    if (target.start.selector === target.end.selector) {
+      for (const root of startRoots) pairs.push([root, root]);
+    }
+    for (const s of startRoots) {
+      for (const e of endRoots) {
+        if (target.start.selector === target.end.selector && s === e) continue;
+        pairs.push([s, e]);
+        if (pairs.length >= 24) break;
+      }
+      if (pairs.length >= 24) break;
+    }
+    const resolved = [];
+    for (const [sRoot, eRoot] of pairs) {
+      try {
+        const start = walkPath(sRoot, target.start.path);
+        const end = walkPath(eRoot, target.end.path);
+        if (!start || !end) continue;
+        const range = document.createRange();
+        range.setStart(start, target.start.offset);
+        range.setEnd(end, target.end.offset);
+        if (!range.collapsed && normalizeWs(range.toString()) === normalizeWs(target.text)) {
+          resolved.push(range);
+        }
+      } catch {
+        // Ignore invalid boundary candidate
+      }
+    }
+    return resolved.length === 1 ? resolved[0] : null;
+  }
+
+  function findUniqueFullTextRange(anchor, text) {
+    if (!text || String(text).endsWith("…")) return null;
+    const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let raw = "",
+      node;
+    while ((node = walker.nextNode())) {
+      nodes.push({ node, start: raw.length });
+      raw += node.nodeValue || "";
+    }
+    // Match normalized whitespace while retaining a map to original DOM offsets.
+    let normalized = "",
+      offsets = [];
+    for (let i = 0; i < raw.length; i++) {
+      if (/\s/.test(raw[i])) {
+        if (!normalized || normalized.endsWith(" ")) continue;
+        normalized += " ";
+        offsets.push(i);
+      } else {
+        normalized += raw[i];
+        offsets.push(i);
+      }
+    }
+    const needle = normalizeWs(text),
+      index = normalized.indexOf(needle);
+    if (!needle || index < 0 || normalized.indexOf(needle, index + 1) !== -1) return null;
+    const startOffset = offsets[index],
+      endOffset = offsets[index + needle.length - 1] + 1;
+    const startNode = [...nodes].reverse().find((entry) => entry.start <= startOffset);
+    const endNode = [...nodes].reverse().find((entry) => entry.start < endOffset);
+    if (!startNode || !endNode) return null;
+    const range = document.createRange();
+    range.setStart(startNode.node, startOffset - startNode.start);
+    range.setEnd(endNode.node, endOffset - endNode.start);
+    return range;
+  }
+
+  function resolveTextTarget(target, fallbackSelector) {
+    const boundaryRange = resolveBoundaryRange(target);
+    if (boundaryRange) {
+      const anchor = closestElement(boundaryRange.commonAncestorContainer);
+      return { anchor, range: boundaryRange };
+    }
+    const matches = queryAll(target?.commonAncestorSelector || target?.selector || fallbackSelector);
+    if (!matches.length) return null;
+    const found = [];
+    for (const anchor of matches) {
+      const range = findUniqueFullTextRange(anchor, target?.text);
+      if (range) found.push({ anchor, range });
+    }
+    return found.length === 1 ? found[0] : null;
+  }
+
+  function getScrollAncestors(anchor) {
+    const result = [];
+    for (let p = anchor; p && p !== document.documentElement; p = p.parentElement) {
+      const style = getComputedStyle(p);
+      if (/(auto|scroll|hidden|clip)/.test(`${style.overflowX} ${style.overflowY}`)) result.push(p);
+    }
+    return result;
+  }
+
+  function clipRectToScrollAncestors(rect, anchor) {
+    let left = Math.max(0, rect.left),
+      top = Math.max(0, rect.top);
+    let right = Math.min(window.innerWidth, rect.right),
+      bottom = Math.min(window.innerHeight, rect.bottom);
+    for (const el of getScrollAncestors(anchor)) {
+      overlayObserver?.observe(el);
+      const r = el.getBoundingClientRect();
+      const x = r.left + el.clientLeft,
+        y = r.top + el.clientTop;
+      left = Math.max(left, x);
+      top = Math.max(top, y);
+      right = Math.min(right, x + el.clientWidth);
+      bottom = Math.min(bottom, y + el.clientHeight);
+    }
+    return right > left && bottom > top
+      ? { left, top, right, bottom, width: right - left, height: bottom - top }
+      : null;
+  }
+
+  function pointInRect(rect, x, y, pad = 0) {
+    return x >= rect.left - pad && x <= rect.right + pad && y >= rect.top - pad && y <= rect.bottom + pad;
+  }
+  function findRenderedTextMarkAtPoint(x, y, pad = 0) {
+    return (
+      renderedMarkRects
+        .filter((entry) => pointInRect(entry.rect, x, y, pad))
+        .sort((a, b) => a.rect.width * a.rect.height - b.rect.width * b.rect.height || b.order - a.order)[0]?.mark ||
+      null
+    );
+  }
+
+  function rangesOverlap(a, b) {
+    try {
+      return a.compareBoundaryPoints(Range.END_TO_START, b) < 0 && a.compareBoundaryPoints(Range.START_TO_END, b) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  function rangeContains(outer, inner) {
+    try {
+      return (
+        outer.compareBoundaryPoints(Range.START_TO_START, inner) <= 0 &&
+        outer.compareBoundaryPoints(Range.END_TO_END, inner) >= 0
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function findOverlappingMarks(range) {
+    const overlaps = [];
+    for (const mark of annotationMarks) {
+      const resolved = resolveTextTarget(mark.target || { text: mark.text, selector: mark.selector }, mark.selector);
+      if (resolved && rangesOverlap(resolved.range, range)) {
+        overlaps.push({ mark, resolved });
+      }
+    }
+    return overlaps;
+  }
+
+  function mergeRangeWithOverlaps(baseRange, overlaps) {
+    try {
+      const merged = baseRange.cloneRange();
+      for (const { resolved } of overlaps) {
+        if (resolved.range.compareBoundaryPoints(Range.START_TO_START, merged) < 0) {
+          merged.setStart(resolved.range.startContainer, resolved.range.startOffset);
+        }
+        if (resolved.range.compareBoundaryPoints(Range.END_TO_END, merged) > 0) {
+          merged.setEnd(resolved.range.endContainer, resolved.range.endOffset);
+        }
+      }
+      return textRangeContextFromRange(merged);
+    } catch {
+      return null;
+    }
+  }
+
+  function ensureDoneStyle() {
+    if (document.getElementById("lavish-done-box-style")) return;
+    const style = document.createElement("style");
+    style.id = "lavish-done-box-style";
+    style.textContent =
+      '[data-lavish-done="true"]{opacity:.36!important;filter:grayscale(.85)!important;transition:opacity 120ms ease,filter 120ms ease}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function normalizeDoneElement(el) {
+    for (const child of el.querySelectorAll('[data-lavish-done="true"]')) child.removeAttribute("data-lavish-done");
+    for (let p = el.parentElement; p; p = p.parentElement) p.removeAttribute("data-lavish-done");
+    doneRanges = doneRanges.filter((item) => !el.contains(item.anchor));
+  }
+
+  function normalizeAllDoneState() {
+    const elements = queryAll('[data-lavish-done="true"]');
+    for (const el of elements)
+      if (el.parentElement?.closest('[data-lavish-done="true"]')) el.removeAttribute("data-lavish-done");
+    doneRanges = doneRanges.filter((item) => !item.anchor.closest('[data-lavish-done="true"]'));
+  }
+
+  function reportDoneBoxes() {
+    const items = queryAll('[data-lavish-done="true"]').map((el) => ({
+      id: uid(el),
+      kind: "element",
+      selector: selector(el),
+      uid: uid(el),
+      tag: el.tagName.toLowerCase(),
+      textSignature: textSignature(el),
+      ancestorSignature: ancestorSignature(el),
+      revision: artifactRevision,
+    }));
+    items.push(...doneRanges.map(({ anchor: _anchor, range: _range, ...item }) => item));
+    postArtifactMessage("lavish:doneBoxes", { items });
+  }
+
+  function validRestoreAnchor(el, item) {
+    if (ancestorSignature(el) !== item.ancestorSignature) return false;
+    if (!/:nth-(?:of-type|child)\(/.test(item.selector)) return true;
+    if (item.revision !== artifactRevision) return false;
+    const sig = textSignature(el),
+      ancestors = ancestorSignature(el);
+    return (
+      queryAll(el.tagName).filter((other) => textSignature(other) === sig && ancestorSignature(other) === ancestors)
+        .length === 1
+    );
+  }
+
+  function restoreDoneItems(items) {
+    for (const el of queryAll('[data-lavish-done="true"]')) el.removeAttribute("data-lavish-done");
+    doneRanges = [];
+    for (const item of Array.isArray(items) ? items : []) {
+      const matches = queryAll(item.selector);
+      if (matches.length !== 1) continue;
+      const el = matches[0];
+      if (!validRestoreAnchor(el, item)) continue;
+      if (item.kind === "element" && isDoneCandidate(el) && textSignature(el) === item.textSignature) {
+        ensureDoneStyle();
+        el.setAttribute("data-lavish-done", "true");
+      }
+      if (item.kind === "text-range") {
+        const resolved = resolveTextTarget(item.target, item.selector);
+        if (resolved && resolved.anchor === el) doneRanges.push({ ...item, ...resolved });
+      }
+    }
+    normalizeAllDoneState();
+    renderOverlays();
+    reportDoneBoxes();
+  }
+
+  function applyDoneTextRange(c) {
+    for (let p = c.element; p; p = p.parentElement) p.removeAttribute("data-lavish-done");
+    doneRanges = doneRanges.filter((item) => {
+      try {
+        return (
+          item.range.compareBoundaryPoints(Range.END_TO_START, c.range) <= 0 ||
+          item.range.compareBoundaryPoints(Range.START_TO_END, c.range) >= 0
+        );
+      } catch {
+        return false;
+      }
+    });
+    doneRanges.push({
+      id: `done-${Date.now()}-${++counter}`,
+      kind: "text-range",
+      selector: c.selector,
+      text: c.target.text,
+      target: c.target,
+      ancestorSignature: ancestorSignature(c.element),
+      revision: artifactRevision,
+      anchor: c.element,
+      range: c.range,
+    });
+    renderOverlays();
+    reportDoneBoxes();
+  }
+
+  function executeReviewShortcut(action, event) {
+    if (activeCardContext) return false;
+    if (action === "delete-mark") {
+      const targetMark = selectedMarkId ? annotationMarks.find((m) => m.id === selectedMarkId) : null;
+      if (!targetMark) return false;
+      event?.preventDefault();
+      selectedMarkId = "";
+      annotationMarks = annotationMarks.filter((m) => m.id !== targetMark.id);
+      renderOverlays();
+      postArtifactMessage("lavish:deleteAnnotationMark", {
+        id: targetMark.id,
+        state: targetMark.state,
+        selector: targetMark.selector,
+      });
+      return true;
+    }
+    const selection = document.getSelection();
+    const c = textSelectionContext(selection);
+    if (action === "comment" && !c) {
+      const targetMark =
+        findRenderedTextMarkAtPoint(lastPointerClient.x, lastPointerClient.y, 6) ||
+        (selectedMarkId ? annotationMarks.find((m) => m.id === selectedMarkId) : null);
+      if (!targetMark) return false;
+      event?.preventDefault();
+      selectedMarkId = targetMark.id;
+      openCommentForMark(targetMark);
+      return true;
+    }
+    if (action === "mark" || action === "comment") {
+      if (!c) return false;
+      event?.preventDefault();
+      ignoreNextClick = false;
+      const overlaps = findOverlappingMarks(c.range);
+      if (action === "mark") {
+        if (overlaps.length === 1 && rangeContains(overlaps[0].resolved.range, c.range)) {
+          selectedMarkId = overlaps[0].mark.id;
+          selection?.removeAllRanges?.();
+          renderOverlays();
+          return true;
+        }
+        const mergedContext = overlaps.length ? mergeRangeWithOverlaps(c.range, overlaps) || c : c;
+        const replaceMarkIds = overlaps.map((o) => o.mark.id);
+        const existingComment = overlaps
+          .map((o) => String(o.mark.comment || "").trim())
+          .filter(Boolean)
+          .join("\n\n");
+        pendingSelectLatestMark = true;
+        queuePrompt(existingComment, {
+          ...mergedContext,
+          queueKey: "",
+          ...(replaceMarkIds.length ? { replaceMarkIds } : {}),
+        });
+        selection?.removeAllRanges?.();
+      } else {
+        pendingSelectLatestMark = true;
+        const mergedContext = overlaps.length ? mergeRangeWithOverlaps(c.range, overlaps) || c : c;
+        const replaceMarkIds = overlaps.map((o) => o.mark.id);
+        const existingComment = overlaps
+          .map((o) => String(o.mark.comment || "").trim())
+          .filter(Boolean)
+          .join("\n\n");
+        selection?.removeAllRanges?.();
+        showAnnotationCard(mergedContext.element, {
+          context: replaceMarkIds.length ? { ...mergedContext, replaceMarkIds } : mergedContext,
+          range: mergedContext.range,
+          ...(existingComment ? { restoreText: existingComment } : {}),
+        });
+      }
+      return true;
+    }
+    if (action === "done" && c) {
+      event?.preventDefault();
+      ignoreNextClick = false;
+      applyDoneTextRange(c);
+      selection?.removeAllRanges?.();
+      return true;
+    }
+    if (action !== "done" && action !== "done-parent") return false;
+    const candidates = resolveDoneCandidates(c?.element || lastPointerTarget);
+    if (action === "done" && !c && !candidates.some((el) => el.getAttribute("data-lavish-done") === "true")) {
+      const hit = renderedDoneRects.find((entry) => pointInRect(entry.rect, lastPointerClient.x, lastPointerClient.y));
+      if (hit) {
+        event?.preventDefault();
+        doneRanges = doneRanges.filter((item) => item !== hit.item);
+        renderOverlays();
+        reportDoneBoxes();
+        return true;
+      }
+    }
+    if (!candidates.length) return false;
+    event?.preventDefault();
+    const activeIdx = candidates.findIndex((el) => el.getAttribute("data-lavish-done") === "true");
+    if (action === "done" && activeIdx >= 0) candidates[activeIdx].removeAttribute("data-lavish-done");
+    else {
+      const target =
+        action === "done" ? candidates[0] : activeIdx >= 0 ? candidates[activeIdx + 1] : candidates[1] || candidates[0];
+      if (target) {
+        ensureDoneStyle();
+        target.setAttribute("data-lavish-done", "true");
+        normalizeDoneElement(target);
+      }
+    }
+    if (action === "done-parent") selection?.removeAllRanges?.();
+    renderOverlays();
+    reportDoneBoxes();
+    return true;
+  }
+
+  function openCommentForMark(mark) {
+    if (!mark) return;
+    const resolved = resolveTextTarget(mark.target || { text: mark.text, selector: mark.selector }, mark.selector);
+    const fallbackEl = resolved?.anchor || safeQuerySelector(mark.selector) || document.body;
+    const range = resolved?.range || null;
+    const markRect = renderedMarkRects.filter((entry) => entry.mark === mark).at(-1)?.rect || null;
+    const target = mark.target || {
+      type: "text-range",
+      text: mark.text,
+      selector: mark.selector,
+      commonAncestorSelector: mark.selector,
+    };
+    const existingComment = String(mark.comment || "").trim();
+    showAnnotationCard(fallbackEl, {
+      context: {
+        uid: "",
+        selector: mark.selector,
+        tag: "text",
+        text: String(target.text || mark.text || "").slice(0, 240),
+        target,
+        element: fallbackEl,
+        ...(range ? { range } : {}),
+        replaceMarkIds: [mark.id],
+      },
+      ...(range ? { range } : markRect ? { point: { x: markRect.left, y: markRect.bottom } } : {}),
+      ...(existingComment ? { restoreText: existingComment } : {}),
+    });
+  }
+
+  function renderOverlays() {
+    if (overlayFrame) {
+      window.cancelAnimationFrame?.(overlayFrame);
+      overlayFrame = 0;
+    }
+    const doneElements = queryAll('[data-lavish-done="true"]');
+    if (!annotationMarks.length && !doneRanges.length && !doneElements.length && !shadow) return;
+    const root = ensureShadow();
+    for (const el of [...(root.children || [])]) {
+      if (/lavish-(?:persistent-mark|mark-badge|mark-add-comment|done-range|done-badge)/.test(el.className || ""))
+        el.remove();
+    }
+    renderedMarkRects = [];
+    renderedDoneRects = [];
+    function position(el, rect) {
+      el.style.left = rect.left + "px";
+      el.style.top = rect.top + "px";
+      el.style.width = rect.width + "px";
+      el.style.height = rect.height + "px";
+    }
+    function draw(item, resolved, order, done) {
+      const isSelected = !done && item.id === selectedMarkId;
+      const rects = [...resolved.range.getClientRects()]
+        .map((rect) => clipRectToScrollAncestors(rect, resolved.anchor))
+        .filter(Boolean);
+      for (const rect of rects) {
+        const el = document.createElement("div");
+        el.className = done
+          ? "lavish-done-range"
+          : `lavish-persistent-mark ${item.hasComment ? "is-commented" : "is-marker-only"}${item.state === "sent" ? " is-sent" : ""}${isSelected ? " is-selected" : ""}`;
+        position(el, rect);
+        root.appendChild(el);
+        if (done) renderedDoneRects.push({ item, rect });
+        else renderedMarkRects.push({ mark: item, rect, order });
+      }
+      const last = rects.at(-1);
+      if (!last) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = done
+        ? "lavish-done-badge"
+        : item.hasComment
+          ? "lavish-mark-badge"
+          : `lavish-mark-add-comment${isSelected ? " is-visible" : ""}`;
+      button.style.left = Math.min((window.innerWidth || 1200) - 48, Math.max(4, last.right - 2)) + "px";
+      button.style.top = Math.max(4, last.top - 8) + "px";
+      if (done) button.textContent = "✓ Done";
+      else if (item.hasComment)
+        button.innerHTML =
+          '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 2h12v9H7l-3 3v-3H2z" stroke="currentColor"/></svg> ' +
+          escapeAnnotationText(item.badgeNumber || "");
+      else button.textContent = "+ 💬";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (done) {
+          doneRanges = doneRanges.filter((entry) => entry !== item);
+          scheduleOverlayRender();
+          reportDoneBoxes();
+        } else {
+          selectedMarkId = item.id;
+          openCommentForMark(item);
+        }
+      });
+      if (!done && !item.hasComment) {
+        button.addEventListener("mouseenter", () => button.classList.add("is-visible"));
+        button.addEventListener("mouseleave", () => {
+          if (item.id !== selectedMarkId) button.classList.remove("is-visible");
+        });
+        item._button = button;
+      }
+      root.appendChild(button);
+    }
+    annotationMarks.forEach((item, index) => {
+      const resolved = resolveTextTarget(item.target || { text: item.text, selector: item.selector }, item.selector);
+      if (resolved) draw(item, resolved, index, false);
+    });
+    doneRanges.forEach((item) => {
+      if (item.anchor.isConnected !== false) draw(item, item, 0, true);
+    });
+    for (const el of doneElements) {
+      const rect = clipRectToScrollAncestors(el.getBoundingClientRect(), el);
+      if (!rect) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "lavish-done-badge";
+      button.style.left = rect.right + "px";
+      button.style.top = rect.top + "px";
+      button.textContent = "✓ Done";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        el.removeAttribute("data-lavish-done");
+        scheduleOverlayRender();
+        reportDoneBoxes();
+      });
+      root.appendChild(button);
+    }
+  }
+
+  function scheduleOverlayRender() {
+    if (overlayFrame) return;
+    overlayFrame = window.requestAnimationFrame(renderOverlays);
+  }
+
+  window.addEventListener("scroll", scheduleOverlayRender, { passive: true, capture: true });
+  window.addEventListener("resize", scheduleOverlayRender, { passive: true });
+  window.addEventListener("load", scheduleOverlayRender, true);
+  document.addEventListener("toggle", scheduleOverlayRender, true);
+  if (typeof ResizeObserver !== "undefined") {
+    overlayObserver = new ResizeObserver(scheduleOverlayRender);
+    overlayObserver.observe(document.documentElement);
+    if (document.body) overlayObserver.observe(document.body);
+  }
+  if (typeof MutationObserver !== "undefined") {
+    new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => !isLavishUi(mutation.target))) scheduleOverlayRender();
+    }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+  }
+  document.addEventListener(
+    "mousemove",
+    (event) => {
+      if (!isLavishUi(event.target)) {
+        lastPointerTarget = event.target;
+        lastPointerClient = { x: event.clientX, y: event.clientY };
+      }
+      for (const mark of annotationMarks)
+        if (mark._button) {
+          const hit = renderedMarkRects.some(
+            (entry) => entry.mark === mark && pointInRect(entry.rect, event.clientX, event.clientY, 18),
+          );
+          const nearBtn = pointInRect(mark._button.getBoundingClientRect(), event.clientX, event.clientY, 10);
+          mark._button.classList.toggle(
+            "is-visible",
+            mark.id === selectedMarkId || hit || nearBtn || mark._button.matches(":hover"),
+          );
+        }
+    },
+    true,
+  );
+  document.addEventListener(
+    "mouseover",
+    (event) => {
+      if (!isLavishUi(event.target)) {
+        lastPointerTarget = event.target;
+        lastPointerClient = { x: event.clientX, y: event.clientY };
+      }
+    },
+    true,
+  );
+
   function queuePrompt(prompt, options = {}) {
     const originElement = options.element || document.activeElement || document.body;
-    /** @type {{ uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown, attachments?: Array<{ id: string, name?: string }>, _lavishQueueKey?: string }} */
+    /** @type {{ uid: string, prompt: string, selector: string, tag: string, text: string, target?: unknown, attachments?: Array<{ id: string, name?: string }>, _lavishQueueKey?: string, replace_mark_ids?: string[] }} */
     const item = {
       ...context(originElement),
       prompt: String(prompt || ""),
@@ -1482,6 +2186,9 @@ export function createArtifactSdk(
     if (options.tag) item.tag = String(options.tag);
     if (options.text) item.text = String(options.text);
     if (options.target) item.target = options.target;
+    if (Array.isArray(options.replaceMarkIds) && options.replaceMarkIds.length) {
+      item.replace_mark_ids = options.replaceMarkIds.map(String).filter(Boolean);
+    }
     if (options.data) item.prompt += "\n\nContext data:\n" + JSON.stringify(options.data, null, 2);
     // Attach only the client-controllable fields (server-vetted id + display name);
     // the chrome forwards these and the server re-resolves each id (see queuePrompts).
@@ -2606,6 +3313,7 @@ export function createArtifactSdk(
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-copy-markdown{position:fixed;display:grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid rgba(255,255,255,.28);border-radius:7px;background:rgba(17,20,26,.92);color:var(--cream-100);box-shadow:0 4px 14px rgba(0,0,0,.28);font:700 15px/1 var(--font-sans);cursor:pointer;transition:opacity .12s ease}.lavish-copy-markdown:hover{background:var(--accent);color:var(--brass-ink)}.lavish-copy-markdown[hidden],.lavish-copy-markdown.is-hidden{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-hint-alert{color:#ff9d7a;font-weight:700}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:176px;overflow-y:auto}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
+    style.textContent += `.lavish-persistent-mark,.lavish-done-range{position:fixed;pointer-events:none;box-sizing:border-box}.lavish-persistent-mark.is-marker-only{background:rgba(244,201,93,.18);border-bottom:1.5px dashed rgba(217,155,22,.72)}.lavish-persistent-mark.is-commented{background:rgba(244,201,93,.38);border-bottom:2px solid #d99b16}.lavish-persistent-mark.is-selected{background:rgba(244,201,93,.52);outline:2px solid #b45309;outline-offset:1px;border-radius:2px}.lavish-persistent-mark.is-sent{opacity:.8}.lavish-done-range{background:rgba(190,190,190,.55);backdrop-filter:grayscale(1)}.lavish-mark-badge,.lavish-mark-add-comment,.lavish-done-badge{position:fixed;pointer-events:auto;border:1px solid #d99b16;border-radius:8px;background:#fff8dc;color:#3b3016;font:12px sans-serif;cursor:pointer}.lavish-mark-add-comment{opacity:0;pointer-events:none}.lavish-mark-add-comment.is-visible,.lavish-mark-add-comment:hover{opacity:1;pointer-events:auto}`;
     shadow.appendChild(style);
     return shadow;
   }
@@ -2806,6 +3514,7 @@ export function createArtifactSdk(
       // Allow an image-only annotation (the element/target still identifies what it
       // refers to), but never queue an empty card.
       if (prompt || readyAttachments.length) {
+        if (c.tag === "text") pendingSelectLatestMark = true;
         queuePrompt(prompt, { ...c, queueKey: "", attachments: readyAttachments });
       }
       closeCard();
@@ -2867,6 +3576,23 @@ export function createArtifactSdk(
     if (event.source !== parent) return;
     const msg = event.data || {};
     if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
+    if (msg.type === "lavish:selectionShortcut") executeReviewShortcut(msg.action, null);
+    if (msg.type === "lavish:annotationMarks") {
+      const list = Array.isArray(msg.marks) ? msg.marks : Array.isArray(msg.items) ? msg.items : [];
+      annotationMarks = list;
+      if (pendingSelectLatestMark && list.length) {
+        selectedMarkId = list.at(-1)?.id || selectedMarkId;
+        pendingSelectLatestMark = false;
+      } else if (selectedMarkId && !list.some((item) => item.id === selectedMarkId)) {
+        selectedMarkId = "";
+      }
+      renderOverlays();
+    }
+    if (msg.type === "lavish:restoreDoneBoxes") restoreDoneItems(msg.items);
+    if (msg.type === "lavish:openCommentForMark") {
+      const mark = annotationMarks.find((item) => item.id === msg.id);
+      if (mark && !activeCardContext) openCommentForMark(mark);
+    }
     if (msg.type === "lavish:attachmentResult") {
       if (!isTrustedAttachmentResult(event, { parentWindow: parent, nonce: ATTACHMENT_NONCE })) return;
       activeAttachments?.handleResult(msg.localId, msg.ok, msg.id, msg.error);
@@ -2938,6 +3664,16 @@ export function createArtifactSdk(
       if (!isModeToggleHotkeyEvent(event)) return;
       event.preventDefault();
       postArtifactMessage("lavish:toggleAnnotationMode");
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      const action = reviewShortcutAction(event);
+      if (!action || activeCardContext) return;
+      executeReviewShortcut(action, event);
     },
     true,
   );
@@ -3038,7 +3774,9 @@ export function createArtifactSdk(
       if (!c) return;
 
       ignoreNextClick = true;
-      showAnnotationCard(c.element, { context: c, range: c.range });
+      window.setTimeout(() => {
+        ignoreNextClick = false;
+      }, 0);
     },
     true,
   );
@@ -3261,7 +3999,6 @@ export function createArtifactSdk(
     "click",
     (event) => {
       if (
-        !annotationMode ||
         event.ctrlKey ||
         event.metaKey ||
         isLavishUi(event.target) ||
@@ -3269,12 +4006,33 @@ export function createArtifactSdk(
         isInteractiveControl(event.target)
       )
         return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (ignoreNextClick) {
+      if (ignoreNextClick || textSelectionContext(document.getSelection())) {
         ignoreNextClick = false;
         return;
       }
+      if (!annotationMode && /** @type {Element | null} */ (event.target)?.closest?.("a[href]")) return;
+      const hitMark = findRenderedTextMarkAtPoint(event.clientX, event.clientY, 2);
+      if (hitMark) {
+        event.preventDefault();
+        event.stopPropagation();
+        selectedMarkId = hitMark.id;
+        renderOverlays();
+        window.focus?.();
+        postArtifactMessage("lavish:activateAnnotationMark", {
+          id: hitMark.id,
+          state: hitMark.state,
+          selector: hitMark.selector,
+          selectOnly: true,
+        });
+        return;
+      }
+      if (selectedMarkId) {
+        selectedMarkId = "";
+        renderOverlays();
+      }
+      if (!annotationMode) return;
+      event.preventDefault();
+      event.stopPropagation();
       // The clicked element's own selector, plus its diagram node's, so any click inside a node
       // finds the node's note again. A table cell's note stays on the exact element clicked.
       const clicked = queuedAnchorSelectors.size ? context(event.target) : null;

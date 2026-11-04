@@ -190,6 +190,9 @@ async function createChromeHarness({
       setAttribute(name, value) {
         this[name] = String(value);
       },
+      getAttribute(name) {
+        return this[name] ?? null;
+      },
       addEventListener(type, handler) {
         listeners.set(type, handler);
       },
@@ -8762,6 +8765,112 @@ test("saving a queued note with its words cleared removes it", async () => {
   chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["queued-edit-save"], 0) });
 
   assert.deepEqual(chrome.queued(), []);
+});
+
+test("clearing a text-range comment keeps the queued marker", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: identicalProjectionNote(0) });
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "   ");
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["queued-edit-save"], 0) });
+
+  assert.equal(chrome.queued().length, 1);
+  assert.equal(chrome.queued()[0].prompt, "");
+  assert.equal(chrome.queued()[0].target.type, "text-range");
+});
+
+test("text markers retain distinct full targets through transcript and page reload", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ storage });
+  const first = { ...identicalProjectionNote(0), prompt: "" };
+  const second = identicalProjectionNote(5);
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: first });
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: second });
+  const prompts = chrome.queued();
+  let marks = chrome.postedToFrame.filter((message) => message.type === "lavish:annotationMarks").at(-1).marks;
+  assert.deepEqual(
+    Array.from(marks, (mark) => [mark.hasComment, mark.badgeNumber]),
+    [
+      [false, 0],
+      [true, 1],
+    ],
+  );
+  const chat = prompts.map((prompt) => chatEntryForPrompt(prompt, "2026-11-04"));
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat }) });
+  marks = chrome.postedToFrame.filter((message) => message.type === "lavish:annotationMarks").at(-1).marks;
+  assert.deepEqual(
+    Array.from(marks, (mark) => mark.state),
+    ["sent", "sent"],
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(marks.map((mark) => mark.target))),
+    prompts.map((item) => item.target),
+  );
+  const reloaded = await createChromeHarness({ storage, sessionData: { ...defaultSessionData, initialChat: chat } });
+  reloaded.frame.dispatch("load");
+  marks = reloaded.postedToFrame.filter((message) => message.type === "lavish:annotationMarks").at(-1).marks;
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(marks.map((mark) => mark.target))),
+    prompts.map((item) => item.target),
+  );
+});
+
+test("activating queued and sent marks opens their edit, transcript, or comment card", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: identicalProjectionNote(0) });
+  const [prompt] = chrome.queued();
+  chrome.sendFrameMessage({ type: "lavish:activateAnnotationMark", id: prompt.prompt_id, state: "queued" });
+  assert.match(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
+  const sent = chatEntryForPrompt(prompt, "2026-11-04");
+  const marker = chatEntryForPrompt({ ...identicalProjectionNote(5), prompt: "", prompt_id: "marker" }, "2026-11-04");
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [sent, marker] }) });
+  chrome.sendFrameMessage({ type: "lavish:activateAnnotationMark", id: prompt.prompt_id, state: "sent" });
+  const bubble = chrome
+    .element("chatLog")
+    .children.find((child) => child.getAttribute("data-prompt-id") === prompt.prompt_id);
+  assert.ok(bubble.classList.contains("is-highlighted"));
+  assert.ok(bubble.scrolledIntoView);
+  chrome.runTimers(1800);
+  assert.equal(bubble.classList.contains("is-highlighted"), false);
+  chrome.sendFrameMessage({ type: "lavish:activateAnnotationMark", id: "marker", state: "sent" });
+  assert.equal(chrome.postedToFrame.at(-1).type, "lavish:openCommentForMark");
+  assert.equal(chrome.postedToFrame.at(-1).id, "marker");
+});
+
+test("done items persist and are restored after iframe and page reload", async () => {
+  const storage = new Map();
+  const chrome = await createChromeHarness({ storage });
+  const items = [{ id: "one", kind: "element", selector: "#one", textSignature: "hash" }];
+  chrome.sendFrameMessage({ type: "lavish:doneBoxes", items });
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(chrome.postedToFrame.filter((m) => m.type === "lavish:restoreDoneBoxes").at(-1).items)),
+    items,
+  );
+  const reloaded = await createChromeHarness({ storage });
+  reloaded.frame.dispatch("load");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(reloaded.postedToFrame.filter((m) => m.type === "lavish:restoreDoneBoxes").at(-1).items)),
+    items,
+  );
+});
+
+test("review shortcuts bridge chrome focus without intercepting editable fields", async () => {
+  const chrome = await createChromeHarness();
+  for (const [key, shiftKey, action] of [
+    ["m", false, "mark"],
+    ["c", false, "comment"],
+    ["d", false, "done"],
+    ["d", true, "done-parent"],
+    ["Delete", false, "delete-mark"],
+    ["Backspace", false, "delete-mark"],
+  ]) {
+    chrome.dispatchDocumentKeydown({ key, shiftKey, target: { closest: () => null } });
+    assert.equal(chrome.postedToFrame.at(-1).action, action);
+  }
+  const count = chrome.postedToFrame.length;
+  chrome.dispatchDocumentKeydown({ key: "m", target: { closest: () => ({}) } });
+  assert.equal(chrome.postedToFrame.length, count);
 });
 
 test("the artifact learns which elements carry a queued note, never the note itself", async () => {
