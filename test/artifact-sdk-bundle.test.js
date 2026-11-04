@@ -429,6 +429,10 @@ test("done shortcut toggles a paragraph and excludes a styled heading", () => {
   key("D", true);
   assert.equal(p.getAttribute("data-lavish-done"), null);
   assert.equal(section.getAttribute("data-lavish-done"), "true");
+  key("D", true);
+  assert.equal(section.getAttribute("data-lavish-done"), null);
+  key("D", true);
+  assert.equal(section.getAttribute("data-lavish-done"), "true");
   key("d");
   sdk.trigger("mousemove", { target: heading, clientX: 12, clientY: 12 });
   key("d");

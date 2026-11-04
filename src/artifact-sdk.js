@@ -1984,10 +1984,13 @@ export function createArtifactSdk(
     if (!candidates.length) return false;
     event?.preventDefault();
     const activeIdx = candidates.findIndex((el) => el.getAttribute("data-lavish-done") === "true");
-    if (action === "done" && activeIdx >= 0) candidates[activeIdx].removeAttribute("data-lavish-done");
-    else {
-      const target =
-        action === "done" ? candidates[0] : activeIdx >= 0 ? candidates[activeIdx + 1] : candidates[1] || candidates[0];
+    if (
+      (action === "done" && activeIdx >= 0) ||
+      (action === "done-parent" && (activeIdx >= 1 || (activeIdx === 0 && candidates.length === 1)))
+    ) {
+      candidates[activeIdx].removeAttribute("data-lavish-done");
+    } else {
+      const target = action === "done" ? candidates[0] : candidates[1] || candidates[0];
       if (target) {
         ensureDoneStyle();
         target.setAttribute("data-lavish-done", "true");
