@@ -121,7 +121,9 @@ function createElement(tag) {
       element.listeners.push({ type, handler });
     },
     removeEventListener() {},
-    focus() {},
+    focus(options) {
+      element.focusedWith = options || {};
+    },
     click() {},
     scrollIntoView() {},
     attachShadow() {
@@ -688,6 +690,22 @@ test("mark arrows step through commented and bare marks in page order and the ch
   assert.equal(sdk.windowScrolls.length, 3);
   assert.equal(sdk.windowScrolls.at(-1).top, -290);
   assert.equal(sdk.posted.length, postedBefore);
+
+  // A keyboard user presses Enter on a focused arrow (a click without a pointer). The overlay is
+  // rebuilt by the jump, so the focus moves to the same arrow beside the mark it reached.
+  const shadowRoot = navs()[0].parentElement;
+  const keyboardNext = navs()[1].children[1];
+  shadowRoot.activeElement = keyboardNext;
+  fire(keyboardNext, "click", { detail: 0 });
+  assert.equal(sdk.posted.at(-1).id, "mid");
+  assert.deepEqual({ ...navs()[2].children[1].focusedWith }, { preventScroll: true });
+  // Beside the last mark in that direction the same arrow is disabled, so the focus takes the
+  // opposite one and stepping back stays possible.
+  shadowRoot.activeElement = navs()[2].children[1];
+  fire(navs()[2].children[1], "click", { detail: 0 });
+  assert.equal(sdk.posted.at(-1).id, "low");
+  assert.deepEqual({ ...navs()[0].children[0].focusedWith }, { preventScroll: true });
+  assert.equal(navs()[0].children[1].focusedWith, undefined);
 });
 
 test("a selected mark later in the list does not steal the hover from the bare marker under the pointer", () => {
