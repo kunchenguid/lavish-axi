@@ -1498,6 +1498,11 @@ export function createArtifactSdk(
   // Overlay state stays outside the artifact DOM, so text offsets remain stable.
   let annotationMarks = [];
   let selectedMarkId = "";
+  // The bare marker whose + comment button and arrows the pointer is near, so an overlay rebuild
+  // mid-press keeps them visible and clickable.
+  let hoveredMarkId = "";
+  // The logical overlay control a primary press started on, and its pointer (see onOverlayActivate).
+  let pressedOverlay = null;
   let pendingSelectLatestMark = false;
   let doneRanges = [];
   let unresolvedDoneItems = [];
@@ -1507,6 +1512,8 @@ export function createArtifactSdk(
   let lastPointerClient = { x: 0, y: 0 };
   let overlayFrame = 0;
   let overlayObserver = null;
+  // Room the up/down arrows take beside a comment badge.
+  const MARK_NAV_WIDTH = 52;
   const normalizeWs = (value) =>
     String(value || "")
       .replace(/\s+/g, " ")
@@ -2038,6 +2045,72 @@ export function createArtifactSdk(
     });
   }
 
+  // Marks top to bottom as the reader sees them, commented or not: the order the arrows step through.
+  function marksInReadingOrder(resolvedMarks) {
+    return resolvedMarks
+      .map(({ item, resolved }) => ({ item, rect: [...resolved.range.getClientRects()][0] }))
+      .filter(({ rect }) => rect)
+      .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+      .map(({ item }) => item);
+  }
+
+  // Moves a box to the middle of the view (a box taller than the view to its top) with explicit
+  // scroll offsets. Artifacts with sticky rails, clipped layouts or a CSS smooth scroll-behavior can
+  // leave scrollIntoView stalled or short of its target, while `instant` offsets land every time.
+  // `includeAnchor` scrolls the anchor itself too, for words inside a scrollable anchor; an element
+  // that is the target scrolls only its ancestors. The window moves sideways only for a box outside
+  // the view, so a page without horizontal overflow keeps its position.
+  function scrollIntoCenter(anchor, getRect, { includeAnchor = false } = {}) {
+    const offsetFor = (start, size, viewStart, viewSize) =>
+      size > viewSize ? start - viewStart - 24 : start + size / 2 - (viewStart + viewSize / 2);
+    for (
+      let p = includeAnchor ? anchor : anchor?.parentElement;
+      p && p !== document.body && p !== document.documentElement;
+      p = p.parentElement
+    ) {
+      const style = getComputedStyle(p);
+      const box = p.getBoundingClientRect();
+      if (p.scrollHeight > p.clientHeight + 1 && /(auto|scroll)/.test(style.overflowY || "")) {
+        const rect = getRect();
+        p.scrollTop += offsetFor(rect.top, rect.height, box.top, p.clientHeight);
+      }
+      if (p.scrollWidth > p.clientWidth + 1 && /(auto|scroll)/.test(style.overflowX || "")) {
+        const rect = getRect();
+        p.scrollLeft += offsetFor(rect.left, rect.width, box.left, p.clientWidth);
+      }
+    }
+    const rect = getRect();
+    const viewWidth = window.innerWidth || 1200;
+    const top = (window.scrollY || 0) + offsetFor(rect.top, rect.height, 0, window.innerHeight || 800);
+    const left =
+      (window.scrollX || 0) +
+      (rect.left < 0 || rect.right > viewWidth ? offsetFor(rect.left, rect.width, 0, viewWidth) : 0);
+    try {
+      window.scrollTo?.({ top, left, behavior: "instant" });
+    } catch {
+      window.scrollTo?.(left, top);
+    }
+  }
+
+  // Brings one mark's words to the middle of the view and selects it. With `syncChat` the
+  // conversation highlights the matching note too, the same way a click on the mark does.
+  function focusAnnotationMark(mark, { syncChat = false } = {}) {
+    const resolved = resolveTextTarget(mark.target || { text: mark.text, selector: mark.selector }, mark.selector);
+    if (!resolved) return false;
+    scrollIntoCenter(resolved.anchor, () => resolved.range.getBoundingClientRect(), { includeAnchor: true });
+    selectedMarkId = mark.id;
+    renderOverlays();
+    if (syncChat) {
+      postArtifactMessage("lavish:activateAnnotationMark", {
+        id: mark.id,
+        state: mark.state,
+        selector: mark.selector,
+        selectOnly: true,
+      });
+    }
+    return true;
+  }
+
   function renderOverlays() {
     if (overlayFrame) {
       window.cancelAnimationFrame?.(overlayFrame);
@@ -2047,9 +2120,17 @@ export function createArtifactSdk(
     if (!annotationMarks.length && !doneRanges.length && !doneElements.length && !shadow) return;
     const root = ensureShadow();
     for (const el of [...(root.children || [])]) {
-      if (/lavish-(?:persistent-mark|mark-badge|mark-add-comment|done-range|done-badge)/.test(el.className || ""))
+      if (
+        /lavish-(?:persistent-mark|mark-badge|mark-add-comment|mark-nav|done-range|done-badge)/.test(el.className || "")
+      )
         el.remove();
     }
+    const resolvedMarks = [];
+    annotationMarks.forEach((item, index) => {
+      const resolved = resolveTextTarget(item.target || { text: item.text, selector: item.selector }, item.selector);
+      if (resolved) resolvedMarks.push({ item, resolved, index });
+    });
+    const markOrder = marksInReadingOrder(resolvedMarks);
     renderedMarkRects = [];
     renderedDoneRects = [];
     function position(el, rect) {
@@ -2058,6 +2139,9 @@ export function createArtifactSdk(
       el.style.width = rect.width + "px";
       el.style.height = rect.height + "px";
     }
+    // Arrows sit beside their badge, whose width is read only after every overlay element is
+    // written, so a render forces one layout instead of one per mark.
+    const navPlacements = [];
     function draw(item, resolved, order, done) {
       const isSelected = !done && item.id === selectedMarkId;
       const rects = [...resolved.range.getClientRects()]
@@ -2081,8 +2165,15 @@ export function createArtifactSdk(
         ? "lavish-done-badge"
         : item.hasComment
           ? "lavish-mark-badge"
-          : `lavish-mark-add-comment${isSelected ? " is-visible" : ""}`;
-      button.style.left = Math.min((window.innerWidth || 1200) - 48, Math.max(4, last.right - 2)) + "px";
+          : `lavish-mark-add-comment${isSelected || item.id === hoveredMarkId ? " is-visible" : ""}`;
+      const navIndex = done ? -1 : markOrder.indexOf(item);
+      const hasNav = navIndex !== -1 && markOrder.length > 1;
+      if (!done) item._nav = null;
+      const badgeLeft = Math.min(
+        (window.innerWidth || 1200) - 48 - (hasNav ? MARK_NAV_WIDTH : 0),
+        Math.max(4, last.right - 2),
+      );
+      button.style.left = badgeLeft + "px";
       button.style.top = Math.max(4, last.top - 8) + "px";
       if (done) button.textContent = "✓ Done";
       else if (item.hasComment)
@@ -2090,9 +2181,7 @@ export function createArtifactSdk(
           '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 2h12v9H7l-3 3v-3H2z" stroke="currentColor"/></svg> ' +
           escapeAnnotationText(item.badgeNumber || "");
       else button.textContent = "+ 💬";
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
+      onOverlayActivate(button, (done ? "done-range:" : "mark:") + item.id, () => {
         if (done) {
           doneRanges = doneRanges.filter((entry) => entry !== item);
           scheduleOverlayRender();
@@ -2110,14 +2199,40 @@ export function createArtifactSdk(
         item._button = button;
       }
       root.appendChild(button);
+      if (!hasNav) return;
+      // Up and down step to the marked passage above or below this one. Beside a bare marker they
+      // show and hide with its + comment button.
+      const nav = document.createElement("div");
+      nav.className = item.hasComment
+        ? "lavish-mark-nav"
+        : `lavish-mark-nav is-marker-only${isSelected || item.id === hoveredMarkId ? " is-visible" : ""}`;
+      if (!item.hasComment) item._nav = nav;
+      navPlacements.push({ nav, button, badgeLeft });
+      nav.style.top = button.style.top;
+      for (const step of [-1, 1]) {
+        const arrow = document.createElement("button");
+        arrow.type = "button";
+        arrow.setAttribute("aria-label", step < 0 ? "Previous mark" : "Next mark");
+        arrow.title = step < 0 ? "Previous mark" : "Next mark";
+        arrow.innerHTML =
+          '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="' +
+          (step < 0 ? "M3.5 10 8 5.5 12.5 10" : "M3.5 6 8 10.5 12.5 6") +
+          '" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        const neighbour = markOrder[navIndex + step];
+        arrow.disabled = !neighbour;
+        onOverlayActivate(arrow, "nav:" + item.id + ":" + step, () => {
+          if (neighbour) focusAnnotationMark(neighbour, { syncChat: true });
+        });
+        nav.appendChild(arrow);
+      }
+      root.appendChild(nav);
     }
-    annotationMarks.forEach((item, index) => {
-      const resolved = resolveTextTarget(item.target || { text: item.text, selector: item.selector }, item.selector);
-      if (resolved) draw(item, resolved, index, false);
-    });
+    for (const { item, resolved, index } of resolvedMarks) draw(item, resolved, index, false);
     doneRanges.forEach((item) => {
       if (item.anchor.isConnected !== false) draw(item, item, 0, true);
     });
+    const badgeWidths = navPlacements.map(({ button }) => button.getBoundingClientRect?.().width || 36);
+    navPlacements.forEach(({ nav, badgeLeft }, i) => (nav.style.left = badgeLeft + badgeWidths[i] + 3 + "px"));
     for (const el of doneElements) {
       const rect = clipRectToScrollAncestors(el.getBoundingClientRect(), el);
       if (!rect) continue;
@@ -2127,9 +2242,7 @@ export function createArtifactSdk(
       button.style.left = rect.right + "px";
       button.style.top = rect.top + "px";
       button.textContent = "✓ Done";
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
+      onOverlayActivate(button, "done-element:" + uid(el), () => {
         el.removeAttribute("data-lavish-done");
         scheduleOverlayRender();
         reportDoneBoxes();
@@ -2137,6 +2250,41 @@ export function createArtifactSdk(
       root.appendChild(button);
     }
   }
+
+  // Overlay controls are rebuilt whenever the artifact mutates. An artifact that toggles a tooltip
+  // on mousedown swaps the control out between press and release, and the browser then fires no
+  // `click`. A press records the control's logical `key`, which every rebuilt copy shares, and its
+  // pointer. Only the same pointer released over a copy with that key activates it: a release that
+  // began elsewhere does nothing, and neither does a touch dragged off the control, whose release
+  // implicit pointer capture still delivers to it. A click without a pointer (keyboard,
+  // `element.click()`) still activates.
+  function onOverlayActivate(button, key, activate) {
+    button.addEventListener("pointerdown", (event) => {
+      if (event.button === 0) pressedOverlay = { key, pointerId: event.pointerId };
+    });
+    button.addEventListener("pointerup", (event) => {
+      if (event.button !== 0) return;
+      const pressed =
+        pressedOverlay?.key === key &&
+        pressedOverlay.pointerId === event.pointerId &&
+        pointInRect(button.getBoundingClientRect(), event.clientX, event.clientY, 4);
+      pressedOverlay = null;
+      if (!pressed) return;
+      event.preventDefault();
+      event.stopPropagation();
+      activate();
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.detail) activate();
+    });
+  }
+
+  // A release or cancel anywhere else ends the press, so a later release over a control that was
+  // never pressed cannot activate it.
+  window.addEventListener("pointerup", () => (pressedOverlay = null));
+  window.addEventListener("pointercancel", () => (pressedOverlay = null));
 
   function scheduleOverlayRender() {
     if (overlayFrame) return;
@@ -2169,11 +2317,15 @@ export function createArtifactSdk(
           const hit = renderedMarkRects.some(
             (entry) => entry.mark === mark && pointInRect(entry.rect, event.clientX, event.clientY, 18),
           );
-          const nearBtn = pointInRect(mark._button.getBoundingClientRect(), event.clientX, event.clientY, 10);
-          mark._button.classList.toggle(
-            "is-visible",
-            mark.id === selectedMarkId || hit || nearBtn || mark._button.matches(":hover"),
+          const near = [mark._button, mark._nav].some(
+            (el) => el && pointInRect(el.getBoundingClientRect(), event.clientX, event.clientY, 10),
           );
+          const pointerNear = hit || near || mark._button.matches(":hover");
+          const visible = mark.id === selectedMarkId || pointerNear;
+          if (pointerNear) hoveredMarkId = mark.id;
+          else if (hoveredMarkId === mark.id) hoveredMarkId = "";
+          mark._button.classList.toggle("is-visible", visible);
+          mark._nav?.classList.toggle("is-visible", visible);
         }
     },
     true,
@@ -3331,7 +3483,7 @@ export function createArtifactSdk(
     shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-copy-markdown{position:fixed;display:grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid rgba(255,255,255,.28);border-radius:7px;background:rgba(17,20,26,.92);color:var(--cream-100);box-shadow:0 4px 14px rgba(0,0,0,.28);font:700 15px/1 var(--font-sans);cursor:pointer;transition:opacity .12s ease}.lavish-copy-markdown:hover{background:var(--accent);color:var(--brass-ink)}.lavish-copy-markdown[hidden],.lavish-copy-markdown.is-hidden{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-hint-alert{color:#ff9d7a;font-weight:700}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:176px;overflow-y:auto}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
-    style.textContent += `.lavish-persistent-mark,.lavish-done-range{position:fixed;pointer-events:none;box-sizing:border-box}.lavish-persistent-mark.is-marker-only{background:rgba(244,201,93,.18);border-bottom:1.5px dashed rgba(217,155,22,.72)}.lavish-persistent-mark.is-commented{background:rgba(244,201,93,.38);border-bottom:2px solid #d99b16}.lavish-persistent-mark.is-selected{background:rgba(244,201,93,.52);outline:2px solid #b45309;outline-offset:1px;border-radius:2px}.lavish-persistent-mark.is-sent{opacity:.8}.lavish-done-range{background:rgba(190,190,190,.55);backdrop-filter:grayscale(1)}.lavish-mark-badge,.lavish-mark-add-comment,.lavish-done-badge{position:fixed;pointer-events:auto;border:1px solid #d99b16;border-radius:8px;background:#fff8dc;color:#3b3016;font:12px sans-serif;cursor:pointer}.lavish-mark-add-comment{opacity:0;pointer-events:none}.lavish-mark-add-comment.is-visible,.lavish-mark-add-comment:hover{opacity:1;pointer-events:auto}`;
+    style.textContent += `.lavish-persistent-mark,.lavish-done-range{position:fixed;pointer-events:none;box-sizing:border-box}.lavish-persistent-mark.is-marker-only{background:rgba(255,196,0,.34);border-bottom:2px solid rgba(217,119,6,.5)}.lavish-persistent-mark.is-commented{background:rgba(255,190,0,.45);border-bottom:2px solid #b45309}.lavish-persistent-mark.is-selected{background:rgba(255,190,0,.55);outline:2px solid #b45309;outline-offset:1px;border-radius:2px}.lavish-persistent-mark.is-sent{opacity:.8}.lavish-done-range{background:rgba(190,190,190,.55);backdrop-filter:grayscale(1)}.lavish-mark-badge,.lavish-mark-add-comment,.lavish-done-badge{position:fixed;pointer-events:auto;border:1px solid #d99b16;border-radius:8px;background:#fff8dc;color:#3b3016;font:12px sans-serif;cursor:pointer}.lavish-mark-nav{position:fixed;display:flex;gap:2px;pointer-events:auto}.lavish-mark-nav button{display:inline-flex;align-items:center;justify-content:center;width:24px;padding:1px 0;border:1px solid #d99b16;border-radius:8px;background:#fff8dc;color:#3b3016;font:12px sans-serif;cursor:pointer}.lavish-mark-nav button:hover:not(:disabled){background:#f4c95d}.lavish-mark-nav button:disabled{opacity:.4;cursor:default}.lavish-mark-nav.is-marker-only{opacity:0;pointer-events:none}.lavish-mark-nav.is-marker-only.is-visible{opacity:1;pointer-events:auto}.lavish-mark-add-comment{opacity:0;pointer-events:none}.lavish-mark-add-comment.is-visible,.lavish-mark-add-comment:hover{opacity:1;pointer-events:auto}`;
     shadow.appendChild(style);
     return shadow;
   }
@@ -3642,6 +3794,10 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:releaseReviewState") document.documentElement.inert = false;
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
+    if (msg.type === "lavish:revealAnnotationMark") {
+      const mark = annotationMarks.find((item) => item.id === msg.id);
+      if (!mark || !focusAnnotationMark(mark)) revealElement(msg.selector);
+    }
     if (msg.type === "lavish:copyUrlResult") handleCopyUrlResult(msg);
     if (msg.type === "lavish:accessUrls") updateAccessUrls(msg);
     if (msg.type === "lavish:queuedAnchors") {
@@ -3658,7 +3814,7 @@ export function createArtifactSdk(
   function revealElement(selector) {
     const target = selector === "html" ? document.documentElement : safeQuerySelector(selector);
     if (!(target instanceof Element)) return;
-    target.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    scrollIntoCenter(target, () => target.getBoundingClientRect());
     const root = ensureShadow();
     for (const el of [...root.querySelectorAll(".lavish-reveal-marker")]) el.remove();
     const rect = target.getBoundingClientRect();

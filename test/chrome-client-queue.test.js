@@ -8837,6 +8837,54 @@ test("activating queued and sent marks opens their edit, transcript, or comment 
   assert.equal(chrome.postedToFrame.at(-1).id, "marker");
 });
 
+test("clicking a note in the conversation scrolls the artifact to the passage it annotates", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: identicalProjectionNote(0) });
+  const [prompt] = chrome.queued();
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  assert.deepEqual(
+    { ...chrome.postedToFrame.at(-1) },
+    { type: "lavish:revealAnnotationMark", id: prompt.prompt_id, selector: "main > p" },
+  );
+  // A second click on the note that is now open for editing still jumps.
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  assert.equal(chrome.postedToFrame.filter((m) => m.type === "lavish:revealAnnotationMark").length, 2);
+
+  const sent = chatEntryForPrompt(prompt, "2026-11-04");
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [sent] }) });
+  const bubble = chrome
+    .element("chatLog")
+    .children.find((child) => child.getAttribute("data-prompt-id") === prompt.prompt_id);
+  const inside = (selector) =>
+    selector === ".bubble.user.is-anchored" && String(bubble.className).includes("is-anchored") ? bubble : null;
+  chrome.element("chatLog").dispatch("click", { target: { closest: inside } });
+  assert.deepEqual(
+    { ...chrome.postedToFrame.at(-1) },
+    { type: "lavish:revealAnnotationMark", id: prompt.prompt_id, selector: "main > p" },
+  );
+
+  // A link inside the bubble keeps its own click.
+  const before = chrome.postedToFrame.length;
+  chrome.element("chatLog").dispatch("click", { target: { closest: (s) => (s.startsWith("a,") ? {} : inside(s)) } });
+  assert.equal(chrome.postedToFrame.length, before);
+});
+
+test("a jump to a sent comment without a prompt id still highlights its bubble", async () => {
+  const chrome = await createChromeHarness();
+  const legacy = chatEntryForPrompt({ ...identicalProjectionNote(0), prompt: "Old note" }, "2026-11-04");
+  delete legacy.prompt_id;
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat: [legacy] }) });
+  const marks = chrome.postedToFrame.filter((message) => message.type === "lavish:annotationMarks").at(-1).marks;
+  assert.deepEqual(
+    Array.from(marks, (mark) => mark.id),
+    ["sent:0:0"],
+  );
+  chrome.sendFrameMessage({ type: "lavish:activateAnnotationMark", id: "sent:0:0", state: "sent", selectOnly: true });
+  const bubble = chrome.element("chatLog").children.find((child) => String(child.className).includes("bubble user"));
+  assert.ok(bubble.classList.contains("is-highlighted"));
+  assert.ok(bubble.scrolledIntoView);
+});
+
 test("done items persist and are restored after iframe and page reload", async () => {
   const storage = new Map();
   const chrome = await createChromeHarness({ storage });

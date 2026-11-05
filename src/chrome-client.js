@@ -319,6 +319,9 @@ let nextSnapshotRequestId = 0;
 let nextSendOperationOrder = 0;
 let workingBubble = null;
 let displayedChat = initialChat.slice();
+// The transcript entry each rendered bubble shows, so a click can find the passage it annotates.
+/** @type {WeakMap<Element, any>} */
+const chatBubbleEntries = new WeakMap();
 let chatRevision = initialChatRevision;
 // Settlement is by per-submission identity, not displayed content: two tabs can queue notes
 // whose chat projection is identical (same selected text under one container, different range
@@ -1085,10 +1088,11 @@ function addChat(entry, shouldScroll = true) {
   if (!text && !(role === "agent" ? entry.html : attachmentCount(entry) || entry.anchor)) return;
 
   const el = document.createElement("div");
-  el.className = "bubble " + role;
+  el.className = "bubble " + role + (role === "user" && entry.anchor?.selector ? " is-anchored" : "");
   const pid = promptIdentity(entry);
   if (pid) el.setAttribute("data-prompt-id", pid);
   el.innerHTML = chatBubbleHtml({ ...entry, role, text });
+  chatBubbleEntries.set(el, entry);
   chatLog.appendChild(el);
   if (shouldScroll) scrollElementIntoView(el);
   return el;
@@ -1682,6 +1686,8 @@ function isPromptEditable(prompt) {
 
 function editQueuedPrompt(index, { reveal = true } = {}) {
   const prompt = queued[index];
+  // Every click jumps to the passage, also on a note already open or no longer editable.
+  if (reveal && prompt?.selector) revealAnnotatedPassage(promptIdentity(prompt) || "q:" + index, prompt.selector);
   if (ended || !isPromptEditable(prompt)) return;
   const id = promptIdentity(prompt);
   if (!id || id === editingPromptId) return;
@@ -1692,8 +1698,46 @@ function editQueuedPrompt(index, { reveal = true } = {}) {
   editFocusPending = true;
   if (isMobileSheet()) setSheetOpen(true);
   render();
-  if (reveal && prompt.selector) postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector) });
 }
+
+// Scrolls the artifact to what a note annotates: the exact highlighted words when the note is a
+// text mark the artifact draws, otherwise the element its selector names.
+function revealAnnotatedPassage(markId, selector) {
+  if (markId && collectAnnotationMarks().some((mark) => mark.id === markId)) {
+    postToFrame({ type: "lavish:revealAnnotationMark", id: markId, selector: String(selector || "") });
+  } else if (selector) {
+    postToFrame({ type: "lavish:revealElement", selector: String(selector) });
+  }
+}
+
+// The mark id a sent transcript entry carries (see collectAnnotationMarks): its prompt id, or for
+// an entry without one the position-based fallback, so every sent note finds its bubble.
+function sentMarkIdOf(entry) {
+  const chatIdx = displayedChat.indexOf(entry);
+  return promptIdentity(entry) || (chatIdx === -1 ? "" : "sent:" + chatIdx + ":0");
+}
+
+function chatBubbleForMarkId(id) {
+  if (!id) return null;
+  return (
+    [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")].find((el) => {
+      const entry = chatBubbleEntries.get(el);
+      return entry ? sentMarkIdOf(entry) === id : el.getAttribute("data-prompt-id") === id;
+    }) || null
+  );
+}
+
+chatLog.addEventListener("click", (event) => {
+  const target = /** @type {Element | null} */ (event.target);
+  if (!target || typeof target.closest !== "function") return;
+  // Links, thumbnails and a text selection inside the bubble keep their own meaning.
+  if (target.closest("a,button,img,input,textarea")) return;
+  if (String(window.getSelection?.() || "").trim()) return;
+  const bubble = target.closest(".bubble.user.is-anchored");
+  const entry = bubble ? chatBubbleEntries.get(bubble) : null;
+  if (!entry?.anchor?.selector) return;
+  revealAnnotatedPassage(sentMarkIdOf(entry), entry.anchor.selector);
+});
 
 function endQueuedEdit() {
   editingPromptId = "";
@@ -4666,9 +4710,7 @@ window.addEventListener("message", (event) => {
           setTimeout(() => qBubble.classList.remove("is-highlighted"), 1800);
         }
       } else if (id) {
-        const bubble = [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")].find(
-          (el) => el.getAttribute("data-prompt-id") === id,
-        );
+        const bubble = chatBubbleForMarkId(id);
         if (bubble) {
           scrollElementIntoView(bubble);
           bubble.classList.add("is-highlighted");
@@ -4679,11 +4721,9 @@ window.addEventListener("message", (event) => {
     }
     if (index !== -1) editQueuedPrompt(index, { reveal: false });
     else {
-      const entry = displayedChat.find((item) => item.role === "user" && promptIdentity(item) === msg.id);
+      const entry = displayedChat.find((item) => item.role === "user" && sentMarkIdOf(item) === id);
       if (entry && (Boolean(String(entry.text || "").trim()) || attachmentCount(entry) > 0)) {
-        const bubble = [...chatLog.querySelectorAll(".bubble.user,.bubble.agent:not(.agent-working)")].find(
-          (el) => el.getAttribute("data-prompt-id") === msg.id,
-        );
+        const bubble = chatBubbleForMarkId(id);
         if (bubble) {
           scrollElementIntoView(bubble);
           bubble.classList.add("is-highlighted");
