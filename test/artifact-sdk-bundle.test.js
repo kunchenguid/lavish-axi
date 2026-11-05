@@ -50,6 +50,18 @@ function createElement(tag) {
       contains() {
         return false;
       },
+      toggle(name, force) {
+        const names = new Set(
+          String(element.className || "")
+            .split(/\s+/)
+            .filter(Boolean),
+        );
+        const on = force ?? !names.has(name);
+        if (on) names.add(name);
+        else names.delete(name);
+        element.className = [...names].join(" ");
+        return on;
+      },
     },
     setAttribute(name, value) {
       attributes.set(name, String(value));
@@ -109,7 +121,9 @@ function createElement(tag) {
       element.listeners.push({ type, handler });
     },
     removeEventListener() {},
-    focus() {},
+    focus(options) {
+      element.focusedWith = options || {};
+    },
     click() {},
     scrollIntoView() {},
     attachShadow() {
@@ -139,6 +153,7 @@ function bootSdk({
   revisionMarkElements = [],
 } = {}) {
   const posted = [];
+  const windowScrolls = [];
   const clipboardWrites = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
@@ -180,7 +195,7 @@ function bootSdk({
       },
       revokeObjectURL() {},
     },
-    getComputedStyle: () => ({}),
+    getComputedStyle: (element) => element?.computedStyle || {},
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
@@ -220,6 +235,7 @@ function bootSdk({
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
     innerWidth: 1280,
     innerHeight: 800,
+    scrollTo: (options) => windowScrolls.push(options),
     scrollX: 0,
     scrollY: 0,
     location: { origin: "http://127.0.0.1" },
@@ -231,6 +247,7 @@ function bootSdk({
 
   return {
     posted,
+    windowScrolls,
     body,
     api: sandbox.window.lavish,
     click(target) {
@@ -539,6 +556,317 @@ test("persistent marks open comments and take priority over element annotations"
   assert.equal(sdk.cards().length, 0);
   sdk.sendChromeMessage({ type: "lavish:openCommentForMark", id: "one" });
   assert.equal(sdk.cards().length, 1);
+});
+
+test("mark arrows step through commented and bare marks in page order and the chrome can reveal one", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const upper = appendTo(sdk.body, cell("p", "Upper words"));
+  const middle = appendTo(sdk.body, cell("p", "Middle words"));
+  const lower = appendTo(sdk.body, cell("p", "Lower words"));
+  for (const [p, top] of [
+    [upper, 100],
+    [middle, 350],
+    [lower, 600],
+  ]) {
+    p.childNodes = [{ nodeType: 3, parentElement: p, parentNode: p, nodeValue: p.textContent }];
+    p.rectTop = top;
+  }
+  const bySelector = { "#upper": upper, "#middle": middle, "#lower": lower };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => {
+    let owner = null;
+    return {
+      setStart(node) {
+        owner = node.parentElement;
+      },
+      setEnd() {},
+      get commonAncestorContainer() {
+        return owner;
+      },
+      toString: () => owner.textContent,
+      collapsed: false,
+      getClientRects: () => [
+        { left: 10, top: owner.rectTop, right: 90, bottom: owner.rectTop + 20, width: 80, height: 20 },
+      ],
+      getBoundingClientRect: () => ({
+        left: 10,
+        top: owner.rectTop,
+        right: 90,
+        bottom: owner.rectTop + 20,
+        width: 80,
+        height: 20,
+      }),
+    };
+  });
+  const textTarget = (selector, text) => ({
+    type: "text-range",
+    text,
+    selector,
+    commonAncestorSelector: selector,
+    start: { selector, path: [0], offset: 0 },
+    end: { selector, path: [0], offset: text.length },
+  });
+  // The chat lists the lower passage first: the arrows follow the page, not the badge numbers.
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "low",
+        selector: "#lower",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+        target: textTarget("#lower", "Lower words"),
+      },
+      {
+        id: "up",
+        selector: "#upper",
+        state: "queued",
+        hasComment: true,
+        badgeNumber: 2,
+        target: textTarget("#upper", "Upper words"),
+      },
+      {
+        id: "mid",
+        selector: "#middle",
+        state: "queued",
+        hasComment: false,
+        badgeNumber: 0,
+        target: textTarget("#middle", "Middle words"),
+      },
+    ],
+  });
+  sdk.runTimers();
+  const navs = () => sdk.overlayElements().filter((el) => el.className.startsWith("lavish-mark-nav"));
+  assert.equal(navs().length, 3);
+  const [lowNav, upNav, midNav] = navs();
+  // The arrows sit just right of their badge (badge at 88px, stub width 100px).
+  assert.equal(upNav.style.left, "191px");
+  assert.equal(upNav.children[0].disabled, true, "the topmost mark has nothing above it");
+  assert.equal(lowNav.children[1].disabled, true, "the bottom mark has nothing below it");
+  // A bare marker's arrows hide with its + comment button until it is hovered or selected.
+  assert.equal(midNav.className, "lavish-mark-nav is-marker-only");
+
+  const fire = (button, type, extra) =>
+    button.listeners.find((l) => l.type === type).handler({ preventDefault() {}, stopPropagation() {}, ...extra });
+  // A release that began elsewhere, such as the end of a text selection dragged onto the arrow,
+  // does not activate it.
+  fire(upNav.children[1], "pointerup", { button: 0, pointerId: 1, clientX: 20, clientY: 20 });
+  assert.equal(sdk.windowScrolls.length, 0);
+  // A touch dragged off the arrow is released elsewhere; implicit pointer capture still delivers
+  // that release to the arrow, which must not activate.
+  fire(upNav.children[1], "pointerdown", { button: 0, pointerId: 1 });
+  fire(upNav.children[1], "pointerup", { button: 0, pointerId: 1, clientX: 600, clientY: 400 });
+  assert.equal(sdk.windowScrolls.length, 0);
+  // An artifact that mutates on mousedown rebuilds the overlay mid-press, so the browser never fires
+  // `click` on the arrow it pressed. The release over the rebuilt copy of the same arrow activates,
+  // and the trailing mouse click is a no-op.
+  fire(upNav.children[1], "pointerdown", { button: 0, pointerId: 2 });
+  sdk.scroll();
+  sdk.runTimers();
+  const rebuiltUpNav = navs()[1];
+  assert.notEqual(rebuiltUpNav, upNav, "the overlay was rebuilt between press and release");
+  fire(rebuiltUpNav.children[1], "pointerup", { button: 0, pointerId: 2, clientX: 20, clientY: 20 });
+  fire(rebuiltUpNav.children[1], "click", { detail: 1 });
+  assert.equal(sdk.windowScrolls.length, 1);
+  // Explicit instant offsets: some artifacts stall scrollIntoView. The bare marker's middle (360)
+  // lands in the middle of the 800px view.
+  assert.deepEqual({ ...sdk.windowScrolls.at(-1) }, { top: -40, left: 0, behavior: "instant" });
+  assert.equal(sdk.posted.at(-1).id, "mid");
+  const selectedMidNav = navs().find((nav) => nav.className.includes("is-marker-only"));
+  assert.equal(selectedMidNav.className, "lavish-mark-nav is-marker-only is-visible");
+  fire(selectedMidNav.children[1], "pointerdown", { button: 0, pointerId: 3 });
+  fire(selectedMidNav.children[1], "pointerup", { button: 0, pointerId: 3, clientX: 20, clientY: 20 });
+  assert.equal(sdk.windowScrolls.at(-1).top, 210);
+  assert.deepEqual(
+    { type: sdk.posted.at(-1).type, id: sdk.posted.at(-1).id, selectOnly: sdk.posted.at(-1).selectOnly },
+    { type: "lavish:activateAnnotationMark", id: "low", selectOnly: true },
+  );
+  assert.ok(sdk.overlayElements().some((el) => el.className.includes("is-selected")));
+
+  // A click in the conversation reveals the exact words without echoing back to the chrome.
+  const postedBefore = sdk.posted.length;
+  sdk.sendChromeMessage({ type: "lavish:revealAnnotationMark", id: "up", selector: "#upper" });
+  assert.equal(sdk.windowScrolls.length, 3);
+  assert.equal(sdk.windowScrolls.at(-1).top, -290);
+  assert.equal(sdk.posted.length, postedBefore);
+
+  // A keyboard user presses Enter on a focused arrow (a click without a pointer). The overlay is
+  // rebuilt by the jump, so the focus moves to the same arrow beside the mark it reached.
+  const shadowRoot = navs()[0].parentElement;
+  const keyboardNext = navs()[1].children[1];
+  shadowRoot.activeElement = keyboardNext;
+  fire(keyboardNext, "click", { detail: 0 });
+  assert.equal(sdk.posted.at(-1).id, "mid");
+  assert.deepEqual({ ...navs()[2].children[1].focusedWith }, { preventScroll: true });
+  // Beside the last mark in that direction the same arrow is disabled, so the focus takes the
+  // opposite one and stepping back stays possible.
+  shadowRoot.activeElement = navs()[2].children[1];
+  fire(navs()[2].children[1], "click", { detail: 0 });
+  assert.equal(sdk.posted.at(-1).id, "low");
+  assert.deepEqual({ ...navs()[0].children[0].focusedWith }, { preventScroll: true });
+  assert.equal(navs()[0].children[1].focusedWith, undefined);
+});
+
+test("a selected mark later in the list does not steal the hover from the bare marker under the pointer", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const first = appendTo(sdk.body, cell("p", "First words"));
+  const second = appendTo(sdk.body, cell("p", "Second words"));
+  for (const [p, top] of [
+    [first, 100],
+    [second, 350],
+  ]) {
+    p.childNodes = [{ nodeType: 3, parentElement: p, parentNode: p, nodeValue: p.textContent }];
+    p.rectTop = top;
+  }
+  const bySelector = { "#first": first, "#second": second };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => {
+    let owner = null;
+    const rect = () => ({ left: 10, top: owner.rectTop, right: 90, bottom: owner.rectTop + 20, width: 80, height: 20 });
+    return {
+      setStart(node) {
+        owner = node.parentElement;
+      },
+      setEnd() {},
+      get commonAncestorContainer() {
+        return owner;
+      },
+      toString: () => owner.textContent,
+      collapsed: false,
+      getClientRects: () => [rect()],
+      getBoundingClientRect: rect,
+    };
+  });
+  const bareMark = (id, selector, text) => ({
+    id,
+    selector,
+    state: "queued",
+    hasComment: false,
+    badgeNumber: 0,
+    target: {
+      type: "text-range",
+      text,
+      selector,
+      commonAncestorSelector: selector,
+      start: { selector, path: [0], offset: 0 },
+      end: { selector, path: [0], offset: text.length },
+    },
+  });
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [bareMark("first", "#first", "First words"), bareMark("second", "#second", "Second words")],
+  });
+  sdk.runTimers();
+  sdk.sendChromeMessage({ type: "lavish:revealAnnotationMark", id: "second", selector: "#second" });
+  // The pointer rests on the first marker while the second one stays selected.
+  sdk.trigger("mousemove", { target: first, clientX: 20, clientY: 110 });
+  // An artifact that mutates on mousedown rebuilds the overlay before the release.
+  sdk.scroll();
+  sdk.runTimers();
+  const addButtons = sdk.overlayElements().filter((el) => el.className.startsWith("lavish-mark-add-comment"));
+  assert.deepEqual(
+    addButtons.map((el) => el.className.includes("is-visible")),
+    [true, true],
+    "the hovered first marker and the selected second marker both keep their + comment control",
+  );
+});
+
+test("a jump scrolls a scrollable anchor itself and brings a mark beyond the right edge into view", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  // Words inside a <pre> that scrolls on its own, sitting right of the 1280px wide view.
+  const pre = appendTo(sdk.body, cell("pre", "Wide words"));
+  pre.childNodes = [{ nodeType: 3, parentElement: pre, parentNode: pre, nodeValue: "Wide words" }];
+  Object.assign(pre, { computedStyle: { overflowY: "auto", overflowX: "visible" } });
+  Object.assign(pre, { scrollHeight: 500, clientHeight: 100, scrollTop: 0, scrollWidth: 100, clientWidth: 100 });
+  sdk.setDocumentQueryAll((query) => (query === "#wide" ? [pre] : []));
+  const rect = { left: 1500, top: 600, right: 1580, bottom: 620, width: 80, height: 20 };
+  sdk.setCreateRange(() => {
+    let owner = null;
+    return {
+      setStart(node) {
+        owner = node.parentElement;
+      },
+      setEnd() {},
+      get commonAncestorContainer() {
+        return owner;
+      },
+      toString: () => owner.textContent,
+      collapsed: false,
+      getClientRects: () => [rect],
+      getBoundingClientRect: () => rect,
+    };
+  });
+  const target = {
+    type: "text-range",
+    text: "Wide words",
+    selector: "#wide",
+    commonAncestorSelector: "#wide",
+    start: { selector: "#wide", path: [0], offset: 0 },
+    end: { selector: "#wide", path: [0], offset: 10 },
+  };
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [{ id: "wide", selector: "#wide", state: "queued", hasComment: true, badgeNumber: 1, target }],
+  });
+  sdk.runTimers();
+  sdk.sendChromeMessage({ type: "lavish:revealAnnotationMark", id: "wide", selector: "#wide" });
+  // The <pre> box is 10..110 tall, so the words' middle (610) moves to its middle (60).
+  assert.equal(pre.scrollTop, 550);
+  // The window centers the words sideways because they lie beyond the right edge.
+  assert.deepEqual({ ...sdk.windowScrolls.at(-1) }, { top: 210, left: 900, behavior: "instant" });
+});
+
+test("a jump scrolls the body when an app-shell layout makes it the scroll container", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  // html{overflow:hidden} with body{overflow:auto}: only the body scrolls, the window never moves.
+  Object.assign(sdk.body, { computedStyle: { overflowY: "auto", overflowX: "hidden" } });
+  Object.assign(sdk.body, { scrollHeight: 3000, clientHeight: 800, scrollTop: 0, scrollWidth: 100, clientWidth: 100 });
+  sdk.body.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1280, bottom: 800, width: 1280, height: 800 });
+  // A smooth scroll-behavior would only start an animation, leaving the marker drawn at the old place.
+  const bodyScrolls = [];
+  sdk.body.scrollTo = (options) => {
+    bodyScrolls.push({ ...options });
+    sdk.body.scrollTop = options.top;
+    sdk.body.scrollLeft = options.left;
+  };
+  const p = appendTo(sdk.body, cell("p", "Deep words"));
+  p.childNodes = [{ nodeType: 3, parentElement: p, parentNode: p, nodeValue: "Deep words" }];
+  sdk.setDocumentQueryAll((query) => (query === "#deep" ? [p] : []));
+  const rect = { left: 10, top: 1500, right: 90, bottom: 1520, width: 80, height: 20 };
+  sdk.setCreateRange(() => {
+    let owner = null;
+    return {
+      setStart(node) {
+        owner = node.parentElement;
+      },
+      setEnd() {},
+      get commonAncestorContainer() {
+        return owner;
+      },
+      toString: () => owner.textContent,
+      collapsed: false,
+      getClientRects: () => [rect],
+      getBoundingClientRect: () => rect,
+    };
+  });
+  const target = {
+    type: "text-range",
+    text: "Deep words",
+    selector: "#deep",
+    commonAncestorSelector: "#deep",
+    start: { selector: "#deep", path: [0], offset: 0 },
+    end: { selector: "#deep", path: [0], offset: 10 },
+  };
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [{ id: "deep", selector: "#deep", state: "queued", hasComment: true, badgeNumber: 1, target }],
+  });
+  sdk.runTimers();
+  sdk.sendChromeMessage({ type: "lavish:revealAnnotationMark", id: "deep", selector: "#deep" });
+  // The words' middle (1510) moves to the middle of the 800px tall body (400).
+  assert.equal(sdk.body.scrollTop, 1110);
+  assert.deepEqual(bodyScrolls, [{ top: 1110, left: 0, behavior: "instant" }]);
 });
 
 test("clicking a mark or pressing M then C or Delete comments or deletes without stacking duplicates", () => {

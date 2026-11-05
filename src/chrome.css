@@ -1126,6 +1126,9 @@ body.lavish {
   background: var(--bg-elevated);
   border-color: var(--border-strong);
 }
+.bubble.user.is-anchored {
+  cursor: pointer;
+}
 .bubble.is-highlighted {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
