@@ -2063,6 +2063,16 @@ export function createArtifactSdk(
   function scrollIntoCenter(anchor, getRect, { includeAnchor = false } = {}) {
     const offsetFor = (start, size, viewStart, viewSize) =>
       size > viewSize ? start - viewStart - 24 : start + size / 2 - (viewStart + viewSize / 2);
+    // Instant, like the window below: a smooth scroll-behavior would only start an animation, so the
+    // marker and the window offset would use the old position.
+    const scrollInstantly = (el, top, left) => {
+      try {
+        el.scrollTo({ top, left, behavior: "instant" });
+      } catch {
+        el.scrollTop = top;
+        el.scrollLeft = left;
+      }
+    };
     // The body counts: an app-shell layout (html{overflow:hidden}, body{overflow:auto}) scrolls only
     // the body. On an ordinary page its scroll offset is inert and the window below does the work.
     for (
@@ -2074,11 +2084,11 @@ export function createArtifactSdk(
       const box = p.getBoundingClientRect();
       if (p.scrollHeight > p.clientHeight + 1 && /(auto|scroll)/.test(style.overflowY || "")) {
         const rect = getRect();
-        p.scrollTop += offsetFor(rect.top, rect.height, box.top, p.clientHeight);
+        scrollInstantly(p, p.scrollTop + offsetFor(rect.top, rect.height, box.top, p.clientHeight), p.scrollLeft || 0);
       }
       if (p.scrollWidth > p.clientWidth + 1 && /(auto|scroll)/.test(style.overflowX || "")) {
         const rect = getRect();
-        p.scrollLeft += offsetFor(rect.left, rect.width, box.left, p.clientWidth);
+        scrollInstantly(p, p.scrollTop || 0, p.scrollLeft + offsetFor(rect.left, rect.width, box.left, p.clientWidth));
       }
     }
     const rect = getRect();

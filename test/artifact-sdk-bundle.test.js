@@ -805,6 +805,13 @@ test("a jump scrolls the body when an app-shell layout makes it the scroll conta
   Object.assign(sdk.body, { computedStyle: { overflowY: "auto", overflowX: "hidden" } });
   Object.assign(sdk.body, { scrollHeight: 3000, clientHeight: 800, scrollTop: 0, scrollWidth: 100, clientWidth: 100 });
   sdk.body.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1280, bottom: 800, width: 1280, height: 800 });
+  // A smooth scroll-behavior would only start an animation, leaving the marker drawn at the old place.
+  const bodyScrolls = [];
+  sdk.body.scrollTo = (options) => {
+    bodyScrolls.push({ ...options });
+    sdk.body.scrollTop = options.top;
+    sdk.body.scrollLeft = options.left;
+  };
   const p = appendTo(sdk.body, cell("p", "Deep words"));
   p.childNodes = [{ nodeType: 3, parentElement: p, parentNode: p, nodeValue: "Deep words" }];
   sdk.setDocumentQueryAll((query) => (query === "#deep" ? [p] : []));
@@ -841,6 +848,7 @@ test("a jump scrolls the body when an app-shell layout makes it the scroll conta
   sdk.sendChromeMessage({ type: "lavish:revealAnnotationMark", id: "deep", selector: "#deep" });
   // The words' middle (1510) moves to the middle of the 800px tall body (400).
   assert.equal(sdk.body.scrollTop, 1110);
+  assert.deepEqual(bodyScrolls, [{ top: 1110, left: 0, behavior: "instant" }]);
 });
 
 test("clicking a mark or pressing M then C or Delete comments or deletes without stacking duplicates", () => {
