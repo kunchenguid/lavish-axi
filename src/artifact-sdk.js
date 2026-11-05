@@ -2063,9 +2063,11 @@ export function createArtifactSdk(
   function scrollIntoCenter(anchor, getRect, { includeAnchor = false } = {}) {
     const offsetFor = (start, size, viewStart, viewSize) =>
       size > viewSize ? start - viewStart - 24 : start + size / 2 - (viewStart + viewSize / 2);
+    // The body counts: an app-shell layout (html{overflow:hidden}, body{overflow:auto}) scrolls only
+    // the body. On an ordinary page its scroll offset is inert and the window below does the work.
     for (
       let p = includeAnchor ? anchor : anchor?.parentElement;
-      p && p !== document.body && p !== document.documentElement;
+      p && p !== document.documentElement;
       p = p.parentElement
     ) {
       const style = getComputedStyle(p);

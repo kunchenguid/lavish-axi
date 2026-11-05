@@ -799,6 +799,50 @@ test("a jump scrolls a scrollable anchor itself and brings a mark beyond the rig
   assert.deepEqual({ ...sdk.windowScrolls.at(-1) }, { top: 210, left: 900, behavior: "instant" });
 });
 
+test("a jump scrolls the body when an app-shell layout makes it the scroll container", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  // html{overflow:hidden} with body{overflow:auto}: only the body scrolls, the window never moves.
+  Object.assign(sdk.body, { computedStyle: { overflowY: "auto", overflowX: "hidden" } });
+  Object.assign(sdk.body, { scrollHeight: 3000, clientHeight: 800, scrollTop: 0, scrollWidth: 100, clientWidth: 100 });
+  sdk.body.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1280, bottom: 800, width: 1280, height: 800 });
+  const p = appendTo(sdk.body, cell("p", "Deep words"));
+  p.childNodes = [{ nodeType: 3, parentElement: p, parentNode: p, nodeValue: "Deep words" }];
+  sdk.setDocumentQueryAll((query) => (query === "#deep" ? [p] : []));
+  const rect = { left: 10, top: 1500, right: 90, bottom: 1520, width: 80, height: 20 };
+  sdk.setCreateRange(() => {
+    let owner = null;
+    return {
+      setStart(node) {
+        owner = node.parentElement;
+      },
+      setEnd() {},
+      get commonAncestorContainer() {
+        return owner;
+      },
+      toString: () => owner.textContent,
+      collapsed: false,
+      getClientRects: () => [rect],
+      getBoundingClientRect: () => rect,
+    };
+  });
+  const target = {
+    type: "text-range",
+    text: "Deep words",
+    selector: "#deep",
+    commonAncestorSelector: "#deep",
+    start: { selector: "#deep", path: [0], offset: 0 },
+    end: { selector: "#deep", path: [0], offset: 10 },
+  };
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [{ id: "deep", selector: "#deep", state: "queued", hasComment: true, badgeNumber: 1, target }],
+  });
+  sdk.runTimers();
+  sdk.sendChromeMessage({ type: "lavish:revealAnnotationMark", id: "deep", selector: "#deep" });
+  // The words' middle (1510) moves to the middle of the 800px tall body (400).
+  assert.equal(sdk.body.scrollTop, 1110);
+});
+
 test("clicking a mark or pressing M then C or Delete comments or deletes without stacking duplicates", () => {
   const sdk = bootSdk({ runAnimationFrames: true });
   const p = appendTo(sdk.body, cell("p", "Marked text"));
