@@ -9467,20 +9467,15 @@ test("the panel edge resizes from the keyboard within the same limits", async ()
   assert.equal(panelWidthState(chrome).width, 360, "the default width is the floor");
   assert.equal(panelWidthState(chrome).stored, null);
 
-  pressPanelEdge(chrome, "End");
+  chrome.dragPanelEdge(1080, 0);
   assert.equal(panelWidthState(chrome).width, 1120);
   pressPanelEdge(chrome, "ArrowLeft");
   assert.equal(panelWidthState(chrome).width, 1120, "the artifact's share is the ceiling");
-  pressPanelEdge(chrome, "Home");
-  assert.equal(panelWidthState(chrome).width, 360);
+  pressPanelEdge(chrome, "ArrowRight");
+  assert.equal(panelWidthState(chrome).width, 1104);
+  assert.equal(panelWidthState(chrome).stored, "1104");
 
   assert.equal(pressPanelEdge(chrome, "Enter").defaultPrevented, false, "other keys pass through");
-});
-
-test("double-clicking the panel edge restores the default width", async () => {
-  const chrome = await createChromeHarness({ localStore: new Map([["lavish-axi:panel-width", "600"]]) });
-  chrome.element("panelResizer").dispatch("dblclick", {});
-  assert.deepEqual(panelWidthState(chrome), { width: 360, min: 360, max: 1120, css: null, stored: null });
 });
 
 test("a stored panel width applies on load in every review and is clamped, not rewritten, by a narrow window", async () => {
@@ -9521,8 +9516,11 @@ test("the panel still resizes when the browser refuses localStorage", async () =
   chrome.dragPanelEdge(1080, 880);
   assert.equal(panelWidthState(chrome).width, 560);
   assert.equal(panelWidthState(chrome).css, "560px");
-  pressPanelEdge(chrome, "Home");
+  pressPanelEdge(chrome, "ArrowRight");
+  assert.equal(panelWidthState(chrome).width, 544);
+  chrome.dragPanelEdge(880, 1300);
   assert.equal(panelWidthState(chrome).width, 360);
+  assert.equal(panelWidthState(chrome).css, null);
 });
 
 test("collapsing and showing the panel brings back the width it was dragged to", async () => {
@@ -9543,7 +9541,7 @@ test("collapsing and showing the panel brings back the width it was dragged to",
 test("the panel edge ignores drags and keys at phone width", async () => {
   const chrome = await createChromeHarness({ mobile: true });
   chrome.dragPanelEdge(300, 100);
-  assert.equal(pressPanelEdge(chrome, "End").defaultPrevented, false);
+  assert.equal(pressPanelEdge(chrome, "ArrowLeft").defaultPrevented, false);
   assert.equal(panelWidthState(chrome).width, 360);
   assert.equal(panelWidthState(chrome).stored, null);
   assert.equal(chrome.element("body").classList.contains("panel-resizing"), false);

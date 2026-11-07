@@ -1649,9 +1649,6 @@ panelResizer.addEventListener("pointermove", (event) => {
 panelResizer.addEventListener("pointerup", finishPanelResize);
 panelResizer.addEventListener("pointercancel", finishPanelResize);
 panelResizer.addEventListener("lostpointercapture", finishPanelResize);
-panelResizer.addEventListener("dblclick", () => {
-  if (!isMobileSheet()) setPanelWidth(PANEL_MIN_WIDTH_PX);
-});
 panelResizer.addEventListener("keydown", (event) => {
   if (isMobileSheet()) return;
   const width = clampPanelWidth(panelWidth || PANEL_MIN_WIDTH_PX);
@@ -1662,12 +1659,6 @@ panelResizer.addEventListener("keydown", (event) => {
       break;
     case "ArrowRight":
       target = width - PANEL_RESIZE_STEP_PX;
-      break;
-    case "Home":
-      target = PANEL_MIN_WIDTH_PX;
-      break;
-    case "End":
-      target = maxPanelWidth();
       break;
     default:
       return;
