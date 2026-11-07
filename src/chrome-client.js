@@ -1567,7 +1567,7 @@ const ARTIFACT_MIN_WIDTH_PX = 320;
 const PANEL_RESIZE_STEP_PX = 16;
 const panelWidthStorageKey = "lavish-axi:panel-width";
 let panelWidth = readPanelWidth();
-/** @type {{ pointerId: any, startX: number, startWidth: number, moved: boolean } | null} */
+/** @type {{ pointerId: any, startX: number, startWidth: number, startStored: number | null } | null} */
 let panelResize = null;
 
 function readPanelWidth() {
@@ -1618,10 +1618,17 @@ function storePanelWidth() {
 
 function finishPanelResize(event) {
   if (!panelResize || event.pointerId !== panelResize.pointerId) return;
-  const moved = panelResize.moved;
+  const { startWidth, startStored } = panelResize;
   panelResize = null;
   document.body.classList.remove("panel-resizing");
-  if (moved) storePanelWidth();
+  // Only a real width change is stored. A drag that ends where it started, including one pushed
+  // into the clamp, keeps the width the viewer had, so a clamped stored width still comes back.
+  if (clampPanelWidth(panelWidth || PANEL_MIN_WIDTH_PX) !== startWidth) {
+    storePanelWidth();
+  } else {
+    panelWidth = startStored;
+    applyPanelWidth();
+  }
 }
 
 panelResizer.addEventListener("pointerdown", (event) => {
@@ -1632,7 +1639,7 @@ panelResizer.addEventListener("pointerdown", (event) => {
     pointerId: event.pointerId,
     startX: Number(event.clientX),
     startWidth: clampPanelWidth(panelWidth || PANEL_MIN_WIDTH_PX),
-    moved: false,
+    startStored: panelWidth,
   };
   // Capture keeps the moves coming once the pointer is over the artifact; chrome.css also turns
   // off the iframe's pointer events under `panel-resizing` so it cannot swallow them.
@@ -1643,7 +1650,6 @@ panelResizer.addEventListener("pointermove", (event) => {
   if (!panelResize || event.pointerId !== panelResize.pointerId) return;
   // The panel is on the right, so moving the edge left (toward the artifact) widens it.
   const delta = panelResize.startX - Number(event.clientX);
-  if (delta) panelResize.moved = true;
   setPanelWidth(panelResize.startWidth + delta, { persist: false });
 });
 panelResizer.addEventListener("pointerup", finishPanelResize);
@@ -1664,7 +1670,8 @@ panelResizer.addEventListener("keydown", (event) => {
       return;
   }
   event.preventDefault();
-  setPanelWidth(target);
+  // A key that cannot move the edge (already at a limit) must not overwrite a clamped stored width.
+  if (clampPanelWidth(target) !== width) setPanelWidth(target);
 });
 window.addEventListener("resize", applyPanelWidth);
 

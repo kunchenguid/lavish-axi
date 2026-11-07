@@ -9496,6 +9496,50 @@ test("a stored panel width applies on load in every review and is clamped, not r
   assert.equal(panelWidthState(chrome).width, 700);
 });
 
+test("an arrow key that cannot change the clamped width leaves the stored width alone", async () => {
+  const chrome = await createChromeHarness({
+    viewportWidth: 900,
+    localStore: new Map([["lavish-axi:panel-width", "700"]]),
+  });
+  assert.equal(panelWidthState(chrome).width, 580, "the 900px window clamps the stored 700px");
+
+  // Already at the ceiling: widening is a no-op, so the viewer's 700px must survive it.
+  assert.equal(pressPanelEdge(chrome, "ArrowLeft").defaultPrevented, true);
+  assert.equal(panelWidthState(chrome).width, 580);
+  assert.equal(panelWidthState(chrome).stored, "700");
+  chrome.resizeWindow(1440);
+  assert.equal(panelWidthState(chrome).width, 700, "the stored width comes back when the window grows");
+
+  // A key that does change the width still stores it.
+  chrome.resizeWindow(900);
+  pressPanelEdge(chrome, "ArrowRight");
+  assert.equal(panelWidthState(chrome).width, 564);
+  assert.equal(panelWidthState(chrome).stored, "564");
+});
+
+test("a drag that ends at the width it started from leaves the stored width alone", async () => {
+  const chrome = await createChromeHarness({
+    viewportWidth: 900,
+    localStore: new Map([["lavish-axi:panel-width", "700"]]),
+  });
+
+  // Pushing the edge further into the clamp moves the pointer but not the panel.
+  chrome.dragPanelEdge(320, 100);
+  assert.equal(panelWidthState(chrome).width, 580);
+  assert.equal(panelWidthState(chrome).stored, "700");
+
+  // So does a drag that wanders off and comes back to where it started.
+  const handle = chrome.element("panelResizer");
+  handle.dispatch("pointerdown", { pointerId: 2, clientX: 320, button: 0 });
+  handle.dispatch("pointermove", { pointerId: 2, clientX: 400 });
+  handle.dispatch("pointermove", { pointerId: 2, clientX: 320 });
+  handle.dispatch("pointerup", { pointerId: 2, clientX: 320 });
+  assert.equal(panelWidthState(chrome).stored, "700");
+
+  chrome.resizeWindow(1440);
+  assert.equal(panelWidthState(chrome).width, 700);
+});
+
 for (const [label, value] of [
   ["a non-number", "wide"],
   ["a fraction", "512.5"],
