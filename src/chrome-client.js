@@ -119,6 +119,7 @@ const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelH
 const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
 const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
+const panelResizer = /** @type {HTMLDivElement} */ (document.getElementById("panelResizer"));
 const sidebarToggle = /** @type {HTMLButtonElement} */ (document.getElementById("sidebarToggle"));
 const sidebarToggleCount = /** @type {HTMLSpanElement} */ (document.getElementById("sidebarToggleCount"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
@@ -1552,6 +1553,129 @@ function renderSidebarToggle() {
 }
 
 sidebarToggle.addEventListener("click", () => setPanelCollapsed(!panelCollapsed));
+
+// ---- Desktop conversation panel resize ----
+// The handle on the panel's artifact-facing edge widens the side column by drag or arrow keys. The
+// default width (`--panel-w` in chrome.css) is also the narrowest, and the artifact always keeps
+// ARTIFACT_MIN_WIDTH_PX. Like the collapse, the width is a per-viewer preference under one
+// localStorage key for every session, absent while the panel is at its default. A stored width the
+// window cannot fit is clamped where it is applied and never rewritten, so it comes back when the
+// window grows. chrome.css reads `--panel-resized-w` only outside the phone breakpoint and hides
+// the handle there, so the stored width never reaches the phone sheet.
+const PANEL_MIN_WIDTH_PX = 360;
+const ARTIFACT_MIN_WIDTH_PX = 320;
+const PANEL_RESIZE_STEP_PX = 16;
+const panelWidthStorageKey = "lavish-axi:panel-width";
+let panelWidth = readPanelWidth();
+/** @type {{ pointerId: any, startX: number, startWidth: number, moved: boolean } | null} */
+let panelResize = null;
+
+function readPanelWidth() {
+  try {
+    const stored = localStorage.getItem(panelWidthStorageKey);
+    const width = /^\d+$/.test(stored || "") ? Number(stored) : 0;
+    return width > PANEL_MIN_WIDTH_PX ? width : null;
+  } catch {
+    return null;
+  }
+}
+
+function maxPanelWidth() {
+  return Math.max(PANEL_MIN_WIDTH_PX, Math.floor(Number(window.innerWidth) || 0) - ARTIFACT_MIN_WIDTH_PX);
+}
+
+function clampPanelWidth(width) {
+  return Math.min(Math.max(Math.round(width), PANEL_MIN_WIDTH_PX), maxPanelWidth());
+}
+
+function applyPanelWidth() {
+  const width = clampPanelWidth(panelWidth || PANEL_MIN_WIDTH_PX);
+  const root = document.documentElement;
+  if (root && root.style && typeof root.style.setProperty === "function") {
+    if (width > PANEL_MIN_WIDTH_PX) root.style.setProperty("--panel-resized-w", width + "px");
+    else root.style.removeProperty("--panel-resized-w");
+  }
+  panelResizer.setAttribute("aria-valuemin", String(PANEL_MIN_WIDTH_PX));
+  panelResizer.setAttribute("aria-valuemax", String(maxPanelWidth()));
+  panelResizer.setAttribute("aria-valuenow", String(width));
+}
+
+function setPanelWidth(width, { persist = true } = {}) {
+  const clamped = clampPanelWidth(width);
+  panelWidth = clamped > PANEL_MIN_WIDTH_PX ? clamped : null;
+  if (persist) storePanelWidth();
+  applyPanelWidth();
+}
+
+function storePanelWidth() {
+  try {
+    if (panelWidth) localStorage.setItem(panelWidthStorageKey, String(panelWidth));
+    else localStorage.removeItem(panelWidthStorageKey);
+  } catch {
+    // Storage refused only means the width does not survive a reload.
+  }
+}
+
+function finishPanelResize(event) {
+  if (!panelResize || event.pointerId !== panelResize.pointerId) return;
+  const moved = panelResize.moved;
+  panelResize = null;
+  document.body.classList.remove("panel-resizing");
+  if (moved) storePanelWidth();
+}
+
+panelResizer.addEventListener("pointerdown", (event) => {
+  // The press is not default-prevented: that would also suppress the mousedown that focuses the
+  // handle for the arrow keys. chrome.css stops text selection under `panel-resizing` instead.
+  if (isMobileSheet() || event.button) return;
+  panelResize = {
+    pointerId: event.pointerId,
+    startX: Number(event.clientX),
+    startWidth: clampPanelWidth(panelWidth || PANEL_MIN_WIDTH_PX),
+    moved: false,
+  };
+  // Capture keeps the moves coming once the pointer is over the artifact; chrome.css also turns
+  // off the iframe's pointer events under `panel-resizing` so it cannot swallow them.
+  if (typeof panelResizer.setPointerCapture === "function") panelResizer.setPointerCapture(event.pointerId);
+  document.body.classList.add("panel-resizing");
+});
+panelResizer.addEventListener("pointermove", (event) => {
+  if (!panelResize || event.pointerId !== panelResize.pointerId) return;
+  // The panel is on the right, so moving the edge left (toward the artifact) widens it.
+  const delta = panelResize.startX - Number(event.clientX);
+  if (delta) panelResize.moved = true;
+  setPanelWidth(panelResize.startWidth + delta, { persist: false });
+});
+panelResizer.addEventListener("pointerup", finishPanelResize);
+panelResizer.addEventListener("pointercancel", finishPanelResize);
+panelResizer.addEventListener("lostpointercapture", finishPanelResize);
+panelResizer.addEventListener("dblclick", () => {
+  if (!isMobileSheet()) setPanelWidth(PANEL_MIN_WIDTH_PX);
+});
+panelResizer.addEventListener("keydown", (event) => {
+  if (isMobileSheet()) return;
+  const width = clampPanelWidth(panelWidth || PANEL_MIN_WIDTH_PX);
+  let target;
+  switch (event.key) {
+    case "ArrowLeft":
+      target = width + PANEL_RESIZE_STEP_PX;
+      break;
+    case "ArrowRight":
+      target = width - PANEL_RESIZE_STEP_PX;
+      break;
+    case "Home":
+      target = PANEL_MIN_WIDTH_PX;
+      break;
+    case "End":
+      target = maxPanelWidth();
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
+  setPanelWidth(target);
+});
+window.addEventListener("resize", applyPanelWidth);
 
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -4831,6 +4955,7 @@ connectLiveEvents();
 
 applySheetState();
 applyPanelCollapsed();
+applyPanelWidth();
 settleQueuedFromTranscript(initialChat, false);
 render();
 setChromeOutdated(false);

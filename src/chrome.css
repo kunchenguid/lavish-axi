@@ -1118,9 +1118,61 @@ body.lavish {
   min-width: 0;
   min-height: 0;
 }
+.panel-resizer {
+  display: none;
+}
 /* A collapsed panel gives its whole column back to the artifact. Scoped to the exact complement of
-   the phone breakpoint so the stored desktop preference can never hide the phone dock. */
+   the phone breakpoint so the stored desktop preference can never hide the phone dock. The same
+   goes for a width the viewer dragged the panel to: chrome-client.js sets `--panel-resized-w` only
+   past the default `--panel-w`, so an unresized panel renders exactly as the base rules say. */
 @media not all and (max-width: 860px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr) var(--panel-resized-w, var(--panel-w));
+  }
+  .panel {
+    position: relative;
+    width: var(--panel-resized-w, var(--panel-w));
+  }
+  /* The handle sits just inside the panel's artifact-facing hairline, so it never covers the
+     artifact's own scrollbar, and an accent line marks that hairline while it is hovered, focused,
+     or dragged. */
+  .panel-resizer {
+    display: block;
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    bottom: 0;
+    left: -1px;
+    width: 6px;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .panel-resizer::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 2px;
+    transition: background var(--dur-fast) var(--ease);
+  }
+  .panel-resizer:hover::after,
+  .panel-resizer:focus-visible::after,
+  body.panel-resizing .panel-resizer::after {
+    background: var(--accent);
+  }
+  .panel-resizer:focus-visible {
+    outline: none;
+  }
+  /* While dragging, the artifact frame must not swallow the pointer, the cursor must not flicker
+     back as it crosses the frame, and the drag must not select text. */
+  body.panel-resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+  body.panel-resizing .frame iframe {
+    pointer-events: none;
+  }
   body.panel-collapsed .layout {
     grid-template-columns: minmax(0, 1fr);
   }
