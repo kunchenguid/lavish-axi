@@ -1134,8 +1134,9 @@ body.lavish {
     width: var(--panel-resized-w, var(--panel-w));
   }
   /* The handle sits just inside the panel's artifact-facing hairline, so it never covers the
-     artifact's own scrollbar, and an accent line marks that hairline while it is hovered, focused,
-     or dragged. */
+     artifact's own scrollbar, and an accent line marks that hairline while it is focused or
+     dragged. Hover shows only the cursor: the pointer usually leaves the handle straight into the
+     out-of-process artifact frame, which never clears the chrome page's `:hover`. */
   .panel-resizer {
     display: block;
     position: absolute;
@@ -1156,7 +1157,6 @@ body.lavish {
     width: 2px;
     transition: background var(--dur-fast) var(--ease);
   }
-  .panel-resizer:hover::after,
   .panel-resizer:focus-visible::after,
   body.panel-resizing .panel-resizer::after {
     background: var(--accent);
