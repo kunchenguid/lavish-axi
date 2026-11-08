@@ -99,8 +99,18 @@ jobs:
           fi
 
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/kunchenguid/homebrew-tap.git" "$RUNNER_TEMP/homebrew-tap"
+          FORMULA="$RUNNER_TEMP/homebrew-tap/Formula/lavish-axi.rb"
+          # A delayed re-run of an older release must not downgrade the tap.
+          if [ -f "$FORMULA" ]; then
+            CURRENT=$(sed -nE 's|.*lavish-axi-([0-9]+\.[0-9]+\.[0-9]+)\.tgz.*|\1|p' "$FORMULA" | head -n 1)
+            if [ -n "$CURRENT" ] && [ "$CURRENT" != "$VERSION" ] \
+              && [ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -n 1)" = "$CURRENT" ]; then
+              echo "Tap already has lavish-axi $CURRENT, newer than $VERSION; skipping."
+              exit 0
+            fi
+          fi
           mkdir -p "$RUNNER_TEMP/homebrew-tap/Formula"
-          cat > "$RUNNER_TEMP/homebrew-tap/Formula/lavish-axi.rb" << FORMULA_EOF
+          cat > "$FORMULA" << FORMULA_EOF
           class LavishAxi < Formula
             desc "Editor for HTML artifacts"
             homepage "https://github.com/kunchenguid/lavish-axi"
