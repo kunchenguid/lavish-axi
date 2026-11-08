@@ -59,3 +59,58 @@ jobs:
         env:
           LAVISH_AXI_UMAMI_HOST: https://a.kunchenguid.com
           LAVISH_AXI_UMAMI_WEBSITE_ID: ${{ vars.LAVISH_AXI_UMAMI_WEBSITE_ID }}
+
+      # Publishes Formula/lavish-axi.rb to kunchenguid/homebrew-tap so
+      # `brew install kunchenguid/tap/lavish-axi` tracks each npm release. Needs
+      # a HOMEBREW_TAP_TOKEN secret with contents:write on kunchenguid/homebrew-tap.
+      - name: Update Homebrew formula
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${HOMEBREW_TAP_TOKEN:?Missing HOMEBREW_TAP_TOKEN}"
+          VERSION=$(node -p 'require("./package.json").version')
+          TARBALL="https://registry.npmjs.org/lavish-axi/-/lavish-axi-${VERSION}.tgz"
+          # The registry can lag a few seconds behind npm publish.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsSL "$TARBALL" -o "$RUNNER_TEMP/lavish-axi.tgz"; then break; fi
+            if [ "$attempt" = 10 ]; then echo "Could not download $TARBALL" >&2; exit 1; fi
+            sleep 15
+          done
+          SHA256=$(sha256sum "$RUNNER_TEMP/lavish-axi.tgz" | awk '{print $1}')
+          if [[ ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Could not compute a valid SHA256 for $TARBALL" >&2
+            exit 1
+          fi
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/kunchenguid/homebrew-tap.git" "$RUNNER_TEMP/homebrew-tap"
+          mkdir -p "$RUNNER_TEMP/homebrew-tap/Formula"
+          cat > "$RUNNER_TEMP/homebrew-tap/Formula/lavish-axi.rb" << FORMULA_EOF
+          class LavishAxi < Formula
+            desc "Editor for HTML artifacts"
+            homepage "https://github.com/kunchenguid/lavish-axi"
+            url "${TARBALL}"
+            sha256 "${SHA256}"
+            license "MIT"
+
+            depends_on "node"
+
+            def install
+              system "npm", "install", *std_npm_args
+              bin.install_symlink libexec.glob("bin/*")
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/lavish-axi --version")
+            end
+          end
+          FORMULA_EOF
+          cd "$RUNNER_TEMP/homebrew-tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/lavish-axi.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "lavish-axi ${VERSION}"
+            git push
+          fi
