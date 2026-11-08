@@ -12,6 +12,9 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -60,17 +63,28 @@ jobs:
           LAVISH_AXI_UMAMI_HOST: https://a.kunchenguid.com
           LAVISH_AXI_UMAMI_WEBSITE_ID: ${{ vars.LAVISH_AXI_UMAMI_WEBSITE_ID }}
 
-      # Publishes Formula/lavish-axi.rb to kunchenguid/homebrew-tap so
-      # `brew install kunchenguid/tap/lavish-axi` tracks each npm release. Needs
-      # a HOMEBREW_TAP_TOKEN secret with contents:write on kunchenguid/homebrew-tap.
+  # Publishes Formula/lavish-axi.rb to kunchenguid/homebrew-tap so
+  # `brew install kunchenguid/tap/lavish-axi` tracks each npm release. Needs
+  # a HOMEBREW_TAP_TOKEN secret with contents:write on kunchenguid/homebrew-tap.
+  homebrew:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
       - name: Update Homebrew formula
-        if: ${{ steps.release.outputs.release_created }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
           : "${HOMEBREW_TAP_TOKEN:?Missing HOMEBREW_TAP_TOKEN}"
-          VERSION=$(node -p 'require("./package.json").version')
+          VERSION="${TAG_NAME#lavish-axi-v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected release tag: $TAG_NAME" >&2
+            exit 1
+          fi
           TARBALL="https://registry.npmjs.org/lavish-axi/-/lavish-axi-${VERSION}.tgz"
           # The registry can lag a few seconds behind npm publish.
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
