@@ -3535,10 +3535,12 @@ test("chrome.css keeps anchor labels shrinkable so the panel cannot overflow the
 
 // The chrome is an app shell that never scrolls itself; `overflow: hidden` on the body still
 // admits touchpad and programmatic horizontal scrolling, so a stray wide element can shove the
-// artifact and its rail sideways. `clip` on the x axis removes that scroll entirely.
+// artifact and its rail sideways. `clip` removes that scroll entirely — and it only holds when
+// both axes clip, because `overflow-y: hidden` would compute an `overflow-x: clip` right back
+// to `hidden` (CSS Overflow 3).
 test("chrome.css never allows a horizontally scrollable document body", async () => {
   const css = await chromeCssSource();
-  assert.match(css, /body\{[^}]*overflow-x:clip[^}]*\}/);
+  assert.match(css, /body\{[^}]*overflow:hidden[^}]*overflow:clip[^}]*\}/);
 });
 
 test("/design serves local Tailwind and DaisyUI artifact assets", async () => {

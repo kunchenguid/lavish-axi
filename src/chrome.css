@@ -123,9 +123,11 @@ body {
   /* The chrome is an app shell and never scrolls itself. `hidden` would still admit touchpad
      and programmatic horizontal scrolling, so a stray wide element (a wide anchor label) could
      shove the artifact and its rail sideways with no visible scrollbar to notice. `clip`
-     removes that scroll outright. */
-  overflow-x: clip;
-  overflow-y: hidden;
+     removes that scroll outright; mixing it with `overflow-y: hidden` would compute the x axis
+     right back to `hidden` (CSS Overflow 3), so both axes clip, with `hidden` as the fallback
+     for engines without `clip` support. */
+  overflow: hidden;
+  overflow: clip;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
