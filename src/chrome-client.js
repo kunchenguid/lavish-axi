@@ -19,6 +19,12 @@ const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
 // This tab's identity for the server-side copy of its unsent notes. Kept in sessionStorage so a
 // reload of the same tab rewrites its own record instead of adding a second one (loadDraftTabId).
 const draftTabStorageKey = "lavish-axi:draft-tab:" + key;
+// Set only while this tab's last local write of its queue and card state succeeded. A reload
+// trusts its local copy over its own server record only then; storage that filled up can keep
+// the small tab id while the newest notes reached only the server.
+const draftLocalSavedStorageKey = "lavish-axi:draft-local-saved:" + key;
+const localDraftSavedAtBoot = loadJsonState(draftLocalSavedStorageKey, false) === true;
+const localDraftWriteOk = { queue: true, reviewState: true };
 // Unsent notes other tabs left on the server. Closing a tab (or an in-app browser discarding it)
 // used to lose its queue; a tab opened later now adopts it.
 const initialDrafts = Array.isArray(sessionData.initialDrafts) ? sessionData.initialDrafts : [];
@@ -500,8 +506,21 @@ function persistQueuedPromptsLocally() {
     } else {
       sessionStorage.removeItem(queueStorageKey);
     }
+    noteLocalDraftWrite("queue", true);
   } catch {
     // The in-memory queue still works if browser storage is unavailable.
+    noteLocalDraftWrite("queue", false);
+  }
+}
+
+function noteLocalDraftWrite(part, ok) {
+  localDraftWriteOk[part] = ok;
+  try {
+    if (localDraftWriteOk.queue && localDraftWriteOk.reviewState)
+      sessionStorage.setItem(draftLocalSavedStorageKey, "true");
+    else sessionStorage.removeItem(draftLocalSavedStorageKey);
+  } catch {
+    // Without the marker a reload merges its own server record, which is the safe direction.
   }
 }
 
@@ -667,41 +686,48 @@ function adoptStoredDrafts() {
   let adopted = 0;
   for (const record of initialDrafts) {
     const tab = String(record?.tab || "");
-    // This tab's own record on a reload: the tab id came back from sessionStorage, so the local
-    // queue and card state did too, and they are newer than (or equal to) the server copy. A
-    // note removed just before the reload must not come back from it.
-    if (!isPromptIdentity(tab) || tab === draftTabId) continue;
-    let allFit = true;
+    if (!isPromptIdentity(tab)) continue;
+    // This tab's own record on a reload. When the tab's last local write succeeded, the local
+    // queue and card state are newer than (or equal to) the server copy, and a note removed just
+    // before the reload must not come back from it. Otherwise the server copy may be the only
+    // current one, so it is merged like any other record (this tab's next write replaces it).
+    const own = tab === draftTabId;
+    if (own && localDraftSavedAtBoot) continue;
+    /** @type {any[]} */
+    const take = [];
     for (const raw of Array.isArray(record.queue) ? record.queue : []) {
       const prompt = adoptQueuedPrompt(raw, true);
       const id = promptIdentity(prompt);
       if (!prompt || !id || present.has(id) || chatAckIds.has(id)) continue;
       const queueKey = typeof prompt[internalQueueKeyField] === "string" ? prompt[internalQueueKeyField] : "";
-      if (queueKey && queueKeys.has(queueKey)) continue;
-      if (queued.length >= draftMaxPrompts) {
-        allFit = false;
+      if (queueKey && (queueKeys.has(queueKey) || take.some((other) => other[internalQueueKeyField] === queueKey))) {
         continue;
       }
-      if (queueKey) queueKeys.add(queueKey);
-      present.add(id);
+      take.push(prompt);
+    }
+    // Whole records only: one whose notes do not all fit stays untouched on the server for a
+    // later tab, so a note removed here can never come back from a partly copied record.
+    if (queued.length + take.length > draftMaxPrompts) continue;
+    for (const prompt of take) {
+      const queueKey = prompt[internalQueueKeyField];
+      if (typeof queueKey === "string" && queueKey) queueKeys.add(queueKey);
+      present.add(promptIdentity(prompt));
       queued.push(prompt);
       adopted += 1;
     }
-    // The queue is taken when it fits; the record's card text only when this tab has no open card
-    // of its own. Card text it could not take stays on the server for a later tab.
+    // The record's card text is taken only when this tab has no open card of its own, or when it
+    // is this tab's own newer copy. Card text it could not take stays on the server for a later tab.
     const reviewState = record.review_state;
     let tookReviewState = true;
     if (reviewStateHasText(reviewState)) {
-      if (!reviewStateHasText(lastReviewState)) {
+      if (own || !reviewStateHasText(lastReviewState)) {
         lastReviewState = reviewState;
-        saveJsonState(reviewStateStorageKey, reviewState);
+        noteLocalDraftWrite("reviewState", saveJsonState(reviewStateStorageKey, reviewState));
       } else {
         tookReviewState = JSON.stringify(lastReviewState) === JSON.stringify(reviewState);
       }
     }
-    // A record whose notes did not all fit stays whole on the server for a later tab; the notes
-    // this tab did take are settled once by identity.
-    if (allFit) draftAdoptedTabs.push({ tab, seq: Number(record.seq) || 0, review_state: tookReviewState });
+    if (!own) draftAdoptedTabs.push({ tab, seq: Number(record.seq) || 0, review_state: tookReviewState });
   }
   if (adopted) persistQueuedPrompts();
   else if (draftAdoptedTabs.length) saveDraftsNow();
@@ -1419,12 +1445,14 @@ function setReviewState(state) {
   if (!state || (!state.card && !(Array.isArray(state.fields) && state.fields.length))) {
     try {
       sessionStorage.removeItem(reviewStateStorageKey);
+      noteLocalDraftWrite("reviewState", true);
     } catch {
       // The in-memory state still works if browser storage is unavailable.
+      noteLocalDraftWrite("reviewState", false);
     }
     return;
   }
-  saveJsonState(reviewStateStorageKey, state);
+  noteLocalDraftWrite("reviewState", saveJsonState(reviewStateStorageKey, state));
 }
 
 function hasUnsentDraft() {

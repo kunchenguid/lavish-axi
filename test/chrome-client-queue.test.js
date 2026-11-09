@@ -92,6 +92,8 @@ async function createChromeHarness({
   // How the browser reports this page load (`performance.getEntriesByType("navigation")`). Left
   // unset, the window has no `performance`, as in a browser without Navigation Timing.
   navigationType = "",
+  // Models a full sessionStorage: `setItem` throws a QuotaExceededError for each key it matches.
+  sessionStorageRefuses = /** @type {(key: string) => boolean} */ (() => false),
   storedQueue = null,
   // Opt-in frozen clock. `reloadChromeAfterServerRestart` waits on wall-clock deadlines, so a
   // test that needs one to expire has to own `Date.now()` rather than sleep through it.
@@ -507,6 +509,7 @@ async function createChromeHarness({
         return storage.has(key) ? storage.get(key) : null;
       },
       setItem(key, value) {
+        if (sessionStorageRefuses(key)) throw new Error("QuotaExceededError");
         storage.set(key, String(value));
       },
       removeItem(key) {
@@ -9719,7 +9722,10 @@ test("a reload keeps this tab's local queue over its own older server copy", asy
   // The reviewer removed "Removed" and reloaded before that removal reached the server.
   const chrome = await createChromeHarness({
     navigationType: "reload",
-    storage: new Map([["lavish-axi:draft-tab:abc", "thisTab"]]),
+    storage: new Map([
+      ["lavish-axi:draft-tab:abc", "thisTab"],
+      ["lavish-axi:draft-local-saved:abc", "true"],
+    ]),
     storedQueue: [{ prompt: "Kept", selector: "h1", tag: "h1", prompt_id: "kept" }],
     sessionData: {
       ...defaultSessionData,
@@ -9748,7 +9754,10 @@ test("a reload keeps this tab's local queue over its own older server copy", asy
 test("a reload with an empty local queue does not restore its own server copy", async () => {
   const chrome = await createChromeHarness({
     navigationType: "reload",
-    storage: new Map([["lavish-axi:draft-tab:abc", "thisTab"]]),
+    storage: new Map([
+      ["lavish-axi:draft-tab:abc", "thisTab"],
+      ["lavish-axi:draft-local-saved:abc", "true"],
+    ]),
     sessionData: {
       ...defaultSessionData,
       initialDrafts: [
@@ -9802,13 +9811,54 @@ test("a booting tab never retires a record whose notes it could not all hold", a
   await flushPromises();
   assert.deepEqual(
     chrome.queued().map((prompt) => prompt.prompt_id),
-    ["a0", "a1", "a2", "b0", "b1"],
+    ["a0", "a1", "a2"],
+    "tab B's notes do not all fit, so none of them is copied",
   );
   assert.deepEqual(
     chrome.draftRequests.at(-1).body.adopted,
     [{ tab: "tabA", seq: 3, review_state: true }],
-    "tab B's b2 did not fit, so its record stays on the server",
+    "tab B's record stays whole on the server",
   );
+});
+
+test("a reload whose last local save failed restores its own server copy", async () => {
+  const storage = new Map();
+  // Storage is full: the small tab id was stored, but the queue and card text were not.
+  /** @type {(key: string) => boolean} */
+  const refuses = (key) => key === "lavish-axi:queued:abc" || key === "lavish-axi:review-state:abc";
+  const first = await createChromeHarness({ storage, sessionStorageRefuses: refuses });
+  first.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Only on the server", selector: "h1", tag: "h1" },
+  });
+  first.sendFrameMessage({
+    type: "lavish:reviewState",
+    state: { card: { selector: "p", text: "Card only on the server" }, fields: [] },
+  });
+  await flushPromises();
+  first.setVisibility("hidden");
+  await flushPromises();
+  const saved = first.draftRequests.at(-1).body;
+  assert.equal(saved.review_state.card.text, "Card only on the server");
+  assert.equal(storage.has("lavish-axi:queued:abc"), false);
+
+  const reloaded = await createChromeHarness({
+    navigationType: "reload",
+    storage,
+    sessionData: {
+      ...defaultSessionData,
+      initialDrafts: [{ ...saved, updated_at: "2026-11-09T10:00:00.000Z" }],
+    },
+  });
+  await flushPromises();
+  assert.deepEqual(
+    reloaded.queued().map((prompt) => prompt.prompt),
+    ["Only on the server"],
+  );
+  const write = reloaded.draftRequests.at(-1).body;
+  assert.equal(write.tab, saved.tab, "the reload still owns its record");
+  assert.equal(write.adopted, undefined, "its own record is replaced by its write, not adopted");
+  assert.equal(write.review_state.card.text, "Card only on the server");
 });
 
 test("a failed draft save says the notes are only in this tab until a save is confirmed", async () => {
