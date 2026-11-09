@@ -23,6 +23,9 @@ const draftTabStorageKey = "lavish-axi:draft-tab:" + key;
 // used to lose its queue; a tab opened later now adopts it.
 const initialDrafts = Array.isArray(sessionData.initialDrafts) ? sessionData.initialDrafts : [];
 const DRAFT_SAVE_DEBOUNCE_MS = 400;
+// The server keeps at most this many notes per tab record (src/review-drafts.js), so a tab never
+// retires a record whose notes it could not all hold.
+const draftMaxPrompts = Number(sessionData.draftMaxPrompts) || Infinity;
 // Browsers cap the bodies of in-flight keepalive requests at 64 KiB in total.
 const DRAFT_KEEPALIVE_MAX_BYTES = 60_000;
 /** @type {any[]} */
@@ -170,6 +173,7 @@ const presenceBanner = /** @type {HTMLDivElement} */ (document.getElementById("p
 const handoffBanner = /** @type {HTMLDivElement} */ (document.getElementById("handoffBanner"));
 const handoffTakeoverButton = /** @type {HTMLButtonElement} */ (document.getElementById("handoffTakeover"));
 const outdatedBanner = /** @type {HTMLDivElement} */ (document.getElementById("outdatedBanner"));
+const draftSaveBanner = /** @type {HTMLDivElement} */ (document.getElementById("draftSaveBanner"));
 const outdatedText = /** @type {HTMLSpanElement} */ (document.getElementById("outdatedText"));
 const outdatedReloadButton = /** @type {HTMLButtonElement} */ (document.getElementById("outdatedReload"));
 const outdatedDismissButton = /** @type {HTMLButtonElement} */ (document.getElementById("outdatedDismiss"));
@@ -531,7 +535,7 @@ function pageLoadIsReload() {
 }
 
 let draftTabId = "";
-/** @type {{ tab: string, review_state: boolean }[]} */
+/** @type {{ tab: string, seq: number, review_state: boolean }[]} */
 let draftAdoptedTabs = [];
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let draftSaveTimer;
@@ -573,14 +577,29 @@ function sendDraftWrite() {
     headers: { "content-type": "application/json" },
     body,
     // A save started just before the tab closes must still land. Keepalive bodies share a
-    // small browser quota, so an unusually large queue goes as an ordinary request.
-    keepalive: body.length < DRAFT_KEEPALIVE_MAX_BYTES,
-  }).then((response) => {
-    if (!response?.ok || seq < draftConfirmedSeq) return;
-    draftConfirmedSeq = seq;
-    draftConfirmedState = state;
-    draftAdoptedTabs = draftAdoptedTabs.filter((entry) => !adopted.includes(entry));
-  });
+    // small browser quota, counted in bytes, so an unusually large queue goes as an ordinary
+    // request.
+    keepalive: new TextEncoder().encode(body).length < DRAFT_KEEPALIVE_MAX_BYTES,
+  }).then(
+    (response) => {
+      if (seq < draftConfirmedSeq) return;
+      showDraftSaveFailed(!response?.ok);
+      if (!response?.ok) return;
+      draftConfirmedSeq = seq;
+      draftConfirmedState = state;
+      draftAdoptedTabs = draftAdoptedTabs.filter((entry) => !adopted.includes(entry));
+    },
+    (error) => {
+      if (seq >= draftConfirmedSeq) showDraftSaveFailed(true);
+      throw error;
+    },
+  );
+}
+
+// A save that did not land leaves the newest notes only in this tab's sessionStorage, which
+// closing the tab loses. Say so until a later save is confirmed; the next change retries.
+function showDraftSaveFailed(failed) {
+  if (draftSaveBanner) draftSaveBanner.hidden = !failed || ended;
 }
 
 // Mirror this tab's unsent notes to the server. Saves never overlap: a change made while one is
@@ -648,22 +667,28 @@ function adoptStoredDrafts() {
   let adopted = 0;
   for (const record of initialDrafts) {
     const tab = String(record?.tab || "");
-    if (!isPromptIdentity(tab)) continue;
+    // This tab's own record on a reload: the tab id came back from sessionStorage, so the local
+    // queue and card state did too, and they are newer than (or equal to) the server copy. A
+    // note removed just before the reload must not come back from it.
+    if (!isPromptIdentity(tab) || tab === draftTabId) continue;
+    let allFit = true;
     for (const raw of Array.isArray(record.queue) ? record.queue : []) {
       const prompt = adoptQueuedPrompt(raw, true);
       const id = promptIdentity(prompt);
       if (!prompt || !id || present.has(id) || chatAckIds.has(id)) continue;
-      const queueKey = prompt[internalQueueKeyField];
-      if (typeof queueKey === "string" && queueKey) {
-        if (queueKeys.has(queueKey)) continue;
-        queueKeys.add(queueKey);
+      const queueKey = typeof prompt[internalQueueKeyField] === "string" ? prompt[internalQueueKeyField] : "";
+      if (queueKey && queueKeys.has(queueKey)) continue;
+      if (queued.length >= draftMaxPrompts) {
+        allFit = false;
+        continue;
       }
+      if (queueKey) queueKeys.add(queueKey);
       present.add(id);
       queued.push(prompt);
       adopted += 1;
     }
-    // The queue is always taken; the record's card text only when this tab has no open card of
-    // its own. Card text it could not take stays on the server for a later tab.
+    // The queue is taken when it fits; the record's card text only when this tab has no open card
+    // of its own. Card text it could not take stays on the server for a later tab.
     const reviewState = record.review_state;
     let tookReviewState = true;
     if (reviewStateHasText(reviewState)) {
@@ -674,7 +699,9 @@ function adoptStoredDrafts() {
         tookReviewState = JSON.stringify(lastReviewState) === JSON.stringify(reviewState);
       }
     }
-    if (tab !== draftTabId) draftAdoptedTabs.push({ tab, review_state: tookReviewState });
+    // A record whose notes did not all fit stays whole on the server for a later tab; the notes
+    // this tab did take are settled once by identity.
+    if (allFit) draftAdoptedTabs.push({ tab, seq: Number(record.seq) || 0, review_state: tookReviewState });
   }
   if (adopted) persistQueuedPrompts();
   else if (draftAdoptedTabs.length) saveDraftsNow();
@@ -3375,6 +3402,7 @@ function markSessionEnded() {
   if (presenceBanner) presenceBanner.hidden = true;
   if (handoffBanner) handoffBanner.hidden = true;
   if (outdatedBanner) outdatedBanner.hidden = true;
+  if (draftSaveBanner) draftSaveBanner.hidden = true;
   layoutGateManuallyBypassed = true;
   layoutGateFailureSticky = false;
   revealLayoutGate();

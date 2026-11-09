@@ -16,6 +16,11 @@ function write(session, payload, options) {
   return applyDraftWrite(session, { seq: nextSeq, ...payload }, options);
 }
 
+// What a booting chrome names when it adopts a record: the tab and the `seq` it was served.
+function seen(session, tab, reviewState = true) {
+  return { tab, seq: session.drafts[tab].seq, review_state: reviewState };
+}
+
 function note(id, text = `note ${id}`) {
   return { prompt: text, selector: "main > p", tag: "p", prompt_id: id };
 }
@@ -25,7 +30,13 @@ test("a tab's write is stored and served back to the next tab", () => {
   const changed = write(session, { tab: "tabA", queue: [note("p1")] }, { now: "2026-11-09T10:00:00.000Z" });
   assert.equal(changed, true);
   assert.deepEqual(serializeDrafts(session), [
-    { tab: "tabA", queue: [note("p1")], review_state: null, updated_at: "2026-11-09T10:00:00.000Z" },
+    {
+      tab: "tabA",
+      seq: session.drafts.tabA.seq,
+      queue: [note("p1")],
+      review_state: null,
+      updated_at: "2026-11-09T10:00:00.000Z",
+    },
   ]);
 });
 
@@ -63,7 +74,7 @@ test("adopting removes the other tabs' records in the same write", () => {
   write(session, { tab: "tabA", queue: [note("p1")] }, { now: "2026-11-09T10:00:00.000Z" });
   write(
     session,
-    { tab: "tabB", queue: [note("p1")], adopted: [{ tab: "tabA", review_state: true }] },
+    { tab: "tabB", queue: [note("p1")], adopted: [seen(session, "tabA")] },
     { now: "2026-11-09T10:01:00.000Z" },
   );
   assert.deepEqual(
@@ -153,10 +164,7 @@ test("an adopting write that could not take the card text keeps it but retires t
     {
       tab: "tabC",
       queue: [note("n1")],
-      adopted: [
-        { tab: "tabA", review_state: false },
-        { tab: "tabB", review_state: false },
-      ],
+      adopted: [seen(session, "tabA", false), seen(session, "tabB", false)],
     },
     { now: "2026-11-09T10:01:00.000Z" },
   );
@@ -172,9 +180,54 @@ test("an adopting write that could not take the card text keeps it but retires t
     ],
     "n2, removed in tab C, does not come back; tab B had no card text, so its record is gone",
   );
-  write(session, { tab: "tabD", queue: [], adopted: [{ tab: "tabA", review_state: true }] });
+  write(session, { tab: "tabD", queue: [], adopted: [seen(session, "tabA")] });
   assert.deepEqual(
     serializeDrafts(session).map((record) => record.tab),
     ["tabC"],
   );
+});
+
+test("adoption retires only a record still at the seq the adopting tab saw", () => {
+  const session = {};
+  write(session, { tab: "tabA", queue: [note("p1")] }, { now: "2026-11-09T10:00:00.000Z" });
+  const observed = seen(session, "tabA");
+  // Tab A, still open, saves another note after tab B booted but before B's adoption lands.
+  write(session, { tab: "tabA", queue: [note("p1"), note("p2")] }, { now: "2026-11-09T10:00:10.000Z" });
+  write(session, { tab: "tabB", queue: [note("p1")], adopted: [observed] }, { now: "2026-11-09T10:00:20.000Z" });
+  assert.deepEqual(
+    serializeDrafts(session).map((record) => [record.tab, record.queue.map((prompt) => prompt.prompt_id)]),
+    [
+      ["tabB", ["p1"]],
+      ["tabA", ["p1", "p2"]],
+    ],
+    "tab B never received p2, so tab A's newer record is left alone",
+  );
+});
+
+test("an adopted record keeps its seq, so a delayed older write from that tab is refused", () => {
+  const session = {};
+  applyDraftWrite(session, { tab: "tabA", seq: 2, queue: [note("p1")] });
+  applyDraftWrite(session, {
+    tab: "tabB",
+    seq: 10,
+    queue: [],
+    adopted: [{ tab: "tabA", seq: 2, review_state: true }],
+  });
+  assert.equal(session.drafts.tabA.seq, 2, "the adopted record stays as an empty tombstone");
+  // Tab A's older save (seq 1) was still in flight and lands last.
+  assert.equal(applyDraftWrite(session, { tab: "tabA", seq: 1, queue: [note("p1"), note("p0")] }), false);
+  assert.deepEqual(serializeDrafts(session), []);
+});
+
+test("adoption tombstones are bounded by the tab cap and evicted before live records", () => {
+  const session = {};
+  for (let i = 0; i < MAX_DRAFT_TABS; i += 1) write(session, { tab: `old${i}`, queue: [note(`o${i}`)] });
+  write(session, {
+    tab: "adopter",
+    queue: [],
+    adopted: Array.from({ length: MAX_DRAFT_TABS }, (_, i) => seen(session, `old${i}`)),
+  });
+  write(session, { tab: "live", queue: [note("l1")] });
+  assert.equal(Object.keys(session.drafts).length, MAX_DRAFT_TABS);
+  assert.ok(session.drafts.live);
 });

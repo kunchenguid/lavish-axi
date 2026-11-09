@@ -99,12 +99,15 @@ function recordIsEmpty(record) {
  *   already has, and changes nothing.
  * - The writer's record is replaced wholesale (the chrome always sends its whole queue), minus
  *   any prompt the transcript already acknowledges.
- * - `adopted` names, as `{ tab, review_state }`, other tabs' records the writer took over at
- *   boot. Their queue always goes, so the notes have exactly one stored owner afterwards; the
- *   record itself goes only when the writer took its card text too (`review_state: true`) or it
- *   had none. A record kept for card text the writer could not take keeps no queue.
- * - An empty record is kept, with nothing in it, so its sequence still refuses an older write
- *   that would bring back what the tab removed. It is never served and is evicted first.
+ * - `adopted` names, as `{ tab, seq, review_state }`, other tabs' records the writer took over
+ *   at boot, with the `seq` it saw. A record written since (its `seq` no longer matches) holds
+ *   something the writer never received, so it is left alone. Otherwise its queue goes, so the
+ *   notes have exactly one stored owner afterwards, and its card text goes too when the writer
+ *   took it (`review_state: true`). A record kept for card text the writer could not take keeps
+ *   no queue.
+ * - An empty record is kept, with nothing in it but its sequence, so an older write from that
+ *   tab still landing later is refused instead of bringing back what was removed or adopted. It
+ *   is never served and is evicted first.
  * - At most MAX_DRAFT_TABS records are kept; the least recently written go first.
  *
  * Throws DraftTooLargeError when the writer's record is over MAX_DRAFT_RECORD_BYTES. Nothing is
@@ -134,9 +137,8 @@ export function applyDraftWrite(session, payload, { now = new Date().toISOString
   for (const value of adopted) {
     const id = normalizeDraftTabId(value?.tab);
     const other = id && id !== tab ? drafts[id] : null;
-    if (!other) continue;
-    if (value.review_state === true || !other.review_state) delete drafts[id];
-    else drafts[id] = { ...other, queue: [] };
+    if (!other || normalizeDraftSeq(other.seq) !== normalizeDraftSeq(value?.seq)) continue;
+    drafts[id] = { ...other, queue: [], review_state: value.review_state === true ? null : other.review_state };
   }
   drafts[tab] = record;
   const ordered = Object.entries(drafts).sort(
@@ -178,8 +180,11 @@ export function pruneSentDrafts(session, promptIds) {
  * The draft records a booting chrome may adopt, most recently written first, with every prompt
  * the transcript already acknowledges removed.
  *
+ * `seq` is what a booting chrome names when it adopts the record, so a write that lands after
+ * the boot is not retired along with what the chrome actually received.
+ *
  * @param {any} session
- * @returns {{ tab: string, queue: any[], review_state: any, updated_at: string }[]}
+ * @returns {{ tab: string, seq: number, queue: any[], review_state: any, updated_at: string }[]}
  */
 export function serializeDrafts(session) {
   const acknowledged = acknowledgedIdSet(session);
@@ -191,7 +196,13 @@ export function serializeDrafts(session) {
     );
     const reviewState = normalizeReviewState(record.review_state);
     if (!queue.length && !reviewState) continue;
-    records.push({ tab, queue, review_state: reviewState, updated_at: String(record.updated_at || "") });
+    records.push({
+      tab,
+      seq: normalizeDraftSeq(record.seq),
+      queue,
+      review_state: reviewState,
+      updated_at: String(record.updated_at || ""),
+    });
   }
   return records.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 }
