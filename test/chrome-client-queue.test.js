@@ -9861,6 +9861,49 @@ test("a reload whose last local save failed restores its own server copy", async
   assert.equal(write.review_state.card.text, "Card only on the server");
 });
 
+test("a reload after a failed local save keeps its own card and leaves another tab's card on the server", async () => {
+  const storage = new Map();
+  /** @type {(key: string) => boolean} */
+  const refuses = (key) => key === "lavish-axi:queued:abc" || key === "lavish-axi:review-state:abc";
+  const first = await createChromeHarness({ storage, sessionStorageRefuses: refuses });
+  first.sendFrameMessage({
+    type: "lavish:reviewState",
+    state: { card: { selector: "p", text: "Own card" }, fields: [] },
+  });
+  await flushPromises();
+  first.setVisibility("hidden");
+  await flushPromises();
+  const saved = first.draftRequests.at(-1).body;
+
+  const reloaded = await createChromeHarness({
+    navigationType: "reload",
+    storage,
+    sessionData: {
+      ...defaultSessionData,
+      // The other tab's record is newer, so the server lists it first.
+      initialDrafts: [
+        {
+          tab: "tabOther",
+          seq: 9,
+          queue: [],
+          review_state: { card: { selector: "h1", text: "Other card" }, fields: [] },
+          updated_at: "2026-11-09T10:05:00.000Z",
+        },
+        { ...saved, updated_at: "2026-11-09T10:00:00.000Z" },
+      ],
+    },
+  });
+  await flushPromises();
+  const write = reloaded.draftRequests.at(-1).body;
+  assert.equal(write.tab, saved.tab);
+  assert.equal(write.review_state.card.text, "Own card", "the tab's own card is restored");
+  assert.deepEqual(
+    write.adopted,
+    [{ tab: "tabOther", seq: 9, review_state: false }],
+    "the other tab's card was not kept, so it stays on the server",
+  );
+});
+
 test("a failed draft save says the notes are only in this tab until a save is confirmed", async () => {
   const chrome = await createChromeHarness({
     draftResponses: [

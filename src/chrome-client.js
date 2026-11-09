@@ -684,7 +684,13 @@ function adoptStoredDrafts() {
     queued.map((prompt) => prompt?.[internalQueueKeyField]).filter((value) => typeof value === "string" && value),
   );
   let adopted = 0;
-  for (const record of initialDrafts) {
+  // This tab's own record goes first, so a card restored from it is settled before any other
+  // tab's card is considered, and another record's card is named taken only when it is kept.
+  const records = [
+    ...initialDrafts.filter((record) => String(record?.tab || "") === draftTabId),
+    ...initialDrafts.filter((record) => String(record?.tab || "") !== draftTabId),
+  ];
+  for (const record of records) {
     const tab = String(record?.tab || "");
     if (!isPromptIdentity(tab)) continue;
     // This tab's own record on a reload. When the tab's last local write succeeded, the local
