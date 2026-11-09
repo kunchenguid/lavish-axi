@@ -1859,7 +1859,7 @@ export function createArtifactSdk(
     const style = document.createElement("style");
     style.id = "lavish-scrollbar-style";
     style.textContent =
-      "::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-thumb{background:#f3f3f4;border-radius:8px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{scrollbar-color:#f3f3f4 transparent}";
+      "::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-thumb{background:#f3f3f4;border-radius:8px;border:1px solid rgba(0,0,0,.28);background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{scrollbar-color:#f3f3f4 transparent}";
     (document.head || document.documentElement).appendChild(style);
   }
 

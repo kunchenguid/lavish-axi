@@ -432,6 +432,9 @@ test("the SDK restyles the frame scrollbar so the thumb separates from warm back
   const style = sdk.head.children.find((el) => el.id === "lavish-scrollbar-style");
   assert.ok(style, "the SDK installs a scrollbar style element");
   assert.match(style.textContent, /::-webkit-scrollbar-thumb\{background:#f3f3f4/);
+  // A fine dark outline keeps the light thumb visible on white inner surfaces too,
+  // not only on the warm artifact background (CodeRabbit finding, Simon's call).
+  assert.match(style.textContent, /border:1px solid rgba\(0,0,0,\.28\)/);
   assert.match(style.textContent, /scrollbar-color:#f3f3f4 transparent/);
 });
 
