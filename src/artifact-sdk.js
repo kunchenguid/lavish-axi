@@ -1554,10 +1554,20 @@ export function createArtifactSdk(
     return chain.join("|");
   }
 
+  // A document intro header (a `<header>` wrapping the page's h1 together with its lead prose)
+  // is one content unit, not page chrome: `done-parent` has to be able to grey the heading along
+  // with the paragraph below it. Headers without that heading-and-prose pairing stay excluded so
+  // site banners and nav strips never become done boxes.
+  function isIntroHeader(node) {
+    if (!/^header$/i.test(node?.tagName || "") || typeof node?.querySelector !== "function") return false;
+    return Boolean(node.querySelector("h1,h2,h3,h4,h5,h6") && node.querySelector("p"));
+  }
+
   function isExcludedDoneTag(node) {
     return (
       !node?.tagName ||
-      /^(html|body|main|nav|header|footer|h[1-6]|summary|legend|caption|script|style|svg)$/i.test(node.tagName) ||
+      (/^(html|body|main|nav|header|footer|h[1-6]|summary|legend|caption|script|style|svg)$/i.test(node.tagName) &&
+        !isIntroHeader(node)) ||
       node.getAttribute?.("role") === "heading" ||
       isLavishUi(node)
     );
@@ -1715,6 +1725,30 @@ export function createArtifactSdk(
     return found.length === 1 ? found[0] : null;
   }
 
+  // An element mark (a right-click annotation made without a text selection) carries only its
+  // container selector. Resolve it to a range spanning that container so the badge, the arrows
+  // and the reveal treat it exactly like a marked passage. Text marks never take this path:
+  // their selector names a container, and the text itself has to be matched, never assumed.
+  function resolveElementMarkTarget(item) {
+    const selector = item?.target?.selector || item?.selector;
+    if (!selector) return null;
+    const matches = queryAll(selector);
+    if (matches.length !== 1) return null;
+    const element = matches[0];
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return { anchor: element, range };
+  }
+
+  // Every consumer of a mark resolves it through the same path its kind dictates: text marks
+  // must match their text (never a bare selector), element marks span the container their
+  // selector names. Diverging resolvers made an element mark's arrow render but jump nowhere.
+  function resolveMarkTarget(item) {
+    return item.kind && item.kind !== "text-range"
+      ? resolveElementMarkTarget(item)
+      : resolveTextTarget(item.target || { text: item.text, selector: item.selector }, item.selector);
+  }
+
   function getScrollAncestors(anchor) {
     const result = [];
     for (let p = anchor; p && p !== document.documentElement; p = p.parentElement) {
@@ -1809,6 +1843,18 @@ export function createArtifactSdk(
     style.id = "lavish-done-box-style";
     style.textContent =
       '[data-lavish-done="true"]{opacity:.36!important;filter:grayscale(.85)!important;transition:opacity 120ms ease,filter 120ms ease}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  // The OS scrollbar thumb barely separates from warm artifact backgrounds, so the review
+  // surface restyles it for contrast inside the sandboxed frame only. Exports strip the SDK
+  // and keep the artifact's own scrollbar styling untouched.
+  function ensureScrollbarStyle() {
+    if (document.getElementById("lavish-scrollbar-style")) return;
+    const style = document.createElement("style");
+    style.id = "lavish-scrollbar-style";
+    style.textContent =
+      "::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-thumb{background:#f3f3f4;border-radius:8px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{scrollbar-color:#f3f3f4 transparent}";
     (document.head || document.documentElement).appendChild(style);
   }
 
@@ -2111,7 +2157,7 @@ export function createArtifactSdk(
   // Brings one mark's words to the middle of the view and selects it. With `syncChat` the
   // conversation highlights the matching note too, the same way a click on the mark does.
   function focusAnnotationMark(mark, { syncChat = false } = {}) {
-    const resolved = resolveTextTarget(mark.target || { text: mark.text, selector: mark.selector }, mark.selector);
+    const resolved = resolveMarkTarget(mark);
     if (!resolved) return false;
     scrollIntoCenter(resolved.anchor, () => resolved.range.getBoundingClientRect(), { includeAnchor: true });
     selectedMarkId = mark.id;
@@ -2146,7 +2192,7 @@ export function createArtifactSdk(
     }
     const resolvedMarks = [];
     annotationMarks.forEach((item, index) => {
-      const resolved = resolveTextTarget(item.target || { text: item.text, selector: item.selector }, item.selector);
+      const resolved = resolveMarkTarget(item);
       if (resolved) resolvedMarks.push({ item, resolved, index });
     });
     const markOrder = marksInReadingOrder(resolvedMarks);
@@ -4275,6 +4321,7 @@ export function createArtifactSdk(
   );
 
   setAnnotationMode(annotationMode);
+  ensureScrollbarStyle();
   installActiveNavigation();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });

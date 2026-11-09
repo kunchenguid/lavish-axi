@@ -181,6 +181,7 @@ function bootSdk({
     navigator: { platform: "Linux", clipboard: { writeText: async (value) => clipboardWrites.push(value) } },
     CSS: { escape: (value) => String(value) },
     Element: class Element {},
+    NodeFilter: { SHOW_TEXT: 4 },
     MutationObserver: class MutationObserver {
       observe() {}
       disconnect() {}
@@ -210,6 +211,7 @@ function bootSdk({
       removeEventListener() {},
       createElement,
       createRange: () => null,
+      createTreeWalker: () => ({ nextNode: () => null }),
       getElementById: (id) => elementsById.get(id) || null,
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
@@ -249,6 +251,7 @@ function bootSdk({
     posted,
     windowScrolls,
     body,
+    head,
     api: sandbox.window.lavish,
     click(target) {
       const listeners = documentListeners.filter((entry) => entry.type === "click");
@@ -424,6 +427,14 @@ test("selection shortcuts preserve mouse selection and mark or comment the selec
   assert.equal(sdk.cards().length, 1);
 });
 
+test("the SDK restyles the frame scrollbar so the thumb separates from warm backgrounds", () => {
+  const sdk = bootSdk();
+  const style = sdk.head.children.find((el) => el.id === "lavish-scrollbar-style");
+  assert.ok(style, "the SDK installs a scrollbar style element");
+  assert.match(style.textContent, /::-webkit-scrollbar-thumb\{background:#f3f3f4/);
+  assert.match(style.textContent, /scrollbar-color:#f3f3f4 transparent/);
+});
+
 test("done shortcut toggles a paragraph and excludes a styled heading", () => {
   const sdk = bootSdk();
   const section = appendTo(sdk.body, createElement("section"));
@@ -455,6 +466,66 @@ test("done shortcut toggles a paragraph and excludes a styled heading", () => {
   key("d");
   assert.equal(heading.getAttribute("data-lavish-done"), null);
   assert.equal(section.getAttribute("data-lavish-done"), "true");
+});
+
+test("done-parent marks an intro header so its heading greys out with the lead", () => {
+  const sdk = bootSdk();
+  const hero = appendTo(sdk.body, createElement("header"));
+  hero.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1018, bottom: 1538, width: 1018, height: 1538 });
+  hero.computedStyle = {
+    display: "block",
+    backgroundColor: "#101623",
+    boxShadow: "none",
+    borderStyle: "none",
+    borderTopWidth: "0px",
+    borderRightWidth: "0px",
+    borderBottomWidth: "0px",
+    borderLeftWidth: "0px",
+    borderRadius: "0px",
+    paddingTop: "28px",
+    paddingRight: "20px",
+    paddingBottom: "28px",
+    paddingLeft: "20px",
+  };
+  const heading = appendTo(hero, cell("h1", "Monetarisierungs-Architektur"));
+  const lead = appendTo(hero, cell("p", "Dieses Dokument bündelt"));
+  hero.querySelectorAll = (query) =>
+    query === '[data-lavish-done="true"]'
+      ? [heading, lead].filter((el) => el.getAttribute("data-lavish-done") === "true")
+      : [];
+  sdk.setDocumentQueryAll((query) =>
+    query === '[data-lavish-done="true"]' ? [hero].filter((el) => el.getAttribute("data-lavish-done") === "true") : [],
+  );
+  const key = (keyName, shiftKey = false) =>
+    sdk.trigger("keydown", { key: keyName, shiftKey, target: sdk.body, preventDefault() {} });
+  sdk.trigger("mousemove", { target: lead, clientX: 12, clientY: 12 });
+  key("d");
+  assert.equal(lead.getAttribute("data-lavish-done"), "true");
+  key("D", true);
+  assert.equal(lead.getAttribute("data-lavish-done"), null);
+  assert.equal(hero.getAttribute("data-lavish-done"), "true");
+  assert.equal(heading.getAttribute("data-lavish-done"), null);
+  key("D", true);
+  assert.equal(hero.getAttribute("data-lavish-done"), null);
+});
+
+test("done still skips a header that carries no heading-and-prose pairing", () => {
+  const sdk = bootSdk();
+  const banner = appendTo(sdk.body, createElement("header"));
+  banner.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1018, bottom: 120, width: 1018, height: 120 });
+  banner.querySelector = () => null;
+  const lead = appendTo(banner, cell("p", "Nur ein Banner-Hinweis"));
+  banner.querySelectorAll = (query) =>
+    query === '[data-lavish-done="true"]' ? [lead].filter((el) => el.getAttribute("data-lavish-done") === "true") : [];
+  sdk.setDocumentQueryAll((query) =>
+    query === '[data-lavish-done="true"]' ? [lead].filter((el) => el.getAttribute("data-lavish-done") === "true") : [],
+  );
+  const key = (keyName, shiftKey = false) =>
+    sdk.trigger("keydown", { key: keyName, shiftKey, target: sdk.body, preventDefault() {} });
+  sdk.trigger("mousemove", { target: lead, clientX: 12, clientY: 12 });
+  key("D", true);
+  assert.equal(banner.getAttribute("data-lavish-done"), null);
+  assert.equal(lead.getAttribute("data-lavish-done"), "true");
 });
 
 test("done shortcut records the selected range and clears the native selection", () => {
@@ -706,6 +777,230 @@ test("mark arrows step through commented and bare marks in page order and the ch
   assert.equal(sdk.posted.at(-1).id, "low");
   assert.deepEqual({ ...navs()[0].children[0].focusedWith }, { preventScroll: true });
   assert.equal(navs()[0].children[1].focusedWith, undefined);
+});
+
+test("an element mark from a right-click annotation gets a badge and joins the arrow order", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const upper = appendTo(sdk.body, cell("p", "Upper words"));
+  const card = appendTo(sdk.body, cell("div", "Card words"));
+  for (const [el, top] of [
+    [upper, 100],
+    [card, 350],
+  ]) {
+    el.childNodes = [{ nodeType: 3, parentElement: el, parentNode: el, nodeValue: el.textContent }];
+    el.rectTop = top;
+  }
+  const bySelector = { "#upper": upper, "#card": card };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => {
+    let owner = null;
+    return {
+      setStart(node) {
+        owner = node.parentElement;
+      },
+      setEnd() {},
+      selectNodeContents(element) {
+        owner = element;
+      },
+      get commonAncestorContainer() {
+        return owner;
+      },
+      toString: () => owner.textContent,
+      collapsed: false,
+      getClientRects: () => [
+        { left: 10, top: owner.rectTop, right: 90, bottom: owner.rectTop + 20, width: 80, height: 20 },
+      ],
+      getBoundingClientRect: () => ({
+        left: 10,
+        top: owner.rectTop,
+        right: 90,
+        bottom: owner.rectTop + 20,
+        width: 80,
+        height: 20,
+      }),
+    };
+  });
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "card-mark",
+        selector: "#card",
+        kind: "element",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+      },
+      {
+        id: "text-mark",
+        selector: "#upper",
+        kind: "text-range",
+        state: "sent",
+        hasComment: false,
+        badgeNumber: 0,
+        target: {
+          type: "text-range",
+          text: "Upper words",
+          selector: "#upper",
+          commonAncestorSelector: "#upper",
+          start: { selector: "#upper", path: [0], offset: 0 },
+          end: { selector: "#upper", path: [0], offset: 11 },
+        },
+      },
+    ],
+  });
+  sdk.runTimers();
+  // The right-click annotation renders a commented badge over its element instead of nothing.
+  assert.ok(sdk.overlayElements().some((el) => el.className.includes("is-commented")));
+  assert.ok(sdk.overlayElements().some((el) => el.className.startsWith("lavish-mark-badge")));
+  // Both marks are in the reading order, so the arrows exist for each of them.
+  const navs = sdk.overlayElements().filter((el) => el.className.startsWith("lavish-mark-nav"));
+  assert.equal(navs.length, 2);
+  assert.equal(
+    navs.every((nav) => nav.children.length === 2),
+    true,
+  );
+});
+
+test("the arrow activates and scrolls to an element mark with no matching text", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const upper = appendTo(sdk.body, cell("p", "Upper words"));
+  const card = appendTo(sdk.body, cell("div", "Card words"));
+  for (const [el, top] of [
+    [upper, 100],
+    [card, 600],
+  ]) {
+    el.childNodes = [{ nodeType: 3, parentElement: el, parentNode: el, nodeValue: el.textContent }];
+    el.rectTop = top;
+  }
+  const bySelector = { "#upper": upper, "#card": card };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => {
+    let owner = null;
+    return {
+      setStart(node) {
+        owner = node.parentElement;
+      },
+      setEnd() {},
+      selectNodeContents(element) {
+        owner = element;
+      },
+      get commonAncestorContainer() {
+        return owner;
+      },
+      toString: () => owner.textContent,
+      collapsed: false,
+      getClientRects: () => [
+        { left: 10, top: owner.rectTop, right: 90, bottom: owner.rectTop + 20, width: 80, height: 20 },
+      ],
+      getBoundingClientRect: () => ({
+        left: 10,
+        top: owner.rectTop,
+        right: 90,
+        bottom: owner.rectTop + 20,
+        width: 80,
+        height: 20,
+      }),
+    };
+  });
+  // The element mark carries no text that resolveTextTarget could match: without the
+  // element path in the focus resolver, its arrow would do nothing at all.
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "text-mark",
+        selector: "#upper",
+        kind: "text-range",
+        state: "sent",
+        hasComment: false,
+        badgeNumber: 0,
+        target: {
+          type: "text-range",
+          text: "Upper words",
+          selector: "#upper",
+          commonAncestorSelector: "#upper",
+          start: { selector: "#upper", path: [0], offset: 0 },
+          end: { selector: "#upper", path: [0], offset: 11 },
+        },
+      },
+      {
+        id: "card-mark",
+        selector: "#card",
+        kind: "element",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+        text: "",
+      },
+    ],
+  });
+  sdk.runTimers();
+  const navs = sdk.overlayElements().filter((el) => el.className.startsWith("lavish-mark-nav"));
+  assert.equal(navs.length, 2, "both marks are navigable");
+  const fire = (button, type, extra) =>
+    button.listeners.find((l) => l.type === type).handler({ preventDefault() {}, stopPropagation() {}, ...extra });
+  // Step from the text mark down to the element mark.
+  fire(navs[0].children[1], "pointerdown", { button: 0, pointerId: 1, clientX: 20, clientY: 20 });
+  fire(navs[0].children[1], "pointerup", { button: 0, pointerId: 1, clientX: 20, clientY: 20 });
+  fire(navs[0].children[1], "click", { detail: 1 });
+  assert.equal(sdk.windowScrolls.length, 1, "the arrow scrolled the element mark into view");
+  assert.equal(sdk.posted.at(-1).type, "lavish:activateAnnotationMark");
+  assert.equal(sdk.posted.at(-1).id, "card-mark");
+});
+
+test("a text mark never falls back to its container selector alone", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const p = appendTo(sdk.body, cell("p", "Reworded since the mark"));
+  p.childNodes = [{ nodeType: 3, parentElement: p, parentNode: p, nodeValue: p.textContent }];
+  p.rectTop = 100;
+  sdk.setDocumentQueryAll((query) => (query === "#gone" ? [p] : []));
+  sdk.setCreateRange(() => {
+    let owner = null;
+    return {
+      setStart(node) {
+        owner = node.parentElement;
+      },
+      setEnd() {},
+      selectNodeContents(element) {
+        owner = element;
+      },
+      get commonAncestorContainer() {
+        return owner;
+      },
+      toString: () => owner.textContent,
+      collapsed: false,
+      getClientRects: () => [
+        { left: 10, top: owner.rectTop, right: 90, bottom: owner.rectTop + 20, width: 80, height: 20 },
+      ],
+    };
+  });
+  // The marked wording no longer exists, so the text mark must stay unresolved rather than
+  // silently anchoring to whatever the selector resolves to now.
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "stale",
+        selector: "#gone",
+        kind: "text-range",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+        target: {
+          type: "text-range",
+          text: "original wording",
+          selector: "#gone",
+          commonAncestorSelector: "#gone",
+          start: { selector: "#gone", path: [0], offset: 0 },
+          end: { selector: "#gone", path: [0], offset: 8 },
+        },
+      },
+    ],
+  });
+  sdk.runTimers();
+  assert.equal(sdk.overlayElements().filter((el) => el.className.startsWith("lavish-persistent-mark")).length, 0);
+  assert.equal(sdk.overlayElements().filter((el) => el.className.startsWith("lavish-mark-badge")).length, 0);
 });
 
 test("a selected mark later in the list does not steal the hover from the bare marker under the pointer", () => {

@@ -1847,7 +1847,9 @@ function collectAnnotationMarks() {
             : anchor.label === "cell"
               ? "table-cell"
               : "element");
-      if (kind !== "text-range") return;
+      // Element anchors (a right-click annotation without a text selection) mark too: without
+      // them the annotation has no symbol and the mark arrows skip it entirely.
+      if (kind !== "text-range" && kind !== "element") return;
       marks.push({
         id,
         state: "sent",
@@ -1870,7 +1872,7 @@ function collectAnnotationMarks() {
     const comment = String(item.prompt || "");
     const hasComment = Boolean(comment.trim()) || attachmentCount(item) > 0;
     const kind = target?.type || (item.tag === "text" ? "text-range" : "element");
-    if (kind !== "text-range") return;
+    if (kind !== "text-range" && kind !== "element") return;
     marks.push({
       id,
       state: "queued",
