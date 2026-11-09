@@ -212,7 +212,11 @@ function bootSdk({
       createElement,
       createRange: () => null,
       createTreeWalker: () => ({ nextNode: () => null }),
-      getElementById: (id) => elementsById.get(id) || null,
+      getElementById: (id) =>
+        elementsById.get(id) ||
+        head.children.find((el) => el.id === id) ||
+        body.children.find((el) => el.id === id) ||
+        null,
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
       querySelectorAll: (selector) =>
@@ -250,6 +254,7 @@ function bootSdk({
   return {
     posted,
     windowScrolls,
+    documentElement,
     body,
     head,
     api: sandbox.window.lavish,
@@ -429,13 +434,24 @@ test("selection shortcuts preserve mouse selection and mark or comment the selec
 
 test("the SDK restyles the frame scrollbar so the thumb separates from warm backgrounds", () => {
   const sdk = bootSdk();
+  sdk.documentElement.computedStyle = { backgroundColor: "rgb(227, 203, 182)" };
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
   const style = sdk.head.children.find((el) => el.id === "lavish-scrollbar-style");
   assert.ok(style, "the SDK installs a scrollbar style element");
   assert.match(style.textContent, /::-webkit-scrollbar-thumb\{background:#f3f3f4/);
-  // A fine dark outline keeps the light thumb visible on white inner surfaces too,
-  // not only on the warm artifact background (CodeRabbit finding, Simon's call).
+  // A fine dark outline keeps the light thumb visible on borderline-light surfaces too.
   assert.match(style.textContent, /border:1px solid rgba\(0,0,0,\.28\)/);
   assert.match(style.textContent, /scrollbar-color:#f3f3f4 transparent/);
+});
+
+test("on a bright artifact surface the scrollbar thumb switches to dark grey", () => {
+  const sdk = bootSdk();
+  sdk.documentElement.computedStyle = { backgroundColor: "rgb(255, 255, 255)" };
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
+  const style = sdk.head.children.find((el) => el.id === "lavish-scrollbar-style");
+  assert.match(style.textContent, /::-webkit-scrollbar-thumb\{background:#4b4b52/);
+  assert.doesNotMatch(style.textContent, /rgba\(0,0,0,\.28\)/, "a dark thumb needs no outline");
+  assert.match(style.textContent, /scrollbar-color:#4b4b52 transparent/);
 });
 
 test("done shortcut toggles a paragraph and excludes a styled heading", () => {
@@ -950,6 +966,78 @@ test("the arrow activates and scrolls to an element mark with no matching text",
   assert.equal(sdk.windowScrolls.length, 1, "the arrow scrolled the element mark into view");
   assert.equal(sdk.posted.at(-1).type, "lavish:activateAnnotationMark");
   assert.equal(sdk.posted.at(-1).id, "card-mark");
+});
+
+test("an element mark on an empty container still gets a badge and arrow order", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const empty = appendTo(sdk.body, cell("div", ""));
+  empty.childNodes = [];
+  empty.rectTop = 200;
+  const bySelector = { "#empty": empty };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => ({
+    setStart() {},
+    setEnd() {},
+    selectNodeContents() {},
+    getClientRects: () => [], // an empty container's range has no rectangles
+    getBoundingClientRect: () => null,
+  }));
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "empty-mark",
+        selector: "#empty",
+        kind: "element",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+        text: "",
+      },
+    ],
+  });
+  const badge = sdk.overlayElements().find((el) => String(el.className || "").includes("lavish-mark-badge"));
+  assert.ok(badge, "an empty container element mark still renders its badge from the element box");
+});
+
+test("overlapping text selection ignores element marks when placing a new text mark", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const p = appendTo(sdk.body, cell("p", "Card words"));
+  p.childNodes = [{ nodeType: 3, parentElement: p, parentNode: p, nodeValue: "Card words" }];
+  const bySelector = { "#card": p };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => {
+    let owner = null;
+    return {
+      setStart() {},
+      setEnd() {},
+      selectNodeContents(element) {
+        owner = element;
+      },
+      getClientRects: () => (owner ? [{ left: 10, top: 10, right: 90, bottom: 30, width: 80, height: 20 }] : []),
+      getBoundingClientRect: () => ({ left: 10, top: 10, right: 90, bottom: 30, width: 80, height: 20 }),
+    };
+  });
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "card-mark",
+        selector: "#card",
+        kind: "element",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+        text: "Card words",
+      },
+    ],
+  });
+  // A new selection inside that element must not merge with or select the element mark:
+  // findOverlappingMarks skips element kinds entirely.
+  selectText(sdk, p, "Card");
+  sdk.trigger("keydown", { key: "m", target: p, preventDefault() {} });
+  const prompt = sdk.posted.find((entry) => entry.type === "lavish:queuePrompt").prompt;
+  assert.equal(prompt.replace_mark_ids, undefined, "an element mark never replaces a fresh text selection");
 });
 
 test("a text mark never falls back to its container selector alone", () => {

@@ -1817,6 +1817,9 @@ export function createArtifactSdk(
   function findOverlappingMarks(range) {
     const overlaps = [];
     for (const mark of annotationMarks) {
+      // Element marks span whole containers; treating their excerpt as text would let a fresh
+      // selection swallow the element mark instead of creating its own text mark.
+      if (mark.kind && mark.kind !== "text-range") continue;
       const resolved = resolveTextTarget(mark.target || { text: mark.text, selector: mark.selector }, mark.selector);
       if (resolved && rangesOverlap(resolved.range, range)) {
         overlaps.push({ mark, resolved });
@@ -1854,13 +1857,53 @@ export function createArtifactSdk(
   // The OS scrollbar thumb barely separates from warm artifact backgrounds, so the review
   // surface restyles it for contrast inside the sandboxed frame only. Exports strip the SDK
   // and keep the artifact's own scrollbar styling untouched.
+  // The thumb adapts to the surface: a bright artifact (white customer surfaces) gets a dark
+  // grey thumb, a dark or warm surface keeps the light #f3f3f4 thumb with its fine outline.
+  function effectiveBackgroundRgb() {
+    for (const el of [document.documentElement, document.body]) {
+      if (!el) continue;
+      const match = String(getComputedStyle(el).backgroundColor || "").match(
+        /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/,
+      );
+      if (match && (match[4] === undefined || Number(match[4]) > 0)) {
+        return [Number(match[1]), Number(match[2]), Number(match[3])];
+      }
+    }
+    return [255, 255, 255];
+  }
+
+  function isBrightSurface() {
+    const [r, g, b] = effectiveBackgroundRgb();
+    const channel = (c) => (c <= 0.03928 ? c / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b) > 0.75;
+  }
+
+  function scrollbarStyleText() {
+    const thumb = isBrightSurface() ? "#4b4b52" : "#f3f3f4";
+    const outline = isBrightSurface() ? "" : "border:1px solid rgba(0,0,0,.28);";
+    return `::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-thumb{background:${thumb};border-radius:8px;${outline}background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{scrollbar-color:${thumb} transparent}`;
+  }
+
   function ensureScrollbarStyle() {
-    if (document.getElementById("lavish-scrollbar-style")) return;
-    const style = document.createElement("style");
-    style.id = "lavish-scrollbar-style";
-    style.textContent =
-      "::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-thumb{background:#f3f3f4;border-radius:8px;border:1px solid rgba(0,0,0,.28);background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{scrollbar-color:#f3f3f4 transparent}";
-    (document.head || document.documentElement).appendChild(style);
+    let style = document.getElementById("lavish-scrollbar-style");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "lavish-scrollbar-style";
+      (document.head || document.documentElement).appendChild(style);
+    }
+    style.textContent = scrollbarStyleText();
+  }
+
+  function watchScrollbarSurface() {
+    if (typeof MutationObserver !== "function") return;
+    let timer = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(ensureScrollbarStyle, 80);
+    });
+    for (const el of [document.documentElement, document.body]) {
+      if (el) observer.observe(el, { attributes: true, attributeFilter: ["class", "style"], subtree: false });
+    }
   }
 
   function normalizeDoneElement(el) {
@@ -2103,7 +2146,12 @@ export function createArtifactSdk(
   // Marks top to bottom as the reader sees them, commented or not: the order the arrows step through.
   function marksInReadingOrder(resolvedMarks) {
     return resolvedMarks
-      .map(({ item, resolved }) => ({ item, rect: [...resolved.range.getClientRects()][0] }))
+      .map(({ item, resolved }) => ({
+        item,
+        rect:
+          [...resolved.range.getClientRects()][0] ||
+          (item.kind && item.kind !== "text-range" ? resolved.anchor?.getBoundingClientRect?.() : null),
+      }))
       .filter(({ rect }) => rect)
       .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
       .map(({ item }) => item);
@@ -2214,9 +2262,15 @@ export function createArtifactSdk(
     const navPlacements = [];
     function draw(item, resolved, order, done) {
       const isSelected = !done && item.id === selectedMarkId;
-      const rects = [...resolved.range.getClientRects()]
+      let rects = [...resolved.range.getClientRects()]
         .map((rect) => clipRectToScrollAncestors(rect, resolved.anchor))
         .filter(Boolean);
+      // An empty container's range has no rectangles; its element mark still deserves a badge
+      // and arrow placement, so fall back to the element's own box (text marks keep range geometry).
+      if (!rects.length && item.kind && item.kind !== "text-range" && resolved.anchor) {
+        const box = clipRectToScrollAncestors(resolved.anchor.getBoundingClientRect(), resolved.anchor);
+        if (box) rects = [box];
+      }
       for (const rect of rects) {
         const el = document.createElement("div");
         el.className = done
@@ -3823,7 +3877,11 @@ export function createArtifactSdk(
     // without the source check the artifact could post to itself and drive the SDK.
     if (event.source !== parent) return;
     const msg = event.data || {};
-    if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
+    if (msg.type === "lavish:setAnnotationMode") {
+      setAnnotationMode(msg.enabled);
+      // A mode flip can come with a theme flip; re-measure the scrollbar surface cheaply.
+      ensureScrollbarStyle();
+    }
     if (msg.type === "lavish:selectionShortcut") executeReviewShortcut(msg.action, null);
     if (msg.type === "lavish:annotationMarks") {
       const list = Array.isArray(msg.marks) ? msg.marks : Array.isArray(msg.items) ? msg.items : [];
@@ -4327,6 +4385,7 @@ export function createArtifactSdk(
 
   setAnnotationMode(annotationMode);
   ensureScrollbarStyle();
+  watchScrollbarSurface();
   installActiveNavigation();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });
