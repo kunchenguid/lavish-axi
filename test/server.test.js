@@ -1073,7 +1073,7 @@ test("takeover banner explains draft ownership before offering takeover", () => 
   const banner = html.match(/id="handoffBanner"[^>]*>([\s\S]*?)<\/div>/)?.[1] || "";
   assert.match(
     banner,
-    /<span>This review is open in another Lavish tab\. Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along\.<\/span>/,
+    /<span>This review is open in another Lavish tab\. Unsent notes are saved with this review, so reopening the link in a new tab or window brings them back\.<\/span>/,
   );
   assert.doesNotMatch(banner, /switch back there/i);
   assert.match(banner, /id="handoffTakeover"[^>]*>Take over here/);
@@ -1087,7 +1087,7 @@ test("composer offers two always-visible top-level send actions", async () => {
   assert.match(html, /class="button button-danger" id="sendAndEnd"[^<]*>.*Send &amp; End</);
   assert.match(
     html,
-    /<div class="send-hint" id="sendHint" hidden>Nothing queued in this tab\. Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Send to Agent<\/button><\/div>/,
+    /<div class="send-hint" id="sendHint" hidden>Nothing queued in this tab\. Unsent notes are saved with this review, so reopening the link in a new tab or window brings them back\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Send to Agent<\/button><\/div>/,
   );
   assert.doesNotMatch(html, /id="sendCaret"/);
   assert.doesNotMatch(html, /id="sendMenu"/);
@@ -1803,6 +1803,87 @@ test("POST /api/:key/prompts rejects non-same-origin callers and queues nothing"
       delivered.prompts.map((prompt) => prompt.prompt),
       ["real reviewer feedback"],
     );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Regression: queued-but-unsent notes lived only in the tab's sessionStorage, so closing the tab
+// (or an in-app browser that discards it) lost them and reopening the link showed an empty queue.
+test("unsent drafts survive a tab close: a later session page serves them back until they are sent", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const stateFile = path.join(dir, "state.json");
+  let server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  let base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    const draft = { prompt: "Make the headline shorter", selector: "h1", tag: "h1", text: "hi", prompt_id: "note-1" };
+    const putDraft = (body, /** @type {Record<string, string>} */ headers = { origin: base }) =>
+      fetch(`${base}/api/${key}/drafts`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify(body),
+      });
+
+    // Same-origin guarded like /prompts: a stored draft becomes the reviewer's words on Send.
+    assert.equal((await putDraft({ tab: "tabA", queue: [draft] }, { origin: "https://evil.example" })).status, 403);
+    assert.equal((await putDraft({ tab: "tabA", queue: [draft] }, {})).status, 403);
+    assert.equal((await putDraft({ queue: [draft] })).status, 400);
+    assert.equal((await putDraft({ tab: "tabA", queue: [{ ...draft, prompt: "x".repeat(300 * 1024) }] })).status, 413);
+    assert.equal(
+      (
+        await fetch(`${base}/api/0000000000000000/drafts`, {
+          method: "PUT",
+          headers: { "content-type": "application/json", origin: base },
+          body: JSON.stringify({ tab: "tabA", queue: [draft] }),
+        })
+      ).status,
+      404,
+    );
+
+    // Tab A queues a note, then goes away without sending.
+    assert.equal((await putDraft({ tab: "tabA", queue: [draft] })).status, 200);
+
+    // Reopening the link - even across a server restart - serves the note to the new tab.
+    await server.close();
+    server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+    base = `http://127.0.0.1:${server.port}`;
+    const reopened = chromeSessionData(await fetch(`${base}/session/${key}`).then((res) => res.text()));
+    assert.deepEqual(
+      reopened.initialDrafts.map((record) => [record.tab, record.queue]),
+      [["tabA", [draft]]],
+    );
+
+    // Sending it settles it everywhere: the server drops it from every stored draft at accept time,
+    // even though tab A never wrote its emptied queue.
+    const sent = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [draft] }),
+    });
+    assert.equal(sent.status, 200);
+    const afterSend = chromeSessionData(await fetch(`${base}/session/${key}`).then((res) => res.text()));
+    assert.deepEqual(afterSend.initialDrafts, []);
+
+    // An ended session takes no further drafts; nothing would ever deliver them.
+    // (Ended through the store: the end route shuts down a server with no live sessions.)
+    await server.close();
+    await new SessionStore(stateFile).endSession(key, "user");
+    server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+    base = `http://127.0.0.1:${server.port}`;
+    const ended = await fetch(`${base}/api/${key}/drafts`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ tab: "tabA", queue: [{ ...draft, prompt_id: "note-2" }] }),
+    });
+    assert.equal(ended.status, 409);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

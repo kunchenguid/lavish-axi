@@ -16,6 +16,15 @@ const reviewStateStorageKey = "lavish-axi:review-state:" + key;
 // Drafts Lavish could not replay. The text outlives the draft that carried it, so the user can
 // still read and copy it after the anchor it was written against is gone for good.
 const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
+// This tab's identity for the server-side copy of its unsent notes. Kept in sessionStorage so a
+// reload of the same tab rewrites its own record instead of adding a second one.
+const draftTabStorageKey = "lavish-axi:draft-tab:" + key;
+// Unsent notes other tabs left on the server. Closing a tab (or an in-app browser discarding it)
+// used to lose its queue; a tab opened later now adopts it.
+const initialDrafts = Array.isArray(sessionData.initialDrafts) ? sessionData.initialDrafts : [];
+const DRAFT_SAVE_DEBOUNCE_MS = 400;
+// Browsers cap the bodies of in-flight keepalive requests at 64 KiB in total.
+const DRAFT_KEEPALIVE_MAX_BYTES = 60_000;
 /** @type {any[]} */
 const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
@@ -475,6 +484,12 @@ function loadQueuedPrompts() {
 }
 
 function persistQueuedPrompts() {
+  persistQueuedPromptsLocally();
+  // The tab's sessionStorage dies with the tab; the server copy is what a reopened link restores.
+  saveDraftsNow();
+}
+
+function persistQueuedPromptsLocally() {
   try {
     if (queued.length) {
       sessionStorage.setItem(queueStorageKey, JSON.stringify(queued));
@@ -484,6 +499,160 @@ function persistQueuedPrompts() {
   } catch {
     // The in-memory queue still works if browser storage is unavailable.
   }
+}
+
+function loadDraftTabId() {
+  try {
+    const stored = sessionStorage.getItem(draftTabStorageKey);
+    if (isPromptIdentity(stored)) return stored;
+  } catch {
+    // Fall through to a fresh id; this tab then simply writes a new record.
+  }
+  const id = createPromptIdentity().replace(/[^A-Za-z0-9_-]/g, "");
+  try {
+    sessionStorage.setItem(draftTabStorageKey, id);
+  } catch {
+    // Without storage a reload mints another id; the server bounds the records it keeps.
+  }
+  return id;
+}
+
+let draftTabId = "";
+/** @type {string[]} */
+let draftAdoptedTabs = [];
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let draftSaveTimer;
+let draftSaveInFlight = false;
+let draftSaveAgain = false;
+// The {queue, review_state} body the server last confirmed. A hidden page re-sends only when
+// what it holds now differs, so switching apps does not cost a request per switch.
+let draftConfirmedState = "";
+
+function draftReviewState() {
+  const state = lastReviewState;
+  if (!state || typeof state !== "object") return null;
+  const hasCard = Boolean(state.card && String(state.card.text || "").trim());
+  const hasFields = Array.isArray(state.fields) && state.fields.length > 0;
+  return hasCard || hasFields ? state : null;
+}
+
+function draftStateBody() {
+  return JSON.stringify({ queue: queued, review_state: draftReviewState() });
+}
+
+function draftRequest(body) {
+  return fetch("/api/" + key + "/drafts", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body,
+    // A save started just before the tab closes must still land. Keepalive bodies share a
+    // small browser quota, so an unusually large queue goes as an ordinary request.
+    keepalive: body.length < DRAFT_KEEPALIVE_MAX_BYTES,
+  });
+}
+
+// Mirror this tab's unsent notes to the server. Saves never overlap: a change made while one is
+// in flight is sent once it settles, so the server never ends on an older queue than the tab's.
+async function saveDraftsNow() {
+  if (!draftTabId || ended) return;
+  clearTimeout(draftSaveTimer);
+  draftSaveTimer = undefined;
+  if (draftSaveInFlight) {
+    draftSaveAgain = true;
+    return;
+  }
+  draftSaveInFlight = true;
+  const state = draftStateBody();
+  const adopted = draftAdoptedTabs.slice();
+  try {
+    const response = await draftRequest(
+      JSON.stringify({ tab: draftTabId, ...JSON.parse(state), ...(adopted.length ? { adopted } : {}) }),
+    );
+    if (response?.ok) {
+      draftConfirmedState = state;
+      draftAdoptedTabs = draftAdoptedTabs.filter((id) => !adopted.includes(id));
+    }
+  } catch {
+    // The tab's own sessionStorage copy still holds the notes; the next change retries.
+  } finally {
+    draftSaveInFlight = false;
+    if (draftSaveAgain) {
+      draftSaveAgain = false;
+      saveDraftsNow();
+    }
+  }
+}
+
+function scheduleDraftSave() {
+  if (!draftTabId || ended) return;
+  clearTimeout(draftSaveTimer);
+  draftSaveTimer = setTimeout(() => {
+    draftSaveTimer = undefined;
+    saveDraftsNow();
+  }, DRAFT_SAVE_DEBOUNCE_MS);
+}
+
+// The page is being hidden or discarded (tab closed, app switched, in-app browser dismissed).
+// Send whatever the server does not have yet as a keepalive request, which outlives the page.
+function flushDraftsOnHide() {
+  if (!draftTabId || ended) return;
+  const state = draftStateBody();
+  if (state === draftConfirmedState && draftTimerIdle()) return;
+  clearTimeout(draftSaveTimer);
+  draftSaveTimer = undefined;
+  const adopted = draftAdoptedTabs.slice();
+  try {
+    draftRequest(JSON.stringify({ tab: draftTabId, ...JSON.parse(state), ...(adopted.length ? { adopted } : {}) }))
+      .then((response) => {
+        if (response?.ok) draftConfirmedState = state;
+      })
+      .catch(() => {});
+  } catch {
+    // Nothing else can be done for a page that is going away.
+  }
+}
+
+function draftTimerIdle() {
+  return draftSaveTimer === undefined && !draftSaveInFlight;
+}
+
+// Take over the unsent notes earlier tabs left on the server, so reopening a review link brings
+// them back. Notes keep their identity: one that another live tab also holds and sends is
+// settled here by the same transcript acknowledgement, never sent twice. A note this tab already
+// holds, by identity or by the artifact's replace-key, keeps this tab's version.
+function adoptStoredDrafts() {
+  if (sessionData.initialEnded) return 0;
+  const present = new Set(queued.map(promptIdentity).filter(Boolean));
+  const queueKeys = new Set(
+    queued.map((prompt) => prompt?.[internalQueueKeyField]).filter((value) => typeof value === "string" && value),
+  );
+  let adopted = 0;
+  for (const record of initialDrafts) {
+    const tab = String(record?.tab || "");
+    if (!isPromptIdentity(tab)) continue;
+    if (tab !== draftTabId) draftAdoptedTabs.push(tab);
+    for (const raw of Array.isArray(record.queue) ? record.queue : []) {
+      const prompt = adoptQueuedPrompt(raw, true);
+      const id = promptIdentity(prompt);
+      if (!prompt || !id || present.has(id) || chatAckIds.has(id)) continue;
+      const queueKey = prompt[internalQueueKeyField];
+      if (typeof queueKey === "string" && queueKey) {
+        if (queueKeys.has(queueKey)) continue;
+        queueKeys.add(queueKey);
+      }
+      present.add(id);
+      queued.push(prompt);
+      adopted += 1;
+    }
+    const reviewState = record.review_state;
+    if (!lastReviewState && reviewState && typeof reviewState === "object" && !Array.isArray(reviewState)) {
+      lastReviewState = reviewState;
+      saveJsonState(reviewStateStorageKey, reviewState);
+    }
+  }
+  if (adopted) persistQueuedPrompts();
+  else if (draftAdoptedTabs.length) saveDraftsNow();
+  return adopted;
 }
 
 function persistTerminalReservation(reserved) {
@@ -794,7 +963,7 @@ function replaceExpiredThumbnail(event) {
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
 const UNSENT_OWNERSHIP_COPY =
-  "Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.";
+  "Unsent notes are saved with this review, so reopening the link in a new tab or window brings them back.";
 const DEFAULT_SEND_HINT = "Nothing queued in this tab. " + UNSENT_OWNERSHIP_COPY;
 const EMPTY_SEND_HINT_HOLD_MS = 9000;
 const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
@@ -1193,6 +1362,7 @@ function setReviewState(state) {
   lastReviewState = state;
   // The artifact reported a card, so its anchor exists: whatever miss was recorded is answered.
   if (state?.card) unrestorableDraftMiss = null;
+  scheduleDraftSave();
   if (!state || (!state.card && !(Array.isArray(state.fields) && state.fields.length))) {
     try {
       sessionStorage.removeItem(reviewStateStorageKey);
@@ -4829,10 +4999,26 @@ events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());
 connectLiveEvents();
 
+draftTabId = loadDraftTabId();
+const restoredDraftCount = adoptStoredDrafts();
+window.addEventListener("pagehide", flushDraftsOnHide);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushDraftsOnHide();
+});
+
 applySheetState();
 applyPanelCollapsed();
 settleQueuedFromTranscript(initialChat, false);
 render();
+if (restoredDraftCount) {
+  showSendHint(
+    restoredDraftCount === 1
+      ? "Restored 1 unsent note saved with this review."
+      : "Restored " + restoredDraftCount + " unsent notes saved with this review.",
+    6000,
+    false,
+  );
+}
 setChromeOutdated(false);
 setWarningsDrawerOpen(false);
 renderWarnings();
