@@ -169,6 +169,8 @@ function bootSdk({
   /** @type {(selector: string) => any[]} */
   let documentQueryAll = () => [];
   let selection = null;
+  /** @type {(root: unknown, whatToShow: number) => { nextNode: () => unknown }} */
+  let treeWalkerFactory = () => ({ nextNode: () => null });
   const elementsById = new Map();
   const documentElement = createElement("html");
   const head = createElement("head");
@@ -183,6 +185,7 @@ function bootSdk({
     CSS: { escape: (value) => String(value) },
     Element: class Element {},
     NodeFilter: { SHOW_TEXT: 4 },
+    Range: { START_TO_START: 0, START_TO_END: 1, END_TO_END: 2, END_TO_START: 3 },
     MutationObserver: class MutationObserver {
       observe() {}
       disconnect() {}
@@ -212,7 +215,7 @@ function bootSdk({
       removeEventListener() {},
       createElement,
       createRange: () => null,
-      createTreeWalker: () => ({ nextNode: () => null }),
+      createTreeWalker: (root, whatToShow) => treeWalkerFactory(root, whatToShow),
       getElementById: (id) =>
         elementsById.get(id) ||
         head.children.find((el) => el.id === id) ||
@@ -278,6 +281,9 @@ function bootSdk({
     },
     setCreateRange(factory) {
       sandbox.document.createRange = factory;
+    },
+    setCreateTreeWalker(factory) {
+      treeWalkerFactory = factory;
     },
     overlayElements() {
       return documentElement.children.flatMap((child) => child.shadowRoot?.children || []);
@@ -1001,22 +1007,156 @@ test("an element mark on an empty container still gets a badge and arrow order",
   assert.ok(badge, "an empty container element mark still renders its badge from the element box");
 });
 
+test("a document-wide element mark outlines the surface instead of covering it", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const surface = appendTo(sdk.body, cell("div", "Whole page body"));
+  surface.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1280, bottom: 800, width: 1280, height: 800 });
+  const bySelector = { "#surface": surface };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => ({
+    setStart() {},
+    setEnd() {},
+    selectNodeContents() {},
+    getClientRects: () => [],
+    getBoundingClientRect: () => null,
+  }));
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "page-mark",
+        selector: "#surface",
+        kind: "element",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+        text: "",
+      },
+    ],
+  });
+  const rects = sdk.overlayElements().filter((el) => String(el.className || "").includes("lavish-persistent-mark"));
+  assert.equal(rects.length, 1, "the whole-page element mark draws exactly one rect");
+  assert.match(
+    String(rects[0].className),
+    /is-document-wide/,
+    "an element box spanning nearly the whole viewport is marked document-wide",
+  );
+  const style = sdk.overlayElements().find((el) => String(el.tagName || "").toLowerCase() === "style");
+  assert.match(
+    String(style?.textContent || ""),
+    /\.lavish-persistent-mark\.is-document-wide\{background:transparent/,
+    "the wide variant paints an outline, never a tint",
+  );
+  const badge = sdk.overlayElements().find((el) => String(el.className || "").includes("lavish-mark-badge"));
+  assert.ok(badge, "the document-wide mark keeps its badge");
+});
+
+test("a normal-sized element mark keeps its tinted box", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const card = appendTo(sdk.body, cell("div", "A card"));
+  const bySelector = { "#card": card };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => ({
+    setStart() {},
+    setEnd() {},
+    selectNodeContents() {},
+    getClientRects: () => [],
+    getBoundingClientRect: () => null,
+  }));
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "card-mark",
+        selector: "#card",
+        kind: "element",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+        text: "",
+      },
+    ],
+  });
+  const rects = sdk.overlayElements().filter((el) => String(el.className || "").includes("lavish-persistent-mark"));
+  assert.equal(rects.length, 1, "the card element mark draws exactly one rect");
+  assert.doesNotMatch(
+    String(rects[0].className),
+    /is-document-wide/,
+    "a 100x30 card is far from document-wide and keeps its tint",
+  );
+});
+
 test("overlapping text selection ignores element marks when placing a new text mark", () => {
   const sdk = bootSdk({ runAnimationFrames: true });
   const p = appendTo(sdk.body, cell("p", "Card words"));
-  p.childNodes = [{ nodeType: 3, parentElement: p, parentNode: p, nodeValue: "Card words" }];
+  const textNode = { nodeType: 3, parentElement: p, parentNode: p, nodeValue: "Card words" };
+  p.childNodes = [textNode];
   const bySelector = { "#card": p };
   sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
-  sdk.setCreateRange(() => {
-    let owner = null;
-    return {
-      setStart() {},
-      setEnd() {},
-      selectNodeContents(element) {
-        owner = element;
+  // Real range semantics: offsets, boundary comparison, and a tree walker that actually walks
+  // text nodes. Without all three the guard under test was never exercised: a stub range
+  // without compareBoundaryPoints makes rangesOverlap throw and answer false either way.
+  const createdRanges = [];
+  const boundaryComparisons = [];
+  const makeRange = () => {
+    const range = {
+      owner: null,
+      startOffset: 0,
+      endOffset: 0,
+      setStart(node, offset) {
+        this.owner = node;
+        this.startOffset = offset;
       },
-      getClientRects: () => (owner ? [{ left: 10, top: 10, right: 90, bottom: 30, width: 80, height: 20 }] : []),
-      getBoundingClientRect: () => ({ left: 10, top: 10, right: 90, bottom: 30, width: 80, height: 20 }),
+      setEnd(node, offset) {
+        this.owner = node;
+        this.endOffset = offset;
+      },
+      selectNodeContents(element) {
+        this.owner = element;
+        this.startOffset = 0;
+        this.endOffset = (element.textContent || "").length;
+      },
+      get commonAncestorContainer() {
+        return this.owner?.parentElement || this.owner;
+      },
+      toString() {
+        return this.owner?.nodeValue ?? this.owner?.textContent ?? "";
+      },
+      collapsed: false,
+      cloneRange() {
+        return this;
+      },
+      getClientRects() {
+        return this.owner ? [{ left: 10, top: 10, right: 90, bottom: 30, width: 80, height: 20 }] : [];
+      },
+      getBoundingClientRect() {
+        return { left: 10, top: 10, right: 90, bottom: 30, width: 80, height: 20 };
+      },
+      compareBoundaryPoints(how, other) {
+        const otherStart = other.startOffset ?? 0;
+        const otherEnd = other.endOffset ?? 0;
+        boundaryComparisons.push({ how, otherStart, otherEnd });
+        if (how === 0) return this.startOffset - otherStart; // START_TO_START
+        if (how === 1) return otherEnd - this.startOffset; // START_TO_END: other.end vs this.start
+        if (how === 2) return this.endOffset - otherEnd; // END_TO_END
+        if (how === 3) return otherStart - this.endOffset; // END_TO_START: other.start vs this.end
+        return 0;
+      },
+    };
+    createdRanges.push(range);
+    return range;
+  };
+  sdk.setCreateRange(makeRange);
+  sdk.setCreateTreeWalker((root) => {
+    let delivered = false;
+    return {
+      nextNode: () => {
+        if (!delivered && root.childNodes?.[0]) {
+          delivered = true;
+          return root.childNodes[0];
+        }
+        return null;
+      },
     };
   });
   sdk.sendChromeMessage({
@@ -1031,14 +1171,61 @@ test("overlapping text selection ignores element marks when placing a new text m
         badgeNumber: 1,
         text: "Card words",
       },
+      {
+        id: "card-text-mark",
+        selector: "#card",
+        kind: "text-range",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 2,
+        text: "Card",
+        target: {
+          type: "text-range",
+          text: "Card",
+          selector: "#card",
+          commonAncestorSelector: "#card",
+        },
+      },
     ],
   });
+  // Control proof that the guard, not a broken resolver, keeps the element mark out: a text
+  // mark over the same paragraph resolves through the walker into a real 0..4 range, and the
+  // 0..10 selection below therefore does overlap it. Only the element-kind guard explains why
+  // the element mark stays out of the same decision.
+  const resolved = createdRanges.find((range) => range.owner === textNode);
+  assert.ok(resolved, "the twin text mark's words resolve through the text walker");
+  assert.equal(resolved.startOffset, 0);
+  assert.equal(resolved.endOffset, 4);
+  const selectionRange = makeRange();
+  selectionRange.owner = textNode;
+  selectionRange.startContainer = textNode;
+  selectionRange.endContainer = textNode;
+  selectionRange.startOffset = 0;
+  selectionRange.endOffset = 10;
+  sdk.setSelection({
+    anchorNode: textNode,
+    anchorOffset: 0,
+    focusNode: textNode,
+    focusOffset: 10,
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => selectionRange,
+    removeAllRanges() {
+      this.rangeCount = 0;
+    },
+    toString: () => "Card words",
+  });
   // A new selection inside that element must not merge with or select the element mark:
-  // findOverlappingMarks skips element kinds entirely.
-  selectText(sdk, p, "Card");
+  // findOverlappingMarks skips element kinds entirely. The overlapping text twin mark is
+  // replaced as usual, which proves the comparison itself was live for this very selection.
   sdk.trigger("keydown", { key: "m", target: p, preventDefault() {} });
   const prompt = sdk.posted.find((entry) => entry.type === "lavish:queuePrompt").prompt;
-  assert.equal(prompt.replace_mark_ids, undefined, "an element mark never replaces a fresh text selection");
+  assert.deepEqual(
+    [...(prompt.replace_mark_ids || [])].sort(),
+    ["card-text-mark"],
+    "the element mark never replaces a fresh text selection; the overlapping text twin does",
+  );
+  assert.ok(boundaryComparisons.length > 0, "the overlap check really compared boundaries before deciding");
 });
 
 test("a text mark never falls back to its container selector alone", () => {
