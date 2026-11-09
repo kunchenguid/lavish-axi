@@ -1242,7 +1242,12 @@ export function createArtifactSdk(
     "[data-lavish-copy],article,p,li,h1,h2,h3,h4,h5,h6,blockquote,pre,figcaption,td,th,.card,.metric,.notice,.source,.callout,.panel,.review-card,.report-card,.evidence-card,.src-card,.sec-card,.meta-block,.dp-card,.tr-card,.source-banner,.sub,.island";
 
   function copyTargetFor(el) {
-    if (!(el instanceof Element) || isLavishUi(el)) return null;
+    if (
+      !(el instanceof Element) ||
+      isLavishUi(el) ||
+      el.closest?.("[data-lavish-no-copy],.glass-showcase-canvas,.psc-card,.psc-page-group")
+    )
+      return null;
     const matches = [];
     for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
       if (!node.matches?.(COPY_TARGET_SELECTOR) || isLavishUi(node)) continue;
