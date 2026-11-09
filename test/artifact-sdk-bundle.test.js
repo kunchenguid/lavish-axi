@@ -1007,7 +1007,7 @@ test("an element mark on an empty container still gets a badge and arrow order",
   assert.ok(badge, "an empty container element mark still renders its badge from the element box");
 });
 
-test("a document-wide element mark outlines the surface instead of covering it", () => {
+test("a document-wide element mark shows only its badge, never a frame", () => {
   const sdk = bootSdk({ runAnimationFrames: true });
   const surface = appendTo(sdk.body, cell("div", "Whole page body"));
   surface.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1280, bottom: 800, width: 1280, height: 800 });
@@ -1035,20 +1035,16 @@ test("a document-wide element mark outlines the surface instead of covering it",
     ],
   });
   const rects = sdk.overlayElements().filter((el) => String(el.className || "").includes("lavish-persistent-mark"));
-  assert.equal(rects.length, 1, "the whole-page element mark draws exactly one rect");
-  assert.match(
-    String(rects[0].className),
-    /is-document-wide/,
-    "an element box spanning nearly the whole viewport is marked document-wide",
-  );
+  assert.equal(rects.length, 0, "a whole-page element mark paints no rect at all - badge only");
   const style = sdk.overlayElements().find((el) => String(el.tagName || "").toLowerCase() === "style");
-  assert.match(
+  assert.doesNotMatch(
     String(style?.textContent || ""),
-    /\.lavish-persistent-mark\.is-document-wide\{background:transparent/,
-    "the wide variant paints an outline, never a tint",
+    /is-document-wide/,
+    "no wide variant styling remains to draw a frame around the whole surface",
   );
   const badge = sdk.overlayElements().find((el) => String(el.className || "").includes("lavish-mark-badge"));
   assert.ok(badge, "the document-wide mark keeps its badge");
+  assert.ok(Number(badge.style.top.replace("px", "")) <= 12, "the badge still anchors to the top of the box");
 });
 
 test("a normal-sized element mark keeps its tinted box", () => {
