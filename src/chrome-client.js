@@ -1383,7 +1383,7 @@ function dockAlert() {
   if (sendAcknowledgementWarningVisible) return { text: "Still sending…", level: "warn" };
   if (outdatedVisible) return { text: "Lavish updated · reload", level: "warn" };
   if (handoffSupersededVisible) return { text: "Open in another tab", level: "warn" };
-  if (agentPresence === "waiting" && hasUnseenSentNotes()) return { text: "Sent · no agent listening", level: "warn" };
+  if (agentPresence === "waiting" && hasUnseenSentNotes()) return { text: "No agent listening", level: "warn" };
   return null;
 }
 

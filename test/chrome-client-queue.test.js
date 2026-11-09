@@ -7389,7 +7389,7 @@ test("the closed dock flags sent notes no agent has picked up", async () => {
     },
   });
   let state = sheetState(chrome);
-  assert.equal(state.summary, "Sent · no agent listening");
+  assert.equal(state.summary, "No agent listening");
   assert.match(state.summaryClass, /is-warn/);
   assert.doesNotMatch(String(chrome.element("panelHead").classList), /is-fresh/, "a warning does not pulse");
 
@@ -7404,7 +7404,7 @@ test("the closed dock flags sent notes no agent has picked up", async () => {
     prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
   });
   state = sheetState(chrome);
-  assert.equal(state.summary, "Sent · no agent listening · 1 queued");
+  assert.equal(state.summary, "No agent listening · 1 queued");
   assert.match(state.summaryClass, /is-warn/);
   assert.doesNotMatch(state.summaryClass, /is-accent/);
   chrome.eventSource().listeners.get("chat-sync")({
