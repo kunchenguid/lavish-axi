@@ -2149,8 +2149,9 @@ export function createArtifactSdk(
       .map(({ item, resolved }) => ({
         item,
         rect:
-          [...resolved.range.getClientRects()][0] ||
-          (item.kind && item.kind !== "text-range" ? resolved.anchor?.getBoundingClientRect?.() : null),
+          item.kind && item.kind !== "text-range"
+            ? resolved.anchor?.getBoundingClientRect?.() || [...resolved.range.getClientRects()][0]
+            : [...resolved.range.getClientRects()][0],
       }))
       .filter(({ rect }) => rect)
       .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
@@ -2265,9 +2266,10 @@ export function createArtifactSdk(
       let rects = [...resolved.range.getClientRects()]
         .map((rect) => clipRectToScrollAncestors(rect, resolved.anchor))
         .filter(Boolean);
-      // An empty container's range has no rectangles; its element mark still deserves a badge
-      // and arrow placement, so fall back to the element's own box (text marks keep range geometry).
-      if (!rects.length && item.kind && item.kind !== "text-range" && resolved.anchor) {
+      // An element mark stands for its whole element, padding included, so it always draws and
+      // hit-tests through the element box; a text mark keeps its line-range geometry. An empty
+      // container simply has no range rectangles, and the box covers it the same way.
+      if (item.kind && item.kind !== "text-range" && resolved.anchor) {
         const box = clipRectToScrollAncestors(resolved.anchor.getBoundingClientRect(), resolved.anchor);
         if (box) rects = [box];
       }

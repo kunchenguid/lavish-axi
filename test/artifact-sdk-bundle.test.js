@@ -115,7 +115,8 @@ function createElement(tag) {
       return [];
     },
     getBoundingClientRect() {
-      return { left: 10, top: 10, right: 110, bottom: 40, width: 100, height: 30 };
+      const top = element.rectTop !== undefined ? element.rectTop : 10;
+      return { left: 10, top, right: 110, bottom: top + 30, width: 100, height: 30 };
     },
     addEventListener(type, handler) {
       element.listeners.push({ type, handler });
