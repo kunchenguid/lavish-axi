@@ -200,6 +200,13 @@ let annotationOverridden = false;
 let annotationDefaultReceived = false;
 let ended = false;
 let agentPresence = "waiting";
+// The phone dock and the collapsed desktop toggle summarize trouble the open panel would show,
+// because on a phone the panel is a closed sheet and its warnings are otherwise invisible. The
+// summary reads state declared further down this file, so it stays quiet until boot reaches it.
+let dockSummaryReady = false;
+let lastDockAlertText = "";
+let handoffSupersededVisible = false;
+let chromeOutdatedVisible = false;
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
 const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
 const layoutGateMaxHoldMs =
@@ -805,6 +812,7 @@ function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = t
   clearTimeout(sendHintTimer);
   sendHintPersistent = holdMs === null;
   sendHint.classList.toggle("persistent", sendHintPersistent);
+  renderSheetSummary();
   if (sendHintPersistent) {
     sendHintTimer = undefined;
     if (focusInput) chatInput.focus();
@@ -826,6 +834,7 @@ function hideSendHint(force = false) {
   sendHint.classList.remove("persistent");
   sendHintPersistent = false;
   sendAcknowledgementWarningVisible = false;
+  renderSheetSummary();
 }
 
 function armSendAcknowledgementWarning() {
@@ -835,6 +844,7 @@ function armSendAcknowledgementWarning() {
     if (pendingAcknowledgements.size > 0 && !sendFailureOwner) {
       sendAcknowledgementWarningVisible = true;
       showSendHint(SEND_STALLED_COPY, null, false);
+      renderSheetSummary();
     }
   }, SEND_ACKNOWLEDGEMENT_WARNING_MS);
 }
@@ -843,6 +853,7 @@ function clearSendAcknowledgementWarning() {
   clearTimeout(sendAcknowledgementTimer);
   sendAcknowledgementTimer = undefined;
   sendAcknowledgementWarningVisible = false;
+  renderSheetSummary();
 }
 
 function showQueuedSendFailure(message = SEND_FAILED_COPY, owner = null) {
@@ -1134,6 +1145,7 @@ function syncChat(chat, revision) {
   for (const note of retiredDraftNodes) chatLog.appendChild(note);
   const anchor = retiredDraftNodes[retiredDraftNodes.length - 1] || workingBubble || lastChatBubble;
   if (anchor) scrollElementIntoView(anchor);
+  renderSheetSummary();
   return true;
 }
 
@@ -1163,6 +1175,8 @@ function setAgentPresence(state) {
 
 function setHandoffSuperseded(visible) {
   if (handoffBanner) handoffBanner.hidden = ended || !visible;
+  handoffSupersededVisible = !ended && Boolean(visible);
+  renderSheetSummary();
 }
 
 // The server this page was connected to went away. What is true beyond that depends on why, so
@@ -1187,6 +1201,8 @@ function setChromeOutdated(visible, reason = chromeOutdatedReason) {
   outdatedReloadInFlight = false;
   if (outdatedReloadButton) outdatedReloadButton.disabled = false;
   if (outdatedBanner) outdatedBanner.hidden = ended || !visible;
+  chromeOutdatedVisible = !ended && Boolean(visible);
+  renderSheetSummary();
 }
 
 function setReviewState(state) {
@@ -1356,24 +1372,68 @@ function applySheetState() {
 
 // What the closed dock says. One line, most actionable state first: work the user has queued,
 // then a reply they have not seen, then whether the agent is there to receive a send.
-function sheetSummary() {
-  if (ended) return { text: "Session ended", accent: false, unread: false };
-  if (queued.length > 0) {
-    return { text: queued.length === 1 ? "1 queued" : queued.length + " queued", accent: true, unread: false };
+// Trouble the reviewer has to act on, in priority order. Each one is also shown in full inside the
+// panel; this is the one-line version for when the panel is closed.
+function dockAlert() {
+  if (ended) return null;
+  const serverReplaced = chromeOutdatedReason === "upgrade" || chromeOutdatedReason === "local-build";
+  const outdatedVisible = chromeOutdatedVisible;
+  if ((outdatedVisible && !serverReplaced) || liveEventFailures >= LIVE_EVENT_UNREACHABLE_FAILURES) {
+    return { text: chromeOutdatedReason === "stop" ? "Lavish stopped" : "Lavish unreachable", level: "error" };
   }
-  if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true };
-  if (agentPresence === "working") return { text: "Agent is working…", accent: false, unread: false };
-  if (agentPresence === "external") return { text: "External listener active", accent: false, unread: false };
-  if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false };
-  return { text: "Agent not listening", accent: false, unread: false };
+  if (sendHintPersistent && !sendAcknowledgementWarningVisible) return { text: "Could not send", level: "error" };
+  if (sendAcknowledgementWarningVisible) return { text: "Still sending…", level: "warn" };
+  if (outdatedVisible) return { text: "Lavish updated · reload", level: "warn" };
+  if (handoffSupersededVisible) return { text: "Open in another tab", level: "warn" };
+  return null;
+}
+
+// A sent note no agent has picked up yet, while nothing is listening: the panel says so on each
+// bubble, and the closed dock must not read as if all is well.
+function hasUnseenSentNotes() {
+  return displayedChat.some((entry) => entry?.role === "user" && hasReceipt(entry) && !entry.delivered_at);
+}
+
+function sheetSummary() {
+  if (ended) return { text: "Session ended", accent: false, unread: false, alert: "" };
+  const alert = dockAlert();
+  if (alert) {
+    const count = queued.length;
+    const suffix = count === 0 ? "" : count === 1 ? " · 1 queued" : " · " + count + " queued";
+    return { text: alert.text + suffix, accent: false, unread: false, alert: alert.level };
+  }
+  if (queued.length > 0) {
+    return {
+      text: queued.length === 1 ? "1 queued" : queued.length + " queued",
+      accent: true,
+      unread: false,
+      alert: "",
+    };
+  }
+  if (unreadAgentReply) return { text: unreadAgentReply, accent: false, unread: true, alert: "" };
+  if (agentPresence === "working") return { text: "Agent is working…", accent: false, unread: false, alert: "" };
+  if (agentPresence === "external") {
+    return { text: "External listener active", accent: false, unread: false, alert: "" };
+  }
+  if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false, alert: "" };
+  if (hasUnseenSentNotes()) return { text: "Sent · no agent listening", accent: false, unread: false, alert: "warn" };
+  return { text: "Agent not listening", accent: false, unread: false, alert: "" };
 }
 
 function renderSheetSummary() {
+  if (!dockSummaryReady) return;
   const summary = sheetSummary();
   panelSummary.textContent = summary.text;
   panelSummary.classList.toggle("is-accent", summary.accent);
   panelSummary.classList.toggle("is-unread", summary.unread);
-  renderSidebarToggle();
+  panelSummary.classList.toggle("is-alert", summary.alert === "error");
+  panelSummary.classList.toggle("is-warn", summary.alert === "warn");
+  panelHead.classList.toggle("has-alert", summary.alert === "error");
+  // A newly raised problem pulses the closed dock once, like a reply does.
+  const alertText = summary.alert ? summary.text : "";
+  if (alertText && alertText !== lastDockAlertText) pulseSheetDock();
+  lastDockAlertText = alertText;
+  renderSidebarToggle(summary);
 }
 
 // A brief pulse on the dock when something the user should notice lands while the sheet is
@@ -1537,15 +1597,18 @@ function applyPanelCollapsed() {
 
 // While collapsed the toggle stands in for the panel: it counts queued notes (the thing still to
 // send) or, failing that, marks an agent reply that arrived out of sight.
-function renderSidebarToggle() {
+function renderSidebarToggle(summary = dockSummaryReady ? sheetSummary() : null) {
   const collapsed = panelCollapsed && !isMobileSheet();
   const count = collapsed ? queued.length : 0;
   const unread = collapsed && count === 0 && Boolean(unreadAgentReply);
+  const alert = collapsed && summary?.alert === "error";
   sidebarToggleCount.textContent = count > 0 ? String(count) : "";
   sidebarToggleCount.hidden = count === 0;
-  sidebarToggle.classList.toggle("is-unread", unread);
+  sidebarToggle.classList.toggle("is-unread", unread && !alert);
+  sidebarToggle.classList.toggle("is-alert", alert);
   let label = collapsed ? "Show conversation" : "Hide conversation";
-  if (count > 0) label += count === 1 ? " (1 queued)" : " (" + count + " queued)";
+  if (alert) label += " (" + summary.text + ")";
+  else if (count > 0) label += count === 1 ? " (1 queued)" : " (" + count + " queued)";
   else if (unread) label += " (new reply)";
   sidebarToggle.setAttribute("aria-label", label);
   sidebarToggle.title = label;
@@ -4767,7 +4830,9 @@ function connectLiveEvents() {
   const socket = new WebSocket(protocol + "//" + location.host + "/events/" + encodeURIComponent(key));
   socket.addEventListener("open", () => {
     eventReconnectDelayMs = 500;
+    const wasUnreachable = liveEventFailures >= LIVE_EVENT_UNREACHABLE_FAILURES;
     liveEventFailures = 0;
+    if (wasUnreachable) renderSheetSummary();
     unreachableDismissed = false;
     if (unreachableBannerOwned) {
       unreachableBannerOwned = false;
@@ -4786,6 +4851,7 @@ function connectLiveEvents() {
   socket.addEventListener("close", () => {
     liveEventFailures += 1;
     noteLiveEventsUnreachable();
+    if (liveEventFailures === LIVE_EVENT_UNREACHABLE_FAILURES) renderSheetSummary();
     setTimeout(connectLiveEvents, eventReconnectDelayMs);
     eventReconnectDelayMs = Math.min(eventReconnectDelayMs * 2, 5000);
   });
@@ -4829,6 +4895,7 @@ events.set("layout-warnings", (data) => setLayoutWarnings(data.warnings || []));
 events.set("ended", () => markSessionEnded());
 connectLiveEvents();
 
+dockSummaryReady = true;
 applySheetState();
 applyPanelCollapsed();
 settleQueuedFromTranscript(initialChat, false);
