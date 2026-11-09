@@ -7338,6 +7338,10 @@ test("the closed dock shows a failed send and a stopped server, not just the que
   assert.doesNotMatch(state.summaryClass, /is-accent/);
   assert.match(String(chrome.element("panelHead").classList), /has-alert/);
   assert.match(String(chrome.element("panelHead").classList), /is-fresh/, "a new problem pulses the dock");
+  chrome.element("panelHead").classList.remove("is-fresh");
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  assert.equal(sheetState(chrome).summary, "Could not send · 1 queued");
+  assert.doesNotMatch(String(chrome.element("panelHead").classList), /is-fresh/, "the same problem pulses once");
 
   // The server going away outranks the failed send: it is why the send failed.
   chrome.eventSource().listeners.get("chrome-outdated")({ data: JSON.stringify({ reason: "stop" }) });
@@ -7387,11 +7391,22 @@ test("the closed dock flags sent notes no agent has picked up", async () => {
   let state = sheetState(chrome);
   assert.equal(state.summary, "Sent · no agent listening");
   assert.match(state.summaryClass, /is-warn/);
+  assert.doesNotMatch(String(chrome.element("panelHead").classList), /is-fresh/, "a warning does not pulse");
 
   chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
   assert.equal(sheetState(chrome).summary, "Agent listening");
 
   chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
+
+  // A queued note does not hide the stranded one; it is counted after it.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  state = sheetState(chrome);
+  assert.equal(state.summary, "Sent · no agent listening · 1 queued");
+  assert.match(state.summaryClass, /is-warn/);
+  assert.doesNotMatch(state.summaryClass, /is-accent/);
   chrome.eventSource().listeners.get("chat-sync")({
     data: JSON.stringify({
       chat: [
@@ -7408,7 +7423,7 @@ test("the closed dock flags sent notes no agent has picked up", async () => {
     }),
   });
   state = sheetState(chrome);
-  assert.equal(state.summary, "Agent not listening", "a note an agent has seen is not flagged");
+  assert.equal(state.summary, "1 queued", "a note an agent has seen is not flagged");
   assert.doesNotMatch(state.summaryClass, /is-warn/);
 });
 

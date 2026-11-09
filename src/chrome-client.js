@@ -204,7 +204,7 @@ let agentPresence = "waiting";
 // because on a phone the panel is a closed sheet and its warnings are otherwise invisible. The
 // summary reads state declared further down this file, so it stays quiet until boot reaches it.
 let dockSummaryReady = false;
-let lastDockAlertText = "";
+let lastDockAlertKey = "";
 let handoffSupersededVisible = false;
 let chromeOutdatedVisible = false;
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
@@ -1370,8 +1370,6 @@ function applySheetState() {
   renderSheetSummary();
 }
 
-// What the closed dock says. One line, most actionable state first: work the user has queued,
-// then a reply they have not seen, then whether the agent is there to receive a send.
 // Trouble the reviewer has to act on, in priority order. Each one is also shown in full inside the
 // panel; this is the one-line version for when the panel is closed.
 function dockAlert() {
@@ -1385,6 +1383,7 @@ function dockAlert() {
   if (sendAcknowledgementWarningVisible) return { text: "Still sending…", level: "warn" };
   if (outdatedVisible) return { text: "Lavish updated · reload", level: "warn" };
   if (handoffSupersededVisible) return { text: "Open in another tab", level: "warn" };
+  if (agentPresence === "waiting" && hasUnseenSentNotes()) return { text: "Sent · no agent listening", level: "warn" };
   return null;
 }
 
@@ -1394,13 +1393,21 @@ function hasUnseenSentNotes() {
   return displayedChat.some((entry) => entry?.role === "user" && hasReceipt(entry) && !entry.delivered_at);
 }
 
+// What the closed dock says. One line, most actionable state first: trouble, then work the user
+// has queued, then a reply they have not seen, then whether the agent is there to receive a send.
 function sheetSummary() {
   if (ended) return { text: "Session ended", accent: false, unread: false, alert: "" };
   const alert = dockAlert();
   if (alert) {
     const count = queued.length;
     const suffix = count === 0 ? "" : count === 1 ? " · 1 queued" : " · " + count + " queued";
-    return { text: alert.text + suffix, accent: false, unread: false, alert: alert.level };
+    return {
+      text: alert.text + suffix,
+      accent: false,
+      unread: false,
+      alert: alert.level,
+      alertKey: alert.level + ":" + alert.text,
+    };
   }
   if (queued.length > 0) {
     return {
@@ -1416,7 +1423,6 @@ function sheetSummary() {
     return { text: "External listener active", accent: false, unread: false, alert: "" };
   }
   if (agentPresence === "listening") return { text: "Agent listening", accent: false, unread: false, alert: "" };
-  if (hasUnseenSentNotes()) return { text: "Sent · no agent listening", accent: false, unread: false, alert: "warn" };
   return { text: "Agent not listening", accent: false, unread: false, alert: "" };
 }
 
@@ -1429,10 +1435,10 @@ function renderSheetSummary() {
   panelSummary.classList.toggle("is-alert", summary.alert === "error");
   panelSummary.classList.toggle("is-warn", summary.alert === "warn");
   panelHead.classList.toggle("has-alert", summary.alert === "error");
-  // A newly raised problem pulses the closed dock once, like a reply does.
-  const alertText = summary.alert ? summary.text : "";
-  if (alertText && alertText !== lastDockAlertText) pulseSheetDock();
-  lastDockAlertText = alertText;
+  // A newly raised failure pulses the closed dock once, like a reply does.
+  const alertKey = summary.alert === "error" ? summary.alertKey : "";
+  if (alertKey && alertKey !== lastDockAlertKey) pulseSheetDock();
+  lastDockAlertKey = alertKey;
   renderSidebarToggle(summary);
 }
 
