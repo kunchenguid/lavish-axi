@@ -1833,23 +1833,30 @@ test("unsent drafts survive a tab close: a later session page serves them back u
       });
 
     // Same-origin guarded like /prompts: a stored draft becomes the reviewer's words on Send.
-    assert.equal((await putDraft({ tab: "tabA", queue: [draft] }, { origin: "https://evil.example" })).status, 403);
-    assert.equal((await putDraft({ tab: "tabA", queue: [draft] }, {})).status, 403);
+    assert.equal(
+      (await putDraft({ tab: "tabA", seq: 1, queue: [draft] }, { origin: "https://evil.example" })).status,
+      403,
+    );
+    assert.equal((await putDraft({ tab: "tabA", seq: 1, queue: [draft] }, {})).status, 403);
     assert.equal((await putDraft({ queue: [draft] })).status, 400);
-    assert.equal((await putDraft({ tab: "tabA", queue: [{ ...draft, prompt: "x".repeat(300 * 1024) }] })).status, 413);
+    assert.equal((await putDraft({ tab: "tabA", queue: [draft] })).status, 400, "a write needs its sequence");
+    assert.equal(
+      (await putDraft({ tab: "tabA", seq: 1, queue: [{ ...draft, prompt: "x".repeat(300 * 1024) }] })).status,
+      413,
+    );
     assert.equal(
       (
         await fetch(`${base}/api/0000000000000000/drafts`, {
           method: "PUT",
           headers: { "content-type": "application/json", origin: base },
-          body: JSON.stringify({ tab: "tabA", queue: [draft] }),
+          body: JSON.stringify({ tab: "tabA", seq: 1, queue: [draft] }),
         })
       ).status,
       404,
     );
 
     // Tab A queues a note, then goes away without sending.
-    assert.equal((await putDraft({ tab: "tabA", queue: [draft] })).status, 200);
+    assert.equal((await putDraft({ tab: "tabA", seq: 1, queue: [draft] })).status, 200);
 
     // Reopening the link - even across a server restart - serves the note to the new tab.
     await server.close();
@@ -1881,7 +1888,7 @@ test("unsent drafts survive a tab close: a later session page serves them back u
     const ended = await fetch(`${base}/api/${key}/drafts`, {
       method: "PUT",
       headers: { "content-type": "application/json", origin: base },
-      body: JSON.stringify({ tab: "tabA", queue: [{ ...draft, prompt_id: "note-2" }] }),
+      body: JSON.stringify({ tab: "tabA", seq: 2, queue: [{ ...draft, prompt_id: "note-2" }] }),
     });
     assert.equal(ended.status, 409);
   } finally {

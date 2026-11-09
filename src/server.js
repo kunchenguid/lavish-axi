@@ -56,7 +56,7 @@ import {
 } from "./export-bundle.js";
 import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
 import { serializeChat, serializeChatAckIds, serializeChatSync } from "./chat-messages.js";
-import { DraftTooLargeError, normalizeDraftTabId, serializeDrafts } from "./review-drafts.js";
+import { DraftTooLargeError, normalizeDraftSeq, normalizeDraftTabId, serializeDrafts } from "./review-drafts.js";
 import { formatServerLogLine, serverStdioIsTimestamped } from "./server-log.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
@@ -1223,8 +1223,8 @@ export async function serve({
         res.status(403).json({ error: "cross-origin draft write rejected" });
         return;
       }
-      if (!normalizeDraftTabId(req.body?.tab)) {
-        res.status(400).json({ error: "a draft write needs a tab id" });
+      if (!normalizeDraftTabId(req.body?.tab) || !normalizeDraftSeq(req.body?.seq)) {
+        res.status(400).json({ error: "a draft write needs a tab id and a sequence number" });
         return;
       }
       const result = await store.saveDrafts(req.params.key, req.body || {});

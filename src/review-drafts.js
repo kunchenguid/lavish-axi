@@ -35,6 +35,13 @@ export function normalizeDraftTabId(value) {
   return normalizePromptId(value);
 }
 
+// Every write carries a per-tab sequence number that only grows. A page being hidden flushes a
+// keepalive write while an earlier one may still be in flight, and the two can land in either
+// order; the stored sequence is what lets the older one be refused instead of winning.
+export function normalizeDraftSeq(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
 // Only entries with a prompt identity are kept. The identity is what lets a draft that was
 // already sent be recognized and dropped (by the transcript's acks), so an identity-less entry
 // could be resurrected after delivery and sent twice.
@@ -88,56 +95,51 @@ function recordIsEmpty(record) {
 /**
  * Apply one tab's draft write to a session in place. Returns whether `session.drafts` changed.
  *
+ * - A write whose `seq` is not above the one stored for its tab is older than what the server
+ *   already has, and changes nothing.
  * - The writer's record is replaced wholesale (the chrome always sends its whole queue), minus
  *   any prompt the transcript already acknowledges.
  * - `adopted` names other tabs' records the writer has taken over at boot; they are removed in
  *   the same write, so the notes have exactly one stored owner afterwards.
- * - An empty record is deleted rather than stored.
+ * - An empty record is kept, with nothing in it, so its sequence still refuses an older write
+ *   that would bring back what the tab removed. It is never served and is evicted first.
  * - At most MAX_DRAFT_TABS records are kept; the least recently written go first.
  *
  * Throws DraftTooLargeError when the writer's record is over MAX_DRAFT_RECORD_BYTES. Nothing is
  * changed in that case.
  *
  * @param {any} session
- * @param {{ tab?: unknown, queue?: unknown, review_state?: unknown, adopted?: unknown }} payload
+ * @param {{ tab?: unknown, seq?: unknown, queue?: unknown, review_state?: unknown, adopted?: unknown }} payload
  * @param {{ now?: string }} [options]
  */
 export function applyDraftWrite(session, payload, { now = new Date().toISOString() } = {}) {
   const tab = normalizeDraftTabId(payload?.tab);
   if (!tab) throw new TypeError("a draft write needs a tab id");
+  const seq = normalizeDraftSeq(payload?.seq);
+  if (!seq) throw new TypeError("a draft write needs a sequence number");
   const acknowledged = acknowledgedIdSet(session);
   const queue = normalizeDraftQueue(payload?.queue).filter(
     (prompt) => !acknowledged.has(normalizePromptId(prompt.prompt_id)),
   );
   const reviewState = normalizeReviewState(payload?.review_state);
-  const record = { queue, review_state: reviewState, updated_at: now };
+  const record = { queue, review_state: reviewState, seq, updated_at: now };
   if (Buffer.byteLength(JSON.stringify(record)) > MAX_DRAFT_RECORD_BYTES) throw new DraftTooLargeError();
 
-  const before = JSON.stringify(storedDrafts(session));
   /** @type {Record<string, any>} */
   const drafts = { ...storedDrafts(session) };
+  if (normalizeDraftSeq(drafts[tab]?.seq) >= seq) return false;
   const adopted = Array.isArray(payload?.adopted) ? payload.adopted.slice(0, MAX_DRAFT_TABS * 4) : [];
   for (const value of adopted) {
     const id = normalizeDraftTabId(value);
     if (id && id !== tab) delete drafts[id];
   }
-  const previous = drafts[tab];
-  if (recordIsEmpty(record)) {
-    delete drafts[tab];
-  } else if (
-    !previous ||
-    JSON.stringify(previous.queue) !== JSON.stringify(record.queue) ||
-    JSON.stringify(previous.review_state ?? null) !== JSON.stringify(record.review_state)
-  ) {
-    drafts[tab] = record;
-  }
-  const ordered = Object.entries(drafts).sort(([, a], [, b]) =>
-    String(b?.updated_at || "").localeCompare(String(a?.updated_at || "")),
+  drafts[tab] = record;
+  const ordered = Object.entries(drafts).sort(
+    ([, a], [, b]) =>
+      Number(recordIsEmpty(a)) - Number(recordIsEmpty(b)) ||
+      String(b?.updated_at || "").localeCompare(String(a?.updated_at || "")),
   );
-  const bounded = Object.fromEntries(ordered.slice(0, MAX_DRAFT_TABS));
-  if (JSON.stringify(bounded) === before) return false;
-  if (Object.keys(bounded).length) session.drafts = bounded;
-  else delete session.drafts;
+  session.drafts = Object.fromEntries(ordered.slice(0, MAX_DRAFT_TABS));
   return true;
 }
 
@@ -162,10 +164,8 @@ export function pruneSentDrafts(session, promptIds) {
     const queue = record.queue.filter((prompt) => !ids.has(normalizePromptId(prompt?.prompt_id)));
     if (queue.length === record.queue.length) continue;
     changed = true;
-    if (!queue.length && !record.review_state) delete session.drafts[tab];
-    else session.drafts[tab] = { ...record, queue };
+    session.drafts[tab] = { ...record, queue };
   }
-  if (changed && !Object.keys(session.drafts).length) delete session.drafts;
   return changed;
 }
 
@@ -189,18 +189,4 @@ export function serializeDrafts(session) {
     records.push({ tab, queue, review_state: reviewState, updated_at: String(record.updated_at || "") });
   }
   return records.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-}
-
-/**
- * How many unsent notes are stored for a session, across tabs, without double-counting a note
- * two tabs both hold.
- *
- * @param {any} session
- */
-export function countDraftNotes(session) {
-  const ids = new Set();
-  for (const record of serializeDrafts(session)) {
-    for (const prompt of record.queue) ids.add(prompt.prompt_id);
-  }
-  return ids.size;
 }

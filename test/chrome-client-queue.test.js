@@ -9594,3 +9594,65 @@ test("an ended review neither adopts nor saves drafts", async () => {
   assert.deepEqual(chrome.queued(), []);
   assert.equal(chrome.draftRequests.length, 0);
 });
+
+test("a booting tab with its own open card does not retire another tab's card text", async () => {
+  const mine = { card: { selector: "h1", text: "My own thought" }, fields: [] };
+  const theirs = { card: { selector: "h2", text: "Their half-written thought" }, fields: [] };
+  const chrome = await createChromeHarness({
+    storage: new Map([["lavish-axi:review-state:abc", JSON.stringify(mine)]]),
+    sessionData: {
+      ...defaultSessionData,
+      initialDrafts: [
+        {
+          tab: "cardTab",
+          queue: [{ prompt: "Their note", selector: "p", tag: "p", prompt_id: "their-note" }],
+          review_state: theirs,
+          updated_at: "2026-11-09T10:01:00.000Z",
+        },
+        {
+          tab: "queueTab",
+          queue: [{ prompt: "Other note", selector: "h3", tag: "h3", prompt_id: "other-note" }],
+          review_state: null,
+          updated_at: "2026-11-09T10:00:00.000Z",
+        },
+      ],
+    },
+  });
+  await flushPromises();
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt_id),
+    ["their-note", "other-note"],
+  );
+  const write = chrome.draftRequests.at(-1).body;
+  assert.deepEqual(write.adopted, ["queueTab"], "only a record this tab fully holds is retired");
+  assert.deepEqual(write.review_state, mine);
+});
+
+test("a hide flush that overlaps an in-flight save is sent with a newer sequence", async () => {
+  /** @type {(value: any) => void} */
+  let release = () => {};
+  const chrome = await createChromeHarness({
+    draftResponses: [new Promise((resolve) => (release = resolve))],
+  });
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "One", selector: "h1", tag: "h1" } });
+  await flushPromises();
+  chrome.sendFrameMessage({
+    type: "lavish:reviewState",
+    state: { card: { selector: "p", text: "Typing" }, fields: [] },
+  });
+  chrome.setVisibility("hidden");
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, 2, "the flush does not wait for the in-flight save");
+  const [first, flush] = chrome.draftRequests.map((request) => request.body);
+  assert.ok(Number.isSafeInteger(first.seq) && first.seq > 0);
+  assert.ok(flush.seq > first.seq, "the server refuses the older body if it lands last");
+  assert.equal(flush.review_state.card.text, "Typing");
+
+  // The older save confirming late does not mark the newer body as the one the server holds.
+  release({ ok: true, json: async () => ({}) });
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  const sent = chrome.draftRequests.length;
+  chrome.setVisibility("hidden");
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, sent, "the flush itself was confirmed");
+});

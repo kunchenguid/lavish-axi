@@ -524,23 +524,37 @@ let draftAdoptedTabs = [];
 let draftSaveTimer;
 let draftSaveInFlight = false;
 let draftSaveAgain = false;
-// The {queue, review_state} body the server last confirmed. A hidden page re-sends only when
-// what it holds now differs, so switching apps does not cost a request per switch.
+// Grows with every write this tab sends. The server keeps the newest per tab and refuses an
+// older one, so a hide flush racing an in-flight save can never let the older body win. Floored
+// at the clock so a reload of the same tab, which keeps its tab id, continues above its last write.
+let draftSeq = 0;
+// The {queue, review_state} body the server last confirmed, and the write that carried it. A
+// hidden page re-sends only when what it holds now differs, so switching apps does not cost a
+// request per switch.
 let draftConfirmedState = "";
+let draftConfirmedSeq = 0;
 
 function draftReviewState() {
-  const state = lastReviewState;
-  if (!state || typeof state !== "object") return null;
+  return reviewStateHasText(lastReviewState) ? lastReviewState : null;
+}
+
+function reviewStateHasText(state) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return false;
   const hasCard = Boolean(state.card && String(state.card.text || "").trim());
   const hasFields = Array.isArray(state.fields) && state.fields.length > 0;
-  return hasCard || hasFields ? state : null;
+  return hasCard || hasFields;
 }
 
 function draftStateBody() {
   return JSON.stringify({ queue: queued, review_state: draftReviewState() });
 }
 
-function draftRequest(body) {
+function sendDraftWrite() {
+  const state = draftStateBody();
+  const adopted = draftAdoptedTabs.slice();
+  draftSeq = Math.max(draftSeq + 1, Date.now());
+  const seq = draftSeq;
+  const body = JSON.stringify({ tab: draftTabId, seq, ...JSON.parse(state), ...(adopted.length ? { adopted } : {}) });
   return fetch("/api/" + key + "/drafts", {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -548,6 +562,11 @@ function draftRequest(body) {
     // A save started just before the tab closes must still land. Keepalive bodies share a
     // small browser quota, so an unusually large queue goes as an ordinary request.
     keepalive: body.length < DRAFT_KEEPALIVE_MAX_BYTES,
+  }).then((response) => {
+    if (!response?.ok || seq < draftConfirmedSeq) return;
+    draftConfirmedSeq = seq;
+    draftConfirmedState = state;
+    draftAdoptedTabs = draftAdoptedTabs.filter((id) => !adopted.includes(id));
   });
 }
 
@@ -562,16 +581,8 @@ async function saveDraftsNow() {
     return;
   }
   draftSaveInFlight = true;
-  const state = draftStateBody();
-  const adopted = draftAdoptedTabs.slice();
   try {
-    const response = await draftRequest(
-      JSON.stringify({ tab: draftTabId, ...JSON.parse(state), ...(adopted.length ? { adopted } : {}) }),
-    );
-    if (response?.ok) {
-      draftConfirmedState = state;
-      draftAdoptedTabs = draftAdoptedTabs.filter((id) => !adopted.includes(id));
-    }
+    await sendDraftWrite();
   } catch {
     // The tab's own sessionStorage copy still holds the notes; the next change retries.
   } finally {
@@ -593,20 +604,15 @@ function scheduleDraftSave() {
 }
 
 // The page is being hidden or discarded (tab closed, app switched, in-app browser dismissed).
-// Send whatever the server does not have yet as a keepalive request, which outlives the page.
+// Send whatever the server does not have yet as a keepalive request, which outlives the page. It
+// may overlap a save still in flight; its higher sequence is what keeps it from being undone.
 function flushDraftsOnHide() {
   if (!draftTabId || ended) return;
-  const state = draftStateBody();
-  if (state === draftConfirmedState && draftTimerIdle()) return;
+  if (draftStateBody() === draftConfirmedState && draftTimerIdle()) return;
   clearTimeout(draftSaveTimer);
   draftSaveTimer = undefined;
-  const adopted = draftAdoptedTabs.slice();
   try {
-    draftRequest(JSON.stringify({ tab: draftTabId, ...JSON.parse(state), ...(adopted.length ? { adopted } : {}) }))
-      .then((response) => {
-        if (response?.ok) draftConfirmedState = state;
-      })
-      .catch(() => {});
+    sendDraftWrite().catch(() => {});
   } catch {
     // Nothing else can be done for a page that is going away.
   }
@@ -630,7 +636,6 @@ function adoptStoredDrafts() {
   for (const record of initialDrafts) {
     const tab = String(record?.tab || "");
     if (!isPromptIdentity(tab)) continue;
-    if (tab !== draftTabId) draftAdoptedTabs.push(tab);
     for (const raw of Array.isArray(record.queue) ? record.queue : []) {
       const prompt = adoptQueuedPrompt(raw, true);
       const id = promptIdentity(prompt);
@@ -644,11 +649,18 @@ function adoptStoredDrafts() {
       queued.push(prompt);
       adopted += 1;
     }
+    // A record is retired only once this tab holds everything in it. Card text this tab could
+    // not take over, because it has an open card of its own, stays on the server for a later tab.
     const reviewState = record.review_state;
-    if (!lastReviewState && reviewState && typeof reviewState === "object" && !Array.isArray(reviewState)) {
-      lastReviewState = reviewState;
-      saveJsonState(reviewStateStorageKey, reviewState);
+    if (reviewStateHasText(reviewState)) {
+      if (!reviewStateHasText(lastReviewState)) {
+        lastReviewState = reviewState;
+        saveJsonState(reviewStateStorageKey, reviewState);
+      } else if (JSON.stringify(lastReviewState) !== JSON.stringify(reviewState)) {
+        continue;
+      }
     }
+    if (tab !== draftTabId) draftAdoptedTabs.push(tab);
   }
   if (adopted) persistQueuedPrompts();
   else if (draftAdoptedTabs.length) saveDraftsNow();
