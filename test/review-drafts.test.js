@@ -61,7 +61,11 @@ test("an open card with text is a draft on its own; an empty card is not", () =>
 test("adopting removes the other tabs' records in the same write", () => {
   const session = {};
   write(session, { tab: "tabA", queue: [note("p1")] }, { now: "2026-11-09T10:00:00.000Z" });
-  write(session, { tab: "tabB", queue: [note("p1")], adopted: ["tabA"] }, { now: "2026-11-09T10:01:00.000Z" });
+  write(
+    session,
+    { tab: "tabB", queue: [note("p1")], adopted: [{ tab: "tabA", review_state: true }] },
+    { now: "2026-11-09T10:01:00.000Z" },
+  );
   assert.deepEqual(
     serializeDrafts(session).map((record) => record.tab),
     ["tabB"],
@@ -132,4 +136,45 @@ test("pruneSentDrafts drops sent notes from every tab's record", () => {
   assert.equal(pruneSentDrafts(session, ["p9"]), false);
   assert.equal(pruneSentDrafts(session, ["p2"]), true);
   assert.deepEqual(serializeDrafts(session), []);
+});
+
+test("an adopting write that could not take the card text keeps it but retires the queue", () => {
+  const session = {};
+  const card = { card: { selector: "h1", text: "Half a thought" }, fields: [] };
+  write(
+    session,
+    { tab: "tabA", queue: [note("n1"), note("n2")], review_state: card },
+    { now: "2026-11-09T10:00:00.000Z" },
+  );
+  write(session, { tab: "tabB", queue: [note("n1")], review_state: null }, { now: "2026-11-09T10:00:30.000Z" });
+  // Tab C takes both queues; it has a card of its own, so it cannot take tab A's.
+  write(
+    session,
+    {
+      tab: "tabC",
+      queue: [note("n1")],
+      adopted: [
+        { tab: "tabA", review_state: false },
+        { tab: "tabB", review_state: false },
+      ],
+    },
+    { now: "2026-11-09T10:01:00.000Z" },
+  );
+  assert.deepEqual(
+    serializeDrafts(session).map((record) => [
+      record.tab,
+      record.queue.map((prompt) => prompt.prompt_id),
+      record.review_state,
+    ]),
+    [
+      ["tabC", ["n1"], null],
+      ["tabA", [], card],
+    ],
+    "n2, removed in tab C, does not come back; tab B had no card text, so its record is gone",
+  );
+  write(session, { tab: "tabD", queue: [], adopted: [{ tab: "tabA", review_state: true }] });
+  assert.deepEqual(
+    serializeDrafts(session).map((record) => record.tab),
+    ["tabC"],
+  );
 });

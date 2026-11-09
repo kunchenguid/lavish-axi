@@ -99,8 +99,10 @@ function recordIsEmpty(record) {
  *   already has, and changes nothing.
  * - The writer's record is replaced wholesale (the chrome always sends its whole queue), minus
  *   any prompt the transcript already acknowledges.
- * - `adopted` names other tabs' records the writer has taken over at boot; they are removed in
- *   the same write, so the notes have exactly one stored owner afterwards.
+ * - `adopted` names, as `{ tab, review_state }`, other tabs' records the writer took over at
+ *   boot. Their queue always goes, so the notes have exactly one stored owner afterwards; the
+ *   record itself goes only when the writer took its card text too (`review_state: true`) or it
+ *   had none. A record kept for card text the writer could not take keeps no queue.
  * - An empty record is kept, with nothing in it, so its sequence still refuses an older write
  *   that would bring back what the tab removed. It is never served and is evicted first.
  * - At most MAX_DRAFT_TABS records are kept; the least recently written go first.
@@ -130,8 +132,11 @@ export function applyDraftWrite(session, payload, { now = new Date().toISOString
   if (normalizeDraftSeq(drafts[tab]?.seq) >= seq) return false;
   const adopted = Array.isArray(payload?.adopted) ? payload.adopted.slice(0, MAX_DRAFT_TABS * 4) : [];
   for (const value of adopted) {
-    const id = normalizeDraftTabId(value);
-    if (id && id !== tab) delete drafts[id];
+    const id = normalizeDraftTabId(value?.tab);
+    const other = id && id !== tab ? drafts[id] : null;
+    if (!other) continue;
+    if (value.review_state === true || !other.review_state) delete drafts[id];
+    else drafts[id] = { ...other, queue: [] };
   }
   drafts[tab] = record;
   const ordered = Object.entries(drafts).sort(

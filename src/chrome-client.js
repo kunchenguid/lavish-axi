@@ -17,7 +17,7 @@ const reviewStateStorageKey = "lavish-axi:review-state:" + key;
 // still read and copy it after the anchor it was written against is gone for good.
 const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
 // This tab's identity for the server-side copy of its unsent notes. Kept in sessionStorage so a
-// reload of the same tab rewrites its own record instead of adding a second one.
+// reload of the same tab rewrites its own record instead of adding a second one (loadDraftTabId).
 const draftTabStorageKey = "lavish-axi:draft-tab:" + key;
 // Unsent notes other tabs left on the server. Closing a tab (or an in-app browser discarding it)
 // used to lose its queue; a tab opened later now adopts it.
@@ -501,10 +501,12 @@ function persistQueuedPromptsLocally() {
   }
 }
 
+// Only a reload is the same tab. A duplicated tab inherits a copy of sessionStorage, so any
+// other load mints its own id and adopts the stored one's record like any other tab's.
 function loadDraftTabId() {
   try {
     const stored = sessionStorage.getItem(draftTabStorageKey);
-    if (isPromptIdentity(stored)) return stored;
+    if (isPromptIdentity(stored) && pageLoadIsReload()) return stored;
   } catch {
     // Fall through to a fresh id; this tab then simply writes a new record.
   }
@@ -517,8 +519,19 @@ function loadDraftTabId() {
   return id;
 }
 
+function pageLoadIsReload() {
+  try {
+    const entry = /** @type {PerformanceNavigationTiming | undefined} */ (
+      performance.getEntriesByType("navigation")[0]
+    );
+    return entry?.type === "reload";
+  } catch {
+    return false;
+  }
+}
+
 let draftTabId = "";
-/** @type {string[]} */
+/** @type {{ tab: string, review_state: boolean }[]} */
 let draftAdoptedTabs = [];
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let draftSaveTimer;
@@ -566,7 +579,7 @@ function sendDraftWrite() {
     if (!response?.ok || seq < draftConfirmedSeq) return;
     draftConfirmedSeq = seq;
     draftConfirmedState = state;
-    draftAdoptedTabs = draftAdoptedTabs.filter((id) => !adopted.includes(id));
+    draftAdoptedTabs = draftAdoptedTabs.filter((entry) => !adopted.includes(entry));
   });
 }
 
@@ -649,18 +662,19 @@ function adoptStoredDrafts() {
       queued.push(prompt);
       adopted += 1;
     }
-    // A record is retired only once this tab holds everything in it. Card text this tab could
-    // not take over, because it has an open card of its own, stays on the server for a later tab.
+    // The queue is always taken; the record's card text only when this tab has no open card of
+    // its own. Card text it could not take stays on the server for a later tab.
     const reviewState = record.review_state;
+    let tookReviewState = true;
     if (reviewStateHasText(reviewState)) {
       if (!reviewStateHasText(lastReviewState)) {
         lastReviewState = reviewState;
         saveJsonState(reviewStateStorageKey, reviewState);
-      } else if (JSON.stringify(lastReviewState) !== JSON.stringify(reviewState)) {
-        continue;
+      } else {
+        tookReviewState = JSON.stringify(lastReviewState) === JSON.stringify(reviewState);
       }
     }
-    if (tab !== draftTabId) draftAdoptedTabs.push(tab);
+    if (tab !== draftTabId) draftAdoptedTabs.push({ tab, review_state: tookReviewState });
   }
   if (adopted) persistQueuedPrompts();
   else if (draftAdoptedTabs.length) saveDraftsNow();

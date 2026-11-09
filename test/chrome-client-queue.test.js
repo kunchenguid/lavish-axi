@@ -89,6 +89,9 @@ async function createChromeHarness({
   beginLoadResponses = [],
   handoffResponses = [],
   draftResponses = [],
+  // How the browser reports this page load (`performance.getEntriesByType("navigation")`). Left
+  // unset, the window has no `performance`, as in a browser without Navigation Timing.
+  navigationType = "",
   storedQueue = null,
   // Opt-in frozen clock. `reloadChromeAfterServerRestart` waits on wall-clock deadlines, so a
   // test that needs one to expire has to own `Date.now()` rather than sleep through it.
@@ -409,6 +412,9 @@ async function createChromeHarness({
     clearTimeout: fakeClearTimeout,
     console,
     ...(fakeClock ? { Date: { now: () => clockNow, parse: Date.parse } } : {}),
+    ...(navigationType
+      ? { performance: { getEntriesByType: (type) => (type === "navigation" ? [{ type: navigationType }] : []) } }
+      : {}),
     fetch: harnessFetch,
     location: {
       protocol: "http:",
@@ -9502,7 +9508,11 @@ test("a new tab adopts the unsent notes an earlier tab left on the server", asyn
   assert.match(chrome.element("sendHint").textContent, /Restored 2 unsent notes/);
 
   const adoption = chrome.draftRequests.at(-1).body;
-  assert.deepEqual(adoption.adopted, ["closedTab"], "the earlier tab's record is retired in the same write");
+  assert.deepEqual(
+    adoption.adopted,
+    [{ tab: "closedTab", review_state: true }],
+    "the earlier tab's record is retired in the same write",
+  );
   assert.notEqual(adoption.tab, "closedTab");
   assert.deepEqual(
     adoption.queue.map((prompt) => prompt.prompt_id),
@@ -9545,7 +9555,7 @@ test("a tab's own queue keeps its answer over an adopted one with the same repla
     chrome.queued().map((prompt) => prompt.prompt),
     ["Plan A"],
   );
-  assert.deepEqual(chrome.draftRequests.at(-1).body.adopted, ["otherTab"]);
+  assert.deepEqual(chrome.draftRequests.at(-1).body.adopted, [{ tab: "otherTab", review_state: true }]);
 });
 
 test("annotation-card typing is saved after a pause and flushed when the page is hidden", async () => {
@@ -9624,7 +9634,14 @@ test("a booting tab with its own open card does not retire another tab's card te
     ["their-note", "other-note"],
   );
   const write = chrome.draftRequests.at(-1).body;
-  assert.deepEqual(write.adopted, ["queueTab"], "only a record this tab fully holds is retired");
+  assert.deepEqual(
+    write.adopted,
+    [
+      { tab: "cardTab", review_state: false },
+      { tab: "queueTab", review_state: true },
+    ],
+    "the queue is taken from both; the card text this tab could not take stays",
+  );
   assert.deepEqual(write.review_state, mine);
 });
 
@@ -9655,4 +9672,43 @@ test("a hide flush that overlaps an in-flight save is sent with a newer sequence
   chrome.setVisibility("hidden");
   await flushPromises();
   assert.equal(chrome.draftRequests.length, sent, "the flush itself was confirmed");
+});
+
+test("a reload keeps the tab's draft record; a duplicated tab gets its own and adopts the original's", async () => {
+  const stored = {
+    tab: "originalTab",
+    queue: [{ prompt: "Original note", selector: "h1", tag: "h1", prompt_id: "orig-1" }],
+  };
+  const record = { ...stored, review_state: null, updated_at: "2026-11-09T10:00:00.000Z" };
+
+  const reloaded = await createChromeHarness({
+    navigationType: "reload",
+    storage: new Map([["lavish-axi:draft-tab:abc", "originalTab"]]),
+    storedQueue: stored.queue,
+    sessionData: { ...defaultSessionData, initialDrafts: [record] },
+  });
+  reloaded.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "More", selector: "p", tag: "p" } });
+  await flushPromises();
+  assert.equal(reloaded.draftRequests.at(-1).body.tab, "originalTab");
+  assert.equal(reloaded.draftRequests.at(-1).body.adopted, undefined);
+
+  // Duplicating a tab copies its sessionStorage, tab id included. Writing under that shared id
+  // would overwrite the original's record, so the duplicate mints its own and adopts the original.
+  for (const navigationType of ["navigate", ""]) {
+    const duplicate = await createChromeHarness({
+      navigationType,
+      storage: new Map([["lavish-axi:draft-tab:abc", "originalTab"]]),
+      storedQueue: stored.queue,
+      sessionData: { ...defaultSessionData, initialDrafts: [record] },
+    });
+    await flushPromises();
+    const write = duplicate.draftRequests.at(-1).body;
+    assert.notEqual(write.tab, "originalTab");
+    assert.equal(duplicate.storage.get("lavish-axi:draft-tab:abc"), write.tab);
+    assert.deepEqual(write.adopted, [{ tab: "originalTab", review_state: true }]);
+    assert.deepEqual(
+      write.queue.map((prompt) => prompt.prompt_id),
+      ["orig-1"],
+    );
+  }
 });
