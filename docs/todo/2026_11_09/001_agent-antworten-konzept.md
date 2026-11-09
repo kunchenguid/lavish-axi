@@ -22,7 +22,7 @@ Beschlüsse im Detail:
 2. Erledigt graut Marke, Badge und Sprechblase aus; der Textinhalt dahinter wird nur leicht entsättigt (Shift+D-Analogie erkennbar, Review-Fläche bleibt lesbar). Keine volle Done-Abdunkelung.
 3. Die Navigationspfeile führen nur über offene und beantwortete Fragen; Erledigtes wird übersprungen.
 4. Farben sind immer doppelt codiert (Farbe plus Form-Symbol), damit die Fläche auch bei Rot-Grün-Sehschwäche, Beamer und Ausdruck funktioniert.
-5. Die Konversationsleiste bekommt einen Ausblende-Filter für Erledigtes (Schalter mit Zähler, zum Beispiel „5 erledigt ausgeblendet"); Zustand gilt pro Sitzung. Standard: erledigte Einträge sichtbar, Simon blendet bewusst aus.
+5. Die Konversationsleiste bekommt einen Ausblende-Filter für Erledigtes (Schalter mit Zähler, zum Beispiel „5 erledigt ausgeblendet“); Zustand gilt pro Sitzung. Standard: erledigte Einträge sichtbar, Simon blendet bewusst aus.
 
 ## Agent-Antworten
 
@@ -65,7 +65,7 @@ Heute erzeugt die öffentliche CLI ausschließlich `agent_reply` (String) oder e
 - `answered` bleibt Server-automatik (nur durch gültige Antwort); Nutzeraktionen sind ausschließlich Erledigen und Wiedereröffnen.
 - Atomarität: Übergang, Persistenz im Annotationsbestand und Verteilung laufen unter `store.lock`; der Live-Strom und `chat-sync` transportieren den Annotationszustand mit (Erweiterung von `serializeChatSync` um den Bestand), sodass Reload, anderer Browser und Neustart denselben Zustand zeigen.
 - Idempotenz und Wiederholung: gleicher Zustand ist ein No-Op mit Erfolgsantwort. Antworten tragen eine vom Agenten erzeugte `answer_id` (UUID); der Server dedupliziert Wiederholungen nach verlorenem Receipt anhand dieser ID.
-- Konfliktdregeln: mehrere Antworten sind erlaubt und bleiben zeitlich geordnet unter der Frage. `resolve: true` setzt erledigt nur aus offen oder beantwortet; nach Simons Wiedereröffnung entscheidet erneut nur Simon oder eine neue Antwort mit resolve. Ein stilles `resolve: false` auf erledigt öffnet nie wieder.
+- Konfliktregeln: mehrere Antworten sind erlaubt und bleiben zeitlich geordnet unter der Frage. `resolve: true` setzt erledigt nur aus offen oder beantwortet; nach Simons Wiedereröffnung entscheidet erneut nur Simon oder eine neue Antwort mit resolve. Ein stilles `resolve: false` auf erledigt öffnet nie wieder.
 
 ## Umsetzungsreihenfolge (Vorschlag, jeweils TDD mit roten Tests zuerst)
 
@@ -74,7 +74,7 @@ Heute erzeugt die öffentliche CLI ausschließlich `agent_reply` (String) oder e
 3. SDK: Antwort-Sprechblase, Zustands-Optik (grün/grau, leichte Entsättigung), Hover-Popup, Pfeilfilter.
 4. Abschluss per Team-Red-Review wie beim heutigen Paket.
 
-## Ankerbruch über Revisionen hinweg (Risiko und Fangelist)
+## Ankerbruch über Revisionen hinweg (Risiko und Gegenmaßnahmen)
 
 - Ursache bleibt bestehen: Überarbeitet der Agent das Artifact, entstehen neue Revisionen und Selektoren können brechen. Das Konzept verkleinert die Folgen: Erledigte Annotationen sind folgenarm verlierbar (Eintrag bleibt in der Leiste), aktive erben den Anker der Frage, werden beim Rendern neu aufgelöst und fallen bei Misslingen auf die Leisten-Darstellung zurück, ohne Inhalt zu verlieren.
 - Prävention (eigenes Folgevorhaben, nicht Teil dieses Pakets): serverseitiger Revisions-Diff (welche Sektionen änderten sich zwischen zwei Versionen) als Frühwarnsystem für gefährdete Anker; Dokumentation unter `docs/todo/2026_11_09/` verlinken, sobald angelegt.
