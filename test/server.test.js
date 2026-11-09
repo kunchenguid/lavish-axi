@@ -3519,6 +3519,28 @@ test("/chrome.css serves the extracted chrome stylesheet", async () => {
   }
 });
 
+// A wide anchor label (e.g. "<Flächen-Theme>") must shrink instead of widening the conversation
+// panel past the viewport: with the panel overflowing, the document becomes horizontally
+// scrollable without a visible bar and touchpad deltas shift the whole chrome sideways.
+test("chrome.css keeps anchor labels shrinkable so the panel cannot overflow the viewport", async () => {
+  const css = await chromeCssSource();
+  assert.match(css, /\.anchor-kind\{[^}]*flex:0 1 auto[^}]*\}/);
+  assert.match(css, /\.anchor-kind\{[^}]*min-width:0[^}]*\}/);
+  assert.match(css, /\.anchor-kind\{[^}]*max-width:100%[^}]*\}/);
+  assert.match(css, /\.anchor-kind\{[^}]*overflow:hidden[^}]*\}/);
+  assert.match(css, /\.anchor-kind\{[^}]*text-overflow:ellipsis[^}]*\}/);
+  // Long unbroken tokens (selectors, theme strings) must wrap inside a bubble, not widen it.
+  assert.match(css, /\.bubble-text\{[^}]*white-space:pre-wrap[^}]*overflow-wrap:anywhere[^}]*\}/);
+});
+
+// The chrome is an app shell that never scrolls itself; `overflow: hidden` on the body still
+// admits touchpad and programmatic horizontal scrolling, so a stray wide element can shove the
+// artifact and its rail sideways. `clip` on the x axis removes that scroll entirely.
+test("chrome.css never allows a horizontally scrollable document body", async () => {
+  const css = await chromeCssSource();
+  assert.match(css, /body\{[^}]*overflow-x:clip[^}]*\}/);
+});
+
 test("/design serves local Tailwind and DaisyUI artifact assets", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });

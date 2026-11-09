@@ -120,7 +120,12 @@ body {
   font-family: var(--font-sans);
   font-size: var(--text-base);
   line-height: var(--lh-base);
-  overflow: hidden;
+  /* The chrome is an app shell and never scrolls itself. `hidden` would still admit touchpad
+     and programmatic horizontal scrolling, so a stray wide element (a wide anchor label) could
+     shove the artifact and its rail sideways with no visible scrollbar to notice. `clip`
+     removes that scroll outright. */
+  overflow-x: clip;
+  overflow-y: hidden;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -1187,6 +1192,7 @@ body.lavish {
 }
 .bubble-text {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 /* Consecutive items from one send sit closer, so a batch reads as a group. */
 .bubble.user + .bubble.user {
@@ -1289,7 +1295,14 @@ body.lavish {
   color: var(--fg-faint);
 }
 .anchor-kind {
-  flex: 0 0 auto;
+  /* A wide label ("<Flächen-Theme>") must shrink and ellipsize instead of widening the
+     conversation panel past the viewport, which made the whole document scroll sideways. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--fg-dim);
