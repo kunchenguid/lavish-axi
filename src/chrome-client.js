@@ -852,8 +852,8 @@ function armSendAcknowledgementWarning() {
 function clearSendAcknowledgementWarning() {
   clearTimeout(sendAcknowledgementTimer);
   sendAcknowledgementTimer = undefined;
-  sendAcknowledgementWarningVisible = false;
-  renderSheetSummary();
+  // The stall hint goes with its flag, so the dock never reads it as a send failure in between.
+  if (sendAcknowledgementWarningVisible) hideSendHint(true);
 }
 
 function showQueuedSendFailure(message = SEND_FAILED_COPY, owner = null) {
@@ -1381,7 +1381,12 @@ function dockAlert() {
   }
   if (sendHintPersistent && !sendAcknowledgementWarningVisible) return { text: "Could not send", level: "error" };
   if (sendAcknowledgementWarningVisible) return { text: "Still sending…", level: "warn" };
-  if (outdatedVisible) return { text: "Lavish updated · reload", level: "warn" };
+  if (outdatedVisible) {
+    return {
+      text: chromeOutdatedReason === "upgrade" ? "Lavish updated · reload" : "Lavish restarted · reload",
+      level: "warn",
+    };
+  }
   if (handoffSupersededVisible) return { text: "Open in another tab", level: "warn" };
   if (agentPresence === "waiting" && hasUnseenSentNotes()) return { text: "No agent listening", level: "warn" };
   return null;

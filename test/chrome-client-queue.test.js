@@ -7354,6 +7354,68 @@ test("the closed dock shows a failed send and a stopped server, not just the que
   assert.equal(sheetState(chrome).summary, "Could not send · 1 queued");
 });
 
+// Regression: a stalled send that then went through cleared the stall flag before the hint, so the
+// dock briefly read "Could not send" and pulsed for a send that succeeded.
+test("a stalled send that succeeds never flashes a send failure on the closed dock", async () => {
+  let resolvePost = (_value) => {};
+  const chrome = await createChromeHarness({
+    mobile: true,
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) return new Promise((resolve) => (resolvePost = resolve));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+  chrome.runTimers(10_000);
+  let state = sheetState(chrome);
+  assert.equal(state.summary, "Still sending… · 1 queued");
+  assert.match(state.summaryClass, /is-warn/);
+  const summaries = [];
+  const summary = chrome.element("panelSummary");
+  let current = summary.textContent;
+  Object.defineProperty(summary, "textContent", {
+    configurable: true,
+    get: () => current,
+    set: (value) => {
+      current = value;
+      summaries.push(value);
+    },
+  });
+
+  chrome.element("panelHead").classList.remove("is-fresh");
+  resolvePost({ ok: true, json: async () => ({}) });
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  state = sheetState(chrome);
+  assert.equal(chrome.queued().length, 0);
+  assert.doesNotMatch(state.summaryClass, /is-alert|is-warn/);
+  assert.ok(summaries.length > 0, "the dock re-rendered after the send");
+  assert.equal(
+    summaries.some((text) => /Could not send/.test(text)),
+    false,
+    "the dock never claims the delivered send failed",
+  );
+  assert.doesNotMatch(String(chrome.element("panelHead").classList), /is-fresh|has-alert/);
+});
+
+test("the closed dock says why the server was replaced", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  sendChromeOutdated(chrome, "upgrade");
+  let state = sheetState(chrome);
+  assert.equal(state.summary, "Lavish updated · reload");
+  assert.match(state.summaryClass, /is-warn/);
+
+  sendChromeOutdated(chrome, "local-build");
+  state = sheetState(chrome);
+  assert.equal(state.summary, "Lavish restarted · reload", "a local build is a restart, not an update");
+  assert.match(state.summaryClass, /is-warn/);
+});
+
 test("the closed dock says when the live connection to Lavish is lost", async () => {
   const chrome = await createChromeHarness({ mobile: true });
   for (let failure = 0; failure < 5; failure += 1) {
