@@ -9496,6 +9496,19 @@ test("a touch phone reporting a desktop-width viewport gets the phone layout, zo
   assert.equal(sheetState(chrome).open, true);
 });
 
+test("picking a layout that zooms the page resizes the sheet to the zoomed viewport", async () => {
+  const chrome = await createChromeHarness({
+    device: { ...DESKTOP_SITE_PHONE, search: "?layout=desktop", styleSheets: [chromeCssSheet()] },
+  });
+  const style = chrome.documentElement.style;
+  assert.equal(style.getPropertyValue("--vv-height"), DESKTOP_SITE_PHONE.innerHeight + "px");
+
+  chrome.element("layoutToggle").onclick();
+  assert.equal(style.zoom, "2.379");
+  const vvHeight = parseFloat(style.getPropertyValue("--vv-height"));
+  assert.ok(Math.abs(vvHeight * 2.379 - DESKTOP_SITE_PHONE.innerHeight) < 0.01, `--vv-height is ${vvHeight}px`);
+});
+
 test("a board link can ask for a layout with ?layout=", async () => {
   const phoneSheet = chromeCssSheet();
   const phone = await createChromeHarness({

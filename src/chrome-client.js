@@ -1407,8 +1407,10 @@ function applyLayoutLock() {
   // Only a phone needs the zoom: a desktop that asks for the phone layout lays it out at its own size.
   const zoom = layout === "phone" && isTouchPhone() ? phoneLayoutZoom() : 1;
   const root = document.documentElement;
-  if (root?.style && zoom !== layoutZoom) root.style.zoom = zoom === 1 ? "" : String(zoom);
+  const zoomChanged = zoom !== layoutZoom;
+  if (root?.style && zoomChanged) root.style.zoom = zoom === 1 ? "" : String(zoom);
   layoutZoom = zoom;
+  if (zoomChanged) syncVisualViewport();
   if (root?.style && typeof root.style.setProperty === "function") {
     if (zoom === 1) root.style.removeProperty("--layout-vh");
     else root.style.setProperty("--layout-vh", (Number(window.innerHeight) || 0) / zoom + "px");
@@ -1645,10 +1647,7 @@ function onLayoutChange() {
 if (layoutToggle) layoutToggle.onclick = () => cycleLayoutPreference();
 // An orientation change moves a zoomed phone layout to a different device width.
 window.addEventListener("resize", () => {
-  if (!appliedLayout) return;
-  const before = appliedLayout + layoutZoom;
-  applyLayoutLock();
-  if (appliedLayout + layoutZoom !== before) syncVisualViewport();
+  if (appliedLayout) applyLayoutLock();
 });
 
 if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
