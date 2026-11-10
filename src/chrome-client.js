@@ -19,6 +19,7 @@ const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
 /** @type {any[]} */
 const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
+const acceptancePromptField = "_lavishAcceptance";
 const promptIdentityField = "prompt_id";
 const PROMPT_IDENTITY_MAX = 128;
 const PROMPT_IDENTITY_RE = /^[A-Za-z0-9_-]+$/;
@@ -446,7 +447,10 @@ function assignPromptIdentity(prompt, keepExisting) {
 function adoptQueuedPrompt(rawPrompt, keepIdentity) {
   const prompt = sanitizeQueuedPrompt(rawPrompt);
   if (!prompt) return null;
-  if (!keepIdentity) delete prompt[promptIdentityField];
+  if (!keepIdentity) {
+    delete prompt[promptIdentityField];
+    delete prompt[acceptancePromptField];
+  }
   assignPromptIdentity(prompt, true);
   return prompt;
 }
@@ -1766,6 +1770,7 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
+  delete clean[acceptancePromptField];
   return clean;
 }
 
@@ -2045,27 +2050,19 @@ function sendQueued(endAfter) {
     if (text || attachments.length) {
       const prompt = { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
       if (attachments.length) prompt.attachments = attachments;
-      assignPromptIdentity(prompt, false);
-      queued.push(prompt);
-      persistQueuedPrompts();
       // Render the durable queued bubble before clearing the editor. If anything after this point
       // fails, the user's words are already both stored and visibly recoverable in the tab. It
       // becomes a sent bubble only when the server's transcript carries it (see submitQueuedOnce).
-      render();
+      pushQueuedPrompt(prompt);
       chatInput.value = "";
       chatAttachmentController.reset();
     }
   }
   const shouldEnd = Boolean(endAfter && !chipsBlocked);
   const preparations = shouldEnd ? [...feedbackPreparations] : [];
-  if (!queued.length && preparations.length === 0) {
-    if (shouldEnd) {
-      // No user comment on Send & End means the user accepts the review as-is.
-      queueAcceptancePrompt();
-    } else {
-      if (!chipsBlocked && !sendFailureOwner) showSendHint(DEFAULT_SEND_HINT, EMPTY_SEND_HINT_HOLD_MS);
-      return;
-    }
+  if (!queued.length && preparations.length === 0 && !shouldEnd) {
+    if (!chipsBlocked && !sendFailureOwner) showSendHint(DEFAULT_SEND_HINT, EMPTY_SEND_HINT_HOLD_MS);
+    return;
   }
   if (!sendFailureOwner) hideSendHint(true);
   if (shouldEnd) {
@@ -2083,12 +2080,22 @@ function sendQueued(endAfter) {
   render();
 }
 
-function queueAcceptancePrompt() {
-  const prompt = { uid: "", prompt: ACCEPT_REVIEW_PROMPT, selector: "", tag: "message", text: "Freeform message" };
+function pushQueuedPrompt(prompt) {
   assignPromptIdentity(prompt, false);
   queued.push(prompt);
   persistQueuedPrompts();
   render();
+}
+
+function queueAcceptancePrompt() {
+  pushQueuedPrompt({
+    uid: "",
+    prompt: ACCEPT_REVIEW_PROMPT,
+    selector: "",
+    tag: "message",
+    text: "Freeform message",
+    [acceptancePromptField]: true,
+  });
 }
 
 function finishTerminalPreparation(terminal, preparations) {
@@ -2149,6 +2156,12 @@ function markTerminalSubmissionFailed(submission) {
 function releaseTerminalSubmission(terminal) {
   if (terminalSubmission !== terminal || ended) return;
   terminalSubmission = null;
+  // A rejected terminal batch never reached the agent, so its synthesized acceptance must not
+  // ride along with the reviewer's next message.
+  for (let index = queued.length - 1; index >= 0; index -= 1) {
+    if (queued[index][acceptancePromptField]) queued.splice(index, 1);
+  }
+  afterQueuedPromptRemoved();
   persistTerminalReservation(false);
   render();
 }

@@ -5906,6 +5906,46 @@ test("chrome send and end accepts the review when preparation leaves the queue e
   assert.equal(submitted[0].body.prompts[0].prompt, "Review accepted. No comments.");
 });
 
+test("a rejected empty Send & End leaves no acceptance for the reviewer's next message", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      if (String(url).endsWith("/prompts")) {
+        posts.push(JSON.parse(init.body));
+        if (posts.length === 1) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({ warnings: [warningPayload({ status: "recurring", status_label: "Still present" })] }),
+          };
+        }
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+
+  chrome.element("sendAndEnd").click();
+  chrome.sendSnapshot("");
+  await flushPromises();
+
+  assert.deepEqual(publicQueued(chrome), []);
+  assert.equal(chrome.element("sendAndEnd").disabled, false);
+
+  chrome.element("chatInput").value = "Fix the header";
+  chrome.element("send").click();
+  chrome.sendSnapshot("");
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(posts.length, 2);
+  assert.deepEqual(
+    posts[1].prompts.map((prompt) => prompt.prompt),
+    ["Fix the header"],
+    "the synthesized acceptance must not ride along with the next message",
+  );
+  assert.equal(posts[1].endSession, undefined);
+});
+
 test("an oversized terminal snapshot retries once without optional DOM context", async () => {
   const posts = [];
   const chrome = await createChromeHarness({
