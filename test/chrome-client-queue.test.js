@@ -5957,6 +5957,41 @@ test("a rejected empty Send & End leaves no acceptance for the reviewer's next m
   assert.equal(chrome.element("sendHint").classList.contains("persistent"), false);
 });
 
+for (const status of [413, 400]) {
+  test(`a rejected empty Send & End shows no failure hint once the session already ended (HTTP ${status})`, async () => {
+    let answerPost = () => {};
+    const posts = [];
+    const chrome = await createChromeHarness({
+      fetchImpl: async (url, init = {}) => {
+        if (String(url).endsWith("/prompts")) {
+          posts.push(JSON.parse(init.body));
+          await new Promise((resolve) => {
+            answerPost = resolve;
+          });
+          return { ok: false, status, json: async () => ({}) };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    chrome.element("sendHint").hidden = true;
+
+    chrome.element("sendAndEnd").click();
+    chrome.sendSnapshot("");
+    await flushPromises();
+    assert.equal(posts.length, 1);
+
+    chrome.eventSource().listeners.get("ended")({ data: JSON.stringify({ ended_by: "agent" }) });
+    answerPost();
+    await flushPromises();
+    await flushPromises();
+
+    assert.equal(chrome.element("sendHint").hidden, true);
+    assert.equal(chrome.element("sendHint").classList.contains("persistent"), false);
+    assert.doesNotMatch(chrome.element("sendHint").textContent, /nothing was sent|could not send/i);
+    assert.equal(chrome.element("endedOverlay").hidden, false);
+  });
+}
+
 test("an empty Send & End does not accept over a visible layout preparation failure", async () => {
   let failPreparation = () => {};
   const preparation = new Promise((_, reject) => {

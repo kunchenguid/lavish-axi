@@ -855,6 +855,7 @@ function showQueuedSendFailure(message = SEND_FAILED_COPY, owner = null) {
 }
 
 function showPersistentSendFailure(message, requireQueuedFeedback = false, owner = null) {
+  if (ended) return;
   clearSendAcknowledgementWarning();
   if (requireQueuedFeedback && !queued.length) return;
   if (sendFailureOwner?.kind === "preparation") return;
@@ -2169,6 +2170,7 @@ function reportRejectedSend(submission, message) {
   }
   const acceptanceOnly = queued.every((prompt) => prompt[acceptancePromptField]);
   releaseTerminalSubmission(submission.terminal);
+  if (ended) return;
   if (acceptanceOnly) showSendHint(EMPTY_END_FAILED_COPY, null, false);
   else showQueuedSendFailure(message, { kind: "submission", operation: submission });
 }
