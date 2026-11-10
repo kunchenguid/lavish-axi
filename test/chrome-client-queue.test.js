@@ -5868,6 +5868,9 @@ test("chrome send and end with an empty composer accepts the review and ends", a
   assert.equal(submitted[0].body.endSession, true);
   assert.equal(submitted[0].body.prompts.length, 1);
   assert.equal(submitted[0].body.prompts[0].prompt, "Review accepted. No comments.");
+  assert.deepEqual(publicPostedBody(submitted[0].body).prompts, [
+    { uid: "", prompt: "Review accepted. No comments.", selector: "", tag: "message", text: "Freeform message" },
+  ]);
   assert.equal(chrome.element("chatInput").disabled, true);
 });
 
@@ -5904,6 +5907,9 @@ test("chrome send and end accepts the review when preparation leaves the queue e
   assert.equal(submitted.length, 1);
   assert.equal(submitted[0].body.endSession, true);
   assert.equal(submitted[0].body.prompts[0].prompt, "Review accepted. No comments.");
+  assert.deepEqual(publicPostedBody(submitted[0].body).prompts, [
+    { uid: "", prompt: "Review accepted. No comments.", selector: "", tag: "message", text: "Freeform message" },
+  ]);
 });
 
 test("a rejected empty Send & End leaves no acceptance for the reviewer's next message", async () => {
@@ -5947,6 +5953,8 @@ test("a rejected empty Send & End leaves no acceptance for the reviewer's next m
     "the synthesized acceptance must not ride along with the next message",
   );
   assert.equal(posts[1].endSession, undefined);
+  assert.doesNotMatch(chrome.element("sendHint").textContent, /nothing was sent/i);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), false);
 });
 
 test("an empty Send & End does not accept over a visible layout preparation failure", async () => {

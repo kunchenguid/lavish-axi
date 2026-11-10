@@ -2163,15 +2163,14 @@ function releaseTerminalSubmission(terminal) {
 }
 
 function reportRejectedSend(submission, message) {
-  const owner = { kind: "submission", operation: submission };
   if (!submission.terminal) {
-    showQueuedSendFailure(message, owner);
+    showQueuedSendFailure(message, { kind: "submission", operation: submission });
     return;
   }
   const acceptanceOnly = queued.every((prompt) => prompt[acceptancePromptField]);
   releaseTerminalSubmission(submission.terminal);
-  if (acceptanceOnly) showPersistentSendFailure(EMPTY_END_FAILED_COPY, false, owner);
-  else showQueuedSendFailure(message, owner);
+  if (acceptanceOnly) showSendHint(EMPTY_END_FAILED_COPY, null, false);
+  else showQueuedSendFailure(message, { kind: "submission", operation: submission });
 }
 
 async function submitQueued(submission) {
