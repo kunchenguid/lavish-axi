@@ -1399,7 +1399,7 @@ function phoneLayoutZoom() {
   const deviceWidth = landscape ? Math.max(width, height) : Math.min(width, height);
   if (!(deviceWidth > 0)) return 1;
   const zoom = viewportWidth / deviceWidth;
-  return zoom >= LAYOUT_ZOOM_MIN ? Math.min(zoom, LAYOUT_ZOOM_MAX) : 1;
+  return zoom >= LAYOUT_ZOOM_MIN ? Math.round(Math.min(zoom, LAYOUT_ZOOM_MAX) * 1000) / 1000 : 1;
 }
 
 function applyLayoutLock() {
@@ -1407,16 +1407,16 @@ function applyLayoutLock() {
   // Only a phone needs the zoom: a desktop that asks for the phone layout lays it out at its own size.
   const zoom = layout === "phone" && isTouchPhone() ? phoneLayoutZoom() : 1;
   const root = document.documentElement;
-  if (root?.style && zoom !== layoutZoom) root.style.zoom = zoom === 1 ? "" : String(Math.round(zoom * 1000) / 1000);
+  if (root?.style && zoom !== layoutZoom) root.style.zoom = zoom === 1 ? "" : String(zoom);
   layoutZoom = zoom;
+  if (root?.style && typeof root.style.setProperty === "function") {
+    if (zoom === 1) root.style.removeProperty("--layout-vh");
+    else root.style.setProperty("--layout-vh", (Number(window.innerHeight) || 0) / zoom + "px");
+  }
   const width = (Number(window.innerWidth) || 0) / zoom;
   for (const { rule, original } of chromeBreakpointRules()) {
     const next = layout ? lockedMediaText(original, layout, width) : original;
     if (rule.media.mediaText !== next) rule.media.mediaText = next;
-  }
-  if (root?.dataset) {
-    if (layout) root.dataset.lavishLayout = layout;
-    else delete root.dataset.lavishLayout;
   }
   appliedLayout = layout;
   renderLayoutToggle();
@@ -1565,11 +1565,11 @@ function syncVisualViewport() {
   if (!root || !root.style || typeof root.style.setProperty !== "function") return;
   const viewport = window.visualViewport;
   // The visual viewport is measured outside the layout zoom, and these lengths are used inside it.
-  const height = (viewport ? viewport.height : window.innerHeight) / layoutZoom;
-  const top = (viewport ? viewport.offsetTop : 0) / layoutZoom;
+  const height = Math.round(viewport ? viewport.height : window.innerHeight) / layoutZoom;
+  const top = Math.round(Math.max(0, (viewport ? viewport.offsetTop : 0) || 0)) / layoutZoom;
   if (!(height > 0)) return;
-  root.style.setProperty("--vv-height", Math.round(height) + "px");
-  root.style.setProperty("--vv-top", Math.round(Math.max(0, top || 0)) + "px");
+  root.style.setProperty("--vv-height", height + "px");
+  root.style.setProperty("--vv-top", top + "px");
 }
 
 function sheetDragOffset(event) {
@@ -1635,6 +1635,8 @@ function onLayoutChange() {
       // Storage refusal only prevents persistence; the in-memory state is already reset.
     }
   }
+  // A reply previewed while one layout hid the conversation is no longer owed once the other
+  // layout shows it.
   if (!isConversationHidden()) unreadAgentReply = "";
   applySheetState();
   applyPanelCollapsed();
@@ -1650,22 +1652,9 @@ window.addEventListener("resize", () => {
 });
 
 if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
-  sheetMedia.addEventListener("change", (event) => {
+  sheetMedia.addEventListener("change", () => {
     // A locked layout ignores the viewport width.
-    if (appliedLayout) return;
-    if (!event.matches) {
-      sheetOpen = false;
-      try {
-        sessionStorage.removeItem(sheetStorageKey);
-      } catch {
-        // Storage refusal only prevents persistence; the in-memory state is already reset.
-      }
-    }
-    // A reply previewed while one layout hid the conversation is no longer owed once the other
-    // layout shows it.
-    if (!isConversationHidden()) unreadAgentReply = "";
-    applySheetState();
-    applyPanelCollapsed();
+    if (!appliedLayout) onLayoutChange();
   });
 }
 if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {

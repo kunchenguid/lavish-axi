@@ -525,7 +525,21 @@ async function createChromeHarness({
     },
   };
   const mediaQueries = [];
-  const documentElement = { style: { zoom: "", setProperty() {} }, dataset: {} };
+  const rootProperties = new Map();
+  const documentElement = {
+    style: {
+      zoom: "",
+      setProperty(name, value) {
+        rootProperties.set(name, value);
+      },
+      removeProperty(name) {
+        rootProperties.delete(name);
+      },
+      getPropertyValue(name) {
+        return rootProperties.get(name) ?? "";
+      },
+    },
+  };
   if (device) {
     context.window.screen = device.screen;
     context.window.innerWidth = device.innerWidth;
@@ -9471,7 +9485,9 @@ test("a touch phone reporting a desktop-width viewport gets the phone layout, zo
   ]);
   assert.deepEqual(mediaTexts(foreign), mediaTexts(chromeCssSheet()), "only Lavish's own stylesheet is touched");
   assert.equal(chrome.documentElement.style.zoom, "2.379");
-  assert.equal(chrome.documentElement.dataset.lavishLayout, "phone");
+  // Viewport units inside the zoom are replaced by the device's own height.
+  const layoutVh = parseFloat(chrome.documentElement.style.getPropertyValue("--layout-vh"));
+  assert.ok(Math.abs(layoutVh * 2.379 - DESKTOP_SITE_PHONE.innerHeight) < 0.01, `--layout-vh is ${layoutVh}px`);
   assert.equal(chrome.element("layoutToggleText").textContent, "Layout: Auto (phone)");
 
   // The sheet controller follows the lock, not the viewport query.
@@ -9487,6 +9503,7 @@ test("a board link can ask for a layout with ?layout=", async () => {
   });
   assert.ok(mediaTexts(phoneSheet).every((text) => !text.includes("(min-width: 0px)")));
   assert.equal(phone.documentElement.style.zoom, "");
+  assert.equal(phone.documentElement.style.getPropertyValue("--layout-vh"), "");
   assert.equal(phone.element("layoutToggleText").textContent, "Layout: Desktop");
   phone.element("panelHead").dispatch("click", {});
   assert.equal(sheetState(phone).open, false, "the desktop layout has no sheet");
@@ -9505,6 +9522,7 @@ test("a board link can ask for a layout with ?layout=", async () => {
   assert.equal(mediaTexts(desktopSheet)[3], "(min-width: 0px)");
   assert.equal(mediaTexts(desktopSheet)[2], "(max-width: 0px)", "a 1280px phone layout is not a 640px one");
   assert.equal(desktop.documentElement.style.zoom, "", "a desktop is not zoomed");
+  assert.equal(desktop.documentElement.style.getPropertyValue("--layout-vh"), "");
   desktop.element("panelHead").dispatch("click", {});
   assert.equal(sheetState(desktop).open, true);
 });
@@ -9517,7 +9535,7 @@ test("a desktop and a tablet keep the width breakpoint unless asked", async () =
     const sheet = chromeCssSheet();
     const chrome = await createChromeHarness({ device: { ...device, styleSheets: [sheet] } });
     assert.deepEqual(mediaTexts(sheet), mediaTexts(chromeCssSheet()));
-    assert.equal(chrome.documentElement.dataset.lavishLayout, undefined);
+    assert.equal(chrome.documentElement.style.zoom, "");
     assert.equal(chrome.element("layoutToggleText").textContent, "Layout: Auto");
   }
 });
