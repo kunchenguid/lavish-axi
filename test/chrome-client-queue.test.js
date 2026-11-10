@@ -5968,7 +5968,11 @@ for (const status of [413, 400]) {
           await new Promise((resolve) => {
             answerPost = resolve;
           });
-          return { ok: false, status, json: async () => ({}) };
+          return {
+            ok: false,
+            status,
+            json: async () => ({ rejected: [{ reason: "not-found" }], caps: {} }),
+          };
         }
         return { ok: true, status: 200, json: async () => ({}) };
       },
