@@ -5849,28 +5849,29 @@ test("chrome send and end carries the end intent with queued prompts", async () 
   assert.equal(chrome.element("chatInput").disabled, true);
 });
 
-test("chrome send and end with an empty composer nudges instead of ending", async () => {
+test("chrome send and end with an empty composer accepts the review and ends", async () => {
   const posts = [];
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {
       posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
-      return { ok: true };
+      return { ok: true, status: 200, json: async () => ({}) };
     },
   });
-  chrome.element("sendHint").hidden = true;
 
-  chrome.element("sendAndEnd").onclick();
+  chrome.element("sendAndEnd").click();
+  chrome.sendSnapshot("");
+  await flushPromises();
   await flushPromises();
 
-  assert.equal(posts.length, 0);
-  assert.equal(chrome.postedToFrame.length, 0);
-  assert.equal(chrome.element("sendHint").hidden, false);
-  assert.match(chrome.element("sendHint").textContent, /End session/);
-  assert.equal(chrome.element("chatInput").focused, true);
-  assert.equal(chrome.element("chatInput").disabled, false);
+  const submitted = posts.filter((post) => String(post.url).endsWith("/prompts"));
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].body.endSession, true);
+  assert.equal(submitted[0].body.prompts.length, 1);
+  assert.equal(submitted[0].body.prompts[0].prompt, "Review accepted. No comments.");
+  assert.equal(chrome.element("chatInput").disabled, true);
 });
 
-test("chrome send and end nudges toward End session when preparation leaves the queue empty", async () => {
+test("chrome send and end accepts the review when preparation leaves the queue empty", async () => {
   const posts = [];
   let finishPreparation = () => {};
   const preparation = new Promise((resolve) => {
@@ -5895,15 +5896,14 @@ test("chrome send and end nudges toward End session when preparation leaves the 
   chrome.element("sendAndEnd").click();
   finishPreparation();
   await flushPromises();
+  chrome.sendSnapshot("");
+  await flushPromises();
   await flushPromises();
 
-  assert.equal(
-    posts.some((post) => String(post.url).endsWith("/prompts")),
-    false,
-  );
-  assert.equal(chrome.element("sendHint").hidden, false);
-  assert.match(chrome.element("sendHint").textContent, /End session/);
-  assert.equal(chrome.element("sendAndEnd").disabled, false);
+  const submitted = posts.filter((post) => String(post.url).endsWith("/prompts"));
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].body.endSession, true);
+  assert.equal(submitted[0].body.prompts[0].prompt, "Review accepted. No comments.");
 });
 
 test("an oversized terminal snapshot retries once without optional DOM context", async () => {

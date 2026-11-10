@@ -797,7 +797,7 @@ const UNSENT_OWNERSHIP_COPY =
   "Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.";
 const DEFAULT_SEND_HINT = "Nothing queued in this tab. " + UNSENT_OWNERSHIP_COPY;
 const EMPTY_SEND_HINT_HOLD_MS = 9000;
-const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
+const ACCEPT_REVIEW_PROMPT = "Review accepted. No comments.";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
   sendHint.textContent = message;
@@ -2059,11 +2059,13 @@ function sendQueued(endAfter) {
   const shouldEnd = Boolean(endAfter && !chipsBlocked);
   const preparations = shouldEnd ? [...feedbackPreparations] : [];
   if (!queued.length && preparations.length === 0) {
-    if (!chipsBlocked && !sendFailureOwner) {
-      if (endAfter) showSendHint(EMPTY_END_HINT);
-      else showSendHint(DEFAULT_SEND_HINT, EMPTY_SEND_HINT_HOLD_MS);
+    if (shouldEnd) {
+      // No user comment on Send & End means the user accepts the review as-is.
+      queueAcceptancePrompt();
+    } else {
+      if (!chipsBlocked && !sendFailureOwner) showSendHint(DEFAULT_SEND_HINT, EMPTY_SEND_HINT_HOLD_MS);
+      return;
     }
-    return;
   }
   if (!sendFailureOwner) hideSendHint(true);
   if (shouldEnd) {
@@ -2078,6 +2080,14 @@ function sendQueued(endAfter) {
     return;
   }
   requestSnapshot("submit", queued.slice(), false, null);
+  render();
+}
+
+function queueAcceptancePrompt() {
+  const prompt = { uid: "", prompt: ACCEPT_REVIEW_PROMPT, selector: "", tag: "message", text: "Freeform message" };
+  assignPromptIdentity(prompt, false);
+  queued.push(prompt);
+  persistQueuedPrompts();
   render();
 }
 
@@ -2111,9 +2121,8 @@ function completeTerminalPreparation(terminal, results) {
   terminal.prompts = queued.slice();
   clearPreparationFailure("terminal");
   if (!terminal.prompts.length) {
-    releaseTerminalSubmission(terminal);
-    if (!sendFailureOwner) showSendHint(EMPTY_END_HINT);
-    return;
+    queueAcceptancePrompt();
+    terminal.prompts = queued.slice();
   }
   // Only make the reservation durable once every preparation has joined the exact
   // batch. A reload before this point must restore an ordinary editable queue, not
