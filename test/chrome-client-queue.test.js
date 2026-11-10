@@ -525,6 +525,7 @@ async function createChromeHarness({
     },
   };
   const mediaQueries = [];
+  const historyReplacements = [];
   const rootProperties = new Map();
   const documentElement = {
     style: {
@@ -545,6 +546,16 @@ async function createChromeHarness({
     context.window.innerWidth = device.innerWidth;
     context.window.innerHeight = device.innerHeight;
     context.location.search = device.search || "";
+    context.location.pathname = "/session/abc";
+    context.location.hash = "#top";
+    context.window.history = {
+      state: { page: "review" },
+      replaceState(state, _title, url) {
+        historyReplacements.push({ state, url: String(url) });
+        const search = String(url).match(/\?[^#]*/);
+        context.location.search = search ? search[0] : "";
+      },
+    };
     context.document.documentElement = documentElement;
     context.document.styleSheets = device.styleSheets || [];
     context.window.matchMedia = (query) => {
@@ -726,6 +737,14 @@ async function createChromeHarness({
     artifactLoadToken: frameLoadToken,
     mediaQueries,
     documentElement,
+    historyReplacements,
+    // The browser resizing the layout viewport (an on-screen keyboard, a rotation), then firing
+    // the window's resize listeners.
+    resizeViewport({ innerWidth = context.window.innerWidth, innerHeight = context.window.innerHeight }) {
+      context.window.innerWidth = innerWidth;
+      context.window.innerHeight = innerHeight;
+      for (const handler of windowListeners.get("resize") || []) handler({});
+    },
     setMobile(matches) {
       for (const list of mediaQueries) {
         list.matches = matches;
@@ -9507,6 +9526,58 @@ test("picking a layout that zooms the page resizes the sheet to the zoomed viewp
   assert.equal(style.zoom, "2.379");
   const vvHeight = parseFloat(style.getPropertyValue("--vv-height"));
   assert.ok(Math.abs(vvHeight * 2.379 - DESKTOP_SITE_PHONE.innerHeight) < 0.01, `--vv-height is ${vvHeight}px`);
+});
+
+// Regression: Android's keyboard shrinks the viewport of an upright phone (the page asks for
+// `interactive-widget=resizes-content`). Read as a rotation, it zoomed the conversation by the
+// screen's long side while the reviewer typed.
+test("an on-screen keyboard shortening the viewport keeps the phone layout zoom", async () => {
+  for (const screen of [
+    DESKTOP_SITE_PHONE.screen,
+    { ...DESKTOP_SITE_PHONE.screen, orientation: { type: "portrait-primary" } },
+  ]) {
+    const chrome = await createChromeHarness({
+      device: { ...DESKTOP_SITE_PHONE, screen, styleSheets: [chromeCssSheet()] },
+    });
+    assert.equal(chrome.documentElement.style.zoom, "2.379");
+    chrome.resizeViewport({ innerHeight: 900 });
+    assert.equal(chrome.documentElement.style.zoom, "2.379", "the keyboard did not turn the phone");
+  }
+});
+
+test("a rotated phone zooms the phone layout by the screen's long side", async () => {
+  // iOS keeps `screen.width`/`height` in portrait; `screen.orientation` says the phone turned.
+  const chrome = await createChromeHarness({
+    device: {
+      screen: { width: 390, height: 844, orientation: { type: "landscape-primary" } },
+      innerWidth: 980,
+      innerHeight: 420,
+      coarse: true,
+      styleSheets: [chromeCssSheet()],
+    },
+  });
+  assert.equal(chrome.documentElement.style.zoom, "1.161");
+});
+
+test("picking a layout from the menu drops ?layout= so the saved choice survives a reload", async () => {
+  const localStore = new Map();
+  const chrome = await createChromeHarness({
+    localStore,
+    device: { ...DESKTOP_SITE_PHONE, search: "?layout=desktop&theme=dark", styleSheets: [chromeCssSheet()] },
+  });
+  assert.deepEqual(chrome.historyReplacements, []);
+  // Desktop (from the link), then Auto, then Phone.
+  chrome.element("layoutToggle").onclick();
+  chrome.element("layoutToggle").onclick();
+  assert.deepEqual(chrome.historyReplacements, [{ state: { page: "review" }, url: "/session/abc?theme=dark#top" }]);
+  assert.equal(localStore.get("lavish-axi:layout"), "phone");
+
+  // The reloaded page has the URL the menu left behind and starts from the saved choice.
+  const reloaded = await createChromeHarness({
+    localStore,
+    device: { ...DESKTOP_SITE_PHONE, search: "?theme=dark", styleSheets: [chromeCssSheet()] },
+  });
+  assert.equal(reloaded.element("layoutToggleText").textContent, "Layout: Phone");
 });
 
 test("a board link can ask for a layout with ?layout=", async () => {

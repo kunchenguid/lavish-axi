@@ -1321,6 +1321,23 @@ function readLayoutQuery() {
   }
 }
 
+// Once the reviewer picks from the menu, a reload must not bring the link's layout back over it.
+function dropLayoutQuery() {
+  try {
+    const params = new URLSearchParams(String(location.search || ""));
+    if (!params.has("layout")) return;
+    params.delete("layout");
+    const search = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      location.pathname + (search ? "?" + search : "") + location.hash,
+    );
+  } catch {
+    // No history API: the choice still applies to this page.
+  }
+}
+
 function readLayoutPreference() {
   try {
     const value = localStorage.getItem(LAYOUT_STORAGE_KEY);
@@ -1395,7 +1412,10 @@ function phoneLayoutZoom() {
   const screenInfo = window.screen;
   const width = Number(screenInfo?.width) || 0;
   const height = Number(screenInfo?.height) || 0;
-  const landscape = viewportWidth > (Number(window.innerHeight) || 0);
+  // The device's orientation, never the viewport's shape: an on-screen keyboard shortens the
+  // viewport of an upright phone without turning it.
+  const orientation = String(screenInfo?.orientation?.type || "");
+  const landscape = orientation ? orientation.startsWith("landscape") : width > height;
   const deviceWidth = landscape ? Math.max(width, height) : Math.min(width, height);
   if (!(deviceWidth > 0)) return 1;
   const zoom = viewportWidth / deviceWidth;
@@ -1438,6 +1458,7 @@ function cycleLayoutPreference() {
   const order = ["auto", "phone", "desktop"];
   const next = order[(order.indexOf(layoutMode()) + 1) % order.length];
   layoutOverride = "";
+  dropLayoutQuery();
   layoutPreference = next;
   try {
     if (next === "auto") localStorage.removeItem(LAYOUT_STORAGE_KEY);
