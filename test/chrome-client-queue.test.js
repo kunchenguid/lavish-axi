@@ -5959,6 +5959,7 @@ test("a rejected empty Send & End leaves no acceptance for the reviewer's next m
 
 for (const status of [413, 400]) {
   test(`a rejected empty Send & End shows no failure hint once the session already ended (HTTP ${status})`, async () => {
+    /** @type {(value?: unknown) => void} */
     let answerPost = () => {};
     const posts = [];
     const chrome = await createChromeHarness({
