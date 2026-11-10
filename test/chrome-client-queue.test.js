@@ -5930,6 +5930,9 @@ test("a rejected empty Send & End leaves no acceptance for the reviewer's next m
 
   assert.deepEqual(publicQueued(chrome), []);
   assert.equal(chrome.element("sendAndEnd").disabled, false);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
+  assert.match(chrome.element("sendHint").textContent, /nothing was sent/i);
+  assert.doesNotMatch(chrome.element("sendHint").textContent, /still queued/i);
 
   chrome.element("chatInput").value = "Fix the header";
   chrome.element("send").click();
@@ -5944,6 +5947,46 @@ test("a rejected empty Send & End leaves no acceptance for the reviewer's next m
     "the synthesized acceptance must not ride along with the next message",
   );
   assert.equal(posts[1].endSession, undefined);
+});
+
+test("an empty Send & End does not accept over a visible layout preparation failure", async () => {
+  let failPreparation = () => {};
+  const preparation = new Promise((_, reject) => {
+    failPreparation = () => reject(new Error("preparation unavailable"));
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/layout-warnings/queue")) return preparation;
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.eventSource().listeners.get("layout-warnings")({
+    data: JSON.stringify({ warnings: [warningPayload()] }),
+  });
+  const [row] = chrome.warningRows();
+  row.children[0].checked = true;
+  row.children[0].dispatch("change");
+
+  chrome.element("warningsQueueButton").click();
+  chrome.element("sendAndEnd").click();
+  failPreparation();
+  await flushPromises();
+  await flushPromises();
+
+  const snapshotRequests = () => chrome.postedToFrame.filter((message) => message.type === "lavish:requestSnapshot");
+  const snapshotRequestsBefore = snapshotRequests().length;
+  chrome.element("sendAndEnd").click();
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(
+    snapshotRequests().length,
+    snapshotRequestsBefore,
+    "an empty accept-and-end must not start a terminal submission over the failed layout fixes",
+  );
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
+  assert.match(chrome.element("sendHint").textContent, /could not prepare the selected layout fixes/i);
 });
 
 test("an oversized terminal snapshot retries once without optional DOM context", async () => {

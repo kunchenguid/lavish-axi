@@ -314,6 +314,7 @@ const SEND_FAILED_COPY =
   "Could not send. Your feedback is still queued in this tab. Check that Lavish is running, then click Send to Agent to retry.";
 const TERMINAL_SEND_FAILED_COPY =
   "Could not send. Your terminal feedback is still queued in this tab. Check that Lavish is running, then click Send & End to retry the same batch.";
+const EMPTY_END_FAILED_COPY = "Could not end the review. Nothing was sent. Click Send & End to try again.";
 const HEALTH_NO_ANSWER_TITLE = "Lavish did not answer.";
 const HEALTH_NO_ANSWER_COPY =
   "Lavish did not answer the check, so this page cannot tell whether it is running. Try again in a moment.";
@@ -2048,7 +2049,7 @@ function sendQueued(endAfter) {
     const text = chatInput.value.trim();
     const attachments = chatAttachmentController.collectReady();
     if (text || attachments.length) {
-      const prompt = { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
+      const prompt = freeformPrompt(text);
       if (attachments.length) prompt.attachments = attachments;
       // Render the durable queued bubble before clearing the editor. If anything after this point
       // fails, the user's words are already both stored and visibly recoverable in the tab. It
@@ -2060,7 +2061,8 @@ function sendQueued(endAfter) {
   }
   const shouldEnd = Boolean(endAfter && !chipsBlocked);
   const preparations = shouldEnd ? [...feedbackPreparations] : [];
-  if (!queued.length && preparations.length === 0 && !shouldEnd) {
+  const acceptsEmptyReview = shouldEnd && sendFailureOwner?.kind !== "preparation";
+  if (!queued.length && preparations.length === 0 && !acceptsEmptyReview) {
     if (!chipsBlocked && !sendFailureOwner) showSendHint(DEFAULT_SEND_HINT, EMPTY_SEND_HINT_HOLD_MS);
     return;
   }
@@ -2080,6 +2082,10 @@ function sendQueued(endAfter) {
   render();
 }
 
+function freeformPrompt(text) {
+  return { uid: "", prompt: text, selector: "", tag: "message", text: "Freeform message" };
+}
+
 function pushQueuedPrompt(prompt) {
   assignPromptIdentity(prompt, false);
   queued.push(prompt);
@@ -2088,14 +2094,7 @@ function pushQueuedPrompt(prompt) {
 }
 
 function queueAcceptancePrompt() {
-  pushQueuedPrompt({
-    uid: "",
-    prompt: ACCEPT_REVIEW_PROMPT,
-    selector: "",
-    tag: "message",
-    text: "Freeform message",
-    [acceptancePromptField]: true,
-  });
+  pushQueuedPrompt({ ...freeformPrompt(ACCEPT_REVIEW_PROMPT), [acceptancePromptField]: true });
 }
 
 function finishTerminalPreparation(terminal, preparations) {
@@ -2125,12 +2124,9 @@ function completeTerminalPreparation(terminal, results) {
     releaseTerminalSubmission(terminal);
     return;
   }
-  terminal.prompts = queued.slice();
   clearPreparationFailure("terminal");
-  if (!terminal.prompts.length) {
-    queueAcceptancePrompt();
-    terminal.prompts = queued.slice();
-  }
+  if (!queued.length) queueAcceptancePrompt();
+  terminal.prompts = queued.slice();
   // Only make the reservation durable once every preparation has joined the exact
   // batch. A reload before this point must restore an ordinary editable queue, not
   // an incomplete terminal submission.
@@ -2164,6 +2160,18 @@ function releaseTerminalSubmission(terminal) {
   afterQueuedPromptRemoved();
   persistTerminalReservation(false);
   render();
+}
+
+function reportRejectedSend(submission, message) {
+  const owner = { kind: "submission", operation: submission };
+  if (!submission.terminal) {
+    showQueuedSendFailure(message, owner);
+    return;
+  }
+  const acceptanceOnly = queued.every((prompt) => prompt[acceptancePromptField]);
+  releaseTerminalSubmission(submission.terminal);
+  if (acceptanceOnly) showPersistentSendFailure(EMPTY_END_FAILED_COPY, false, owner);
+  else showQueuedSendFailure(message, owner);
 }
 
 async function submitQueued(submission) {
@@ -2253,11 +2261,10 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
   }
   if (!response.ok) {
     if (response.status === 413) {
-      showQueuedSendFailure(
+      reportRejectedSend(
+        submission,
         "Could not send because this feedback is too large. It is still queued. Remove some feedback or attachments, then try again.",
-        { kind: "submission", operation: submission },
       );
-      if (submission.terminal) releaseTerminalSubmission(submission.terminal);
       throw new Error("queued feedback exceeds the request size limit");
     }
     if (response.status === 409) {
@@ -2271,11 +2278,10 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
         return false;
       }
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
-      showQueuedSendFailure(
+      reportRejectedSend(
+        submission,
         "Could not send because the layout issue selection changed. Your feedback is still queued. Review the current issues, then click Send to Agent to retry.",
-        { kind: "submission", operation: submission },
       );
-      if (submission.terminal) releaseTerminalSubmission(submission.terminal);
       return;
     }
     // C4: the server persisted nothing (atomic reject) - the queue below is left
@@ -2284,11 +2290,7 @@ async function submitQueuedOnce(submission, preserveFailureState = false) {
     if (response.status === 400) {
       const detail = await response.json().catch(() => ({}));
       if (Array.isArray(detail.rejected) && detail.rejected.length) {
-        showQueuedSendFailure(describeAttachmentRejection(detail.rejected, detail.caps), {
-          kind: "submission",
-          operation: submission,
-        });
-        if (submission.terminal) releaseTerminalSubmission(submission.terminal);
+        reportRejectedSend(submission, describeAttachmentRejection(detail.rejected, detail.caps));
       } else {
         showQueuedSendFailure(submission.terminal ? TERMINAL_SEND_FAILED_COPY : SEND_FAILED_COPY, {
           kind: submission.terminal ? "terminal" : "submission",
