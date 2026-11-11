@@ -330,6 +330,7 @@ export async function serve({
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
   const serverStateId = stateId(stateFile);
+  const serverProcessId = crypto.randomUUID();
   let tailscalePhoneReady = false;
   let tailscaleDetectionWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   // Requested addresses that have not bound yet, with the last error for each. Background recovery
@@ -778,6 +779,7 @@ export async function serve({
       app: "lavish-axi",
       version,
       state_id: serverStateId,
+      process_id: serverProcessId,
       state_dir: path.dirname(stateFile),
       // Where this process is listening and every address it was asked to serve (bound or still
       // retrying). The CLI uses both to find one daemon per port whatever host it was configured
