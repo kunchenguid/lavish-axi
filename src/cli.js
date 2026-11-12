@@ -1848,18 +1848,17 @@ async function findRunningServer(port, { reconcileNetwork = false } = {}) {
 // refuse to start.
 function ownedDuplicates(owned, chosen) {
   const covered = new Set([chosen.host, ...(Array.isArray(chosen.health.hosts) ? chosen.health.hosts : [])]);
-  const processIds = new Set([chosen.health.process_id]);
+  const chosenId = chosen.health.process_id;
   const duplicates = [];
   for (const entry of owned) {
     const processId = entry.health.process_id;
     if (
       entry === chosen ||
       covered.has(entry.host) ||
-      (typeof processId === "string" && processId !== "" && processIds.has(processId))
+      (typeof processId === "string" && processId !== "" && processId === chosenId)
     )
       continue;
     duplicates.push(entry);
-    processIds.add(processId);
     for (const host of Array.isArray(entry.health.hosts) ? entry.health.hosts : [entry.host]) covered.add(host);
   }
   return duplicates;
