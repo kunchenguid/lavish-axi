@@ -2542,9 +2542,9 @@ export function createArtifactSdk(
     const marker = document.createElement("div");
     marker.className = "lavish-reveal-marker";
     // The smooth scroll has only started when scrollIntoView returns, so the rect read now is the
-    // pre-scroll one and the fixed marker would stay there. Re-place the marker on `scrollend`
-    // (captured, so a nested scroll container's counts too) and on every frame while it lives,
-    // which covers browsers without `scrollend`.
+    // pre-scroll one. Re-measure the target every frame while the marker lives, which keeps the
+    // fixed marker on it as the smooth scroll settles, inside nested scroll containers, in
+    // browsers without `scrollend`, and when the reviewer scrolls during the flash.
     const place = () => {
       const rect = target.getBoundingClientRect();
       marker.style.left = rect.left + "px";
@@ -2560,12 +2560,10 @@ export function createArtifactSdk(
     };
     const stop = () => {
       tracking = false;
-      window.removeEventListener("scrollend", place, true);
     };
     stopRevealTracking = stop;
     place();
     root.appendChild(marker);
-    window.addEventListener("scrollend", place, true);
     window.requestAnimationFrame(follow);
     window.setTimeout(() => {
       stop();

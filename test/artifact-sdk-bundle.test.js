@@ -178,10 +178,7 @@ function bootSdk({
   const windowListeners = [];
   sandbox.window = {
     addEventListener: (type, handler) => windowListeners.push({ type, handler }),
-    removeEventListener: (type, handler) => {
-      const index = windowListeners.findIndex((entry) => entry.type === type && entry.handler === handler);
-      if (index >= 0) windowListeners.splice(index, 1);
-    },
+    removeEventListener() {},
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
@@ -283,12 +280,6 @@ function bootSdk({
         timer.ran = true;
         timer.fn();
       }
-    },
-    dispatchWindowEvent(type) {
-      for (const listener of windowListeners.filter((entry) => entry.type === type)) listener.handler({ type });
-    },
-    windowListenerCount(type) {
-      return windowListeners.filter((entry) => entry.type === type).length;
     },
     revealMarkers() {
       return documentElement.children
@@ -402,19 +393,11 @@ function assertMarkerAtSettledRect(sdk) {
   );
 }
 
-test("reveal keeps the smooth scroll and moves the marker to the target once the scroll ends", () => {
+test("reveal keeps the smooth scroll and moves the marker to the settled rect frame by frame", () => {
   const { sdk, scroll, calls } = bootRevealTarget();
   sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].behavior, "smooth");
-  scroll.settled = true;
-  sdk.dispatchWindowEvent("scrollend");
-  assertMarkerAtSettledRect(sdk);
-});
-
-test("reveal follows the target frame by frame when no scrollend arrives", () => {
-  const { sdk, scroll } = bootRevealTarget();
-  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
   scroll.settled = true;
   sdk.runFrames();
   assertMarkerAtSettledRect(sdk);
@@ -424,11 +407,11 @@ test("a reveal marker stops tracking once it is removed or replaced", () => {
   const { sdk, scroll } = bootRevealTarget();
   sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
   sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
-  assert.equal(sdk.windowListenerCount("scrollend"), 1, "a new reveal releases the previous one");
+  const readsBeforeFrame = scroll.reads;
   sdk.runFrames();
+  assert.equal(scroll.reads - readsBeforeFrame, 1, "a new reveal stops the previous one's frame loop");
   sdk.runTimersOf(2400);
   assert.equal(sdk.revealMarkers().length, 0);
-  assert.equal(sdk.windowListenerCount("scrollend"), 0, "the scrollend listener is released");
   const readsAtRemoval = scroll.reads;
   sdk.runFrames();
   sdk.runFrames();
