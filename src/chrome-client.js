@@ -1582,7 +1582,9 @@ function editQueuedPrompt(index, { reveal = true } = {}) {
   editFocusPending = true;
   revealConversation();
   render();
-  if (reveal && prompt.selector) postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector) });
+  if (reveal && prompt.selector) {
+    postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector), queued: true });
+  }
 }
 
 function endQueuedEdit() {
